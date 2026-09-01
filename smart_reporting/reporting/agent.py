@@ -1114,7 +1114,7 @@ def _reporting_invalid_argument_receipt(
         attempt = int(previous) + 1 if isinstance(previous, int) else 1
         counts[tool_name] = attempt
         state[_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY] = counts
-    is_analysis_write = function_name == "create_or_write_analysis_file"
+    is_analysis_write = function_name in {"create_analysis_file", "overwrite_analysis_file"}
     receipt: dict[str, Any] = {
         "ok": False,
         "status": "rejected",
@@ -1124,7 +1124,7 @@ def _reporting_invalid_argument_receipt(
             else "report_tool_arguments_json_invalid"
         ),
         "message": (
-            "create_or_write_analysis_file 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
+            f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
             if is_analysis_write
             else f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按当前 schema 重试。"
         ),
@@ -1739,7 +1739,7 @@ async def normalize_reporting_tool_arguments(
     if (
         succeeded
         and task_kind == "visualization_section"
-        and function_name == "create_or_write_analysis_file"
+        and function_name in {"create_analysis_file", "overwrite_analysis_file"}
         and isinstance(state, dict)
     ):
         state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True

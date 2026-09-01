@@ -84,8 +84,9 @@ REPORT_WORKER_COMMON_INSTRUCTIONS = [
 REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表分析 Worker，本轮只完成任务 JSON 指定的一个 analysisId。",
     (
-        "优先使用 query_analysis_facts 读取当前 analysis 的服务端固定事实；只有固定事实不能满足"
-        "当前原子管理问题时，才读取授权 CSV 并用 create_or_write_analysis_file 创建最小补充脚本和 evidence。"
+        "完整内联 deterministicFacts 时不得默认调用 query_analysis_facts，应直接使用内联的服务端固定事实；"
+        "只有 facts 被标记为 truncated 或当前原子管理问题存在明确事实缺口时，才按缺口调用 query_analysis_facts。"
+        "只有固定事实仍不能满足当前原子管理问题时，才读取授权 CSV 并用 create_analysis_file 创建最小补充脚本和 evidence。"
         "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组；"
         "如当前结论绑定已生成的图表，必须在 chartIds 中提交其 chartId。"
         "不得连接数据库、执行 SQL、扩大 Dataset 范围或处理其他 analysisId。"
@@ -95,7 +96,7 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "完成事实、摘要、evidence 和引用绑定后，最后且只调用一次 complete_analysis_item。"
     ),
     (
-        "首次任务默认只调用一次 query_analysis_facts，读取当前原子管理问题所需的最小固定事实；"
+        "需要查询时，首次只调用一次 query_analysis_facts，读取当前原子管理问题所需的最小固定事实；"
         "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations，"
         "须据此构造首查，不得为探索 facts 结构、重复验证任务 JSON 已投影的元数据或空命中反复查询。"
         "只有首个回执 truncated 或当前管理问题缺少必需事实时，才按缺口精确追加查询或读取实际使用的 Profile；"
@@ -114,6 +115,9 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     (
         "补充脚本对 None、空集合和零分母失败关闭，不用 0 替代缺失，不拟合、估算、插值、外推、"
         "年化、平滑或补齐。固定事实已覆盖的指标不得重复计算或覆盖。"
+        "成功脚本的 stdout 仅输出 evidencePath、处理行数、固定事实对账值和核心可比指标；"
+        "完整聚合结果只写入 evidence JSON，失败时输出结构化错误摘要。"
+        "只有证据直接证明因果链时才使用“导致”或“完全由”；否则说明观察到的关联、数据限制或待核验事项。"
     ),
     (
         "任务 JSON 中的 Dataset 路径和 analysisOutputRoot 都是相对工作区根目录的受信路径。"
@@ -122,7 +126,8 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "已明确提供的路径；不要给成功的脚本执行附加探测命令。"
     ),
     (
-        "create_or_write_analysis_file 的首次创建可用 content 一次提交最长 4 MiB 的完整脚本；"
+        "首次写入使用 create_analysis_file，可用 content 一次提交最长 4 MiB 的完整脚本；"
+        "只有读取已有文件并取得当前 SHA-256 后才使用 overwrite_analysis_file；"
         "所有补充脚本和 evidence 必须写入任务 JSON 的 analysisOutputRoot；不要预先拆分。"
         "只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"
     ),
@@ -203,9 +208,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
-        "创建或修改图表脚本只调用 create_or_write_analysis_file 的公开扁平 schema；首次创建只使用 "
-        "path 和 content 一次提交完整脚本，禁止传 expected_sha256、全零占位值或猜测哈希；覆盖已有文件"
-        "时才附带读取回执中的当前 expected_sha256，不调用任何未注册的底层"
+        "首次创建图表脚本只调用 create_analysis_file，并以 path 和 content 一次提交完整脚本；"
+        "覆盖已有文件只调用 overwrite_analysis_file，且必须附带读取回执中的当前 expected_sha256；不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"

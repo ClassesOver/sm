@@ -22,8 +22,25 @@ def _stable_digest(value: Any) -> str:
     ).hexdigest()
 
 
-def analysis_file_write_parameters() -> dict[str, Any]:
-    """返回唯一的 analysis 文件 CAS 写入 schema。"""
+def analysis_file_create_parameters() -> dict[str, Any]:
+    """返回仅允许首次创建 analysis 文件的 schema。"""
+
+    return {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "content": {
+                "type": "string",
+                "description": "完整文件内容；单次调用总写入意图不超过 4 MiB。",
+            },
+        },
+        "required": ["path", "content"],
+        "additionalProperties": False,
+    }
+
+
+def analysis_file_overwrite_parameters() -> dict[str, Any]:
+    """返回仅允许 CAS 覆盖已有 analysis 文件的 schema。"""
 
     return {
         "type": "object",
@@ -36,10 +53,10 @@ def analysis_file_write_parameters() -> dict[str, Any]:
             "expected_sha256": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
-                "description": "仅覆盖已有文件时提供读取回执中的当前 SHA-256；首次创建必须省略，禁止传全零或猜测值。",
+                "description": "读取回执中的当前 SHA-256。",
             },
         },
-        "required": ["path", "content"],
+        "required": ["path", "content", "expected_sha256"],
         "additionalProperties": False,
     }
 

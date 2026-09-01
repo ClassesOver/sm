@@ -53,7 +53,7 @@ from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
 from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
-from .validation import analysis_file_write_parameters
+from .validation import analysis_file_create_parameters, analysis_file_overwrite_parameters
 
 REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
@@ -161,26 +161,37 @@ class ReportWorkspaceTaskToolkit(
             updated = updated.replace("、目录列举及 Git 状态或差异", "")
             reporting_instruction_lines.append(updated)
         self.instructions = "\n".join(reporting_instruction_lines)
-        self.register(
-            Function(
-                name="create_or_write_analysis_file",
-                description=(
-                    "创建或 CAS 覆盖一个 analysis 文件。首次创建仅传 path 和 content；"
-                    "不得传 expected_sha256 占位值。覆盖已有文件必须额外传入读取回执中的当前 "
-                    "expected_sha256。服务端保存写入意图，"
-                    "完成写入和 SHA-256 校验后提交意图。"
-                ),
-                parameters=(
-                    analysis_file_write_parameters()
-                    if phase != "section"
-                    else {"type": "object", "properties": {}, "additionalProperties": False}
-                ),
-                strict=True,
-                entrypoint=self.create_or_write_analysis_file,
-                pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_nonretryable_tool_call,
+        for name, description, parameters, entrypoint in (
+            (
+                "create_analysis_file",
+                "创建此前不存在的 analysis 文件。只传 path 和 content；目标已存在时读取当前 "
+                "SHA-256 后改用 overwrite_analysis_file。服务端完成写入和 SHA-256 校验后提交意图。",
+                analysis_file_create_parameters,
+                self.create_analysis_file,
+            ),
+            (
+                "overwrite_analysis_file",
+                "使用读取回执中的 expected_sha256 CAS 覆盖已有 analysis 文件。目标不存在时改用 "
+                "create_analysis_file；服务端完成写入和 SHA-256 校验后提交意图。",
+                analysis_file_overwrite_parameters,
+                self.overwrite_analysis_file,
+            ),
+        ):
+            self.register(
+                Function(
+                    name=name,
+                    description=description,
+                    parameters=(
+                        parameters()
+                        if phase != "section"
+                        else {"type": "object", "properties": {}, "additionalProperties": False}
+                    ),
+                    strict=True,
+                    entrypoint=entrypoint,
+                    pre_hook=_reset_stop_after_tool_call,
+                    post_hook=_stop_after_nonretryable_tool_call,
+                )
             )
-        )
 
         self.register(
             Function(
@@ -1461,7 +1472,7 @@ class ReportWorkspaceTaskToolkit(
                     "recoveryOperation": error.details.get("recoveryOperation"),
                 }
             result["requiredActions"] = [
-                "只使用 details.currentFiles 中当前 64 位 sha256 调用 create_or_write_analysis_file 覆盖。"
+                "只使用 details.currentFiles 中当前 64 位 sha256 调用 overwrite_analysis_file 覆盖。"
             ]
         elif (
             code == "report_analysis_dependency_missing"
@@ -1515,6 +1526,7 @@ class ReportWorkspaceTaskToolkit(
                 "report_analysis_evidence_missing",
                 "report_analysis_evidence_not_registered",
                 "report_analysis_evidence_identity_mismatch",
+                "report_analysis_overwrite_target_missing",
                 "report_profile_query_invalid",
                 "report_analysis_context_query_invalid",
                 "report_analysis_facts_query_invalid",
@@ -1528,38 +1540,29 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
         elif code == "report_analysis_evidence_missing":
             result["requiredActions"] = [
-                "先使用 create_or_write_analysis_file 写入真实 evidence，再重试当前 analysis 提交。"
+                "先使用 create_analysis_file 或 overwrite_analysis_file 写入真实 evidence，再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_not_registered":
             result["requiredActions"] = [
-                "通过 create_or_write_analysis_file 对 details.missingRegistration 中的文件做幂等登记，"
+                "通过 create_analysis_file 或 overwrite_analysis_file 对 details.missingRegistration 中的文件做幂等登记，"
                 "再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_identity_mismatch":
             result["requiredActions"] = [
-                "文件已在登记后发生变化；通过 create_or_write_analysis_file 提交当前内容和 SHA-256，"
+                "文件已在登记后发生变化；通过 overwrite_analysis_file 提交当前内容和 SHA-256，"
                 "再重试当前 analysis 提交。"
             ]
+        elif code == "report_analysis_overwrite_target_missing":
+            result["requiredActions"] = ["改用 create_analysis_file 创建该目标文件。"]
         elif code == "report_analysis_dependency_missing":
             result["requiredActions"] = [
                 "只创建 details.missingPaths 指向的缺失本地模块，再运行原脚本。"
             ]
         elif code == "report_analysis_write_intent_invalid":
-            details = result.get("details")
-            if (
-                isinstance(details, Mapping)
-                and details.get("toolName") == "create_or_write_analysis_file"
-                and details.get("path") == "arguments.expected_sha256"
-                and details.get("validator") == "placeholder"
-            ):
-                result["requiredActions"] = [
-                    "删除 arguments.expected_sha256；保留原 path 和 content 后重试。"
-                ]
-            else:
-                result["requiredActions"] = [
-                    "保持 toolName 不变，只按 details.expectedFields 和 details.path 修正 arguments；"
-                    "不要在 arguments 内嵌套 toolName 或第二层 arguments。"
-                ]
+            result["requiredActions"] = [
+                "保持 toolName 不变，只按 details.expectedFields 和 details.path 修正 arguments；"
+                "不要在 arguments 内嵌套 toolName 或第二层 arguments。"
+            ]
         elif code == "report_analysis_python_syntax_invalid":
             result["requiredActions"] = [
                 "修正 details.path 指向的 Python 语法错误后，使用原 operation 重新提交。"
@@ -1618,23 +1621,6 @@ class ReportWorkspaceTaskToolkit(
         path = normalized_details.get("path")
         validator = normalized_details.get("validator")
         expected_fields = normalized_details.get("expectedFields")
-        if (
-            code == "report_analysis_write_intent_invalid"
-            and tool_name == "create_or_write_analysis_file"
-            and path == "arguments.expected_sha256"
-            and validator == "placeholder"
-        ):
-            return {
-                "kind": "argument_patch",
-                "toolName": tool_name,
-                "argumentEdits": [
-                    {
-                        "op": "remove",
-                        "path": "expected_sha256",
-                        "reason": "首次创建不得提供该字段。",
-                    }
-                ],
-            }
         if validation_errors:
             return {
                 "kind": "schema_validation",
@@ -1660,8 +1646,14 @@ class ReportWorkspaceTaskToolkit(
         if code == "report_analysis_write_path_conflict":
             return {
                 "kind": "overwrite_current_file",
-                "toolName": "create_or_write_analysis_file",
+                "toolName": "overwrite_analysis_file",
                 "currentFiles": normalized_details.get("currentFiles", []),
+            }
+        if code == "report_analysis_overwrite_target_missing":
+            return {
+                "kind": "create_missing_file",
+                "toolName": "create_analysis_file",
+                "paths": normalized_details.get("paths", []),
             }
         if code == "report_analysis_dependency_missing":
             return {

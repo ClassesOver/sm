@@ -405,7 +405,7 @@ async def test_visualization_successful_script_write_records_recoverable_progres
 
     result = await normalize_reporting_tool_arguments(
         run_context,
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         lambda: {"ok": True, "status": "committed"},
         {},
     )
@@ -629,7 +629,7 @@ def test_visualization_projection_hides_process_until_script_session_exists() ->
             "read_tool_output",
             "process",
             "terminal",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "register_report_charts",
             "finalize_report_analysis",
         )
@@ -738,7 +738,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
             "read_file",
             "read_tool_output",
             "get_skill_reference",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "terminal",
             "register_report_charts",
             "finalize_report_analysis",
@@ -753,7 +753,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
     assert [item["function"]["name"] for item in projected] == [
         "read_file",
         "read_tool_output",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         "terminal",
     ]
 
@@ -877,7 +877,7 @@ def test_analysis_recovery_projection_keeps_only_completion() -> None:
         for name in (
             "query_analysis_facts",
             "query_profile",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "complete_analysis_item",
         )
     ]
@@ -1015,8 +1015,8 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "replace_text" not in instructions
     assert "git_status" not in instructions
     if task_kind == "visualization_section":
-        assert "只调用 create_or_write_analysis_file" in instructions
-        assert "禁止传 expected_sha256、全零占位值或猜测哈希" in instructions
+        assert "只调用 create_analysis_file" in instructions
+        assert "覆盖已有文件只调用 overwrite_analysis_file" in instructions
         assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions
@@ -1269,7 +1269,7 @@ def test_section_projection_does_not_add_analysis_receipt_ledger() -> None:
         assert _with_reporting_durable_identities(messages) is messages
 
 
-def test_malformed_create_or_write_analysis_file_raises_original_json_error() -> None:
+def test_malformed_create_analysis_file_raises_original_json_error() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     raw_arguments = '{"path":"analysis/report.py","content":'
     assistant = Message(
@@ -1279,7 +1279,7 @@ def test_malformed_create_or_write_analysis_file_raises_original_json_error() ->
                 "id": "call-write-1",
                 "type": "function",
                 "function": {
-                    "name": "create_or_write_analysis_file",
+                    "name": "create_analysis_file",
                     "arguments": raw_arguments,
                 },
             }
@@ -1302,7 +1302,7 @@ def test_malformed_create_or_write_analysis_file_raises_original_json_error() ->
     assert messages[0].content == '{"phase":"analysis"}'
 
 
-def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded_receipt() -> None:
+def test_long_malformed_create_analysis_file_is_not_replaced_by_bounded_receipt() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     raw_arguments = '{"path":"analysis/report.py","content":"' + ("x" * 2000)
     assistant = Message(
@@ -1312,7 +1312,7 @@ def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded
                 "id": "call-write-long-invalid",
                 "type": "function",
                 "function": {
-                    "name": "create_or_write_analysis_file",
+                    "name": "create_analysis_file",
                     "arguments": raw_arguments,
                 },
             }
@@ -1328,7 +1328,7 @@ def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded
     assert len(messages) == 1
 
 
-def test_create_or_write_analysis_file_does_not_autofix_trailing_json_brace() -> None:
+def test_create_analysis_file_does_not_autofix_trailing_json_brace() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     assistant = Message(
         role="assistant",
@@ -1337,7 +1337,7 @@ def test_create_or_write_analysis_file_does_not_autofix_trailing_json_brace() ->
                 "id": "call-write-2",
                 "type": "function",
                 "function": {
-                    "name": "create_or_write_analysis_file",
+                    "name": "create_analysis_file",
                     "arguments": ('{"path":"analysis/report.py","content":"pass\\n"}}'),
                 },
             }
@@ -2567,7 +2567,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
             "read_file",
             "read_tool_output",
             "get_skill_reference",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "terminal",
             "inspect_chart",
             "view_image",
@@ -2582,7 +2582,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
         )
 
     assert [item["function"]["name"] for item in projected] == [
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         "terminal",
     ]
 
@@ -2610,7 +2610,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
             "process",
             "view_image",
             "inspect_chart",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "terminal",
             "register_report_charts",
             "finalize_report_analysis",
@@ -2624,7 +2624,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
 
     assert [item["function"]["name"] for item in projected] == [
         "read_file",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         "terminal",
     ]
 
@@ -3175,7 +3175,7 @@ def test_tools_for_task_visualization_section() -> None:
     names = tools_for_task("analysis", "visualization_section")
     assert names is not None
     assert "submit_visualization_charts" in names
-    assert "create_or_write_analysis_file" in names
+    assert "create_analysis_file" in names
     assert "terminal" in names
     assert "register_report_charts" not in names
     assert "finalize_report_analysis" not in names

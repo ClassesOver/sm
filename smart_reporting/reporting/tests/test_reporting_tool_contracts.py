@@ -68,7 +68,8 @@ from smart_reporting.reporting.tools.toolkit import (
 from smart_reporting.reporting.tools.validation import (
     _bound_profile_pointer_value,
     _jmespath_reporting_error,
-    analysis_file_write_parameters,
+    analysis_file_create_parameters,
+    analysis_file_overwrite_parameters,
 )
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
@@ -2571,34 +2572,36 @@ async def test_register_report_charts_requires_current_acceptable_inspection(
     assert result["code"] == code
 
 
-def test_create_or_write_analysis_file_schema_is_single_file_cas_contract() -> None:
-    parameters = analysis_file_write_parameters()
+def test_analysis_file_create_and_overwrite_schemas_are_mutually_exclusive() -> None:
+    create_parameters = analysis_file_create_parameters()
+    overwrite_parameters = analysis_file_overwrite_parameters()
 
-    assert parameters["required"] == ["path", "content"]
-    assert set(parameters["properties"]) == {"path", "content", "expected_sha256"}
-    assert "arguments" not in parameters["properties"]
-    assert parameters["additionalProperties"] is False
-    assert "禁止传全零或猜测值" in parameters["properties"]["expected_sha256"]["description"]
+    assert create_parameters["required"] == ["path", "content"]
+    assert set(create_parameters["properties"]) == {"path", "content"}
+    assert create_parameters["additionalProperties"] is False
+    assert overwrite_parameters["required"] == ["path", "content", "expected_sha256"]
+    assert set(overwrite_parameters["properties"]) == {"path", "content", "expected_sha256"}
+    assert overwrite_parameters["additionalProperties"] is False
 
 
-def test_create_or_write_analysis_file_rejects_unregistered_operation_fields() -> None:
+def test_create_analysis_file_rejects_unregistered_operation_fields() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
 
     with pytest.raises(ReportingError) as raised:
         toolkit._validate_analysis_write_arguments(
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             {"path": "analysis/report.py", "content": "x = 1\n", "operation": "create_file"},
         )
 
     assert raised.value.code == "report_analysis_write_intent_invalid"
 
 
-def test_create_or_write_analysis_file_accepts_complete_long_content() -> None:
+def test_create_analysis_file_accepts_complete_long_content() -> None:
     content = "".join(f"line_{index} = {index}\n" for index in range(500))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
 
     canonical, paths, _expected_states, _payload_bytes = toolkit._validate_analysis_write_arguments(
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         {"path": "analysis/report.py", "content": content},
     )
 
@@ -2606,76 +2609,47 @@ def test_create_or_write_analysis_file_accepts_complete_long_content() -> None:
     assert canonical["content"] == content
 
 
-def test_create_or_write_analysis_file_rejects_intent_over_four_mib() -> None:
+def test_create_analysis_file_rejects_intent_over_four_mib() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
 
     with pytest.raises(ReportingError) as raised:
         toolkit._validate_analysis_write_arguments(
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             {"path": "analysis/report.py", "content": "x" * MAX_ANALYSIS_WRITE_INTENT_BYTES},
         )
 
     assert raised.value.code == "report_analysis_write_intent_too_large"
 
 
-def test_create_or_write_analysis_file_returns_actionable_schema_error() -> None:
+def test_create_analysis_file_returns_actionable_schema_error() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
 
     with pytest.raises(ReportingError) as raised:
         toolkit._validate_analysis_write_arguments(
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             {"path": "analysis/report.py"},
         )
 
     assert raised.value.code == "report_analysis_write_intent_invalid"
     assert raised.value.details == {
-        "toolName": "create_or_write_analysis_file",
+        "toolName": "create_analysis_file",
         "path": "arguments",
         "validator": "required",
         "message": "'content' is a required property",
-        "expectedFields": ["content", "expected_sha256", "path"],
+        "expectedFields": ["content", "path"],
     }
 
 
-def test_analysis_write_schema_rejection_has_machine_readable_recovery() -> None:
+def test_create_analysis_file_rejects_cas_hash_as_schema_error() -> None:
     error = ReportingError(
         "report_analysis_write_intent_invalid",
-        "首次创建不得传 expected_sha256。",
+        "create_analysis_file 不接受 expected_sha256。",
         details={
-            "toolName": "create_or_write_analysis_file",
-            "path": "arguments.expected_sha256",
-            "validator": "placeholder",
-            "message": "首次创建不得传 expected_sha256。",
-            "expectedFields": ["content", "expected_sha256", "path"],
-        },
-    )
-
-    receipt = ReportWorkspaceTaskToolkit._failure(error)
-
-    assert receipt["recovery"] == {
-        "kind": "argument_patch",
-        "toolName": "create_or_write_analysis_file",
-        "argumentEdits": [
-            {
-                "op": "remove",
-                "path": "expected_sha256",
-                "reason": "首次创建不得提供该字段。",
-            }
-        ],
-    }
-    assert "删除 arguments.expected_sha256" in receipt["requiredActions"][0]
-
-
-def test_generic_schema_rejection_has_validation_recovery() -> None:
-    error = ReportingError(
-        "report_analysis_write_intent_invalid",
-        "缺少 content。",
-        details={
-            "toolName": "create_or_write_analysis_file",
+            "toolName": "create_analysis_file",
             "path": "arguments",
-            "validator": "required",
-            "message": "'content' is a required property",
-            "expectedFields": ["content", "expected_sha256", "path"],
+            "validator": "additionalProperties",
+            "message": "Additional properties are not allowed ('expected_sha256' was unexpected)",
+            "expectedFields": ["content", "path"],
         },
     )
 
@@ -2683,10 +2657,35 @@ def test_generic_schema_rejection_has_validation_recovery() -> None:
 
     assert receipt["recovery"] == {
         "kind": "schema_validation",
-        "toolName": "create_or_write_analysis_file",
+        "toolName": "create_analysis_file",
+        "path": "arguments",
+        "validator": "additionalProperties",
+        "expectedFields": ["content", "path"],
+    }
+    assert "保持 toolName 不变" in receipt["requiredActions"][0]
+
+
+def test_generic_schema_rejection_has_validation_recovery() -> None:
+    error = ReportingError(
+        "report_analysis_write_intent_invalid",
+        "缺少 content。",
+        details={
+            "toolName": "create_analysis_file",
+            "path": "arguments",
+            "validator": "required",
+            "message": "'content' is a required property",
+            "expectedFields": ["content", "path"],
+        },
+    )
+
+    receipt = ReportWorkspaceTaskToolkit._failure(error)
+
+    assert receipt["recovery"] == {
+        "kind": "schema_validation",
+        "toolName": "create_analysis_file",
         "path": "arguments",
         "validator": "required",
-        "expectedFields": ["content", "expected_sha256", "path"],
+        "expectedFields": ["content", "path"],
     }
 
 
@@ -3359,7 +3358,7 @@ async def test_pending_analysis_file_write_recovers_matching_written_file() -> N
 
     result = await toolkit._recover_pending_analysis_write(
         scope=scope,
-        tool_name="create_or_write_analysis_file",
+        tool_name="create_analysis_file",
         canonical={"path": "analysis/report.py", "content": content},
         paths=("analysis/report.py",),
         intent_sha256="a" * 64,
@@ -3397,7 +3396,7 @@ async def test_pending_analysis_file_write_rejects_changed_written_file() -> Non
     with pytest.raises(ReportingError) as raised:
         await toolkit._recover_pending_analysis_write(
             scope=SimpleNamespace(thread_id="thread-1"),
-            tool_name="create_or_write_analysis_file",
+            tool_name="create_analysis_file",
             canonical={"path": "analysis/report.py", "content": "x = 1\n"},
             paths=("analysis/report.py",),
             intent_sha256="a" * 64,
@@ -3422,7 +3421,7 @@ async def test_pending_analysis_file_write_with_missing_target_continues_write()
 
     result = await toolkit._recover_pending_analysis_write(
         scope=SimpleNamespace(thread_id="thread-1"),
-        tool_name="create_or_write_analysis_file",
+        tool_name="create_analysis_file",
         canonical={"path": "analysis/report.py", "content": "x = 1\n"},
         paths=("analysis/report.py",),
         intent_sha256="a" * 64,
@@ -3467,7 +3466,7 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.create_or_write_analysis_file(
+    result = await toolkit.create_analysis_file(
         path="analysis/report.py",
         content="print('ok')\n",
         run_context=RunContext(run_id="run-1", session_id="session-1"),
@@ -3477,15 +3476,15 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
     assert result["details"] == {
         "paths": ["analysis/report.py"],
         "currentFiles": [{"path": "analysis/report.py", "size": 12, "sha256": "a" * 64}],
-        "recoveryOperation": "create_or_write_analysis_file",
+        "recoveryOperation": "overwrite_analysis_file",
     }
     assert "当前 64 位 sha256" in result["requiredActions"][0]
-    assert "create_or_write_analysis_file" in result["requiredActions"][0]
+    assert "overwrite_analysis_file" in result["requiredActions"][0]
     toolkit._apply_durable.assert_awaited_once()
 
 
 @pytest.mark.anyio
-async def test_analysis_write_treats_zero_placeholder_hash_as_first_create() -> None:
+async def test_create_analysis_file_rejects_unexpected_cas_hash_before_write() -> None:
     @asynccontextmanager
     async def context(value):
         yield value
@@ -3514,18 +3513,68 @@ async def test_analysis_write_treats_zero_placeholder_hash_as_first_create() -> 
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.create_or_write_analysis_file(
+    result = await toolkit._write_analysis_file(
+        tool_name="create_analysis_file",
         path="analysis/report.py",
         content="print('ok')\n",
         expected_sha256="0" * 64,
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "committed"
-    assert result["artifacts"] == [identity]
-    assert toolkit.kernel.patch.await_args.args[0] == "patch"
-    toolkit._apply_durable.assert_awaited()
+    assert result["code"] == "report_analysis_write_intent_invalid"
+    assert result["details"]["validator"] == "additionalProperties"
+    toolkit.kernel.patch.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_overwrite_analysis_file_rejects_missing_target_before_workspace_mutation() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    scope = SimpleNamespace(thread_id="thread-1")
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(),
+        service=SimpleNamespace(
+            abatch_hash_files=AsyncMock(
+                return_value=[{"path": "analysis/report.py", "missing": True}]
+            )
+        ),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.overwrite_analysis_file(
+        path="analysis/report.py",
+        content="print('ok')\n",
+        expected_sha256="a" * 64,
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["code"] == "report_analysis_overwrite_target_missing"
+    assert result["details"] == {
+        "paths": ["analysis/report.py"],
+    }
+    assert result["requiredActions"] == ["改用 create_analysis_file 创建该目标文件。"]
+    assert result["recovery"] == {
+        "kind": "create_missing_file",
+        "toolName": "create_analysis_file",
+        "paths": ["analysis/report.py"],
+    }
+    toolkit.kernel.patch.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -3561,7 +3610,7 @@ async def test_analysis_write_rejects_invalid_python_before_workspace_mutation()
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.create_or_write_analysis_file(
+    result = await toolkit.create_analysis_file(
         path="analysis/report.py",
         content=invalid_source,
         run_context=RunContext(run_id="run-1", session_id="session-1"),
@@ -3607,7 +3656,7 @@ async def test_analysis_write_allows_valid_python_cas_update() -> None:
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.create_or_write_analysis_file(
+    result = await toolkit.overwrite_analysis_file(
         path="analysis/report.py",
         content=updated,
         expected_sha256="a" * 64,
@@ -3660,7 +3709,7 @@ async def test_visualization_section_analysis_file_write_commits_signed_script()
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.create_or_write_analysis_file(
+    result = await toolkit.create_analysis_file(
         path=script_path,
         content=source,
         run_context=RunContext(run_id="run-1", session_id="session-1"),
@@ -3704,9 +3753,7 @@ def test_successful_tool_call_resets_no_progress_failure_count() -> None:
     assert context.session_state[_REPORT_TOOL_FAILURE_STATE_KEY]["phaseFailureCount"] == 2
 
     success = {"ok": True, "status": "accepted"}
-    assert (
-        _enforce_reporting_no_progress(context, "create_or_write_analysis_file", success) == success
-    )
+    assert _enforce_reporting_no_progress(context, "create_analysis_file", success) == success
     assert _REPORT_TOOL_FAILURE_STATE_KEY not in context.session_state
 
     assert _enforce_reporting_no_progress(context, "terminal", failure) == failure
@@ -3742,7 +3789,7 @@ def test_terminal_no_progress_preserves_original_recovery_and_actions() -> None:
     context = RunContext(run_id="run-1", session_id="session-1", session_state={})
     recovery = {
         "kind": "argument_patch",
-        "toolName": "create_or_write_analysis_file",
+        "toolName": "create_analysis_file",
         "argumentEdits": [{"op": "remove", "path": "expected_sha256"}],
     }
     failure = {
@@ -3752,10 +3799,10 @@ def test_terminal_no_progress_preserves_original_recovery_and_actions() -> None:
         "recovery": recovery,
     }
 
-    _enforce_reporting_no_progress(context, "create_or_write_analysis_file", failure)
-    _enforce_reporting_no_progress(context, "create_or_write_analysis_file", failure)
+    _enforce_reporting_no_progress(context, "create_analysis_file", failure)
+    _enforce_reporting_no_progress(context, "create_analysis_file", failure)
     with pytest.raises(StopAgentRun) as stopped:
-        _enforce_reporting_no_progress(context, "create_or_write_analysis_file", failure)
+        _enforce_reporting_no_progress(context, "create_analysis_file", failure)
 
     receipt = json.loads(str(stopped.value))
     assert receipt["recovery"] == recovery
@@ -3781,7 +3828,7 @@ def test_phase_failure_limit_stops_distinct_failures_without_progress() -> None:
     for index in range(7):
         result = _enforce_reporting_no_progress(
             context,
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             {"ok": False, "code": "report_analysis_write_intent_invalid"},
             {"path": f"analysis/{index}.py"},
         )
@@ -3789,7 +3836,7 @@ def test_phase_failure_limit_stops_distinct_failures_without_progress() -> None:
     with pytest.raises(StopAgentRun) as stopped:
         _enforce_reporting_no_progress(
             context,
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             {"ok": False, "code": "report_analysis_write_intent_invalid"},
             {"path": "analysis/7.py"},
         )
@@ -3900,17 +3947,20 @@ def test_analysis_context_tool_reserves_current_analysis_for_task_json() -> None
     assert "仅用于按需读取 Dataset 元数据" in description
 
 
-def test_analysis_tool_schemas_expose_single_file_cas_and_standard_jmespath_patterns() -> None:
+def test_analysis_tool_schemas_expose_create_and_overwrite_contracts() -> None:
     toolkit = ReportWorkspaceTaskToolkit(
         fake_workspace_service(None),
         AsyncMock(),
         state_repository=AsyncMock(),
     )
 
-    write_tool = toolkit.async_functions["create_or_write_analysis_file"]
+    create_tool = toolkit.async_functions["create_analysis_file"]
+    overwrite_tool = toolkit.async_functions["overwrite_analysis_file"]
 
-    assert "创建或 CAS 覆盖" in write_tool.description
-    assert write_tool.parameters == analysis_file_write_parameters()
+    assert "此前不存在" in create_tool.description
+    assert create_tool.parameters == analysis_file_create_parameters()
+    assert "CAS 覆盖" in overwrite_tool.description
+    assert overwrite_tool.parameters == analysis_file_overwrite_parameters()
 
     expected_examples = {
         "query_profile": '"query":"values(variables)[0]"',
@@ -4104,7 +4154,8 @@ _WORKER_TOOL_SCHEMA_NAMES = (
     "query_profile",
     "query_analysis_context",
     "query_analysis_facts",
-    "create_or_write_analysis_file",
+    "create_analysis_file",
+    "overwrite_analysis_file",
     "complete_analysis_item",
     "finalize_report_analysis",
     "inspect_chart",
@@ -4118,7 +4169,8 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "query_profile": "985e869a7ec204ff3b7ff3b9d411338ce26bfacca34e004f878ccddab01731ec",
     "query_analysis_context": "1c4c56570eb9217299fc221e62d8ba48e08f5fac0c65f3b27df480360f7982d0",
     "query_analysis_facts": "ae90792e199a1560dbd951861bcc197d508d860f6cdbf0d6ffc0f89632a53c9d",
-    "create_or_write_analysis_file": "0a6eb74ba7bbb994583ac3743fbf80ab0d4266a76e181e3f66b18ec996c0b7ea",
+    "create_analysis_file": "0760ebcc4c0392fda369f16ba5d30bab3cbb2f7a37c8af2d0edc759e5991bab1",
+    "overwrite_analysis_file": "10e3a3726f2c206cce0e04a353b505070bc59337e7bcee7462c6b68e33bf96d1",
     "complete_analysis_item": "9c2e0d1eff9bb28aec286154573bbc38c025bd1f3a5d30bb129593beed755fb9",
     "finalize_report_analysis": "0a5a381b7eda6a4b5cdf93302bdc5bd1bcb3aa411bc52745a972dee6f0e99d67",
     "inspect_chart": "c038586b8d6fa4ecefe1c9d75d4d35e217d9e3cf91719c4fd2a7ad78f775c9c6",
@@ -4179,7 +4231,7 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
             "section",
             "section",
             {"read_file", "render_report_section", "request_analysis_rework"},
-            {"update_plan", "create_or_write_analysis_file", "query_analysis_facts"},
+            {"update_plan", "create_analysis_file", "query_analysis_facts"},
         ),
     ],
 )
@@ -4214,9 +4266,9 @@ def test_report_worker_toolkit_registers_only_current_task_tools(
     # 阶段工具通过 Toolkit 内部函数对象调用 finish_task 收尾；它仍由模型投影层隐藏。
     assert "finish_task" in names
     if phase == "analysis":
-        assert "create_or_write_analysis_file" in names
+        assert "create_analysis_file" in names
     else:
-        assert "create_or_write_analysis_file" not in names
+        assert "create_analysis_file" not in names
     assert not {"create_files", "overwrite_file", "replace_text", "apply_patch"} & names
     assert "update_plan" not in (toolkit.instructions or "")
     assert "replace_text" not in (toolkit.instructions or "")
@@ -5561,7 +5613,7 @@ async def test_visualization_script_over_64_kib_fails_before_write_intent() -> N
     with pytest.raises(ReportingError) as raised:
         await toolkit._preflight_analysis_python_write(
             scope=SimpleNamespace(thread_id="thread-1"),
-            tool_name="create_or_write_analysis_file",
+            tool_name="create_analysis_file",
             canonical={
                 "path": "analysis/charts/trend.py",
                 "content": "#" * (64 * 1024 + 1),
