@@ -47,6 +47,9 @@ from .reporting_identity import (
     apply_report_identity,
     requires_workspace_capability,
 )
+from .quality_warnings.api import create_quality_warning_router
+from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
+from .quality_warnings.service import QualityWarningService
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .workspace import (
@@ -87,6 +90,8 @@ workspace_service = WorkspaceService(
     network_allow_list=settings.daytona_network_allow_list,
 )
 report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
+quality_warning_repository = SqlAlchemyQualityWarningRepository(agent_database.async_engine)
+quality_warning_service = QualityWarningService(quality_warning_repository)
 report_artifact_repository = SqlAlchemyReportArtifactRepository(agent_database.async_engine)
 report_download_grants = ReportDownloadGrantService(report_download_repository)
 report_artifact_persistence = ReportArtifactPersistenceService(
@@ -177,6 +182,8 @@ async def require_workspace_capability(request: Request, call_next):
             request,
             user_id=str(request.state.capability.user),
             thread_id=thread,
+            database=request.state.capability.database,
+            company_id=str(request.state.capability.company),
         )
     try:
         response = await call_next(request)
@@ -394,6 +401,7 @@ report_worker, report_runtime = create_report_runtime(
     settings,
     download_grants=report_download_grants,
     artifact_persistence=report_artifact_persistence,
+    quality_warning_service=quality_warning_service,
 )
 report_workflow_controller = ReportWorkflowController(
     report_runtime.workflow,
@@ -421,9 +429,11 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
+    application.include_router(create_quality_warning_router())
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
+    application.router.add_event_handler("startup", quality_warning_service.create_schema)
     return application
 
 
@@ -432,6 +442,7 @@ application_context = ApplicationContext(
     workspace_service,
     report_agent,
     database=agent_database,
+    quality_warning_service=quality_warning_service,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

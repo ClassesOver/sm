@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from .async_utils import complete_cleanup
 from .database import AgentDatabase
 from .settings import AgentSettings
+from .quality_warnings.service import QualityWarningService
 from .workspace import WorkspaceService
 
 
@@ -21,6 +22,7 @@ class ApplicationContext:
     workspace_service: WorkspaceService
     report_agent: Agent
     database: AgentDatabase | None = None
+    quality_warning_service: QualityWarningService | None = None
 
 
 def create_agentos_app(

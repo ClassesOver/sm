@@ -1708,7 +1708,8 @@ async def test_register_report_charts_rejects_metric_code_outside_frozen_catalog
     )
 
     assert result["ok"] is False
-    assert result["code"] == "report_chart_metric_unknown"
+    # 未知指标已降级为告警；本测试未提供 durable 章节草案，先由草案完整性门禁拒绝。
+    assert result["code"] == "report_chart_draft_unknown"
     toolkit._inspect_chart.assert_not_awaited()
 
 
@@ -6032,49 +6033,92 @@ async def test_finalize_rejects_registered_chart_missing_from_durable_section_dr
     assert result["code"] == "report_visualization_section_draft_missing"
 
 
-def test_finalize_semantic_catalog_fails_closed_on_ambiguous_facts() -> None:
-    with pytest.raises(ReportingError) as missing_grain:
-        runtime_analysis._finalize_semantic_catalog(
-            analysis_plans={"a": {"datasetIds": ["d"]}},
-            fact_bundles={"a": {"metrics": []}},
-            dataset_ids=("d",),
-        )
-    assert missing_grain.value.code == "report_analysis_semantic_invalid"
+def test_finalize_semantic_catalog_records_ambiguous_facts_as_findings() -> None:
+    _datasets, _metrics, findings = runtime_analysis._finalize_semantic_catalog(
+        analysis_plans={"a": {"datasetIds": ["d"]}},
+        fact_bundles={"a": {"metrics": []}},
+        dataset_ids=("d",),
+    )
+    assert findings[0]["ruleCode"] == "report_dataset_grain_missing"
 
-    with pytest.raises(ReportingError) as missing_period:
-        runtime_analysis._finalize_semantic_catalog(
-            analysis_plans={"a": {"datasetIds": ["d"], "organizationGrain": ["record"]}},
-            fact_bundles={"a": {"metrics": [{"metricCodes": ["m"], "unit": "元"}]}},
-            dataset_ids=("d",),
-        )
-    assert missing_period.value.code == "report_analysis_semantic_invalid"
+    _datasets, _metrics, findings = runtime_analysis._finalize_semantic_catalog(
+        analysis_plans={"a": {"datasetIds": ["d"], "organizationGrain": ["record"]}},
+        fact_bundles={"a": {"metrics": [{"metricCodes": ["m"], "unit": "元"}]}},
+        dataset_ids=("d",),
+    )
+    assert findings[0]["ruleCode"] == "report_metric_semantic_incomplete"
 
-    with pytest.raises(ReportingError) as conflict_unit:
-        runtime_analysis._finalize_semantic_catalog(
-            analysis_plans={"a": {"datasetIds": ["d"], "organizationGrain": ["record"]}},
-            fact_bundles={
-                "a": {
-                    "metrics": [
-                        {
-                            "metricCodes": ["m"],
-                            "formula": "sum(x)",
-                            "unit": "元",
-                            "periodStart": "2026",
-                            "periodEnd": "2026",
-                        },
-                        {
-                            "metricCodes": ["m"],
-                            "formula": "sum(x)",
-                            "unit": "人",
-                            "periodStart": "2026",
-                            "periodEnd": "2026",
-                        },
-                    ]
-                }
-            },
-            dataset_ids=("d",),
-        )
-    assert conflict_unit.value.code == "report_analysis_semantic_invalid"
+    _datasets, _metrics, findings = runtime_analysis._finalize_semantic_catalog(
+        analysis_plans={"a": {"datasetIds": ["d"], "organizationGrain": ["record"]}},
+        fact_bundles={
+            "a": {
+                "metrics": [
+                    {
+                        "metricCodes": ["m"],
+                        "formula": "sum(x)",
+                        "unit": "元",
+                        "periodStart": "2026",
+                        "periodEnd": "2026",
+                    },
+                    {
+                        "metricCodes": ["m"],
+                        "formula": "sum(x)",
+                        "unit": "人",
+                        "periodStart": "2026",
+                        "periodEnd": "2026",
+                    },
+                ]
+            }
+        },
+        dataset_ids=("d",),
+    )
+    assert findings[0]["ruleCode"] == "report_metric_semantic_incomplete"
+
+
+def test_finalize_semantic_catalog_merges_repeated_metric_across_periods() -> None:
+    dataset_semantics, metric_definitions, findings = _finalize_semantic_catalog(
+        analysis_plans={
+            "analysis_001": {
+                "datasetIds": ["d"],
+                "organizationGrain": ["record"],
+            }
+        },
+        fact_bundles={
+            "analysis_001": {
+                "metrics": [
+                    {
+                        "metricCodes": ["income_summary_total"],
+                        "formula": "sum(income)",
+                        "unit": "元",
+                        "periodStart": "2024-01-01",
+                        "periodEnd": "2024-11-30",
+                    },
+                    {
+                        "metricCodes": ["income_summary_total"],
+                        "formula": "sum(income)",
+                        "unit": "元",
+                        "periodStart": "2025-01-01",
+                        "periodEnd": "2025-11-30",
+                    },
+                ]
+            }
+        },
+        dataset_ids=("d",),
+    )
+
+    assert dataset_semantics == [
+        {"datasetId": "d", "rowGrain": "record", "duplicateResolution": "not_applicable"}
+    ]
+    assert metric_definitions == [
+        {
+            "code": "income_summary_total",
+            "name": "income_summary_total",
+            "definition": "income_summary_total；sum(income)",
+            "unit": "元",
+            "periodBasis": "2024-01-01 至 2024-11-30；2025-01-01 至 2025-11-30",
+        }
+    ]
+    assert findings == []
 
 
 def test_finalize_semantic_catalog_rejects_dataset_ids_outside_evidence() -> None:

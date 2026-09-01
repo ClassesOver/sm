@@ -37,6 +37,8 @@ _CLI_PROGRESS_TOOLS = frozenset(
     }
 )
 _CLI_PROGRESS_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+DEFAULT_TENANT_DATABASE = "default"
+DEFAULT_TENANT_COMPANY_ID = "default"
 
 
 class _CliProgressSink:
@@ -208,9 +210,17 @@ async def drive_workflow(
     run_id: str,
     session_id: str,
     user_id: str,
+    database: str | None = None,
+    company_id: str | None = None,
     read: Callable[[str], str] = input,
     write: Callable[[str], None] = print,
 ) -> dict[str, Any]:
+    if bool(database) != bool(company_id):
+        raise ReportingError(
+            "report_workflow_context_missing", "租户 database 和 companyId 必须同时提供。"
+        )
+    database = database or DEFAULT_TENANT_DATABASE
+    company_id = company_id or DEFAULT_TENANT_COMPANY_ID
     async with _workflow_execution_lock(runtime, run_id):
         return await _drive_workflow_unlocked(
             workflow,
@@ -219,6 +229,8 @@ async def drive_workflow(
             run_id=run_id,
             session_id=session_id,
             user_id=user_id,
+            database=database,
+            company_id=company_id,
             read=read,
             write=write,
         )
@@ -232,10 +244,18 @@ async def _drive_workflow_unlocked(
     run_id: str,
     session_id: str,
     user_id: str,
+    database: str | None = None,
+    company_id: str | None = None,
     read: Callable[[str], str],
     write: Callable[[str], None],
 ) -> dict[str, Any]:
-    scope = {"externalRunId": run_id, "threadId": session_id, "userId": user_id}
+    scope = {
+        "externalRunId": run_id,
+        "threadId": session_id,
+        "userId": user_id,
+        "database": database,
+        "companyId": company_id,
+    }
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
     try:
         output = await workflow.arun(
@@ -336,10 +356,19 @@ async def resume_workflow(
     run_id: str,
     session_id: str,
     user_id: str,
+    database: str,
+    company_id: str,
     read: Callable[[str], str] = input,
     write: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """显式恢复同一 Agno run，不创建新 run。"""
+
+    if bool(database) != bool(company_id):
+        raise ReportingError(
+            "report_workflow_context_missing", "租户 database 和 companyId 必须同时提供。"
+        )
+    database = database or DEFAULT_TENANT_DATABASE
+    company_id = company_id or DEFAULT_TENANT_COMPANY_ID
 
     async with _workflow_execution_lock(runtime, run_id):
         return await _resume_workflow_unlocked(
@@ -348,6 +377,8 @@ async def resume_workflow(
             run_id=run_id,
             session_id=session_id,
             user_id=user_id,
+            database=database,
+            company_id=company_id,
             read=read,
             write=write,
         )
@@ -360,6 +391,8 @@ async def _resume_workflow_unlocked(
     run_id: str,
     session_id: str,
     user_id: str,
+    database: str,
+    company_id: str,
     read: Callable[[str], str],
     write: Callable[[str], None],
 ) -> dict[str, Any]:
@@ -377,7 +410,13 @@ async def _resume_workflow_unlocked(
             "report_workflow_resume_invalid",
             "指定 Reporting run 当前不是可恢复暂停或中断状态。",
         )
-    scope = {"externalRunId": run_id, "threadId": session_id, "userId": user_id}
+    scope = {
+        "externalRunId": run_id,
+        "threadId": session_id,
+        "userId": user_id,
+        "database": database,
+        "companyId": company_id,
+    }
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
     if status == "running":
         # Agno Workflow 2.8.2 只允许 acontinue_run 接收 PAUSED，但进程被终止时
@@ -420,6 +459,8 @@ async def run_cli(
     write: Callable[[str], None] = print,
     resume_run_id: str | None = None,
     resume_session_id: str | None = None,
+    database: str | None = None,
+    company_id: str | None = None,
     debug: bool = True,
 ) -> dict[str, Any]:
     if (resume_run_id is None) != (resume_session_id is None):
@@ -427,6 +468,12 @@ async def run_cli(
             "report_workflow_resume_invalid",
             "恢复时必须同时提供 runId 和 sessionId。",
         )
+    if bool(database) != bool(company_id):
+        raise ReportingError(
+            "report_workflow_context_missing", "租户 database 和 companyId 必须同时提供。"
+        )
+    database = database or DEFAULT_TENANT_DATABASE
+    company_id = company_id or DEFAULT_TENANT_COMPANY_ID
     report_input = (
         None if resume_run_id is not None else parse_report_input(read_report_input(read=read))
     )
@@ -450,6 +497,8 @@ async def run_cli(
                 run_id=run_id,
                 session_id=session_id,
                 user_id="cli",
+                database=database,
+                company_id=company_id,
                 read=read,
                 write=write,
             )
@@ -462,6 +511,8 @@ async def run_cli(
                 run_id=run_id,
                 session_id=session_id,
                 user_id="cli",
+                database=database,
+                company_id=company_id,
                 read=read,
                 write=write,
             )
@@ -483,6 +534,8 @@ def main(argv: list[str] | None = None) -> None:
         parser = argparse.ArgumentParser(description="运行或恢复 Reporting CLI。")
         parser.add_argument("--resume-run-id")
         parser.add_argument("--resume-session-id")
+        parser.add_argument("--tenant-database")
+        parser.add_argument("--tenant-company-id")
         parser.add_argument(
             "--debug",
             action=argparse.BooleanOptionalAction,
@@ -494,6 +547,8 @@ def main(argv: list[str] | None = None) -> None:
             run_cli(
                 resume_run_id=parsed.resume_run_id,
                 resume_session_id=parsed.resume_session_id,
+                database=parsed.tenant_database,
+                company_id=parsed.tenant_company_id,
                 debug=parsed.debug,
             )
         )
