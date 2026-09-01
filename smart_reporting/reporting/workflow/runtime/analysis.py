@@ -2871,13 +2871,14 @@ def _analysis_item_completion_conditions(
         ]
     return [
         "只回答 currentAnalysis 的原子管理问题和 primaryMetricFamily",
-        "deterministicFacts 已内联当前分析项的完整受信固定事实；不得为探索 facts 结构、"
-        "重复验证任务 JSON 已投影的元数据或空命中调用 query_analysis_facts",
-        "只有当前管理问题确实缺少必需事实时，才按缺口精确调用 query_analysis_facts 或读取实际使用的 Profile；"
+        "deterministicFacts 已内联当前分析项的受信固定事实；"
+        "先根据 currentAnalysis 判断其是否覆盖当前管理问题的必需事实；"
+        "不得为探索 facts 结构、重复验证任务 JSON 已投影的元数据或空命中调用 query_analysis_facts",
+        "固定事实足够时立即调用 complete_analysis_item；不得查询、读取 Profile、读取 CSV、"
+        "创建脚本或 evidence，evidencePaths 传空数组，且只调用一次",
+        "仅当前管理问题确实缺少必需事实时，才按缺口精确调用 query_analysis_facts 或读取实际使用的 Profile；"
         "不得猜测、补齐或替代缺失事实",
-        "固定事实足够时立即调用 complete_analysis_item；不创建脚本或 evidence，"
-        "evidencePaths 传空数组",
-        "只为 deterministicFactFile 未覆盖的事实缺口创建补充 evidence",
+        "仅当 deterministicFactFile 仍未覆盖该事实缺口时，才从已绑定 CSV 创建最小补充 evidence",
         "本阶段禁止生成或登记图表",
         "最后且只调用一次 complete_analysis_item",
     ]

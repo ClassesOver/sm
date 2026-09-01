@@ -21,7 +21,10 @@ from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting import contract as reporting_contract
 from smart_reporting.reporting.agent import ReportWorkerOpenAIChat
 from smart_reporting.reporting.contract import ReportPeriod
+from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
+    AnalysisFileIdentity,
+    DatasetAnalysisContext,
     DetailedAnalysisPlan,
 )
 from smart_reporting.reporting.hospital_operation.outline import (
@@ -37,7 +40,12 @@ from smart_reporting.reporting.model_policy import (
     reporting_thinking_profile_from_model,
 )
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
+from smart_reporting.reporting.workflow.checkpoint import (
+    FileIdentity,
+    MetricDefinition,
+    ProfileCoverageDataset,
+    ProfileCoverageManifest,
+)
 from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
@@ -46,10 +54,17 @@ from smart_reporting.reporting.workflow.runtime import (
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
 from smart_reporting.reporting.workflow.runtime.analysis import _coding_detailed_analysis_plan
 from smart_reporting.reporting.workflow.runtime.base import (
+    REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
+    REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
+    REPORT_PROFILE_COVERAGE_STATE_KEY,
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
 )
-from smart_reporting.reporting.workflow.runtime.datasets import _requirement_measure_field_refs
+from smart_reporting.reporting.workflow.runtime.datasets import (
+    RuntimeDatasetsMixin,
+    _requirement_measure_field_refs,
+)
 from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
@@ -542,6 +557,107 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     )
     assert "完整聚合结果只写入 evidence JSON" in instructions
     assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
+
+
+@pytest.mark.anyio
+async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps() -> None:
+    context = DatasetAnalysisContext(
+        profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
+        profileModelView={},
+        profileEngineVersion="4.19.1",
+        datasetId="dataset-1",
+        path="datasets/dataset-1.csv",
+        size=1,
+        sha256="b" * 64,
+        rowCount=1,
+        columnCount=3,
+        fields=("month", "department", "amount"),
+        organizationGrain=("department",),
+        metricSemantics=(
+            {
+                "fieldRef": "source.database.income.amount",
+                "aggregation": "sum",
+            },
+        ),
+        numericFields=("amount",),
+        periodValues=("2025-01",),
+        timeSeriesSortField="month",
+    )
+    handle = DatasetHandle(
+        dataset_id="dataset-1",
+        source_id="source-1",
+        path="datasets/dataset-1.csv",
+        row_count=1,
+        size=1,
+        sha256="b" * 64,
+        requirement_id="requirement-1",
+        sql_hash="c" * 64,
+    )
+    coverage = ProfileCoverageManifest(
+        authorizedDatasetCount=1,
+        coveredDatasetCount=1,
+        datasets=(
+            ProfileCoverageDataset(
+                datasetId="dataset-1",
+                datasetPath="datasets/dataset-1.csv",
+                datasetSize=1,
+                datasetSnapshotHash="b" * 64,
+                profileFile=FileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
+                rowCount=1,
+                fieldCount=3,
+                fields=("month", "department", "amount"),
+                periodCoverage=("2025-01",),
+            ),
+        ),
+    )
+    state: dict[str, Any] = {
+        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [context.model_dump(mode="json", by_alias=True)],
+        REPORT_PROFILE_COVERAGE_STATE_KEY: coverage.model_dump(mode="json", by_alias=True),
+        REPORT_ANALYSIS_PLAN_STATE_KEY: [
+            {
+                "code": "income",
+                "description": "收入规模分析",
+                "managementQuestion": "收入规模如何？",
+                "primaryMetricFamily": "收入",
+                "requirementIds": ["requirement-1"],
+            }
+        ],
+        REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]},
+    }
+    runtime: Any = object.__new__(RuntimeDatasetsMixin)
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: SimpleNamespace(
+        domains=("income",), report_goal="分析收入规模"
+    )
+    runtime._profile = lambda _run_context: SimpleNamespace(metrics=())
+    runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
+    runtime._scope = lambda _run_context: {"threadId": "thread-1"}
+    runtime._write_artifact_validation_context = AsyncMock(
+        return_value=FileIdentity(path="analysis/context.json", size=1, sha256="d" * 64)
+    )
+    runtime._apply_durable_command = AsyncMock()
+    runtime._assert_state_safe = lambda _state: None
+
+    output = await runtime.generate_detailed_analysis_plan(
+        SimpleNamespace(), SimpleNamespace(run_id="run-1")
+    )
+
+    analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert (
+        "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"
+        in analysis.actions
+    )
+    assert "deterministicFacts 覆盖当前管理问题时直接提交" in analysis.evidence_summary
+    assert "仅在必需事实缺口时由 Coding 从 CSV 复算并保存补充 evidence" in analysis.evidence_summary
+    assert (
+        "deterministicFacts 覆盖当前管理问题时立即且只调用一次 complete_analysis_item，"
+        "evidencePaths 传空数组" in analysis.completion_conditions
+    )
+    assert (
+        "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，按 analysisId 从 CSV 复算"
+        "并保存最小补充 evidence" in analysis.completion_conditions
+    )
+    assert "按 analysisId 完成 CSV 复算并保存可复现证据" not in analysis.completion_conditions
 
 
 def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:

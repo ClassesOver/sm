@@ -499,7 +499,10 @@ class RuntimeDatasetsMixin:
                 )
             )
             actions = ["核验数据范围、指标口径和 Profile 告警"]
-            actions.append("从不可变 CSV 复算规模、结构和关键指标")
+            actions.append(
+                "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，"
+                "从不可变 CSV 复算并保存补充 evidence"
+            )
             if periods:
                 actions.append("分析期间趋势、变化幅度和比较基准")
             if any(context.organization_grain for context in referenced_contexts):
@@ -584,7 +587,8 @@ class RuntimeDatasetsMixin:
                     evidenceSummary=(
                         f"计划绑定 {len(referenced_contexts)} 个不可变数据集、"
                         f"{sum(context.row_count for context in referenced_contexts)} 行记录；"
-                        f"{profile_signal}最终数字由 Coding 从 CSV 复算。"
+                        f"{profile_signal}deterministicFacts 覆盖当前管理问题时直接提交；"
+                        "仅在必需事实缺口时由 Coding 从 CSV 复算并保存补充 evidence。"
                     ),
                     limitations=item_warnings[:100],
                     recommendedTables=("按期间与组织粒度汇总关键指标",),
@@ -592,7 +596,10 @@ class RuntimeDatasetsMixin:
                     suggestedSection=(description or domain)[:128],
                     completionConditions=(
                         "核验全部绑定数据集的路径、大小和 SHA-256",
-                        "按 analysisId 完成 CSV 复算并保存可复现证据",
+                        "deterministicFacts 覆盖当前管理问题时立即且只调用一次 "
+                        "complete_analysis_item，evidencePaths 传空数组",
+                        "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，按 analysisId "
+                        "从 CSV 复算并保存最小补充 evidence",
                         "正文、表格和图表只绑定已登记 citationId",
                     ),
                 )
