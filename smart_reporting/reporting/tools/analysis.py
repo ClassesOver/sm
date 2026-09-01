@@ -1369,19 +1369,13 @@ class RuntimeAnalysisMixin:
                 )
             next_id = durable.payload.get("currentAnalysisId")
             self._complete_phase_plan(self._session_state(run_context))
-            finish_function = self.async_functions.get("finish_task")
-            if finish_function is None:
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Reporting Worker 缺少底层 finish_task。",
-                )
             finish_result = await self.kernel.finish_task(
                 f"分析项 {analysisId} 已提交冻结事实与证据。",
                 [item["path"] for item in identities],
                 None,
                 [],
                 run_context,
-                finish_function,
+                self._finish_function,
                 _scope=scope,
             )
             if finish_result.get("status") != "accepted":

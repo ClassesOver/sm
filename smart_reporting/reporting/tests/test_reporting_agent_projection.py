@@ -49,7 +49,6 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
-    REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
@@ -112,7 +111,7 @@ async def test_visualization_terminal_success_clears_pending_script_failure() ->
 
 
 @pytest.mark.anyio
-async def test_visualization_skill_success_is_deduplicated_within_run() -> None:
+async def test_visualization_skill_results_are_not_cached() -> None:
     run_context = RunContext(
         run_id="run-visualization-skill-dedupe",
         session_id="session-visualization-skill-dedupe",
@@ -146,54 +145,8 @@ async def test_visualization_skill_success_is_deduplicated_within_run() -> None:
     )
 
     assert first == second == {"ok": True, "reference": "rules"}
-    assert calls == 1
-
-
-@pytest.mark.anyio
-async def test_visualization_skill_failure_is_not_cached_across_retry_run() -> None:
-    dependencies = {
-        REPORTING_TASK_DEPENDENCY: {
-            "externalRunId": "visualization-skill-retry-task",
-            REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-            REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-        }
-    }
-    calls = 0
-
-    def read_reference(**_: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        return {"ok": calls > 1, "attempt": calls}
-
-    first_context = RunContext(
-        run_id="run-visualization-skill-retry-1",
-        session_id="session-visualization-skill-retry",
-        session_state={},
-        dependencies=dependencies,
-    )
-    second_context = RunContext(
-        run_id="run-visualization-skill-retry-2",
-        session_id="session-visualization-skill-retry",
-        session_state=first_context.session_state,
-        dependencies=dependencies,
-    )
-
-    first = await normalize_reporting_tool_arguments(
-        first_context,
-        "get_skill_reference",
-        read_reference,
-        {"reference_path": "guide.md"},
-    )
-    second = await normalize_reporting_tool_arguments(
-        second_context,
-        "get_skill_reference",
-        read_reference,
-        {"reference_path": "guide.md"},
-    )
-
-    assert first == {"ok": False, "attempt": 1}
-    assert second == {"ok": True, "attempt": 2}
     assert calls == 2
+    assert "agentos_reporting_visualization_skill_cache" not in run_context.session_state
 
 
 def test_phase_tool_admission_uses_capability_matrix() -> None:
@@ -282,84 +235,6 @@ def test_reporting_task_kind_from_run_context_accepts_new_kinds(task_kind: str) 
         },
     )
     assert reporting_task_kind_from_run_context(run_context) == task_kind
-
-
-@pytest.mark.anyio
-async def test_visualization_skill_concurrent_success_is_deduplicated() -> None:
-    run_context = RunContext(
-        run_id="run-visualization-skill-concurrent",
-        session_id="session-visualization-skill-concurrent",
-        session_state={},
-        dependencies={
-            REPORTING_TASK_DEPENDENCY: {
-                "externalRunId": "visualization-skill-concurrent-task",
-                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-            }
-        },
-    )
-    calls = 0
-
-    async def read_reference(**_: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        await asyncio.sleep(0.01)
-        return {"ok": True, "reference": "rules"}
-
-    results = await asyncio.gather(
-        *(
-            normalize_reporting_tool_arguments(
-                run_context,
-                "get_skill_reference",
-                read_reference,
-                {"reference_path": "guide.md"},
-            )
-            for _ in range(2)
-        )
-    )
-
-    assert results == [{"ok": True, "reference": "rules"}] * 2
-    assert calls == 1
-
-
-@pytest.mark.anyio
-async def test_visualization_skill_cache_rejects_invalid_entry_and_is_bounded() -> None:
-    run_context = RunContext(
-        run_id="run-visualization-skill-cache-bounded",
-        session_id="session-visualization-skill-cache-bounded",
-        session_state={
-            REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY: {"invalid": {"result": "bad"}}
-        },
-        dependencies={
-            REPORTING_TASK_DEPENDENCY: {
-                "externalRunId": "visualization-skill-cache-bounded-task",
-                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-                "visualizationAttemptToolLimit": 100,
-                "visualizationTotalToolLimit": 100,
-            }
-        },
-    )
-    calls = 0
-
-    def read_reference(**_: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        return {"ok": True, "reference": calls}
-
-    for index in range(65):
-        result = await normalize_reporting_tool_arguments(
-            run_context,
-            "get_skill_reference",
-            read_reference,
-            {"reference_path": f"guide-{index}.md"},
-        )
-        assert result["ok"] is True
-
-    cache = run_context.session_state[REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY]
-    assert isinstance(cache, dict)
-    assert len(cache) == 64
-    assert calls == 65
 
 
 def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.MonkeyPatch) -> None:

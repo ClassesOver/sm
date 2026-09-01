@@ -50,6 +50,23 @@ from smart_reporting.workspace import (
 )
 
 
+def test_旧_coding_workspace_辅助工具不再注册():
+    toolkit = BaseToolkit(None)  # type: ignore[arg-type]
+    tools = {**toolkit.functions, **toolkit.async_functions}
+
+    assert (
+        not {
+            "workspace_stat",
+            "workspace_tree",
+            "workspace_git_status",
+            "workspace_git_diff",
+            "workspace_git_log",
+            "workspace_git_show",
+        }
+        & tools.keys()
+    )
+
+
 def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_path):
     assert WORKSPACE_SNAPSHOT == "sandbox-tools"
     client = FakeClient()
@@ -618,7 +635,7 @@ async def test_异步文件哈希从_artifacts_stdout_读取回执(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_大文件分段读取哈希统计和目录树均在沙箱内执行(tmp_path):
+async def test_大文件分段读取和哈希均在沙箱内执行(tmp_path):
     current = service(tmp_path)
     large_content = (("line value\n" * 100_000) + "last line").encode()
     current.create_file("thread", "data/large.txt", large_content)
@@ -636,10 +653,6 @@ async def test_大文件分段读取哈希统计和目录树均在沙箱内执�
             output = "line value\nline value\n"
         elif "sha256sum" in command:
             output = f"{digest}\x00{len(large_content)}\x00"
-        elif "stat --printf" in command:
-            output = f"regular file\x00{len(large_content)}\x001753200000\x00600\x00"
-        elif "find " in command:
-            output = f"d\tnested\t4096\x00f\tlarge.txt\t{len(large_content)}\x00"
         else:
             raise AssertionError(f"unexpected command: {command}")
         return type("Result", (), {"result": output, "exit_code": 0})()
@@ -660,8 +673,6 @@ async def test_大文件分段读取哈希统计和目录树均在沙箱内执�
         "data/large.txt", start_line=90_000, line_count=2, run_context=context
     )
     hashed = await toolkit.workspace_hash_file("data/large.txt", run_context=context)
-    stat = await toolkit.workspace_stat("data/large.txt", run_context=context)
-    tree = await toolkit.workspace_tree("data", max_depth=2, run_context=context)
 
     assert len(large_content) > MAX_READ_BYTES
     assert lines == {
@@ -677,121 +688,10 @@ async def test_大文件分段读取哈希统计和目录树均在沙箱内执�
         "size": len(large_content),
         "sha256": digest,
     }
-    assert stat == {
-        "path": "data/large.txt",
-        "type": "file",
-        "size": len(large_content),
-        "modifiedUnix": 1_753_200_000,
-        "mode": "600",
-    }
-    assert tree == {
-        "root": "data",
-        "entries": [
-            {"path": "data/nested", "type": "directory", "size": 4096},
-            {"path": "data/large.txt", "type": "file", "size": len(large_content)},
-        ],
-        "truncated": False,
-    }
     assert sandbox.fs.download_calls == []
     assert any("wc -l" in call["command"] for call in process.calls)
     assert any("sed -n" in call["command"] for call in process.calls)
     assert any("sha256sum" in call["command"] for call in process.calls)
-    assert any("stat --printf" in call["command"] for call in process.calls)
-    assert any("find " in call["command"] for call in process.calls)
-
-
-@pytest.mark.anyio
-async def test_只读_git_工具使用固定参数并拒绝非法修订(tmp_path):
-    current = service(tmp_path)
-    current.create_file("thread", "repo/src/app.py", b"print('ok')\n")
-    sandbox = current.sandbox_for("thread")
-    process = sandbox.process
-
-    def execute_git(command, cwd=None, timeout=None):
-        process.calls.append({"command": command, "cwd": cwd, "timeout": timeout})
-        return type("Result", (), {"result": "git output", "exit_code": 0})()
-
-    process.exec = execute_git
-    toolkit = BaseToolkit(
-        WorkspaceService(
-            current.secret,
-            client=current.client,
-            registry=current.registry,
-            async_client=AsyncFakeClient(current.client),
-            async_registry=AsyncMemoryRegistry(current.registry.values),
-        )
-    )
-    context = RunContext(run_id="run", session_id="thread")
-
-    assert (await toolkit.workspace_git_status("repo", run_context=context))["output"]
-    assert (
-        await toolkit.workspace_git_diff(
-            "repo", staged=True, revision="HEAD~2", file_path="src/app.py", run_context=context
-        )
-    )["output"]
-    assert (
-        await toolkit.workspace_git_log(
-            "repo", revision="main", max_count=10, file_path="src/app.py", run_context=context
-        )
-    )["output"]
-    assert (
-        await toolkit.workspace_git_show(
-            "repo", revision="HEAD^", file_path="src/app.py", run_context=context
-        )
-    )["output"]
-
-    commands = [call["command"] for call in process.calls]
-    assert all("git -C" in command and "--no-pager" in command for command in commands)
-    assert all("core.fsmonitor=false" in command for command in commands)
-    assert all("core.hooksPath=/dev/null" in command for command in commands)
-    assert "--short" in commands[0] and "--branch" in commands[0]
-    assert "--no-ext-diff" in commands[1] and "--no-textconv" in commands[1]
-    assert "--cached" in commands[1] and "HEAD~2" in commands[1]
-    assert "--max-count=10" in commands[2] and "main" in commands[2]
-    assert "--format=fuller" in commands[3] and "HEAD^" in commands[3]
-    assert all(call["cwd"] == WORKSPACE_ROOT for call in process.calls)
-    assert sandbox.fs.download_calls == []
-
-    with pytest.raises(WorkspaceError, match="Git 修订"):
-        await toolkit.workspace_git_show("repo", revision="--help", run_context=context)
-    assert len(process.calls) == 4
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("stderr", "message"),
-    [
-        ("fatal: not a git repository", "不是 Git 仓库"),
-        ("fatal: bad revision 'missing'", "修订不存在"),
-        ("error: pathspec 'missing.py' did not match", "文件路径不存在"),
-        ("fatal: unexpected internal detail /secret/path", "Git 只读命令执行失败"),
-    ],
-)
-async def test_git_失败只返回分类诊断而不暴露原始_stderr(tmp_path, stderr, message):
-    current = service(tmp_path)
-    current.create_file("thread", "repo/file.txt", b"content\n")
-    process = current.sandbox_for("thread").process
-
-    def fail_git(command, cwd=None, timeout=None):
-        process.calls.append({"command": command, "cwd": cwd, "timeout": timeout})
-        return type("Result", (), {"result": stderr, "exit_code": 128})()
-
-    process.exec = fail_git
-    toolkit = BaseToolkit(
-        WorkspaceService(
-            current.secret,
-            client=current.client,
-            registry=current.registry,
-            async_client=AsyncFakeClient(current.client),
-            async_registry=AsyncMemoryRegistry(current.registry.values),
-        )
-    )
-
-    with pytest.raises(WorkspaceError, match=message) as error:
-        await toolkit.workspace_git_show(
-            "repo", revision="missing", run_context=RunContext(run_id="run", session_id="thread")
-        )
-    assert "/secret/path" not in str(error.value)
 
 
 @pytest.mark.anyio

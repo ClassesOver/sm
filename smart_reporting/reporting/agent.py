@@ -1,5 +1,4 @@
 import ast
-import asyncio
 import hashlib
 import inspect
 import json
@@ -9,7 +8,7 @@ from copy import copy, deepcopy
 from dataclasses import fields
 from functools import partial
 from time import perf_counter
-from typing import Any, Literal, cast
+from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -60,7 +59,7 @@ from .model_policy import (
     apply_reporting_thinking_profile,
     reporting_thinking_profile_from_model,
 )
-from .models import ReportingError, VisualizationSkillCacheEntry
+from .models import ReportingError
 from .phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
@@ -80,7 +79,6 @@ from .phase import (
     REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
-    REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -246,117 +244,6 @@ async def propagate_reporting_tool_errors(
 
 def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
     return run_context.session_state if isinstance(run_context.session_state, dict) else None
-
-
-_VISUALIZATION_SKILL_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
-_VISUALIZATION_SKILL_CACHE_MAX_LOCKS = 128
-
-
-def _visualization_skill_cache_key(
-    run_context: RunContext,
-    function_name: str,
-    arguments: Mapping[str, Any],
-) -> str | None:
-    # 只读 Skill 结果可以在同一可视化 run 内复用；身份和参数必须完整参与键值，
-    # 防止不同用户、任务、重试或 Skill 路径之间发生结果串用。
-    if function_name not in {"get_skill_instructions", "get_skill_reference"}:
-        return None
-    if reporting_phase_from_run_context(run_context) != "analysis":
-        return None
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return None
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    if not isinstance(external_run_id, str) or not external_run_id:
-        return None
-    try:
-        normalized = json.dumps(
-            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-    except (TypeError, ValueError):
-        return None
-    identity = {
-        "externalRunId": external_run_id,
-        "runId": str(run_context.run_id or ""),
-        "sessionId": str(run_context.session_id or ""),
-        "userId": str(run_context.user_id or ""),
-        "tool": function_name,
-        "arguments": normalized,
-    }
-    return hashlib.sha256(
-        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def _cached_visualization_skill_result(
-    run_context: RunContext,
-    cache_key: str | None,
-) -> Any:
-    state = _reporting_session_state(run_context)
-    if state is None or cache_key is None:
-        return None
-    cache = state.get(REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY)
-    if not isinstance(cache, Mapping) or cache_key not in cache:
-        return None
-    try:
-        entry = VisualizationSkillCacheEntry.model_validate(cache[cache_key])
-    except ValidationError:
-        return None
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    expected_user_id = str(run_context.user_id or "anonymous")
-    if (
-        entry.run_id != str(run_context.run_id or "")
-        or entry.session_id != str(run_context.session_id or "")
-        or entry.user_id != expected_user_id
-        or entry.external_run_id != external_run_id
-        or entry.tool_name not in {"get_skill_instructions", "get_skill_reference"}
-    ):
-        return None
-    return entry.result
-
-
-def _cache_visualization_skill_result(
-    run_context: RunContext,
-    cache_key: str | None,
-    function_name: str,
-    result: Any,
-) -> None:
-    if cache_key is None:
-        return
-    state = _reporting_session_state(run_context)
-    if state is None:
-        return
-    try:
-        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError):
-        return
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    if not isinstance(external_run_id, str) or not external_run_id:
-        return
-    try:
-        entry = VisualizationSkillCacheEntry(
-            runId=str(run_context.run_id or ""),
-            sessionId=str(run_context.session_id or ""),
-            userId=str(run_context.user_id or "anonymous"),
-            externalRunId=external_run_id,
-            toolName=cast(Literal["get_skill_instructions", "get_skill_reference"], function_name),
-            result=result,
-        )
-    except ValidationError:
-        return
-    cache = state.setdefault(REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY, {})
-    if isinstance(cache, dict):
-        cache[cache_key] = entry.model_dump(mode="json", by_alias=True)
-        while len(cache) > 64:
-            cache.pop(next(iter(cache)))
 
 
 def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
@@ -1547,35 +1434,8 @@ async def normalize_reporting_tool_arguments(
     function_name: str,
     function_call: Any,
     arguments: dict[str, Any],
-    *,
-    _skip_skill_cache: bool = False,
 ) -> Any:
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
-
-    if not _skip_skill_cache:
-        cache_key = _visualization_skill_cache_key(run_context, function_name, arguments)
-        if cache_key is not None:
-            lock = _VISUALIZATION_SKILL_CACHE_LOCKS.setdefault(cache_key, asyncio.Lock())
-            if len(_VISUALIZATION_SKILL_CACHE_LOCKS) > _VISUALIZATION_SKILL_CACHE_MAX_LOCKS:
-                for stale_key, stale_lock in list(_VISUALIZATION_SKILL_CACHE_LOCKS.items()):
-                    if stale_key != cache_key and not stale_lock.locked():
-                        _VISUALIZATION_SKILL_CACHE_LOCKS.pop(stale_key, None)
-                        if (
-                            len(_VISUALIZATION_SKILL_CACHE_LOCKS)
-                            <= _VISUALIZATION_SKILL_CACHE_MAX_LOCKS
-                        ):
-                            break
-            async with lock:
-                cached = _cached_visualization_skill_result(run_context, cache_key)
-                if cached is not None:
-                    return cached
-                return await normalize_reporting_tool_arguments(
-                    run_context,
-                    function_name,
-                    function_call,
-                    arguments,
-                    _skip_skill_cache=True,
-                )
 
     task_kind = reporting_task_kind_from_run_context(run_context)
     state = _reporting_session_state(run_context)
@@ -1604,11 +1464,6 @@ async def normalize_reporting_tool_arguments(
         )
     ):
         _stop_closed_visualization(run_context)
-    skill_cache_key = _visualization_skill_cache_key(run_context, function_name, arguments)
-    if skill_cache_key is not None:
-        cached = _cached_visualization_skill_result(run_context, skill_cache_key)
-        if cached is not None:
-            return cached
     exploration_receipt = _visualization_exploration_budget_receipt(run_context, function_name)
     if exploration_receipt is not None:
         # 超出独立探索额度的调用仍是一次真实工具尝试，但不能再次增加 read/fact 用量。
@@ -1743,9 +1598,6 @@ async def normalize_reporting_tool_arguments(
         and isinstance(state, dict)
     ):
         state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
-    if succeeded:
-        # 仅缓存成功且可序列化的只读 Skill 结果；失败必须保留真实重试机会。
-        _cache_visualization_skill_result(run_context, skill_cache_key, function_name, result)
     if (
         succeeded
         and task_kind == "visualization_finalize"

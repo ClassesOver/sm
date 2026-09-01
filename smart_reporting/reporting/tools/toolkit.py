@@ -119,6 +119,15 @@ class ReportWorkspaceTaskToolkit(
         self._assembly_allowed_tools = allowed_tools
         self._assembly_internal_tools = {"finish_task"}
         super().__init__(*args, **kwargs)
+        finish_function = self.async_functions.get("finish_task")
+        if finish_function is None:
+            raise ReportingError(
+                "report_phase_contract_invalid",
+                "Reporting Worker 缺少底层 finish_task。",
+            )
+        self._finish_function: Function = finish_function
+        # finish_task 由服务端阶段提交逻辑调用，不能进入模型可见工具 schema。
+        self.async_functions.pop("finish_task", None)
         for hidden_tool_name in ("create_files", "overwrite_file", "replace_text", "apply_patch"):
             self.functions.pop(hidden_tool_name, None)
             self.async_functions.pop(hidden_tool_name, None)
@@ -126,9 +135,7 @@ class ReportWorkspaceTaskToolkit(
         # 当前产物哈希，不重复要求 verify 或执行 Task acceptance validator。
         self.kernel.require_finish_verification = False
         self.kernel.evaluate_finish_acceptance = False
-        finish_function = self.async_functions.get("finish_task")
-        if finish_function is not None:
-            finish_function.parameters["properties"].pop("verification_ids", None)
+        self._finish_function.parameters["properties"].pop("verification_ids", None)
         self.functions.pop("verify", None)
         self.async_functions.pop("verify", None)
         view_image = self.async_functions.get("view_image")
@@ -1380,19 +1387,13 @@ class ReportWorkspaceTaskToolkit(
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._complete_phase_plan(state)
-        finish_function = self.async_functions.get("finish_task")
-        if finish_function is None:
-            raise ReportingError(
-                "report_phase_contract_invalid",
-                "Reporting Worker 缺少底层 finish_task。",
-            )
         finish_result = await self.kernel.finish_task(
             summary,
             [identity["path"]],
             None,
             [],
             run_context,
-            finish_function,
+            self._finish_function,
             _scope=scope,
         )
         if finish_result.get("status") != "accepted":

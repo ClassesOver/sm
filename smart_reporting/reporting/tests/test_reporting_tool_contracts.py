@@ -4149,7 +4149,6 @@ async def test_analysis_rework_rejects_analysis_outside_current_work_item() -> N
 
 
 _WORKER_TOOL_SCHEMA_NAMES = (
-    "finish_task",
     "read_profile_pointer",
     "query_profile",
     "query_analysis_context",
@@ -4164,7 +4163,6 @@ _WORKER_TOOL_SCHEMA_NAMES = (
     "render_report_section",
 )
 _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
-    "finish_task": "ab5eb78da519bcfeb7b4d312e2febb3407b8aa43f6d5362e7cd555472f9a6ff4",
     "read_profile_pointer": "b2519d0e7b882bf1ef9cb0943daecf776a012225b5376e08b939684aadfd733d",
     "query_profile": "985e869a7ec204ff3b7ff3b9d411338ce26bfacca34e004f878ccddab01731ec",
     "query_analysis_context": "1c4c56570eb9217299fc221e62d8ba48e08f5fac0c65f3b27df480360f7982d0",
@@ -4210,6 +4208,8 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
 
     assert package.ReportWorkspaceTaskToolkit is toolkit_class
     assert fingerprints == _WORKER_TOOL_SCHEMA_FINGERPRINTS
+    assert toolkit._finish_function.name == "finish_task"
+    assert "finish_task" not in toolkit.async_functions
 
 
 @pytest.mark.parametrize(
@@ -4263,8 +4263,9 @@ def test_report_worker_toolkit_registers_only_current_task_tools(
 
     assert required <= names
     assert not forbidden & names
-    # 阶段工具通过 Toolkit 内部函数对象调用 finish_task 收尾；它仍由模型投影层隐藏。
-    assert "finish_task" in names
+    # finish_task 仅供服务端阶段收尾使用，不得进入模型可见函数表。
+    assert "finish_task" not in names
+    assert toolkit._finish_function is not None
     if phase == "analysis":
         assert "create_analysis_file" in names
     else:
@@ -5007,7 +5008,7 @@ async def test_complete_analysis_item_finishes_task_and_only_accepted_stops_run(
             return_value={"ok": finish_status == "accepted", "status": finish_status}
         ),
     )
-    toolkit.async_functions = {"finish_task": finish_function}
+    toolkit._finish_function = finish_function
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
@@ -5084,7 +5085,7 @@ async def test_complete_analysis_item_recovers_same_durable_payload_and_rejects_
         service=SimpleNamespace(abatch_hash_files=AsyncMock(return_value=[identity])),
         finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
     )
-    toolkit.async_functions = {"finish_task": SimpleNamespace(name="finish_task")}
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
@@ -5149,7 +5150,7 @@ async def test_complete_analysis_item_uses_immutable_facts_without_model_evidenc
         service=SimpleNamespace(abatch_hash_files=AsyncMock(return_value=[fact_identity])),
         finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
     )
-    toolkit.async_functions = {"finish_task": SimpleNamespace(name="finish_task")}
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
