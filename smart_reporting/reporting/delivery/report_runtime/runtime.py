@@ -305,7 +305,6 @@ class ReportRuntime:
                 expected_sections=context["sections"],
                 expected_headings=context["headingNumbers"],
                 expected_image_count=len(allowed_images),
-                watermark_text=context["watermarkText"],
             )
             html_document = _html_document(html_body, context=context, layout=layout)
             html_bytes = html_document.encode("utf-8")
@@ -598,7 +597,6 @@ class ReportRuntime:
                     expected_sections=context["sections"],
                     expected_headings=context["headingNumbers"],
                     expected_image_count=int(render.get("imageCount") or 0),
-                    watermark_text=context["watermarkText"],
                 )
                 word_rendering = _validate_docx_rendering(
                     word,

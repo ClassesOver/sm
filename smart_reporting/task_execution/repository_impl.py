@@ -683,25 +683,6 @@ class CodingTaskRepository:
                 .values(lease_owner=None, lease_expires_at=None, updated_at=utcnow())
             )
 
-    async def suspend_task(self, external_run_id: str, lease_owner: str) -> bool:
-        await self.initialize()
-        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            result = await connection.execute(
-                update(self.tasks)
-                .where(
-                    self.tasks.c.external_run_id == external_run_id,
-                    self.tasks.c.status.in_(ACTIVE_TASK_STATUSES),
-                    self.tasks.c.lease_owner == lease_owner,
-                )
-                .values(
-                    status="suspended",
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    updated_at=utcnow(),
-                )
-            )
-        return result.rowcount == 1
-
     async def bind_initial_run(self, external_run_id: str, internal_run_id: str) -> CodingTask:
         await self.initialize()
         now = utcnow()
@@ -736,107 +717,6 @@ class CodingTaskRepository:
         if task.current_internal_run_id != internal_run_id:
             raise CodingRepositoryError("task_run_conflict", "编码任务已由其他内部运行接管。")
         return task
-
-    async def begin_run(self, external_run_id: str, internal_run_id: str) -> CodingTask:
-        await self.initialize()
-        task = await self.get_task(external_run_id)
-        if task is None:
-            raise CodingRepositoryError("task_not_found", "编码任务不存在。")
-        now = utcnow()
-        if task.deadline_at <= now:
-            raise CodingRepositoryError("task_deadline_exceeded", "编码任务已达到 24 小时时限。")
-        if task.continuation_count >= MAX_CONTINUATIONS:
-            raise CodingRepositoryError("task_continuation_exhausted", "编码任务已达到续跑上限。")
-        next_count = task.continuation_count + 1
-        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            result = await connection.execute(
-                update(self.tasks)
-                .where(
-                    self.tasks.c.external_run_id == external_run_id,
-                    self.tasks.c.continuation_count == task.continuation_count,
-                    self.tasks.c.status.in_(ACTIVE_TASK_STATUSES),
-                )
-                .values(
-                    current_internal_run_id=internal_run_id,
-                    continuation_count=next_count,
-                    status="running",
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    updated_at=now,
-                )
-            )
-            if result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "编码任务状态已被其他实例更新。")
-            await connection.execute(
-                insert(self.runs).values(
-                    internal_run_id=internal_run_id,
-                    external_run_id=external_run_id,
-                    continuation_index=next_count,
-                    status="running",
-                    created_at=now,
-                )
-            )
-        updated = await self.get_task(external_run_id)
-        assert updated is not None
-        return updated
-
-    async def record_error(self, external_run_id: str, error: BaseException | str) -> CodingTask:
-        task = await self.get_task(external_run_id)
-        if task is None:
-            raise CodingRepositoryError("task_not_found", "编码任务不存在。")
-        fingerprint = error_fingerprint(error)
-        same_count = task.same_error_count + 1 if task.error_fingerprint == fingerprint else 1
-        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            result = await connection.execute(
-                update(self.tasks)
-                .where(
-                    self.tasks.c.external_run_id == external_run_id,
-                    self.tasks.c.same_error_count == task.same_error_count,
-                )
-                .values(
-                    error_fingerprint=fingerprint,
-                    same_error_count=same_count,
-                    status="suspended",
-                    updated_at=utcnow(),
-                )
-            )
-        if result.rowcount != 1:
-            raise CodingRepositoryError("task_cas_conflict", "编码任务错误状态已被其他实例更新。")
-        updated = await self.get_task(external_run_id)
-        assert updated is not None
-        return updated
-
-    async def set_task_status(
-        self,
-        external_run_id: str,
-        status: str,
-        *,
-        result_text: str | None = None,
-        finish_payload: dict[str, Any] | None = None,
-    ) -> None:
-        await self.initialize()
-        now = utcnow()
-        values: dict[str, Any] = {
-            "status": status,
-            "updated_at": now,
-            "lease_owner": None,
-            "lease_expires_at": None,
-        }
-        if status in TERMINAL_TASK_STATUSES:
-            values["completed_at"] = now
-        if result_text is not None:
-            values["result_text"] = bounded_output(result_text)
-        if finish_payload is not None:
-            json.dumps(finish_payload)
-            values["finish_payload"] = finish_payload
-        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            result = await connection.execute(
-                update(self.tasks)
-                .where(self.tasks.c.external_run_id == external_run_id)
-                .values(**values)
-            )
-        if result.rowcount != 1:
-            raise CodingRepositoryError("task_not_found", "编码任务不存在。")
 
     async def complete_task(
         self,

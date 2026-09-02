@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 import pytest
 
 from smart_reporting.database import create_agent_database
@@ -15,7 +13,6 @@ from smart_reporting.task_execution.repository import (
     MAX_INSTRUCTION_BYTES,
     CodingRepositoryError,
     CodingTaskRepository,
-    utcnow,
 )
 
 
@@ -122,22 +119,6 @@ async def test_acceptance_contract_is_persisted_and_immutable(repository):
             acceptance_contract=acceptance_contract,
         )
     assert conflict.value.code == "task_acceptance_contract_conflict"
-
-
-@pytest.mark.anyio
-async def test_legacy_terminal_task_is_not_exposed_as_v2_snapshot(repository):
-    legacy = await repository.create_task(
-        external_run_id="legacy",
-        owner_user_id="user",
-        thread_id="thread",
-        agent_id="coding-agent",
-        sandbox_id="sandbox",
-        deadline_at=utcnow() + timedelta(hours=24),
-    )
-    await repository.set_task_status(legacy.external_run_id, "cancelled")
-
-    assert await repository.get_task_snapshot(legacy.external_run_id) is None
-
 
 @pytest.mark.anyio
 async def test_lease_epoch_fences_old_owner_and_heartbeat_does_not_change_version(repository):
