@@ -36,9 +36,7 @@ from ..phase import (
 )
 from ..vision import ReportVisionReviewer
 from ..workflow.checkpoint import (
-    AnalysisDatasetSemantics,
     FileIdentity,
-    MetricDefinition,
     ReportBrief,
     SectionClaimSubmission,
 )
@@ -433,36 +431,23 @@ class ReportWorkspaceTaskToolkit(
             Function(
                 name="finalize_report_analysis",
                 description=(
-                    "全部 analysisId 完成后一次冻结 ReportBrief、共享指标口径和全局 Warning；"
+                    "全部 analysisId 完成后一次冻结 ReportBrief 和全局 Warning；"
                     "服务端从 durable state 派生逐 analysis evidence、Profile 回执和已登记图表。"
                     '示例：{"reportBrief":{"objective":"分析经营表现","executiveSummary":'
                     '"收入增长但成本承压","managementQuestions":["增长是否可持续？"],'
-                    '"warnings":[]},"datasetSemantics":[{"datasetId":"dataset_001",'
-                    '"rowGrain":"record","duplicateResolution":"not_applicable"}],'
-                    '"metricDefinitions":[],"warnings":[]}'
+                    '"warnings":[]},"warnings":[]}'
                 ),
                 parameters={
                     "type": "object",
                     "properties": {
                         "reportBrief": ReportBrief.model_json_schema(by_alias=True),
-                        "datasetSemantics": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 100,
-                            "items": AnalysisDatasetSemantics.model_json_schema(by_alias=True),
-                        },
-                        "metricDefinitions": {
-                            "type": "array",
-                            "maxItems": 500,
-                            "items": MetricDefinition.model_json_schema(by_alias=True),
-                        },
                         "warnings": {
                             "type": "array",
                             "maxItems": 500,
                             "items": {"type": "string", "maxLength": 2000},
                         },
                     },
-                    "required": ["reportBrief", "datasetSemantics"],
+                    "required": ["reportBrief"],
                     "additionalProperties": False,
                 },
                 strict=True,

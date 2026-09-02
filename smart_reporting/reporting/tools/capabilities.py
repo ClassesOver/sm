@@ -38,7 +38,6 @@ REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
 REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES = frozenset(
     {
         "finalize_report_analysis",
-        "get_skill_instructions",
         "read_file",
         "read_tool_output",
         "register_report_charts",

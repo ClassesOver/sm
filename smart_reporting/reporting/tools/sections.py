@@ -460,14 +460,9 @@ class RuntimeSectionsMixin:
                     }
                 )
             )
-        artifact_version = (
-            "2"
-            if normalized_claims and all(block.claim_ids for block in normalized_blocks)
-            else "1"
-        )
         artifact = SectionArtifact.model_validate(
             {
-                "version": artifact_version,
+                "version": "1",
                 "sectionCode": section_code,
                 "blocks": normalized_blocks,
                 "claims": normalized_claims,

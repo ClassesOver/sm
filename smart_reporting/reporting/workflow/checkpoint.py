@@ -308,7 +308,7 @@ class AnalysisDatasetSemantics(StrictModel):
 
 
 class AnalysisEvidenceManifest(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     evidence: tuple[AnalysisEvidence, ...] = Field(min_length=1, max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
@@ -337,12 +337,10 @@ class AnalysisEvidenceManifest(StrictModel):
         known_datasets = {dataset_id for item in self.evidence for dataset_id in item.dataset_ids}
         if any(set(item.chart_ids) - known_charts for item in self.evidence):
             raise ValueError("analysis evidence 引用了未登记图表")
-        if self.version == "2" and not self.dataset_semantics:
-            raise ValueError("v2 AnalysisEvidenceManifest 必须冻结 Dataset 语义")
-        if self.version == "2" and any(
-            item.visual_inspection_receipt is None for item in self.charts
-        ):
-            raise ValueError("v2 AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
+        if not self.dataset_semantics:
+            raise ValueError("AnalysisEvidenceManifest 必须冻结 Dataset 语义")
+        if any(item.visual_inspection_receipt is None for item in self.charts):
+            raise ValueError("AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
         # 未冻结指标属于可修复语义质量问题，由发布检查记录告警。
         if any(item.source_dataset_id not in known_datasets for item in self.charts):
             raise ValueError("AnalysisChart 引用了未冻结 Dataset")
@@ -352,7 +350,7 @@ class AnalysisEvidenceManifest(StrictModel):
 
 
 class AnalysisArtifact(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     report_brief: ReportBrief = Field(alias="reportBrief")
     evidence_manifest: AnalysisEvidenceManifest = Field(alias="evidenceManifest")
     profile_read_receipts: tuple[ProfileReadReceipt, ...] = Field(
@@ -364,8 +362,8 @@ class AnalysisArtifact(StrictModel):
 
     @model_validator(mode="after")
     def validate_nested_version(self) -> AnalysisArtifact:
-        if self.version == "2" and self.evidence_manifest.version != "2":
-            raise ValueError("v2 AnalysisArtifact 只能包含 v2 EvidenceManifest")
+        if self.evidence_manifest.version != "1":
+            raise ValueError("AnalysisArtifact 只能包含 v1 EvidenceManifest")
         return self
 
 
@@ -532,7 +530,7 @@ class SectionClaimSubmission(StrictModel):
 
 
 class SectionArtifact(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
     claims: tuple[SectionClaim, ...] = Field(default=(), max_length=500)
@@ -541,8 +539,8 @@ class SectionArtifact(StrictModel):
     @model_validator(mode="after")
     def validate_claim_references(self) -> SectionArtifact:
         known = {claim.claim_id for claim in self.claims}
-        if self.version == "2" and not self.claims:
-            raise ValueError("v2 章节必须提交结构化 claims")
+        if not self.claims:
+            raise ValueError("章节必须提交结构化 claims")
         if len(known) != len(self.claims):
             raise ValueError("章节 claimId 不能重复")
         referenced = {claim_id for block in self.blocks for claim_id in block.claim_ids}
@@ -550,25 +548,18 @@ class SectionArtifact(StrictModel):
             raise ValueError("正文 block 引用了未声明的 claim")
         if known - referenced:
             raise ValueError("章节 claim 必须由正文 block 引用")
-        if self.version == "2" and any(not block.claim_ids for block in self.blocks):
-            raise ValueError("v2 章节的每个正文 block 必须引用至少一个 claim")
+        if any(not block.claim_ids for block in self.blocks):
+            raise ValueError("章节的每个正文 block 必须引用至少一个 claim")
         return self
 
 
-def read_analysis_artifact(
-    payload: Mapping[str, Any], *, running: bool = False
-) -> AnalysisArtifact:
-    """读取内部分析产物；运行中的 v1 不得猜测缺失的 v2 语义字段。"""
-    version = str(payload.get("version", ""))
-    if version == "1" and running:
+def read_analysis_artifact(payload: Mapping[str, Any]) -> AnalysisArtifact:
+    """读取统一 v1 分析产物；旧版本不得进入任何运行或终态路径。"""
+    if str(payload.get("version", "")) != "1":
         raise ReportingError(
             "report_semantic_contract_upgrade_required",
-            "运行中的 v1 分析产物缺少 v2 语义契约，必须重新分析。",
+            "分析产物必须使用统一 v1 语义契约，请重新分析。",
         )
-    if version == "1":
-        legacy = dict(payload)
-        legacy.pop("version", None)
-        return AnalysisArtifact.model_construct(version="1", **legacy)
     return AnalysisArtifact.model_validate(payload)
 
 
@@ -670,7 +661,7 @@ class ContextTrace(StrictModel):
 
 
 class ReportingCheckpoint(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     revision: int = Field(ge=1)
     phase: Literal["analysis", "sections", "finalize", "completed"]
     outline_hash: str = Field(alias="outlineHash", pattern=SHA256_PATTERN)
@@ -704,16 +695,8 @@ class ReportingCheckpoint(StrictModel):
 
     @model_validator(mode="after")
     def validate_sections(self) -> ReportingCheckpoint:
-        if self.version == "1" and self.phase != "completed":
-            raise ValueError(
-                "report_semantic_contract_upgrade_required: 运行中的 v1 checkpoint 必须重新分析"
-            )
-        if (
-            self.version == "2"
-            and self.evidence_manifest is not None
-            and self.evidence_manifest.version != "2"
-        ):
-            raise ValueError("v2 ReportingCheckpoint 只能包含 v2 EvidenceManifest")
+        if self.evidence_manifest is not None and self.evidence_manifest.version != "1":
+            raise ValueError("ReportingCheckpoint 只能包含 v1 EvidenceManifest")
         completed = [item.section_code for item in self.completed_sections]
         if len(completed) != len(set(completed)):
             raise ValueError("checkpoint completedSections 不能重复")

@@ -7,9 +7,6 @@ from typing import Literal
 from pydantic import ConfigDict, Field
 
 from .base import (
-    _FABRICATION_NEGATION_PATTERN,
-    _FORBIDDEN_DERIVATION_PATTERN,
-    _NUMERIC_MEASURE_TYPE_PATTERN,
     _PLANNER_DISPLAY_NAMES,
     DOMAIN_CODES,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -92,6 +89,7 @@ from .base import (
     resolve_schema_snapshot,
 )
 from .datasets import _analysis_context_payload
+from .models import _NUMERIC_MEASURE_TYPE_PATTERN
 from .validation import (
     _analysis_bundle_semantic_issues,
     _available_table_columns,
@@ -251,7 +249,7 @@ class RuntimePlanningMixin:
         )
         task_ids: tuple[str, ...] = ()
         if stored_checkpoint is not None:
-            # 运行中的 v1 checkpoint 仍由业务恢复路径失败关闭；终态清理不能因此
+            # 无法解析的旧 checkpoint 仍由业务恢复路径失败关闭；终态清理不能因此
             # 跳过已启动任务。这里只验证并读取 taskId，任何结构损坏都会阻止销毁
             # sandbox，避免遗漏仍在运行的 phase task。
             checkpoint = _TerminalCleanupCheckpoint.model_validate(stored_checkpoint)
@@ -1326,13 +1324,6 @@ def _resolved_report_type(
     if domains and len(domains) < len(DOMAIN_CODES):
         return "topic"
     return "comprehensive"
-
-
-def _contains_forbidden_derivation(value: str) -> bool:
-    for match in _FORBIDDEN_DERIVATION_PATTERN.finditer(value):
-        if not _FABRICATION_NEGATION_PATTERN.search(value[: match.start()]):
-            return True
-    return False
 
 
 def _model_table(table: Any) -> ModelTable:

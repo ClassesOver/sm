@@ -86,10 +86,12 @@ from .phase import (
     current_reporting_run_context,
     record_reporting_projection_metrics,
     reporting_analysis_fact_usage_from_run_context,
+    reporting_analysis_model_request_limit_from_run_context,
     reporting_analysis_recovery_from_run_context,
     reporting_phase_allows_tool,
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
+    reporting_thinking_budget_from_run_context,
     reporting_thinking_effort_from_run_context,
     reporting_visual_inspection_mode_from_run_context,
     reporting_visualization_exploration_budget_exhausted_from_run_context,
@@ -130,6 +132,7 @@ _REPORT_TOOL_SAME_FAILURE_LIMIT = 3
 _REPORT_TOOL_PHASE_FAILURE_LIMIT = 8
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_analysis_success_tools"
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT = 24
+_REPORT_ANALYSIS_ITEM_MODEL_REQUEST_STATE_KEY = "agentos_reporting_analysis_model_requests"
 # 可视化的第一次 attempt 最多执行 48 次工具；fresh retry 从受信契约恢复累计计数，
 # 两轮合计不得超过 64 次。失败调用同样消耗预算，避免通过不断更换错误参数绕过上限。
 # finalize 是登记后的单向收尾，不计入预算；确定性脚本失败最多允许 3 次。
@@ -175,7 +178,6 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
             "managementQuestions": ["增长是否可持续"],
             "warnings": [],
         },
-        "metricDefinitions": [],
         "warnings": [],
     },
     "request_analysis_rework": {
@@ -249,6 +251,45 @@ def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
 def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
     progress = state.get("agentos_coding_tool_progress") if isinstance(state, dict) else None
     return int(progress.get("mutation", 0)) if isinstance(progress, dict) else 0
+
+
+def _reserve_analysis_model_request(run_context: RunContext | None) -> None:
+    """记录分析项模型请求；最后一次请求必须收敛到终态工具。"""
+
+    if run_context is None or reporting_task_kind_from_run_context(run_context) != "analysis_item":
+        return
+    limit = reporting_analysis_model_request_limit_from_run_context(run_context)
+    state = _reporting_session_state(run_context)
+    if limit is None or state is None:
+        return
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
+    identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
+    requests = state.get(_REPORT_ANALYSIS_ITEM_MODEL_REQUEST_STATE_KEY)
+    requests = dict(requests) if isinstance(requests, Mapping) else {}
+    count = requests.get(identity, 0)
+    count = (
+        int(count) if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
+    )
+    requests[identity] = count + 1
+    state[_REPORT_ANALYSIS_ITEM_MODEL_REQUEST_STATE_KEY] = requests
+
+
+def _analysis_model_request_must_finish(run_context: RunContext | None) -> bool:
+    if run_context is None or reporting_task_kind_from_run_context(run_context) != "analysis_item":
+        return False
+    limit = reporting_analysis_model_request_limit_from_run_context(run_context)
+    state = _reporting_session_state(run_context)
+    if limit is None or state is None:
+        return False
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
+    identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
+    requests = state.get(_REPORT_ANALYSIS_ITEM_MODEL_REQUEST_STATE_KEY)
+    count = requests.get(identity, 0) if isinstance(requests, Mapping) else 0
+    return isinstance(count, int) and not isinstance(count, bool) and count >= limit
 
 
 def _reporting_analysis_item_tool_budget(
@@ -1902,6 +1943,11 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         and _visualization_lifecycle_tool_allowed(run_context, name)
         and not (
             task_kind == "analysis_item"
+            and _analysis_model_request_must_finish(run_context)
+            and name != "complete_analysis_item"
+        )
+        and not (
+            task_kind == "analysis_item"
             and run_context is not None
             and reporting_analysis_recovery_from_run_context(run_context)
             and name != "complete_analysis_item"
@@ -1950,9 +1996,11 @@ def _report_worker_tools_cache_key(run_context: RunContext) -> str:
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
     phase = _reporting_phase_from_messages(messages)
     task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
-    # 单项分析不生成图表，也不需要通用沙箱能力说明；章节阶段更不持有 Skill 工具。
-    # 只为 visualization 保留 Agno Skill 提示，避免模型看到已被阶段白名单隐藏的入口。
-    if phase != "section" and not (phase == "analysis" and task_kind == "analysis_item"):
+    # 单项分析、可视化汇总和章节阶段都不使用 Skill；只有章节制图 worker 保留
+    # Agno Skill 提示，因为它需要按需读取图表生成规范。
+    if phase == "analysis" and task_kind == "visualization_section":
+        return messages
+    if phase not in {"analysis", "section"}:
         return messages
     projected: list[Message] | None = None
     opening = "<skills_system>"
@@ -2074,6 +2122,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
     def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
         """为单次请求生成隔离配置，禁止并发 Section 修改共享 Worker 模型。"""
 
+        _reserve_analysis_model_request(current_reporting_run_context())
         base_profile = reporting_thinking_profile_from_model(self)
         profile = base_profile
         previous_error = self.report_run_error()
@@ -2084,6 +2133,11 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             budget = base_profile.thinking_budget
             if budget is None:
                 raise ValueError("Reporting Worker 缺少 thinking_budget，无法应用请求档位")
+            requested_budget = reporting_thinking_budget_from_run_context(
+                current_reporting_run_context()
+            )
+            if requested_budget is not None:
+                budget = min(budget, requested_budget)
             profile = ReportingThinkingProfile.on(
                 reasoning_effort=bound_effort,
                 thinking_budget=budget,
@@ -2127,7 +2181,20 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
 
     @staticmethod
     def _phase_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-        if reporting_task_kind_from_run_context(current_reporting_run_context()) not in {
+        run_context = current_reporting_run_context()
+        if _analysis_model_request_must_finish(run_context):
+            tools = kwargs.get("tools")
+            if isinstance(tools, list):
+                terminal_tools = [
+                    item
+                    for item in tools
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("function"), Mapping)
+                    and item["function"].get("name") == "complete_analysis_item"
+                ]
+                if terminal_tools:
+                    return {**kwargs, "tools": terminal_tools, "tool_choice": "required"}
+        if reporting_task_kind_from_run_context(run_context) not in {
             "visualization_section",
             "visualization_finalize",
         }:

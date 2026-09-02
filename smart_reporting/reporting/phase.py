@@ -33,6 +33,8 @@ REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
+REPORTING_THINKING_BUDGET_DEPENDENCY_KEY = "reportingThinkingBudget"
+REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY = "analysisModelRequestLimit"
 REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY = "reportingVisualizationToolCalls"
 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY = "reportingVisualizationScriptFailures"
@@ -269,6 +271,46 @@ def reporting_thinking_effort_from_acceptance_contract(
     phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
     effort = phase_contract.get("thinkingEffort") if isinstance(phase_contract, Mapping) else None
     return effort if effort in {"off", "high", "max"} else None
+
+
+def reporting_thinking_budget_from_acceptance_contract(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return None
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    budget = phase_contract.get("thinkingBudget") if isinstance(phase_contract, Mapping) else None
+    return (
+        budget if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0 else None
+    )
+
+
+def reporting_analysis_model_request_limit_from_acceptance_contract(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return None
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    limit = (
+        phase_contract.get("analysisModelRequestLimit")
+        if isinstance(phase_contract, Mapping)
+        else None
+    )
+    return limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
 
 
 def reporting_visual_inspection_mode_from_acceptance_contract(
@@ -516,6 +558,40 @@ def reporting_thinking_effort_from_run_context(
         else None
     )
     return effort if effort in {"off", "high", "max"} else None
+
+
+def reporting_thinking_budget_from_run_context(run_context: RunContext | None) -> int | None:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    budget = (
+        binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY)
+        if isinstance(binding, Mapping)
+        else None
+    )
+    return (
+        budget if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0 else None
+    )
+
+
+def reporting_analysis_model_request_limit_from_run_context(
+    run_context: RunContext | None,
+) -> int | None:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    limit = (
+        binding.get(REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY)
+        if isinstance(binding, Mapping)
+        else None
+    )
+    return limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
 
 
 def reporting_visualization_registered_from_run_context(run_context: RunContext | None) -> bool:

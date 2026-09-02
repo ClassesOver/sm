@@ -2377,11 +2377,11 @@ async def test_toolkit_returns_structured_workspace_errors(execution_runtime):
         raise WorkspacePathConflict("文件内容已变化。")
 
     invalid = await toolkit._invoke(
-        "list_files", {"path": "/workspace/report"}, invalid_path, runtime.context
+        "read_file", {"path": "/workspace/report"}, invalid_path, runtime.context
     )
     conflicted = await toolkit._invoke(
-        "overwrite_file",
-        {"path": "/home/daytona/workspace/report.md"},
+        "terminal",
+        {"command": "touch /home/daytona/workspace/report.md"},
         conflict,
         runtime.context,
     )
@@ -2391,7 +2391,7 @@ async def test_toolkit_returns_structured_workspace_errors(execution_runtime):
         "status": "rejected",
         "code": "workspace_error",
         "message": "工作区路径是绝对路径，请改用相对路径。",
-        "details": {"tool": "list_files", "suggestedPath": "report"},
+        "details": {"tool": "read_file", "suggestedPath": "report"},
         "requiredActions": ["按错误说明修正参数后重试。"],
         "retryable": True,
     }
@@ -2492,9 +2492,7 @@ async def test_skill_script_verification_uses_server_receipt_without_database(mo
 @pytest.mark.parametrize(
     ("writer_tool", "writer_arguments"),
     [
-        ("patch", {"mode": "test"}),
         ("terminal", {"command": "touch generated.txt"}),
-        ("verify", {"validator_id": "analysis:report"}),
     ],
 )
 async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(
@@ -2537,7 +2535,7 @@ async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(
 
     reads = [
         asyncio.create_task(
-            toolkit._invoke("git_status", {"repo_path": str(index)}, read_call, runtime.context)
+            toolkit._invoke("read_file", {"path": f"file-{index}"}, read_call, runtime.context)
         )
         for index in range(2)
     ]

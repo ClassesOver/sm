@@ -23,9 +23,11 @@ from ..phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
@@ -46,8 +48,10 @@ from ..phase import (
     record_reporting_tool_event,
     reporting_analysis_fact_budget_contract_from_acceptance_contract,
     reporting_analysis_fact_usage_from_run_context,
+    reporting_analysis_model_request_limit_from_acceptance_contract,
     reporting_phase_from_acceptance_contract,
     reporting_task_kind_from_acceptance_contract,
+    reporting_thinking_budget_from_acceptance_contract,
     reporting_thinking_effort_from_acceptance_contract,
     reporting_visual_inspection_mode_from_acceptance_contract,
     reporting_visualization_budget_contract_from_acceptance_contract,
@@ -247,6 +251,9 @@ class ReportTaskRunner:
                 reporting_thinking_effort = reporting_thinking_effort_from_acceptance_contract(
                     acceptance_contract
                 )
+                reporting_thinking_budget = reporting_thinking_budget_from_acceptance_contract(
+                    acceptance_contract
+                )
                 visual_inspection_mode = reporting_visual_inspection_mode_from_acceptance_contract(
                     acceptance_contract
                 )
@@ -266,6 +273,11 @@ class ReportTaskRunner:
                 )
                 analysis_fact_budget = (
                     reporting_analysis_fact_budget_contract_from_acceptance_contract(
+                        acceptance_contract
+                    )
+                )
+                analysis_model_request_limit = (
+                    reporting_analysis_model_request_limit_from_acceptance_contract(
                         acceptance_contract
                     )
                 )
@@ -353,6 +365,11 @@ class ReportTaskRunner:
                             else {}
                         ),
                         **(
+                            {REPORTING_THINKING_BUDGET_DEPENDENCY_KEY: reporting_thinking_budget}
+                            if reporting_thinking_budget is not None
+                            else {}
+                        ),
+                        **(
                             {
                                 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY: (
                                     visual_inspection_mode
@@ -365,6 +382,15 @@ class ReportTaskRunner:
                         ),
                         **(
                             {
+                                **(
+                                    {
+                                        REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY: (
+                                            analysis_model_request_limit
+                                        )
+                                    }
+                                    if analysis_model_request_limit is not None
+                                    else {}
+                                ),
                                 REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY: (
                                     analysis_fact_budget["analysisFactBudgetVersion"]
                                 ),

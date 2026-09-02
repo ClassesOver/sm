@@ -777,15 +777,12 @@ class RuntimeAnalysisMixin:
     async def finalize_report_analysis(
         self,
         reportBrief: dict[str, Any],
-        datasetSemantics: list[dict[str, Any]],
-        metricDefinitions: list[dict[str, Any]] | None = None,
         warnings: list[str] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。
 
-        datasetSemantics/metricDefinitions 语义目录以 acceptance contract 的服务端投影
-        为唯一受信来源；模型提交的同名参数仅作接口兼容占位，会被直接覆盖。
+        Dataset 和指标语义目录由 acceptance contract 的服务端投影派生，模型无需提交。
         """
 
         state = self._session_state(run_context)

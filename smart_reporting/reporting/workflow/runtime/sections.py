@@ -428,11 +428,6 @@ class RuntimeSectionsMixin:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物身份无效。"
             ) from error
-        if artifact.version == "1":
-            raise ReportingError(
-                "report_semantic_contract_upgrade_required",
-                "运行中的 v1 章节产物缺少 v2 语义契约，必须重新分析。",
-            )
         if artifact.section_code != section_code:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物没有绑定当前 sectionCode。"
@@ -847,11 +842,6 @@ class RuntimeSectionsMixin:
                 raise ReportingError(
                     "report_section_artifact_invalid", "章节产物顺序或 sectionCode 已变化。"
                 )
-            if artifact.version == "1":
-                raise ReportingError(
-                    "report_semantic_contract_upgrade_required",
-                    "运行中的 v1 章节产物缺少 v2 语义契约，必须重新分析。",
-                )
             section_artifacts.append(artifact)
 
         draft = ReportDraft(
@@ -1144,11 +1134,6 @@ class RuntimeSectionsMixin:
                     AnalysisArtifact,
                 ),
             )
-            if analysis_artifact.version == "1":
-                raise ReportingError(
-                    "report_semantic_contract_upgrade_required",
-                    "运行中的 v1 分析产物缺少 v2 语义契约，必须重新分析。",
-                )
 
         while True:
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)

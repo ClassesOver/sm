@@ -4249,7 +4249,7 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "create_analysis_file": "0760ebcc4c0392fda369f16ba5d30bab3cbb2f7a37c8af2d0edc759e5991bab1",
     "overwrite_analysis_file": "10e3a3726f2c206cce0e04a353b505070bc59337e7bcee7462c6b68e33bf96d1",
     "complete_analysis_item": "9c2e0d1eff9bb28aec286154573bbc38c025bd1f3a5d30bb129593beed755fb9",
-    "finalize_report_analysis": "0a5a381b7eda6a4b5cdf93302bdc5bd1bcb3aa411bc52745a972dee6f0e99d67",
+    "finalize_report_analysis": "f1055e5279e841323544438ccd9516c52cd3b7c98ef4bf6c3e5e09400e4416d3",
     "inspect_chart": "c038586b8d6fa4ecefe1c9d75d4d35e217d9e3cf91719c4fd2a7ad78f775c9c6",
     "register_report_charts": "4522acf4b9385c526b7403964b4496ce179ccac2935246da7265de5daebb228c",
     "submit_visualization_charts": "716438f17d1a73e772599609eb24beaaf917329c766741f2f7eb3e46a3aa2bbc",
@@ -4289,6 +4289,20 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
     assert fingerprints == _WORKER_TOOL_SCHEMA_FINGERPRINTS
     assert toolkit._finish_function.name == "finish_task"
     assert "finish_task" not in toolkit.async_functions
+
+
+def test_finalize_tool_schema_uses_server_projected_semantics() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    parameters = toolkit.async_functions["finalize_report_analysis"].parameters
+
+    assert "datasetSemantics" not in parameters["properties"]
+    assert "metricDefinitions" not in parameters["properties"]
+    assert parameters["required"] == ["reportBrief"]
 
 
 @pytest.mark.parametrize(
@@ -4449,6 +4463,34 @@ def test_dynamic_metric_tools_do_not_return_static_correction_examples() -> None
     }
 
 
+def test_finalize_argument_failure_example_matches_reduced_schema() -> None:
+    error = ValidationError.from_exception_data(
+        "ReportBrief",
+        [
+            {
+                "type": "missing",
+                "loc": ("reportBrief", "objective"),
+                "input": {},
+            }
+        ],
+    )
+
+    failure = _report_tool_argument_failure("finalize_report_analysis", error, {})
+
+    assert failure["correctCallExample"] == {
+        "name": "finalize_report_analysis",
+        "arguments": {
+            "reportBrief": {
+                "objective": "形成年度运营报告",
+                "executiveSummary": "收入增长但成本承压",
+                "managementQuestions": ["增长是否可持续"],
+                "warnings": [],
+            },
+            "warnings": [],
+        },
+    }
+
+
 @pytest.mark.anyio
 async def test_render_report_section_rejects_inline_image_before_writing_artifact() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
@@ -4545,6 +4587,7 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
     )
 
     payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["version"] == "1"
     assert payload["blocks"][0]["citationIds"] == ["citation_004", "citation_010"]
 
 
@@ -5966,18 +6009,6 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
             "executiveSummary": "收入摘要。",
             "managementQuestions": ["收入表现如何？"],
         },
-        datasetSemantics=[
-            {"datasetId": "dataset-1", "rowGrain": "month", "duplicateResolution": "resolved"}
-        ],
-        metricDefinitions=[
-            {
-                "code": "income_total",
-                "name": "被改写的指标",
-                "definition": "模型自定义口径。",
-                "unit": "元",
-                "periodBasis": "2025-01",
-            }
-        ],
         run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
     )
 
@@ -6024,8 +6055,6 @@ async def test_finalize_rejects_registered_chart_missing_from_durable_section_dr
             "executiveSummary": "摘要。",
             "managementQuestions": ["经营表现如何？"],
         },
-        datasetSemantics=[],
-        metricDefinitions=[],
         run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
     )
 
@@ -6163,8 +6192,6 @@ async def test_global_zero_charts_fails_at_finalize() -> None:
             "executiveSummary": "摘要。",
             "managementQuestions": ["经营表现如何？"],
         },
-        datasetSemantics=[],
-        metricDefinitions=[],
         run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
     )
 
@@ -6267,7 +6294,6 @@ async def test_finalize_rejects_malformed_durable_dataset_ids(dataset_ids: objec
             "executiveSummary": "摘要。",
             "managementQuestions": ["经营表现如何？"],
         },
-        datasetSemantics=[],
         run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
     )
 

@@ -74,6 +74,111 @@ from .datasets import _profile_coverage_instruction_projection
 
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
 
+_ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
+_ANALYSIS_MODEL_REQUEST_LIMITS = {"simple": 2, "standard": 2, "complex": 3}
+_ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
+    {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
+)
+
+
+def _analysis_item_complexity(
+    plan: Mapping[str, Any],
+) -> tuple[int, Literal["simple", "standard", "complex"]]:
+    """仅根据已校验分析计划字段计算复杂度，避免从自然语言猜测预算。"""
+
+    def _count(name: str) -> int:
+        value = plan.get(name)
+        return (
+            len(value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else 0
+        )
+
+    score = max(0, _count("datasetIds") - 1) * 3
+    score += min(2, max(0, _count("metrics") - 1))
+    score += 2 if _count("comparisonBasis") else 0
+    organization_grain_count = _count("organizationGrain")
+    score += 2 if organization_grain_count >= 2 else organization_grain_count
+    score += max(0, _count("actions") - 2)
+    tier: Literal["simple", "standard", "complex"] = (
+        "simple" if score <= 2 else "standard" if score <= 5 else "complex"
+    )
+    return score, tier
+
+
+def _analysis_item_thinking_policy(
+    plan: Mapping[str, Any], *, retry: bool, retry_reason: str | None
+) -> tuple[Literal["high", "max"], int, Literal["simple", "standard", "complex"], int]:
+    """返回 thinking 档位、预算、复杂度和模型请求上限。"""
+
+    _, tier = _analysis_item_complexity(plan)
+    normalized_reason = (retry_reason or "").lower()
+    evidence_retry = normalized_reason in _ANALYSIS_EVIDENCE_RETRY_REASONS or any(
+        marker in normalized_reason for marker in ("evidence", "fact_incomplete")
+    )
+    if retry and evidence_retry:
+        return "max", _ANALYSIS_THINKING_BUDGETS["complex"], tier, 3
+    return "high", _ANALYSIS_THINKING_BUDGETS[tier], tier, _ANALYSIS_MODEL_REQUEST_LIMITS[tier]
+
+
+_MODEL_FACT_IDENTITY_KEYS = frozenset(
+    {
+        "datasetSha256",
+        "datasetSha256s",
+        "profileHash",
+        "currentDatasetSha256",
+        "baselineDatasetSha256",
+    }
+)
+_MODEL_FACT_WARNING_COLLECTIONS = (
+    "metrics",
+    "derivedMetrics",
+    "comparisons",
+    "reconciliations",
+)
+
+
+def _model_facing_deterministic_facts(
+    bundle: DeterministicAnalysisBundle,
+) -> dict[str, Any]:
+    """投影模型所需事实，隐藏校验元数据并去重重复告警。
+
+    哈希、文件大小和路径属于服务端身份校验边界，完整 bundle 仍写入不可变 facts
+    文件；模型只需要业务事实和可读的告警文本。相同告警可能同时出现在多个指标、
+    比较和汇总层，模型输入只保留首次出现的位置，避免重复消耗上下文预算。
+    """
+
+    projected = bundle.model_dump(mode="json", by_alias=True)
+    seen_warnings: set[str] = set()
+    for collection_key in _MODEL_FACT_WARNING_COLLECTIONS:
+        collection = projected.get(collection_key)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            for key in _MODEL_FACT_IDENTITY_KEYS:
+                item.pop(key, None)
+            warnings = item.get("warnings")
+            if not isinstance(warnings, list):
+                continue
+            unique = []
+            for warning in warnings:
+                if not isinstance(warning, str) or warning in seen_warnings:
+                    continue
+                seen_warnings.add(warning)
+                unique.append(warning)
+            item["warnings"] = unique
+
+    warnings = projected.get("warnings")
+    if isinstance(warnings, list):
+        unique = []
+        for warning in warnings:
+            if not isinstance(warning, str) or warning in seen_warnings:
+                continue
+            seen_warnings.add(warning)
+            unique.append(warning)
+        projected["warnings"] = unique
+    return projected
+
 
 def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int:
     """按当前分析项复杂度分配事实查询额度，并保留硬上限。"""
@@ -801,14 +906,6 @@ class RuntimeAnalysisMixin:
             durable.payload.get("workflowCheckpoint") if durable is not None else None
         )
         if isinstance(stored_checkpoint, dict):
-            if (
-                stored_checkpoint.get("version") == "1"
-                and stored_checkpoint.get("phase") != "completed"
-            ):
-                raise ReportingError(
-                    "report_semantic_contract_upgrade_required",
-                    "运行中的 v1 checkpoint 缺少 v2 语义契约，必须重新分析。",
-                )
             try:
                 checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
             except (TypeError, ValueError, ValidationError) as error:
@@ -961,7 +1058,7 @@ class RuntimeAnalysisMixin:
         profile = reporting_thinking_profile_from_model(model)
         if not profile.enabled:
             return "off"
-        return "high" if retry else "off"
+        return "high"
 
     async def _analysis_item_artifacts_from_receipt(
         self,
@@ -1136,7 +1233,7 @@ class RuntimeAnalysisMixin:
                 "deterministicFactFile": fact_files[analysis_id].model_dump(
                     mode="json", by_alias=True
                 ),
-                "deterministicFacts": deterministic_facts.model_dump(mode="json", by_alias=True),
+                "deterministicFacts": _model_facing_deterministic_facts(deterministic_facts),
                 "profileCoverage": _profile_coverage_instruction_projection(
                     checkpoint.profile_coverage,
                     analysis_context_file,
@@ -1172,6 +1269,32 @@ class RuntimeAnalysisMixin:
                     "单项分析投影超过模型输入边界；证据未被静默截断。",
                 )
             retry = any(item.status == "failed" for item in matching_traces)
+            effective_retry_reason = retry_reason or (
+                last_error.code if isinstance(last_error, ReportingError) else None
+            )
+            (
+                policy_effort,
+                thinking_budget,
+                complexity_tier,
+                model_request_limit,
+            ) = _analysis_item_thinking_policy(
+                analysis_plan, retry=retry, retry_reason=effective_retry_reason
+            )
+            complexity_score, _ = _analysis_item_complexity(analysis_plan)
+            worker_effort = self._worker_thinking_effort(retry=retry)
+            thinking_effort = "off" if worker_effort == "off" else policy_effort
+            loguru_logger.info(
+                "report_analysis_thinking_policy analysis_id={} effort={} budget={} "
+                "complexity_tier={} complexity_score={} model_request_limit={} "
+                "escalation_reason={}",
+                analysis_id,
+                thinking_effort,
+                thinking_budget,
+                complexity_tier,
+                complexity_score,
+                model_request_limit,
+                effective_retry_reason if thinking_effort == "max" else "-",
+            )
             analysis_fact_queries_used = _analysis_fact_retry_usage(last_error)
             analysis_recovery = _analysis_fact_recovery_required(last_error)
             contract = build_report_phase_acceptance_contract(
@@ -1182,9 +1305,14 @@ class RuntimeAnalysisMixin:
                 phase_contract={
                     "reportRunId": report_run_id,
                     "taskKind": "analysis_item",
-                    # 单项分析首次继承 Worker 的 high 档位；只有服务端判定上一次尝试
-                    # 失败时才升为 max。全局关闭 thinking 时 Worker 策略仍会返回 off。
-                    "thinkingEffort": self._worker_thinking_effort(retry=retry),
+                    "thinkingEffort": thinking_effort,
+                    "thinkingBudget": thinking_budget,
+                    "thinkingComplexityTier": complexity_tier,
+                    "thinkingComplexityScore": complexity_score,
+                    "analysisModelRequestLimit": model_request_limit,
+                    "thinkingEscalationReason": (
+                        effective_retry_reason if thinking_effort == "max" else None
+                    ),
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
                     "analysisFactBudgetVersion": 1,

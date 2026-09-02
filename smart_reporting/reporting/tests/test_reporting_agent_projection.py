@@ -38,10 +38,12 @@ from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
@@ -442,6 +444,13 @@ def test_report_worker_caps_only_long_model_timeout(
                 "inspect_chart",
             ],
         ),
+        (
+            "visualization_finalize",
+            [
+                "register_report_charts",
+                "finalize_report_analysis",
+            ],
+        ),
     ],
 )
 def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
@@ -769,10 +778,12 @@ def test_analysis_recovery_projection_keeps_only_completion() -> None:
     [
         ("analysis", "analysis_item", False),
         ("analysis", "visualization_section", True),
+        ("analysis", "visualization_finalize", False),
+        ("analysis", "unknown", False),
         ("section", "section", False),
     ],
 )
-def test_report_worker_keeps_skill_prompt_only_for_visualization(
+def test_report_worker_keeps_skill_prompt_only_for_visualization_section(
     phase: str,
     task_kind: str,
     keeps_skills: bool,
@@ -818,7 +829,14 @@ def test_section_projection_hides_internal_finish_task() -> None:
     )
     tools = [
         {"type": "function", "function": {"name": name}}
-        for name in ("finish_task", "read_file", "render_report_section")
+        for name in (
+            "finish_task",
+            "get_skill_instructions",
+            "get_skill_reference",
+            "get_skill_script",
+            "read_file",
+            "render_report_section",
+        )
     ]
 
     with bind_reporting_run_context(context):
@@ -926,6 +944,9 @@ def test_build_report_agent_instructions_for_visualization_task_kinds() -> None:
     assert any("register_report_charts" in item for item in finalize_instructions)
     assert any("finalize_report_analysis" in item for item in finalize_instructions)
     assert not any("submit_visualization_charts" in item for item in finalize_instructions)
+    assert not any(
+        "finalize_report_analysis.metricDefinitions" in item for item in finalize_instructions
+    )
 
 
 @pytest.mark.parametrize("mode", ["vision", "deterministic"])
@@ -2930,6 +2951,7 @@ def test_report_section_requests_disable_thinking_without_mutating_worker() -> N
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
                 REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
                 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "high",
+                REPORTING_THINKING_BUDGET_DEPENDENCY_KEY: 4096,
             }
         },
     )
@@ -2951,16 +2973,54 @@ def test_report_section_requests_disable_thinking_without_mutating_worker() -> N
         section_model = model._phase_request_model([])
 
     assert analysis_model is not model
-    assert analysis_model.extra_body == {
-        "enable_thinking": True,
-        "thinking_budget": 8192,
-    }
+    assert analysis_model.extra_body == {"enable_thinking": True, "thinking_budget": 4096}
     assert analysis_model.reasoning_effort == "high"
     assert section_model is not model
     assert section_model.extra_body == {"enable_thinking": False}
     assert section_model.reasoning_effort is None
     assert model.extra_body == {"enable_thinking": True, "thinking_budget": 8192}
     assert model.reasoning_effort == "high"
+
+
+def test_analysis_last_model_request_exposes_only_terminal_tool() -> None:
+    model = ReportWorkerOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test",
+        reasoning_effort="high",
+        extra_body={"enable_thinking": True, "thinking_budget": 8192},
+    )
+    context = RunContext(
+        run_id="run-analysis-request-budget",
+        session_id="session-analysis-request-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-request-budget",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "high",
+                REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY: 2,
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": "query_analysis_facts"}},
+        {"type": "function", "function": {"name": "complete_analysis_item"}},
+    ]
+
+    with bind_reporting_run_context(context):
+        model._phase_request_model([])
+        first = model._phase_request_kwargs({"tools": tools})
+        model._phase_request_model([])
+        second = model._phase_request_kwargs({"tools": tools})
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')], tools
+        )
+
+    assert first == {"tools": tools}
+    assert second["tool_choice"] == "required"
+    assert [item["function"]["name"] for item in second["tools"]] == ["complete_analysis_item"]
+    assert [item["function"]["name"] for item in projected] == ["complete_analysis_item"]
 
 
 @pytest.mark.anyio

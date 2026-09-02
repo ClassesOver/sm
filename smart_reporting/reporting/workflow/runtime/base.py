@@ -245,19 +245,6 @@ _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
 
 
 _JSON_FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
-_FORBIDDEN_DERIVATION_PATTERN = re.compile(
-    r"(?:拟合|估算|估计|推算|插值|外推|年化|平滑|填补|补齐|视为(?:未发生|零|0)|"
-    r"imput(?:e|ed|ation)|interpolat\w*|extrapolat\w*|estimat\w*|annualiz\w*|smooth\w*)",
-    re.IGNORECASE,
-)
-_FABRICATION_NEGATION_PATTERN = re.compile(
-    r"(?:(?:不得|禁止|避免|拒绝|无需|无须|不应|不可).{0,24}|"
-    r"不(?:进行|采用|使用|予以|做|作).{0,8})$"
-)
-_NUMERIC_MEASURE_TYPE_PATTERN = re.compile(
-    r"^(?:TINYINT|SMALLINT|INT|INTEGER|BIGINT|LARGEINT|FLOAT|DOUBLE|DECIMAL)",
-    re.IGNORECASE,
-)
 _VISIBLE_MACHINE_SCALAR_KEYS = frozenset(
     {
         "code",

@@ -1,4 +1,3 @@
-import logging
 import unicodedata
 from os import getenv
 from pathlib import PurePosixPath
@@ -25,6 +24,9 @@ from .http_request_limits import (
     validate_agentos_run_multipart,
 )
 from .logging_config import configure_file_logging
+from .quality_warnings.api import create_quality_warning_router
+from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
+from .quality_warnings.service import QualityWarningService
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.data_source.starrocks import StarRocksSourceConfig
@@ -47,9 +49,6 @@ from .reporting_identity import (
     apply_report_identity,
     requires_workspace_capability,
 )
-from .quality_warnings.api import create_quality_warning_router
-from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
-from .quality_warnings.service import QualityWarningService
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .workspace import (
@@ -60,7 +59,6 @@ from .workspace import (
 
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 202 * 1024 * 1024
 WORKSPACE_FILE_BYTES = 200 * 1024 * 1024
-logger = logging.getLogger(__name__)
 
 
 class WorkspaceDeleteFilePayload(BaseModel):

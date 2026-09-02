@@ -167,8 +167,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     (
         "chartRegistrationRules 是 register_report_charts 的预校验清单：metricCodes 只能取"
         "非空 allowedMetricCodes；若 allowedMetricCodes=null，则为每张图使用语义明确、稳定的"
-        "metricCode。所有已登记图表的 metricCode 都必须在 finalize_report_analysis.metricDefinitions"
-        "中逐个定义同名 code。"
+        "metricCode。服务端会从 acceptance contract 投影的 metricDefinitions 校验所有已登记"
+        "图表的 metricCode；不要向 finalize_report_analysis 提交指标定义。"
         "comparisonType 为 period/yoy/mom 时必须填写 comparisonPeriod；"
         " comparability=reference_only 时 title 和 altText 都必须包含“参考”。"
     ),
@@ -280,10 +280,10 @@ REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS = [
 REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS.extend(
     [
         (
-            "当前是 visualization_finalize Task。章节图表草案、ReportBrief、metricDefinitions、"
-            "datasetSemantics 和全局 Warning 必须按任务 JSON 的受信语义目录投影使用；"
-            "不得猜测、重建或扩大目录。只调用一次 register_report_charts 整批登记，"
-            "随后立即调用 finalize_report_analysis。不得提交章节草案。"
+            "当前是 visualization_finalize Task。章节图表草案、ReportBrief 和全局 Warning 必须按"
+            "任务 JSON 的受信投影使用；指标定义和数据集语义由服务端从 acceptance contract 派生，"
+            "不得猜测、重建或提交它们。只调用一次 register_report_charts 整批登记，随后立即调用"
+            "finalize_report_analysis，且只传 reportBrief 与可选 warnings。不得提交章节草案。"
         ),
     ]
 )

@@ -27,6 +27,9 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DatasetAnalysisContext,
     DetailedAnalysisPlan,
 )
+from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
+)
 from smart_reporting.reporting.hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
@@ -52,7 +55,12 @@ from smart_reporting.reporting.workflow.runtime import (
     ReportWorkflowRuntime,
 )
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
-from smart_reporting.reporting.workflow.runtime.analysis import _coding_detailed_analysis_plan
+from smart_reporting.reporting.workflow.runtime.analysis import (
+    _analysis_item_complexity,
+    _analysis_item_thinking_policy,
+    _coding_detailed_analysis_plan,
+    _model_facing_deterministic_facts,
+)
 from smart_reporting.reporting.workflow.runtime.base import (
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -673,7 +681,7 @@ def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     assert "detailedAnalysisPlan" not in string_keys
 
 
-def test_worker_thinking_effort_is_off_first_and_high_on_retry(
+def test_worker_thinking_effort_is_high_first_and_on_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = object.__new__(ReportWorkflowRuntime)
@@ -688,8 +696,118 @@ def test_worker_thinking_effort_is_off_first_and_high_on_retry(
         "smart_reporting.reporting.workflow.runtime.analysis.reporting_thinking_profile_from_model",
         lambda _model: _Profile(),
     )
-    assert runtime._worker_thinking_effort(retry=False) == "off"
+    assert runtime._worker_thinking_effort(retry=False) == "high"
     assert runtime._worker_thinking_effort(retry=True) == "high"
+
+
+def test_analysis_item_complexity_uses_structured_plan_fields() -> None:
+    simple = {
+        "datasetIds": ["ds-1"],
+        "fields": ["month"],
+        "metrics": ["income"],
+        "periods": ["2025"],
+        "comparisonBasis": [],
+        "organizationGrain": [],
+        "actions": ["summarize"],
+        "recommendedCharts": [],
+    }
+    complex_plan = {
+        "datasetIds": ["ds-1", "ds-2"],
+        "fields": ["month", "area", "department"],
+        "metrics": ["income", "volume"],
+        "periods": ["2024", "2025"],
+        "comparisonBasis": ["yoy"],
+        "organizationGrain": ["area", "department"],
+        "actions": ["compare", "attribute", "recommend"],
+        "recommendedCharts": ["trend", "contribution"],
+    }
+
+    assert _analysis_item_complexity(simple) == (0, "simple")
+    assert _analysis_item_complexity(complex_plan) == (9, "complex")
+
+    standard = {**simple, "comparisonBasis": ["yoy"], "organizationGrain": ["area"]}
+    assert _analysis_item_complexity(standard) == (3, "standard")
+
+
+def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() -> None:
+    plan = {"metrics": ["income"], "datasetIds": ["ds-1"]}
+
+    assert _analysis_item_thinking_policy(plan, retry=False, retry_reason=None) == (
+        "high",
+        4096,
+        "simple",
+        2,
+    )
+    assert _analysis_item_thinking_policy(plan, retry=False, retry_reason="schema_validation") == (
+        "high",
+        4096,
+        "simple",
+        2,
+    )
+    assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
+        "max",
+        8192,
+        "simple",
+        3,
+    )
+
+
+def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplicates_warnings() -> (
+    None
+):
+    bundle = DeterministicAnalysisBundle.model_validate(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [
+                {
+                    "datasetId": "dataset-1",
+                    "datasetSha256": "a" * 64,
+                    "profileHash": "b" * 64,
+                    "periodRoles": ["current"],
+                    "metricCodes": ["income_total"],
+                    "field": "income",
+                    "fieldRef": "rj.income",
+                    "aggregation": "sum",
+                    "unit": "元",
+                    "formula": "sum(income)",
+                    "total": 10,
+                    "missingCount": 0,
+                    "zeroCount": 0,
+                    "negativeCount": 0,
+                    "warnings": ["期间不完整", "期间不完整"],
+                },
+                {
+                    "datasetId": "dataset-1",
+                    "datasetSha256": "a" * 64,
+                    "profileHash": "b" * 64,
+                    "periodRoles": ["current"],
+                    "metricCodes": ["income_count"],
+                    "field": "count",
+                    "fieldRef": "rj.count",
+                    "aggregation": "sum",
+                    "unit": "人次",
+                    "formula": "sum(count)",
+                    "total": 5,
+                    "missingCount": 0,
+                    "zeroCount": 0,
+                    "negativeCount": 0,
+                    "warnings": ["期间不完整", "字段缺失"],
+                },
+            ],
+            "warnings": ["期间不完整", "全局告警", "全局告警"],
+        }
+    )
+
+    projected = _model_facing_deterministic_facts(bundle)
+
+    assert all(
+        "datasetSha256" not in item and "profileHash" not in item for item in projected["metrics"]
+    )
+    assert projected["metrics"][0]["warnings"] == ["期间不完整"]
+    assert projected["metrics"][1]["warnings"] == ["字段缺失"]
+    assert projected["warnings"] == ["全局告警"]
+    assert bundle.metrics[0].dataset_sha256 == "a" * 64
+    assert bundle.metrics[0].warnings == ("期间不完整", "期间不完整")
 
 
 def test_instruction_component_bytes_reports_sizes_without_content() -> None:
