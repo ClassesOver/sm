@@ -987,6 +987,25 @@ def test_visualization_section_instructions_match_inspection_mode(mode: str) -> 
     assert "inspect_chart" not in "\n".join(build_report_agent_instructions(finalize_context))
 
 
+def test_visualization_vision_instructions_require_chart_repair_for_hard_defects() -> None:
+    context = RunContext(
+        run_id="run-visualization-repair",
+        session_id="session-visualization-repair",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
+                "reportingVisualInspectionMode": "vision",
+            }
+        },
+    )
+
+    instructions = "\n".join(build_report_agent_instructions(context))
+
+    assert "空白、截断、严重重叠或文字不可读" in instructions
+    assert "修正源脚本、重新生成并再次检查" in instructions
+
+
 def test_section_instructions_match_server_derived_claim_contract() -> None:
     context = RunContext(
         run_id="run-section-contract",
@@ -1042,6 +1061,36 @@ def test_visualization_instructions_require_readable_chart_layouts() -> None:
         assert phrase in instructions
 
 
+@pytest.mark.parametrize("mode", ["vision", "deterministic"])
+def test_visualization_section_instructions_keep_management_chart_selection_rules(
+    mode: str,
+) -> None:
+    context = RunContext(
+        run_id=f"run-visualization-selection-{mode}",
+        session_id=f"session-visualization-selection-{mode}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
+                "reportingVisualInspectionMode": mode,
+            }
+        },
+    )
+
+    instructions = "\n".join(build_report_agent_instructions(context))
+
+    for phrase in (
+        "根据批准提纲、管理问题和真实数据选择图表",
+        "收入域呈现规模、结构、趋势",
+        "工作量域不得用单项业务量代表全部工作量",
+        "预算域只有同版本、同期间才可比较",
+        "全成本域的单位成本必须有可靠分母",
+        "费控域不得用次均费用替代全成本",
+        "资金域不得把应收变化等同现金变化",
+    ):
+        assert phrase in instructions
+
+
 def test_visualization_skill_preserves_chart_generation_invariants() -> None:
     skill_path = REPORTING_BUILTIN_SKILLS_DIR / "report-visualization" / "SKILL.md"
     reference_dir = skill_path.parent / "references"
@@ -1065,9 +1114,41 @@ def test_visualization_skill_preserves_chart_generation_invariants() -> None:
         "taskFinished",
         "reference_only",
         "参考",
+        "同一 `chartId` 只服务一个正文块",
+        "去重后仍不唯一",
+        "系列数超过 4 且期间超过 6",
+        "TopN 不超过 8",
+        "图表与其解释块连续排布",
+        "结构化诊断",
+        "修正源脚本、重新生成并再次检查",
+        "普通警告和建议",
+        "瀑布图应明确起点、终点、正负方向和无法解释的剩余项",
+        "Pareto 图同时展示对象贡献和累计占比",
+        "样本过少时披露限制",
+        "色阶中心、缺失值和极端值处理",
+        "零点是否截断应与管理问题相符",
+        "不作为服务端审批条件",
     ):
         assert phrase in skill
     assert not reference_dir.exists()
+
+
+def test_visualization_skill_uses_six_domain_decision_rules_and_prevents_repeated_charts() -> None:
+    skill_path = REPORTING_BUILTIN_SKILLS_DIR / "report-visualization" / "SKILL.md"
+    skill = skill_path.read_text(encoding="utf-8")
+
+    for phrase in (
+        "收入：先用规模、结构与期间趋势回答",
+        "工作量：分别呈现门急诊、出院或服务结构",
+        "预算：只比较同版本、同期间的实际、预算和序时进度",
+        "全成本：呈现规模、结构、趋势和冲销",
+        "费控：呈现次均、药耗与高值耗材",
+        "资金：呈现现金余额、应收、回款和付款",
+        "同一指标、期间和粒度的同类趋势图不得重复",
+        "截断后相同",
+        "只保留能改变管理判断的最小图表集合",
+    ):
+        assert phrase in skill
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
