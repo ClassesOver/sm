@@ -145,6 +145,8 @@ class SandboxRegistry:
         else:
             assert isinstance(database, BaseDb)
             resolved_database = database
+        if resolved_database.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
+            raise ValueError("工作区注册表只支持 PostgreSQL。")
         self.db: BaseDb = resolved_database
         schema = getattr(self.db, "db_schema", None)
         self.metadata = MetaData(schema=schema)
@@ -171,15 +173,12 @@ class SandboxRegistry:
         if self._initialized:
             return
         with self._connect() as connection, connection.begin():
-            if connection.dialect.name == "postgresql":
-                if self.metadata.schema:
-                    connection.exec_driver_sql(
-                        f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
-                    )
-                connection.exec_driver_sql(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    ("agent-workspace:initialize",),
-                )
+            if self.metadata.schema:
+                connection.exec_driver_sql(f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"')
+            connection.exec_driver_sql(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("agent-workspace:initialize",),
+            )
             self.metadata.create_all(connection)
         self.db.upsert_schema_version(self.table.name, "1.0.0")
         self._initialized = True
@@ -198,21 +197,12 @@ class SandboxRegistry:
     def locked(self, value: str):
         self.ensure_initialized()
         with self._connect() as connection:
-            if connection.dialect.name == "sqlite":
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-                try:
-                    yield SandboxRegistryTransaction(connection, self.table)
-                    connection.commit()
-                except Exception:
-                    connection.rollback()
-                    raise
-            else:
-                with connection.begin():
-                    connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (value,),
-                    )
-                    yield SandboxRegistryTransaction(connection, self.table)
+            with connection.begin():
+                connection.exec_driver_sql(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (value,),
+                )
+                yield SandboxRegistryTransaction(connection, self.table)
 
 
 class SandboxRegistryTransaction:
@@ -255,6 +245,8 @@ class AsyncSandboxRegistry:
         else:
             assert isinstance(database, AsyncBaseDb)
             resolved_database = database
+        if resolved_database.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
+            raise ValueError("工作区注册表只支持 PostgreSQL。")
         self.db: AsyncBaseDb = resolved_database
         schema = getattr(self.db, "db_schema", None)
         self.metadata = MetaData(schema=schema)
@@ -286,15 +278,14 @@ class AsyncSandboxRegistry:
                 return
             async with self._connect() as connection:
                 async with connection.begin():
-                    if connection.dialect.name == "postgresql":
-                        if self.metadata.schema:
-                            await connection.exec_driver_sql(
-                                f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
-                            )
+                    if self.metadata.schema:
                         await connection.exec_driver_sql(
-                            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                            ("agent-workspace:initialize",),
+                            f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
                         )
+                    await connection.exec_driver_sql(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        ("agent-workspace:initialize",),
+                    )
                     await connection.run_sync(self.metadata.create_all)
             await self.db.upsert_schema_version(self.table.name, "1.0.0")
             self._initialized = True
@@ -315,11 +306,10 @@ class AsyncSandboxRegistry:
         await self.ensure_initialized()
         async with self._connect() as connection:
             async with connection.begin():
-                if connection.dialect.name == "postgresql":
-                    await connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (f"agent-workspace-generation:{base_label}",),
-                    )
+                await connection.exec_driver_sql(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"agent-workspace-generation:{base_label}",),
+                )
                 generation = (
                     await connection.execute(
                         select(self.generation_table.c.generation).where(
@@ -394,21 +384,12 @@ class AsyncSandboxRegistry:
     async def locked(self, value: str):
         await self.ensure_initialized()
         async with self._connect() as connection:
-            if connection.dialect.name == "sqlite":
-                await connection.exec_driver_sql("BEGIN IMMEDIATE")
-                try:
-                    yield AsyncSandboxRegistryTransaction(connection, self.table)
-                    await connection.commit()
-                except Exception:
-                    await connection.rollback()
-                    raise
-            else:
-                async with connection.begin():
-                    await connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (value,),
-                    )
-                    yield AsyncSandboxRegistryTransaction(connection, self.table)
+            async with connection.begin():
+                await connection.exec_driver_sql(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (value,),
+                )
+                yield AsyncSandboxRegistryTransaction(connection, self.table)
 
 
 class AsyncSandboxRegistryTransaction:

@@ -20,7 +20,7 @@ from smart_reporting.quality_warnings.repository import SqlAlchemyQualityWarning
 
 
 def test_sql_quality_warning_repository_requires_postgresql() -> None:
-    engine = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         SqlAlchemyQualityWarningRepository(engine)  # type: ignore[arg-type]

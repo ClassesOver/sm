@@ -1,4 +1,7 @@
+import os
+
 import pytest
+from sqlalchemy import text
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.task_execution.models import (
@@ -15,14 +18,26 @@ from smart_reporting.task_execution.repository import (
     CodingTaskRepository,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
-async def repository(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+async def repository():
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
+    database = create_agent_database(database_url)
     repository = CodingTaskRepository(database.async_db)
-    yield repository
-    await database.async_engine.dispose()
-    database.sync_engine.dispose()
+    await repository.initialize()
+    try:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
+        yield repository
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 def scope(run_id: str = "run") -> CodingScope:
@@ -119,6 +134,7 @@ async def test_acceptance_contract_is_persisted_and_immutable(repository):
             acceptance_contract=acceptance_contract,
         )
     assert conflict.value.code == "task_acceptance_contract_conflict"
+
 
 @pytest.mark.anyio
 async def test_lease_epoch_fences_old_owner_and_heartbeat_does_not_change_version(repository):

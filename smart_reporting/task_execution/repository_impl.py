@@ -181,11 +181,11 @@ def _execution_from_row(row: Any) -> CodingExecution:
 
 class CodingTaskRepository:
     def __init__(self, db: AsyncBaseDb):
+        if db.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
+            raise ValueError("任务执行仓储只支持 PostgreSQL。")
         self.db = db
-        dialect = db.db_engine.dialect.name  # type: ignore[attr-defined]
-        schema = CODING_DB_SCHEMA if dialect == "postgresql" else None
-        self._legacy_schema = getattr(db, "db_schema", None) if schema else None
-        self.metadata = MetaData(schema=schema)
+        self._legacy_schema = getattr(db, "db_schema", None)
+        self.metadata = MetaData(schema=CODING_DB_SCHEMA)
         self.schema_versions = Table(
             "agentos_coding_schema_versions",
             self.metadata,
@@ -345,12 +345,9 @@ class CodingTaskRepository:
             if self._initialized:
                 return
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-                if connection.dialect.name == "postgresql":
-                    await connection.execute(text("SELECT pg_advisory_xact_lock(1735812441)"))
-                    await connection.execute(
-                        text(f'CREATE SCHEMA IF NOT EXISTS "{CODING_DB_SCHEMA}"')
-                    )
-                    await self._move_legacy_schema(connection)
+                await connection.execute(text("SELECT pg_advisory_xact_lock(1735812441)"))
+                await connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{CODING_DB_SCHEMA}"'))
+                await self._move_legacy_schema(connection)
                 await connection.run_sync(self.metadata.create_all)
                 await self._migrate_schema(connection)
                 await connection.execute(delete(self.schema_versions))
@@ -427,21 +424,18 @@ class CodingTaskRepository:
         task_columns = await connection.run_sync(columns, self.tasks.name)
         run_columns = await connection.run_sync(columns, self.runs.name)
         execution_columns = await connection.run_sync(columns, self.executions.name)
-        dialect = connection.dialect.name
         identifier_preparer = connection.dialect.identifier_preparer
         qualified_tables = {
             table.name: identifier_preparer.format_table(table)
             for table in (self.tasks, self.runs, self.executions)
         }
-        json_type = "JSONB" if dialect == "postgresql" else "JSON"
-        timestamp_type = "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "DATETIME"
         additions = {
             self.tasks.name: (
                 ("state_version", "BIGINT NOT NULL DEFAULT 0"),
                 ("lease_epoch", "BIGINT NOT NULL DEFAULT 0"),
                 ("instruction_sequence", "BIGINT NOT NULL DEFAULT 0"),
-                ("acceptance_contract", json_type),
-                ("finish_receipt", json_type),
+                ("acceptance_contract", "JSONB"),
+                ("finish_receipt", "JSONB"),
                 ("predecessor_task_id", "VARCHAR(128)"),
             ),
             self.runs.name: (
@@ -449,13 +443,13 @@ class CodingTaskRepository:
                 ("outcome", "VARCHAR(32)"),
                 ("agno_status", "VARCHAR(32)"),
                 ("lease_epoch", "BIGINT NOT NULL DEFAULT 0"),
-                ("updated_at", timestamp_type),
+                ("updated_at", "TIMESTAMP WITH TIME ZONE"),
             ),
             self.executions.name: (
                 ("kind", "VARCHAR(32) NOT NULL DEFAULT 'terminal'"),
                 ("attempt_no", "INTEGER NOT NULL DEFAULT 0"),
                 ("lease_epoch", "BIGINT NOT NULL DEFAULT 0"),
-                ("operation_receipt", json_type),
+                ("operation_receipt", "JSONB"),
             ),
         }
         known = {

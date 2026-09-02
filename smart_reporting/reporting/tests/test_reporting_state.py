@@ -114,7 +114,7 @@ def make_submit_command(section_code: str) -> dict[str, object]:
 
 
 def test_repository_requires_postgresql() -> None:
-    database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
+    database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="mysql")))
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         ReportingStateRepository(database)  # type: ignore[arg-type]

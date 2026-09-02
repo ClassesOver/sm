@@ -414,21 +414,6 @@ def test_注册表直到首次使用才初始化(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_异步注册表连接只启动一次并正常归还(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'registry.db'}")
-    registry = AsyncSandboxRegistry(database.async_db)
-
-    try:
-        async with registry.locked("thread") as transaction:
-            await transaction.set("thread", "sandbox-1")
-        async with registry.locked("thread") as transaction:
-            assert await transaction.get("thread") == "sandbox-1"
-    finally:
-        await database.async_engine.dispose()
-        database.sync_engine.dispose()
-
-
-@pytest.mark.anyio
 async def test_基础工具支持搜索分段读取哈希精确补丁和媒体检查(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "src/app.py", b"alpha\nneedle here\nomega\n")

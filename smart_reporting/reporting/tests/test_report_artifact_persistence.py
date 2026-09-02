@@ -53,7 +53,7 @@ async def _content(stream) -> bytes:
 
 
 def test_sql_publication_repositories_require_postgresql() -> None:
-    engine = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
 
     for repository_type in (
         SqlAlchemyDownloadGrantRepository,

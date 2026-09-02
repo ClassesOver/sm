@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from agno.run import RunContext
 from agno.tools import Function
 from agno.tools.function import FunctionCall
 from daytona.common.errors import DaytonaNotFoundError
+from sqlalchemy import text
 
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
@@ -66,11 +68,19 @@ from smart_reporting.workspace import (
     WorkspaceToolkit,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 async def execution_runtime(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务执行集成测试。")
+    database = create_agent_database(database_url)
     repository = CodingTaskRepository(database.async_db)
+    await repository.initialize()
+    async with database.async_engine.begin() as connection:
+        await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
     synchronous = service(tmp_path)
     workspace = WorkspaceService(
         synchronous.secret,
@@ -109,6 +119,8 @@ async def execution_runtime(tmp_path):
         kernel=CodingExecutionKernel(workspace, repository),
         context=context,
     )
+    async with database.async_engine.begin() as connection:
+        await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
     await database.async_engine.dispose()
     database.sync_engine.dispose()
 

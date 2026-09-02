@@ -15,14 +15,26 @@ from smart_reporting.task_execution.repository import (
     utcnow,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
-async def repository(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+async def repository():
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
+    database = create_agent_database(database_url)
     current = CodingTaskRepository(database.async_db)
-    yield current, database
-    await database.async_engine.dispose()
-    database.sync_engine.dispose()
+    await current.initialize()
+    try:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(delete(current.tasks))
+        yield current, database
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(delete(current.tasks))
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 async def create_task(repository: CodingTaskRepository, run_id: str = "external-run"):
@@ -37,7 +49,7 @@ async def create_task(repository: CodingTaskRepository, run_id: str = "external-
 
 
 @pytest.mark.anyio
-async def test_sqlite_repository_initializes_schema_versions_and_supports_cas(repository):
+async def test_postgres_repository_initializes_schema_versions_and_supports_cas(repository):
     current, database = repository
     task = await create_task(current)
 
@@ -66,7 +78,6 @@ async def test_sqlite_repository_initializes_schema_versions_and_supports_cas(re
         )
         is None
     )
-
 
 
 @pytest.mark.anyio
@@ -112,6 +123,7 @@ async def test_execution_scope_terminal_receipt_and_output_are_persistent_and_bo
             sandbox_id=task.sandbox_id,
         )
     assert rejected.value.code == "execution_scope_mismatch"
+
 
 @pytest.mark.anyio
 async def test_complete_task_rejects_stale_mutation_and_closes_active_task(repository):
@@ -206,12 +218,11 @@ async def test_cleanup_removes_only_terminal_records_after_seven_days(repository
     assert await current.get_task(active.external_run_id) is not None
 
 
-@pytest.mark.integration
 @pytest.mark.anyio
 async def test_postgres_repository_uses_the_same_core_contract():
-    db_url = os.environ.get("AGENTOS_TEST_POSTGRES_URL")
+    db_url = os.environ.get("REPORTING_TEST_DB_URL")
     if not db_url:
-        pytest.skip("需要独立的 AGENTOS_TEST_POSTGRES_URL。")
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
     database = create_agent_database(db_url)
     assert database.backend == "postgresql"
     current = CodingTaskRepository(database.async_db)
