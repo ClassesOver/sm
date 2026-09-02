@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.agent import Agent
 from agno.exceptions import StopAgentRun
+from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.response import ModelResponse
 from agno.run import RunContext
@@ -2982,45 +2983,127 @@ def test_report_section_requests_disable_thinking_without_mutating_worker() -> N
     assert model.reasoning_effort == "high"
 
 
-def test_analysis_last_model_request_exposes_only_terminal_tool() -> None:
-    model = ReportWorkerOpenAIChat(
-        id="deepseek-v4-flash-0731",
-        api_key="test",
-        reasoning_effort="high",
-        extra_body={"enable_thinking": True, "thinking_budget": 8192},
-    )
+@pytest.mark.anyio
+async def test_analysis_request_limit_applies_inside_agno_tool_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_requests: list[tuple[list[str], str | dict[str, Any] | None]] = []
+
+    async def read_file(path: str) -> dict[str, Any]:
+        return {"ok": True, "path": path, "content": "{}"}
+
+    async def create_analysis_file(path: str, content: str) -> dict[str, Any]:
+        _ = content
+        return {"ok": True, "artifacts": [{"path": path}]}
+
+    async def terminal(command: str) -> dict[str, Any]:
+        _ = command
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output": "evidence/analysis_001/composition.json\n",
+        }
+
+    async def complete_analysis_item() -> dict[str, bool]:
+        return {"ok": True}
+
+    calls = [
+        ("read_file", {"path": "facts/analysis_001.json"}),
+        (
+            "create_analysis_file",
+            {
+                "path": "evidence/analysis_001/analyze.py",
+                "content": "print('evidence/analysis_001/composition.json')\n",
+            },
+        ),
+        ("terminal", {"command": "python3 evidence/analysis_001/analyze.py"}),
+        ("read_file", {"path": "evidence/analysis_001/composition.json"}),
+        ("complete_analysis_item", {}),
+    ]
+
+    async def provider_stream(
+        _model: ProjectedOpenAIChat,
+        _messages: list[Message],
+        *_args: Any,
+        **kwargs: Any,
+    ):
+        tools = kwargs.get("tools")
+        names = sorted(
+            item["function"]["name"]
+            for item in tools
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+        )
+        provider_requests.append((names, kwargs.get("tool_choice")))
+        round_no = len(provider_requests)
+        tool_name, arguments = calls[round_no - 1]
+        yield ModelResponse(
+            tool_calls=[
+                ChoiceDeltaToolCall(
+                    index=0,
+                    id=f"call-{round_no}",
+                    type="function",
+                    function=ChoiceDeltaToolCallFunction(
+                        name=tool_name,
+                        arguments=json.dumps(arguments, ensure_ascii=False),
+                    ),
+                )
+            ]
+        )
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke_stream", provider_stream)
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     context = RunContext(
-        run_id="run-analysis-request-budget",
-        session_id="session-analysis-request-budget",
+        run_id="run-analysis-agno-loop",
+        session_id="session-analysis-agno-loop",
         session_state={},
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
-                "externalRunId": "analysis-request-budget",
+                "externalRunId": "analysis-agno-loop",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
                 REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
-                REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "high",
-                REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY: 2,
+                REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY: 3,
             }
         },
     )
     tools = [
-        {"type": "function", "function": {"name": "query_analysis_facts"}},
-        {"type": "function", "function": {"name": "complete_analysis_item"}},
+        Function(name="read_file", entrypoint=read_file),
+        Function(name="create_analysis_file", entrypoint=create_analysis_file),
+        Function(name="terminal", entrypoint=terminal),
+        Function(
+            name="complete_analysis_item",
+            entrypoint=complete_analysis_item,
+            stop_after_tool_call=True,
+        ),
     ]
+    for function in tools:
+        function.tool_hooks = [normalize_reporting_tool_arguments]
+        function._run_context = context
 
     with bind_reporting_run_context(context):
-        model._phase_request_model([])
-        first = model._phase_request_kwargs({"tools": tools})
-        model._phase_request_model([])
-        second = model._phase_request_kwargs({"tools": tools})
-        projected = _phase_filtered_report_tools(
-            [Message(role="user", content='{"phase":"analysis"}')], tools
-        )
+        responses = [
+            response
+            async for response in Model.aresponse_stream(
+                model,
+                [Message(role="user", content="execute")],
+                tools=tools,
+                tool_choice="auto",
+            )
+        ]
 
-    assert first == {"tools": tools}
-    assert second["tool_choice"] == "required"
-    assert [item["function"]["name"] for item in second["tools"]] == ["complete_analysis_item"]
-    assert [item["function"]["name"] for item in projected] == ["complete_analysis_item"]
+    assert responses
+    assert provider_requests == [
+        (
+            ["complete_analysis_item", "create_analysis_file", "read_file", "terminal"],
+            "auto",
+        ),
+        (
+            ["complete_analysis_item", "create_analysis_file", "read_file", "terminal"],
+            "auto",
+        ),
+        (["terminal"], "required"),
+        (["read_file"], "required"),
+        (["complete_analysis_item"], "required"),
+    ]
 
 
 @pytest.mark.anyio

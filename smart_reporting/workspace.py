@@ -1137,35 +1137,6 @@ class WorkspaceService:
             )
         return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
 
-    async def alist_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
-        relative, remote = self.normalize_path(path)
-        async with self._async_client() as client:
-            sandbox = await self._asandbox_for(client, thread)
-            await self._avalidate_existing_path(sandbox, relative)
-            entries = await sandbox.fs.list_files(remote)
-        if len(entries) > MAX_LIST_ENTRIES:
-            raise WorkspaceError(
-                f"工作区目录包含超过 {MAX_LIST_ENTRIES} 个项目，请进入子目录后重试。"
-            )
-        result = []
-        for entry in entries:
-            if entry.name in (".", "..") or self._is_symlink(entry):
-                continue
-            child = f"{relative}/{entry.name}".strip("/")
-            result.append(
-                {
-                    "path": child,
-                    "name": entry.name,
-                    "isDirectory": bool(entry.is_dir),
-                    "size": int(entry.size or 0),
-                    "mimeType": False
-                    if entry.is_dir
-                    else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
-                    "modifiedAt": entry.modified_at or entry.mod_time,
-                }
-            )
-        return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
-
     @staticmethod
     def _validate_content(content: bytes):
         if not isinstance(content, bytes):

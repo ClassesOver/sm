@@ -2101,17 +2101,33 @@ def _with_reporting_durable_identities(messages: list[Message]) -> list[Message]
 def _phase_filtered_model_call(
     messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    updated_args = args
+    # Agno 在一次 response/aresponse 调用内部自行循环“模型请求 -> 工具结果 ->
+    # 下一次模型请求”，且进入循环前只格式化一次工具。这里位于每次真实 provider
+    # invoke 的公共边界，必须在此计数并重新投影；放在外层 response 边界只会记录 1 次，
+    # 无法约束同一 Agno run 内的后续请求。
+    _reserve_analysis_model_request(current_reporting_run_context())
+    positional = list(args)
     updated_kwargs = dict(kwargs)
     if "tools" in updated_kwargs:
         updated_kwargs["tools"] = _phase_filtered_report_tools(
             messages, updated_kwargs.get("tools")
         )
     elif len(args) >= 3:
-        positional = list(args)
         positional[2] = _phase_filtered_report_tools(messages, positional[2])
-        updated_args = tuple(positional)
-    return updated_args, updated_kwargs
+    if _analysis_model_request_must_finish(current_reporting_run_context()):
+        tools = (
+            updated_kwargs.get("tools")
+            if "tools" in updated_kwargs
+            else positional[2]
+            if len(positional) >= 3
+            else None
+        )
+        if any(_report_model_tool_name(tool) == "complete_analysis_item" for tool in tools or []):
+            if "tool_choice" in updated_kwargs or len(positional) < 4:
+                updated_kwargs["tool_choice"] = "required"
+            else:
+                positional[3] = "required"
+    return tuple(positional), updated_kwargs
 
 
 class ReportingOpenAIChat(ProjectedOpenAIChat):
@@ -2122,7 +2138,6 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
     def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
         """为单次请求生成隔离配置，禁止并发 Section 修改共享 Worker 模型。"""
 
-        _reserve_analysis_model_request(current_reporting_run_context())
         base_profile = reporting_thinking_profile_from_model(self)
         profile = base_profile
         previous_error = self.report_run_error()
