@@ -93,11 +93,6 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
         runs_limit=None,
     ):
         started_at = perf_counter()
-        logger.info(
-            "agent_session_read_started backend=postgresql session_type={} user_id_present={}",
-            _session_type_name(session_type),
-            str(user_id is not None).lower(),
-        )
         try:
             result = await super().get_session(
                 session_id=session_id,
@@ -127,11 +122,6 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
     async def upsert_session(self, session, deserialize=True):
         started_at = perf_counter()
         session_type = type(session).__name__
-        logger.info(
-            "agent_session_write_started backend=postgresql session_type={} run_count={}",
-            session_type,
-            len(getattr(session, "runs", None) or []),
-        )
         try:
             clear_terminal_session_reasoning(session)
             result = await super().upsert_session(session, deserialize=deserialize)
