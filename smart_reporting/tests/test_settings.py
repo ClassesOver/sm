@@ -279,14 +279,22 @@ def test_context_budget_rejects_invalid_reserve():
         )
 
 
-def test_environment_precedes_file_and_file_populates_missing_values(tmp_path):
+def test_model_tiers_ignore_obsolete_model_variable_and_prefer_process_environment(tmp_path):
     env_file = tmp_path / "agent.env"
-    env_file.write_text("MODEL=file-model\nOPENAI_API_KEY=file-key\n", encoding="utf-8")
-    environ = {"AGENT_ENV_FILE": str(env_file), "MODEL": "process-model"}
+    env_file.write_text(
+        "MODEL=obsolete-file-model\nAGENT_MODEL_STANDARD=file-standard\nOPENAI_API_KEY=file-key\n",
+        encoding="utf-8",
+    )
+    environ = {
+        "AGENT_ENV_FILE": str(env_file),
+        "MODEL": "obsolete-process-model",
+        "AGENT_MODEL_STANDARD": "process-standard",
+    }
 
     current = AgentSettings.from_environment(environ)
 
-    assert current.model_id == "process-model"
+    assert not hasattr(current, "model_id")
+    assert current.model_standard_id == "process-standard"
     assert current.openai_api_key == "file-key"
     assert environ["OPENAI_API_KEY"] == "file-key"
 
