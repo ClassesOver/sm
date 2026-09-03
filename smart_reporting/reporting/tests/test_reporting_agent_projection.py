@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import pytest
+from agno.models.message import Message
 from agno.run import RunContext
 
+from smart_reporting.reporting.agent import _phase_filtered_report_messages
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
 from smart_reporting.reporting.instructions import build_report_agent_instructions
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    bind_reporting_run_context,
     reporting_task_kind_from_acceptance_contract,
     reporting_task_kind_from_run_context,
 )
@@ -70,8 +73,6 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
     assert visualization_tools is not None
     assert visualization_tools == frozenset(
         {
-            "get_skill_instructions",
-            "get_skill_reference",
             "inspect_chart",
             "process",
             "read_file",
@@ -83,3 +84,17 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
             "overwrite_analysis_file",
         }
     )
+
+
+def test_visualization_projection_removes_skill_system_message() -> None:
+    messages = [
+        Message(
+            role="system",
+            content="before\n<skills_system>removed skills</skills_system>\nafter",
+        )
+    ]
+
+    with bind_reporting_run_context(_context("analysis", "visualization_section")):
+        projected = _phase_filtered_report_messages(messages)
+
+    assert projected[0].content == "before\nafter"

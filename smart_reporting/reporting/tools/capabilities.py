@@ -21,8 +21,6 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
 # 不再暴露全局登记/冻结 worker，最终分析产物由服务端确定性汇总。
 REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
     {
-        "get_skill_instructions",
-        "get_skill_reference",
         "inspect_chart",
         "process",
         "read_file",

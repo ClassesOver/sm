@@ -25,8 +25,6 @@ def test_visualization_worker_exposes_only_its_section_toolset() -> None:
     tools = tools_for_task("analysis", "visualization_section")
     assert tools == frozenset(
         {
-            "get_skill_instructions",
-            "get_skill_reference",
             "inspect_chart",
             "process",
             "read_file",

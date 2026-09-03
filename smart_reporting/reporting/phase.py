@@ -72,8 +72,6 @@ REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
 REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
 REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
     {
-        "get_skill_instructions",
-        "get_skill_reference",
         "query_analysis_context",
         "query_analysis_facts",
         "read_file",

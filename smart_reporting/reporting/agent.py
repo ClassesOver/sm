@@ -1884,11 +1884,7 @@ def _report_worker_tools_cache_key(run_context: RunContext) -> str:
 
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
     phase = _reporting_phase_from_messages(messages)
-    task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
-    # 单项分析、可视化汇总和章节阶段都不使用 Skill；只有章节制图 worker 保留
-    # Agno Skill 提示，因为它需要按需读取图表生成规范。
-    if phase == "analysis" and task_kind == "visualization_section":
-        return messages
+    # Reporting 各阶段的约束均由静态指令提供，不向 Worker 投影通用 Skill 提示。
     if phase not in {"analysis", "section"}:
         return messages
     projected: list[Message] | None = None
@@ -2487,9 +2483,8 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
             configured_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
         phase = _reporting_phase_from_messages(messages)
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
-        # Visualization 的首个请求已携带全局冻结 facts，随后还必须保留已读取的 Skill
-        # 回合才能生成脚本。继续套用单项分析的 128K 上限会在 Skill 返回后立即 rebase，
-        # 只留下可重载哈希并诱发重复读取；因此它直接使用 Reporting 已配置的输入预算。
+        # Visualization 的首个请求已携带全局冻结 facts，后续还需要保留脚本执行和图片检查
+        # 回执。继续套用单项分析上限可能过早 rebase，因此直接使用 Reporting 配置的输入预算。
         phase_cap = (
             REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
             if phase == "analysis"
