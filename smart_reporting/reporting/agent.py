@@ -213,7 +213,13 @@ def _is_terminal_reporting_error(error: Any) -> bool:
         isinstance(error, ReportingError)
         and isinstance(error.details, dict)
         and error.details.get("terminalReason")
-        in {"tool_no_progress", "visualization_exploration_budget_exhausted"}
+        in {
+            "tool_no_progress",
+            "visualization_exploration_budget_exhausted",
+            # 补丁拒绝说明当前模型上下文中的文件内容、SHA 或 diff 已不可复用；
+            # 必须让 Task runner 结束当前 run 并创建 fresh attempt，不能继续同一消息历史。
+            "analysis_patch_rejected",
+        }
     )
 
 

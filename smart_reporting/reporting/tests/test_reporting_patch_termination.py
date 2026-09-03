@@ -6,7 +6,11 @@ import pytest
 from agno.exceptions import StopAgentRun
 from agno.run import RunContext
 
-from smart_reporting.reporting.agent import normalize_reporting_tool_arguments
+from smart_reporting.reporting.agent import (
+    _is_terminal_reporting_error,
+    normalize_reporting_tool_arguments,
+)
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
@@ -80,3 +84,13 @@ async def test_non_patch_rejection_keeps_existing_feedback_loop() -> None:
     )
 
     assert result["code"] == "tool_no_progress"
+
+
+def test_rejected_analysis_patch_is_a_terminal_reporting_error() -> None:
+    error = ReportingError(
+        "report_analysis_write_intent_invalid",
+        "标准 unified diff 语法无效。",
+        details={"terminalReason": "analysis_patch_rejected"},
+    )
+
+    assert _is_terminal_reporting_error(error) is True
