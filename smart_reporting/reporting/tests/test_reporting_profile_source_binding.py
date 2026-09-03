@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from smart_reporting.reporting.profile import (
+    Capability,
+    CapabilitySet,
     bind_reporting_profile_sources,
+    build_outline_shape_view,
     load_configured_reporting_profiles,
     resolve_reporting_profile,
 )
@@ -133,3 +136,26 @@ def test_ruijin_profile覆盖项目预算三个权威金额指标() -> None:
     }
     assert {code: metrics[code].field_ref for code in expected} == expected
     assert all(metrics[code].aggregation == "sum" for code in expected)
+
+
+def test_提纲上下文只包含可用能力() -> None:
+    registry = load_configured_reporting_profiles(Path("deploy/agentos/reporting"))
+    profile = bind_reporting_profile_sources(
+        resolve_reporting_profile(registry, "ruijin"), {"rj": "rj"}
+    )
+    capabilities = CapabilitySet(
+        effectiveProfileHash=profile.effective_profile_hash,
+        capabilities=(
+            Capability(code="month", kind="dimension", available=True),
+            Capability(
+                code="year",
+                kind="dimension",
+                available=False,
+                reasons=("报告期间没有数据: rj.rj.dwd_project_budget_view",),
+            ),
+        ),
+    )
+
+    context = build_outline_shape_view(profile, capabilities, (), (), ())
+
+    assert [item["code"] for item in context["capabilities"]] == ["month"]

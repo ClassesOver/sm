@@ -1,6 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 
+from smart_reporting.quality_warnings import QualityAuditCollector
+from smart_reporting.reporting.delivery.artifacts_v1 import Citation
 from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+from smart_reporting.reporting.hospital_operation.detailed_analysis import DetailedAnalysisPlan
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisArtifact,
@@ -18,7 +23,11 @@ from smart_reporting.reporting.workflow.checkpoint import (
     SectionClaim,
     read_analysis_artifact,
 )
-from smart_reporting.reporting.workflow.runtime.publication import evaluate_publication_semantics
+from smart_reporting.reporting.workflow.runtime.publication import (
+    _publication_warning_notice,
+    evaluate_publication_semantics,
+)
+from smart_reporting.reporting.workflow.runtime.sections import RuntimeSectionsMixin
 
 
 def test_non_v1_artifact_fails_closed() -> None:
@@ -317,6 +326,132 @@ def test_section_block_claim_reference_must_exist() -> None:
 
 def _identity(path: str) -> FileIdentity:
     return FileIdentity(path=path, size=1, sha256="0" * 64)
+
+
+def test_section_work_item_uses_charts_from_section_scoped_artifact() -> None:
+    chart = AnalysisChart(
+        chartId="chart-1",
+        sourceFile=_identity("analysis/charts/income.png"),
+        title="收入趋势",
+        altText="收入趋势图",
+        citationIds=("c1",),
+        metricCodes=("income_total",),
+        currentPeriod="2026-01",
+        comparisonType="none",
+        sourceDatasetId="dataset-1",
+        aggregationGrain="month",
+        visualInspectionReceipt=ChartVisualInspectionReceipt(
+            sourcePath="analysis/charts/income.png",
+            sha256="0" * 64,
+            inspectionMode="deterministic",
+            visualReviewStatus="not_run",
+            inspectorId="deterministic-raster-inspector-v1",
+            modelId=None,
+            reviewed=True,
+            requiresRevision=False,
+        ),
+    )
+    artifact = AnalysisArtifact(
+        reportBrief=ReportBrief(
+            objective="分析收入",
+            executiveSummary="收入摘要",
+            managementQuestions=("收入如何？",),
+        ),
+        evidenceManifest=AnalysisEvidenceManifest(
+            evidence=(
+                AnalysisEvidence(
+                    analysisId="analysis_001",
+                    summary="冻结证据",
+                    datasetIds=("dataset-1",),
+                    evidenceFiles=(_identity("analysis/evidence.json"),),
+                    citationIds=("c1",),
+                    metrics=("indicator_value",),
+                    chartIds=(),
+                ),
+            ),
+            metricDefinitions=(
+                MetricDefinition(
+                    code="income_total",
+                    name="收入",
+                    definition="收入合计",
+                    unit="元",
+                    periodBasis="2026-01",
+                ),
+            ),
+            charts=(chart,),
+            datasetSemantics=(
+                AnalysisDatasetSemantics(
+                    datasetId="dataset-1",
+                    rowGrain="record",
+                    duplicateResolution="not_applicable",
+                ),
+            ),
+        ),
+    )
+    plan = DetailedAnalysisPlan.model_validate(
+        {
+            "analyses": [
+                {
+                    "analysisId": "analysis_001",
+                    "domain": "hospital_operation",
+                    "managementQuestion": "收入如何？",
+                    "primaryMetricFamily": "income",
+                    "datasetIds": ["dataset-1"],
+                    "fields": ["indicator_value"],
+                    "metrics": ["indicator_value"],
+                    "periods": ["2026-01"],
+                    "actions": ["sum"],
+                    "evidenceSummary": "收入证据",
+                    "suggestedSection": "section_001",
+                    "completionConditions": ["给出收入结论"],
+                }
+            ],
+            "datasetIds": ["dataset-1"],
+        }
+    )
+
+    work_item = RuntimeSectionsMixin._build_section_work_item(
+        SimpleNamespace(
+            code="section_001",
+            section_number="1",
+            title="收入分析",
+            focus=(),
+            analysis_ids=("analysis_001",),
+        ),
+        detailed_plan=plan,
+        analysis_artifact=artifact,
+        citation_bindings=(
+            Citation(
+                citationId="c1",
+                datasetId="dataset-1",
+                requirementId="r1",
+                snapshotHash="1" * 64,
+            ),
+        ),
+    )
+
+    assert [item.chart_id for item in work_item.charts] == ["chart-1"]
+    assert [item.code for item in work_item.metric_definitions] == ["income_total"]
+
+
+def test_unused_chart_warning_uses_report_audit_subject() -> None:
+    notice = _publication_warning_notice(
+        {
+            "code": "unused_chart_excluded",
+            "message": "未被正文引用的图表已从发布包排除。",
+            "chartIds": ["chart-1"],
+        },
+        run_id="report-1",
+        source_phase="publication",
+    )
+    audit = QualityAuditCollector(report_run_id="report-1", revision=1)
+    audit.add(notice)
+
+    result = audit.build()
+
+    assert notice.subject_type == "report"
+    assert result.total == 1
+    assert result.by_disposition == {"quality_warning": 1}
 
 
 def _semantic_inputs(*, claim: SectionClaim, duplicate_resolution: str = "not_applicable"):
