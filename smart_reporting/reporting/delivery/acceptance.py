@@ -1,54 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from agno.skills import LocalSkills, Skills
-from agno.tools.function import Function
-
-from ..phase import (
-    current_reporting_run_context,
-    reporting_phase_from_run_context,
-    reporting_task_kind_from_run_context,
-)
 from .artifacts_v1 import ReportArtifactManifest
 
 REPORT_PHASE_CONTRACT_ID = "reporting-phase:contract"
-REPORTING_BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "builtin_skills"
-
-
-class ReportingSkills(Skills):
-    """按受信 Reporting Task 分层暴露 Skill 元数据和访问工具。
-
-    Agno 会在每次构造系统消息和工具列表时直接调用 ``Skills`` 方法，无法把
-    ``RunContext`` 作为参数传入。这里读取当前 Reporting 绑定的 ContextVar：只有
-    章节制图阶段需要按需读取规范，其余阶段保持 Skill 不可见，避免全局 Skill
-    提示或工具在模型 schema 中泄露到错误的生命周期。
-    """
-
-    @staticmethod
-    def _enabled_for_current_task() -> bool:
-        run_context = current_reporting_run_context()
-        return (
-            reporting_phase_from_run_context(run_context) == "analysis"
-            and reporting_task_kind_from_run_context(run_context) == "visualization_section"
-        )
-
-    def get_system_prompt_snippet(self) -> str:
-        if not self._enabled_for_current_task():
-            return ""
-        return super().get_system_prompt_snippet()
-
-    def get_tools(self) -> list[Function]:
-        if not self._enabled_for_current_task():
-            return []
-        return super().get_tools()
-
-
-def load_reporting_skills(base_skills: Skills | None) -> Skills:
-    loaders = list(base_skills.loaders) if base_skills is not None else []
-    loaders.append(LocalSkills(str(REPORTING_BUILTIN_SKILLS_DIR)))
-    return ReportingSkills(loaders=loaders)
 
 
 def build_report_phase_acceptance_contract(

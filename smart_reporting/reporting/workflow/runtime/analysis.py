@@ -752,6 +752,9 @@ class RuntimeAnalysisMixin:
             analysis_id = instruction.get("analysisId")
             if not isinstance(analysis_id, str):
                 raise ReportingError("report_analysis_item_unknown", "章节缺少有效 analysisId。")
+            section_goal = instruction.get("sectionGoal")
+            if not isinstance(section_goal, Mapping):
+                raise ReportingError("report_analysis_item_unknown", "章节缺少有效 sectionGoal。")
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
             updated = await self._run_analysis_item_task(
                 run_context,
@@ -766,6 +769,7 @@ class RuntimeAnalysisMixin:
                 analysis_context_file=analysis_context_file,
                 fact_files=fact_files,
                 analysis_id=analysis_id,
+                section_goal=section_goal,
                 retry_reason=("report_revision_feedback" if feedback else None),
                 feedback=feedback,
                 rework_request=None,
@@ -870,7 +874,6 @@ class RuntimeAnalysisMixin:
             input={"reportGoal": self._envelope(run_context).report_goal},
             run_id=str(run_context.run_id or scope["externalRunId"]),
             session_id=scope["threadId"],
-            stream=False,
         )
         content = getattr(output, "content", None)
         if not isinstance(content, dict):
@@ -1559,6 +1562,7 @@ class RuntimeAnalysisMixin:
         analysis_context_file: FileIdentity,
         fact_files: Mapping[str, FileIdentity],
         analysis_id: str,
+        section_goal: Mapping[str, Any],
         retry_reason: str | None,
         feedback: str | None,
         rework_request: AnalysisReworkRequest | None,
@@ -1670,6 +1674,7 @@ class RuntimeAnalysisMixin:
                 "phase": "analysis",
                 "taskKind": "analysis_item",
                 "reportGoal": self._envelope(run_context).report_goal,
+                "sectionGoal": dict(section_goal),
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
                 "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),

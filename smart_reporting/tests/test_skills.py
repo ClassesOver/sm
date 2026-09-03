@@ -5,13 +5,6 @@ import pytest
 from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 
-from smart_reporting.reporting.delivery.acceptance import load_reporting_skills
-from smart_reporting.reporting.phase import (
-    REPORTING_PHASE_DEPENDENCY_KEY,
-    REPORTING_TASK_DEPENDENCY,
-    REPORTING_TASK_KIND_DEPENDENCY_KEY,
-    bind_reporting_run_context,
-)
 from smart_reporting.skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -59,104 +52,6 @@ def test_load_skills_without_path_uses_no_loaders(monkeypatch):
     assert isinstance(skills, Skills)
     assert skills.loaders == []
     assert skills.get_all_skills() == []
-
-
-def test_load_reporting_skills_includes_sandbox_environment_without_tool_contract():
-    skills = load_reporting_skills(None)
-
-    assert {skill.name for skill in skills.get_all_skills()} == {
-        "report-visualization",
-        "sandbox-tooling",
-    }
-    skill = next(skill for skill in skills.get_all_skills() if skill.name == "sandbox-tooling")
-    assert "Daytona" in skill.description
-    visualization_context = RunContext(
-        run_id="run-visualization-section",
-        session_id="session-visualization-section",
-        dependencies={
-            REPORTING_TASK_DEPENDENCY: {
-                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-            }
-        },
-    )
-    with bind_reporting_run_context(visualization_context):
-        assert {tool.name for tool in skills.get_tools()} == {
-            "get_skill_instructions",
-            "get_skill_reference",
-            "get_skill_script",
-        }
-
-    instructions = skill.instructions
-    assert "sandbox-tools-20260723" not in instructions
-    assert "`rg`" in instructions
-    assert "LibreOffice" in instructions
-    assert "pytest" in instructions
-    assert "network_block_all" in instructions
-    assert "当前 Task 实际注册的工具" in instructions
-    assert "create_analysis_file" in instructions
-    assert "overwrite_analysis_file" in instructions
-    assert "仅轮询同一 Task 启动的运行进程" in instructions
-    for retired_tool_name in (
-        "create_files",
-        "overwrite_file",
-        "replace_text",
-        "apply_patch",
-    ):
-        assert retired_tool_name not in instructions
-    assert "image-source" not in instructions
-    assert "镜像能力的权威来源" not in instructions
-    assert "co" + "dex" not in instructions.lower()
-
-
-@pytest.mark.parametrize(
-    "phase_and_task_kind",
-    [("analysis", "analysis_item"), ("section", "section")],
-)
-def test_reporting_skills_are_hidden_outside_visualization_section(phase_and_task_kind):
-    phase, task_kind = phase_and_task_kind
-    skills = load_reporting_skills(None)
-    context = RunContext(
-        run_id=f"run-{task_kind}",
-        session_id=f"session-{task_kind}",
-        dependencies={
-            REPORTING_TASK_DEPENDENCY: {
-                REPORTING_PHASE_DEPENDENCY_KEY: phase,
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
-            }
-        },
-    )
-
-    with bind_reporting_run_context(context):
-        assert skills.get_system_prompt_snippet() == ""
-        assert skills.get_tools() == []
-
-
-def test_reporting_skills_follow_the_bound_reporting_task_layer():
-    skills = load_reporting_skills(None)
-    assert skills.get_system_prompt_snippet() == ""
-    assert skills.get_tools() == []
-
-    def context(task_kind: str) -> RunContext:
-        phase = "section" if task_kind == "section" else "analysis"
-        return RunContext(
-            run_id=f"run-{task_kind}",
-            session_id=f"session-{task_kind}",
-            dependencies={
-                REPORTING_TASK_DEPENDENCY: {
-                    REPORTING_PHASE_DEPENDENCY_KEY: phase,
-                    REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
-                }
-            },
-        )
-
-    with bind_reporting_run_context(context("visualization_section")):
-        assert "<skills_system>" in skills.get_system_prompt_snippet()
-        assert skills.get_tools()
-
-    with bind_reporting_run_context(context("analysis_item")):
-        assert skills.get_system_prompt_snippet() == ""
-        assert skills.get_tools() == []
 
 
 @pytest.mark.anyio

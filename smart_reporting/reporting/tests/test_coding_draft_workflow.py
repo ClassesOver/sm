@@ -57,10 +57,11 @@ async def test_coding_workflow_is_agno_workflow_and_injects_goals() -> None:
     )
 
     assert isinstance(workflow, Workflow)
-    await workflow.sections[0].run(RunContext(run_id="run-1", session_id="session-1"))
+    await workflow.sections[0].execute_section(RunContext(run_id="run-1", session_id="session-1"))
     assert [kind for kind, _ in seen] == ["analysis", "visualization", "draft"]
     assert all(item[1]["reportGoal"] == "分析收入变化原因" for item in seen)
     assert all(item[1]["sectionGoal"]["sectionCode"] == "section_001" for item in seen)
+    assert all(item[1]["sectionGoal"]["title"] == "规模" for item in seen)
     assert seen[0][1]["analysisId"] == "a1"
     assert seen[-1][1]["visualizationSubmitted"] is True
 
@@ -79,7 +80,7 @@ async def test_failed_analysis_blocks_visualization_and_draft() -> None:
     )
 
     with pytest.raises(RuntimeError, match="分析项 a1 执行失败"):
-        await workflow.run(RunContext(run_id="run-1", session_id="session-1"))
+        await workflow.execute_section(RunContext(run_id="run-1", session_id="session-1"))
     visualization.assert_not_awaited()
     draft.assert_not_awaited()
 
@@ -156,6 +157,32 @@ async def test_parallel_section_failure_stops_following_batches() -> None:
     with pytest.raises(RuntimeError, match="Agno 章节步骤执行失败"):
         await workflow._run_sections(RunContext(run_id="run-1", session_id="session-1"))
     assert started == ["section_001"]
+
+
+@pytest.mark.anyio
+async def test_coding_workflow_arun_uses_agno_public_entrypoint() -> None:
+    workflow = CodingAnalysisAndDraftWorkflow(
+        report_goal="目标",
+        sections=[{"sectionCode": "section_001", "analysisIds": ["a1"]}],
+        run_analysis=AsyncMock(return_value=_ok("analysis")),
+        submit_visualization=AsyncMock(return_value=_ok("visualization")),
+        draft_section=AsyncMock(return_value=_ok("draft")),
+    )
+
+    output = await workflow.arun(
+        input={"reportGoal": "目标"}, run_id="run-1", session_id="session-1"
+    )
+
+    assert output.content == {
+        "sections": [
+            {
+                "sectionCode": "section_001",
+                "analysisCount": 1,
+                "visualizationSubmitted": True,
+                "draftCompleted": True,
+            }
+        ]
+    }
 
 
 def test_parallel_plan_uses_agno_parallel_container() -> None:

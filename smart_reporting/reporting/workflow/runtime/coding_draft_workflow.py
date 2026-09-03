@@ -92,7 +92,7 @@ class CodingDraftWorkflow(Workflow):
             self._analysis_outputs[analysis_id] = output
         return output
 
-    async def run(self, run_context: RunContext) -> CodingDraftWorkflowResult:
+    async def execute_section(self, run_context: RunContext) -> CodingDraftWorkflowResult:
         self._analysis_outputs = {}
         try:
             analysis_plan = build_coding_draft_steps(self, run_context)
@@ -184,7 +184,9 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
                 Step(
                     step_id="coding-sections",
                     name="逐章分析、可视化与成稿",
-                    executor=self._execute,
+                    # Agno 在执行 Step 时按参数名注入当前 RunContext；其公开
+                    # StepExecutor 类型尚未描述该运行时注入，故仅在此处豁免。
+                    executor=self._execute_sections,  # type: ignore[arg-type]
                     max_retries=0,
                 )
             ],
@@ -200,9 +202,9 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
             results: list[CodingDraftWorkflowResult] = []
 
             async def execute_section(
-                _input: Any, section: CodingDraftWorkflow, **_kwargs: Any
+                _input: StepInput, section: CodingDraftWorkflow, **_kwargs: Any
             ) -> StepOutput:
-                result = await section.run(run_context)
+                result = await section.execute_section(run_context)
                 results.append(result)
                 return StepOutput(content=result)
 
@@ -210,7 +212,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
             for section in batch:
 
                 async def run_section(
-                    value: Any, section: CodingDraftWorkflow = section, **kwargs: Any
+                    value: StepInput, section: CodingDraftWorkflow = section, **kwargs: Any
                 ) -> StepOutput:
                     return await execute_section(value, section, **kwargs)
 
@@ -223,7 +225,8 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
                     )
                 )
             container: Steps | Parallel = (
-                Parallel(*steps, name="coding-sections-batch")
+                # Agno 3.0.0 运行时要求展开列表；其类型标注与实现不一致。
+                Parallel(*steps, name="coding-sections-batch")  # type: ignore[arg-type]
                 if parallel
                 else Steps(name="coding-sections", steps=steps)
             )
@@ -260,9 +263,11 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
             results.extend(await execute_batch(batch, parallel=True))
         # Parallel completion order is nondeterministic; output remains outline order.
         by_code = {result.section_code: result for result in results}
-        return tuple(by_code[section.section_goal.get("sectionCode")] for section in self.sections)
+        return tuple(
+            by_code[str(section.section_goal.get("sectionCode", ""))] for section in self.sections
+        )
 
-    async def _execute(self, _input: Any, run_context: RunContext) -> StepOutput:
+    async def _execute_sections(self, _input: Any, run_context: RunContext) -> StepOutput:
         results = await self._run_sections(run_context)
         return StepOutput(
             content={
@@ -285,7 +290,7 @@ def build_coding_draft_steps(
 ) -> Steps | Parallel:
     """构造可供 Agno 运行器使用的 Steps/Parallel 计划。
 
-    运行器仍由 ``CodingDraftWorkflow.run`` 执行门禁；该函数用于检查和测试步骤
+    运行器仍由 ``CodingDraftWorkflow.execute_section`` 执行门禁；该函数用于检查和测试步骤
     结构，所有自定义 Step 均关闭隐式重试。
     """
 
@@ -293,7 +298,7 @@ def build_coding_draft_steps(
     for analysis_id in workflow.analysis_ids:
 
         async def run_analysis(
-            _input: Any, analysis_id: str = analysis_id, **_kwargs: Any
+            _input: StepInput, analysis_id: str = analysis_id, **_kwargs: Any
         ) -> StepOutput:
             return await workflow._run_analysis_one(analysis_id, run_context)
 
@@ -306,5 +311,6 @@ def build_coding_draft_steps(
             )
         )
     if workflow.execution_mode == "parallel":
-        return Parallel(*steps, name="coding-analysis-items")
+        # Agno 3.0.0 运行时要求展开列表；其类型标注与实现不一致。
+        return Parallel(*steps, name="coding-analysis-items")  # type: ignore[arg-type]
     return Steps(name="coding-analysis-items", steps=steps)

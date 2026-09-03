@@ -51,7 +51,6 @@ from ..task_execution.execution import (
     is_task_tool_scheduler_hook,
 )
 from ..workspace import WorkspaceService
-from .delivery.acceptance import load_reporting_skills
 from .instructions import build_report_agent_instructions
 from .model_policy import (
     ReportingReasoningEffort,
@@ -2665,7 +2664,7 @@ def create_report_worker(
     # 同一组 Reporting 预算，不能静默退回普通 Coding Agent 的 256K/32K 默认值。
     context_token_budget = settings.report_context_token_budget
     output_token_reserve = settings.report_output_token_reserve
-    reporting_skills = load_reporting_skills(load_sandbox_execution_skills(settings.skills_dir))
+    worker_skills = load_sandbox_execution_skills(settings.skills_dir)
     vision_reviewer = (
         ReportVisionReviewer(settings, workspace_service) if settings.report_enable_vision else None
     )
@@ -2718,7 +2717,7 @@ def create_report_worker(
         model=worker_model,
         instructions=build_report_agent_instructions,
         use_instruction_tags=True,
-        skills=reporting_skills,
+        skills=worker_skills,
         tools=partial(
             build_report_worker_tools,
             workspace_service,

@@ -550,6 +550,8 @@ async def _empty_close() -> None:
 def test_analysis_item_instructions_submit_facts_without_model_evidence() -> None:
     instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
 
+    assert "任务 JSON 的 sectionGoal 标识当前分析所属章节" in instructions
+    assert "不得为其他章节生成证据或结论" in instructions
     assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
     assert "evidencePaths 传空数组" in instructions
     assert "deterministicFactFile 直接冻结为 evidence" in instructions
