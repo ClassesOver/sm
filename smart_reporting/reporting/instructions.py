@@ -142,6 +142,13 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
+        "任务 JSON 的 reportVisualTheme 是当前报告唯一可用的图表主题。脚本必须直接使用其中的 "
+        "primary、accent、highlight、grid、surface 与 chartPalette，不得自定义或猜测主题色；"
+        "核心/基准系列使用 primary，对比系列使用 accent，highlight 仅标记管理关注项，"
+        "多系列按 chartPalette 顺序取色。颜色不得成为唯一信息通道，正负、风险和分类仍须通过 "
+        "标签、线型、标记或注释表达。"
+    ),
+    (
         "任务 JSON 的 visualizationFacts 已批量签发当前图表所需的 facts 文件和字段入口；"
         "不得调用 query_analysis_facts、query_analysis_context 或 read_file 探索 facts/evidence。"
         "visualizationFacts.metrics 已给出 metricIndex、total、各数组元素数和 dataPaths；"

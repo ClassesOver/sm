@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from agno.run import RunContext
 
+from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
 from smart_reporting.reporting.instructions import build_report_agent_instructions
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
@@ -54,6 +55,14 @@ def test_visualization_instructions_require_section_submission() -> None:
     )
     assert "submit_visualization_charts" in instructions
     assert "章节" in instructions
+    assert "reportVisualTheme" in instructions
+    assert "颜色不得成为唯一信息通道" in instructions
+
+
+def test_visualization_instruction_theme_projects_report_theme() -> None:
+    from smart_reporting.reporting.workflow.runtime.analysis import _visualization_instruction_theme
+
+    assert _visualization_instruction_theme() == REPORT_VISUAL_THEME
 
 
 def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
