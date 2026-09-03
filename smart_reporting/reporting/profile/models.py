@@ -109,21 +109,6 @@ class ScopeFilterPatch(ProfileModel):
         return _field_refs(value)
 
 
-class SectionPatch(ProfileModel):
-    code: str = Field(pattern=PROFILE_ID_PATTERN)
-    enabled: bool = True
-    title: str | None = Field(default=None, min_length=1, max_length=300)
-    required: bool | None = None
-    required_capabilities: tuple[str, ...] | None = Field(
-        default=None, alias="requiredCapabilities", max_length=100
-    )
-
-    @field_validator("required_capabilities")
-    @classmethod
-    def validate_capabilities(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
-        return _codes(value)
-
-
 class PageLayoutPatch(ProfileModel):
     header_left: str | None = Field(default=None, alias="headerLeft", max_length=200)
     header_right: str | None = Field(default=None, alias="headerRight", max_length=200)
@@ -167,10 +152,6 @@ class ReportingProfileDocument(ProfileModel):
     measure_semantics: tuple[ProfileMeasureSemantic, ...] = Field(
         default=(), alias="measureSemantics", max_length=2_000
     )
-    sections: tuple[SectionPatch, ...] = Field(default=(), max_length=200)
-    section_order: tuple[str, ...] | None = Field(
-        default=None, alias="sectionOrder", min_length=1, max_length=200
-    )
     page_layout: PageLayoutPatch | None = Field(default=None, alias="pageLayout")
     document_branding: DocumentBrandingPatch | None = Field(default=None, alias="documentBranding")
 
@@ -183,7 +164,6 @@ class ReportingProfileDocument(ProfileModel):
             self.metrics,
             self.reconciliations,
             self.scope_filters,
-            self.sections,
         ):
             codes = [item.code for item in values]
             if len(codes) != len(set(codes)):
@@ -196,8 +176,6 @@ class ReportingProfileDocument(ProfileModel):
         semantic_refs = [item.field_ref.lower() for item in self.measure_semantics]
         if len(semantic_refs) != len(set(semantic_refs)):
             raise ValueError("同一 Profile 层的 measureSemantics.fieldRef 不能重复")
-        if self.section_order is not None:
-            _codes(self.section_order)
         return self
 
 
@@ -266,20 +244,6 @@ class EffectiveScopeFilter(ProfileModel):
         return _field_refs(value) or ()
 
 
-class EffectiveSection(ProfileModel):
-    code: str = Field(pattern=PROFILE_ID_PATTERN)
-    title: str = Field(min_length=1, max_length=300)
-    required: bool = False
-    required_capabilities: tuple[str, ...] = Field(
-        default=(), alias="requiredCapabilities", max_length=100
-    )
-
-    @field_validator("required_capabilities")
-    @classmethod
-    def validate_capabilities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _codes(value) or ()
-
-
 class EffectivePageLayout(ProfileModel):
     header_left: str = Field(default="{organization}", alias="headerLeft", max_length=200)
     header_right: str = Field(default="{title}", alias="headerRight", max_length=200)
@@ -344,7 +308,6 @@ class EffectiveReportingProfile(ProfileModel):
     measure_semantics: tuple[ProfileMeasureSemantic, ...] = Field(
         default=(), alias="measureSemantics", max_length=2_000
     )
-    sections: tuple[EffectiveSection, ...] = Field(min_length=1, max_length=200)
     page_layout: EffectivePageLayout = Field(
         default_factory=EffectivePageLayout, alias="pageLayout"
     )

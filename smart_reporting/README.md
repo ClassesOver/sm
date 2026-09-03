@@ -58,7 +58,9 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
 | `OPENAI_API_KEY` | 模型 API 密钥 |
 | `OPENAI_BASE_URL` | OpenAI-compatible API 地址 |
 | `AGENT_MODEL_VLLM_REASONING` | 经 vLLM 提供 DeepSeek V4 时设为 `true`，使用官方 `chat_template_kwargs` reasoning 格式；默认 `false` 保持云端请求格式不变 |
-| `MODEL` | 默认模型 |
+| `AGENT_MODEL_FAST` | Reporting fast 档模型，默认 `qwen3.6-35b-a3b` |
+| `AGENT_MODEL_STANDARD` | Reporting standard 档模型，默认 `deepseek-v4-flash-0731` |
+| `AGENT_MODEL_STRONG` | Reporting strong 档模型，默认 `deepseek-v4-flash-0731` |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
 | `AGENT_DAYTONA_API_URL` | Daytona API 地址 |

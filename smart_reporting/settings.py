@@ -7,7 +7,9 @@ from urllib.parse import quote, urlsplit
 from dotenv import dotenv_values
 
 DEFAULT_ENV_FILE = ".env"
-DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
+DEFAULT_MODEL_FAST_ID = "qwen3.6-35b-a3b"
+DEFAULT_MODEL_STANDARD_ID = "deepseek-v4-flash-0731"
+DEFAULT_MODEL_STRONG_ID = "deepseek-v4-flash-0731"
 DEFAULT_REPORT_VISION_MODEL_ID = "qwen3.6-flash"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 900
 DEFAULT_WORKSPACE_SNAPSHOT = "sandbox-tools"
@@ -155,7 +157,9 @@ def _report_public_base_url(values: MutableMapping[str, str]) -> str | None:
 @dataclass(frozen=True)
 class AgentSettings:
     env_file: str
-    model_id: str
+    model_fast_id: str
+    model_standard_id: str
+    model_strong_id: str
     model_timeout_seconds: int
     model_vllm_reasoning: bool
     openai_base_url: str
@@ -265,7 +269,18 @@ class AgentSettings:
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         return cls(
             env_file=env_file,
-            model_id=values.get("MODEL", DEFAULT_MODEL_ID),
+            model_fast_id=(
+                values.get("AGENT_MODEL_FAST", DEFAULT_MODEL_FAST_ID).strip()
+                or DEFAULT_MODEL_FAST_ID
+            ),
+            model_standard_id=(
+                values.get("AGENT_MODEL_STANDARD", DEFAULT_MODEL_STANDARD_ID).strip()
+                or DEFAULT_MODEL_STANDARD_ID
+            ),
+            model_strong_id=(
+                values.get("AGENT_MODEL_STRONG", DEFAULT_MODEL_STRONG_ID).strip()
+                or DEFAULT_MODEL_STRONG_ID
+            ),
             model_timeout_seconds=_positive_int(
                 values,
                 "AGENT_MODEL_TIMEOUT_SECONDS",

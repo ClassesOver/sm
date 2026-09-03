@@ -4,10 +4,15 @@ import pytest
 from agno.models.message import Message
 from agno.run import RunContext
 
-from smart_reporting.reporting.agent import _phase_filtered_report_messages
+from smart_reporting.reporting.agent import (
+    ReportWorkerOpenAIChat,
+    _phase_filtered_report_messages,
+)
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
 from smart_reporting.reporting.instructions import build_report_agent_instructions
 from smart_reporting.reporting.phase import (
+    REPORTING_MODEL_ID_DEPENDENCY_KEY,
+    REPORTING_MODEL_TIER_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
@@ -41,6 +46,36 @@ def _context(phase: str, task_kind: str) -> RunContext:
 )
 def test_current_task_kinds_are_projected_from_run_context(phase: str, task_kind: str) -> None:
     assert reporting_task_kind_from_run_context(_context(phase, task_kind)) == task_kind
+
+
+def test_model_route_is_projected_from_run_context() -> None:
+    context = _context("analysis", "analysis_item")
+    context.dependencies[REPORTING_TASK_DEPENDENCY].update(
+        {
+            REPORTING_MODEL_TIER_DEPENDENCY_KEY: "fast",
+            REPORTING_MODEL_ID_DEPENDENCY_KEY: "qwen3.6-35b-a3b",
+        }
+    )
+    from smart_reporting.reporting.phase import reporting_model_route_from_run_context
+
+    assert reporting_model_route_from_run_context(context) == ("fast", "qwen3.6-35b-a3b")
+
+
+def test_worker_request_uses_model_id_selected_by_trusted_route() -> None:
+    context = _context("analysis", "analysis_item")
+    context.dependencies[REPORTING_TASK_DEPENDENCY].update(
+        {
+            REPORTING_MODEL_TIER_DEPENDENCY_KEY: "fast",
+            REPORTING_MODEL_ID_DEPENDENCY_KEY: "qwen3.6-35b-a3b",
+        }
+    )
+    worker = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test-key")
+
+    with bind_reporting_run_context(context):
+        request_model = worker._phase_request_model([Message(role="user", content="test")])
+
+    assert worker.id == "deepseek-v4-flash-0731"
+    assert request_model.id == "qwen3.6-35b-a3b"
 
 
 def test_unknown_task_kind_is_not_projected() -> None:

@@ -2,23 +2,8 @@
   "version": "1",
   "profileId": "finance",
   "revision": "1",
-  "extends": ["ruijin"],
-  "sections": [
-    {"code": "service_workload", "enabled": false},
-    {"code": "financial_overview", "title": "财务运行总览", "required": true},
-    {"code": "financial_risk", "title": "财务风险与异常", "required": true}
-  ],
-  "sectionOrder": [
-    "executive_summary",
-    "scope_and_methodology",
-    "financial_overview",
-    "income_and_budget",
-    "cost_and_expenditure",
-    "project_budget",
-    "financial_risk",
-    "key_findings",
-    "limitations",
-    "recommendations"
+  "extends": [
+    "ruijin"
   ],
   "pageLayout": {
     "footerLeft": "财务经营分析"

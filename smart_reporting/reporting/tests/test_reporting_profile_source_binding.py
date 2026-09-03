@@ -29,16 +29,6 @@ def _profile(tmp_path: Path, field_ref: str):
                 "fieldRefs": [field_ref],
             }
         ],
-        "sections": [
-            {"code": code, "title": title}
-            for code, title in (
-                ("executive_summary", "执行摘要"),
-                ("scope_and_methodology", "分析范围与方法"),
-                ("key_findings", "关键发现"),
-                ("limitations", "局限性"),
-                ("recommendations", "建议"),
-            )
-        ],
     }
     (root / "test-profile.json").write_text(
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"

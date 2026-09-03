@@ -276,28 +276,9 @@ metadata API 和 Profile 都可以提供已确认语义。同一字段内容完�
 不得写死在默认 Profile。程序可以发现冲突、重复、缺失和候选范围，但不能仅凭统计相关性替代业务
 含义；无法确定的语义必须由模型提出并由用户确认。
 
-### sections 与 sectionOrder
+### 动态报告章节
 
-`sections` 与 `sectionOrder` 不参与医院运营报告运行时。医院运营报告在详细分析计划冻结后动态生成章节，模型只提交中文标题、分析重点和 analysisId 引用，
-`section_001` 等 code 由服务端按批准顺序生成并冻结。Profile 不得新增、删除或重排医院运营报告的
-顶层章节；部署文件中现存的医院章节配置不具有运行时权威。
-
-章节至少必须包含以下五个领域无关 code：
-
-```text
-executive_summary
-scope_and_methodology
-key_findings
-limitations
-recommendations
-```
-
-报告展示始终使用最终 `sections[].title`，`code` 只用于机器协议、Markdown section marker 和 manifest。
-`requiredCapabilities` 可以引用已定义的 dimension、metric 或 reconciliation code；能力在运行时依据
-Profile、Schema Snapshot 和 DataShape 确定性缩小。
-
-一旦提供 `sectionOrder`，它必须且只能包含全部生效章节 code，不得缺项、增项或重复。自定义 Profile
-标题是展示层唯一事实来源，生成器不能用硬编码标题覆盖。
+医院运营报告在详细分析计划冻结后动态生成章节。Profile 不再声明 `sections` 或 `sectionOrder`；模型提交中文标题、分析重点和 `analysisId` 引用，服务端按批准顺序生成并冻结章节 code。
 
 ### pageLayout
 
