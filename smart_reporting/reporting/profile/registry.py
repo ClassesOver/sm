@@ -16,7 +16,6 @@ from .models import (
     EffectiveReconciliation,
     EffectiveReportingProfile,
     EffectiveScopeFilter,
-    EffectiveSection,
     ReportingProfileDocument,
     ReportingProfileRegistry,
     effective_profile_hash,
@@ -24,15 +23,6 @@ from .models import (
 
 MAX_PROFILE_BYTES = 1024 * 1024
 MAX_PROFILES = 500
-_REQUIRED_SECTION_CODES = frozenset(
-    {
-        "executive_summary",
-        "scope_and_methodology",
-        "key_findings",
-        "limitations",
-        "recommendations",
-    }
-)
 _FORBIDDEN_KEYS = frozenset(
     {
         "connection",
@@ -121,20 +111,6 @@ def resolve_reporting_profile(
     reconciliations = _merge_items(ordered, "reconciliations")
     scope_filters = _merge_items(ordered, "scope_filters")
     measure_semantics = _merge_measure_semantics(ordered)
-    sections = _merge_items(ordered, "sections")
-    section_order = next(
-        (
-            document.section_order
-            for document in reversed(ordered)
-            if document.section_order is not None
-        ),
-        None,
-    )
-    if section_order is not None:
-        sections_by_code = {item["code"]: item for item in sections}
-        if set(section_order) != set(sections_by_code):
-            raise ValueError("sectionOrder 必须且只能包含全部生效章节 code。")
-        sections = tuple(sections_by_code[code] for code in section_order)
     effective_dimensions = tuple(EffectiveDimension.model_validate(item) for item in dimensions)
     effective_metrics = tuple(EffectiveMetric.model_validate(item) for item in metrics)
     effective_reconciliations = tuple(
@@ -143,7 +119,6 @@ def resolve_reporting_profile(
     effective_scope_filters = tuple(
         EffectiveScopeFilter.model_validate(item) for item in scope_filters
     )
-    effective_sections = tuple(EffectiveSection.model_validate(item) for item in sections)
     layout: dict[str, Any] = {}
     for document in ordered:
         if document.page_layout is not None:
@@ -162,13 +137,10 @@ def resolve_reporting_profile(
                 )
             )
     effective_branding = EffectiveDocumentBranding.model_validate(branding)
-    if not effective_sections:
-        raise ValueError("有效 Profile 至少需要一个报告章节。")
     _validate_references(
         effective_dimensions,
         effective_metrics,
         effective_reconciliations,
-        effective_sections,
     )
     payload: dict[str, object] = {
         "profileId": profile_id,
@@ -187,7 +159,6 @@ def resolve_reporting_profile(
         "measureSemantics": [
             item.model_dump(mode="json", by_alias=True) for item in measure_semantics
         ],
-        "sections": [item.model_dump(mode="json", by_alias=True) for item in effective_sections],
         "pageLayout": effective_layout.model_dump(mode="json", by_alias=True),
         "documentBranding": effective_branding.model_dump(mode="json", by_alias=True),
     }
@@ -358,13 +329,9 @@ def _validate_references(
     dimensions: tuple[EffectiveDimension, ...],
     metrics: tuple[EffectiveMetric, ...],
     reconciliations: tuple[EffectiveReconciliation, ...],
-    sections: tuple[EffectiveSection, ...],
 ) -> None:
     dimension_codes = {item.code for item in dimensions}
     metric_map = {item.code: item for item in metrics}
-    capability_codes = dimension_codes | set(metric_map) | {item.code for item in reconciliations}
-    if not _REQUIRED_SECTION_CODES.issubset({item.code for item in sections}):
-        raise ValueError("Profile 缺少领域无关的基础章节。")
     for metric in metrics:
         if metric.aggregation == "ratio" and {
             metric.numerator_metric,
@@ -381,22 +348,9 @@ def _validate_references(
             for code in (item.left_metric, item.right_metric)
         ):
             raise ValueError("对账规则当前只支持 sum 和 count 基础指标。")
-    for section in sections:
-        if set(section.required_capabilities) - capability_codes:
-            raise ValueError("章节引用了未知 capability。")
 
 
 def _builtin_profile() -> EffectiveReportingProfile:
-    sections = tuple(
-        EffectiveSection(code=code, title=title, required=True)
-        for code, title in (
-            ("executive_summary", "执行摘要"),
-            ("scope_and_methodology", "分析范围与方法"),
-            ("key_findings", "关键发现"),
-            ("limitations", "局限性"),
-            ("recommendations", "建议"),
-        )
-    )
     payload: dict[str, object] = {
         "profileId": "builtin-generic",
         "revision": "1",
@@ -406,7 +360,6 @@ def _builtin_profile() -> EffectiveReportingProfile:
         "reconciliations": [],
         "scopeFilters": [],
         "measureSemantics": [],
-        "sections": [item.model_dump(mode="json", by_alias=True) for item in sections],
         "pageLayout": EffectivePageLayout().model_dump(mode="json", by_alias=True),
         "documentBranding": EffectiveDocumentBranding().model_dump(mode="json", by_alias=True),
     }

@@ -2,7 +2,9 @@
   "version": "1",
   "profileId": "ruijin",
   "revision": "5",
-  "extends": ["base"],
+  "extends": [
+    "base"
+  ],
   "metrics": [
     {
       "code": "actual_medical_income",
@@ -197,7 +199,9 @@
       "code": "year",
       "kind": "time",
       "description": "项目预算日历年度；INTEGER 类型不代表可聚合指标。",
-      "fieldRefs": ["rj.dwd_project_budget_view.period_year"]
+      "fieldRefs": [
+        "rj.dwd_project_budget_view.period_year"
+      ]
     },
     {
       "code": "area",
@@ -261,48 +265,41 @@
       "code": "project",
       "kind": "category",
       "description": "预算项目；项目金额粒度和可加性由运行时画像及用户审核确定。",
-      "fieldRefs": ["rj.dwd_project_budget_view.project_name"]
+      "fieldRefs": [
+        "rj.dwd_project_budget_view.project_name"
+      ]
     },
     {
       "code": "income_type",
       "kind": "category",
       "description": "收入业务类型；枚举由运行时画像确定。",
-      "fieldRefs": ["rj.dwd_hdc_income_summary_view.income_type"]
+      "fieldRefs": [
+        "rj.dwd_hdc_income_summary_view.income_type"
+      ]
     },
     {
       "code": "income_indicator",
       "kind": "category",
       "description": "收入构成指标。",
-      "fieldRefs": ["rj.dwd_hdc_income_summary_view.indicator_name"]
+      "fieldRefs": [
+        "rj.dwd_hdc_income_summary_view.indicator_name"
+      ]
     },
     {
       "code": "cost_indicator",
       "kind": "category",
       "description": "成本构成指标。",
-      "fieldRefs": ["rj.dwd_hdc_cost_table_view.indicator_name"]
+      "fieldRefs": [
+        "rj.dwd_hdc_cost_table_view.indicator_name"
+      ]
     },
     {
       "code": "fund_nature",
       "kind": "category",
       "description": "成本经费性质。",
-      "fieldRefs": ["rj.dwd_hdc_cost_table_view.fund_nature"]
+      "fieldRefs": [
+        "rj.dwd_hdc_cost_table_view.fund_nature"
+      ]
     }
-  ],
-  "sections": [
-    {"code": "income_and_budget", "title": "收入与预算执行分析", "required": false},
-    {"code": "cost_and_expenditure", "title": "成本与支出分析", "required": false},
-    {"code": "project_budget", "title": "项目预算执行分析", "required": false},
-    {"code": "service_workload", "title": "医疗服务工作量分析", "required": false}
-  ],
-  "sectionOrder": [
-    "executive_summary",
-    "scope_and_methodology",
-    "income_and_budget",
-    "cost_and_expenditure",
-    "project_budget",
-    "service_workload",
-    "key_findings",
-    "limitations",
-    "recommendations"
   ]
 }

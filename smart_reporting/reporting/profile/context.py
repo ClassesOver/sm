@@ -151,19 +151,6 @@ def resolve_capabilities(
             )
         )
 
-    for section in profile.sections:
-        missing = tuple(
-            item for item in section.required_capabilities if not availability.get(item, False)
-        )
-        section_reasons = tuple(f"依赖 capability 不可用: {item}" for item in missing)
-        values.append(
-            Capability(
-                code=section.code,
-                kind="section",
-                available=not section_reasons,
-                reasons=section_reasons,
-            )
-        )
     return CapabilitySet(
         effectiveProfileHash=profile.effective_profile_hash,
         capabilities=tuple(values),
