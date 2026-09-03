@@ -318,7 +318,6 @@ class RuntimeSectionsMixin:
         receipt_ids = {
             receipt_id for item in selected_evidence for receipt_id in item.profile_read_receipt_ids
         }
-        chart_ids = {chart_id for item in selected_evidence for chart_id in item.chart_ids}
         citation_ids = {
             citation_id for item in selected_evidence for citation_id in item.citation_ids
         }
@@ -328,11 +327,9 @@ class RuntimeSectionsMixin:
             for item in analysis_artifact.profile_read_receipts
             if item.receipt_id in receipt_ids
         )
-        charts = tuple(
-            item
-            for item in analysis_artifact.evidence_manifest.charts
-            if item.chart_id in chart_ids
-        )
+        # 调用方按 section_codes 构造章节级 AnalysisArtifact；图表晚于 analysis evidence
+        # 生成，不能再依赖 evidence.chartIds 反向筛选，否则新生成图表会全部丢失。
+        charts = analysis_artifact.evidence_manifest.charts
         selected_metric_codes.update(code for chart in charts for code in chart.metric_codes)
         citations = tuple(
             SectionCitation(

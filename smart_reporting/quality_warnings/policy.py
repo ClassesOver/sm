@@ -86,6 +86,8 @@ def _subject_types(code: str) -> frozenset[str]:
         return frozenset({"report", "metric"})
     if code == "report_metric_definition_incomplete":
         return frozenset({"metric"})
+    if code == "unused_chart_excluded":
+        return frozenset({"report"})
     if code.startswith("report_section_block_"):
         return frozenset({"section_block"})
     if "claim" in code or code.startswith("report_period_"):
@@ -102,8 +104,6 @@ def _subject_types(code: str) -> frozenset[str]:
         "duplicate_section_heading_removed",
     }:
         return frozenset({"report", "section"})
-    if code == "unused_chart_excluded":
-        return frozenset({"report"})
     return frozenset({"section", "report"})
 
 
