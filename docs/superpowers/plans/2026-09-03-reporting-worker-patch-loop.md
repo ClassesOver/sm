@@ -4,7 +4,7 @@
 
 **Goal:** 用单一 unified diff 工具稳定完成 Reporting 分析脚本修改，并阻止图表检查回执引用已变化的文件。
 
-**Architecture:** 复用现有 Reporting durable write intent、WorkspaceService 路径/边界校验和 Daytona 文件 API。Patch 在临时副本内由 `git apply` 校验/应用，成功后调用现有原子 Workspace mutation；图表提交仅增加检查回执 SHA 的当前文件核对。
+**Architecture:** 复用现有 Reporting durable write intent、WorkspaceService 路径/边界校验和 Daytona 文件 API。Patch 在临时 staging tree 内初始化隔离 Git 仓库，由 `git apply` 校验/应用，成功后调用现有原子 Workspace mutation；图表提交仅增加检查回执 SHA 的当前文件核对。
 
 **Tech Stack:** Python 3.12、FastAPI/Agno 3.0.1、Daytona WorkspaceService、标准 unified diff、pytest、Ruff。
 
@@ -36,7 +36,7 @@
 
 - [ ] 先添加修改、新建、删除、冲突和绝对路径拒绝测试。
 - [ ] 运行测试确认失败。
-- [ ] 使用 `git apply --check` / `git apply` 在临时副本执行；禁止初始化用户工作区 Git 仓库。
+- [ ] 在临时 staging tree 初始化隔离 Git 仓库后使用 `git apply --check` / `git apply`；禁止初始化用户工作区 Git 仓库。
 - [ ] 保留现有 WorkspaceService 路径、大小、文件数量和 UTF-8 边界校验；Git 不可用时失败关闭。
 - [ ] 运行 patch 内核定点测试确认通过。
 

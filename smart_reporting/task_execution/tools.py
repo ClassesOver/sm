@@ -1,5 +1,8 @@
 import hashlib
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agno.tools import Function, Toolkit
@@ -75,6 +78,8 @@ def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
 
 
 def _apply_unified_hunks(content: str, patched_file: Any) -> str:
+    """保留历史 hunk 应用器以便审计；生产 patch 路径已统一由 Git 执行。"""
+
     original = content.splitlines(keepends=True)
     updated: list[str] = []
     source_index = 0
@@ -104,44 +109,123 @@ def _apply_unified_hunks(content: str, patched_file: Any) -> str:
     return "".join(updated)
 
 
+def _run_git_apply(root: Path, patch_path: Path, *, check: bool) -> None:
+    command = [
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.safecrlf=false",
+        "apply",
+        "--no-index",
+    ]
+    if check:
+        command.append("--check")
+    command.append(str(patch_path))
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError as error:
+        raise WorkspaceError("补丁应用内核不可用，请稍后重试。") from error
+    except subprocess.TimeoutExpired as error:
+        raise WorkspaceError("补丁应用内核超时，请稍后重试。") from error
+    if completed.returncode != 0:
+        raise WorkspaceError("标准 unified diff 无法应用到当前文件内容。")
+
+
+def _initialize_git_tree(root: Path) -> None:
+    try:
+        subprocess.run(
+            ["git", "init", "--quiet"],
+            cwd=root,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        raise WorkspaceError("补丁应用内核不可用，请稍后重试。") from error
+
+
 def build_workspace_changes(
     service: WorkspaceService,
     thread: str,
     patch: str,
     expected_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    changes: list[dict[str, Any]] = []
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
-    parsed = PatchSet(normalized)
     operations = parse_unified_diff(normalized)
-    for operation, patched_file in zip(operations, parsed, strict=True):
+    originals: dict[str, str] = {}
+    paths: list[tuple[_PatchOperation, str]] = []
+    for operation in operations:
         path = service.normalize_path(operation.path, allow_root=False)[0]
+        paths.append((operation, path))
         if operation.operation == "create":
             if expected_sha256 and path in expected_sha256:
                 raise WorkspaceError("新增文件不能提供已有文件的基线 SHA-256。")
-            updated = _apply_unified_hunks("", patched_file)
-            changes.append({"operation": "create", "path": path, "content": updated})
             continue
-
         current = service.read_text(thread, path)
         digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
         if expected_sha256 and expected_sha256.get(path) != digest:
             raise WorkspaceError("文件内容已变化，请重新读取文件和哈希后再应用补丁。")
-        if operation.operation == "delete":
-            if _apply_unified_hunks(current, patched_file):
-                raise WorkspaceError("删除文件的 unified diff 应移除全部现有内容。")
-            changes.append({"operation": "delete", "path": path, "expected_sha256": digest})
-            continue
+        originals[path] = current
 
-        updated = _apply_unified_hunks(current, patched_file)
-        changes.append(
-            {
-                "operation": "update",
+    # Git 是唯一的 hunk 应用器；临时树不包含真实 workspace，也不会使用 index 或
+    # 真实仓库状态。先完整校验再应用，保证任何非法 diff 都不会越过 Daytona 的原子提交。
+    with tempfile.TemporaryDirectory(prefix="reporting-patch-") as temporary:
+        root = Path(temporary, "tree")
+        root.mkdir()
+        _initialize_git_tree(root)
+        for path, content in originals.items():
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8", newline="")
+        patch_path = Path(temporary, "change.diff")
+        patch_path.write_text(normalized, encoding="utf-8", newline="")
+        _run_git_apply(root, patch_path, check=True)
+        _run_git_apply(root, patch_path, check=False)
+
+        changes: list[dict[str, Any]] = []
+        for operation, path in paths:
+            if operation.operation == "delete":
+                if (root / path).exists():
+                    raise WorkspaceError("删除文件的 unified diff 未移除目标文件。")
+                changes.append(
+                    {
+                        "operation": "delete",
+                        "path": path,
+                        "expected_sha256": hashlib.sha256(
+                            originals[path].encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
+                continue
+            target = root / path
+            if not target.is_file():
+                raise WorkspaceError("标准 unified diff 未生成预期目标文件。")
+            try:
+                content = target.read_text(encoding="utf-8")
+            except UnicodeDecodeError as error:
+                raise WorkspaceError("标准 unified diff 产生了非 UTF-8 文本文件。") from error
+            change: dict[str, Any] = {
+                "operation": operation.operation,
                 "path": path,
-                "content": updated,
-                "expected_sha256": digest,
+                "content": content,
             }
-        )
+            if operation.operation == "update":
+                change["expected_sha256"] = hashlib.sha256(
+                    originals[path].encode("utf-8")
+                ).hexdigest()
+            changes.append(change)
     if len(changes) > MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁转换后的文件操作不能超过 {MAX_PATCH_FILES} 个。")
     return changes

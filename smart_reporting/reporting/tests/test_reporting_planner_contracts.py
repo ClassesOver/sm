@@ -68,6 +68,7 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
+    MAX_REPORT_SECTION_PHASE_ATTEMPTS,
     OUTLINE_SECTION_COUNT_INSTRUCTION,
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -146,6 +147,10 @@ def test_workflow_runtime_uses_package_boundaries() -> None:
     assert ReportWorkflowRuntime.__module__ == ("smart_reporting.reporting.workflow.runtime.facade")
     assert AnalysisBundle.__module__ == "smart_reporting.reporting.workflow.runtime.models"
     assert DataUnderstandingPlan.__module__ == ("smart_reporting.reporting.workflow.runtime.models")
+
+
+def test_reporting_fresh_retry_budget_allows_three_attempts() -> None:
+    assert MAX_REPORT_SECTION_PHASE_ATTEMPTS == 3
 
 
 def test_runtime_capability_modules_do_not_import_facade() -> None:
@@ -581,6 +586,19 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
 
 
+def test_patch_instructions_include_complete_unified_diff_templates() -> None:
+    analysis_instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
+    visualization_instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+
+    for instructions in (analysis_instructions, visualization_instructions):
+        assert "--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@" in instructions
+        assert "--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@" in instructions
+        assert "--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@" in instructions
+        assert "单行文件更新必须使用 @@ -1 +1 @@" in instructions
+        assert "expected_sha256 的值必须是 64 位小写十六进制字符串" in instructions
+        assert "不需要基线时省略 expected_sha256" in instructions
+
+
 @pytest.mark.anyio
 async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps() -> None:
     context = DatasetAnalysisContext(
@@ -853,8 +871,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         lambda *_args, **_kwargs: [
             SimpleNamespace(
                 coding_read_file=AsyncMock(),
-                create_analysis_file=AsyncMock(),
-                overwrite_analysis_file=AsyncMock(),
+                apply_analysis_patch=AsyncMock(),
                 terminal=AsyncMock(),
                 complete_analysis_item=AsyncMock(),
             )

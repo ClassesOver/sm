@@ -89,8 +89,7 @@ async def test_analysis_item_workflow_keeps_five_stages_when_supplement_is_skipp
         plan_evidence=plan,
         summarize=summarize,
         read_file=AsyncMock(return_value=_facts_read_result()),
-        create_file=AsyncMock(),
-        overwrite_file=AsyncMock(),
+        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=complete,
     )
@@ -107,7 +106,7 @@ async def test_analysis_item_workflow_keeps_five_stages_when_supplement_is_skipp
         ("complete-analysis", "completed"),
     )
     assert events == ["plan", "summarize"]
-    workflow.create_file.assert_not_awaited()
+    workflow.apply_patch.assert_not_awaited()
     workflow.run_script.assert_not_awaited()
     complete.assert_awaited_once()
     assert complete.await_args.kwargs["evidencePaths"] == []
@@ -146,10 +145,17 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
             _tool_result(content=evidence, sha256="b" * 64),
         ]
     )
-    create = AsyncMock(
+    apply_patch = AsyncMock(
         side_effect=lambda **kwargs: (
             events.append("create")
-            or _tool_result(artifacts=[{"path": kwargs["path"], "sha256": "c" * 64}])
+            or _tool_result(
+                artifacts=[
+                    {
+                        "path": "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+                        "sha256": "c" * 64,
+                    }
+                ]
+            )
         )
     )
     terminal = AsyncMock(
@@ -166,8 +172,7 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
         plan_evidence=plan,
         summarize=summarize,
         read_file=reads,
-        create_file=create,
-        overwrite_file=AsyncMock(),
+        apply_patch=apply_patch,
         run_script=terminal,
         complete=complete,
     )
@@ -200,11 +205,12 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
         plan_evidence=plan,
         summarize=AsyncMock(),
         read_file=AsyncMock(return_value=_facts_read_result()),
-        create_file=AsyncMock(
-            return_value=_tool_result(artifacts=[{"path": "supplement.py", "sha256": "b" * 64}])
-        ),
-        overwrite_file=AsyncMock(
-            return_value=_tool_result(artifacts=[{"path": "supplement.py", "sha256": "c" * 64}])
+        apply_patch=AsyncMock(
+            side_effect=[
+                _tool_result(artifacts=[{"path": "supplement.py", "sha256": "b" * 64}]),
+                _tool_result(artifacts=[{"path": "supplement.py", "sha256": "c" * 64}]),
+                _tool_result(artifacts=[{"path": "supplement.py", "sha256": "d" * 64}]),
+            ]
         ),
         run_script=AsyncMock(return_value=_tool_result(exitCode=1, output="bad csv")),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
@@ -217,7 +223,7 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
 
     assert repairs == [False, True, True]
     assert workflow.run_script.await_count == 3
-    assert workflow.overwrite_file.await_count == 2
+    assert workflow.apply_patch.await_count == 3
     workflow.complete.assert_not_awaited()
 
 
@@ -248,11 +254,8 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
                 *[_tool_result(content=invalid, sha256="b" * 64) for _ in range(3)],
             ]
         ),
-        create_file=AsyncMock(
+        apply_patch=AsyncMock(
             return_value=_tool_result(artifacts=[{"path": "x", "sha256": "c" * 64}])
-        ),
-        overwrite_file=AsyncMock(
-            return_value=_tool_result(artifacts=[{"path": "x", "sha256": "d" * 64}])
         ),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
@@ -294,8 +297,7 @@ async def test_analysis_item_workflow_reuses_durable_completion_payload_exactly(
         plan_evidence=AsyncMock(),
         summarize=AsyncMock(),
         read_file=AsyncMock(return_value=_facts_read_result()),
-        create_file=AsyncMock(),
-        overwrite_file=AsyncMock(),
+        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=complete,
     )
@@ -324,8 +326,7 @@ async def test_analysis_item_workflow_preserves_planner_provider_error() -> None
         plan_evidence=AsyncMock(side_effect=provider_error),
         summarize=AsyncMock(),
         read_file=AsyncMock(return_value=_facts_read_result()),
-        create_file=AsyncMock(),
-        overwrite_file=AsyncMock(),
+        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=complete,
     )
@@ -372,8 +373,7 @@ async def test_analysis_item_workflow_reads_deterministic_facts_in_chunks() -> N
         ),
         summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="固定事实摘要", warnings=())),
         read_file=reads,
-        create_file=AsyncMock(),
-        overwrite_file=AsyncMock(),
+        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
     )

@@ -130,7 +130,13 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "已明确提供的路径；不要给成功的脚本执行附加探测命令。"
     ),
     (
-        "脚本修改统一使用 apply_analysis_patch 提交标准 unified diff；已有文件需在 expected_sha256 中提供当前 SHA-256；"
+        "脚本修改统一使用 apply_analysis_patch 提交标准 unified diff；已有文件需在 expected_sha256 中提供当前 SHA-256。"
+        "patch 必须完整包含文件头、hunk 头和每一行内容，直接按以下模板生成，不能只写 @@ hunk：\n"
+        "更新：\n--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@\n-old line\n+new line\n"
+        "新增：\n--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@\n+new line\n"
+        "删除：\n--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old line。\n"
+        "单行文件更新必须使用 @@ -1 +1 @@，不得声明不存在的行；按实际文件行数填写 hunk。"
+        "expected_sha256 的值必须是 64 位小写十六进制字符串；新建文件或不需要基线时省略 expected_sha256，禁止填写 true、false 或其他布尔值。"
         "所有补充脚本和 evidence 必须写入任务 JSON 的 analysisOutputRoot；不要预先拆分。"
         "只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"
     ),
@@ -235,8 +241,14 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
-        "图表脚本修改统一调用 apply_analysis_patch，新增文件使用 /dev/null 基线，已有文件附带当前 expected_sha256；不调用任何未注册的底层"
-        "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
+        "图表脚本修改统一调用 apply_analysis_patch，新增文件使用 /dev/null 基线，已有文件附带当前 expected_sha256。"
+        "patch 必须完整包含文件头、hunk 头和每一行内容，直接按以下模板生成，不能只写 @@ hunk：\n"
+        "更新：\n--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@\n-old line\n+new line\n"
+        "新增：\n--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@\n+new line\n"
+        "删除：\n--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old line。\n"
+        "单行文件更新必须使用 @@ -1 +1 @@，不得声明不存在的行；按实际文件行数填写 hunk。"
+        "expected_sha256 的值必须是 64 位小写十六进制字符串；新建文件或不需要基线时省略 expected_sha256，禁止填写 true、false 或其他布尔值。"
+        "不调用任何未注册的底层文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"
         "running 和 session_id 后才可用 process，并且只允许 poll、wait 或 kill 该 session_id。"

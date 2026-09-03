@@ -38,10 +38,8 @@ def _script_patch(path: str, content: str, previous: str | None) -> str:
     if previous is None:
         before_name, after_name = "/dev/null", f"b/{path}"
     else:
-        before_name = after_name = f"a/{path}"
-    return "".join(
-        difflib.unified_diff(before, after, fromfile=before_name, tofile=after_name)
-    )
+        before_name, after_name = f"a/{path}", f"b/{path}"
+    return "".join(difflib.unified_diff(before, after, fromfile=before_name, tofile=after_name))
 
 
 class _StrictModel(BaseModel):
@@ -132,35 +130,14 @@ class AnalysisItemWorkflow:
         plan_evidence: PlanEvidence,
         summarize: Summarize,
         read_file: ToolCall,
-        apply_patch: ToolCall | None = None,
-        create_file: ToolCall | None = None,
-        overwrite_file: ToolCall | None = None,
+        apply_patch: ToolCall,
         run_script: ToolCall,
         complete: ToolCall,
     ) -> None:
         self.plan_evidence = plan_evidence
         self.summarize = summarize
         self.read_file = read_file
-        if apply_patch is None:
-            if create_file is None or overwrite_file is None:
-                raise TypeError("apply_patch 或 create_file/overwrite_file 必须提供")
-
-            async def legacy_apply_patch(**kwargs: Any) -> dict[str, Any]:
-                expected = kwargs.get("expected_sha256")
-                patch_text = kwargs["patch"]
-                target = patch_text.split("+++ b/", 1)[1].splitlines()[0]
-                content = "".join(
-                    line[1:] for line in patch_text.splitlines(keepends=True) if line.startswith("+")
-                )
-                operation = overwrite_file if expected else create_file
-                arguments = {"path": target, "content": content, "run_context": kwargs.get("run_context")}
-                if expected:
-                    arguments["expected_sha256"] = expected[target]
-                return await operation(**arguments)
-
-            self.apply_patch = legacy_apply_patch
-        else:
-            self.apply_patch = apply_patch
+        self.apply_patch = apply_patch
         self.run_script = run_script
         self.complete = complete
 
@@ -455,7 +432,9 @@ class AnalysisItemWorkflow:
         previous = None
         if state.script_sha256 is not None:
             current = await self.read_file(
-                path=script_path, max_bytes=MAX_ANALYSIS_SCRIPT_REPAIRS * 131072, run_context=run_context
+                path=script_path,
+                max_bytes=MAX_ANALYSIS_SCRIPT_REPAIRS * 131072,
+                run_context=run_context,
             )
             self._require_ok(current, default_code="report_analysis_script_read_failed")
             previous = current.get("content")

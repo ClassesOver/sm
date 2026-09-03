@@ -133,6 +133,16 @@ _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT = 24
 _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT = 48
 _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT = 64
 _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT = 3
+_REPORT_ANALYSIS_PATCH_STOP_CODES = frozenset(
+    {
+        "report_analysis_write_intent_invalid",
+        "report_analysis_write_path_conflict",
+        "report_analysis_write_identity_mismatch",
+        "report_analysis_write_intent_too_large",
+        "report_analysis_python_syntax_invalid",
+        "report_visualization_script_too_large",
+    }
+)
 _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries"
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
@@ -899,6 +909,44 @@ def _stop_exhausted_reporting_tool_budget(
     raise StopAgentRun(serialized, agent_message=serialized)
 
 
+def _stop_rejected_analysis_patch(
+    run_context: RunContext,
+    result: Mapping[str, Any],
+) -> None:
+    """关闭当前 Coding attempt，让阶段层用新上下文重新读取并生成补丁。
+
+    patch 拒绝说明模型持有的文件上下文、SHA 或 diff 结构已经不能继续使用；在同一
+    上下文里让模型修补会把错误 hunk 和过期事实继续累积，容易形成长尾死循环。这里只
+    处理稳定的 Reporting 业务拒绝码；Daytona、网络和其他基础设施异常仍沿用原异常
+    路径，交给既有工作流重试策略，不被伪装成可 fresh retry 的模型错误。
+    """
+
+    raw_details = result.get("details")
+    details = dict(raw_details) if isinstance(raw_details, Mapping) else {}
+    details["terminalReason"] = "analysis_patch_rejected"
+    error = ReportingError(
+        str(result["code"]),
+        str(result.get("message") or "analysis 补丁被服务端拒绝。"),
+        details=details,
+    )
+    _record_reporting_tool_run_error(run_context, error)
+    receipt = {
+        "ok": False,
+        "status": "rejected",
+        "code": error.code,
+        "message": error.message,
+        "details": details,
+        "retryable": False,
+        "runDisposition": "stop_current_run",
+        "recovery": {"kind": "fresh_task_retry"},
+        "requiredActions": [
+            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须重新读取目标文件和当前 SHA-256 后生成完整标准 unified diff。"
+        ],
+    }
+    serialized = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
+    raise StopAgentRun(serialized, agent_message=serialized)
+
+
 def _reporting_invalid_argument_receipt(
     run_context: RunContext | None,
     function_name: Any,
@@ -1554,6 +1602,15 @@ async def normalize_reporting_tool_arguments(
         result,
         succeeded=succeeded,
     )
+    if (
+        function_name == "apply_analysis_patch"
+        and not succeeded
+        and isinstance(result.get("code"), str)
+        and result["code"] in _REPORT_ANALYSIS_PATCH_STOP_CODES
+        and reporting_phase_from_run_context(run_context) == "analysis"
+        and task_kind in {"analysis_item", "visualization_section"}
+    ):
+        _stop_rejected_analysis_patch(run_context, result)
     return _enforce_reporting_no_progress(run_context, function_name, result, arguments)
 
 

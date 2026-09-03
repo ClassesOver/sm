@@ -171,7 +171,8 @@ class ReportWorkspaceTaskToolkit(
             (
                 "apply_analysis_patch",
                 "使用标准 unified diff 原子修改 analysis 文件；已有文件的当前 SHA-256 "
-                "通过 expected_sha256 映射提供，新增文件不填写。",
+                "通过 expected_sha256 映射提供，值必须是 64 位小写十六进制字符串；新增文件或不需要基线时省略，"
+                "禁止填写 true、false 或其他布尔值。",
                 analysis_patch_parameters,
                 self.apply_analysis_patch,
             ),

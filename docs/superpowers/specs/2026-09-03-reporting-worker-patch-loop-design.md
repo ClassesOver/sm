@@ -6,9 +6,9 @@
 
 ## 范围
 
-- 将 `create_analysis_file` 与 `overwrite_analysis_file` 收敛为 `apply_analysis_patch`。
+- 分析项和图表章节统一只暴露 `apply_analysis_patch`；`create_analysis_file` 与 `overwrite_analysis_file` 不再兼容。
 - 输入使用标准 unified diff；不维护自研 hunk 应用算法。
-- 优先调用工作区可用的 `git apply --check` / `git apply`；不要求用户工作区存在 `.git`，不自动执行 `git init`。
+- 在临时 staging tree 中初始化隔离 Git 仓库，再调用 `git apply --check` / `git apply`；不要求用户 Daytona 工作区存在 `.git`，也不修改用户工作区的 Git 状态。
 - 在临时副本中完成检查和应用，再通过现有 WorkspaceService 原子提交。
 - 保留现有路径隔离、文件大小/数量、Python 语法和写入意图幂等语义。
 - 选择性增强图表检查：`inspect_chart` 回执记录检查时文件 SHA，提交图表时核对当前 SHA，拒绝旧检查结果。
@@ -29,7 +29,7 @@
 
 - diff 语法错误、冲突、越界路径、基线 SHA 不匹配、超限或校验失败均不写入用户工作区。
 - 相同 patch 意图重放沿用现有 durable write intent，返回已提交结果，不重复产生副作用。
-- Git 不可用时明确失败关闭，不静默退回自研 patch 算法。
+- Git 或临时 staging 初始化不可用时明确失败关闭，不静默退回自研 patch 算法。
 
 ## 验证标准
 
