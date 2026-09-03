@@ -71,7 +71,6 @@ def _render_docx(
         expected_sections=context["sections"],
         expected_headings=context["headingNumbers"],
         expected_image_count=None,
-        watermark_text=context["watermarkText"],
     )
 
 
@@ -457,7 +456,6 @@ def _validate_docx_structure(
     expected_sections: list[dict[str, str]],
     expected_headings: list[dict[str, Any]],
     expected_image_count: int | None,
-    watermark_text: str,
 ) -> dict[str, Any]:
     if not path.is_file() or not 1 <= path.stat().st_size <= MAX_DOCX_BYTES:
         raise ReportFailure("Word 文件不存在或超过 200 MiB")

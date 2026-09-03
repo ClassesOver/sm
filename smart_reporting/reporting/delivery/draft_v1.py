@@ -120,7 +120,11 @@ class ReportDraftBlock(StrictModel):
     block_id: str = Field(alias="blockId", min_length=1, max_length=128)
     markdown: str = Field(min_length=1, max_length=64_000)
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=100)
-    chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds")
+    chart_ids: tuple[str, ...] = Field(
+        default=(),
+        alias="chartIds",
+        description="当前正文块实际展示的冻结图表 ID；使用图表时必须显式填写。",
+    )
     claim_ids: tuple[str, ...] = Field(default=(), alias="claimIds", max_length=100)
 
     @field_validator("markdown")

@@ -26,7 +26,6 @@ from .outline import (
     ReportOutlineSection,
     freeze_outline,
 )
-from .profiles import HospitalOperationProfile, ruijin_profile
 
 __all__ = [
     "DOMAIN_CODES",
@@ -36,7 +35,6 @@ __all__ = [
     "DeterministicAnalysisBundle",
     "DomainDefinition",
     "DomainResolution",
-    "HospitalOperationProfile",
     "OutlineSectionProposal",
     "ReportOutline",
     "ReportOutlineProposal",
@@ -48,5 +46,4 @@ __all__ = [
     "freeze_outline",
     "profile_csv_dataset",
     "resolve_domain_mentions",
-    "ruijin_profile",
 ]

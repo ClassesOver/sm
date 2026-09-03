@@ -71,7 +71,7 @@ def create_report_runtime(
         ),
         state_repository=state_repository,
         analysis_concurrency=settings.report_analysis_concurrency,
-        visualization_concurrency=settings.report_visualization_concurrency,
         section_concurrency=settings.report_section_concurrency,
+        coding_execution_mode=settings.report_coding_execution_mode,
     )
     return report_worker, runtime

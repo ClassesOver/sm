@@ -4,19 +4,37 @@ from __future__ import annotations
 
 from typing import Literal
 
+from ...phase import (
+    REPORTING_TASK_DEPENDENCY,
+    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
+    REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+)
+from ...tools import build_report_worker_tools
 from ..checkpoint import CheckpointRetryUsage
+from .analysis_item_workflow import (
+    AnalysisEvidencePlan,
+    AnalysisItemWorkflow,
+    AnalysisSummaryDraft,
+)
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
     MAX_REPORT_INSTRUCTION_BYTES,
     MAX_REPORT_SECTION_PHASE_ATTEMPTS,
+    REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY,
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
+    REPORT_ARTIFACTS_STATE_KEY,
+    REPORT_DATA_REQUIREMENTS_STATE_KEY,
+    REPORT_DATASET_LINEAGE_STATE_KEY,
+    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY,
+    REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_OUTLINE_HASH_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
+    REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_VISUAL_THEME,
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-    AnalysisArtifact,
     AnalysisReworkRequest,
     Any,
     Awaitable,
@@ -34,6 +52,7 @@ from .base import (
     Mapping,
     OpenAIChat,
     ProfileCoverageManifest,
+    QueryRequirement,
     ReportingCheckpoint,
     ReportingCommand,
     ReportingError,
@@ -48,12 +67,16 @@ from .base import (
     ValidationError,
     WorkspaceService,
     ZoneInfo,
+    _coding_observed_data_facts,
     _frozen_outline,
     _payload_sha256,
+    _report_machine_terms,
     _source_warnings_from_state,
     anyio,
     asyncio,
+    authoritative_citations,
     build_deterministic_analysis_bundle,
+    build_report_artifact_validation_context,
     build_report_phase_acceptance_contract,
     cast,
     date,
@@ -70,9 +93,127 @@ from .base import (
     time,
     validate_metric_code_bindings,
 )
+from .coding_draft_workflow import CodingAnalysisAndDraftWorkflow
 from .datasets import _profile_coverage_instruction_projection
 
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
+
+
+async def _completed_coding_step_output() -> StepOutput:
+    """构造章节计划所需的默认成功回调结果。"""
+    return StepOutput(content={"status": "ready"})
+
+
+_ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
+_ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
+    {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
+)
+
+
+def _visualization_instruction_theme() -> dict[str, Any]:
+    return {
+        **REPORT_VISUAL_THEME,
+        "chartPalette": list(REPORT_VISUAL_THEME["chartPalette"]),
+    }
+
+
+def _analysis_item_complexity(
+    plan: Mapping[str, Any],
+) -> tuple[int, Literal["simple", "standard", "complex"]]:
+    """仅根据已校验分析计划字段计算复杂度，避免从自然语言猜测预算。"""
+
+    def _count(name: str) -> int:
+        value = plan.get(name)
+        return (
+            len(value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else 0
+        )
+
+    score = max(0, _count("datasetIds") - 1) * 3
+    score += min(2, max(0, _count("metrics") - 1))
+    score += 2 if _count("comparisonBasis") else 0
+    organization_grain_count = _count("organizationGrain")
+    score += 2 if organization_grain_count >= 2 else organization_grain_count
+    score += max(0, _count("actions") - 2)
+    tier: Literal["simple", "standard", "complex"] = (
+        "simple" if score <= 2 else "standard" if score <= 5 else "complex"
+    )
+    return score, tier
+
+
+def _analysis_item_thinking_policy(
+    plan: Mapping[str, Any], *, retry: bool, retry_reason: str | None
+) -> tuple[Literal["high", "max"], int, Literal["simple", "standard", "complex"]]:
+    """返回 thinking 档位、预算和复杂度；固定五阶段不再按请求次数截断。"""
+
+    _, tier = _analysis_item_complexity(plan)
+    normalized_reason = (retry_reason or "").lower()
+    evidence_retry = normalized_reason in _ANALYSIS_EVIDENCE_RETRY_REASONS or any(
+        marker in normalized_reason for marker in ("evidence", "fact_incomplete")
+    )
+    if retry and evidence_retry:
+        return "max", _ANALYSIS_THINKING_BUDGETS["complex"], tier
+    return "high", _ANALYSIS_THINKING_BUDGETS[tier], tier
+
+
+_MODEL_FACT_IDENTITY_KEYS = frozenset(
+    {
+        "datasetSha256",
+        "datasetSha256s",
+        "profileHash",
+        "currentDatasetSha256",
+        "baselineDatasetSha256",
+    }
+)
+_MODEL_FACT_WARNING_COLLECTIONS = (
+    "metrics",
+    "derivedMetrics",
+    "comparisons",
+    "reconciliations",
+)
+
+
+def _model_facing_deterministic_facts(
+    bundle: DeterministicAnalysisBundle,
+) -> dict[str, Any]:
+    """投影模型所需事实，隐藏校验元数据并去重重复告警。
+
+    哈希、文件大小和路径属于服务端身份校验边界，完整 bundle 仍写入不可变 facts
+    文件；模型只需要业务事实和可读的告警文本。相同告警可能同时出现在多个指标、
+    比较和汇总层，模型输入只保留首次出现的位置，避免重复消耗上下文预算。
+    """
+
+    projected = bundle.model_dump(mode="json", by_alias=True)
+    seen_warnings: set[str] = set()
+    for collection_key in _MODEL_FACT_WARNING_COLLECTIONS:
+        collection = projected.get(collection_key)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            for key in _MODEL_FACT_IDENTITY_KEYS:
+                item.pop(key, None)
+            warnings = item.get("warnings")
+            if not isinstance(warnings, list):
+                continue
+            unique = []
+            for warning in warnings:
+                if not isinstance(warning, str) or warning in seen_warnings:
+                    continue
+                seen_warnings.add(warning)
+                unique.append(warning)
+            item["warnings"] = unique
+
+    warnings = projected.get("warnings")
+    if isinstance(warnings, list):
+        unique = []
+        for warning in warnings:
+            if not isinstance(warning, str) or warning in seen_warnings:
+                continue
+            seen_warnings.add(warning)
+            unique.append(warning)
+        projected["warnings"] = unique
+    return projected
 
 
 def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int:
@@ -88,35 +229,16 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
 
 
 class RuntimeAnalysisMixin:
-    async def _run_visualization_finalize(
-        self,
-        *,
-        task_scope: TaskScope,
-        instruction: str,
-        acceptance_contract: dict[str, Any],
-        parent_run_id: str,
-    ) -> Mapping[str, Any]:
-        """启动并运行汇总 Task；产物冻结仍由调用方按 receipt 做身份校验。"""
-        task_id = task_scope.external_run_id
-        existing = await self.task_runner.repository.get_task_snapshot(task_id)
-        if existing is None:
-            await self.task_runner.start(
-                task_scope, instruction, acceptance_contract=acceptance_contract
-            )
-        elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
-            raise ReportingError(
-                "report_analysis_task_terminal", "可视化汇总 Task 已在未签发阶段产物前终止。"
-            )
-        return await self.task_runner.run(task_scope, parent_run_id=parent_run_id)
-
-    async def _run_visualization_section_task(self, section_code: str) -> None:
+    async def _run_visualization_section_task(
+        self, section_code: str, *, context: Mapping[str, Any] | None = None
+    ) -> None:
         """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。
 
         失败按 sectionCode 记入 checkpoint 账本并驱动同章 fresh retry(上限
         MAX_REPORT_SECTION_PHASE_ATTEMPTS);重试章继承已消耗预算并关闭探索
         (visualizationRecovery),已完成章由入口 durable 判定直接跳过。
         """
-        context = self._visualization_context
+        context = context or self._visualization_context
         run_context = context["run_context"]
         checkpoint = await self._current_reporting_checkpoint(run_context, context["checkpoint"])
         outline = _frozen_outline(self._state(run_context))
@@ -134,23 +256,51 @@ class RuntimeAnalysisMixin:
         facts = []
         section_analysis_items: dict[str, Mapping[str, Any]] = {}
         section_fact_files: dict[str, FileIdentity] = {}
+        section_warnings: list[str] = []
         for analysis_id in section.analysis_ids:
             fact_file = context["fact_files"].get(analysis_id)
             durable_item = (
                 analysis_items.get(analysis_id) if isinstance(analysis_items, Mapping) else None
             )
             if fact_file is None or not isinstance(durable_item, Mapping):
-                raise ReportingError(
-                    "report_analysis_evidence_incomplete",
-                    f"章节 {section_code} 缺少 analysisId {analysis_id} 的冻结 facts 或 durable 分析项。",
+                section_warnings.append(
+                    f"analysisId {analysis_id} 缺少冻结 facts 或 durable 分析项"
                 )
+                continue
             facts.append(
                 await self._visualization_section_fact_projection(
-                    analysis_id, fact_file, durable_item
+                    analysis_id, fact_file, durable_item, thread_id=context["thread_id"]
                 )
             )
             section_analysis_items[analysis_id] = durable_item
             section_fact_files[analysis_id] = fact_file
+        if not section_fact_files:
+            loguru_logger.warning(
+                f"report_visualization_section_warning section_code={section_code} "
+                f"warnings={section_warnings}"
+            )
+            if section_warnings:
+                await self._apply_durable_command(
+                    run_context,
+                    ReportingCommand(
+                        name="record_warnings",
+                        commandId=(
+                            f"visualization-warning:{context['revision']}:{section_code}:"
+                            f"{payload_sha256(section_warnings)}"
+                        ),
+                        payload={
+                            "warnings": [
+                                {
+                                    "code": "visualization_section_warning",
+                                    "message": warning,
+                                    "sectionCode": section_code,
+                                }
+                                for warning in section_warnings
+                            ]
+                        },
+                    ),
+                )
+            return
         # 按章动态预算以该章 analysisIds 的 evidence/fact 文件为基数,与全局汇总预算
         # 同构但互不共享;TaskRunner 解析(visualizationBudgetVersion 等 10 个标量)
         # 缺一即拒绝,因此必须整组注入 acceptance contract。
@@ -183,13 +333,26 @@ class RuntimeAnalysisMixin:
                 attempt=attempt,
             )
             script_path = f"{root}/charts.py"
+            try:
+                report_goal = self._envelope(run_context).report_goal
+            except ReportingError:
+                report_goal = ""
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_section",
+                "reportGoal": report_goal,
                 "sectionCode": section_code,
                 "section": section.model_dump(mode="json", by_alias=True),
+                "sectionGoal": {
+                    "sectionCode": section.code,
+                    "title": section.title,
+                    "focus": list(section.focus),
+                    "analysisIds": list(section.analysis_ids),
+                },
                 "analysisIds": list(section.analysis_ids),
+                "warnings": section_warnings,
                 "visualInspectionMode": context["visual_inspection_mode"],
+                "reportVisualTheme": _visualization_instruction_theme(),
                 "visualizationFacts": facts,
                 "visualizationWorkspace": {
                     "scriptPath": script_path,
@@ -309,9 +472,13 @@ class RuntimeAnalysisMixin:
         analysis_id: str,
         fact_file: FileIdentity,
         durable_item: Any,
+        *,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         fact_model = await self._read_identity_model(
-            self._visualization_context["thread_id"], fact_file, DeterministicAnalysisBundle
+            thread_id or self._visualization_context["thread_id"],
+            fact_file,
+            DeterministicAnalysisBundle,
         )
         payload = fact_model.model_dump(mode="json", by_alias=True)
         return {
@@ -406,6 +573,7 @@ class RuntimeAnalysisMixin:
     async def run_coding_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        feedback = self._feedback(_step_input)
         state = self._state(run_context)
         scope = self._scope(run_context)
         durable = await self.state_repository.get_or_create(
@@ -483,7 +651,293 @@ class RuntimeAnalysisMixin:
             },
             run_context=self._tool_context(run_context),
         )
-        return StepOutput(content=await self._run_coding(run_context, feedback=None))
+        revision = int(result.get("revision", 0)) + 1
+        async with self.workspace_service._async_client() as client:
+            sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
+            sandbox_id = str(getattr(sandbox, "id", "") or "")
+        if not sandbox_id or not self.report_worker.id:
+            raise ReportingError("report_worker_unavailable", "报表 Coding 工作区不可用。")
+        lineage = tuple(
+            DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+        )
+        requirements = tuple(
+            QueryRequirement.model_validate(item)
+            for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
+        )
+        detailed_plan = DetailedAnalysisPlan.model_validate(
+            state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
+        )
+        analysis_context_file = FileIdentity.model_validate(
+            state.get(REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY)
+        )
+        profile_coverage = ProfileCoverageManifest.model_validate(
+            state.get(REPORT_PROFILE_COVERAGE_STATE_KEY)
+        )
+        dataset_handles = tuple(
+            DatasetHandle.from_state(item) for item in result.get("datasets", ())
+        )
+        if not dataset_handles:
+            raise ReportingError("report_analysis_context_unavailable", "授权 Dataset 缺失。")
+        citation_bindings = authoritative_citations(lineage)
+        render_sections = [
+            {
+                "code": section.code,
+                "title": section.title,
+                "protocolMarker": True,
+                "analysisIds": list(section.analysis_ids),
+            }
+            for section in outline.sections
+        ]
+        validation_context = build_report_artifact_validation_context(
+            forbidden_visible_terms=_report_machine_terms(
+                state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
+                state[REPORT_DATASET_LINEAGE_STATE_KEY],
+                state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
+            ),
+            observed_data_facts=_coding_observed_data_facts(
+                self._data_shapes(run_context), requirements, lineage
+            ),
+            expected_sections=tuple(item["code"] for item in render_sections),
+            expected_citation_bindings=tuple(
+                (item.dataset_id, item.requirement_id) for item in citation_bindings
+            ),
+            expected_citations=tuple(
+                (item.citation_id, item.dataset_id, item.requirement_id, item.snapshot_hash)
+                for item in citation_bindings
+            ),
+            analysis_context_file=analysis_context_file.model_dump(mode="json", by_alias=True),
+        )
+        validation_context["renderContract"] = {
+            "title": state[REPORT_OUTLINE_STATE_KEY]["title"],
+            "sections": render_sections,
+            "citationIds": [item.citation_id for item in citation_bindings],
+            "requireTable": False,
+        }
+        validation_context_file = FileIdentity.model_validate(
+            await self._write_artifact_validation_context(
+                scope["threadId"],
+                f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.validation-context.json",
+                validation_context,
+            )
+        )
+        checkpoint = await self._load_or_create_reporting_checkpoint(
+            run_context,
+            revision=revision,
+            profile_coverage=profile_coverage,
+            analysis_context_file=analysis_context_file,
+            outline=outline,
+        )
+        checkpoint, fact_files = await self._restore_or_create_deterministic_analysis_facts(
+            run_context=run_context,
+            checkpoint=checkpoint,
+            thread_id=scope["threadId"],
+            report_run_id=str(run_context.run_id or scope["externalRunId"]),
+            revision=revision,
+            detailed_plan=detailed_plan,
+            dataset_handles=dataset_handles,
+        )
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            phase="analysis",
+            files=self._merge_checkpoint_files(checkpoint.files, validation_context_file),
+        )
+        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        checkpoint_state: dict[str, Any] = checkpoint.model_dump(mode="python")
+        # Coding 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
+        # 回调不持有跨模型调用的外层锁，从而允许 Parallel 模式真正并发执行分析项和章节。
+
+        async def run_analysis_item(
+            instruction: Mapping[str, Any], context: RunContext
+        ) -> StepOutput:
+            analysis_id = instruction.get("analysisId")
+            if not isinstance(analysis_id, str):
+                raise ReportingError("report_analysis_item_unknown", "章节缺少有效 analysisId。")
+            section_goal = instruction.get("sectionGoal")
+            if not isinstance(section_goal, Mapping):
+                raise ReportingError("report_analysis_item_unknown", "章节缺少有效 sectionGoal。")
+            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
+            updated = await self._run_analysis_item_task(
+                run_context,
+                checkpoint=checkpoint,
+                revision=revision,
+                sandbox_id=sandbox_id,
+                validation_context_file=validation_context_file,
+                detailed_plan=detailed_plan,
+                dataset_handles=dataset_handles,
+                lineage=lineage,
+                citation_bindings=citation_bindings,
+                analysis_context_file=analysis_context_file,
+                fact_files=fact_files,
+                analysis_id=analysis_id,
+                section_goal=section_goal,
+                retry_reason=("report_revision_feedback" if feedback else None),
+                feedback=feedback,
+                rework_request=None,
+            )
+            checkpoint_state.clear()
+            checkpoint_state.update(updated.model_dump(mode="python"))
+            return StepOutput(content={"analysisId": analysis_id, "status": "completed"})
+
+        async def submit_visualization(
+            instruction: Mapping[str, Any], _context: RunContext
+        ) -> StepOutput:
+            section_code = instruction.get("sectionCode")
+            if not isinstance(section_code, str):
+                raise ReportingError(
+                    "report_visualization_section_invalid", "章节缺少有效 sectionCode。"
+                )
+            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
+            visual_inspection_mode = (
+                "vision"
+                if getattr(
+                    getattr(self.report_worker, "model", None), "_report_vision_enabled", True
+                )
+                else "deterministic"
+            )
+            visualization_context = {
+                "run_context": run_context,
+                "checkpoint": checkpoint,
+                "revision": revision,
+                "sandbox_id": sandbox_id,
+                "external_run_id": str(run_context.run_id or scope["externalRunId"]),
+                "thread_id": scope["threadId"],
+                "validation_context_file": validation_context_file,
+                "fact_files": fact_files,
+                "visual_inspection_mode": visual_inspection_mode,
+            }
+            await self._run_visualization_section_task(section_code, context=visualization_context)
+            updated = await self._current_reporting_checkpoint(run_context, checkpoint)
+            checkpoint_state.clear()
+            checkpoint_state.update(updated.model_dump(mode="python"))
+            return StepOutput(content={"sectionCode": section_code, "status": "completed"})
+
+        async def draft_section(instruction: Mapping[str, Any], _context: RunContext) -> StepOutput:
+            section_code = instruction.get("sectionCode")
+            if not isinstance(section_code, str):
+                raise ReportingError("report_section_invalid", "章节缺少有效 sectionCode。")
+            section = next(item for item in outline.sections if item.code == section_code)
+            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
+            artifact = await self._build_coding_artifact(
+                run_context,
+                analysis_ids=section.analysis_ids,
+                detailed_plan=detailed_plan,
+                fact_files=fact_files,
+                citation_bindings=citation_bindings,
+                section_codes=(section_code,),
+            )
+            work_item = self._build_section_work_item(
+                section,
+                detailed_plan=detailed_plan,
+                analysis_artifact=artifact,
+                citation_bindings=citation_bindings,
+            )
+            updated, _section_artifact, rework = await self._run_section_phase(
+                run_context,
+                checkpoint=checkpoint,
+                revision=revision,
+                sandbox_id=sandbox_id,
+                validation_context_file=validation_context_file,
+                work_item=work_item,
+                analysis_rework_constraints=self._analysis_rework_constraints(
+                    detailed_plan=detailed_plan,
+                    profile_coverage=profile_coverage,
+                    analysis_ids=work_item.analysis_ids,
+                ),
+            )
+            if rework is not None:
+                raise ReportingError(
+                    "report_analysis_rework_required", "章节请求补证；请重新运行该报告。"
+                )
+            checkpoint_state.clear()
+            checkpoint_state.update(updated.model_dump(mode="python"))
+            return StepOutput(content={"sectionCode": section_code, "status": "completed"})
+
+        coding_workflow = CodingAnalysisAndDraftWorkflow(
+            report_goal=self._envelope(run_context).report_goal,
+            sections=[
+                {
+                    "sectionCode": section.code,
+                    "title": section.title,
+                    "focus": section.focus,
+                    "analysisIds": list(section.analysis_ids),
+                }
+                for section in outline.sections
+            ],
+            run_analysis=run_analysis_item,
+            submit_visualization=submit_visualization,
+            draft_section=draft_section,
+            execution_mode=getattr(self, "coding_execution_mode", "sequential"),
+            section_concurrency=getattr(self, "section_concurrency", 1),
+            analysis_concurrency=getattr(self, "analysis_concurrency", 1),
+        )
+        output = await coding_workflow.arun(
+            input={"reportGoal": self._envelope(run_context).report_goal},
+            run_id=str(run_context.run_id or scope["externalRunId"]),
+            session_id=scope["threadId"],
+        )
+        content = getattr(output, "content", None)
+        if not isinstance(content, dict):
+            raise ReportingError(
+                "report_coding_workflow_output_invalid",
+                "CodingAnalysisAndDraftWorkflow 未返回有效结果。",
+            )
+        final_checkpoint = ReportingCheckpoint.model_validate(checkpoint_state)
+        final_artifact = await self._build_coding_artifact(
+            run_context,
+            analysis_ids=tuple(item.analysis_id for item in detailed_plan.analyses),
+            detailed_plan=detailed_plan,
+            fact_files=fact_files,
+            citation_bindings=citation_bindings,
+        )
+        artifact_path = (
+            f"报表/智能分析/{run_context.run_id}/phases/revision-{revision}/analysis-artifact.json"
+        )
+        artifact_file = await self._write_immutable_artifact(
+            scope["threadId"],
+            artifact_path,
+            json.dumps(
+                final_artifact.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+        )
+        final_checkpoint = self._update_reporting_checkpoint(
+            final_checkpoint,
+            phase="finalize",
+            report_brief=final_artifact.report_brief,
+            evidence_manifest=final_artifact.evidence_manifest,
+            analysis_manifest_file=artifact_file,
+            profile_read_receipts=final_artifact.profile_read_receipts,
+        )
+        await self._persist_reporting_checkpoint(run_context, final_checkpoint)
+        markdown_path = f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.md"
+        manifest_path = (
+            f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.manifest.json"
+        )
+        _final_checkpoint, manifest = await self._finalize_reporting_sections(
+            run_context,
+            checkpoint=final_checkpoint,
+            revision=revision,
+            markdown_path=markdown_path,
+            manifest_path=manifest_path,
+            lineage=lineage,
+            citation_bindings=citation_bindings,
+            source_warnings=_source_warnings_from_state(state),
+        )
+        result.update(
+            {
+                "markdownPath": markdown_path,
+                "artifactManifestPath": manifest_path,
+                "revision": revision,
+            }
+        )
+        state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+        state[REPORT_ARTIFACTS_STATE_KEY] = {
+            "draft": manifest.model_dump(mode="json", by_alias=True)
+        }
+        return StepOutput(
+            content={**content, "jobId": result["jobId"], "markdownPath": markdown_path}
+        )
 
     async def _write_artifact_validation_context(
         self,
@@ -801,14 +1255,6 @@ class RuntimeAnalysisMixin:
             durable.payload.get("workflowCheckpoint") if durable is not None else None
         )
         if isinstance(stored_checkpoint, dict):
-            if (
-                stored_checkpoint.get("version") == "1"
-                and stored_checkpoint.get("phase") != "completed"
-            ):
-                raise ReportingError(
-                    "report_semantic_contract_upgrade_required",
-                    "运行中的 v1 checkpoint 缺少 v2 语义契约，必须重新分析。",
-                )
             try:
                 checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
             except (TypeError, ValueError, ValidationError) as error:
@@ -961,7 +1407,7 @@ class RuntimeAnalysisMixin:
         profile = reporting_thinking_profile_from_model(model)
         if not profile.enabled:
             return "off"
-        return "max" if retry else "high"
+        return "high"
 
     async def _analysis_item_artifacts_from_receipt(
         self,
@@ -1000,6 +1446,107 @@ class RuntimeAnalysisMixin:
                 )
         return expected
 
+    async def _execute_analysis_item_workflow(
+        self,
+        instruction: str,
+        task_run_context: RunContext,
+        *,
+        parent_run_context: RunContext,
+    ) -> StepOutput:
+        """在当前 Task lease 内执行五阶段子流程，工具继续复用现有强契约。"""
+
+        try:
+            payload = json.loads(instruction)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise ReportingError(
+                "report_analysis_context_invalid", "单项分析任务输入不是有效 JSON。"
+            ) from error
+        if not isinstance(payload, dict):
+            raise ReportingError(
+                "report_analysis_context_invalid", "单项分析任务输入必须是 JSON 对象。"
+            )
+        toolkits = build_report_worker_tools(
+            self.workspace_service,
+            self.task_runner.repository,
+            state_repository=self.state_repository,
+            run_context=task_run_context,
+        )
+        if len(toolkits) != 1:
+            raise ReportingError("report_phase_contract_invalid", "单项分析 Toolkit 装配结果无效。")
+        toolkit = toolkits[0]
+        analysis_id = str(payload.get("currentAnalysisId") or "")
+
+        async def plan_evidence(
+            planner_payload: Mapping[str, Any], *, repair: bool
+        ) -> AnalysisEvidencePlan:
+            request = {
+                **planner_payload,
+                "analysisBlock": {
+                    "blockId": f"{analysis_id}:evidence:{'repair' if repair else 'initial'}"
+                },
+            }
+            dependencies = (
+                task_run_context.dependencies
+                if isinstance(task_run_context.dependencies, dict)
+                else None
+            )
+            binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
+            previous_effort = previous_budget = _missing = object()
+            if repair:
+                if not isinstance(binding, dict):
+                    raise ReportingError(
+                        "report_phase_contract_invalid",
+                        "脚本修复缺少隔离的 thinking 契约。",
+                    )
+                # repair 与正常计划共享 Agent，但只在当前顺序步骤内临时升级。finally
+                # 必须恢复原档位，防止同一 Task 的最终摘要继承 max 预算。
+                previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
+                previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
+                binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "max"
+                binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_THINKING_BUDGETS[
+                    "complex"
+                ]
+            try:
+                output = await self._run_planner(
+                    self._analysis_evidence_agent,
+                    request,
+                    parent_run_context,
+                )
+            finally:
+                if repair and isinstance(binding, dict):
+                    for key, previous in (
+                        (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
+                        (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
+                    ):
+                        if previous is _missing:
+                            binding.pop(key, None)
+                        else:
+                            binding[key] = previous
+            return cast(AnalysisEvidencePlan, output)
+
+        async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
+            output = await self._run_planner(
+                self._analysis_summary_agent,
+                {
+                    **summary_payload,
+                    "analysisBlock": {"blockId": f"{analysis_id}:summary"},
+                },
+                parent_run_context,
+            )
+            return cast(AnalysisSummaryDraft, output)
+
+        workflow = AnalysisItemWorkflow(
+            plan_evidence=plan_evidence,
+            summarize=summarize,
+            read_file=toolkit.coding_read_file,
+            create_file=toolkit.create_analysis_file,
+            overwrite_file=toolkit.overwrite_analysis_file,
+            run_script=toolkit.terminal,
+            complete=toolkit.complete_analysis_item,
+        )
+        result = await workflow.run(payload, task_run_context)
+        return result.output
+
     async def _run_analysis_item_task(
         self,
         run_context: RunContext,
@@ -1015,6 +1562,7 @@ class RuntimeAnalysisMixin:
         analysis_context_file: FileIdentity,
         fact_files: Mapping[str, FileIdentity],
         analysis_id: str,
+        section_goal: Mapping[str, Any],
         retry_reason: str | None,
         feedback: str | None,
         rework_request: AnalysisReworkRequest | None,
@@ -1126,6 +1674,7 @@ class RuntimeAnalysisMixin:
                 "phase": "analysis",
                 "taskKind": "analysis_item",
                 "reportGoal": self._envelope(run_context).report_goal,
+                "sectionGoal": dict(section_goal),
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
                 "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
@@ -1136,7 +1685,7 @@ class RuntimeAnalysisMixin:
                 "deterministicFactFile": fact_files[analysis_id].model_dump(
                     mode="json", by_alias=True
                 ),
-                "deterministicFacts": deterministic_facts.model_dump(mode="json", by_alias=True),
+                "deterministicFacts": _model_facing_deterministic_facts(deterministic_facts),
                 "profileCoverage": _profile_coverage_instruction_projection(
                     checkpoint.profile_coverage,
                     analysis_context_file,
@@ -1172,6 +1721,30 @@ class RuntimeAnalysisMixin:
                     "单项分析投影超过模型输入边界；证据未被静默截断。",
                 )
             retry = any(item.status == "failed" for item in matching_traces)
+            effective_retry_reason = retry_reason or (
+                last_error.code if isinstance(last_error, ReportingError) else None
+            )
+            (
+                policy_effort,
+                thinking_budget,
+                complexity_tier,
+            ) = _analysis_item_thinking_policy(
+                analysis_plan, retry=retry, retry_reason=effective_retry_reason
+            )
+            complexity_score, _ = _analysis_item_complexity(analysis_plan)
+            worker_effort = self._worker_thinking_effort(retry=retry)
+            thinking_effort = "off" if worker_effort == "off" else policy_effort
+            loguru_logger.info(
+                "report_analysis_thinking_policy analysis_id={} effort={} budget={} "
+                "complexity_tier={} complexity_score={} "
+                "escalation_reason={}",
+                analysis_id,
+                thinking_effort,
+                thinking_budget,
+                complexity_tier,
+                complexity_score,
+                effective_retry_reason if thinking_effort == "max" else "-",
+            )
             analysis_fact_queries_used = _analysis_fact_retry_usage(last_error)
             analysis_recovery = _analysis_fact_recovery_required(last_error)
             contract = build_report_phase_acceptance_contract(
@@ -1182,9 +1755,13 @@ class RuntimeAnalysisMixin:
                 phase_contract={
                     "reportRunId": report_run_id,
                     "taskKind": "analysis_item",
-                    # 单项分析首次继承 Worker 的 high 档位；只有服务端判定上一次尝试
-                    # 失败时才升为 max。全局关闭 thinking 时 Worker 策略仍会返回 off。
-                    "thinkingEffort": self._worker_thinking_effort(retry=retry),
+                    "thinkingEffort": thinking_effort,
+                    "thinkingBudget": thinking_budget,
+                    "thinkingComplexityTier": complexity_tier,
+                    "thinkingComplexityScore": complexity_score,
+                    "thinkingEscalationReason": (
+                        effective_retry_reason if thinking_effort == "max" else None
+                    ),
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
                     "analysisFactBudgetVersion": 1,
@@ -1247,6 +1824,10 @@ class RuntimeAnalysisMixin:
                 receipt = await self.task_runner.run(
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
+                    executor=partial(
+                        self._execute_analysis_item_workflow,
+                        parent_run_context=run_context,
+                    ),
                 )
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
@@ -1335,798 +1916,6 @@ class RuntimeAnalysisMixin:
                         "attempt": attempt,
                         "retryUsage": _checkpoint_retry_usage(
                             error, work_kind="analysis_item"
-                        ).model_dump(mode="json", by_alias=True),
-                    },
-                )
-                await self._persist_reporting_checkpoint(run_context, checkpoint)
-        assert last_error is not None
-        raise last_error
-
-    async def _run_analysis_phase(
-        self,
-        run_context: RunContext,
-        *,
-        checkpoint: ReportingCheckpoint,
-        revision: int,
-        sandbox_id: str,
-        validation_context_file: FileIdentity,
-        detailed_plan: DetailedAnalysisPlan,
-        dataset_handles: tuple[DatasetHandle, ...],
-        lineage: tuple[DatasetLineage, ...],
-        citation_bindings: tuple[Citation, ...],
-        analysis_context_file: FileIdentity,
-        feedback: str | None,
-        rework_request: AnalysisReworkRequest | None,
-    ) -> tuple[ReportingCheckpoint, AnalysisArtifact]:
-        scope = self._scope(run_context)
-        checkpoint, fact_files = await self._restore_or_create_deterministic_analysis_facts(
-            run_context=run_context,
-            checkpoint=checkpoint,
-            thread_id=scope["threadId"],
-            report_run_id=str(run_context.run_id or scope["externalRunId"]),
-            revision=revision,
-            detailed_plan=detailed_plan,
-            dataset_handles=dataset_handles,
-        )
-        analysis_ids = tuple(item.analysis_id for item in detailed_plan.analyses)
-        candidate_analysis_ids = (
-            rework_request.analysis_ids if rework_request is not None else analysis_ids
-        )
-        if rework_request is not None:
-            checkpoint = self._update_reporting_checkpoint(
-                checkpoint,
-                phase="analysis",
-                report_brief=None,
-                evidence_manifest=None,
-                analysis_manifest_file=None,
-                last_error=None,
-            )
-            await self._apply_durable_command(
-                run_context,
-                ReportingCommand(
-                    name="start_analysis",
-                    commandId=(
-                        f"analysis-rework-start:{revision}:"
-                        f"{payload_sha256(rework_request.model_dump(mode='json', by_alias=True))}"
-                    ),
-                ),
-            )
-            await self._persist_reporting_checkpoint(run_context, checkpoint)
-        retry_reason = (
-            f"analysis_rework:{payload_sha256(rework_request.model_dump(mode='json', by_alias=True))}"
-            if rework_request is not None
-            else ("report_revision_feedback" if feedback else None)
-        )
-
-        completed_task_ids = {
-            item.analysis_id
-            for item in checkpoint.trace
-            if item.phase == "analysis"
-            and item.work_kind == "analysis_item"
-            and item.status == "completed"
-            and item.retry_reason == retry_reason
-            and item.analysis_id is not None
-        }
-
-        async def run_one(analysis_id: str) -> ReportingCheckpoint:
-            return await self._run_analysis_item_task(
-                run_context,
-                checkpoint=checkpoint,
-                revision=revision,
-                sandbox_id=sandbox_id,
-                validation_context_file=validation_context_file,
-                detailed_plan=detailed_plan,
-                dataset_handles=dataset_handles,
-                lineage=lineage,
-                citation_bindings=citation_bindings,
-                analysis_context_file=analysis_context_file,
-                fact_files=fact_files,
-                analysis_id=analysis_id,
-                retry_reason=retry_reason,
-                feedback=feedback,
-                rework_request=rework_request,
-            )
-
-        scheduled_analysis_ids = await _run_pending_analysis_items(
-            candidate_analysis_ids,
-            completed_analysis_ids=completed_task_ids,
-            concurrency=self.analysis_concurrency,
-            worker=run_one,
-        )
-        if scheduled_analysis_ids:
-            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
-        visual_inspection_mode: Literal["vision", "deterministic"] = (
-            "vision"
-            if getattr(getattr(self.report_worker, "model", None), "_report_vision_enabled", True)
-            else "deterministic"
-        )
-        _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
-        self._visualization_context = {
-            "run_context": run_context,
-            "checkpoint": checkpoint,
-            "revision": revision,
-            "sandbox_id": sandbox_id,
-            "external_run_id": str(run_context.run_id or scope["externalRunId"]),
-            "thread_id": scope["threadId"],
-            "validation_context_file": validation_context_file,
-            "fact_files": fact_files,
-            "visual_inspection_mode": visual_inspection_mode,
-        }
-        durable_visualization = await self.state_repository.get(
-            str(run_context.run_id or scope["externalRunId"])
-        )
-        visualization_payload = (
-            durable_visualization.payload if durable_visualization is not None else {}
-        )
-        completed_visualization_sections = {
-            item
-            for item in visualization_payload.get("completedVisualizationSections", ())
-            if isinstance(item, str)
-        }
-        raw_outline = self._state(run_context).get(REPORT_OUTLINE_STATE_KEY)
-        outline = (
-            _frozen_outline(self._state(run_context))
-            if isinstance(raw_outline, Mapping) and "sections" in raw_outline
-            else None
-        )
-        section_codes = (
-            tuple(section.code for section in outline.sections) if outline is not None else ()
-        )
-        await _run_pending_visualization_sections(
-            section_codes,
-            completed_section_codes=completed_visualization_sections,
-            concurrency=getattr(self, "visualization_concurrency", 1),
-            worker=self._run_visualization_section_task,
-        )
-        checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
-        last_error: Exception | None = _checkpoint_retry_error(
-            checkpoint,
-            work_kind="visualization_finalize",
-            analysis_id=None,
-            retry_reason=retry_reason,
-        )
-        _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
-        # finalize 的 Dataset 语义必须来自本次已授权的 snapshot；空 handles 没有可绑定的
-        # 身份和语义，继续构造空目录会把不完整输入交给 worker，并可能产生无效 finalize
-        # Task。此校验位于 finalize Task 启动前，确保运行时边界直接拒绝且不产生副作用。
-        if not dataset_handles:
-            raise ReportingError(
-                "report_analysis_dataset_inconsistent",
-                "可视化汇总缺少授权 Dataset snapshot。",
-            )
-
-        # 图表 Worker 需要一次拿到完整的、已校验身份的事实包；把 facts 读取放在
-        # Workflow 边界而不是交给模型反复 query/read，消除日志中因路径歧义产生的
-        # 探索往返。包只在本次 visualization 阶段首次构建，fresh retry 复用内存对象，
-        # 不重新下载或计算 deterministic facts。
-        visualization_facts_package: list[dict[str, Any]] | None = None
-        fact_bundles: dict[str, dict[str, Any]] = {}
-
-        for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
-            started_trace = next(
-                (
-                    item
-                    for item in reversed(checkpoint.trace)
-                    if item.phase == "analysis"
-                    and item.work_kind == "visualization_finalize"
-                    and item.status == "started"
-                    and item.retry_reason == retry_reason
-                ),
-                None,
-            )
-            attempt = (
-                started_trace.attempt
-                if started_trace is not None
-                else max(
-                    (
-                        item.attempt
-                        for item in checkpoint.trace
-                        if item.phase == "analysis" and item.work_kind == "visualization_finalize"
-                    ),
-                    default=-1,
-                )
-                + 1
-            )
-            task_id = reporting_phase_task_key(
-                str(run_context.run_id or "report"),
-                revision,
-                "analysis",
-                task_key="viz-finalize",
-                task_kind="visualization_finalize",
-                attempt=attempt,
-            )
-            output_path = (
-                f"报表/智能分析/{run_context.run_id}/phases/revision-{revision}/"
-                f"visualization-attempt-{attempt + 1}.json"
-            )
-            durable_state = await self.state_repository.get(
-                str(run_context.run_id or scope["externalRunId"])
-            )
-            durable_payload = durable_state.payload if durable_state is not None else {}
-            visualization_payload = durable_payload
-            registered_charts = [
-                dict(item)
-                for item in durable_payload.get("charts", ())
-                if isinstance(item, Mapping) and isinstance(item.get("chartId"), str)
-            ]
-            charts_registered = durable_payload.get("chartsRegistered") is True or (
-                "chartsRegistered" not in durable_payload and bool(registered_charts)
-            )
-            current_analysis_id = durable_payload.get("currentAnalysisId")
-            completed_analysis_ids = {
-                item
-                for item in durable_payload.get("completedAnalysisIds", ())
-                if isinstance(item, str)
-            }
-            if current_analysis_id is not None or completed_analysis_ids != set(analysis_ids):
-                raise ReportingError(
-                    "report_analysis_evidence_incomplete",
-                    "visualization 启动前 analysisId 尚未按冻结计划全部完成。",
-                )
-            analysis_plans = {
-                item.analysis_id: {
-                    "analysisId": item.analysis_id,
-                    "domain": item.domain,
-                    "step": item.management_question,
-                    "primaryMetricFamily": item.primary_metric_family,
-                    "datasetIds": list(item.dataset_ids),
-                    "organizationGrain": list(item.organization_grain),
-                }
-                for item in detailed_plan.analyses
-            }
-            analysis_items = durable_payload.get("analysisItems")
-            visualization_budget = _visualization_dynamic_budget(analysis_items, fact_files)
-            if visualization_facts_package is None:
-                visualization_facts_package = []
-                for analysis in detailed_plan.analyses:
-                    fact_model = await self._read_identity_model(
-                        scope["threadId"],
-                        fact_files[analysis.analysis_id],
-                        DeterministicAnalysisBundle,
-                    )
-                    fact_payload = fact_model.model_dump(mode="json", by_alias=True)
-                    fact_bundles[analysis.analysis_id] = fact_payload
-                    raw_metrics = fact_payload.get("metrics", [])
-                    raw_derived_metrics = fact_payload.get("derivedMetrics", [])
-                    raw_comparisons = fact_payload.get("comparisons", [])
-                    durable_item = (
-                        analysis_items.get(analysis.analysis_id)
-                        if isinstance(analysis_items, Mapping)
-                        else None
-                    )
-                    visualization_facts_package.append(
-                        {
-                            "analysisId": analysis.analysis_id,
-                            "plan": analysis_plans[analysis.analysis_id],
-                            "summary": (
-                                durable_item.get("summary")
-                                if isinstance(durable_item, Mapping)
-                                else None
-                            ),
-                            "factFile": fact_files[analysis.analysis_id].model_dump(
-                                mode="json", by_alias=True
-                            ),
-                            # 模型只需要知道可画哪些字段及其在真实 facts schema 中的精确位置。
-                            # 完整数值序列继续留在已验哈希的 facts 文件，由图表脚本按签发路径
-                            # 一次读取；禁止复制大数组，也禁止让模型猜 periodValues/topGroups
-                            # 位于根节点还是 metric 内。
-                            "metrics": [
-                                {
-                                    "metricIndex": metric_index,
-                                    **{
-                                        key: metric.get(key)
-                                        for key in (
-                                            "datasetId",
-                                            "field",
-                                            "metricCodes",
-                                            "aggregation",
-                                            "unit",
-                                            "scope",
-                                            "periodRoles",
-                                            "periodStart",
-                                            "periodEnd",
-                                            "total",
-                                        )
-                                    },
-                                    "periodValueCount": len(metric.get("periodValues", ())),
-                                    "topGroupCount": len(metric.get("topGroups", ())),
-                                    "bottomGroupCount": len(metric.get("bottomGroups", ())),
-                                    "dataPaths": {
-                                        "metric": f"metrics[{metric_index}]",
-                                        "periodValues": f"metrics[{metric_index}].periodValues",
-                                        "topGroups": f"metrics[{metric_index}].topGroups",
-                                        "bottomGroups": f"metrics[{metric_index}].bottomGroups",
-                                    },
-                                }
-                                for metric_index, metric in enumerate(raw_metrics)
-                                if isinstance(metric, Mapping)
-                            ],
-                            "derivedMetrics": [
-                                {
-                                    "derivedMetricIndex": metric_index,
-                                    **{
-                                        key: metric.get(key)
-                                        for key in (
-                                            "code",
-                                            "kind",
-                                            "unit",
-                                            "periodRole",
-                                            "periodStart",
-                                            "periodEnd",
-                                            "datasetIds",
-                                            "value",
-                                            "percentage",
-                                        )
-                                    },
-                                    "dataPath": f"derivedMetrics[{metric_index}]",
-                                }
-                                for metric_index, metric in enumerate(raw_derived_metrics)
-                                if isinstance(metric, Mapping)
-                            ],
-                            "comparisons": [
-                                {
-                                    "comparisonIndex": comparison_index,
-                                    **{
-                                        key: comparison.get(key)
-                                        for key in (
-                                            "comparisonType",
-                                            "field",
-                                            "unit",
-                                            "periodStart",
-                                            "periodEnd",
-                                            "currentDatasetId",
-                                            "baselineDatasetId",
-                                            "currentTotal",
-                                            "baselineTotal",
-                                            "change",
-                                            "changeRate",
-                                        )
-                                    },
-                                    "dataPath": f"comparisons[{comparison_index}]",
-                                }
-                                for comparison_index, comparison in enumerate(raw_comparisons)
-                                if isinstance(comparison, Mapping)
-                            ],
-                            "correlationCount": len(fact_payload.get("correlations", {})),
-                            "correlationsPath": "correlations",
-                            "reconciliationCount": len(fact_payload.get("reconciliations", ())),
-                            "reconciliationsPath": "reconciliations",
-                            "warningCount": len(fact_payload.get("warnings", ())),
-                            "warningsPath": "warnings",
-                            "fields": sorted(
-                                {
-                                    *(
-                                        metric["field"]
-                                        for metric in raw_metrics
-                                        if isinstance(metric, Mapping)
-                                        and isinstance(metric.get("field"), str)
-                                    ),
-                                }
-                            ),
-                            "allowedMetricCodes": sorted(
-                                {
-                                    *(
-                                        code
-                                        for metric in raw_metrics
-                                        if isinstance(metric, Mapping)
-                                        for code in metric.get("metricCodes", ())
-                                        if isinstance(code, str)
-                                    ),
-                                    *(
-                                        metric["code"]
-                                        for metric in raw_derived_metrics
-                                        if isinstance(metric, Mapping)
-                                        and isinstance(metric.get("code"), str)
-                                    ),
-                                }
-                            ),
-                            "evidenceFiles": (
-                                durable_item.get("evidenceFiles", [])
-                                if isinstance(durable_item, Mapping)
-                                else []
-                            ),
-                            "citationIds": (
-                                durable_item.get("citationIds", [])
-                                if isinstance(durable_item, Mapping)
-                                else []
-                            ),
-                        }
-                    )
-            visualization_root = f"报表/智能分析/{run_context.run_id}/analysis"
-            allowed_metric_codes = sorted(
-                {
-                    code
-                    for item in visualization_facts_package
-                    for code in item["allowedMetricCodes"]
-                }
-            )
-            if set(fact_bundles) != set(analysis_ids):
-                raise ReportingError(
-                    "report_analysis_evidence_incomplete",
-                    "确定性 facts 没有精确覆盖冻结分析计划。",
-                )
-            evidence_dataset_ids = {
-                dataset_id
-                for analysis_id in analysis_ids
-                for item in (
-                    (analysis_items.get(analysis_id),)
-                    if isinstance(analysis_items, Mapping)
-                    else ()
-                )
-                if isinstance(item, Mapping)
-                for dataset_id in _require_dataset_id_sequence(
-                    item.get("datasetIds"), error_message="durable analysis Dataset 无效。"
-                )
-            }
-            authorized_dataset_ids = {item.dataset_id for item in dataset_handles}
-            if authorized_dataset_ids and (
-                not evidence_dataset_ids
-                or not evidence_dataset_ids.issubset(authorized_dataset_ids)
-            ):
-                raise ReportingError(
-                    "report_analysis_dataset_inconsistent",
-                    "durable analysis evidence Dataset 不属于授权 Dataset snapshot。",
-                )
-            if authorized_dataset_ids:
-                dataset_semantics, metric_definitions, semantic_findings = (
-                    _finalize_semantic_catalog(
-                        analysis_plans=analysis_plans,
-                        fact_bundles=fact_bundles,
-                        dataset_ids=tuple(sorted(evidence_dataset_ids)),
-                    )
-                )
-            else:
-                # 没有授权 snapshot 时不能伪造 Dataset 语义；保留空投影让 worker 的
-                # 终态校验先给出原始错误。真实报表入口总会提供非空授权 snapshot。
-                dataset_semantics, metric_definitions, semantic_findings = [], [], []
-            chart_registration_rules = {
-                # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
-                # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
-                # 非空目录仍由 register_report_charts 严格拒绝未知 code。
-                "allowedMetricCodes": allowed_metric_codes or None,
-                "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
-                "referenceOnlyTitleAndAltTextMustContain": "参考",
-                "vision": visual_inspection_mode == "vision",
-            }
-            instruction_payload = {
-                "phase": "analysis",
-                "taskKind": "visualization_finalize",
-                "reportGoal": self._envelope(run_context).report_goal,
-                "completionConditions": _visualization_completion_conditions(
-                    last_error,
-                    charts_registered,
-                    tuple(item["chartId"] for item in registered_charts),
-                ),
-                "outline": self._state(run_context)[REPORT_OUTLINE_STATE_KEY],
-                "visualTheme": REPORT_VISUAL_THEME,
-                "registeredCharts": registered_charts,
-                "visualInspectionMode": visual_inspection_mode,
-                "analysisPlans": analysis_plans,
-                "analysisCitationIds": _visualization_analysis_citation_ids(
-                    detailed_plan, citation_bindings
-                ),
-                "citationDatasetIds": {
-                    item.citation_id: item.dataset_id for item in citation_bindings
-                },
-                "deterministicFactFiles": {
-                    analysis_id: identity.model_dump(mode="json", by_alias=True)
-                    for analysis_id, identity in fact_files.items()
-                },
-                "visualizationFacts": visualization_facts_package,
-                "datasetSemantics": dataset_semantics,
-                "metricDefinitions": metric_definitions,
-                "sectionEvidenceCatalog": {
-                    section_code: visualization_payload.get("visualizationSections", {}).get(
-                        section_code, {}
-                    )
-                    for section_code in section_codes
-                },
-                "chartRegistrationRules": chart_registration_rules,
-                # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
-                # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
-                "visualizationWorkspace": {
-                    "scriptPath": f"{visualization_root}/charts.py",
-                    "chartOutputRoot": f"{visualization_root}/charts",
-                    "allowedTerminalCommand": f"python3 {visualization_root}/charts.py",
-                },
-                "sourceWarnings": [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in _source_warnings_from_state(self._state(run_context))
-                ],
-                "reviewFeedback": feedback,
-                "analysisOutputPath": output_path,
-            }
-            instruction_component_bytes = self._instruction_component_bytes(instruction_payload)
-            instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
-            instruction_bytes = len(instruction.encode("utf-8"))
-            if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
-                raise ReportingError(
-                    "report_analysis_context_too_large",
-                    "全局分析投影超过模型输入边界；证据未被静默截断。",
-                )
-            visualization_usage = _visualization_retry_usage(last_error)
-            contract = build_report_phase_acceptance_contract(
-                phase="analysis",
-                validation_context_file=validation_context_file.model_dump(
-                    mode="json", by_alias=True
-                ),
-                phase_contract={
-                    "reportRunId": str(run_context.run_id or scope["externalRunId"]),
-                    "taskKind": "visualization_finalize",
-                    "chartsRegistered": charts_registered,
-                    "retainedChartIds": [item["chartId"] for item in registered_charts],
-                    "visualizationRecovery": _visualization_recovery_required(last_error),
-                    "visualInspectionMode": visual_inspection_mode,
-                    **visualization_budget,
-                    **visualization_usage,
-                    "visualizationWorkspace": {
-                        "scriptPath": f"{visualization_root}/charts.py",
-                        "chartOutputRoot": f"{visualization_root}/charts",
-                    },
-                    "thinkingEffort": self._worker_thinking_effort(
-                        retry=any(
-                            item.status == "failed"
-                            for item in checkpoint.trace
-                            if item.phase == "analysis"
-                            and item.work_kind == "visualization_finalize"
-                            and item.retry_reason == retry_reason
-                        )
-                    ),
-                    "analysisIds": list(analysis_ids),
-                    "currentAnalysisId": None,
-                    "datasetSemantics": dataset_semantics,
-                    "metricDefinitions": metric_definitions,
-                    "semanticFindings": semantic_findings,
-                    "sectionEvidenceCatalog": {
-                        section_code: visualization_payload.get("visualizationSections", {}).get(
-                            section_code, {}
-                        )
-                        for section_code in section_codes
-                    },
-                    "analysisPlans": analysis_plans,
-                    "analysisDatasetIds": {
-                        item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
-                    },
-                    "allowedMetricCodes": allowed_metric_codes or None,
-                    "deterministicFactFiles": {
-                        analysis_id: identity.model_dump(mode="json", by_alias=True)
-                        for analysis_id, identity in fact_files.items()
-                    },
-                    "datasetIds": sorted(evidence_dataset_ids),
-                    "authorizedDatasetIds": [item.dataset_id for item in dataset_handles],
-                    "citationIds": [item.citation_id for item in citation_bindings],
-                    "citationRegistry": [
-                        item.model_dump(mode="json", by_alias=True) for item in citation_bindings
-                    ],
-                    "citationDatasetIds": {
-                        item.citation_id: item.dataset_id for item in citation_bindings
-                    },
-                },
-                analysis_output_path=output_path,
-            )
-            task_scope = TaskScope(
-                task_id,
-                scope["userId"],
-                scope["threadId"],
-                sandbox_id,
-                str(self.report_worker.id),
-            )
-            if started_trace is None:
-                checkpoint = self._update_reporting_checkpoint(
-                    checkpoint,
-                    phase="analysis",
-                    trace=(
-                        *checkpoint.trace,
-                        ContextTrace(
-                            phase="analysis",
-                            taskId=task_id,
-                            workKind="visualization_finalize",
-                            attempt=attempt,
-                            instructionBytes=instruction_bytes,
-                            projectedContextBytes=instruction_bytes,
-                            retryReason=retry_reason,
-                            visualInspectionMode=visual_inspection_mode,
-                        ),
-                    ),
-                    last_error=None,
-                )
-                await self._persist_reporting_checkpoint(run_context, checkpoint)
-            trace_metrics: dict[str, Any] = {}
-            visualization_usage_metrics: Mapping[str, Any] = {}
-            started_at = time.monotonic()
-            try:
-                receipt = await self._run_visualization_finalize(
-                    task_scope=task_scope,
-                    instruction=instruction,
-                    acceptance_contract=contract,
-                    parent_run_id=str(run_context.run_id or ""),
-                )
-                raw_projection_metrics = receipt.get("projectionMetrics")
-                if isinstance(raw_projection_metrics, Mapping):
-                    visualization_usage_metrics = raw_projection_metrics
-                trace_metrics = self._trace_metrics_from_receipt(receipt)
-                trace_metrics["duration_seconds"] = time.monotonic() - started_at
-                identity = await self._phase_artifact_from_receipt(
-                    scope["threadId"], cast(dict[str, Any], receipt), (output_path,)
-                )
-                artifact = cast(
-                    AnalysisArtifact,
-                    await self._read_identity_model(scope["threadId"], identity, AnalysisArtifact),
-                )
-                if (
-                    tuple(item.analysis_id for item in artifact.evidence_manifest.evidence)
-                    != analysis_ids
-                ):
-                    raise ReportingError(
-                        "report_analysis_evidence_incomplete",
-                        "全局分析产物没有按冻结顺序覆盖全部 analysisId。",
-                    )
-                coverage_hashes = {
-                    item.dataset_id: item.profile_file.sha256
-                    for item in checkpoint.profile_coverage.datasets
-                }
-                if any(
-                    coverage_hashes.get(item.dataset_id) != item.snapshot_hash
-                    for item in artifact.profile_read_receipts
-                ):
-                    raise ReportingError(
-                        "report_profile_receipt_changed",
-                        "ProfileReadReceipt 没有绑定当前完整 Profile 快照。",
-                    )
-                durable_after_worker = await self.state_repository.get(
-                    str(run_context.run_id or scope["externalRunId"])
-                )
-                completed_by_worker = set(
-                    durable_after_worker.payload.get("completedAnalysisIds", ())
-                    if durable_after_worker is not None
-                    else ()
-                )
-                artifact_analysis_ids = {
-                    evidence.analysis_id for evidence in artifact.evidence_manifest.evidence
-                }
-                trace_metrics["completed_analysis_count"] = len(
-                    completed_by_worker & artifact_analysis_ids
-                )
-                for evidence in artifact.evidence_manifest.evidence:
-                    if evidence.analysis_id in completed_by_worker:
-                        continue
-                    await self._apply_durable_command(
-                        run_context,
-                        ReportingCommand(
-                            name="complete_analysis_item",
-                            commandId=f"analysis-item:{revision}:{evidence.analysis_id}:{identity.sha256}",
-                            payload={
-                                "analysisId": evidence.analysis_id,
-                                "summary": evidence.summary,
-                                "datasetIds": list(evidence.dataset_ids),
-                                "evidenceFiles": [
-                                    item.model_dump(mode="json", by_alias=True)
-                                    for item in evidence.evidence_files
-                                ],
-                                "citationIds": list(evidence.citation_ids),
-                                "profileReadReceiptIds": list(evidence.profile_read_receipt_ids),
-                                "chartIds": list(evidence.chart_ids),
-                                "warnings": list(evidence.warnings),
-                            },
-                        ),
-                    )
-                await self._apply_durable_command(
-                    run_context,
-                    ReportingCommand(
-                        name="finalize_report_analysis",
-                        commandId=f"analysis-freeze:{revision}:{identity.sha256}",
-                        payload={
-                            "reportBrief": artifact.report_brief.model_dump(
-                                mode="json", by_alias=True
-                            ),
-                            "evidenceManifest": artifact.evidence_manifest.model_dump(
-                                mode="json", by_alias=True
-                            ),
-                            "warnings": list(artifact.evidence_manifest.warnings),
-                        },
-                    ),
-                )
-                await self._apply_durable_command(
-                    run_context,
-                    ReportingCommand(
-                        name="enter_sections",
-                        commandId=f"sections-start:{revision}:{identity.sha256}",
-                    ),
-                )
-                checkpoint = self._replace_trace(
-                    checkpoint,
-                    task_id,
-                    status="completed",
-                    artifact_file=identity,
-                    pointer_receipt_ids=tuple(
-                        item.receipt_id for item in artifact.profile_read_receipts
-                    ),
-                    **trace_metrics,
-                )
-                analysis_warnings = tuple(
-                    {"code": "analysis_warning", "message": warning}
-                    for warning in artifact.evidence_manifest.warnings
-                )
-                checkpoint = self._update_reporting_checkpoint(
-                    checkpoint,
-                    phase="sections",
-                    profile_read_receipts=artifact.profile_read_receipts,
-                    report_brief=artifact.report_brief,
-                    evidence_manifest=artifact.evidence_manifest,
-                    analysis_manifest_file=identity,
-                    warnings=tuple((*checkpoint.warnings, *analysis_warnings)[-500:]),
-                    last_error=None,
-                    files=self._merge_checkpoint_files(checkpoint.files, identity),
-                )
-                await self._persist_reporting_checkpoint(run_context, checkpoint)
-                logger.info(
-                    "report_phase_context phase=analysis work_kind=visualization "
-                    "task_id=%s instruction_bytes=%s duration_seconds=%.3f tool_events=%s "
-                    "component_bytes=%s "
-                    "profile_receipts=%s model_input_tokens=%s model_requests=%s "
-                    "max_projected_tokens=%s rebases=%s hard_cap=%s "
-                    "completed_analysis=%s retry_reason=%s budget_version=%s "
-                    "evidence_read_units=%s read_limit=%s fact_query_limit=%s "
-                    "attempt_tool_limit=%s total_tool_limit=%s read_units_used=%s "
-                    "fact_queries_used=%s tool_calls=%s script_failures=%s "
-                    "attempt_successful_tools=%s attempt_rejected_tools=%s",
-                    task_id,
-                    instruction_bytes,
-                    trace_metrics["duration_seconds"],
-                    trace_metrics.get("tool_event_count", 0),
-                    instruction_component_bytes,
-                    len(artifact.profile_read_receipts),
-                    trace_metrics.get("model_input_tokens"),
-                    trace_metrics.get("model_request_count", 0),
-                    trace_metrics.get("max_projected_tokens", 0),
-                    trace_metrics.get("rebase_count", 0),
-                    trace_metrics.get("input_token_hard_cap", 0),
-                    trace_metrics.get("completed_analysis_count", 0),
-                    retry_reason or "-",
-                    visualization_budget["visualizationBudgetVersion"],
-                    visualization_budget["visualizationEvidenceReadUnits"],
-                    visualization_budget["visualizationReadLimit"],
-                    visualization_budget["visualizationFactQueryLimit"],
-                    visualization_budget["visualizationAttemptToolLimit"],
-                    visualization_budget["visualizationTotalToolLimit"],
-                    visualization_usage_metrics.get("visualizationReadUnitsUsed", 0),
-                    visualization_usage_metrics.get("visualizationFactQueriesUsed", 0),
-                    visualization_usage_metrics.get("visualizationToolCalls", 0),
-                    visualization_usage_metrics.get("visualizationScriptFailures", 0),
-                    visualization_usage_metrics.get("visualizationAttemptSuccessfulToolCalls", 0),
-                    visualization_usage_metrics.get("visualizationAttemptRejectedToolCalls", 0),
-                )
-                return checkpoint, artifact
-            except Exception as error:
-                last_error = error
-                trace_metrics.setdefault("duration_seconds", time.monotonic() - started_at)
-                code = (
-                    error.code
-                    if isinstance(error, ReportingError)
-                    else "report_analysis_phase_failed"
-                )
-                message = (error.message if isinstance(error, ReportingError) else str(error))[
-                    :2000
-                ]
-                checkpoint = self._replace_trace(
-                    checkpoint,
-                    task_id,
-                    status="failed",
-                    **trace_metrics,
-                )
-                checkpoint = self._update_reporting_checkpoint(
-                    checkpoint,
-                    phase="analysis",
-                    last_error={
-                        "phase": "analysis",
-                        "code": code,
-                        "message": message or "可视化冻结阶段失败。",
-                        "retryReason": retry_reason,
-                        "taskId": task_id,
-                        "workKind": "visualization_finalize",
-                        "attempt": attempt,
-                        "retryUsage": _checkpoint_retry_usage(
-                            error, work_kind="visualization_finalize"
                         ).model_dump(mode="json", by_alias=True),
                     },
                 )
@@ -2470,7 +2259,7 @@ def _ensure_visual_inspection_capability(
             item.visual_inspection_mode
             for item in reversed(checkpoint.trace)
             if item.phase == "analysis"
-            and item.work_kind in {"visualization_section", "visualization_finalize"}
+            and item.work_kind == "visualization_section"
             and item.visual_inspection_mode is not None
         ),
         None,
@@ -2547,7 +2336,7 @@ def _visualization_section_completion_conditions(last_error: Exception | None) -
 def _checkpoint_retry_error(
     checkpoint: ReportingCheckpoint,
     *,
-    work_kind: Literal["analysis_item", "visualization_section", "visualization_finalize"],
+    work_kind: Literal["analysis_item", "visualization_section"],
     analysis_id: str | None,
     retry_reason: str | None,
 ) -> ReportingError | None:
@@ -2601,7 +2390,7 @@ def _checkpoint_retry_error(
 def _checkpoint_retry_usage(
     error: Exception,
     *,
-    work_kind: Literal["analysis_item", "visualization_section", "visualization_finalize"],
+    work_kind: Literal["analysis_item", "visualization_section"],
 ) -> CheckpointRetryUsage:
     if work_kind == "analysis_item":
         return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))
@@ -2710,10 +2499,13 @@ def _finalize_semantic_catalog(
     dataset_semantics = []
     for dataset_id in dataset_ids:
         grains = grains_by_dataset[dataset_id]
+        row_grain = "+".join(sorted(grains)) or "unknown"
+        if len(row_grain) > 128:
+            row_grain = "unknown"
         dataset_semantics.append(
             {
                 "datasetId": dataset_id,
-                "rowGrain": "+".join(sorted(grains)) or "unknown",
+                "rowGrain": row_grain,
                 "duplicateResolution": "not_applicable",
             }
         )
@@ -2868,13 +2660,14 @@ def _analysis_item_completion_conditions(
         ]
     return [
         "只回答 currentAnalysis 的原子管理问题和 primaryMetricFamily",
-        "deterministicFacts 已内联当前分析项的完整受信固定事实；不得为探索 facts 结构、"
-        "重复验证任务 JSON 已投影的元数据或空命中调用 query_analysis_facts",
-        "只有当前管理问题确实缺少必需事实时，才按缺口精确调用 query_analysis_facts 或读取实际使用的 Profile；"
+        "deterministicFacts 已内联当前分析项的受信固定事实；"
+        "先根据 currentAnalysis 判断其是否覆盖当前管理问题的必需事实；"
+        "不得为探索 facts 结构、重复验证任务 JSON 已投影的元数据或空命中调用 query_analysis_facts",
+        "固定事实足够时立即调用 complete_analysis_item；不得查询、读取 Profile、读取 CSV、"
+        "创建脚本或 evidence，evidencePaths 传空数组，且只调用一次",
+        "仅当前管理问题确实缺少必需事实时，才按缺口精确调用 query_analysis_facts 或读取实际使用的 Profile；"
         "不得猜测、补齐或替代缺失事实",
-        "固定事实足够时立即调用 complete_analysis_item；不创建脚本或 evidence，"
-        "evidencePaths 传空数组",
-        "只为 deterministicFactFile 未覆盖的事实缺口创建补充 evidence",
+        "仅当 deterministicFactFile 仍未覆盖该事实缺口时，才从已绑定 CSV 创建最小补充 evidence",
         "本阶段禁止生成或登记图表",
         "最后且只调用一次 complete_analysis_item",
     ]
@@ -2889,7 +2682,7 @@ def _visualization_completion_conditions(
         return [
             "durable state 已完成整批图表登记；禁止改图、换 chartId、重复登记或继续自检",
             "不要调用任何读取、写入、执行、Skill 或视觉工具",
-            "立即且只调用一次 finalize_report_analysis",
+            "立即结束当前章节任务",
         ]
     retained_requirement = (
         "registeredCharts 是已冻结的保留图表；不得重新生成、改写、检查或登记其中 chartId，只补缺失图表"
@@ -2901,7 +2694,7 @@ def _visualization_completion_conditions(
             "上一轮因工具调用或脚本失败达到上限而终止，且已关闭事实探索；禁止重新规划、重复读取事实或重新探索工作区",
             retained_requirement,
             "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
-            "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
+            "只调用一次 submit_visualization_charts 提交当前章节图表",
         ]
     return [
         "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
@@ -2913,7 +2706,7 @@ def _visualization_completion_conditions(
         "不得传 workdir、cd、ls、find、wc、管道、heredoc 或运行其他脚本",
         "批量读取事实、生成和执行图表脚本；相同文件不得重复读取、执行或视觉检查",
         "按批准提纲生成必要图表并整批登记 citation",
-        "最后且只调用一次 finalize_report_analysis",
+        "最后且只调用一次 submit_visualization_charts 提交当前章节图表",
         "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
     ]
 

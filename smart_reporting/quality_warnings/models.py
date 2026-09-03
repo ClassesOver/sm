@@ -24,10 +24,13 @@ _FINGERPRINT_DETAIL_KEYS = frozenset(
         "metricCode",
         "reasonCode",
         "referenceType",
+        "sectionCode",
+        "blockId",
     }
 )
 
 NonEmptyIdentity = Annotated[str, Field(min_length=1, max_length=_IDENTITY_MAX_LENGTH)]
+WarningDisposition = Literal["informational", "quality_warning", "review_required"]
 
 
 class _FrozenModel(BaseModel):
@@ -60,6 +63,9 @@ class WarningFinding(_FrozenModel):
     subject_type: NonEmptyIdentity
     subject_id: NonEmptyIdentity
     severity: Literal["warning"] = "warning"
+    disposition: WarningDisposition = "quality_warning"
+    source_phase: NonEmptyIdentity = Field(default="legacy", alias="sourcePhase")
+    source_phases: tuple[NonEmptyIdentity, ...] = Field(default=(), alias="sourcePhases")
     message: Annotated[str, Field(min_length=1, max_length=_MESSAGE_MAX_LENGTH)]
     details: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -72,6 +78,13 @@ class WarningFinding(_FrozenModel):
             raise ValueError("details 超过大小限制。")
         return value
 
+    @field_validator("source_phases")
+    @classmethod
+    def _source_phases_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("sourcePhases 不能重复。")
+        return value
+
 
 class WarningQuery(_FrozenModel):
     domain: NonEmptyIdentity | None = None
@@ -79,6 +92,7 @@ class WarningQuery(_FrozenModel):
     rule_code: NonEmptyIdentity | None = None
     subject_type: NonEmptyIdentity | None = None
     subject_id: NonEmptyIdentity | None = None
+    disposition: WarningDisposition | None = None
     first_observed_after: datetime | None = None
     last_observed_before: datetime | None = None
     cursor: Annotated[str, Field(min_length=1, max_length=1_024)] | None = None
@@ -103,6 +117,8 @@ class QualityWarningRecord(_FrozenModel):
     occurrence_count: int
     last_check_id: str
     version: int
+    disposition: WarningDisposition = "quality_warning"
+    source_phase: str = Field(default="legacy", alias="sourcePhase")
 
 
 class QualityWarningEvent(_FrozenModel):
@@ -113,6 +129,26 @@ class QualityWarningEvent(_FrozenModel):
     check_id: str
     occurred_at: datetime
     details: dict[str, JsonValue]
+
+
+class WarningNotice(_FrozenModel):
+    """阶段内产生的不可变告警通知，不包含租户或持久化状态。"""
+
+    rule_code: NonEmptyIdentity = Field(alias="ruleCode")
+    subject_type: NonEmptyIdentity = Field(alias="subjectType")
+    subject_id: NonEmptyIdentity = Field(alias="subjectId")
+    message: Annotated[str, Field(min_length=1, max_length=_MESSAGE_MAX_LENGTH)]
+    details: dict[str, JsonValue] = Field(default_factory=dict)
+    source_phase: NonEmptyIdentity = Field(alias="sourcePhase")
+
+    @field_validator("details")
+    @classmethod
+    def _details_are_safe_json(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        _assert_safe_detail_keys(value)
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > _DETAILS_MAX_BYTES:
+            raise ValueError("details 超过大小限制。")
+        return value
 
 
 class QualityWarningPage(_FrozenModel):
@@ -129,6 +165,14 @@ class CheckContext(_FrozenModel):
     thread_id: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     user_id: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     session_id: Annotated[str, Field(min_length=1, max_length=256)] | None = None
+
+
+class WarningCheck(_FrozenModel):
+    """一次可原子提交的规则检查及其完整覆盖范围。"""
+
+    check_scope: CheckScope = Field(alias="checkScope")
+    findings: tuple[WarningFinding, ...] = Field(default=(), max_length=2_000)
+    context: CheckContext
 
 
 def warning_fingerprint(finding: WarningFinding) -> str:

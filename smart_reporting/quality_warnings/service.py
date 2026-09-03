@@ -10,9 +10,11 @@ from .models import (
     QualityWarningPage,
     QualityWarningRecord,
     TenantScope,
+    WarningCheck,
     WarningFinding,
     WarningQuery,
 )
+from .policy import QualityWarningContractError, get_warning_rule
 from .repository import QualityWarningRepository
 
 
@@ -33,20 +35,58 @@ class QualityWarningService:
         findings: Sequence[WarningFinding],
         context: CheckContext,
     ) -> tuple[QualityWarningRecord, ...]:
-        for finding in findings:
-            if (
-                finding.rule_code != check_scope.rule_code
-                or finding.subject_type != check_scope.subject_type
-            ):
-                raise ValueError("finding 必须与成功检查的规则和主体类型一致。")
-            if finding.subject_id not in check_scope.covered_subject_ids:
-                raise ValueError("finding 主体不在成功检查声明的覆盖范围内。")
-        return await self.repository.record_successful_check(
+        return await self.record_successful_checks(
             tenant=tenant,
-            check_scope=check_scope,
-            findings=findings,
-            context=context,
+            checks=(
+                WarningCheck(
+                    checkScope=check_scope,
+                    findings=tuple(findings),
+                    context=context,
+                ),
+            ),
         )
+
+    async def record_successful_checks(
+        self,
+        *,
+        tenant: TenantScope,
+        checks: Sequence[WarningCheck],
+    ) -> tuple[QualityWarningRecord, ...]:
+        if not checks:
+            raise ValueError("成功检查批次不能为空。")
+        check_ids = [check.context.check_id for check in checks]
+        if len(check_ids) != len(set(check_ids)):
+            raise ValueError("成功检查批次不能包含重复 check_id。")
+        scopes = [
+            (
+                check.check_scope.domain,
+                check.check_scope.rule_code,
+                check.check_scope.subject_type,
+            )
+            for check in checks
+        ]
+        if len(scopes) != len(set(scopes)):
+            raise ValueError("成功检查批次不能包含重复检查范围。")
+        for check in checks:
+            scope = check.check_scope
+            for finding in check.findings:
+                rule = get_warning_rule(finding.rule_code)
+                if (
+                    finding.rule_code != scope.rule_code
+                    or finding.subject_type != scope.subject_type
+                ):
+                    raise ValueError("finding 必须与成功检查的规则和主体类型一致。")
+                if finding.subject_id not in scope.covered_subject_ids:
+                    raise ValueError("finding 主体不在成功检查声明的覆盖范围内。")
+                if finding.subject_type not in rule.subject_types:
+                    raise QualityWarningContractError(
+                        f"规则 {finding.rule_code} 不允许主体类型 {finding.subject_type}。"
+                    )
+                if finding.disposition != rule.disposition:
+                    raise QualityWarningContractError(
+                        f"规则 {finding.rule_code} 的 disposition 不匹配。"
+                    )
+        return await self.repository.record_successful_checks(tenant=tenant, checks=checks)
 
     async def list_warnings(
         self, *, tenant: TenantScope, query: WarningQuery

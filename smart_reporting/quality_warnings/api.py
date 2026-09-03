@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from .models import TenantScope, WarningQuery
+from .models import TenantScope, WarningDisposition, WarningQuery
 from .service import QualityWarningService
 
 
@@ -29,12 +29,9 @@ def create_quality_warning_router() -> APIRouter:
         subject_id: Annotated[
             str | None, Query(alias="subjectId", min_length=1, max_length=128)
         ] = None,
-        first_observed_after: Annotated[
-            datetime | None, Query(alias="firstObservedAfter")
-        ] = None,
-        last_observed_before: Annotated[
-            datetime | None, Query(alias="lastObservedBefore")
-        ] = None,
+        disposition: Annotated[WarningDisposition | None, Query()] = None,
+        first_observed_after: Annotated[datetime | None, Query(alias="firstObservedAfter")] = None,
+        last_observed_before: Annotated[datetime | None, Query(alias="lastObservedBefore")] = None,
         cursor: Annotated[str | None, Query(min_length=1, max_length=1024)] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ):
@@ -44,10 +41,11 @@ def create_quality_warning_router() -> APIRouter:
             tenant=tenant,
             query=WarningQuery(
                 domain=domain,
-                status=status,
+                status=cast(Literal["open", "resolved"], status),
                 rule_code=rule_code,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                disposition=disposition,
                 first_observed_after=first_observed_after,
                 last_observed_before=last_observed_before,
                 cursor=cursor,
@@ -59,9 +57,7 @@ def create_quality_warning_router() -> APIRouter:
     @router.get("/quality-warnings/{warning_id}")
     async def get_quality_warning(request: Request, warning_id: UUID):
         tenant = _tenant_scope(request)
-        record = await _service(request).get_warning(
-            tenant=tenant, warning_id=warning_id
-        )
+        record = await _service(request).get_warning(tenant=tenant, warning_id=warning_id)
         if record is None:
             raise HTTPException(status_code=404, detail="quality_warning_not_found")
         return record

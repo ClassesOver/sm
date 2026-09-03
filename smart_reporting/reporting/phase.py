@@ -16,7 +16,6 @@ ReportingPhase = Literal["analysis", "section"]
 ReportingTaskKind = Literal[
     "analysis_item",
     "visualization_section",
-    "visualization_finalize",
     "section",
 ]
 
@@ -33,6 +32,7 @@ REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
+REPORTING_THINKING_BUDGET_DEPENDENCY_KEY = "reportingThinkingBudget"
 REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY = "reportingVisualizationToolCalls"
 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY = "reportingVisualizationScriptFailures"
@@ -65,9 +65,9 @@ REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_bu
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 4
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
-# 两类当前可视化 worker 共用受信预算与脚本状态。章节 worker 消耗探索、脚本和检查
-# 额度；finalize worker 只使用收口工具。旧 taskKind 不在该集合内，所有调用方据此拒绝。
-REPORTING_VISUALIZATION_TASK_KINDS = frozenset({"visualization_section", "visualization_finalize"})
+# 当前可视化章节 worker 共用受信预算与脚本状态；图表提交和章节收口均在同一章节
+# 子工作流内完成，不再存在独立的全局 finalize worker。
+REPORTING_VISUALIZATION_TASK_KINDS = frozenset({"visualization_section"})
 REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
 REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
 REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
@@ -86,8 +86,6 @@ REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
         "overwrite_analysis_file",
         "terminal",
         "submit_visualization_charts",
-        "register_report_charts",
-        "finalize_report_analysis",
     }
 )
 
@@ -245,7 +243,6 @@ def reporting_task_kind_from_acceptance_contract(value: Any) -> ReportingTaskKin
         in {
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
         }
         else None
@@ -269,6 +266,25 @@ def reporting_thinking_effort_from_acceptance_contract(
     phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
     effort = phase_contract.get("thinkingEffort") if isinstance(phase_contract, Mapping) else None
     return effort if effort in {"off", "high", "max"} else None
+
+
+def reporting_thinking_budget_from_acceptance_contract(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return None
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    budget = phase_contract.get("thinkingBudget") if isinstance(phase_contract, Mapping) else None
+    return (
+        budget if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0 else None
+    )
 
 
 def reporting_visual_inspection_mode_from_acceptance_contract(
@@ -314,12 +330,9 @@ def _visualization_phase_contract(value: Any) -> Mapping[str, Any] | None:
 
 
 def reporting_visualization_registered_from_acceptance_contract(value: Any) -> bool:
-    contract = _visualization_phase_contract(value)
-    return bool(
-        contract
-        and contract.get("taskKind") == "visualization_finalize"
-        and contract.get("chartsRegistered") is True
-    )
+    # 图表提交已按章节完成，不存在全局登记状态。
+    _ = value
+    return False
 
 
 def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> bool:
@@ -494,7 +507,6 @@ def reporting_task_kind_from_run_context(
         in {
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
         }
         else None
@@ -518,20 +530,26 @@ def reporting_thinking_effort_from_run_context(
     return effort if effort in {"off", "high", "max"} else None
 
 
-def reporting_visualization_registered_from_run_context(run_context: RunContext | None) -> bool:
-    if reporting_task_kind_from_run_context(run_context) != "visualization_finalize":
-        return False
+def reporting_thinking_budget_from_run_context(run_context: RunContext | None) -> int | None:
     dependencies = (
         run_context.dependencies
         if run_context is not None and isinstance(run_context.dependencies, Mapping)
         else {}
     )
     binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    return (
-        binding.get(REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY) is True
+    budget = (
+        binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY)
         if isinstance(binding, Mapping)
-        else False
+        else None
     )
+    return (
+        budget if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0 else None
+    )
+
+
+def reporting_visualization_registered_from_run_context(run_context: RunContext | None) -> bool:
+    _ = run_context
+    return False
 
 
 def reporting_visualization_recovery_from_run_context(run_context: RunContext | None) -> bool:

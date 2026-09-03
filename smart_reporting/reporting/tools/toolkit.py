@@ -36,10 +36,7 @@ from ..phase import (
 )
 from ..vision import ReportVisionReviewer
 from ..workflow.checkpoint import (
-    AnalysisDatasetSemantics,
     FileIdentity,
-    MetricDefinition,
-    ReportBrief,
     SectionClaimSubmission,
 )
 from ..workflow.repository import ReportingStateRepository
@@ -54,6 +51,8 @@ from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
 from .validation import analysis_file_create_parameters, analysis_file_overwrite_parameters
+
+SUPPLEMENTAL_EVIDENCE_READ_BYTES = 128 * 1024
 
 REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
@@ -431,48 +430,6 @@ class ReportWorkspaceTaskToolkit(
         )
         self.register(
             Function(
-                name="finalize_report_analysis",
-                description=(
-                    "全部 analysisId 完成后一次冻结 ReportBrief、共享指标口径和全局 Warning；"
-                    "服务端从 durable state 派生逐 analysis evidence、Profile 回执和已登记图表。"
-                    '示例：{"reportBrief":{"objective":"分析经营表现","executiveSummary":'
-                    '"收入增长但成本承压","managementQuestions":["增长是否可持续？"],'
-                    '"warnings":[]},"datasetSemantics":[{"datasetId":"dataset_001",'
-                    '"rowGrain":"record","duplicateResolution":"not_applicable"}],'
-                    '"metricDefinitions":[],"warnings":[]}'
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "reportBrief": ReportBrief.model_json_schema(by_alias=True),
-                        "datasetSemantics": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 100,
-                            "items": AnalysisDatasetSemantics.model_json_schema(by_alias=True),
-                        },
-                        "metricDefinitions": {
-                            "type": "array",
-                            "maxItems": 500,
-                            "items": MetricDefinition.model_json_schema(by_alias=True),
-                        },
-                        "warnings": {
-                            "type": "array",
-                            "maxItems": 500,
-                            "items": {"type": "string", "maxLength": 2000},
-                        },
-                    },
-                    "required": ["reportBrief", "datasetSemantics"],
-                    "additionalProperties": False,
-                },
-                strict=True,
-                entrypoint=self.finalize_report_analysis,
-                pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_finished_phase_call,
-            )
-        )
-        self.register(
-            Function(
                 name="request_analysis_rework",
                 description=(
                     "仅当当前 SectionWorkItem 的证据不足以成稿时，提交缺口和受影响 analysisIds；"
@@ -539,40 +496,12 @@ class ReportWorkspaceTaskToolkit(
         )
         self.register(
             Function(
-                name="register_report_charts",
-                description=(
-                    "在图表源文件最终定稿后一次登记 Coding 根据本轮不可变 CSV 生成的报告图表；"
-                    "每张图必须先调用 inspect_chart，服务端校验当前文件哈希的视觉回执、Dataset "
-                    "citation 并决定发布路径。登记后不得改写或复用同一 chartId 的源文件。"
-                    "metricCodes、周期和 Dataset 必须逐字取自本轮已冻结分析事实，禁止使用"
-                    "income、revenue 等自然语言别名或猜测期间。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "charts": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 100,
-                            "items": ReportChartRegistration.model_json_schema(by_alias=True),
-                        }
-                    },
-                    "required": ["charts"],
-                    "additionalProperties": False,
-                },
-                strict=True,
-                entrypoint=self.register_report_charts,
-                pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_nonretryable_tool_call,
-            )
-        )
-        self.register(
-            Function(
                 name="render_report_section",
                 description=(
                     "提交当前 SectionWorkItem 指定章节。每个 block 的 markdown 不得重复"
                     "服务端章节 title，内部标题从 ### 开始；可使用列表、引用、强调和表格，"
-                    "图片通过 chartIds 引用。claim 使用 managementQuestionRef 绑定当前章节"
+                    "图片必须通过 chartIds 显式引用；每个实际使用的 chartId 同时填入对应 block 和 claim。"
+                    "claim 使用 managementQuestionRef 绑定当前章节"
                     "问题目录；periodBasis 和问题全文由服务端补齐，绑定图表时周期、比较语义、"
                     "可比性和图表 citation 也由服务端补齐。metricCode 必须逐字取自当前"
                     "SectionWorkItem.metricDefinitions.code，禁止使用 income、revenue 等自然语言别名；"
@@ -708,7 +637,6 @@ class ReportWorkspaceTaskToolkit(
         if task_kind not in {
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
         }:
             raise ReportingError("report_phase_contract_invalid", "Reporting taskKind 参数无效。")
@@ -751,15 +679,36 @@ class ReportWorkspaceTaskToolkit(
         result: Any,
     ) -> int | None:
         _ = result
-        if (
-            self._active_reporting_phase(scope) != "analysis"
-            or self._active_reporting_task_kind(scope) != "visualization_section"
-            or tool_name != "read_file"
-        ):
+        if self._active_reporting_phase(scope) != "analysis" or tool_name != "read_file":
             return None
+        task_kind = self._active_reporting_task_kind(scope)
         try:
             requested = WorkspaceService.normalize_path(arguments.get("path"), allow_root=False)[0]
             _parameters, contract = self._phase_parameters(scope, "analysis")
+            if task_kind == "analysis_item":
+                analysis_id = contract.get("currentAnalysisId")
+                fact_files = contract.get("deterministicFactFiles")
+                fact_file = (
+                    fact_files.get(analysis_id)
+                    if isinstance(analysis_id, str) and isinstance(fact_files, Mapping)
+                    else None
+                )
+                signed = WorkspaceService.normalize_path(
+                    fact_file.get("path") if isinstance(fact_file, Mapping) else None,
+                    allow_root=False,
+                )[0]
+                # 五阶段子流程会直接校验完整固定 facts；仅该签发文件可避开
+                # 通用模型回显截断，其他路径仍保持默认上下文边界。
+                if requested == signed:
+                    return MAX_TOOL_OUTPUT_READ_BYTES
+                evidence_root = contract.get("analysisOutputRoot")
+                evidence_path = WorkspaceService.normalize_path(
+                    f"{str(evidence_root or '').rstrip('/')}/supplement.json",
+                    allow_root=False,
+                )[0]
+                return SUPPLEMENTAL_EVIDENCE_READ_BYTES if requested == evidence_path else None
+            if task_kind != "visualization_section":
+                return None
             workspace = contract.get("visualizationWorkspace")
             script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
             signed = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
@@ -1569,9 +1518,7 @@ class ReportWorkspaceTaskToolkit(
                 "修正 details.path 指向的 Python 语法错误后，使用原 operation 重新提交。"
             ]
         elif code == "report_chart_registration_closed":
-            result["requiredActions"] = [
-                "图表已完成不可变登记；不要改图或重复登记，立即调用 finalize_report_analysis。"
-            ]
+            result["requiredActions"] = ["图表已完成不可变登记；不要改图或重复提交。"]
         elif (
             code == "report_chart_file_missing"
             and isinstance(error, ReportingError)

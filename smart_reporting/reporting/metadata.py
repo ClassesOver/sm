@@ -141,13 +141,6 @@ class ReportingMetadataClient:
         try:
             for attempt in range(1, MAX_METADATA_ATTEMPTS + 1):
                 started_at = perf_counter()
-                logger.info(
-                    "report_metadata_http_started target={} path={} attempt={} timeout_seconds={}",
-                    self.log_target,
-                    path,
-                    attempt,
-                    self.timeout_seconds,
-                )
                 try:
                     response_content = bytearray()
                     async with client.stream("POST", path, headers=headers, json=body) as response:

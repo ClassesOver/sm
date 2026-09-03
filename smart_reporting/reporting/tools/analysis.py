@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import ast
-import asyncio
 import hashlib
 import json
 import re
@@ -19,24 +18,14 @@ from typing import Any
 from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
-from pydantic import ValidationError
 
 from ...task_execution.changes import create_files_patch
 from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
-    AnalysisArtifact,
-    AnalysisChart,
-    AnalysisDatasetSemantics,
-    AnalysisEvidence,
-    AnalysisEvidenceManifest,
-    FileIdentity,
     MetricDefinition,
-    ProfileReadReceipt,
-    ReportBrief,
 )
 from ..workflow.state import ReportingRunState
-from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 from .validation import (
     _jsonschema_error_message,
     _stable_digest,
@@ -774,467 +763,6 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError) as error:
             return self._failure(error, retryable=False)
 
-    async def finalize_report_analysis(
-        self,
-        reportBrief: dict[str, Any],
-        datasetSemantics: list[dict[str, Any]],
-        metricDefinitions: list[dict[str, Any]] | None = None,
-        warnings: list[str] | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。
-
-        datasetSemantics/metricDefinitions 语义目录以 acceptance contract 的服务端投影
-        为唯一受信来源；模型提交的同名参数仅作接口兼容占位，会被直接覆盖。
-        """
-
-        state = self._session_state(run_context)
-        try:
-            scope = await self.kernel.scope(run_context)
-            self._require_phase_tool(
-                scope,
-                allowed=frozenset({"analysis"}),
-                tool_name="finalize_report_analysis",
-                run_context=run_context,
-                task_kinds=frozenset({"visualization_finalize"}),
-            )
-            await self._ensure_visualization_terminal_settled(scope)
-            durable = await self._durable_state(scope)
-            if not isinstance(durable.payload.get("charts"), list) or not durable.payload["charts"]:
-                raise ReportingError(
-                    "report_visualization_charts_not_registered",
-                    "图表尚未完成登记，不能冻结可视化分析；请先成功调用 register_report_charts。",
-                )
-            # Finalize 必须消费章节 worker 已提交的 durable 草案，而不能仅信任全局 charts
-            # registry。register 的门禁负责阻止新非法登记；这里再次验证当前 registry 的
-            # 每个图表都有对应章节草案和冻结文件身份，防止旧状态、人工写入或部分恢复绕过
-            # 章节收口契约后进入正式 AnalysisArtifact。
-            draft_charts_by_id, draft_files_by_path = self._section_chart_draft_catalog(
-                durable.payload
-            )
-            for chart in durable.payload["charts"]:
-                if not isinstance(chart, Mapping) or not isinstance(chart.get("chartId"), str):
-                    raise ReportingError(
-                        "report_visualization_section_draft_missing",
-                        "已登记图表缺少有效章节草案身份。",
-                    )
-                chart_id = chart["chartId"]
-                draft = draft_charts_by_id.get(chart_id)
-                source_path = chart.get("sourcePath")
-                draft_file = (
-                    draft_files_by_path.get(source_path) if isinstance(source_path, str) else None
-                )
-                if (
-                    draft is None
-                    or draft.get("sourcePath") != source_path
-                    or draft_file is None
-                    or draft_file.get("size") != chart.get("size")
-                    or draft_file.get("sha256") != chart.get("sha256")
-                ):
-                    raise ReportingError(
-                        "report_visualization_section_draft_missing",
-                        "已登记图表未被 durable 章节草案完整解释。",
-                        details={"chartId": chart_id, "sourcePath": source_path},
-                    )
-            parameters, contract = self._phase_parameters(scope, "analysis")
-            output_path = parameters.get("analysisOutputPath")
-            expected_analysis_ids = contract.get("analysisIds")
-            known_dataset_ids = contract.get("datasetIds")
-            known_citation_ids = contract.get("citationIds")
-            contract_dataset_semantics = contract.get("datasetSemantics")
-            contract_metric_definitions = contract.get("metricDefinitions")
-            authorized_dataset_ids = contract.get("authorizedDatasetIds")
-            if (
-                not isinstance(output_path, str)
-                or not isinstance(expected_analysis_ids, list)
-                or not isinstance(known_citation_ids, list)
-                or not isinstance(contract_dataset_semantics, list)
-                or not isinstance(contract_metric_definitions, list)
-            ):
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Analysis Task 缺少冻结注册表或服务端投影的语义目录。",
-                )
-            known_dataset_ids = _require_dataset_id_sequence(known_dataset_ids)
-            authorized_dataset_ids = _require_dataset_id_sequence(authorized_dataset_ids)
-            submitted = durable.payload.get("analysisItems")
-            if not isinstance(submitted, dict) or any(
-                not isinstance(submitted.get(item), dict) for item in expected_analysis_ids
-            ):
-                raise ReportingError(
-                    "report_analysis_evidence_invalid", "耐久分析账本未完整覆盖全部 analysisId。"
-                )
-            # complete_analysis_item 已冻结 Dataset、fact 文件、Profile receipt、citation
-            # 与 chart。Finalize 只按批准顺序从耐久账本派生，不接受模型重新提交 evidence。
-            evidence = [
-                {
-                    **submitted[item],
-                    "evidencePaths": [
-                        entry.get("path")
-                        for entry in submitted[item].get("evidenceFiles", ())
-                        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
-                    ],
-                }
-                for item in expected_analysis_ids
-            ]
-            evidence_dataset_ids = {
-                dataset_id
-                for item in evidence
-                for dataset_id in _require_dataset_id_sequence(item.get("datasetIds"))
-            }
-            if set(known_dataset_ids) != evidence_dataset_ids:
-                raise ReportingError(
-                    "report_analysis_dataset_inconsistent",
-                    "phase contract Dataset 必须精确覆盖 durable analysis evidence Dataset。",
-                )
-            if not evidence_dataset_ids.issubset(set(authorized_dataset_ids)):
-                raise ReportingError(
-                    "report_analysis_dataset_inconsistent",
-                    "analysis evidence Dataset 不属于授权 Dataset snapshot。",
-                )
-            # 语义目录的唯一受信来源是 acceptance contract 的服务端投影。模型提交的
-            # datasetSemantics/metricDefinitions 参数仅保留接口兼容，一律被覆盖，
-            # 任何模型侧改写都不得进入冻结 manifest；投影缺失时失败关闭。
-            warnings = warnings or []
-            parsed_dataset_semantics = tuple(
-                AnalysisDatasetSemantics.model_validate(item) for item in contract_dataset_semantics
-            )
-            if {item.dataset_id for item in parsed_dataset_semantics} != evidence_dataset_ids:
-                raise ReportingError(
-                    "report_analysis_dataset_semantics_incomplete",
-                    "Dataset 语义必须精确覆盖全部授权 Dataset。",
-                )
-
-            receipts = tuple(
-                ProfileReadReceipt.model_validate(item)
-                for item in (durable.payload.get("profileReadReceipts", ()))
-            )
-            receipt_ids = {item.receipt_id for item in receipts}
-            receipts_by_id = {item.receipt_id: item for item in receipts}
-            chart_registry = {
-                item["chartId"]: item
-                for item in durable.payload.get("charts", ())
-                if isinstance(item, dict) and isinstance(item.get("chartId"), str)
-            }
-
-            parsed_evidence: list[AnalysisEvidence] = []
-            for item in evidence:
-                if not isinstance(item, dict):
-                    raise ReportingError(
-                        "report_analysis_evidence_invalid", "analysis evidence 必须是对象。"
-                    )
-                allowed = {
-                    "analysisId",
-                    "summary",
-                    "datasetIds",
-                    "evidencePaths",
-                    "citationIds",
-                    "metrics",
-                    "chartIds",
-                    "profileReadReceiptIds",
-                    "warnings",
-                    "evidenceFiles",
-                }
-                if set(item) - allowed:
-                    raise ReportingError(
-                        "report_analysis_evidence_invalid", "analysis evidence 包含未注册字段。"
-                    )
-                analysis_id = item.get("analysisId")
-                durable_item = (
-                    submitted.get(analysis_id)
-                    if isinstance(submitted, dict) and isinstance(analysis_id, str)
-                    else None
-                )
-                if isinstance(durable_item, dict):
-                    # CompleteAnalysisItem 已在 CAS 聚合中冻结 Dataset、引用、Profile
-                    # receipt 和文件身份。Dataset coverage 不等于分布事实被结论使用，
-                    # Finalize 因此只保留单项显式提交的 receipt，不按 Dataset 自动补齐。
-                    item = _derive_durable_analysis_binding(durable_item)
-                paths = item.get("evidencePaths")
-                supplied_identities = item.get("evidenceFiles")
-                if not paths and isinstance(supplied_identities, list):
-                    paths = [
-                        entry.get("path")
-                        for entry in supplied_identities
-                        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
-                    ]
-                if (
-                    not isinstance(paths, list)
-                    or not paths
-                    or len(paths) > 50
-                    or len(paths) != len(set(paths))
-                    or any(not isinstance(path, str) or not path for path in paths)
-                ):
-                    raise ReportingError(
-                        "report_analysis_evidence_invalid",
-                        "每项 analysis 必须绑定 1 至 50 个不重复 evidencePaths。",
-                    )
-                identities = await asyncio.gather(
-                    *(self.kernel.service.ahash_file(scope.thread_id, path) for path in paths)
-                )
-                if any(identity.get("missing") for identity in identities):
-                    raise ReportingError(
-                        "report_analysis_evidence_missing", "analysis evidence 文件不存在。"
-                    )
-                if isinstance(supplied_identities, list) and supplied_identities != identities:
-                    raise ReportingError(
-                        "report_analysis_evidence_identity_mismatch",
-                        "analysis evidence 文件身份在单项完成后发生变化。",
-                        details={"paths": paths},
-                    )
-                parsed = AnalysisEvidence.model_validate(
-                    {
-                        **{
-                            key: value
-                            for key, value in item.items()
-                            if key not in {"evidencePaths", "evidenceFiles"}
-                        },
-                        "evidenceFiles": identities,
-                    }
-                )
-                if set(parsed.dataset_ids) - set(known_dataset_ids):
-                    raise ReportingError(
-                        "report_analysis_dataset_unknown",
-                        "analysis evidence 引用了未授权 Dataset。",
-                    )
-                if set(parsed.citation_ids) - set(known_citation_ids):
-                    raise ReportingError(
-                        "report_analysis_citation_unknown",
-                        "analysis evidence 引用了未注册 citation。",
-                    )
-                if set(parsed.chart_ids) - set(chart_registry):
-                    raise ReportingError(
-                        "report_analysis_chart_unknown", "analysis evidence 引用了未登记图表。"
-                    )
-                if set(parsed.profile_read_receipt_ids) - receipt_ids:
-                    raise ReportingError(
-                        "report_profile_receipt_unknown",
-                        "analysis evidence 引用了不存在的 ProfileReadReceipt。",
-                    )
-                if any(
-                    receipts_by_id[receipt_id].dataset_id not in parsed.dataset_ids
-                    for receipt_id in parsed.profile_read_receipt_ids
-                ):
-                    raise ReportingError(
-                        "report_profile_receipt_dataset_mismatch",
-                        "analysis evidence 绑定的 ProfileReadReceipt 不属于其 Dataset 范围。",
-                    )
-                parsed_evidence.append(parsed)
-            if [item.analysis_id for item in parsed_evidence] != expected_analysis_ids:
-                raise ReportingError(
-                    "report_analysis_evidence_incomplete",
-                    "analysis evidence 必须按冻结顺序精确覆盖全部 analysisId。",
-                )
-            parsed_metric_definitions = tuple(
-                MetricDefinition.model_validate(item) for item in contract_metric_definitions
-            )
-            fact_bundles: dict[str, Mapping[str, Any]] = {}
-            deterministic_files = contract.get("deterministicFactFiles")
-            if isinstance(deterministic_files, Mapping):
-                for analysis_id in expected_analysis_ids:
-                    identity = deterministic_files.get(analysis_id)
-                    if not isinstance(identity, Mapping):
-                        continue
-                    path = identity.get("path")
-                    if not isinstance(path, str) or not path:
-                        continue
-                    _relative, remote = self.kernel.service.normalize_path(path, allow_root=False)
-                    async with self.kernel.service._async_client() as client:
-                        sandbox = await self.kernel.service._asandbox_for(client, scope.thread_id)
-                        content = await self.kernel.service._adownload_file(
-                            sandbox, remote, 10 * 1024 * 1024
-                        )
-                    expected_size = identity.get("size")
-                    expected_sha256 = identity.get("sha256")
-                    if (
-                        not isinstance(expected_size, int)
-                        or len(content) != expected_size
-                        or not isinstance(expected_sha256, str)
-                        or hashlib.sha256(content).hexdigest() != expected_sha256
-                    ):
-                        raise ReportingError(
-                            "report_analysis_evidence_identity_mismatch",
-                            "固定事实文件身份在分析冻结前发生变化。",
-                            details={"path": path},
-                        )
-                    try:
-                        payload = json.loads(content)
-                    except (TypeError, ValueError) as error:
-                        raise ReportingError(
-                            "report_analysis_evidence_invalid", "固定事实文件不是有效 JSON。"
-                        ) from error
-                    if isinstance(payload, Mapping):
-                        fact_bundles[analysis_id] = payload
-            chart_metric_codes = tuple(
-                code
-                for chart in chart_registry.values()
-                if isinstance(chart, Mapping)
-                for code in chart.get("metricCodes", ())
-                if isinstance(code, str)
-            )
-            missing_metric_codes = _missing_metric_definition_codes(
-                fact_bundles=tuple(fact_bundles.values()),
-                chart_metric_codes=chart_metric_codes,
-                metric_definitions=parsed_metric_definitions,
-            )
-            if missing_metric_codes:
-                raise ReportingError(
-                    "report_analysis_metric_definition_missing",
-                    "冻结事实或图表引用的指标缺少完整定义。",
-                    details={"missingMetricCodes": list(missing_metric_codes)},
-                )
-            projected_evidence: list[AnalysisEvidence] = []
-            for evidence_item in parsed_evidence:
-                metric_codes = _fact_metric_codes(fact_bundles.get(evidence_item.analysis_id, {}))
-                projected_evidence.append(
-                    evidence_item.model_copy(update={"metrics": metric_codes})
-                    if metric_codes
-                    else evidence_item
-                )
-            parsed_evidence = projected_evidence
-            bound_profile_receipt_ids = {
-                receipt_id
-                for item in parsed_evidence
-                for receipt_id in item.profile_read_receipt_ids
-            }
-            # Profile receipt 只有被 analysis 显式绑定时才能证明实际使用；Dataset 相同只
-            # 能证明曾经读取，不能由服务端推断归属。图表仍可按 citation 交集确定性绑定，
-            # 无法证明归属的图表保持未使用并由 finalize 排除。
-            bound_chart_ids = {chart_id for item in parsed_evidence for chart_id in item.chart_ids}
-            for chart_id, chart in chart_registry.items():
-                if chart_id in bound_chart_ids or not isinstance(chart, dict):
-                    continue
-                raw_citation_ids = chart.get("citationIds")
-                if not isinstance(raw_citation_ids, (list, tuple)):
-                    continue
-                chart_citation_ids = {
-                    value for value in raw_citation_ids if isinstance(value, str) and value
-                }
-                selected_index: int | None = None
-                selected_overlap = 0
-                for index, candidate_evidence in enumerate(parsed_evidence):
-                    overlap = len(chart_citation_ids.intersection(candidate_evidence.citation_ids))
-                    if overlap > selected_overlap:
-                        selected_index = index
-                        selected_overlap = overlap
-                if selected_index is None:
-                    continue
-                selected = parsed_evidence[selected_index]
-                parsed_evidence[selected_index] = selected.model_copy(
-                    update={"chart_ids": (*selected.chart_ids, chart_id)}
-                )
-                bound_chart_ids.add(chart_id)
-
-            parsed_charts: list[AnalysisChart] = []
-            for chart_id, chart in chart_registry.items():
-                if not isinstance(chart, dict):
-                    raise ReportingError("report_analysis_chart_invalid", "图表登记状态无效。")
-                source_path = chart.get("sourcePath")
-                if not isinstance(source_path, str):
-                    raise ReportingError("report_analysis_chart_invalid", "图表缺少源路径。")
-                current = await self.kernel.service.ahash_file(scope.thread_id, source_path)
-                if (
-                    current.get("missing")
-                    or current.get("size") != chart.get("size")
-                    or current.get("sha256") != chart.get("sha256")
-                ):
-                    raise ReportingError(
-                        "report_analysis_chart_changed", f"图表 {chart_id} 在冻结前发生变化。"
-                    )
-                parsed_charts.append(
-                    AnalysisChart.model_validate(
-                        {
-                            "chartId": chart_id,
-                            "sourceFile": current,
-                            "title": chart.get("title"),
-                            "altText": chart.get("altText"),
-                            "citationIds": chart.get("citationIds"),
-                            "metricCodes": chart.get("metricCodes"),
-                            "currentPeriod": chart.get("currentPeriod"),
-                            "comparisonPeriod": chart.get("comparisonPeriod"),
-                            "comparisonType": chart.get("comparisonType"),
-                            "sourceDatasetId": chart.get("sourceDatasetId"),
-                            "aggregationGrain": chart.get("aggregationGrain"),
-                            "comparability": chart.get("comparability"),
-                            "visualInspectionReceipt": chart.get("visualInspectionReceipt"),
-                        }
-                    )
-                )
-
-            deterministic_chart_ids = [
-                item.chart_id
-                for item in parsed_charts
-                if item.visual_inspection_receipt is not None
-                and item.visual_inspection_receipt.inspection_mode == "deterministic"
-            ]
-            if deterministic_chart_ids:
-                warning = "图表仅通过确定性图片文件检查，未运行模型视觉审查：" + "、".join(
-                    deterministic_chart_ids
-                )
-                if warning not in warnings:
-                    if len(warnings) >= 500:
-                        warnings = warnings[:499]
-                    warnings.append(warning)
-
-            artifact = AnalysisArtifact(
-                reportBrief=ReportBrief.model_validate(reportBrief),
-                evidenceManifest=AnalysisEvidenceManifest(
-                    evidence=tuple(parsed_evidence),
-                    metricDefinitions=parsed_metric_definitions,
-                    charts=tuple(parsed_charts),
-                    datasetSemantics=parsed_dataset_semantics,
-                    warnings=tuple(warnings),
-                ),
-                profileReadReceipts=tuple(
-                    receipt
-                    for receipt in receipts
-                    if receipt.receipt_id in bound_profile_receipt_ids
-                ),
-            )
-            serialized = artifact.model_dump(mode="json", by_alias=True)
-            phase_state = (
-                state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
-            )
-            if isinstance(phase_state, dict):
-                if (
-                    phase_state.get("phase") != "analysis"
-                    or phase_state.get("payload") != serialized
-                ):
-                    raise ReportingError(
-                        "report_analysis_already_submitted",
-                        "当前 analysis run 已冻结阶段产物，不能替换。",
-                    )
-                identity = FileIdentity.model_validate(phase_state.get("artifactFile")).model_dump(
-                    mode="json", by_alias=True
-                )
-            else:
-                identity = await self._write_phase_json(
-                    scope=scope,
-                    path=output_path,
-                    payload=serialized,
-                    run_context=run_context,
-                )
-                if state is not None:
-                    state[REPORT_PHASE_OUTPUT_STATE_KEY] = {
-                        "phase": "analysis",
-                        "payload": serialized,
-                        "artifactFile": identity,
-                    }
-            return await self._finish_phase_task(
-                scope=scope,
-                phase="analysis",
-                identity=identity,
-                summary="全局分析、证据清单和指标口径已冻结。",
-                state=state,
-                run_context=run_context,
-                extra={
-                    "analysisCount": len(parsed_evidence),
-                    "profileReadReceiptCount": len(receipts),
-                },
-            )
-        except (ReportingError, ValidationError, WorkspaceError) as error:
-            return self._failure(error)
-
     async def complete_analysis_item(
         self,
         analysisId: str,
@@ -1326,10 +854,12 @@ class RuntimeAnalysisMixin:
             if isinstance(expected_datasets, dict):
                 planned = expected_datasets.get(analysisId)
                 if isinstance(planned, list) and set(datasetIds) != set(planned):
-                    raise ReportingError(
-                        "report_analysis_dataset_mismatch",
-                        "analysis item 必须精确绑定服务端计划中的 Dataset。",
-                    )
+                    warnings.append("analysis Dataset 与冻结计划不一致，已保留实际提交归属。")
+            authorized_dataset_ids = contract.get("authorizedDatasetIds")
+            if isinstance(authorized_dataset_ids, list) and not set(datasetIds).issubset(
+                set(item for item in authorized_dataset_ids if isinstance(item, str))
+            ):
+                warnings.append("analysis evidence Dataset 不属于授权 snapshot。")
             receipts = durable_current.payload.get("profileReadReceipts")
             receipt_by_id = {
                 item.get("receiptId"): item
@@ -1351,7 +881,11 @@ class RuntimeAnalysisMixin:
                     "analysis item 绑定的 ProfileReadReceipt 不属于其 Dataset 范围。",
                 )
             identities = await self.kernel.service.abatch_hash_files(scope.thread_id, evidencePaths)
-            await self._ensure_registered_analysis_evidence(scope=scope, identities=identities)
+            _durable, evidence_warnings = await self._ensure_registered_analysis_evidence(
+                scope=scope, identities=identities
+            )
+            warnings.extend(evidence_warnings)
+            payload["warnings"] = list(dict.fromkeys(warnings))
             payload["evidenceFiles"] = identities
             if isinstance(durable_item, dict):
                 if durable_item != payload:
@@ -1441,8 +975,8 @@ class RuntimeAnalysisMixin:
         *,
         durable: ReportingRunState,
         identities: list[dict[str, Any]],
-    ) -> None:
-        """确认 evidence 当前身份与 durable 写入登记逐项一致。"""
+    ) -> list[str]:
+        """确认 evidence 可读取；身份漂移只记录 warning，不阻止发布。"""
 
         missing, unregistered, changed = cls._analysis_evidence_registration_status(
             durable=durable,
@@ -1454,28 +988,19 @@ class RuntimeAnalysisMixin:
                 "analysis evidence 文件不存在。",
                 details={"paths": missing},
             )
+        warnings: list[str] = []
         if changed:
-            raise ReportingError(
-                "report_analysis_evidence_identity_mismatch",
-                "analysis evidence 文件身份已变化，请按当前 SHA-256 重新登记。",
-                details={"paths": changed},
-            )
+            warnings.append("analysis evidence 文件身份或 SHA-256 已变化，已按当前文件继续发布。")
         if unregistered:
-            raise ReportingError(
-                "report_analysis_evidence_not_registered",
-                "analysis evidence 必须先通过 create_analysis_file 或 overwrite_analysis_file 登记。",
-                details={
-                    "paths": unregistered,
-                    "missingRegistration": unregistered,
-                },
-            )
+            warnings.append("analysis evidence 文件未登记，已按当前文件继续发布。")
+        return warnings
 
     async def _ensure_registered_analysis_evidence(
         self,
         *,
         scope: Any,
         identities: list[dict[str, Any]],
-    ) -> ReportingRunState:
+    ) -> tuple[ReportingRunState, list[str]]:
         """把 terminal 等工具已写出的 evidence 身份登记到唯一 durable 账本。"""
 
         durable = await self._durable_state(scope)
@@ -1489,12 +1014,9 @@ class RuntimeAnalysisMixin:
                 "analysis evidence 文件不存在。",
                 details={"paths": missing},
             )
+        warnings: list[str] = []
         if changed:
-            raise ReportingError(
-                "report_analysis_evidence_identity_mismatch",
-                "analysis evidence 文件身份已变化，请按当前 SHA-256 重新登记。",
-                details={"paths": changed},
-            )
+            warnings.append("analysis evidence 文件身份或 SHA-256 已变化，已按当前文件继续发布。")
         identities_by_path = {
             item["path"]: item
             for item in identities
@@ -1512,16 +1034,14 @@ class RuntimeAnalysisMixin:
             except ReportingError as error:
                 if error.code != "report_artifact_identity_mismatch":
                     raise
-                raise ReportingError(
-                    "report_analysis_evidence_identity_mismatch",
-                    "analysis evidence 文件身份已变化，请按当前 SHA-256 重新登记。",
-                    details={"paths": [path]},
-                ) from error
-        self._validate_registered_analysis_evidence(
-            durable=durable,
-            identities=identities,
+                warnings.append("analysis evidence 登记身份发生变化，已按当前文件继续发布。")
+        warnings.extend(
+            self._validate_registered_analysis_evidence(
+                durable=durable,
+                identities=identities,
+            )
         )
-        return durable
+        return durable, list(dict.fromkeys(warnings))
 
 
 def _require_dataset_id_sequence(value: object) -> list[str]:

@@ -1,6 +1,7 @@
-from datetime import timedelta
+import os
 
 import pytest
+from sqlalchemy import text
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.task_execution.models import (
@@ -15,17 +16,28 @@ from smart_reporting.task_execution.repository import (
     MAX_INSTRUCTION_BYTES,
     CodingRepositoryError,
     CodingTaskRepository,
-    utcnow,
 )
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def repository_v2(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+async def repository():
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
+    database = create_agent_database(database_url)
     repository = CodingTaskRepository(database.async_db)
-    yield repository
-    await database.async_engine.dispose()
-    database.sync_engine.dispose()
+    await repository.initialize()
+    try:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
+        yield repository
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 def scope(run_id: str = "run") -> CodingScope:
@@ -33,13 +45,13 @@ def scope(run_id: str = "run") -> CodingScope:
 
 
 @pytest.mark.anyio
-async def test_reporting可显式提高单条指令上限且默认边界不变(repository_v2):
+async def test_reporting可显式提高单条指令上限且默认边界不变(repository):
     content = "x" * (MAX_INSTRUCTION_BYTES + 1)
     with pytest.raises(CodingRepositoryError) as rejected:
-        await repository_v2.create_task_with_initial_attempt(scope("default-limit"), content)
+        await repository.create_task_with_initial_attempt(scope("default-limit"), content)
     assert rejected.value.code == "instruction_too_large"
 
-    task = await repository_v2.create_task_with_initial_attempt(
+    task = await repository.create_task_with_initial_attempt(
         scope("report-limit"),
         content,
         max_instruction_bytes=512 * 1024,
@@ -49,29 +61,29 @@ async def test_reporting可显式提高单条指令上限且默认边界不变(r
 
 
 @pytest.mark.anyio
-async def test_create_aggregate_is_idempotent_and_attempt_zero_is_free(repository_v2):
-    task = await repository_v2.create_task_with_initial_attempt(scope(), "实现目标")
-    duplicate = await repository_v2.create_task_with_initial_attempt(scope(), "实现目标")
+async def test_create_aggregate_is_idempotent_and_attempt_zero_is_free(repository):
+    task = await repository.create_task_with_initial_attempt(scope(), "实现目标")
+    duplicate = await repository.create_task_with_initial_attempt(scope(), "实现目标")
 
     assert duplicate == task
     assert task.state is TaskState.NEW
     assert task.current_attempt_no == task.continuation_count == 0
-    attempt = await repository_v2.get_attempt(task.current_internal_run_id)
+    attempt = await repository.get_attempt(task.current_internal_run_id)
     assert attempt is not None and attempt.state is AttemptState.CREATED
 
     with pytest.raises(CodingRepositoryError, match="初始目标不一致") as conflict:
-        await repository_v2.create_task_with_initial_attempt(scope(), "另一个目标")
+        await repository.create_task_with_initial_attempt(scope(), "另一个目标")
     assert conflict.value.code == "task_initial_instruction_conflict"
 
 
 @pytest.mark.anyio
-async def test_new_attempt_instruction_keeps_initial_goal_and_latest_supplement(repository_v2):
-    task = await repository_v2.create_task_with_initial_attempt(scope(), "不可变目标")
-    await repository_v2.submit_instruction(scope(), "first", "较早补充")
-    await repository_v2.submit_instruction(scope(), "latest", "最新补充")
-    lease = await repository_v2.claim_lease("run", "worker")
+async def test_new_attempt_instruction_keeps_initial_goal_and_latest_supplement(repository):
+    task = await repository.create_task_with_initial_attempt(scope(), "不可变目标")
+    await repository.submit_instruction(scope(), "first", "较早补充")
+    await repository.submit_instruction(scope(), "latest", "最新补充")
+    lease = await repository.claim_lease("run", "worker")
     assert isinstance(lease, Lease)
-    continued = await repository_v2.close_and_decide(
+    continued = await repository.close_and_decide(
         "run",
         lease,
         task.state_version + 2,
@@ -81,13 +93,13 @@ async def test_new_attempt_instruction_keeps_initial_goal_and_latest_supplement(
     )
 
     assert (
-        await repository_v2.attempt_instruction("run", continued.current_attempt_no)
+        await repository.attempt_instruction("run", continued.current_attempt_no)
         == "不可变目标\n\n最新补充"
     )
 
 
 @pytest.mark.anyio
-async def test_acceptance_contract_is_persisted_and_immutable(repository_v2):
+async def test_acceptance_contract_is_persisted_and_immutable(repository):
     acceptance_contract = {
         "version": 1,
         "requirements": [
@@ -100,12 +112,12 @@ async def test_acceptance_contract_is_persisted_and_immutable(repository_v2):
         ],
     }
 
-    task = await repository_v2.create_task_with_initial_attempt(
+    task = await repository.create_task_with_initial_attempt(
         scope(),
         "实现目标",
         acceptance_contract=acceptance_contract,
     )
-    duplicate = await repository_v2.create_task_with_initial_attempt(
+    duplicate = await repository.create_task_with_initial_attempt(
         scope(),
         "实现目标",
         acceptance_contract=acceptance_contract,
@@ -114,9 +126,9 @@ async def test_acceptance_contract_is_persisted_and_immutable(repository_v2):
     assert task.acceptance_contract == acceptance_contract
     assert duplicate.acceptance_contract == acceptance_contract
     acceptance_contract["requirements"][0]["parameters"]["currency"] = "USD"
-    assert (await repository_v2.get_task_snapshot("run")).acceptance_contract != acceptance_contract
+    assert (await repository.get_task_snapshot("run")).acceptance_contract != acceptance_contract
     with pytest.raises(CodingRepositoryError) as conflict:
-        await repository_v2.create_task_with_initial_attempt(
+        await repository.create_task_with_initial_attempt(
             scope(),
             "实现目标",
             acceptance_contract=acceptance_contract,
@@ -125,53 +137,38 @@ async def test_acceptance_contract_is_persisted_and_immutable(repository_v2):
 
 
 @pytest.mark.anyio
-async def test_legacy_terminal_task_is_not_exposed_as_v2_snapshot(repository_v2):
-    legacy = await repository_v2.create_task(
-        external_run_id="legacy",
-        owner_user_id="user",
-        thread_id="thread",
-        agent_id="coding-agent",
-        sandbox_id="sandbox",
-        deadline_at=utcnow() + timedelta(hours=24),
-    )
-    await repository_v2.set_task_status(legacy.external_run_id, "cancelled")
-
-    assert await repository_v2.get_task_snapshot(legacy.external_run_id) is None
-
-
-@pytest.mark.anyio
-async def test_lease_epoch_fences_old_owner_and_heartbeat_does_not_change_version(repository_v2):
-    task = await repository_v2.create_task_with_initial_attempt(scope(), "实现目标")
-    first = await repository_v2.claim_lease("run", "worker-a")
+async def test_lease_epoch_fences_old_owner_and_heartbeat_does_not_change_version(repository):
+    task = await repository.create_task_with_initial_attempt(scope(), "实现目标")
+    first = await repository.claim_lease("run", "worker-a")
     assert isinstance(first, Lease)
-    heartbeat = await repository_v2.heartbeat_lease("run", first)
+    heartbeat = await repository.heartbeat_lease("run", first)
 
     assert heartbeat.epoch == first.epoch == 1
-    assert (await repository_v2.get_task_snapshot("run")).state_version == task.state_version
-    assert await repository_v2.claim_lease("run", "worker-b") is None
+    assert (await repository.get_task_snapshot("run")).state_version == task.state_version
+    assert await repository.claim_lease("run", "worker-b") is None
 
     expired = Lease(first.owner, first.epoch - 1, first.expires_at)
     with pytest.raises(CodingRepositoryError) as stale:
-        await repository_v2.resume_current("run", expired, task.state_version)
+        await repository.resume_current("run", expired, task.state_version)
     assert stale.value.code == "task_cas_conflict"
 
 
 @pytest.mark.anyio
-async def test_instruction_inbox_idempotency_conflict_and_atomic_apply(repository_v2):
-    await repository_v2.create_task_with_initial_attempt(scope(), "实现目标")
-    first = await repository_v2.submit_instruction(scope(), "instruction-1", "增加失败测试")
-    duplicate = await repository_v2.submit_instruction(scope(), "instruction-1", "增加失败测试")
+async def test_instruction_inbox_idempotency_conflict_and_atomic_apply(repository):
+    await repository.create_task_with_initial_attempt(scope(), "实现目标")
+    first = await repository.submit_instruction(scope(), "instruction-1", "增加失败测试")
+    duplicate = await repository.submit_instruction(scope(), "instruction-1", "增加失败测试")
 
     assert duplicate == first
     assert first.state is InstructionState.PENDING
     with pytest.raises(CodingRepositoryError) as conflict:
-        await repository_v2.submit_instruction(scope(), "instruction-1", "修改成别的内容")
+        await repository.submit_instruction(scope(), "instruction-1", "修改成别的内容")
     assert conflict.value.code == "instruction_id_conflict"
 
-    current = await repository_v2.get_task_snapshot("run")
-    lease = await repository_v2.claim_lease("run", "worker")
+    current = await repository.get_task_snapshot("run")
+    lease = await repository.claim_lease("run", "worker")
     assert current is not None and isinstance(lease, Lease)
-    continued = await repository_v2.close_and_decide(
+    continued = await repository.close_and_decide(
         "run",
         lease,
         current.state_version,
@@ -181,16 +178,16 @@ async def test_instruction_inbox_idempotency_conflict_and_atomic_apply(repositor
     )
 
     assert continued.current_attempt_no == continued.continuation_count == 1
-    assert await repository_v2.pending_instructions("run") == []
+    assert await repository.pending_instructions("run") == []
 
 
 @pytest.mark.anyio
-async def test_finish_is_two_phase_and_instruction_requires_successor(repository_v2):
-    task = await repository_v2.create_task_with_initial_attempt(scope(), "实现目标")
-    lease = await repository_v2.claim_lease("run", "worker")
+async def test_finish_is_two_phase_and_instruction_requires_successor(repository):
+    task = await repository.create_task_with_initial_attempt(scope(), "实现目标")
+    lease = await repository.claim_lease("run", "worker")
     assert isinstance(lease, Lease)
     receipt = {"summary": "完成", "digest": "abc"}
-    finishing = await repository_v2.request_finish(
+    finishing = await repository.request_finish(
         "run",
         lease,
         task.state_version,
@@ -200,15 +197,15 @@ async def test_finish_is_two_phase_and_instruction_requires_successor(repository
     )
 
     assert finishing.state is TaskState.FINISHING
-    attempt = await repository_v2.get_attempt(finishing.current_internal_run_id)
+    attempt = await repository.get_attempt(finishing.current_internal_run_id)
     assert attempt is not None and attempt.state is AttemptState.FINISH_REQUESTED
     with pytest.raises(CodingRepositoryError) as successor:
-        await repository_v2.submit_instruction(scope(), "late", "继续修改")
+        await repository.submit_instruction(scope(), "late", "继续修改")
     assert successor.value.code == "task_successor_required"
 
-    completed = await repository_v2.finalize_finish(
+    completed = await repository.finalize_finish(
         "run", lease, finishing.state_version, agno_status="COMPLETED"
     )
     assert completed.state is TaskState.COMPLETED
-    closed = await repository_v2.get_attempt(completed.current_internal_run_id)
+    closed = await repository.get_attempt(completed.current_internal_run_id)
     assert closed is not None and closed.outcome is AttemptOutcome.FINISH_ACCEPTED

@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 import psycopg
 from agno.db.base import AsyncBaseDb, BaseDb
 from agno.db.postgres import AsyncPostgresDb, PostgresDb
-from agno.db.sqlite import AsyncSqliteDb, SqliteDb
 from loguru import logger
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -20,7 +18,6 @@ from .settings import DEFAULT_AGENT_DB_URL as SETTINGS_DEFAULT_AGENT_DB_URL
 from .settings import database_url_from_environment
 
 DEFAULT_AGENT_DB_URL = SETTINGS_DEFAULT_AGENT_DB_URL
-SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 
 def _duration_ms(started_at: float) -> int:
@@ -46,16 +43,7 @@ def _normalized_database_urls(db_url: str) -> tuple[str, str, str]:
         normalized = f"postgresql+psycopg{separator}{connection}"
         return "postgresql", normalized, normalized
 
-    if url.drivername in {"sqlite", "sqlite+aiosqlite"}:
-        database = str(url.database or "")
-        query = {str(key).lower(): str(value).lower() for key, value in url.query.items()}
-        if not database or database == ":memory:" or query.get("mode") == "memory":
-            raise ValueError("SQLite 必须使用持久化文件，不能使用内存数据库。")
-        async_url = str(url.set(drivername="sqlite+aiosqlite"))
-        sync_url = str(url.set(drivername="sqlite"))
-        return "sqlite", async_url, sync_url
-
-    raise ValueError("AGENT_DB_URL 只支持 postgresql[+psycopg]:// 或 sqlite[+aiosqlite]:///。")
+    raise ValueError("AGENT_DB_URL 只支持 postgresql[+psycopg]://。")
 
 
 def psycopg_db_url(db_url: str | None = None) -> str:
@@ -63,18 +51,6 @@ def psycopg_db_url(db_url: str | None = None) -> str:
     if backend != "postgresql":
         raise ValueError("当前数据库不是 PostgreSQL，不能创建 psycopg 连接。")
     return sync_url.replace("postgresql+psycopg://", "postgresql://", 1)
-
-
-def _configure_sqlite_engine(engine: Engine) -> None:
-    @event.listens_for(engine, "connect")
-    def configure_connection(dbapi_connection: Any, _connection_record: Any) -> None:
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        finally:
-            cursor.close()
 
 
 class SerializedAsyncPostgresDb(AsyncPostgresDb):
@@ -117,11 +93,6 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
         runs_limit=None,
     ):
         started_at = perf_counter()
-        logger.info(
-            "agent_session_read_started backend=postgresql session_type={} user_id_present={}",
-            _session_type_name(session_type),
-            str(user_id is not None).lower(),
-        )
         try:
             result = await super().get_session(
                 session_id=session_id,
@@ -151,11 +122,6 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
     async def upsert_session(self, session, deserialize=True):
         started_at = perf_counter()
         session_type = type(session).__name__
-        logger.info(
-            "agent_session_write_started backend=postgresql session_type={} run_count={}",
-            session_type,
-            len(getattr(session, "runs", None) or []),
-        )
         try:
             clear_terminal_session_reasoning(session)
             result = await super().upsert_session(session, deserialize=deserialize)
@@ -178,12 +144,6 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
         return result
 
 
-class SerializedAsyncSqliteDb(AsyncSqliteDb):
-    async def upsert_session(self, session, deserialize=True):
-        clear_terminal_session_reasoning(session)
-        return await super().upsert_session(session, deserialize=deserialize)
-
-
 @dataclass(frozen=True)
 class AgentDatabase:
     backend: str
@@ -203,32 +163,21 @@ class AgentDatabase:
 
 def create_agent_database(db_url: str | None = None) -> AgentDatabase:
     backend, async_url, sync_url = _normalized_database_urls(db_url or agent_db_url())
-    if backend == "postgresql":
-        async_engine = create_async_engine(
-            async_url,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-        )
-        sync_engine = create_engine(
-            sync_url,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-        )
-        async_db: AsyncBaseDb = SerializedAsyncPostgresDb(
-            db_url=async_url,
-            db_engine=async_engine,
-        )
-        sync_db: BaseDb = PostgresDb(db_url=sync_url, db_engine=sync_engine)
-    else:
-        sqlite_path = make_url(sync_url).database
-        if sqlite_path:
-            Path(sqlite_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        async_engine = create_async_engine(async_url)
-        sync_engine = create_engine(sync_url)
-        _configure_sqlite_engine(async_engine.sync_engine)
-        _configure_sqlite_engine(sync_engine)
-        async_db = SerializedAsyncSqliteDb(db_url=async_url, db_engine=async_engine)
-        sync_db = SqliteDb(db_url=sync_url, db_engine=sync_engine)
+    async_engine = create_async_engine(
+        async_url,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+    )
+    sync_engine = create_engine(
+        sync_url,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+    )
+    async_db: AsyncBaseDb = SerializedAsyncPostgresDb(
+        db_url=async_url,
+        db_engine=async_engine,
+    )
+    sync_db: BaseDb = PostgresDb(db_url=sync_url, db_engine=sync_engine)
     return AgentDatabase(
         backend=backend,
         async_url=async_url,

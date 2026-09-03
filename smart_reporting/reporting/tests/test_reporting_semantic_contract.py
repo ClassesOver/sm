@@ -21,13 +21,13 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime.publication import evaluate_publication_semantics
 
 
-def test_running_v1_artifact_fails_closed() -> None:
+def test_non_v1_artifact_fails_closed() -> None:
     with pytest.raises(ReportingError, match="report_semantic_contract_upgrade_required"):
-        read_analysis_artifact({"version": "1"}, running=True)
+        read_analysis_artifact({"version": "2"})
 
 
-def test_v2_artifact_rejects_nested_v1_manifest() -> None:
-    with pytest.raises(ValueError, match="v2 EvidenceManifest"):
+def test_v1_artifact_rejects_incomplete_nested_manifest() -> None:
+    with pytest.raises(ValueError, match="AnalysisEvidenceManifest 必须冻结 Dataset 语义"):
         AnalysisArtifact(
             reportBrief=ReportBrief(
                 objective="目标",
@@ -45,14 +45,28 @@ def test_v2_artifact_rejects_nested_v1_manifest() -> None:
         )
 
 
-def test_completed_v1_artifact_is_read_only_compatible() -> None:
-    artifact = read_analysis_artifact({"version": "1"}, running=False)
-    assert artifact.version == "1"
+def test_v1_artifact_uses_unified_schema() -> None:
+    payload = {
+        "version": "1",
+        "reportBrief": {
+            "objective": "目标",
+            "executiveSummary": "摘要",
+            "managementQuestions": ["收入如何？"],
+        },
+        "evidenceManifest": {
+            "version": "1",
+            "evidence": [{"analysisId": "analysis_001", "datasetIds": ["d1"]}],
+            "datasetSemantics": [
+                {"datasetId": "d1", "rowGrain": "row", "duplicateResolution": "resolved"}
+            ],
+        },
+    }
+    with pytest.raises(ValueError):
+        read_analysis_artifact(payload)
 
 
-def test_running_v1_checkpoint_fails_closed() -> None:
-    with pytest.raises(ValueError, match="report_semantic_contract_upgrade_required"):
-        ReportingCheckpoint.model_validate(
+def test_v1_checkpoint_is_valid() -> None:
+    checkpoint = ReportingCheckpoint.model_validate(
             {
                 "version": "1",
                 "revision": 1,
@@ -76,6 +90,7 @@ def test_running_v1_checkpoint_fails_closed() -> None:
                 },
             }
         )
+    assert checkpoint.version == "1"
 
 
 def test_chart_requires_structured_comparability_fields() -> None:
@@ -188,7 +203,7 @@ def test_deterministic_chart_visual_inspection_receipt_is_honest() -> None:
     assert receipt.visual_review_status == "not_run"
 
 
-def test_v2_manifest_requires_every_chart_visual_inspection_receipt() -> None:
+def test_v1_manifest_requires_every_chart_visual_inspection_receipt() -> None:
     with pytest.raises(ValueError, match="视觉检查回执"):
         AnalysisEvidenceManifest(
             evidence=(
