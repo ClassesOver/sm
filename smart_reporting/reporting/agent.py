@@ -87,6 +87,7 @@ from .phase import (
     record_reporting_projection_metrics,
     reporting_analysis_fact_usage_from_run_context,
     reporting_analysis_recovery_from_run_context,
+    reporting_model_route_from_run_context,
     reporting_phase_allows_tool,
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
@@ -2042,6 +2043,10 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             ):
                 profile = escalation_profile
         request_model = copy(self)
+        model_route = reporting_model_route_from_run_context(current_reporting_run_context())
+        if model_route is not None:
+            _, routed_model_id = model_route
+            request_model.id = routed_model_id
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
         if task_kind == "analysis_item":
             output_limit = _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT
@@ -2690,6 +2695,11 @@ def create_report_worker(
         input_token_budget=input_token_budget,
     )
     worker_model._report_vision_enabled = settings.report_enable_vision
+    worker_model._report_model_profiles = build_model_profiles(
+        fast_model_id=settings.model_fast_id,
+        standard_model_id=settings.model_standard_id,
+        strong_model_id=settings.model_strong_id,
+    )
     worker_model.max_tokens = output_token_reserve
     worker_profile = (
         ReportingThinkingProfile.on(

@@ -14,6 +14,12 @@ from agno.run import RunContext
 from loguru import logger
 
 from ...async_utils import complete_cleanup
+from ...model_routing import (
+    DEFAULT_TASK_POLICIES,
+    ModelRouter,
+    ModelRouteRequest,
+    RouteFailure,
+)
 from ...task_execution import TaskExecutionRepository, TaskScope, TaskState
 from ...task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
 from ...task_execution.session import TaskSession
@@ -24,6 +30,8 @@ from ..phase import (
     REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
+    REPORTING_MODEL_ID_DEPENDENCY_KEY,
+    REPORTING_MODEL_TIER_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
@@ -189,6 +197,9 @@ class ReportTaskRunner:
         self.execution_cleanup = execution_cleanup
         self.event_sink = event_sink
         self.idle_timeout_seconds = idle_timeout_seconds
+        self._model_profiles = getattr(worker.model, "_report_model_profiles", None)
+        if self._model_profiles is None:
+            raise ValueError("Report Worker 缺少模型档位目录")
 
     async def start(
         self,
@@ -248,6 +259,46 @@ class ReportTaskRunner:
                 reporting_task_kind = reporting_task_kind_from_acceptance_contract(
                     acceptance_contract
                 )
+                requirements = acceptance_contract.get("requirements")
+                phase_contract: Mapping[str, Any] = {}
+                if (
+                    isinstance(requirements, list)
+                    and requirements
+                    and isinstance(requirements[0], Mapping)
+                ):
+                    parameters = requirements[0].get("parameters")
+                    if isinstance(parameters, Mapping) and isinstance(
+                        parameters.get("phaseContract"), Mapping
+                    ):
+                        phase_contract = parameters["phaseContract"]
+                complexity = phase_contract.get("thinkingComplexityTier", "standard")
+                if complexity not in {"simple", "standard", "complex"}:
+                    complexity = "standard"
+                escalation_reason = str(
+                    phase_contract.get("thinkingEscalationReason") or ""
+                ).lower()
+                failure = (
+                    RouteFailure.SCHEMA
+                    if "schema" in escalation_reason
+                    else RouteFailure.EVIDENCE
+                    if any(marker in escalation_reason for marker in ("evidence", "fact"))
+                    else RouteFailure.TRANSIENT
+                    if continuing
+                    else None
+                )
+                route_task_kind = (
+                    "section_generation"
+                    if reporting_task_kind == "section"
+                    else reporting_task_kind
+                )
+                route = ModelRouter(self._model_profiles, DEFAULT_TASK_POLICIES).select(
+                    ModelRouteRequest(
+                        task_kind=route_task_kind or "facade",
+                        complexity=complexity,
+                        failure=failure,
+                        attempt=1 if failure is not None else 0,
+                    )
+                )
                 reporting_thinking_effort = reporting_thinking_effort_from_acceptance_contract(
                     acceptance_contract
                 )
@@ -306,6 +357,8 @@ class ReportTaskRunner:
                         "leaseEpoch": session.lease.epoch,
                         "attemptNo": attempt.attempt_no,
                         REPORTING_PHASE_DEPENDENCY_KEY: reporting_phase,
+                        REPORTING_MODEL_TIER_DEPENDENCY_KEY: route.tier,
+                        REPORTING_MODEL_ID_DEPENDENCY_KEY: route.model_id,
                         **(
                             {
                                 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: visualization_tool_calls,

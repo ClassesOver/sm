@@ -60,5 +60,8 @@ DEFAULT_TASK_POLICIES: Mapping[str, TaskPolicy] = MappingProxyType(
         "sql_planning": _policy("sql_planning", ("standard", "standard", "strong")),
         "analysis_item": _policy("analysis_item", ("standard", "standard", "strong")),
         "section_generation": _policy("section_generation", ("standard", "standard", "strong")),
+        "visualization_section": _policy(
+            "visualization_section", ("standard", "standard", "strong")
+        ),
     }
 )

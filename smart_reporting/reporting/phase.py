@@ -31,6 +31,8 @@ REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
+REPORTING_MODEL_TIER_DEPENDENCY_KEY = "reportingModelTier"
+REPORTING_MODEL_ID_DEPENDENCY_KEY = "reportingModelId"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
 REPORTING_THINKING_BUDGET_DEPENDENCY_KEY = "reportingThinkingBudget"
 REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
@@ -509,6 +511,26 @@ def reporting_task_kind_from_run_context(
         }
         else None
     )
+
+
+def reporting_model_route_from_run_context(
+    run_context: RunContext | None,
+) -> tuple[str, str] | None:
+    """读取执行器签发的模型档位和 ID；缺失或不一致时保持默认模型。"""
+
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    if not isinstance(binding, Mapping):
+        return None
+    tier = binding.get(REPORTING_MODEL_TIER_DEPENDENCY_KEY)
+    model_id = binding.get(REPORTING_MODEL_ID_DEPENDENCY_KEY)
+    if tier not in {"fast", "standard", "strong"} or not isinstance(model_id, str) or not model_id:
+        return None
+    return tier, model_id
 
 
 def reporting_thinking_effort_from_run_context(
