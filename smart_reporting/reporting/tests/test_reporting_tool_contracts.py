@@ -107,3 +107,19 @@ async def test_section_visualization_requires_its_task_kind() -> None:
     result = await toolkit.submit_visualization_charts(sectionCode="section_001", charts=[])
     assert result["ok"] is False
     assert result["code"] == "report_phase_tool_forbidden"
+
+
+def test_visualization_terminal_forbidden_returns_allowed_command() -> None:
+    error = ReportingError(
+        "report_visualization_terminal_forbidden",
+        "visualization terminal 只允许从工作区根目录执行签发脚本。",
+        details={"allowedCommand": "python3 analysis/charts/section_001/charts.py"},
+    )
+
+    result = ReportWorkspaceTaskToolkit._failure(error, retryable=False)
+
+    assert result["details"] == {"allowedCommand": "python3 analysis/charts/section_001/charts.py"}
+    assert result["requiredActions"] == [
+        "保持 workdir 为空，仅使用 details.allowedCommand 原样执行签发脚本；"
+        "不要改写命令、添加 cd 或执行其他 terminal 命令。"
+    ]

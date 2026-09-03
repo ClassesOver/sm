@@ -177,6 +177,8 @@ async def test_controller_reclaims_sandbox_after_terminal_start(
                 "external_run_id": "external-run",
                 "thread_id": "thread",
                 "user_id": "user",
+                "database": "default",
+                "company_id": "default",
             },
             session_id,
             run_id,

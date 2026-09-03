@@ -1520,6 +1520,17 @@ class ReportWorkspaceTaskToolkit(
         elif code == "report_chart_registration_closed":
             result["requiredActions"] = ["图表已完成不可变登记；不要改图或重复提交。"]
         elif (
+            code == "report_visualization_terminal_forbidden"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            allowed_command = error.details.get("allowedCommand")
+            if isinstance(allowed_command, str) and allowed_command:
+                result["details"] = {"allowedCommand": allowed_command}
+            result["requiredActions"] = [
+                "保持 workdir 为空，仅使用 details.allowedCommand 原样执行签发脚本；不要改写命令、添加 cd 或执行其他 terminal 命令。"
+            ]
+        elif (
             code == "report_chart_file_missing"
             and isinstance(error, ReportingError)
             and isinstance(error.details, Mapping)
