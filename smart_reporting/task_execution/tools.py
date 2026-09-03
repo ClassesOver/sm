@@ -108,6 +108,7 @@ def build_workspace_changes(
     service: WorkspaceService,
     thread: str,
     patch: str,
+    expected_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
@@ -116,12 +117,16 @@ def build_workspace_changes(
     for operation, patched_file in zip(operations, parsed, strict=True):
         path = service.normalize_path(operation.path, allow_root=False)[0]
         if operation.operation == "create":
+            if expected_sha256 and path in expected_sha256:
+                raise WorkspaceError("新增文件不能提供已有文件的基线 SHA-256。")
             updated = _apply_unified_hunks("", patched_file)
             changes.append({"operation": "create", "path": path, "content": updated})
             continue
 
         current = service.read_text(thread, path)
         digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
+        if expected_sha256 and expected_sha256.get(path) != digest:
+            raise WorkspaceError("文件内容已变化，请重新读取文件和哈希后再应用补丁。")
         if operation.operation == "delete":
             if _apply_unified_hunks(current, patched_file):
                 raise WorkspaceError("删除文件的 unified diff 应移除全部现有内容。")

@@ -22,41 +22,23 @@ def _stable_digest(value: Any) -> str:
     ).hexdigest()
 
 
-def analysis_file_create_parameters() -> dict[str, Any]:
-    """返回仅允许首次创建 analysis 文件的 schema。"""
-
+def analysis_patch_parameters() -> dict[str, Any]:
+    """返回受限标准 unified diff 的 schema。"""
     return {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "minLength": 1},
-            "content": {
+            "patch": {
                 "type": "string",
-                "description": "完整文件内容；单次调用总写入意图不超过 4 MiB。",
-            },
-        },
-        "required": ["path", "content"],
-        "additionalProperties": False,
-    }
-
-
-def analysis_file_overwrite_parameters() -> dict[str, Any]:
-    """返回仅允许 CAS 覆盖已有 analysis 文件的 schema。"""
-
-    return {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "minLength": 1},
-            "content": {
-                "type": "string",
-                "description": "完整文件内容；单次调用总写入意图不超过 4 MiB。",
+                "minLength": 1,
+                "description": "标准 unified diff；路径必须使用 a/ 与 b/ 前缀。",
             },
             "expected_sha256": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$",
-                "description": "读取回执中的当前 SHA-256。",
+                "type": "object",
+                "description": "已有文件的基线 SHA-256 映射；新增文件不填写对应项。",
+                "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             },
         },
-        "required": ["path", "content", "expected_sha256"],
+        "required": ["patch"],
         "additionalProperties": False,
     }
 

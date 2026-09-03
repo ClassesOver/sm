@@ -19,7 +19,7 @@ from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ...task_execution.changes import create_files_patch
+from ...task_execution.changes import build_workspace_changes, parse_unified_diff
 from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -29,8 +29,7 @@ from ..workflow.state import ReportingRunState
 from .validation import (
     _jsonschema_error_message,
     _stable_digest,
-    analysis_file_create_parameters,
-    analysis_file_overwrite_parameters,
+    analysis_patch_parameters,
 )
 
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
@@ -126,12 +125,9 @@ class RuntimeAnalysisMixin:
     def _validate_analysis_write_arguments(
         self, tool_name: str, arguments: Mapping[str, Any]
     ) -> tuple[dict[str, Any], tuple[str, ...], dict[str, str], int]:
-        """按公开写入工具的互斥 schema 冻结完整写入身份。"""
+        """按公开 unified diff schema 冻结完整写入身份。"""
 
-        schemas = {
-            "create_analysis_file": analysis_file_create_parameters,
-            "overwrite_analysis_file": analysis_file_overwrite_parameters,
-        }
+        schemas = {"apply_analysis_patch": analysis_patch_parameters}
         schema_factory = schemas.get(tool_name)
         if schema_factory is None:
             raise ReportingError(
@@ -171,7 +167,26 @@ class RuntimeAnalysisMixin:
                 )
             expected_states[path] = state
 
-        add_path(raw["path"], "present")
+        operations = parse_unified_diff(raw["patch"])
+        expected_sha256 = raw.get("expected_sha256", {})
+        if not isinstance(expected_sha256, dict):
+            raise ReportingError("report_analysis_write_intent_invalid", "expected_sha256 必须是对象。")
+        normalized_expected: dict[str, str] = {}
+        for path, digest in expected_sha256.items():
+            if not isinstance(path, str) or not isinstance(digest, str):
+                raise ReportingError("report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。")
+            normalized_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            if normalized_path in normalized_expected or len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ReportingError("report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。")
+            normalized_expected[normalized_path] = digest
+        operation_paths = {WorkspaceService.normalize_path(item.path, allow_root=False)[0] for item in operations}
+        if set(normalized_expected) - operation_paths:
+            raise ReportingError("report_analysis_write_intent_invalid", "基线 SHA-256 包含非补丁目标路径。")
+        for operation in operations:
+            add_path(operation.path, "present")
+        raw["expected_sha256"] = normalized_expected
 
         payload_bytes = len(
             json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -188,11 +203,12 @@ class RuntimeAnalysisMixin:
         canonical: Mapping[str, Any],
     ) -> dict[str, dict[str, Any]]:
         contents: dict[str, str] = {}
-        if tool_name in {"create_analysis_file", "overwrite_analysis_file"}:
-            path = canonical.get("path")
-            content = canonical.get("content")
-            if isinstance(path, str) and isinstance(content, str):
-                contents[path] = content
+        if tool_name == "apply_analysis_patch":
+            for operation in canonical.get("operations", ()):
+                if isinstance(operation, Mapping) and isinstance(operation.get("path"), str):
+                    content = operation.get("content")
+                    if isinstance(content, str):
+                        contents[operation["path"]] = content
         return {
             WorkspaceService.normalize_path(path, allow_root=False)[0]: {
                 "path": WorkspaceService.normalize_path(path, allow_root=False)[0],
@@ -271,13 +287,7 @@ class RuntimeAnalysisMixin:
     ) -> None:
         """在提交 Workspace mutation 前拒绝会破坏 Python 语法的写入。"""
 
-        changes = [
-            {
-                "operation": "update" if canonical.get("expected_sha256") else "create",
-                "path": WorkspaceService.normalize_path(canonical["path"], allow_root=False)[0],
-                "content": canonical["content"],
-            }
-        ]
+        changes = list(canonical.get("operations", ()))
 
         # Kernel patch 的实际提交发生在这之后；预检只使用同一候选文本，保证语法错误时
         # Workspace 与 write intent 都不产生可恢复但无效的中间状态。
@@ -323,55 +333,35 @@ class RuntimeAnalysisMixin:
                     details={"path": path, "line": error.lineno, "offset": error.offset},
                 ) from error
 
-    async def _write_analysis_file(
+    async def apply_analysis_patch(
         self,
-        *,
-        tool_name: str,
-        path: str,
-        content: str,
-        expected_sha256: str | None,
+        patch: str,
+        expected_sha256: dict[str, str] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """保存固定操作的写入意图、执行写入并返回文件身份。"""
 
-        canonical_tool_name = tool_name
-        canonical_input = {
-            "path": path,
-            "content": content,
-            **({"expected_sha256": expected_sha256} if expected_sha256 is not None else {}),
-        }
+        canonical_tool_name = "apply_analysis_patch"
+        canonical_input = {"patch": patch, **({"expected_sha256": expected_sha256} if expected_sha256 else {})}
 
         async def call(scope: Any) -> dict[str, Any]:
             _parameters, contract = self._phase_parameters(scope, "analysis")
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
+            raw_operations = build_workspace_changes(
+                self.kernel.service,
+                scope.thread_id,
+                canonical["patch"],
+                canonical.get("expected_sha256"),
+            )
+            canonical["operations"] = raw_operations
             self._require_analysis_task_output_paths(contract, paths)
             await self._preflight_analysis_python_write(
                 scope=scope,
                 tool_name=canonical_tool_name,
                 canonical=canonical,
             )
-            if canonical_tool_name == "overwrite_analysis_file":
-                current_files = await self._analysis_write_hash_files(
-                    thread_id=scope.thread_id,
-                    paths=paths,
-                )
-                current_by_path = {
-                    item.get("path"): item for item in current_files if isinstance(item, dict)
-                }
-                missing_paths = [
-                    path
-                    for path in paths
-                    if not isinstance(current_by_path.get(path), dict)
-                    or current_by_path[path].get("missing") is True
-                ]
-                if missing_paths:
-                    raise ReportingError(
-                        "report_analysis_overwrite_target_missing",
-                        "CAS 覆盖目标文件不存在。",
-                        details={"paths": missing_paths},
-                    )
             payload = json.dumps(
                 {
                     "version": "1",
@@ -429,31 +419,9 @@ class RuntimeAnalysisMixin:
                 command_id=f"write-intent:{intent_sha256}",
             )
             try:
-                if canonical_tool_name == "overwrite_analysis_file":
-                    result = await self.kernel.patch(
-                        "overwrite",
-                        canonical["path"],
-                        None,
-                        None,
-                        False,
-                        None,
-                        run_context,
-                        content=canonical["content"],
-                        expected_sha256=canonical["expected_sha256"],
-                        _scope=scope,
-                    )
-                else:
-                    patch = create_files_patch([canonical])
-                    result = await self.kernel.patch(
-                        "patch",
-                        None,
-                        None,
-                        None,
-                        False,
-                        patch,
-                        run_context,
-                        _scope=scope,
-                    )
+                result = await self.kernel.patch(
+                    "patch", None, None, None, False, canonical["patch"], run_context, _scope=scope
+                )
             except WorkspacePathConflict as error:
                 try:
                     current_files = await self._analysis_write_hash_files(
@@ -468,7 +436,7 @@ class RuntimeAnalysisMixin:
                     details={
                         "paths": list(paths),
                         "currentFiles": current_files,
-                        "recoveryOperation": "overwrite_analysis_file",
+                        "recoveryOperation": "apply_analysis_patch",
                     },
                 ) from error
             if result.get("ok") is not True:
@@ -518,38 +486,6 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error)
 
-    async def create_analysis_file(
-        self,
-        path: str,
-        content: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        """原子创建此前不存在的 analysis 文件。"""
-
-        return await self._write_analysis_file(
-            tool_name="create_analysis_file",
-            path=path,
-            content=content,
-            expected_sha256=None,
-            run_context=run_context,
-        )
-
-    async def overwrite_analysis_file(
-        self,
-        path: str,
-        content: str,
-        expected_sha256: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        """使用读取回执中的 SHA-256 原子覆盖已有 analysis 文件。"""
-
-        return await self._write_analysis_file(
-            tool_name="overwrite_analysis_file",
-            path=path,
-            content=content,
-            expected_sha256=expected_sha256,
-            run_context=run_context,
-        )
 
     @staticmethod
     def _direct_python_script_path(command: Any, workdir: Any) -> str | None:

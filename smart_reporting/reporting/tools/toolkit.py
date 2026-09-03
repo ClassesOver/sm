@@ -50,7 +50,7 @@ from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
 from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
-from .validation import analysis_file_create_parameters, analysis_file_overwrite_parameters
+from .validation import analysis_patch_parameters
 
 SUPPLEMENTAL_EVIDENCE_READ_BYTES = 128 * 1024
 
@@ -169,18 +169,11 @@ class ReportWorkspaceTaskToolkit(
         self.instructions = "\n".join(reporting_instruction_lines)
         for name, description, parameters, entrypoint in (
             (
-                "create_analysis_file",
-                "创建此前不存在的 analysis 文件。只传 path 和 content；目标已存在时读取当前 "
-                "SHA-256 后改用 overwrite_analysis_file。服务端完成写入和 SHA-256 校验后提交意图。",
-                analysis_file_create_parameters,
-                self.create_analysis_file,
-            ),
-            (
-                "overwrite_analysis_file",
-                "使用读取回执中的 expected_sha256 CAS 覆盖已有 analysis 文件。目标不存在时改用 "
-                "create_analysis_file；服务端完成写入和 SHA-256 校验后提交意图。",
-                analysis_file_overwrite_parameters,
-                self.overwrite_analysis_file,
+                "apply_analysis_patch",
+                "使用标准 unified diff 原子修改 analysis 文件；已有文件的当前 SHA-256 "
+                "通过 expected_sha256 映射提供，新增文件不填写。",
+                analysis_patch_parameters,
+                self.apply_analysis_patch,
             ),
         ):
             self.register(
@@ -1422,7 +1415,7 @@ class ReportWorkspaceTaskToolkit(
                     "recoveryOperation": error.details.get("recoveryOperation"),
                 }
             result["requiredActions"] = [
-                "只使用 details.currentFiles 中当前 64 位 sha256 调用 overwrite_analysis_file 覆盖。"
+                "只使用 details.currentFiles 中当前 64 位 sha256 调用 apply_analysis_patch 覆盖。"
             ]
         elif (
             code == "report_analysis_dependency_missing"
@@ -1490,20 +1483,20 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
         elif code == "report_analysis_evidence_missing":
             result["requiredActions"] = [
-                "先使用 create_analysis_file 或 overwrite_analysis_file 写入真实 evidence，再重试当前 analysis 提交。"
+                "先使用 apply_analysis_patch 写入真实 evidence，再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_not_registered":
             result["requiredActions"] = [
-                "通过 create_analysis_file 或 overwrite_analysis_file 对 details.missingRegistration 中的文件做幂等登记，"
+                "通过 apply_analysis_patch 对 details.missingRegistration 中的文件做幂等登记，"
                 "再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_identity_mismatch":
             result["requiredActions"] = [
-                "文件已在登记后发生变化；通过 overwrite_analysis_file 提交当前内容和 SHA-256，"
+                "文件已在登记后发生变化；通过 apply_analysis_patch 提交当前内容和 SHA-256，"
                 "再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_overwrite_target_missing":
-            result["requiredActions"] = ["改用 create_analysis_file 创建该目标文件。"]
+            result["requiredActions"] = ["改用 apply_analysis_patch 创建该目标文件。"]
         elif code == "report_analysis_dependency_missing":
             result["requiredActions"] = [
                 "只创建 details.missingPaths 指向的缺失本地模块，再运行原脚本。"
@@ -1593,14 +1586,14 @@ class ReportWorkspaceTaskToolkit(
             return recovery
         if code == "report_analysis_write_path_conflict":
             return {
-                "kind": "overwrite_current_file",
-                "toolName": "overwrite_analysis_file",
+                "kind": "apply_patch_current_file",
+                "toolName": "apply_analysis_patch",
                 "currentFiles": normalized_details.get("currentFiles", []),
             }
         if code == "report_analysis_overwrite_target_missing":
             return {
-                "kind": "create_missing_file",
-                "toolName": "create_analysis_file",
+                "kind": "apply_patch_missing_file",
+                "toolName": "apply_analysis_patch",
                 "paths": normalized_details.get("paths", []),
             }
         if code == "report_analysis_dependency_missing":

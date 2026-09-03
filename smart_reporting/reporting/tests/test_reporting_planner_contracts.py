@@ -572,8 +572,7 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "不得猜测 /workspace" in instructions
     assert "不得用 pwd、ls、find 或 wc 探测" in instructions
     assert "不要给成功的脚本执行附加探测命令" in instructions
-    assert "首次写入使用 create_analysis_file" in instructions
-    assert "只有读取已有文件并取得当前 SHA-256 后才使用 overwrite_analysis_file" in instructions
+    assert "脚本修改统一使用 apply_analysis_patch" in instructions
     assert (
         "成功脚本的 stdout 仅输出 evidencePath、处理行数、固定事实对账值和核心可比指标"
         in instructions
