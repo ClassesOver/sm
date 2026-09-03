@@ -5,14 +5,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import io
 from collections.abc import Mapping
-from pathlib import PurePosixPath
 from typing import Any
 
 from agno.run import RunContext
-from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 
 from ...workspace import WorkspaceError, WorkspaceService
@@ -22,10 +18,6 @@ from ..delivery.draft_v1 import (
     validate_report_draft_blocks,
 )
 from ..models import ReportingError
-from ..phase import (
-    REPORTING_TASK_DEPENDENCY,
-    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
-)
 from ..workflow.checkpoint import (
     AnalysisReworkRequest,
     ChartVisualInspectionReceipt,
@@ -35,6 +27,7 @@ from ..workflow.checkpoint import (
     SectionClaimSubmission,
     SectionWorkItem,
 )
+from ..workspace import inspect_report_chart_file
 from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 from .validation import _stable_digest
 
@@ -207,7 +200,7 @@ class RuntimeSectionsMixin:
                 )
                 for chart in selected_charts:
                     for citation_id in chart.citation_ids:
-                        if citation_id not in citation_ids:
+                        if citation_id in known_citations and citation_id not in citation_ids:
                             citation_ids.append(citation_id)
             else:
                 if submission.current_period is None:
@@ -423,6 +416,9 @@ class RuntimeSectionsMixin:
         # 明确回执重试，只通过 chartIds 登记图表。
         parsed_blocks = tuple(ReportDraftBlock.model_validate(item) for item in blocks)
         validate_report_draft_blocks(parsed_blocks)
+        known_citations = {item.citation_id for item in work_item.citations}
+        known_charts = {item.chart_id for item in work_item.charts}
+        chart_citations = {item.chart_id: item.citation_ids for item in work_item.charts}
         normalized_claims, claim_warnings = self._normalize_section_claims(
             section_code=section_code,
             claims=claims,
@@ -449,16 +445,98 @@ class RuntimeSectionsMixin:
                         },
                     }
                 )
+            unknown_citation_ids = set(block.citation_ids) - known_citations
+            if unknown_citation_ids:
+                warning_items.append(
+                    {
+                        "code": "report_section_block_citation_unknown",
+                        "message": "正文 block 的未知 citation 已移除，正文内容保留。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "blockId": block.block_id,
+                            "unknownCitationIds": sorted(unknown_citation_ids),
+                        },
+                    }
+                )
+            unknown_chart_ids = set(block.chart_ids) - known_charts
+            if unknown_chart_ids:
+                warning_items.append(
+                    {
+                        "code": "report_section_block_chart_unknown",
+                        "message": "正文 block 的未知 chart 已移除，正文内容保留。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "blockId": block.block_id,
+                            "unknownChartIds": sorted(unknown_chart_ids),
+                        },
+                    }
+                )
             normalized_blocks.append(
                 block.model_copy(
                     update={
+                        "citation_ids": tuple(
+                            citation_id
+                            for citation_id in block.citation_ids
+                            if citation_id in known_citations
+                        ),
+                        "chart_ids": tuple(
+                            chart_id for chart_id in block.chart_ids if chart_id in known_charts
+                        ),
                         "claim_ids": tuple(
                             claim_id
                             for claim_id in block.claim_ids
                             if claim_id in normalized_claim_ids
-                        )
+                        ),
                     }
                 )
+            )
+        # 图表提交属于当前章节的冻结事实。模型可能只生成正文而遗漏 chartIds；此时不能
+        # 让 assemble_report_markdown 静默排除已提交图片，确定性地将未引用图表绑定到首个
+        # 正文块，并补齐其 citation，保证最终 Markdown/PDF 消费章节图表。
+        referenced_chart_ids = {
+            chart_id for block in normalized_blocks for chart_id in block.chart_ids
+        }
+        unreferenced_charts = tuple(
+            chart for chart in work_item.charts if chart.chart_id not in referenced_chart_ids
+        )
+        if unreferenced_charts and normalized_blocks:
+            first_block = normalized_blocks[0]
+            chart_ids = list(first_block.chart_ids)
+            citation_ids = list(first_block.citation_ids)
+            for chart in unreferenced_charts:
+                chart_ids.append(chart.chart_id)
+                for citation_id in chart.citation_ids:
+                    if citation_id in known_citations and citation_id not in citation_ids:
+                        citation_ids.append(citation_id)
+            normalized_blocks[0] = first_block.model_copy(
+                update={"chart_ids": tuple(chart_ids), "citation_ids": tuple(citation_ids)}
+            )
+            warning_items.append(
+                {
+                    "code": "report_section_chart_auto_bound",
+                    "message": "模型未绑定已提交图表，服务端已将其确定性绑定到首个正文块。",
+                    "details": {
+                        "sectionCode": section_code,
+                        "chartIds": [chart.chart_id for chart in unreferenced_charts],
+                    },
+                }
+            )
+        # 未知引用可以局部丢弃，但整章必须仍保留至少一个冻结 citation 作为事实锚点。
+        # 这里在 SectionArtifact 结构校验前判断，避免 claims 全部因未知 citation 被省略
+        # 时落成泛化的 Pydantic 错误，向模型返回稳定且可重试的领域错误码。
+        valid_block_citations = {
+            citation_id for block in normalized_blocks for citation_id in block.citation_ids
+        }
+        valid_block_citations.update(
+            citation_id
+            for block in normalized_blocks
+            for chart_id in block.chart_ids
+            for citation_id in chart_citations[chart_id]
+            if citation_id in known_citations
+        )
+        if not valid_block_citations:
+            raise ReportingError(
+                "report_section_citation_missing", "当前章节没有任何可验证 citation。"
             )
         artifact = SectionArtifact.model_validate(
             {
@@ -469,8 +547,6 @@ class RuntimeSectionsMixin:
                 "warnings": warning_items[-500:],
             }
         )
-        known_citations = {item.citation_id for item in work_item.citations}
-        known_charts = {item.chart_id for item in work_item.charts}
         metrics_by_code = {item.code: item for item in work_item.metric_definitions}
         charts_by_id = {item.chart_id: item for item in work_item.charts}
         citation_datasets = {item.citation_id: item.dataset_id for item in work_item.citations}
@@ -543,7 +619,7 @@ class RuntimeSectionsMixin:
                             "actualMetricCode": claim.metric_code,
                         }
                     )
-                if set(chart.citation_ids) - set(claim.citation_ids):
+                if (set(chart.citation_ids) & known_citations) - set(claim.citation_ids):
                     semantic_conflicts.append(
                         {
                             "code": "report_section_claim_chart_conflict",
@@ -639,18 +715,6 @@ class RuntimeSectionsMixin:
                 for conflict in semantic_conflicts
             )
             artifact = artifact.model_copy(update={"warnings": tuple(warning_items[-500:])})
-        referenced_citations = {
-            citation_id for block in artifact.blocks for citation_id in block.citation_ids
-        }
-        if referenced_citations - known_citations:
-            raise ReportingError(
-                "report_section_citation_unknown", "当前章节引用了 SectionWorkItem 外的 citation。"
-            )
-        referenced_charts = {chart_id for block in artifact.blocks for chart_id in block.chart_ids}
-        if referenced_charts - known_charts:
-            raise ReportingError(
-                "report_section_chart_unknown", "当前章节引用了 SectionWorkItem 外的 chart。"
-            )
         normalized_blocks = []
         for block in artifact.blocks:
             bound_citations = list(block.citation_ids)
@@ -658,18 +722,22 @@ class RuntimeSectionsMixin:
                 chart = charts_by_id[chart_id]
                 unknown_chart_citations = set(chart.citation_ids) - known_citations
                 if unknown_chart_citations:
-                    raise ReportingError(
-                        "report_section_chart_citation_unknown",
-                        f"图表 {chart_id} 引用了当前章节外的 citation。",
-                        details={
-                            "sectionCode": section_code,
-                            "blockId": block.block_id,
-                            "chartId": chart_id,
-                            "unknownCitationIds": sorted(unknown_chart_citations),
-                        },
+                    warning_items = list(artifact.warnings)
+                    warning_items.append(
+                        {
+                            "code": "report_section_chart_citation_unknown",
+                            "message": f"图表 {chart_id} 的未知 citation 已从正文绑定中移除。",
+                            "details": {
+                                "sectionCode": section_code,
+                                "blockId": block.block_id,
+                                "chartId": chart_id,
+                                "unknownCitationIds": sorted(unknown_chart_citations),
+                            },
+                        }
                     )
+                    artifact = artifact.model_copy(update={"warnings": tuple(warning_items[-500:])})
                 for citation_id in chart.citation_ids:
-                    if citation_id not in bound_citations:
+                    if citation_id in known_citations and citation_id not in bound_citations:
                         bound_citations.append(citation_id)
             normalized_blocks.append(
                 block.model_copy(update={"citation_ids": tuple(bound_citations)})
@@ -678,10 +746,24 @@ class RuntimeSectionsMixin:
         referenced_citations = {
             citation_id for block in artifact.blocks for citation_id in block.citation_ids
         }
-        if known_citations - referenced_citations:
+        if not referenced_citations:
             raise ReportingError(
-                "report_section_citation_missing", "当前章节没有覆盖全部相关 evidence citation。"
+                "report_section_citation_missing", "当前章节没有任何可验证 citation。"
             )
+        missing_citations = known_citations - referenced_citations
+        if missing_citations:
+            warning_items = list(artifact.warnings)
+            warning_items.append(
+                {
+                    "code": "report_section_citation_missing",
+                    "message": "当前章节未覆盖部分相关 evidence citation，已保留正文并记录警告。",
+                    "details": {
+                        "sectionCode": section_code,
+                        "missingCitationIds": sorted(missing_citations),
+                    },
+                }
+            )
+            artifact = artifact.model_copy(update={"warnings": tuple(warning_items[-500:])})
         phase_state = state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
         serialized = artifact.model_dump(mode="json", by_alias=True)
         if isinstance(phase_state, dict):
@@ -862,66 +944,11 @@ class RuntimeSectionsMixin:
         thread_id: str,
         path: str,
     ) -> dict[str, Any]:
-        source_path, remote = self.kernel.service.normalize_path(path, allow_root=False)
-        async with self.kernel.service._async_client() as client:
-            sandbox = await self.kernel.service._asandbox_for(client, thread_id)
-            try:
-                await self.kernel.service._avalidate_existing_path(sandbox, source_path)
-            except WorkspaceError as error:
-                # 图表文件未生成(SKIP)时给出可恢复的字段级回执:模型移除该
-                # 图或先生成再提交。不得让 WorkspaceError 穿透为 run 级失败,
-                # 否则 error continuation 会注入全量任务上下文并滚入
-                # tool_no_progress 8 连败终态(见 2026-08-31 真实运行分析)。
-                raise ReportingError(
-                    "report_chart_file_missing",
-                    "图表源文件不存在;未生成的图表不得提交登记。",
-                    details={"sourcePath": source_path},
-                ) from error
-            info = await self.kernel.service._ainfo(sandbox, remote)
-            if not self.kernel.service._is_regular_file(info):
-                raise ReportingError("report_chart_source_invalid", "图表源路径必须指向普通文件。")
-            size = int(getattr(info, "size", 0) or 0)
-            if not 0 < size <= MAX_REPORT_CHART_BYTES:
-                raise ReportingError(
-                    "report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。"
-                )
-            content = await self.kernel.service._adownload_file(
-                sandbox, remote, MAX_REPORT_CHART_BYTES
-            )
-        digest = hashlib.sha256(content).hexdigest()
-        try:
-            with Image.open(io.BytesIO(content)) as image:
-                image.load()
-                image_format = str(image.format or "").upper()
-                width, height = image.size
-                colors = image.convert("RGBA").getcolors(maxcolors=2)
-        except (UnidentifiedImageError, OSError) as error:
-            raise ReportingError(
-                "report_chart_source_invalid", "图表源文件无法解码或图片签名无效。"
-            ) from error
-        suffix = PurePosixPath(source_path).suffix.lower()
-        if image_format == "PNG" and suffix == ".png":
-            media_type = "image/png"
-            extension = ".png"
-        elif image_format == "JPEG" and suffix in {".jpg", ".jpeg"}:
-            media_type = "image/jpeg"
-            extension = ".jpg"
-        else:
-            raise ReportingError(
-                "report_chart_source_invalid", "图表仅允许签名与扩展名一致的 PNG 或 JPEG。"
-            )
-        if width < 1 or height < 1 or (colors is not None and len(colors) <= 1):
-            raise ReportingError("report_chart_blank", "图表图片完全空白，不能登记。")
-        return {
-            "sourcePath": source_path,
-            "size": len(content),
-            "sha256": digest,
-            "format": image_format,
-            "mediaType": media_type,
-            "extension": extension,
-            "width": width,
-            "height": height,
-        }
+        return await inspect_report_chart_file(
+            self.kernel.service,
+            thread_id=thread_id,
+            path=path,
+        )
 
     async def _inspect_chart(
         self,
@@ -1039,339 +1066,6 @@ class RuntimeSectionsMixin:
             "ok": True,
             "status": "reviewed",
             "receipt": receipt.model_dump(mode="json", by_alias=True),
-        }
-
-    async def register_report_charts(
-        self,
-        charts: list[dict[str, Any]],
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        try:
-            scope = await self.kernel.scope(run_context)
-            self._require_phase_tool(
-                scope,
-                allowed=frozenset({"analysis"}),
-                tool_name="register_report_charts",
-                run_context=run_context,
-                task_kinds=frozenset({"visualization_finalize"}),
-            )
-            if self._active_reporting_task_kind(scope) != "visualization_finalize":
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "register_report_charts 只允许 visualization_finalize Task 调用。",
-                )
-            await self._ensure_visualization_terminal_settled(scope)
-            state = self._session_state(run_context)
-            dependencies = (
-                run_context.dependencies
-                if run_context is not None and isinstance(run_context.dependencies, Mapping)
-                else {}
-            )
-            task_binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-            external_run_id = (
-                task_binding.get("externalRunId") if isinstance(task_binding, Mapping) else None
-            )
-            task_identity = (
-                f"{external_run_id or ''}:{run_context.run_id if run_context is not None else ''}"
-            )
-            pending = (
-                state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
-                if isinstance(state, Mapping)
-                else None
-            )
-            pending_failure = pending.get(task_identity) if isinstance(pending, Mapping) else None
-            if pending_failure is None and isinstance(external_run_id, str) and external_run_id:
-                prefix = f"{external_run_id}:"
-                for key, value in (
-                    reversed(tuple(pending.items())) if isinstance(pending, Mapping) else ()
-                ):
-                    if key == external_run_id or key.startswith(prefix):
-                        pending_failure = value
-                        break
-            if (
-                isinstance(pending_failure, Mapping)
-                and pending_failure.get("lastScriptFailed") is True
-            ):
-                raise ReportingError(
-                    "report_visualization_script_failed",
-                    "最近一次可视化脚本执行包含失败项，修正脚本并重新执行成功后才能登记图表。",
-                    details={
-                        "diagnostics": list(pending_failure.get("diagnostics", ()))[:20],
-                    },
-                )
-            _parameters, phase_contract = self._phase_parameters(scope, "analysis")
-            output_root = self._chart_output_root(phase_contract)
-            visual_inspection_mode = phase_contract.get("visualInspectionMode", "vision")
-            if visual_inspection_mode not in {"vision", "deterministic"}:
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Analysis Task 图表检查模式无效。",
-                )
-            raw_citation_ids = phase_contract.get("citationIds")
-            if (
-                not isinstance(raw_citation_ids, list)
-                or len(raw_citation_ids) != len(set(raw_citation_ids))
-                or any(not isinstance(item, str) or not item for item in raw_citation_ids)
-            ):
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Analysis Task citation 注册表无效。",
-                )
-            citation_ids = tuple(raw_citation_ids)
-            raw_citation_datasets = phase_contract.get("citationDatasetIds")
-            if not isinstance(raw_citation_datasets, Mapping) or any(
-                not isinstance(citation_id, str) or not isinstance(dataset_id, str)
-                for citation_id, dataset_id in raw_citation_datasets.items()
-            ):
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Analysis Task 缺少权威 citation 注册表。",
-                )
-            citation_datasets = dict(raw_citation_datasets)
-            if set(citation_datasets) != set(citation_ids):
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Analysis Task citation 注册表未精确覆盖 citationIds。",
-                )
-            parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
-            raw_allowed_metric_codes = phase_contract.get("allowedMetricCodes")
-            if raw_allowed_metric_codes is not None and (
-                not isinstance(raw_allowed_metric_codes, list)
-                or any(not isinstance(code, str) or not code for code in raw_allowed_metric_codes)
-                or len(raw_allowed_metric_codes) != len(set(raw_allowed_metric_codes))
-            ):
-                raise ReportingError(
-                    "report_phase_contract_invalid", "Analysis Task 指标注册表无效。"
-                )
-            unknown_metric_codes: list[str] = []
-            if isinstance(raw_allowed_metric_codes, list):
-                allowed_metric_codes = set(raw_allowed_metric_codes)
-                unknown_metric_codes = sorted(
-                    {
-                        code
-                        for item in parsed
-                        for code in item.metric_codes
-                        if code not in allowed_metric_codes
-                    }
-                )
-            if len({item.chart_id for item in parsed}) != len(parsed):
-                raise ReportingError(
-                    "report_chart_registration_duplicate", "同一次登记的 chartId 不能重复。"
-                )
-            raw_retained_chart_ids = phase_contract.get("retainedChartIds", [])
-            if (
-                not isinstance(raw_retained_chart_ids, list)
-                or len(raw_retained_chart_ids) != len(set(raw_retained_chart_ids))
-                or any(not isinstance(item, str) or not item for item in raw_retained_chart_ids)
-            ):
-                raise ReportingError(
-                    "report_phase_contract_invalid", "Analysis Task 保留图表注册表无效。"
-                )
-            retained_chart_ids = set(raw_retained_chart_ids)
-            if retained_chart_ids & {item.chart_id for item in parsed}:
-                raise ReportingError(
-                    "report_chart_registration_duplicate",
-                    "返工只能登记缺失图表，不得重新生成或检查保留图表。",
-                    details={"retainedChartIds": sorted(retained_chart_ids)},
-                )
-            if any(set(item.citation_ids) - set(citation_ids) for item in parsed):
-                raise ReportingError("report_chart_citation_unknown", "图表引用了未注册 citation。")
-            for item in parsed:
-                cited_dataset_ids = {
-                    citation_datasets[citation_id] for citation_id in item.citation_ids
-                }
-                if item.source_dataset_id not in cited_dataset_ids:
-                    raise ReportingError(
-                        "report_chart_citation_dataset_mismatch",
-                        "图表主 Dataset 必须至少由一个 citation 绑定。",
-                        details={
-                            "chartId": item.chart_id,
-                            "sourceDatasetId": item.source_dataset_id,
-                            "citationDatasetIds": sorted(cited_dataset_ids)[:100],
-                        },
-                    )
-            durable = await self._durable_state(scope)
-            registry = {
-                item["chartId"]: item
-                for item in durable.payload.get("charts", ())
-                if isinstance(item, dict) and isinstance(item.get("chartId"), str)
-            }
-            # 章节草案消费门禁:register 只能登记 durable visualizationSections 中
-            # 章节 worker 已提交的图表,且 chartId、sourcePath、全部注册元数据必须与
-            # 草案逐字一致。未提交路径、篡改元数据以及被 fresh attempt 作废的旧
-            # attempt 路径(草案已被新 attempt 替换)都会在落库前被确定性拒绝。
-            draft_charts_by_id, draft_files_by_path = self._section_chart_draft_catalog(
-                durable.payload
-            )
-            for registration in parsed:
-                draft_chart = draft_charts_by_id.get(registration.chart_id)
-                if draft_chart is None:
-                    raise ReportingError(
-                        "report_chart_draft_unknown",
-                        "图表不在 durable 章节草案中；只能登记章节 worker 已提交的图表。",
-                        details={
-                            "chartId": registration.chart_id,
-                            "sourcePath": registration.source_path,
-                        },
-                    )
-                if draft_chart != registration.model_dump(mode="json", by_alias=True):
-                    raise ReportingError(
-                        "report_chart_draft_conflict",
-                        "图表登记元数据与 durable 章节草案不一致。",
-                        details={
-                            "chartId": registration.chart_id,
-                            "sourcePath": registration.source_path,
-                        },
-                    )
-                if registration.source_path not in draft_files_by_path:
-                    raise ReportingError(
-                        "report_chart_draft_conflict",
-                        "图表登记缺少 durable 章节草案的文件身份。",
-                        details={
-                            "chartId": registration.chart_id,
-                            "sourcePath": registration.source_path,
-                        },
-                    )
-            warnings: list[dict[str, Any]] = []
-            if isinstance(raw_allowed_metric_codes, list):
-                for code in unknown_metric_codes:
-                    warnings.append(
-                        {
-                            "code": "report_chart_metric_unfrozen",
-                            "message": "图表引用了尚未冻结定义的指标代码。",
-                            "details": {"metricCode": code},
-                        }
-                    )
-            registered: list[dict[str, Any]] = []
-            inspected: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-            for registration in parsed:
-                self._require_chart_output_path(registration.source_path, output_root)
-                identity, chart_warnings = await self._inspect_chart(
-                    thread_id=scope.thread_id,
-                    registration=registration,
-                )
-                # 文件身份复核:登记时实际文件的 size/sha256 必须与章节提交草案时
-                # 冻结的身份一致;文件在提交后被改写即拒绝,防止陈旧文件混入 manifest。
-                draft_file = draft_files_by_path[identity["sourcePath"]]
-                if (
-                    draft_file.get("size") != identity["size"]
-                    or draft_file.get("sha256") != identity["sha256"]
-                ):
-                    raise ReportingError(
-                        "report_chart_draft_conflict",
-                        "图表文件身份与 durable 章节草案不一致。",
-                        details={
-                            "chartId": registration.chart_id,
-                            "sourcePath": identity["sourcePath"],
-                        },
-                    )
-                if visual_inspection_mode == "deterministic":
-                    parsed_receipt = ChartVisualInspectionReceipt(
-                        sourcePath=identity["sourcePath"],
-                        sha256=identity["sha256"],
-                        inspectionMode="deterministic",
-                        visualReviewStatus="not_run",
-                        inspectorId="deterministic-raster-inspector-v1",
-                        modelId=None,
-                        reviewed=True,
-                        requiresRevision=False,
-                        summary="已通过确定性图片文件检查；未运行模型视觉审查。",
-                        warnings=("未运行模型视觉审查。",),
-                    )
-                    chart_warnings.append(
-                        {
-                            "code": "chart_visual_review_not_run",
-                            "chartId": registration.chart_id,
-                            "message": "未运行模型视觉审查；图表仅通过确定性图片文件检查。",
-                        }
-                    )
-                else:
-                    raw_receipts = durable.payload.get("chartInspectionReceipts")
-                    receipts = raw_receipts if isinstance(raw_receipts, list) else []
-                    same_path = [
-                        item
-                        for item in receipts
-                        if isinstance(item, Mapping)
-                        and item.get("sourcePath") == identity["sourcePath"]
-                    ]
-                    receipt = next(
-                        (item for item in same_path if item.get("sha256") == identity["sha256"]),
-                        None,
-                    )
-                    if receipt is None:
-                        code = (
-                            "report_chart_inspection_changed"
-                            if same_path
-                            else "report_chart_inspection_missing"
-                        )
-                        raise ReportingError(
-                            code,
-                            "正式图表缺少绑定当前文件哈希的视觉检查回执。",
-                        )
-                    parsed_receipt = ChartVisualInspectionReceipt.model_validate(receipt)
-                    has_critical_issue = any(
-                        item.severity == "critical" for item in parsed_receipt.issues
-                    )
-                    if (
-                        parsed_receipt.inspection_mode != "vision"
-                        or parsed_receipt.visual_review_status != "passed"
-                        or parsed_receipt.reviewed is not True
-                        or parsed_receipt.requires_revision is True
-                        or has_critical_issue
-                    ):
-                        raise ReportingError(
-                            "report_chart_inspection_failed",
-                            "图表视觉检查未通过，修正并重新检查后才能登记。",
-                        )
-                identity["visualInspectionReceipt"] = parsed_receipt.model_dump(
-                    mode="json", by_alias=True
-                )
-                existing = registry.get(registration.chart_id)
-                if isinstance(existing, dict):
-                    immutable_file_keys = {
-                        "sourcePath",
-                        "size",
-                        "sha256",
-                        "format",
-                        "mediaType",
-                        "extension",
-                        "width",
-                        "height",
-                    }
-                    if any(existing.get(key) != identity.get(key) for key in immutable_file_keys):
-                        raise ReportingError(
-                            "report_chart_registration_conflict",
-                            f"chartId {registration.chart_id} 已绑定不同图表身份。",
-                        )
-                inspected.append((identity, chart_warnings))
-            registration_digest = _stable_digest([identity for identity, _ in inspected])
-            await self._apply_durable(
-                scope,
-                name="register_charts",
-                payload={"charts": [identity for identity, _ in inspected]},
-                command_id=f"charts:{registration_digest}",
-            )
-            for identity, chart_warnings in inspected:
-                warnings.extend(chart_warnings)
-                registered.append(
-                    {
-                        "chartId": identity["chartId"],
-                        "sourcePath": identity["sourcePath"],
-                        "size": identity["size"],
-                        "sha256": identity["sha256"],
-                        "format": identity["format"],
-                        "width": identity["width"],
-                        "height": identity["height"],
-                    }
-                )
-        except (ReportingError, ValidationError, WorkspaceError) as error:
-            return self._failure(error)
-        return {
-            "ok": True,
-            "status": "completed",
-            "charts": registered,
-            "warnings": warnings,
-            "mutation_sequence": getattr(scope.task, "mutation_sequence", 0),
         }
 
     async def submit_visualization_charts(

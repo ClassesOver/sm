@@ -165,10 +165,10 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "不要构造新的 facts/evidence 路径，也不要为确认字段重复查询。"
     ),
     (
-        "chartRegistrationRules 是 register_report_charts 的预校验清单：metricCodes 只能取"
+        "chartRegistrationRules 是 submit_visualization_charts 的预校验清单：metricCodes 只能取"
         "非空 allowedMetricCodes；若 allowedMetricCodes=null，则为每张图使用语义明确、稳定的"
         "metricCode。服务端会从 acceptance contract 投影的 metricDefinitions 校验所有已登记"
-        "图表的 metricCode；不要向 finalize_report_analysis 提交指标定义。"
+        "图表的 metricCode；指标定义由服务端从冻结计划派生。"
         "comparisonType 为 period/yoy/mom 时必须填写 comparisonPeriod；"
         " comparability=reference_only 时 title 和 altText 都必须包含“参考”。"
     ),
@@ -203,7 +203,7 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     ),
     (
         "每张最终图表必须先调用 inspect_chart，"
-        "取得绑定当前文件哈希的通过回执后再使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
+        "取得绑定当前文件哈希的通过回执后再使用 submit_visualization_charts 提交；图表必须绑定已注册 citationId。"
     ),
     (
         "可读性布局规则：分类轴只使用能唯一识别对象的最短业务名称；完整科室/组织层级可放在正文、表格、脚注或图表说明中；"
@@ -233,36 +233,29 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "running 和 session_id 后才可用 process，并且只允许 poll、wait 或 kill 该 session_id。"
     ),
     (
-        "汇总全部分析形成 ReportBrief、共享指标口径、覆盖全部 Dataset 的 rowGrain/duplicateResolution"
-        " 语义和全局 Warning，最后且只调用一次"
-        " finalize_report_analysis。AnalysisEvidenceManifest、Profile receipt 和图表身份由服务端 durable"
-        " 账本派生，不得重新提交或猜测。"
+        "只处理当前章节的冻结分析结果；章节完成后由服务端确定性汇总 ReportBrief、"
+        "AnalysisEvidenceManifest、Profile receipt 和全局 Warning，不提交全局产物。"
     ),
     (
-        "register_report_charts 返回成功即表示整批图表身份已不可变登记；返回的 warning 只进入交付元数据，"
-        "不得再改图、换 chartId、重复登记或继续自检，下一步必须立即调用 finalize_report_analysis。"
+        "submit_visualization_charts 返回成功即表示当前章节图表身份已不可变登记；返回的 warning 只进入交付元数据，"
+        "不得再改图、换 chartId、重复登记或继续自检。"
     ),
     (
-        "finalize_report_analysis 接受后服务端会直接写入最终 AnalysisArtifact 并结束当前 Task；"
-        "不要继续输出、修改文件或追加 finish_task 调用。"
+        "submit_visualization_charts 接受后服务端会结束当前章节 Task；不要继续输出、修改文件或追加 finish_task 调用。"
     ),
     *HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
 ]
 
-# 章节可视化 worker 只负责当前章节的脚本、执行和草案提交；图表身份登记与
-# ReportBrief 冻结必须留在独立的 finalize worker，避免并行章节互相覆盖全局账本。
+# 章节可视化 worker 负责当前章节的脚本、执行和草案提交；服务端按章节保存图表身份，
+# 避免并行章节互相覆盖全局账本。
 REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
     item
     for item in REPORT_VISUALIZATION_AGENT_INSTRUCTIONS
     if not any(
         phrase in item
         for phrase in (
-            "chartRegistrationRules",
             "每张最终图表必须先调用 inspect_chart",
-            "汇总全部分析形成 ReportBrief",
-            "register_report_charts 返回成功",
-            "finalize_report_analysis 接受后",
-            "不得调用 register_report_charts 或 finalize_report_analysis",
+            "submit_visualization_charts 返回成功",
         )
     )
 ]
@@ -276,35 +269,6 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
         ),
     ]
 )
-
-# finalize worker 只消费服务端投影的全局语义目录和各章节草案，不再执行图表脚本或重新探索事实。
-REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS = [
-    item
-    for item in REPORT_VISUALIZATION_AGENT_INSTRUCTIONS
-    if any(
-        phrase in item
-        for phrase in (
-            "任务 JSON 的 visualizationFacts",
-            "chartRegistrationRules",
-            "任务 JSON 的 analysisCitationIds",
-            "deterministicFactFiles",
-            "汇总全部分析形成 ReportBrief",
-            "register_report_charts 返回成功",
-            "finalize_report_analysis 接受后",
-        )
-    )
-]
-REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS.extend(
-    [
-        (
-            "当前是 visualization_finalize Task。章节图表草案、ReportBrief 和全局 Warning 必须按"
-            "任务 JSON 的受信投影使用；指标定义和数据集语义由服务端从 acceptance contract 派生，"
-            "不得猜测、重建或提交它们。只调用一次 register_report_charts 整批登记，随后立即调用"
-            "finalize_report_analysis，且只传 reportBrief 与可选 warnings。不得提交章节草案。"
-        ),
-    ]
-)
-
 
 # 章节 run 已由 Workflow 投影为独立 SectionWorkItem，不再承担数据分析或工作区开发。
 # 这里单独声明最小指令集，避免通用 Coding、全局分析和 Skill 使用规则继续占用章节注意力；
@@ -322,6 +286,11 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "补丁历史或重试记录。sectionCode 必须原样复制。"
     ),
     (
+        "成稿前必须核对当前章节每个 analysisId 的 factFiles、evidenceFiles 和 factSummaries；"
+        "摘要不足以支撑结论时，使用 read_file 按授权文件身份补读原始 facts/evidence，"
+        "不得凭空补写指标、比较值或管理结论。"
+    ),
+    (
         "章节 title 由服务端统一插入，block 不得重复一级或二级章节标题；"
         "章节内部标题从三级标题开始，并可使用段落、列表、引用、强调和表格组织管理叙事。"
     ),
@@ -329,6 +298,12 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "根据 SectionWorkItem 中的实际证据决定图表和表格。核心经营指标使用标准 Markdown 管道表，"
         "标明期间、单位和比较口径，直接写入 render_report_section 正文；不得将表格渲染为图片或"
         "登记为 chartId。具体图表类型、表格数量和列项根据数据实际决定。"
+    ),
+    (
+        "提交成稿前逐一检查 SectionWorkItem.charts：凡是本章节已提交且能支持正文结论的图表，"
+        "必须把原 chartId 同时填入对应正文 block.chartIds 和对应 claim.chartIds；不得留空或改写 ID。"
+        "图表应紧跟解释它的正文块。只有确实无法支持本章叙事的图表才可不绑定，并在正文结论中保持"
+        "与事实一致；服务端会对遗漏绑定做确定性兜底，但模型必须优先显式完成绑定。"
     ),
     (
         "正文块提交 blockId、Markdown、citationIds、chartIds 和 claimIds，不提交 analysisIds。"
@@ -344,9 +319,9 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "reference_only 结论及其正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
     ),
     (
-        "claim 的结构或语义不确定性不触发章节返工：仍应优先使用当前 WorkItem 的冻结目录提交，"
-        "服务端会对无法验证的 claim 做确定性归一化、移除无效绑定或省略 claim，并把问题写入交付警告；"
-        "不得因 claim 警告重复调用 render_report_section。"
+        "claim 的结构或语义不确定性不触发分析返工：仍应优先使用当前 WorkItem 的冻结目录提交。"
+        "服务端会归一化可验证字段；若 claim 或 block 的绑定无效，当前章节产物会被拒绝并进入章节修复，"
+        "不得通过省略 claim、保留空 claimIds 或重复请求分析返工来绕过该约束。"
     ),
     "报告结论、数字、表格和图表必须来自当前冻结 evidence；不得年化、拟合、外推、补齐、平滑或作无依据归因。",
     "deterministicFactFiles 是服务端复算并校验哈希的固定事实，优先读取并沿用；可补充解释和非标准分析，但不得覆盖其中数值。",
@@ -390,11 +365,6 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
                 "修正源脚本、重新生成并再次检查；普通警告和建议按管理问题与实际数据判断是否采纳。"
             )
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
-    if task_kind == "visualization_finalize":
-        return [
-            *REPORT_WORKER_COMMON_INSTRUCTIONS,
-            *REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS,
-        ]
     if task_kind == "analysis_item":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS]
     raise ValueError("Reporting Worker 缺少受信 taskKind。")

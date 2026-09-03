@@ -176,6 +176,21 @@ class AnalysisEvidence(StrictModel):
     )
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_evidence_paths(cls, value: Any) -> Any:
+        """允许 durable 旧提交携带 evidencePaths，但不让路径绕过文件身份校验。
+
+        analysis item 工具历史上提交的是 evidencePaths，服务端随后会把路径解析为
+        带 size/sha256 的 evidenceFiles。下游阶段只信任后者；这里仅移除已被服务端
+        冻结的过渡字段，缺失 evidenceFiles 仍由严格字段校验拒绝。
+        """
+
+        if isinstance(value, Mapping) and "evidencePaths" in value:
+            value = dict(value)
+            value.pop("evidencePaths", None)
+        return value
+
     @model_validator(mode="after")
     def validate_references(self) -> AnalysisEvidence:
         for name, values in (
@@ -385,12 +400,11 @@ class SectionWorkItem(StrictModel):
     section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=200)
     objective: str = Field(min_length=1, max_length=4000)
-    report_brief: ReportBrief = Field(alias="reportBrief")
     completion_conditions: tuple[str, ...] = Field(
         alias="completionConditions", min_length=1, max_length=100
     )
     analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2000)
-    evidence: tuple[AnalysisEvidence, ...] = Field(min_length=1, max_length=200)
+    evidence: tuple[AnalysisEvidence, ...] = Field(default=(), max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
     )
@@ -404,7 +418,7 @@ class SectionWorkItem(StrictModel):
         default=(), alias="profileReadReceiptIds", max_length=1000
     )
     charts: tuple[AnalysisChart, ...] = Field(default=(), max_length=100)
-    citations: tuple[SectionCitation, ...] = Field(min_length=1, max_length=2000)
+    citations: tuple[SectionCitation, ...] = Field(default=(), max_length=2000)
     fact_files: tuple[FileIdentity, ...] = Field(default=(), alias="factFiles", max_length=200)
     fact_summaries: tuple[str, ...] = Field(default=(), alias="factSummaries", max_length=200)
     markdown_requirements: tuple[str, ...] = Field(
@@ -414,10 +428,13 @@ class SectionWorkItem(StrictModel):
     @model_validator(mode="after")
     def validate_projection(self) -> SectionWorkItem:
         evidence_ids = tuple(item.analysis_id for item in self.evidence)
-        if evidence_ids != self.analysis_ids or len(self.analysis_ids) != len(
+        expected_evidence_ids = tuple(
+            analysis_id for analysis_id in self.analysis_ids if analysis_id in evidence_ids
+        )
+        if evidence_ids != expected_evidence_ids or len(self.analysis_ids) != len(
             set(self.analysis_ids)
         ):
-            raise ValueError("SectionWorkItem evidence 必须按顺序精确覆盖 analysisIds")
+            raise ValueError("SectionWorkItem evidence 必须按 analysisIds 顺序提供，缺失项允许告警")
         question_refs = tuple(item.ref for item in self.management_question_catalog)
         if question_refs and question_refs != self.analysis_ids:
             raise ValueError("SectionWorkItem 管理问题目录必须按顺序精确覆盖 analysisIds")
@@ -540,7 +557,16 @@ class SectionArtifact(StrictModel):
     def validate_claim_references(self) -> SectionArtifact:
         known = {claim.claim_id for claim in self.claims}
         if not self.claims:
-            raise ValueError("章节必须提交结构化 claims")
+            # 工具层会把结构无效的模型 claim 清理掉并留下稳定 warning；此时允许
+            # 先冻结正文降级产物，供上层按 warning 触发重试。正常章节仍必须有 claims。
+            invalid_claims_only = any(
+                item.get("code") == "report_section_claim_invalid"
+                for item in self.warnings
+                if isinstance(item, dict)
+            )
+            if not invalid_claims_only:
+                raise ValueError("章节必须提交结构化 claims")
+            return self
         if len(known) != len(self.claims):
             raise ValueError("章节 claimId 不能重复")
         referenced = {claim_id for block in self.blocks for claim_id in block.claim_ids}
@@ -602,12 +628,10 @@ class CheckpointError(StrictModel):
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
     details: dict[str, Any] | None = Field(default=None, max_length=50)
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
-    # visualization_section/visualization_finalize 区分并行章节图表 worker 与汇总 worker。
     work_kind: (
         Literal[
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
             "finalize",
         ]
@@ -627,7 +651,6 @@ class ContextTrace(StrictModel):
         Literal[
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
             "finalize",
         ]
@@ -782,7 +805,7 @@ def reporting_phase_task_key(
 ) -> str:
     # 三种 analysis 身份分支与 taskKind 一一绑定，防止把可视化身份伪装成 analysisId：
     # analysis_id 只属于 analysis_item（历史调用不传 taskKind）；section_code 只属于
-    # visualization_section；finalize 只接受固定 task_key "viz-finalize"，不接受任意
+    # visualization_section；章节任务使用稳定 task_key，避免并发重入生成重复回执。
     # 字符串。section phase 维持普通章节身份，不允许携带可视化 taskKind。
     if (
         revision < 1
@@ -804,13 +827,6 @@ def reporting_phase_task_key(
             phase == "analysis"
             and section_code is not None
             and task_kind != "visualization_section"
-        )
-        or (
-            phase == "analysis"
-            and (
-                task_key is not None
-                and (task_key != "viz-finalize" or task_kind != "visualization_finalize")
-            )
         )
     ):
         raise ValueError("Reporting phase task identity 无效")

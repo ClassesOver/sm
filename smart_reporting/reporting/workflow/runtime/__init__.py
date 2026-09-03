@@ -1,5 +1,10 @@
 """Reporting Workflow runtime public entrypoint."""
 
+from .coding_draft_workflow import (
+    CodingAnalysisAndDraftWorkflow,
+    CodingDraftWorkflow,
+    CodingDraftWorkflowResult,
+)
 from .facade import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
@@ -13,4 +18,7 @@ __all__ = [
     "REPORT_WORKFLOW_INPUT_STATE_KEY",
     "REPORT_WORKFLOW_RESULT_STATE_KEY",
     "ReportWorkflowRuntime",
+    "CodingDraftWorkflow",
+    "CodingDraftWorkflowResult",
+    "CodingAnalysisAndDraftWorkflow",
 ]

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
+from agno.run import RunContext
 from agno.workflow.step import StepOutput
 from pydantic import ValidationError
 from sqlglot import parse_one
@@ -44,6 +45,7 @@ from smart_reporting.reporting.model_policy import (
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisEvidence,
     FileIdentity,
     MetricDefinition,
     ProfileCoverageDataset,
@@ -61,7 +63,12 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _coding_detailed_analysis_plan,
     _model_facing_deterministic_facts,
 )
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidencePlan,
+    AnalysisSummaryDraft,
+)
 from smart_reporting.reporting.workflow.runtime.base import (
+    OUTLINE_SECTION_COUNT_INSTRUCTION,
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
@@ -210,6 +217,12 @@ def test_publication_gate_accepts_metrics_aligned_to_common_window() -> None:
 def test_planner_trace_names_use_human_display_labels_without_changing_ids() -> None:
     assert _PLANNER_DISPLAY_NAMES["report-outline-planner"] == "报告提纲规划"
     assert _PLANNER_DISPLAY_NAMES["report-sql-planner"] == "取数方案设计"
+
+
+def test_outline_prompt_prioritizes_user_section_count_over_analysis_split() -> None:
+    assert "reportGoal 中明确的章节数量约束" in OUTLINE_SECTION_COUNT_INSTRUCTION
+    assert "高于按 analysisId 拆分章节" in OUTLINE_SECTION_COUNT_INSTRUCTION
+    assert "不超过用户指定数量的章节" in OUTLINE_SECTION_COUNT_INSTRUCTION
 
 
 def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:
@@ -736,20 +749,138 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
         "high",
         4096,
         "simple",
-        2,
     )
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason="schema_validation") == (
         "high",
         4096,
         "simple",
-        2,
     )
     assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
         "max",
         8192,
         "simple",
-        3,
     )
+
+
+def test_analysis_evidence_accepts_legacy_evidence_paths_without_bypassing_identity() -> None:
+    payload = {
+        "analysisId": "analysis_001",
+        "summary": "完成摘要",
+        "datasetIds": ["dataset_001"],
+        "evidenceFiles": [
+            {"path": "evidence/analysis_001/facts.json", "size": 1, "sha256": "a" * 64}
+        ],
+        "evidencePaths": ["evidence/analysis_001/facts.json"],
+        "citationIds": ["citation_001"],
+    }
+
+    evidence = AnalysisEvidence.model_validate(payload)
+
+    assert evidence.evidence_files[0].path == "evidence/analysis_001/facts.json"
+    assert "evidencePaths" not in evidence.model_dump(mode="json", by_alias=True)
+
+
+def test_analysis_evidence_still_requires_hashed_evidence_files_when_only_paths_are_present() -> (
+    None
+):
+    with pytest.raises(ValidationError):
+        AnalysisEvidence.model_validate(
+            {
+                "analysisId": "analysis_001",
+                "summary": "完成摘要",
+                "datasetIds": ["dataset_001"],
+                "evidencePaths": ["evidence/analysis_001/facts.json"],
+                "citationIds": ["citation_001"],
+            }
+        )
+
+
+@pytest.mark.anyio
+async def test_analysis_script_repair_temporarily_escalates_to_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_context = RunContext(
+        run_id="task-run-1",
+        session_id="task-session-1",
+        dependencies={
+            "AgentOS 编码任务": {
+                "reportingThinkingEffort": "high",
+                "reportingThinkingBudget": 4096,
+            }
+        },
+    )
+    observed: list[tuple[str, str, int]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace()
+    runtime.task_runner = SimpleNamespace(repository=SimpleNamespace())
+    runtime.state_repository = SimpleNamespace()
+    runtime._analysis_evidence_agent = SimpleNamespace()
+    runtime._analysis_summary_agent = SimpleNamespace()
+
+    async def run_planner(_agent, payload, _parent_context):
+        binding = task_context.dependencies["AgentOS 编码任务"]
+        observed.append(
+            (
+                payload["analysisBlock"]["blockId"],
+                binding["reportingThinkingEffort"],
+                binding["reportingThinkingBudget"],
+            )
+        )
+        if payload["analysisBlock"]["blockId"].endswith(":summary"):
+            return AnalysisSummaryDraft(summary="完成摘要", warnings=())
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason="缺少构成",
+            missingFacts=("构成",),
+            script="print('evidence')",
+        )
+
+    class FakeAnalysisItemWorkflow:
+        def __init__(self, *, plan_evidence, summarize, **_kwargs):
+            self.plan_evidence = plan_evidence
+            self.summarize = summarize
+
+        async def run(self, _payload, _run_context):
+            await self.plan_evidence({}, repair=False)
+            await self.plan_evidence({}, repair=True)
+            await self.summarize({})
+            return SimpleNamespace(output=StepOutput(content={"ok": True}))
+
+    runtime._run_planner = run_planner
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.build_report_worker_tools",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                coding_read_file=AsyncMock(),
+                create_analysis_file=AsyncMock(),
+                overwrite_analysis_file=AsyncMock(),
+                terminal=AsyncMock(),
+                complete_analysis_item=AsyncMock(),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.AnalysisItemWorkflow",
+        FakeAnalysisItemWorkflow,
+    )
+
+    await runtime._execute_analysis_item_workflow(
+        '{"currentAnalysisId":"analysis_001"}',
+        task_context,
+        parent_run_context=RunContext(
+            run_id="report-run-1", session_id="report-session-1", session_state={}
+        ),
+    )
+
+    assert observed == [
+        ("analysis_001:evidence:initial", "high", 4096),
+        ("analysis_001:evidence:repair", "max", 8192),
+        ("analysis_001:summary", "high", 4096),
+    ]
+    assert task_context.dependencies["AgentOS 编码任务"] == {
+        "reportingThinkingEffort": "high",
+        "reportingThinkingBudget": 4096,
+    }
 
 
 def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplicates_warnings() -> (

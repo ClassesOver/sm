@@ -886,32 +886,6 @@ class ContextBudgetController(ProtectedCompressionManager):
                 )
         return encoded
 
-    def _coding_candidates(self, messages: list[Message]) -> list[Message]:
-        protected = self._protected_indexes(messages)
-        return [
-            message
-            for index, message in enumerate(messages)
-            if index not in protected
-            and message.role == "tool"
-            and message.tool_name in CODING_TOOL_NAMES
-            and message.tool_name not in SKILL_TOOL_NAMES
-            and message.compressed_content is None
-        ]
-
-    def _effective_token_count(self, messages: list[Message]) -> int:
-        if self.model is None:
-            return _fallback_context_token_count(messages)
-        effective = []
-        for message in messages:
-            candidate = deepcopy(message)
-            if candidate.compressed_content is not None:
-                candidate.content = candidate.compressed_content
-            effective.append(candidate)
-        try:
-            return self.model.count_tokens(effective)
-        except Exception:
-            return _fallback_context_token_count(effective)
-
     def should_compress(self, messages, tools=None, model=None, response_format=None):
         counting_model = model or self.model
         model_id, _host = _model_log_fields(counting_model)
@@ -1559,7 +1533,6 @@ class ProjectedOpenAIChat(OpenAIChat):
         token = _CODING_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
-        logger.info("model_provider_request_started mode=sync model_id={} host={}", model_id, host)
         try:
             return super().invoke(projected, *args, **kwargs)
         except BaseException as error:
@@ -1606,7 +1579,6 @@ class ProjectedOpenAIChat(OpenAIChat):
         token = _CODING_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
-        logger.info("model_provider_request_started mode=async model_id={} host={}", model_id, host)
         try:
             return await super().ainvoke(projected, *args, **kwargs)
         except BaseException as error:
@@ -1656,7 +1628,6 @@ class ProjectedOpenAIChat(OpenAIChat):
         first_chunk_ms: int | None = None
         chunk_count = 0
         failed = False
-        logger.info("model_provider_stream_started mode=sync model_id={} host={}", model_id, host)
         try:
             for response in super().invoke_stream(projected, *args, **kwargs):
                 chunk_count += 1
@@ -1724,7 +1695,6 @@ class ProjectedOpenAIChat(OpenAIChat):
         first_chunk_ms: int | None = None
         chunk_count = 0
         failed = False
-        logger.info("model_provider_stream_started mode=async model_id={} host={}", model_id, host)
         try:
             async for response in super().ainvoke_stream(projected, *args, **kwargs):
                 chunk_count += 1

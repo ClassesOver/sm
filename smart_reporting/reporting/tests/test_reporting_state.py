@@ -88,19 +88,6 @@ def submit_section(
     ).state
 
 
-def register_charts_state() -> ReportingRunState:
-    state = make_visualization_state()
-    return ReportingStateReducer.apply(
-        state,
-        {
-            "name": "register_charts",
-            "commandId": "register-charts",
-            "payload": {"charts": [{"chartId": "chart_a", "sha256": "a" * 64}]},
-        },
-        state.state_version,
-    ).state
-
-
 def state_with_chart(chart_id: str, section_code: str) -> ReportingRunState:
     return submit_section(make_visualization_state(), section_code, chart_id=chart_id)
 
@@ -252,9 +239,12 @@ def test_submit_visualization_charts_rejects_cross_section_duplicate_source_path
     assert exc_info.value.code == "report_visualization_section_conflict"
 
 
-def test_submit_visualization_charts_blocked_after_registration_closed() -> None:
+def test_submit_visualization_charts_blocked_after_analysis_phase() -> None:
     with pytest.raises(ReportingStateError):
-        ReportingStateReducer.apply(register_charts_state(), make_submit_command("section_003"))
+        ReportingStateReducer.apply(
+            initial_state().model_copy(update={"phase": ReportingPhase.FINALIZE}),
+            make_submit_command("section_003"),
+        )
 
 
 def test_submit_visualization_charts_rejects_malformed_top_level_payload() -> None:
@@ -409,7 +399,7 @@ def test_record_artifact_is_idempotent_and_rejects_identity_change() -> None:
     assert raised.value.code == "report_artifact_identity_mismatch"
 
 
-def test_complete_analysis_items_can_finish_out_of_order_and_enter_visualization():
+def test_complete_analysis_items_can_finish_out_of_order_and_remain_running():
     state = apply_phase(initial_state(), "start_analysis")
     state = ReportingStateReducer.apply(
         state,
@@ -443,8 +433,24 @@ def test_complete_analysis_items_can_finish_out_of_order_and_enter_visualization
         },
         second_completed_first.state_version,
     ).state
-    assert completed.phase is ReportingPhase.VISUALIZATION
+    assert completed.phase is ReportingPhase.ANALYSIS_RUNNING
     assert completed.payload["currentAnalysisId"] is None
+
+
+def test_complete_transitions_directly_from_section_coding_phase() -> None:
+    state = apply_phase(initial_state(), "start_analysis")
+
+    completed = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "complete",
+            "commandId": "complete-section-coding",
+            "payload": {"markdown": {"path": "report.md"}},
+        },
+        state.state_version,
+    ).state
+
+    assert completed.phase is ReportingPhase.COMPLETED
 
 
 def test_set_analysis_plan_freezes_matching_durable_plan_details():
@@ -506,9 +512,6 @@ def test_targeted_rework_requires_analysis_ids_and_missing_evidence():
         },
         state.state_version,
     ).state
-    for command in ("freeze_analysis", "enter_sections"):
-        state = apply_phase(state, command)
-
     with pytest.raises(ReportingStateError) as invalid:
         ReportingStateReducer.apply(
             state,
@@ -566,22 +569,6 @@ def test_section_start_is_idempotent_and_rejects_other_work_item() -> None:
 
 
 def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sections():
-    income_receipt = {
-        "sourcePath": "analysis/charts/income.png",
-        "sha256": "a" * 64,
-        "modelId": "vision-model",
-        "reviewed": True,
-        "requiresRevision": False,
-        "issues": [],
-    }
-    overview_receipt = {
-        "sourcePath": "analysis/charts/overview.png",
-        "sha256": "b" * 64,
-        "modelId": "vision-model",
-        "reviewed": True,
-        "requiresRevision": False,
-        "issues": [],
-    }
     state = initial_state().model_copy(
         update={
             "phase": ReportingPhase.SECTIONS,
@@ -602,22 +589,17 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
                     "overview": {"sectionCode": "overview", "analysisIds": ["analysis_002"]},
                     "income": {"sectionCode": "income", "analysisIds": ["analysis_001"]},
                 },
-                "charts": [
-                    {
-                        "chartId": "income",
-                        "sourcePath": "analysis/charts/income.png",
-                        "sha256": "a" * 64,
-                        "visualInspectionReceipt": income_receipt,
+                "visualizationSections": {
+                    "income": {
+                        "charts": [make_chart_registration("income")],
+                        "files": [make_file_identity("analysis/charts/income.png")],
                     },
-                    {
-                        "chartId": "overview",
-                        "sourcePath": "analysis/charts/overview.png",
-                        "sha256": "b" * 64,
-                        "visualInspectionReceipt": overview_receipt,
+                    "overview": {
+                        "charts": [make_chart_registration("overview")],
+                        "files": [make_file_identity("analysis/charts/overview.png")],
                     },
-                ],
-                "chartsRegistered": True,
-                "chartInspectionReceipts": [income_receipt, overview_receipt],
+                },
+                "completedVisualizationSections": ["income", "overview"],
                 "reportBrief": {"objective": "旧目标"},
                 "analysisEvidenceManifest": {
                     "version": "2",
@@ -664,9 +646,8 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     assert rework.payload["runningSections"] == {"overview": "overview-old-hash"}
     assert set(rework.payload["sectionArtifacts"]) == {"overview"}
     assert rework.payload["pendingSections"] == ["income"]
-    assert [item["chartId"] for item in rework.payload["charts"]] == ["overview"]
-    assert rework.payload["chartsRegistered"] is False
-    assert rework.payload["chartInspectionReceipts"] == [overview_receipt]
+    assert set(rework.payload["visualizationSections"]) == {"overview"}
+    assert rework.payload["completedVisualizationSections"] == ["overview"]
     assert rework.payload["reportBrief"] is None
     assert rework.payload["analysisEvidenceManifest"] is None
     assert rework.payload["profileReadReceipts"] == [
@@ -708,26 +689,19 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     supplemented = ReportingStateReducer.apply(
         visualization,
         {
-            "name": "register_charts",
+            "name": "submit_visualization_charts",
             "commandId": "rework-charts",
             "payload": {
-                "charts": [
-                    {
-                        "chartId": "income",
-                        "sourcePath": "analysis/charts/income-v2.png",
-                        "sha256": "d" * 64,
-                    }
-                ]
+                "sectionCode": "income",
+                "charts": [make_chart_registration("income", "analysis/charts/income-v2.png")],
+                "files": [make_file_identity("analysis/charts/income-v2.png")],
             },
         },
         visualization.state_version,
     ).state
 
-    assert [item["chartId"] for item in supplemented.payload["charts"]] == [
-        "overview",
-        "income",
-    ]
-    assert supplemented.payload["chartsRegistered"] is True
+    assert set(supplemented.payload["visualizationSections"]) == {"overview", "income"}
+    assert supplemented.payload["completedVisualizationSections"] == ["overview", "income"]
 
 
 def test_write_intent_is_durable_and_identity_conflicts_fail_closed():
@@ -1106,34 +1080,33 @@ async def test_analysis_facts_survive_repository_restart(state_repository):
     assert restored.payload["analysisItems"]["analysis_001"]["summary"] == "收入规模已复算"
 
 
-def test_chart_batch_registration_is_atomic_and_closes_lifecycle():
-    state = apply_phase(apply_phase(initial_state(), "start_analysis"), "start_visualization")
+def test_section_chart_submission_is_idempotent_and_rejects_changed_content():
+    state = apply_phase(initial_state(), "start_analysis")
     first = ReportingStateReducer.apply(
         state,
         {
-            "name": "register_charts",
+            "name": "submit_visualization_charts",
             "commandId": "charts-1",
             "payload": {
-                "charts": [
-                    {"chartId": "chart-1", "sha256": "a" * 64},
-                    {"chartId": "chart-2", "sha256": "b" * 64},
-                ]
+                "sectionCode": "section_001",
+                "charts": [make_chart_registration("chart-1")],
+                "files": [],
             },
         },
         state.state_version,
     ).state
-    assert first.payload["chartsRegistered"] is True
-    assert [item["chartId"] for item in first.payload["charts"]] == ["chart-1", "chart-2"]
+    assert [
+        item["chartId"] for item in first.payload["visualizationSections"]["section_001"]["charts"]
+    ] == ["chart-1"]
     replayed = ReportingStateReducer.apply(
         first,
         {
-            "name": "register_charts",
+            "name": "submit_visualization_charts",
             "commandId": "charts-1",
             "payload": {
-                "charts": [
-                    {"chartId": "chart-1", "sha256": "a" * 64},
-                    {"chartId": "chart-2", "sha256": "b" * 64},
-                ]
+                "sectionCode": "section_001",
+                "charts": [make_chart_registration("chart-1")],
+                "files": [],
             },
         },
         first.state_version,
@@ -1144,13 +1117,17 @@ def test_chart_batch_registration_is_atomic_and_closes_lifecycle():
         ReportingStateReducer.apply(
             first,
             {
-                "name": "register_charts",
+                "name": "submit_visualization_charts",
                 "commandId": "charts-2",
-                "payload": {"charts": [{"chartId": "chart-3", "sha256": "c" * 64}]},
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": [make_chart_registration("chart-2")],
+                    "files": [],
+                },
             },
             first.state_version,
         )
-    assert conflict.value.code == "report_chart_registration_closed"
+    assert conflict.value.code == "report_visualization_section_conflict"
 
 
 def test_chart_inspection_receipt_is_durable_idempotent_and_identity_bound() -> None:
@@ -1306,13 +1283,6 @@ def test_checkpoint_error_rejects_section_code_in_analysis_id() -> None:
         )
 
 
-def test_checkpoint_error_accepts_visualization_finalize() -> None:
-    error = CheckpointError.model_validate(
-        {"phase": "analysis", "code": "x", "message": "m", "workKind": "visualization_finalize"}
-    )
-    assert error.work_kind == "visualization_finalize"
-
-
 def test_context_trace_accepts_new_work_kinds() -> None:
     trace = ContextTrace.model_validate(
         {
@@ -1323,10 +1293,15 @@ def test_context_trace_accepts_new_work_kinds() -> None:
         }
     )
     assert trace.work_kind == "visualization_section"
-    finalize = ContextTrace.model_validate(
-        {"phase": "analysis", "workKind": "visualization_finalize", "attempt": 0}
+    visualization = ContextTrace.model_validate(
+        {
+            "phase": "analysis",
+            "workKind": "visualization_section",
+            "sectionCode": "section_001",
+            "attempt": 0,
+        }
     )
-    assert finalize.work_kind == "visualization_finalize"
+    assert visualization.work_kind == "visualization_section"
 
 
 @pytest.mark.parametrize("model", [CheckpointError, ContextTrace])

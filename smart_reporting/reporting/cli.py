@@ -30,7 +30,6 @@ from .workflow.state import ReportingStateError
 _CLI_PROGRESS_TOOLS = frozenset(
     {
         "complete_analysis_item",
-        "finalize_report_analysis",
         "finish_task",
         "render_report_section",
         "request_analysis_rework",

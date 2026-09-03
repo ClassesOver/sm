@@ -23,7 +23,6 @@ from ..phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
-    REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
@@ -48,7 +47,6 @@ from ..phase import (
     record_reporting_tool_event,
     reporting_analysis_fact_budget_contract_from_acceptance_contract,
     reporting_analysis_fact_usage_from_run_context,
-    reporting_analysis_model_request_limit_from_acceptance_contract,
     reporting_phase_from_acceptance_contract,
     reporting_task_kind_from_acceptance_contract,
     reporting_thinking_budget_from_acceptance_contract,
@@ -63,6 +61,7 @@ from ..phase import (
 from .orchestration import record_step_model_metrics
 
 WorkerEventSink = Callable[[TaskScope, str, Any], Awaitable[None]]
+ReportTaskExecutor = Callable[[str, RunContext], Awaitable[Any]]
 MAX_REPORT_INSTRUCTION_BYTES = 512 * 1024
 DEFAULT_REPORT_WORKER_IDLE_TIMEOUT_SECONDS = 900
 MAX_REPORT_WORKER_CONTINUATIONS = 1
@@ -210,6 +209,7 @@ class ReportTaskRunner:
         scope: TaskScope,
         *,
         parent_run_id: str = "",
+        executor: ReportTaskExecutor | None = None,
     ) -> dict[str, Any]:
         async with TaskSession(self.repository, scope) as session:
             await self.execution_cleanup.cleanup_old_epoch(scope, session.lease.epoch)
@@ -273,11 +273,6 @@ class ReportTaskRunner:
                 )
                 analysis_fact_budget = (
                     reporting_analysis_fact_budget_contract_from_acceptance_contract(
-                        acceptance_contract
-                    )
-                )
-                analysis_model_request_limit = (
-                    reporting_analysis_model_request_limit_from_acceptance_contract(
                         acceptance_contract
                     )
                 )
@@ -350,8 +345,7 @@ class ReportTaskRunner:
                                     else {}
                                 ),
                             }
-                            if reporting_task_kind
-                            in {"visualization_section", "visualization_finalize"}
+                            if reporting_task_kind == "visualization_section"
                             else {}
                         ),
                         **(
@@ -375,22 +369,12 @@ class ReportTaskRunner:
                                     visual_inspection_mode
                                 )
                             }
-                            if reporting_task_kind
-                            in {"visualization_section", "visualization_finalize"}
+                            if reporting_task_kind == "visualization_section"
                             and visual_inspection_mode is not None
                             else {}
                         ),
                         **(
                             {
-                                **(
-                                    {
-                                        REPORTING_ANALYSIS_MODEL_REQUEST_LIMIT_DEPENDENCY_KEY: (
-                                            analysis_model_request_limit
-                                        )
-                                    }
-                                    if analysis_model_request_limit is not None
-                                    else {}
-                                ),
                                 REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY: (
                                     analysis_fact_budget["analysisFactBudgetVersion"]
                                 ),
@@ -425,7 +409,8 @@ class ReportTaskRunner:
                     capture_reporting_projection_metrics() as projection_metrics,
                     bind_reporting_run_context(worker_run_context),
                 ):
-                    output = await self._run_worker(
+                    output = await self._execute_task(
+                        executor=executor,
                         continuing=continuing,
                         instruction=instruction,
                         internal_run_id=attempt.internal_run_id,
@@ -466,10 +451,7 @@ class ReportTaskRunner:
                             )
                         },
                     )
-                if reporting_task_kind in {
-                    "visualization_section",
-                    "visualization_finalize",
-                } and isinstance(error, Exception):
+                if reporting_task_kind == "visualization_section" and isinstance(error, Exception):
                     setattr(
                         error,
                         REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
@@ -480,6 +462,36 @@ class ReportTaskRunner:
             finally:
                 if model_metrics_settlement is not None:
                     model_metrics_settlement.settle(outcome=task_outcome)
+
+    async def _execute_task(
+        self,
+        *,
+        executor: ReportTaskExecutor | None,
+        continuing: bool,
+        instruction: str,
+        internal_run_id: str,
+        worker_session_id: str,
+        owner_user_id: str,
+        dependencies: dict[str, Any],
+        run_context: RunContext,
+        scope: TaskScope,
+        parent_run_id: str,
+        model_metrics_settlement: _TaskModelMetricsSettlement | None = None,
+    ) -> Any:
+        if executor is not None:
+            return await executor(instruction, run_context)
+        return await self._run_worker(
+            continuing=continuing,
+            instruction=instruction,
+            internal_run_id=internal_run_id,
+            worker_session_id=worker_session_id,
+            owner_user_id=owner_user_id,
+            dependencies=dependencies,
+            run_context=run_context,
+            scope=scope,
+            parent_run_id=parent_run_id,
+            model_metrics_settlement=model_metrics_settlement,
+        )
 
     async def _run_worker(
         self,
@@ -515,8 +527,6 @@ class ReportTaskRunner:
             terminal_tools = ("complete_analysis_item",)
         elif task_kind == "visualization_section":
             terminal_tools = ("submit_visualization_charts",)
-        elif task_kind == "visualization_finalize":
-            terminal_tools = ("finalize_report_analysis",)
         elif task_kind == "section":
             terminal_tools = ("render_report_section", "request_analysis_rework")
         else:
@@ -543,13 +553,6 @@ class ReportTaskRunner:
                             "脚本尚未执行时先且只执行一次签发的本章脚本;"
                             "随后只调用一次 submit_visualization_charts 提交该章全部图表草案,"
                             "缺失的图表不要提交。不得调用 read_file,不得输出解释性文本。"
-                        )
-                    elif task_kind == "visualization_finalize" and recovery_attempt > 0:
-                        recovery_instruction = (
-                            "服务端已保留全部章节图表草案。立即停止重新探索;"
-                            "只调用一次 register_report_charts 整批登记,随后立即调用 "
-                            "finalize_report_analysis。不得调用 read_file/query_analysis_facts,"
-                            "不得输出解释性文本。"
                         )
                     else:
                         recovery_instruction = (

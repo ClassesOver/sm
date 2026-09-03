@@ -111,7 +111,7 @@ def test_load_reporting_skills_includes_sandbox_environment_without_tool_contrac
 
 @pytest.mark.parametrize(
     "phase_and_task_kind",
-    [("analysis", "visualization_finalize"), ("section", "section")],
+    [("analysis", "analysis_item"), ("section", "section")],
 )
 def test_reporting_skills_are_hidden_outside_visualization_section(phase_and_task_kind):
     phase, task_kind = phase_and_task_kind
@@ -154,7 +154,7 @@ def test_reporting_skills_follow_the_bound_reporting_task_layer():
         assert "<skills_system>" in skills.get_system_prompt_snippet()
         assert skills.get_tools()
 
-    with bind_reporting_run_context(context("visualization_finalize")):
+    with bind_reporting_run_context(context("analysis_item")):
         assert skills.get_system_prompt_snippet() == ""
         assert skills.get_tools() == []
 

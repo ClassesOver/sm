@@ -68,15 +68,11 @@ def build_report_phase_acceptance_contract(
         if task_kind not in {
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
         }:
             raise ValueError("analysis phase taskKind 无效")
         # citationRegistry 只用于模型指令展示，工具校验只消费 citationIds；visualization
         # 也不需要单项计划映射。避免把重复的大型投影塞进 16 KiB acceptance 参数。
         trusted_phase_contract.pop("citationRegistry", None)
-        if task_kind == "visualization_finalize":
-            trusted_phase_contract.pop("analysisPlans", None)
-            trusted_phase_contract.pop("analysisDatasetIds", None)
         if task_kind == "analysis_item":
             if analysis_output_path or section_output_path or rework_request_path:
                 raise ValueError("analysis item 不得声明阶段输出路径")

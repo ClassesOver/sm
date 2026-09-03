@@ -40,6 +40,8 @@ from .models import (
     QualityWarningPage,
     QualityWarningRecord,
     TenantScope,
+    WarningCheck,
+    WarningDisposition,
     WarningFinding,
     WarningQuery,
     warning_fingerprint,
@@ -59,6 +61,8 @@ quality_warnings_v1 = Table(
     Column("fingerprint", String(64), nullable=False),
     Column("status", String(16), nullable=False),
     Column("severity", String(16), nullable=False),
+    Column("disposition", String(32), nullable=False, server_default="quality_warning"),
+    Column("source_phase", String(64), nullable=False, server_default="legacy"),
     Column("message", Text, nullable=False),
     Column("details", JSONB, nullable=False),
     Column("first_observed_at", DateTime(timezone=True), nullable=False),
@@ -137,6 +141,10 @@ class QualityWarningRepository(Protocol):
         context: CheckContext,
     ) -> tuple[QualityWarningRecord, ...]: ...
 
+    async def record_successful_checks(
+        self, *, tenant: TenantScope, checks: Sequence[WarningCheck]
+    ) -> tuple[QualityWarningRecord, ...]: ...
+
     async def list_warnings(
         self, *, tenant: TenantScope, query: WarningQuery
     ) -> tuple[QualityWarningRecord, ...]: ...
@@ -165,6 +173,18 @@ class SqlAlchemyQualityWarningRepository:
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(_metadata.create_all)
+            await connection.execute(
+                text(
+                    "ALTER TABLE quality_warnings_v1 "
+                    "ADD COLUMN IF NOT EXISTS disposition VARCHAR(32) NOT NULL DEFAULT 'quality_warning'"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE quality_warnings_v1 "
+                    "ADD COLUMN IF NOT EXISTS source_phase VARCHAR(64) NOT NULL DEFAULT 'legacy'"
+                )
+            )
 
     async def record_successful_check(
         self,
@@ -174,44 +194,76 @@ class SqlAlchemyQualityWarningRepository:
         findings: Sequence[WarningFinding],
         context: CheckContext,
     ) -> tuple[QualityWarningRecord, ...]:
+        return await self.record_successful_checks(
+            tenant=tenant,
+            checks=(
+                WarningCheck(
+                    checkScope=check_scope,
+                    findings=tuple(findings),
+                    context=context,
+                ),
+            ),
+        )
+
+    async def record_successful_checks(
+        self,
+        *,
+        tenant: TenantScope,
+        checks: Sequence[WarningCheck],
+    ) -> tuple[QualityWarningRecord, ...]:
+        if not checks:
+            raise ValueError("成功检查批次不能为空。")
         now = datetime.now(UTC)
-        deduplicated = _deduplicate_findings(findings)
         try:
             async with self.engine.begin() as connection:
-                # 一个检查范围内的全部判断必须串行化。否则并发检查可能互相将仍存在的
-                # 告警关闭，破坏“完整成功复检才可关闭”的生命周期不变量。
-                await connection.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
-                    {"scope": _scope_lock_key(tenant, check_scope)},
+                ordered_checks = tuple(
+                    sorted(
+                        checks,
+                        key=lambda item: (
+                            item.check_scope.domain,
+                            item.check_scope.rule_code,
+                            item.check_scope.subject_type,
+                        ),
+                    )
                 )
-                records = []
-                found_identity_keys = set()
-                for finding in deduplicated:
-                    fingerprint = warning_fingerprint(finding)
-                    identity = _identity_values(tenant, check_scope, finding, fingerprint)
-                    found_identity_keys.add((finding.subject_id, fingerprint))
-                    record = await self._upsert_open_warning(
+                # 所有检查先按稳定范围顺序加锁，再写入和解析缺失项，避免并发批次死锁。
+                for check in ordered_checks:
+                    await connection.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+                        {"scope": _scope_lock_key(tenant, check.check_scope)},
+                    )
+                records: list[QualityWarningRecord] = []
+                found_by_check: list[tuple[WarningCheck, set[tuple[str, str]]]] = []
+                for check in ordered_checks:
+                    deduplicated = _deduplicate_findings(check.findings)
+                    found_identity_keys: set[tuple[str, str]] = set()
+                    for finding in deduplicated:
+                        fingerprint = warning_fingerprint(finding)
+                        identity = _identity_values(tenant, check.check_scope, finding, fingerprint)
+                        found_identity_keys.add((finding.subject_id, fingerprint))
+                        records.append(
+                            await self._upsert_open_warning(
+                                connection,
+                                identity=identity,
+                                finding=finding,
+                                context=check.context,
+                                now=now,
+                            )
+                        )
+                    found_by_check.append((check, found_identity_keys))
+                for check, found_identity_keys in found_by_check:
+                    await self._resolve_absent_covered_warnings(
                         connection,
-                        identity=identity,
-                        finding=finding,
-                        context=context,
+                        tenant=tenant,
+                        check_scope=check.check_scope,
+                        found_identity_keys=found_identity_keys,
+                        context=check.context,
                         now=now,
                     )
-                    records.append(record)
-                await self._resolve_absent_covered_warnings(
-                    connection,
-                    tenant=tenant,
-                    check_scope=check_scope,
-                    found_identity_keys=found_identity_keys,
-                    context=context,
-                    now=now,
-                )
         except BaseException as error:
             logger.error(
-                "quality_warning_persist_failed domain={} rule_code={} subject_type={} error_type={}",
-                check_scope.domain,
-                check_scope.rule_code,
-                check_scope.subject_type,
+                "quality_warning_batch_persist_failed check_count={} error_type={}",
+                len(checks),
                 type(error).__name__,
             )
             raise
@@ -235,6 +287,8 @@ class SqlAlchemyQualityWarningRepository:
             conditions.append(quality_warnings_v1.c.subject_type == query.subject_type)
         if query.subject_id is not None:
             conditions.append(quality_warnings_v1.c.subject_id == query.subject_id)
+        if query.disposition is not None:
+            conditions.append(quality_warnings_v1.c.disposition == query.disposition)
         if query.first_observed_after is not None:
             conditions.append(quality_warnings_v1.c.first_observed_at >= query.first_observed_after)
         if query.last_observed_before is not None:
@@ -307,6 +361,8 @@ class SqlAlchemyQualityWarningRepository:
                 **identity,
                 status="open",
                 severity=finding.severity,
+                disposition=finding.disposition,
+                source_phase=finding.source_phase,
                 message=finding.message,
                 details=finding.details,
                 first_observed_at=now,
@@ -335,6 +391,8 @@ class SqlAlchemyQualityWarningRepository:
                 .where(quality_warnings_v1.c.warning_id == row["warning_id"])
                 .values(
                     status="open",
+                    disposition=finding.disposition,
+                    source_phase=finding.source_phase,
                     message=finding.message,
                     details=finding.details,
                     last_observed_at=now,
@@ -545,6 +603,8 @@ def _record_from_row(row: RowMapping) -> QualityWarningRecord:
         fingerprint=cast(str, row["fingerprint"]),
         status=cast(Literal["open", "resolved"], row["status"]),
         severity=cast(Literal["warning"], row["severity"]),
+        disposition=cast(WarningDisposition, row.get("disposition") or "quality_warning"),
+        sourcePhase=cast(str, row.get("source_phase") or "legacy"),
         message=cast(str, row["message"]),
         details=cast(dict[str, Any], row["details"]),
         first_observed_at=_utc(cast(datetime, row["first_observed_at"])),
@@ -575,7 +635,10 @@ def _event_from_row(row: RowMapping) -> QualityWarningEvent:
 
 def _encode_cursor(record: QualityWarningRecord) -> str:
     value = json.dumps(
-        {"lastObservedAt": record.last_observed_at.isoformat(), "warningId": str(record.warning_id)},
+        {
+            "lastObservedAt": record.last_observed_at.isoformat(),
+            "warningId": str(record.warning_id),
+        },
         separators=(",", ":"),
     )
     return base64.urlsafe_b64encode(value.encode("ascii")).decode("ascii").rstrip("=")

@@ -77,6 +77,8 @@ MAX_REPORT_TOOL_PREVIEW_BYTES = 16 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
+# read_file 支持分析 evidence 的单次 128 KiB 受控读取；工具输出分页仍使用上面的 64 KiB 窗口。
+MAX_READ_FILE_BYTES = 128 * 1024
 MAX_PARALLEL_READ_TOOLS = 10
 MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
@@ -3547,8 +3549,8 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                             "max_bytes": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "maximum": MAX_TOOL_OUTPUT_READ_BYTES,
-                                "default": MAX_TOOL_OUTPUT_READ_BYTES,
+                                "maximum": MAX_READ_FILE_BYTES,
+                                "default": MAX_READ_FILE_BYTES,
                             },
                         },
                         "required": ["path"],
@@ -3960,9 +3962,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             # 仅显式关闭 finish 验证的专用 Kernel 可跳过；默认 Coding 门禁仍失败关闭。
             if tool_name == "finish_task" and not self.kernel.require_finish_verification:
                 return None
-            if (
-                TOOL_SPECS[tool_name].effect == "read"
-            ):
+            if TOOL_SPECS[tool_name].effect == "read":
                 return None
             failed_verification = next(
                 (
@@ -4004,9 +4004,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             repair_with_files = failure_code in self._FINISH_FILE_REPAIR_CODES or (
                 failure_code.startswith("finish_acceptance_")
             )
-            if repair_with_files and (
-                TOOL_SPECS[tool_name].effect == "read"
-            ):
+            if repair_with_files and (TOOL_SPECS[tool_name].effect == "read"):
                 return None
             allowed_tools = (
                 ["finish_task"]
@@ -4125,9 +4123,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         if (
             isinstance(max_bytes, bool)
             or not isinstance(max_bytes, int)
-            or not 1 <= max_bytes <= MAX_TOOL_OUTPUT_READ_BYTES
+            or not 1 <= max_bytes <= MAX_READ_FILE_BYTES
         ):
-            raise WorkspaceError("read_file max_bytes 必须是 1 至 65536 之间的整数。")
+            raise WorkspaceError(
+                f"read_file max_bytes 必须是 1 至 {MAX_READ_FILE_BYTES} 之间的整数。"
+            )
 
         async def call(scope: CodingTaskScope):
             content, _mime = await asyncio.to_thread(

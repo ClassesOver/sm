@@ -196,8 +196,8 @@ class AgentSettings:
     report_context_token_budget: int
     report_output_token_reserve: int
     report_analysis_concurrency: int
-    report_visualization_concurrency: int
     report_section_concurrency: int
+    report_coding_execution_mode: str
 
     @classmethod
     def from_environment(
@@ -251,18 +251,17 @@ class AgentSettings:
             1,
             maximum=4,
         )
-        report_visualization_concurrency = _positive_int(
-            values,
-            "AGENT_REPORT_VISUALIZATION_CONCURRENCY",
-            1,
-            maximum=4,
-        )
         report_section_concurrency = _positive_int(
             values,
             "AGENT_REPORT_SECTION_CONCURRENCY",
             1,
             maximum=5,
         )
+        report_coding_execution_mode = (
+            values.get("AGENT_REPORT_CODING_EXECUTION_MODE", "sequential").strip().lower()
+        )
+        if report_coding_execution_mode not in {"sequential", "parallel"}:
+            raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         return cls(
             env_file=env_file,
@@ -334,6 +333,6 @@ class AgentSettings:
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
             report_analysis_concurrency=report_analysis_concurrency,
-            report_visualization_concurrency=report_visualization_concurrency,
             report_section_concurrency=report_section_concurrency,
+            report_coding_execution_mode=report_coding_execution_mode,
         )

@@ -8,7 +8,7 @@ description: 为 Reporting 可视化章节选择、生成、复核和提交图�
 ## 阶段边界
 
 - `visualization_section` 只处理任务 JSON 指定章节：读取签发的 facts/evidence，写入签发的脚本和图表输出路径，最后只调用一次 `submit_visualization_charts`。不得登记全局图表或冻结分析。
-- `visualization_finalize` 只消费已提交的章节草案和受信语义目录：调用 `register_report_charts` 后立即调用 `finalize_report_analysis`；不重跑图表脚本或提交章节草案。
+- `visualization_section` 只处理当前章节：读取受信 facts/evidence，生成并检查图表后调用 `submit_visualization_charts`；不处理其他章节或全局分析冻结。
 
 ## 选择
 
