@@ -15,14 +15,26 @@ from smart_reporting.task_execution.repository import (
     utcnow,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
-async def repository(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+async def repository():
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
+    database = create_agent_database(database_url)
     current = CodingTaskRepository(database.async_db)
-    yield current, database
-    await database.async_engine.dispose()
-    database.sync_engine.dispose()
+    await current.initialize()
+    try:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(delete(current.tasks))
+        yield current, database
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(delete(current.tasks))
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 async def create_task(repository: CodingTaskRepository, run_id: str = "external-run"):
@@ -37,7 +49,7 @@ async def create_task(repository: CodingTaskRepository, run_id: str = "external-
 
 
 @pytest.mark.anyio
-async def test_sqlite_repository_initializes_schema_versions_and_supports_cas(repository):
+async def test_postgres_repository_initializes_schema_versions_and_supports_cas(repository):
     current, database = repository
     task = await create_task(current)
 
@@ -45,8 +57,8 @@ async def test_sqlite_repository_initializes_schema_versions_and_supports_cas(re
     assert await current.claim_lease(task.external_run_id, "worker-a") is True
     assert await current.claim_lease(task.external_run_id, "worker-b") is False
 
-    running = await current.begin_run(task.external_run_id, "internal-1")
-    assert running.continuation_count == 1
+    running = await current.bind_initial_run(task.external_run_id, "internal-1")
+    assert running.continuation_count == 0
     assert running.current_internal_run_id == "internal-1"
     assert await current.increment_mutation(task.external_run_id) == 1
 
@@ -69,46 +81,10 @@ async def test_sqlite_repository_initializes_schema_versions_and_supports_cas(re
 
 
 @pytest.mark.anyio
-async def test_initial_run_does_not_consume_continuation_budget(repository):
-    current, _database = repository
-    task = await create_task(current)
-
-    initial = await current.bind_initial_run(task.external_run_id, "internal-0")
-    continued = await current.begin_run(task.external_run_id, "internal-1")
-
-    assert initial.continuation_count == 0
-    assert initial.current_internal_run_id == "internal-0"
-    assert continued.continuation_count == 1
-    async with current.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-        mappings = (
-            await connection.execute(
-                select(
-                    current.runs.c.internal_run_id,
-                    current.runs.c.continuation_index,
-                ).order_by(current.runs.c.continuation_index)
-            )
-        ).all()
-    assert mappings == [("internal-0", 0), ("internal-1", 1)]
-
-
-@pytest.mark.anyio
-async def test_only_lease_owner_can_suspend_active_task(repository):
-    current, _database = repository
-    task = await create_task(current)
-    await current.bind_initial_run(task.external_run_id, "internal-0")
-    assert await current.claim_lease(task.external_run_id, "request-a") is True
-
-    assert await current.suspend_task(task.external_run_id, "request-b") is False
-    assert (await current.get_task(task.external_run_id)).status == "running"
-    assert await current.suspend_task(task.external_run_id, "request-a") is True
-    assert (await current.get_task(task.external_run_id)).status == "suspended"
-
-
-@pytest.mark.anyio
 async def test_execution_scope_terminal_receipt_and_output_are_persistent_and_bounded(repository):
     current, _database = repository
     task = await create_task(current)
-    await current.begin_run(task.external_run_id, "internal-1")
+    await current.bind_initial_run(task.external_run_id, "internal-1")
     await current.reserve_execution(
         execution_id="execution-1",
         external_run_id=task.external_run_id,
@@ -147,20 +123,6 @@ async def test_execution_scope_terminal_receipt_and_output_are_persistent_and_bo
             sandbox_id=task.sandbox_id,
         )
     assert rejected.value.code == "execution_scope_mismatch"
-
-
-@pytest.mark.anyio
-async def test_same_error_fingerprint_counts_consecutive_failures(repository):
-    current, _database = repository
-    task = await create_task(current)
-
-    first = await current.record_error(task.external_run_id, " Provider timeout ")
-    second = await current.record_error(task.external_run_id, "provider   timeout")
-    third = await current.record_error(task.external_run_id, "different")
-
-    assert first.same_error_count == 1
-    assert second.same_error_count == 2
-    assert third.same_error_count == 1
 
 
 @pytest.mark.anyio
@@ -234,7 +196,15 @@ async def test_cleanup_removes_only_terminal_records_after_seven_days(repository
         output="visible result",
         exit_code=0,
     )
-    await current.set_task_status(expired.external_run_id, "completed")
+    assert await current.claim_lease(expired.external_run_id, "completion-worker") is True
+    await current.complete_task(
+        expired.external_run_id,
+        expected_mutation_sequence=0,
+        expected_lease_owner="completion-worker",
+        result_text="done",
+        finish_payload={"summary": "done"},
+        retained_execution_ids=[],
+    )
     active = await create_task(current, "active-run")
 
     removed = await current.cleanup_expired(
@@ -248,12 +218,11 @@ async def test_cleanup_removes_only_terminal_records_after_seven_days(repository
     assert await current.get_task(active.external_run_id) is not None
 
 
-@pytest.mark.integration
 @pytest.mark.anyio
 async def test_postgres_repository_uses_the_same_core_contract():
-    db_url = os.environ.get("AGENTOS_TEST_POSTGRES_URL")
+    db_url = os.environ.get("REPORTING_TEST_DB_URL")
     if not db_url:
-        pytest.skip("需要独立的 AGENTOS_TEST_POSTGRES_URL。")
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
     database = create_agent_database(db_url)
     assert database.backend == "postgresql"
     current = CodingTaskRepository(database.async_db)

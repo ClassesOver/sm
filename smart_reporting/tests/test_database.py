@@ -168,35 +168,6 @@ async def test_postgres_table_initialization_serializes_only_same_table(monkeypa
     assert max_active_calls == 2
 
 
-def test_sqlite_database_factory_rejects_memory_and_enables_required_pragmas(tmp_path):
-    with pytest.raises(ValueError, match="不能使用内存数据库"):
-        create_agent_database("sqlite:///:memory:")
-
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
-    try:
-        assert database.backend == "sqlite"
-        assert database.async_db.db_engine is database.async_engine
-        with database.sync_engine.connect() as connection:
-            assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
-            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
-            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 30_000
-    finally:
-        database.sync_engine.dispose()
-
-
-@pytest.mark.anyio
-async def test_sqlite_async_engine_connects_with_required_pragmas_without_hanging(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
-    try:
-        async with asyncio.timeout(5):
-            async with database.async_engine.connect() as connection:
-                assert (
-                    await connection.exec_driver_sql("PRAGMA journal_mode")
-                ).scalar_one() == "wal"
-                assert (await connection.exec_driver_sql("PRAGMA foreign_keys")).scalar_one() == 1
-                assert (
-                    await connection.exec_driver_sql("PRAGMA busy_timeout")
-                ).scalar_one() == 30_000
-    finally:
-        await database.async_engine.dispose()
-        database.sync_engine.dispose()
+def test_database_factory_rejects_non_postgresql_url():
+    with pytest.raises(ValueError, match="只支持 postgresql"):
+        create_agent_database("mysql://database/example")

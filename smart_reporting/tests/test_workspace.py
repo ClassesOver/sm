@@ -41,17 +41,17 @@ from smart_reporting.workspace import (
     WORKSPACE_ROOT,
     WORKSPACE_SNAPSHOT,
     AsyncSandboxRegistry,
-    BaseToolkit,
     DaytonaToolkit,
     SandboxRegistry,
     WorkspaceError,
     WorkspacePathConflict,
     WorkspaceService,
+    WorkspaceToolkit,
 )
 
 
 def test_旧_coding_workspace_辅助工具不再注册():
-    toolkit = BaseToolkit(None)  # type: ignore[arg-type]
+    toolkit = WorkspaceToolkit(None)  # type: ignore[arg-type]
     tools = {**toolkit.functions, **toolkit.async_functions}
 
     assert (
@@ -414,21 +414,6 @@ def test_注册表直到首次使用才初始化(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_异步注册表连接只启动一次并正常归还(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'registry.db'}")
-    registry = AsyncSandboxRegistry(database.async_db)
-
-    try:
-        async with registry.locked("thread") as transaction:
-            await transaction.set("thread", "sandbox-1")
-        async with registry.locked("thread") as transaction:
-            assert await transaction.get("thread") == "sandbox-1"
-    finally:
-        await database.async_engine.dispose()
-        database.sync_engine.dispose()
-
-
-@pytest.mark.anyio
 async def test_基础工具支持搜索分段读取哈希精确补丁和媒体检查(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "src/app.py", b"alpha\nneedle here\nomega\n")
@@ -460,7 +445,7 @@ async def test_基础工具支持搜索分段读取哈希精确补丁和媒体�
         async_client=AsyncFakeClient(current.client),
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
-    toolkit = BaseToolkit(async_service)
+    toolkit = WorkspaceToolkit(async_service)
     tools = {**toolkit.functions, **toolkit.async_functions}
     context = RunContext(run_id="run", session_id="thread")
 
@@ -658,7 +643,7 @@ async def test_大文件分段读取和哈希均在沙箱内执行(tmp_path):
         return type("Result", (), {"result": output, "exit_code": 0})()
 
     process.exec = execute_command
-    toolkit = BaseToolkit(
+    toolkit = WorkspaceToolkit(
         WorkspaceService(
             current.secret,
             client=current.client,
@@ -749,7 +734,7 @@ async def test_文本搜索在沙箱内使用_rg_并支持_codex_常用模式(tm
         async_client=AsyncFakeClient(current.client),
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
-    toolkit = BaseToolkit(async_service)
+    toolkit = WorkspaceToolkit(async_service)
     context = RunContext(run_id="run", session_id="thread")
 
     matches = await toolkit.workspace_search_text(
@@ -827,7 +812,7 @@ async def test_rg_搜索拒绝非法模式_glob_和受控原始数据(tmp_path):
         async_client=AsyncFakeClient(current.client),
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
-    toolkit = BaseToolkit(async_service)
+    toolkit = WorkspaceToolkit(async_service)
     context = RunContext(run_id="run", session_id="thread")
 
     with pytest.raises(WorkspaceError, match="大小写模式"):
@@ -847,7 +832,7 @@ async def test_rg_搜索拒绝非法模式_glob_和受控原始数据(tmp_path):
 def test_补丁拒绝陈旧和非唯一内容(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "notes.txt", b"same\nsame\n")
-    tools = BaseToolkit(current).functions
+    tools = WorkspaceToolkit(current).functions
     context = RunContext(run_id="run", session_id="thread")
     digest = current.hash_file("thread", "notes.txt")
 
@@ -881,7 +866,7 @@ def test_批量补丁支持多文件多段编辑(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "a.txt", b"one\ntwo\nthree\n")
     current.create_file("thread", "b.txt", b"alpha\nbeta\n")
-    tools = BaseToolkit(current).functions
+    tools = WorkspaceToolkit(current).functions
     context = RunContext(run_id="run", session_id="thread")
     a_hash = current.hash_file("thread", "a.txt")["sha256"]
     b_hash = current.hash_file("thread", "b.txt")["sha256"]
@@ -916,7 +901,7 @@ def test_批量补丁预检任一冲突时不写入任何文件(tmp_path):
     current.create_file("thread", "a.txt", b"before-a\n")
     current.create_file("thread", "b.txt", b"before-b\n")
     a_hash = current.hash_file("thread", "a.txt")["sha256"]
-    tools = BaseToolkit(current).functions
+    tools = WorkspaceToolkit(current).functions
 
     with pytest.raises(WorkspacePathConflict, match="文件内容已变化"):
         tools["workspace_apply_patch_set"].entrypoint(
@@ -943,7 +928,7 @@ def test_定位_hunk_支持多文件并拒绝错位或陈旧内容(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "a.txt", b"one\ntwo\nthree\nfour\n")
     current.create_file("thread", "b.txt", b"alpha\nbeta\ngamma\n")
-    tool = BaseToolkit(current).functions["workspace_apply_hunks"]
+    tool = WorkspaceToolkit(current).functions["workspace_apply_hunks"]
     context = RunContext(run_id="run", session_id="thread")
 
     result = tool.entrypoint(
@@ -984,7 +969,7 @@ def test_定位_hunk_支持多文件并拒绝错位或陈旧内容(tmp_path):
 def test_基础读取拒绝把超大文本直接注入模型并要求分段读取(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "large.txt", b"x" * (MAX_TOOL_OUTPUT_BYTES + 1))
-    tools = BaseToolkit(current).functions
+    tools = WorkspaceToolkit(current).functions
     context = RunContext(run_id="run", session_id="thread")
 
     with pytest.raises(WorkspaceError, match="workspace_read_lines"):
@@ -1016,7 +1001,7 @@ async def test_sandbox_exec_使用原生异步进程并绑定工作区(tmp_path)
         async_client=AsyncFakeClient(current.client),
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
-    toolkit = BaseToolkit(async_service)
+    toolkit = WorkspaceToolkit(async_service)
 
     result = await toolkit.sandbox_exec(
         "pwd", cwd="资料", timeout=30, run_context=RunContext(run_id="run", session_id="thread")
@@ -1041,7 +1026,7 @@ async def test_sandbox_exec_后台模式使用受管会话并支持轮询输入�
         async_client=AsyncFakeClient(current.client),
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
-    toolkit = BaseToolkit(async_service)
+    toolkit = WorkspaceToolkit(async_service)
     context = RunContext(run_id="run", session_id="thread")
 
     started = await toolkit.sandbox_exec(
@@ -1144,7 +1129,7 @@ async def test_后台进程完成后轮询返回最终输出并清理会话(tmp_
         async_client=AsyncFakeClient(current.client),
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
-    toolkit = BaseToolkit(async_service)
+    toolkit = WorkspaceToolkit(async_service)
     context = RunContext(run_id="run", session_id="thread")
     started = await toolkit.sandbox_exec("pytest", background=True, run_context=context)
     process = current.sandbox_for("thread").process
@@ -1228,7 +1213,7 @@ async def test_并发启动后台进程不会突破数量上限(tmp_path, monkey
 @pytest.mark.anyio
 async def test_后台日志字节游标不切断_utf8_字符(tmp_path):
     current = service(tmp_path)
-    toolkit = BaseToolkit(
+    toolkit = WorkspaceToolkit(
         WorkspaceService(
             current.secret,
             client=current.client,
@@ -1307,7 +1292,7 @@ def test_完整变更集支持新建更新删除移动(tmp_path):
     current.create_file("thread", "delete.txt", b"delete me\n")
     current.create_file("thread", "move.txt", b"move me\n")
     context = RunContext(run_id="run", session_id="thread")
-    tool = BaseToolkit(current).functions["workspace_apply_changes"]
+    tool = WorkspaceToolkit(current).functions["workspace_apply_changes"]
 
     result = tool.entrypoint(
         changes=[
@@ -1352,7 +1337,7 @@ def test_完整变更集支持新建更新删除移动(tmp_path):
 def test_结构化创建目录和复制文件保持边界(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "source.txt", b"source\n")
-    tools = BaseToolkit(current).functions
+    tools = WorkspaceToolkit(current).functions
     context = RunContext(run_id="run", session_id="thread")
 
     created = tools["workspace_create_directory"].entrypoint(
@@ -1376,7 +1361,7 @@ def test_完整变更集预检冲突零写入且执行失败会回滚(tmp_path, 
     current = service(tmp_path)
     current.create_file("thread", "a.txt", b"before a\n")
     current.create_file("thread", "b.txt", b"before b\n")
-    tool = BaseToolkit(current).functions["workspace_apply_changes"]
+    tool = WorkspaceToolkit(current).functions["workspace_apply_changes"]
     context = RunContext(run_id="run", session_id="thread")
     a_hash = current.hash_file("thread", "a.txt")["sha256"]
 
@@ -1636,7 +1621,7 @@ def test_create_file_locked_serializes_same_thread_and_path(tmp_path):
 
 def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):
     current = service(tmp_path)
-    toolkit = BaseToolkit(current)
+    toolkit = WorkspaceToolkit(current)
     tools = toolkit.functions
     context = RunContext(run_id="run", session_id="thread")
 
@@ -1671,7 +1656,7 @@ def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):
 def test_智能体文本工具禁止读取受控原始报表分片(tmp_path, path):
     current = service(tmp_path)
     current.upload("thread", path, b'{"secret":"raw"}\n')
-    current_tools = BaseToolkit(current).functions
+    current_tools = WorkspaceToolkit(current).functions
 
     with pytest.raises(WorkspaceError, match="不能进入智能体上下文"):
         current_tools["workspace_read_file"].entrypoint(

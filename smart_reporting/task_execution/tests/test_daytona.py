@@ -9,6 +9,7 @@ import pytest
 from agno.run import RunContext
 from daytona import AsyncDaytona, CreateSandboxFromSnapshotParams
 from daytona.common.errors import DaytonaNotFoundError
+from sqlalchemy import delete
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.skills import skill_script_receipt_hook
@@ -44,9 +45,12 @@ class _BoundWorkspaceService(WorkspaceService):
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_readonly(tmp_path):
+async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_readonly():
     if not os.getenv("DAYTONA_API_KEY"):
         pytest.skip("需要 Daytona API Key")
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL Daytona 集成测试。")
 
     body = (
         "from pathlib import Path\n"
@@ -56,6 +60,8 @@ async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_rea
     expected_sha256 = hashlib.sha256(body.encode()).hexdigest()
     sandbox = None
     database = None
+    repository = None
+    scope = None
     async with AsyncDaytona() as client:
         try:
             sandbox = await client.create(
@@ -75,7 +81,7 @@ async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_rea
                 await sandbox.fs.get_file_info(WORKSPACE_ROOT)
             except DaytonaNotFoundError:
                 await sandbox.fs.create_folder(WORKSPACE_ROOT, "700")
-            database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+            database = create_agent_database(database_url)
             repository = CodingTaskRepository(database.async_db)
             scope = CodingScope(
                 "skill-readonly-integration",
@@ -201,6 +207,13 @@ async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_rea
             with pytest.raises(WorkspaceError):
                 WorkspaceService.normalize_path(readonly_path, allow_root=False)
         finally:
+            if repository is not None and scope is not None:
+                async with database.async_engine.begin() as connection:
+                    await connection.execute(
+                        delete(repository.tasks).where(
+                            repository.tasks.c.external_run_id == scope.external_run_id
+                        )
+                    )
             if database is not None:
                 await database.async_engine.dispose()
                 database.sync_engine.dispose()

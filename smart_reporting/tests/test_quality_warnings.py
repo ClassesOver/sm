@@ -6,15 +6,15 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from pydantic import ValidationError
 from fastapi import FastAPI
+from pydantic import ValidationError
 
 from smart_reporting.quality_warnings import (
     CheckContext,
     CheckScope,
-    QualityWarningService,
     QualityWarningPage,
     QualityWarningRecord,
+    QualityWarningService,
     TenantScope,
     WarningFinding,
     warning_fingerprint,
@@ -113,6 +113,7 @@ async def test_quality_warning_list_uses_capability_tenant_and_defaults_to_open(
         async def list_warning_page(self, *, tenant, query):
             assert tenant == record.tenant
             assert query.status == "open"
+            assert query.disposition == "quality_warning"
             return QualityWarningPage(records=(record,))
 
     application = FastAPI()
@@ -127,7 +128,7 @@ async def test_quality_warning_list_uses_capability_tenant_and_defaults_to_open(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=application), base_url="http://test"
     ) as client:
-        response = await client.get("/quality-warnings")
+        response = await client.get("/quality-warnings?disposition=quality_warning")
 
     assert response.status_code == 200
     assert response.json()["records"][0]["warning_id"] == str(record.warning_id)

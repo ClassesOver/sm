@@ -17,9 +17,8 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
         "terminal",
     }
 )
-# 可视化按章节并行化(Spec §6.3):章节执行期只产出图稿与分析文件,不接触 report
-# 级注册/冻结终态;finalize 阶段才合并注册并冻结。两矩阵互补且互斥,任何章节 run
-# 都无法绕过 finalize 收口(见第 8 节不变量)。
+# 可视化按章节归属：章节 worker 直接提交本章图表，服务端在提交时完成身份校验；
+# 不再暴露全局登记/冻结 worker，最终分析产物由服务端确定性汇总。
 REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
     {
         "get_skill_instructions",
@@ -35,17 +34,6 @@ REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
         "overwrite_analysis_file",
     }
 )
-REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES = frozenset(
-    {
-        "finalize_report_analysis",
-        "get_skill_instructions",
-        "read_file",
-        "read_tool_output",
-        "register_report_charts",
-        "create_analysis_file",
-        "overwrite_analysis_file",
-    }
-)
 
 
 def tools_for_task(phase: str | None, task_kind: str | None) -> frozenset[str] | None:
@@ -55,15 +43,12 @@ def tools_for_task(phase: str | None, task_kind: str | None) -> frozenset[str] |
         return REPORTING_ANALYSIS_ITEM_TOOL_NAMES
     if phase == "analysis" and task_kind == "visualization_section":
         return REPORTING_VISUALIZATION_SECTION_TOOL_NAMES
-    if phase == "analysis" and task_kind == "visualization_finalize":
-        return REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES
     return None
 
 
 __all__ = [
     "REPORTING_ANALYSIS_ITEM_TOOL_NAMES",
     "REPORTING_SECTION_TOOL_NAMES",
-    "REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES",
     "REPORTING_VISUALIZATION_SECTION_TOOL_NAMES",
     "tools_for_task",
 ]

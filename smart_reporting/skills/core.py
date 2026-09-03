@@ -14,7 +14,7 @@ from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
 from daytona.common.errors import DaytonaNotFoundError
 
-from .task_execution.acceptance import (
+from ..task_execution.acceptance import (
     AcceptanceContractError,
     normalize_acceptance_contract,
     validate_artifact_pattern,

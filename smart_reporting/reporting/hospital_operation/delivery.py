@@ -12,13 +12,6 @@ from .schema import HospitalOperationSchema
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 SourcePolicy = Literal["csv", "source_compare", "source_explicit"]
-SOURCE_WARNING_CODES = frozenset(
-    {
-        "source_coverage_difference",
-        "source_period_difference",
-        "source_data_quality",
-    }
-)
 
 
 class SourceWarning(HospitalOperationSchema):
@@ -93,7 +86,6 @@ class PlanExecutionReceipt(HospitalOperationSchema):
 
 __all__ = [
     "PlanExecutionReceipt",
-    "SOURCE_WARNING_CODES",
     "SourceBinding",
     "SourcePolicy",
     "SourceWarning",

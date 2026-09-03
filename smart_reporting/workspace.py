@@ -69,7 +69,6 @@ MAX_MANAGED_PROCESSES = 4
 MAX_PROCESS_INPUT_BYTES = 8 * 1024
 MAX_PTY_ROWS = 200
 MAX_PTY_COLS = 400
-MAX_GIT_LOG_ENTRIES = 100
 MAX_BRANCH_FILES = 2000
 MAX_BRANCH_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_BRANCH_FILE_BYTES = 200 * 1024 * 1024
@@ -146,6 +145,8 @@ class SandboxRegistry:
         else:
             assert isinstance(database, BaseDb)
             resolved_database = database
+        if resolved_database.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
+            raise ValueError("工作区注册表只支持 PostgreSQL。")
         self.db: BaseDb = resolved_database
         schema = getattr(self.db, "db_schema", None)
         self.metadata = MetaData(schema=schema)
@@ -172,15 +173,12 @@ class SandboxRegistry:
         if self._initialized:
             return
         with self._connect() as connection, connection.begin():
-            if connection.dialect.name == "postgresql":
-                if self.metadata.schema:
-                    connection.exec_driver_sql(
-                        f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
-                    )
-                connection.exec_driver_sql(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    ("agent-workspace:initialize",),
-                )
+            if self.metadata.schema:
+                connection.exec_driver_sql(f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"')
+            connection.exec_driver_sql(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("agent-workspace:initialize",),
+            )
             self.metadata.create_all(connection)
         self.db.upsert_schema_version(self.table.name, "1.0.0")
         self._initialized = True
@@ -199,21 +197,12 @@ class SandboxRegistry:
     def locked(self, value: str):
         self.ensure_initialized()
         with self._connect() as connection:
-            if connection.dialect.name == "sqlite":
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-                try:
-                    yield SandboxRegistryTransaction(connection, self.table)
-                    connection.commit()
-                except Exception:
-                    connection.rollback()
-                    raise
-            else:
-                with connection.begin():
-                    connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (value,),
-                    )
-                    yield SandboxRegistryTransaction(connection, self.table)
+            with connection.begin():
+                connection.exec_driver_sql(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (value,),
+                )
+                yield SandboxRegistryTransaction(connection, self.table)
 
 
 class SandboxRegistryTransaction:
@@ -256,6 +245,8 @@ class AsyncSandboxRegistry:
         else:
             assert isinstance(database, AsyncBaseDb)
             resolved_database = database
+        if resolved_database.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
+            raise ValueError("工作区注册表只支持 PostgreSQL。")
         self.db: AsyncBaseDb = resolved_database
         schema = getattr(self.db, "db_schema", None)
         self.metadata = MetaData(schema=schema)
@@ -287,15 +278,14 @@ class AsyncSandboxRegistry:
                 return
             async with self._connect() as connection:
                 async with connection.begin():
-                    if connection.dialect.name == "postgresql":
-                        if self.metadata.schema:
-                            await connection.exec_driver_sql(
-                                f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
-                            )
+                    if self.metadata.schema:
                         await connection.exec_driver_sql(
-                            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                            ("agent-workspace:initialize",),
+                            f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
                         )
+                    await connection.exec_driver_sql(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        ("agent-workspace:initialize",),
+                    )
                     await connection.run_sync(self.metadata.create_all)
             await self.db.upsert_schema_version(self.table.name, "1.0.0")
             self._initialized = True
@@ -316,11 +306,10 @@ class AsyncSandboxRegistry:
         await self.ensure_initialized()
         async with self._connect() as connection:
             async with connection.begin():
-                if connection.dialect.name == "postgresql":
-                    await connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (f"agent-workspace-generation:{base_label}",),
-                    )
+                await connection.exec_driver_sql(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"agent-workspace-generation:{base_label}",),
+                )
                 generation = (
                     await connection.execute(
                         select(self.generation_table.c.generation).where(
@@ -395,21 +384,12 @@ class AsyncSandboxRegistry:
     async def locked(self, value: str):
         await self.ensure_initialized()
         async with self._connect() as connection:
-            if connection.dialect.name == "sqlite":
-                await connection.exec_driver_sql("BEGIN IMMEDIATE")
-                try:
-                    yield AsyncSandboxRegistryTransaction(connection, self.table)
-                    await connection.commit()
-                except Exception:
-                    await connection.rollback()
-                    raise
-            else:
-                async with connection.begin():
-                    await connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (value,),
-                    )
-                    yield AsyncSandboxRegistryTransaction(connection, self.table)
+            async with connection.begin():
+                await connection.exec_driver_sql(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (value,),
+                )
+                yield AsyncSandboxRegistryTransaction(connection, self.table)
 
 
 class AsyncSandboxRegistryTransaction:
@@ -1115,35 +1095,6 @@ class WorkspaceService:
         sandbox = self.sandbox_for(thread)
         self._validate_existing_path(sandbox, relative)
         entries = sandbox.fs.list_files(remote)
-        if len(entries) > MAX_LIST_ENTRIES:
-            raise WorkspaceError(
-                f"工作区目录包含超过 {MAX_LIST_ENTRIES} 个项目，请进入子目录后重试。"
-            )
-        result = []
-        for entry in entries:
-            if entry.name in (".", "..") or self._is_symlink(entry):
-                continue
-            child = f"{relative}/{entry.name}".strip("/")
-            result.append(
-                {
-                    "path": child,
-                    "name": entry.name,
-                    "isDirectory": bool(entry.is_dir),
-                    "size": int(entry.size or 0),
-                    "mimeType": False
-                    if entry.is_dir
-                    else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
-                    "modifiedAt": entry.modified_at or entry.mod_time,
-                }
-            )
-        return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
-
-    async def alist_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
-        relative, remote = self.normalize_path(path)
-        async with self._async_client() as client:
-            sandbox = await self._asandbox_for(client, thread)
-            await self._avalidate_existing_path(sandbox, relative)
-            entries = await sandbox.fs.list_files(remote)
         if len(entries) > MAX_LIST_ENTRIES:
             raise WorkspaceError(
                 f"工作区目录包含超过 {MAX_LIST_ENTRIES} 个项目，请进入子目录后重试。"
@@ -1959,276 +1910,6 @@ class WorkspaceService:
             raise WorkspaceError("批量哈希读取超时，请稍后重试。") from error
         return results
 
-    async def astat(self, thread: str, path: str = "") -> dict[str, Any]:
-        relative, remote = self.normalize_path(path)
-        script = f"stat --printf='%F\\0%s\\0%Y\\0%a\\0' -- {shlex.quote(remote)}"
-        output, _truncated = await self._arun_workspace_command(
-            thread,
-            relative,
-            remote,
-            self._shell_command(script),
-            expected_type="any",
-            failure_message="工作区路径统计失败，请检查路径后重试。",
-        )
-        raw_type, raw_size, raw_modified, mode = self._parse_null_fields(
-            output, 4, "工作区路径统计结果无效，请稍后重试。"
-        )
-        if "directory" in raw_type:
-            item_type = "directory"
-        elif "regular" in raw_type:
-            item_type = "file"
-        else:
-            raise WorkspaceError("工作区路径不是普通文件或目录，请更换路径后重试。")
-        try:
-            size = int(raw_size)
-            modified = int(raw_modified)
-        except ValueError as error:
-            raise WorkspaceError("工作区路径统计结果无效，请稍后重试。") from error
-        return {
-            "path": relative,
-            "type": item_type,
-            "size": size,
-            "modifiedUnix": modified,
-            "mode": mode,
-        }
-
-    async def atree(
-        self,
-        thread: str,
-        path: str = "",
-        max_depth: int = 4,
-        limit: int = 200,
-    ) -> dict[str, Any]:
-        if (
-            isinstance(max_depth, bool)
-            or not isinstance(max_depth, int)
-            or not 1 <= max_depth <= 32
-        ):
-            raise WorkspaceError("目录树深度必须是 1 至 32 之间的整数。")
-        if (
-            isinstance(limit, bool)
-            or not isinstance(limit, int)
-            or not 1 <= limit <= MAX_LIST_ENTRIES
-        ):
-            raise WorkspaceError(f"目录树条目数必须是 1 至 {MAX_LIST_ENTRIES} 之间的整数。")
-        relative, remote = self.normalize_path(path)
-        arguments = [
-            "find",
-            remote,
-            "-xdev",
-            "-mindepth",
-            "1",
-            "-maxdepth",
-            str(max_depth),
-            "(",
-            "-type",
-            "f",
-            "-o",
-            "-type",
-            "d",
-            ")",
-            "!",
-            "-path",
-            f"{WORKSPACE_ROOT}/报表/原始数据/*/分片/*.jsonl",
-            "!",
-            "-path",
-            f"{WORKSPACE_ROOT}/reports/data/*.jsonl",
-            "-printf",
-            "%y\\t%P\\t%s\\0",
-        ]
-        pipeline = f"{shlex.join(arguments)} | sort -z | head -z -n {limit + 1}"
-        output, command_truncated = await self._arun_workspace_command(
-            thread,
-            relative,
-            remote,
-            self._shell_command(pipeline, pipefail=True),
-            expected_type="directory",
-            failure_message="工作区目录树读取失败，请缩小范围后重试。",
-            accepted_exit_codes=(0, 141),
-        )
-        records = output.split("\x00")
-        malformed = bool(records and records[-1])
-        records = records[:-1] if records and records[-1] == "" else records
-        entries = []
-        for record in records[: limit + 1]:
-            fields = record.split("\t")
-            if len(fields) != 3:
-                malformed = True
-                continue
-            raw_type, raw_path, raw_size = fields
-            try:
-                found = self.normalize_path(f"{relative}/{raw_path}".strip("/"), allow_root=False)[
-                    0
-                ]
-                size = int(raw_size)
-            except (ValueError, WorkspaceError):
-                malformed = True
-                continue
-            if _is_controlled_raw_dataset(found) or raw_type not in {"d", "f"}:
-                continue
-            entries.append(
-                {
-                    "path": found,
-                    "type": "directory" if raw_type == "d" else "file",
-                    "size": size,
-                }
-            )
-        truncated = command_truncated or malformed or len(entries) > limit
-        return {"root": relative, "entries": entries[:limit], "truncated": truncated}
-
-    @staticmethod
-    def _validate_git_revision(revision: str) -> str:
-        allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/@{}^~:-"
-        if (
-            not isinstance(revision, str)
-            or not 1 <= len(revision) <= 128
-            or revision.startswith("-")
-            or not revision.isascii()
-            or any(character not in allowed for character in revision)
-        ):
-            raise WorkspaceError("Git 修订格式无效，请使用分支、标签或提交哈希。")
-        return revision
-
-    @classmethod
-    def _validate_git_file_path(cls, file_path: str | None) -> str | None:
-        if file_path is None:
-            return None
-        if not isinstance(file_path, str) or not file_path:
-            raise WorkspaceError("Git 文件路径必须是非空的仓库相对路径。")
-        return cls.normalize_path(file_path, allow_root=False)[0]
-
-    async def _agit(
-        self,
-        thread: str,
-        repo_path: str,
-        arguments: list[str],
-    ) -> dict[str, Any]:
-        relative, remote = self.normalize_path(repo_path)
-        command = shlex.join(
-            [
-                "git",
-                "-C",
-                remote,
-                "--no-pager",
-                "-c",
-                "color.ui=false",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.pager=cat",
-                *arguments,
-            ]
-        )
-        pipeline = f"{command} 2>&1 | head -c {MAX_TOOL_OUTPUT_BYTES + 1}"
-        output, command_truncated = await self._arun_workspace_command(
-            thread,
-            relative,
-            remote,
-            self._shell_command(pipeline, pipefail=True),
-            expected_type="directory",
-            failure_message="Git 只读命令执行失败，请检查仓库路径和修订后重试。",
-            output_limit=MAX_TOOL_OUTPUT_BYTES + 1,
-            accepted_exit_codes=(0, 141),
-            failure_classifier=self._classify_git_failure,
-        )
-        encoded = output.encode("utf-8")
-        truncated = command_truncated or len(encoded) > MAX_TOOL_OUTPUT_BYTES
-        if len(encoded) > MAX_TOOL_OUTPUT_BYTES:
-            output = encoded[:MAX_TOOL_OUTPUT_BYTES].decode("utf-8", errors="ignore")
-        return {"exitCode": 0, "output": output, "truncated": truncated}
-
-    @staticmethod
-    def _classify_git_failure(output: str) -> str:
-        normalized = output.lower()
-        if "not a git repository" in normalized:
-            return "所选目录不是 Git 仓库。"
-        if any(
-            marker in normalized
-            for marker in ("bad revision", "unknown revision", "ambiguous argument")
-        ):
-            return "Git 修订不存在或无法解析。"
-        if "pathspec" in normalized and (
-            "did not match" in normalized or "does not match" in normalized
-        ):
-            return "Git 文件路径不存在或不匹配。"
-        return "Git 只读命令执行失败。"
-
-    async def agit_status(self, thread: str, repo_path: str = "") -> dict[str, Any]:
-        return await self._agit(
-            thread,
-            repo_path,
-            ["status", "--short", "--branch", "--untracked-files=all"],
-        )
-
-    async def agit_diff(
-        self,
-        thread: str,
-        repo_path: str = "",
-        staged: bool = False,
-        revision: str | None = None,
-        file_path: str | None = None,
-    ) -> dict[str, Any]:
-        if not isinstance(staged, bool):
-            raise WorkspaceError("Git 暂存区标志必须是布尔值。")
-        arguments = ["diff", "--no-ext-diff", "--no-textconv", "--unified=3"]
-        if staged:
-            arguments.append("--cached")
-        if revision is not None:
-            arguments.append(self._validate_git_revision(revision))
-        path = self._validate_git_file_path(file_path)
-        if path is not None:
-            arguments.extend(("--", path))
-        return await self._agit(thread, repo_path, arguments)
-
-    async def agit_log(
-        self,
-        thread: str,
-        repo_path: str = "",
-        revision: str = "HEAD",
-        max_count: int = 20,
-        file_path: str | None = None,
-    ) -> dict[str, Any]:
-        if (
-            isinstance(max_count, bool)
-            or not isinstance(max_count, int)
-            or not 1 <= max_count <= MAX_GIT_LOG_ENTRIES
-        ):
-            raise WorkspaceError(f"Git 日志条数必须是 1 至 {MAX_GIT_LOG_ENTRIES} 之间的整数。")
-        arguments = [
-            "log",
-            f"--max-count={max_count}",
-            "--date=iso-strict",
-            "--pretty=format:%H%x09%ad%x09%an%x09%s",
-            self._validate_git_revision(revision),
-        ]
-        path = self._validate_git_file_path(file_path)
-        if path is not None:
-            arguments.extend(("--", path))
-        return await self._agit(thread, repo_path, arguments)
-
-    async def agit_show(
-        self,
-        thread: str,
-        repo_path: str = "",
-        revision: str = "HEAD",
-        file_path: str | None = None,
-    ) -> dict[str, Any]:
-        arguments = [
-            "show",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--format=fuller",
-            "--stat",
-            "--patch",
-            self._validate_git_revision(revision),
-        ]
-        path = self._validate_git_file_path(file_path)
-        if path is not None:
-            arguments.extend(("--", path))
-        return await self._agit(thread, repo_path, arguments)
-
     def hash_file(self, thread: str, path: str) -> dict[str, Any]:
         relative = self.normalize_path(path, allow_root=False)[0]
         content, _mime_type = self.file_bytes(thread, relative)
@@ -3029,292 +2710,6 @@ def _is_controlled_raw_dataset(path: str) -> bool:
         and parts[3] == "分片"
         and parts[4].endswith(".jsonl")
     ) or bool(len(parts) == 3 and parts[0:2] == ("reports", "data") and parts[2].endswith(".jsonl"))
-
-
-BASE_TOOLKIT_INSTRUCTIONS = """
-基础工作区工具规则：
-- 所有工具都操作当前 thread 的同一个 Daytona sandbox，不是 AgentOS 宿主机；路径使用工作区相对路径。
-- 文件定位优先使用 rg 搜索，读取和哈希只读检查优先使用 workspace_* 专用工具；这些工具在 sandbox 内复用 sed、wc 和 sha256sum，不要用 sandbox_exec 重复实现。
-- 修改已有文本遵循“读取和哈希 → 精确补丁 → 重新读取或检查”；已知原文件行坐标时使用 workspace_apply_hunks，同一任务涉及 create/update/delete/move 时优先使用 workspace_apply_changes，只有不依赖行坐标的纯文本多段替换使用 workspace_apply_patch_set。创建目录或复制普通文件使用对应 workspace_* 工具。
-- 对任务先检查相关文件和测试，明确可验证的成功标准；完成修改后运行与改动匹配的测试或脚本，不能只凭写入成功声称完成。
-- Python 编码优先创建工作区内 `.py` 脚本并反复读取、精确修改和执行；使用当前沙箱已安装的解释器和依赖，不要默认安装新包或访问网络。
-- 独立的只读调用可放在同一工具批次；后一步依赖前一步结果时必须串行，并原样使用工具返回的路径、SHA-256、sessionId 和 commandId。
-- 短命令使用前台 sandbox_exec；后台命令默认使用短时限，只有明确的长构建、测试或服务才提高 timeout，最长 86400 秒，再用 sandbox_process_poll 轮询到 completed，每次分页原样使用返回的 nextOffset。需要输入、PTY 中断或终止时分别使用 sandbox_process_write、sandbox_process_interrupt 或 sandbox_process_stop，不要用 shell 后台符号绕过受管会话。
-- 工具失败时依据返回的错误、output、exitCode 或 status 修正后再继续；不得忽略失败或盲目重复有副作用的调用。
-- 只有命令成功结束、后台任务到达 completed、文件修改重新校验后，才能声称对应操作完成；running、已提交或已写入输入都不代表完成。
-""".strip()
-
-
-# Agno 从 Python 签名可以推断类型和必填项，但不会推断这些运行时边界。
-# 约束直接写入 Agno Function.parameters；工具实现仍保留同样的服务端校验。
-BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
-    "sandbox_exec": {
-        "command": {"minLength": 1},
-        "timeout": {
-            "minimum": 1,
-            "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
-            "default": 30,
-        },
-        "background": {"default": False},
-        "pty": {"default": False},
-        "pty_rows": {"minimum": 1, "maximum": MAX_PTY_ROWS, "default": 24},
-        "pty_cols": {"minimum": 1, "maximum": MAX_PTY_COLS, "default": 80},
-        "suppress_input_echo": {"default": True},
-        "yield_time_ms": {"minimum": 0, "maximum": 30000},
-    },
-    "sandbox_process_poll": {
-        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
-        "command_id": {
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": r"^[A-Za-z0-9._-]+$",
-        },
-        "offset": {"minimum": 0, "default": 0},
-        "max_bytes": {
-            "minimum": 1,
-            "maximum": MAX_TOOL_OUTPUT_BYTES,
-            "default": MAX_TOOL_OUTPUT_BYTES,
-        },
-    },
-    "sandbox_process_write": {
-        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
-        "command_id": {
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": r"^[A-Za-z0-9._-]+$",
-        },
-        "data": {"minLength": 1, "maxLength": MAX_PROCESS_INPUT_BYTES},
-        "offset": {"minimum": 0, "default": 0},
-        "max_bytes": {
-            "minimum": 1,
-            "maximum": MAX_TOOL_OUTPUT_BYTES,
-            "default": MAX_TOOL_OUTPUT_BYTES,
-        },
-        "yield_time_ms": {"minimum": 0, "maximum": 30000},
-    },
-    "sandbox_process_stop": {
-        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
-        "command_id": {
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": r"^[A-Za-z0-9._-]+$",
-        },
-    },
-    "sandbox_process_interrupt": {
-        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
-        "command_id": {
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": r"^[A-Za-z0-9._-]+$",
-        },
-        "signal": {"enum": ["INT"], "default": "INT"},
-    },
-    "workspace_read_lines": {
-        "start_line": {"minimum": 1},
-        "line_count": {"minimum": 1, "maximum": MAX_READ_LINES, "default": 200},
-    },
-    "workspace_search_files": {
-        "pattern": {"minLength": 1, "maxLength": MAX_SEARCH_GLOB_BYTES, "default": "*"},
-        "include_globs": {
-            "maxItems": MAX_SEARCH_GLOBS,
-            "items": {"type": "string", "minLength": 1, "maxLength": MAX_SEARCH_GLOB_BYTES},
-        },
-        "exclude_globs": {
-            "maxItems": MAX_SEARCH_GLOBS,
-            "items": {"type": "string", "minLength": 1, "maxLength": MAX_SEARCH_GLOB_BYTES},
-        },
-        "limit": {"minimum": 1, "maximum": MAX_SEARCH_RESULTS, "default": 50},
-        "offset": {"minimum": 0, "maximum": MAX_SEARCH_ENTRIES - 1, "default": 0},
-    },
-    "workspace_search_text": {
-        "query": {"minLength": 1, "maxLength": 1024},
-        "include_globs": {
-            "maxItems": MAX_SEARCH_GLOBS,
-            "items": {"type": "string", "minLength": 1, "maxLength": MAX_SEARCH_GLOB_BYTES},
-        },
-        "exclude_globs": {
-            "maxItems": MAX_SEARCH_GLOBS,
-            "items": {"type": "string", "minLength": 1, "maxLength": MAX_SEARCH_GLOB_BYTES},
-        },
-        "regex": {"default": False},
-        "case_mode": {
-            "enum": ["smart", "sensitive", "insensitive"],
-            "default": "smart",
-        },
-        "word_match": {"default": False},
-        "before_context": {
-            "minimum": 0,
-            "maximum": MAX_SEARCH_CONTEXT_LINES,
-            "default": 0,
-        },
-        "after_context": {
-            "minimum": 0,
-            "maximum": MAX_SEARCH_CONTEXT_LINES,
-            "default": 0,
-        },
-        "mode": {
-            "enum": ["matches", "files_with_matches", "count"],
-            "default": "matches",
-        },
-        "limit": {"minimum": 1, "maximum": MAX_SEARCH_RESULTS, "default": 50},
-        "offset": {"minimum": 0, "maximum": MAX_SEARCH_ENTRIES - 1, "default": 0},
-    },
-    "workspace_apply_patch": {
-        "old_text": {"minLength": 1},
-        "expected_sha256": {
-            "minLength": 64,
-            "maxLength": 64,
-            "pattern": r"^[0-9a-fA-F]{64}$",
-        },
-    },
-    "workspace_apply_patch_set": {
-        "patches": {
-            "minItems": 1,
-            "maxItems": MAX_PATCH_FILES,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["path", "expected_sha256", "edits"],
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "目标工作区相对文件路径。",
-                        "minLength": 1,
-                        "maxLength": MAX_PATH_BYTES,
-                    },
-                    "expected_sha256": {
-                        "type": "string",
-                        "description": "修改前由 workspace_hash_file 返回的 SHA-256。",
-                        "minLength": 64,
-                        "maxLength": 64,
-                        "pattern": r"^[0-9a-fA-F]{64}$",
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "按顺序应用到当前文件的精确文本编辑。",
-                        "minItems": 1,
-                        "maxItems": MAX_PATCH_EDITS,
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["old_text", "new_text"],
-                            "properties": {
-                                "old_text": {
-                                    "type": "string",
-                                    "description": "必须精确匹配的原文本。",
-                                    "minLength": 1,
-                                },
-                                "new_text": {
-                                    "type": "string",
-                                    "description": "替换后的新文本。",
-                                },
-                                "replace_all": {
-                                    "type": "boolean",
-                                    "description": "是否替换当前文件中的全部匹配。",
-                                    "default": False,
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-    "workspace_apply_hunks": {
-        "patches": {
-            "minItems": 1,
-            "maxItems": MAX_PATCH_FILES,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["path", "expected_sha256", "hunks"],
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "目标工作区相对文件路径。",
-                        "minLength": 1,
-                        "maxLength": MAX_PATH_BYTES,
-                    },
-                    "expected_sha256": {
-                        "type": "string",
-                        "description": "修改前由 workspace_hash_file 返回的 SHA-256。",
-                        "minLength": 64,
-                        "maxLength": 64,
-                        "pattern": r"^[0-9a-fA-F]{64}$",
-                    },
-                    "hunks": {
-                        "type": "array",
-                        "description": "按原文件行坐标定位且互不重叠的文本 hunk。",
-                        "minItems": 1,
-                        "maxItems": MAX_PATCH_EDITS,
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["old_start", "old_text", "new_text"],
-                            "properties": {
-                                "old_start": {
-                                    "type": "integer",
-                                    "description": "原文件中的 1-based 起始行号。",
-                                    "minimum": 1,
-                                },
-                                "old_text": {
-                                    "type": "string",
-                                    "description": "必须从起始行精确匹配的原文本。",
-                                    "minLength": 1,
-                                },
-                                "new_text": {
-                                    "type": "string",
-                                    "description": "替换后的新文本。",
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-    "workspace_apply_changes": {
-        "changes": {
-            "minItems": 1,
-            "maxItems": MAX_PATCH_FILES,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["operation", "path"],
-                "properties": {
-                    "operation": {
-                        "type": "string",
-                        "description": "文件操作：create、update、delete 或 move。",
-                        "enum": ["create", "update", "delete", "move"],
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "源文件或新建文件的工作区相对路径。",
-                        "minLength": 1,
-                        "maxLength": MAX_PATH_BYTES,
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "move 操作的目标工作区相对路径。",
-                        "minLength": 1,
-                        "maxLength": MAX_PATH_BYTES,
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "create 或 update 操作的完整 UTF-8 文本。",
-                    },
-                    "expected_sha256": {
-                        "type": "string",
-                        "description": "update、delete 或 move 前的文件 SHA-256。",
-                        "minLength": 64,
-                        "maxLength": 64,
-                        "pattern": r"^[0-9a-fA-F]{64}$",
-                    },
-                },
-            },
-        },
-    },
-}
 
 
 class DaytonaToolkit(Toolkit):
@@ -4178,27 +3573,3 @@ class WorkspaceToolkit(DaytonaToolkit):
             path: 要检查的工作区相对 PDF 路径。
         """
         return self.service.inspect_pdf(_thread(run_context), path)
-
-
-class BaseToolkit(WorkspaceToolkit):
-    def __init__(self, service: WorkspaceService):
-        super().__init__(
-            service,
-            name="base",
-            instructions=BASE_TOOLKIT_INSTRUCTIONS,
-            add_instructions=True,
-        )
-        self._apply_parameter_constraints()
-
-    def _apply_parameter_constraints(self) -> None:
-        for function in {**self.functions, **self.async_functions}.values():
-            function.process_entrypoint()
-            schema = dict(function.parameters)
-            schema["additionalProperties"] = False
-            properties = {name: dict(value) for name, value in schema.get("properties", {}).items()}
-            for name, constraints in BASE_TOOL_PARAMETER_CONSTRAINTS.get(function.name, {}).items():
-                if name in properties:
-                    properties[name].update(constraints)
-            schema["properties"] = properties
-            function.parameters = schema
-            function.skip_entrypoint_processing = True

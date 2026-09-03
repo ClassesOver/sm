@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -36,18 +36,6 @@ class InstructionState(StrEnum):
     PENDING = "pending"
     APPLIED = "applied"
     REJECTED = "rejected"
-
-
-class ExecutionKind(StrEnum):
-    TERMINAL = "terminal"
-    PROCESS_WRITE = "process_write"
-    PROCESS_SUBMIT = "process_submit"
-    PATCH = "patch"
-    VERIFICATION = "verification"
-
-
-TERMINAL_TASK_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED})
-RUNNABLE_TASK_STATES = frozenset({TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED})
 
 
 def utcnow() -> datetime:
@@ -113,10 +101,3 @@ class InstructionReceipt:
     state: InstructionState
     code: str | None = None
     applied_attempt_no: int | None = None
-
-
-@dataclass(frozen=True)
-class CodingEvent:
-    event_id: str
-    type: str
-    data: dict[str, Any] = field(default_factory=dict)

@@ -119,7 +119,6 @@ from ...hospital_operation.outline import (
     ReportOutlineProposal,
     freeze_outline,
 )
-from ...hospital_operation.profiles import HospitalOperationProfile, ruijin_profile
 from ...instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
@@ -153,12 +152,18 @@ from ...profile import (
 from ...workspace import WorkspaceReportService
 from ..checkpoint import (
     AnalysisArtifact,
+    AnalysisChart,
+    AnalysisDatasetSemantics,
+    AnalysisEvidence,
+    AnalysisEvidenceManifest,
     AnalysisReworkRequest,
     CompletedSection,
     ContextTrace,
     FileIdentity,
     MetricDefinition,
     ProfileCoverageManifest,
+    ProfileReadReceipt,
+    ReportBrief,
     ReportingCheckpoint,
     SectionArtifact,
     SectionCitation,
@@ -185,6 +190,7 @@ from ..query_pipeline import (
 from ..repository import ReportingStateRepository
 from ..state import ReportingCommand, ReportingStateError
 from ..state import ReportingPhase as DurableReportingPhase
+from .analysis_item_workflow import AnalysisEvidencePlan, AnalysisSummaryDraft
 from .models import (
     AnalysisBundle,
     AnalysisItem,
@@ -246,19 +252,6 @@ _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
 
 
 _JSON_FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
-_FORBIDDEN_DERIVATION_PATTERN = re.compile(
-    r"(?:拟合|估算|估计|推算|插值|外推|年化|平滑|填补|补齐|视为(?:未发生|零|0)|"
-    r"imput(?:e|ed|ation)|interpolat\w*|extrapolat\w*|estimat\w*|annualiz\w*|smooth\w*)",
-    re.IGNORECASE,
-)
-_FABRICATION_NEGATION_PATTERN = re.compile(
-    r"(?:(?:不得|禁止|避免|拒绝|无需|无须|不应|不可).{0,24}|"
-    r"不(?:进行|采用|使用|予以|做|作).{0,8})$"
-)
-_NUMERIC_MEASURE_TYPE_PATTERN = re.compile(
-    r"^(?:TINYINT|SMALLINT|INT|INTEGER|BIGINT|LARGEINT|FLOAT|DOUBLE|DECIMAL)",
-    re.IGNORECASE,
-)
 _VISIBLE_MACHINE_SCALAR_KEYS = frozenset(
     {
         "code",
@@ -378,9 +371,18 @@ _PLANNER_DISPLAY_NAMES = {
     "report-data-understanding-planner": "数据范围分析",
     "report-measure-semantic-proposer": "指标口径整理",
     "report-analysis-planner": "分析计划设计",
+    "report-analysis-evidence-planner": "补充证据规划",
+    "report-analysis-summary-writer": "单项分析总结",
     "report-sql-planner": "取数方案设计",
     "report-outline-planner": "报告提纲规划",
 }
+
+OUTLINE_SECTION_COUNT_INSTRUCTION = (
+    "按详细分析计划的重要性组织动态章节；未涉及或无数据领域不得生成空章。"
+    "必须优先遵守 reportGoal 中明确的章节数量约束（例如‘一个章节’）；"
+    "该约束高于按 analysisId 拆分章节的默认组织方式，所有相关 analysisId 应合并到"
+    "不超过用户指定数量的章节中。用户未指定数量时才按分析计划动态拆分。"
+)
 
 
 class _ReportWorkflowRuntimeBase:
@@ -405,8 +407,8 @@ class _ReportWorkflowRuntimeBase:
         report_public_base_url: str | None = None,
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 1,
-        visualization_concurrency: int = 1,
         section_concurrency: int = 1,
+        coding_execution_mode: str = "sequential",
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")
@@ -426,10 +428,10 @@ class _ReportWorkflowRuntimeBase:
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
-        if isinstance(visualization_concurrency, bool) or not 1 <= visualization_concurrency <= 4:
-            raise ValueError("visualization_concurrency 必须在 1 到 4 之间")
         if isinstance(section_concurrency, bool) or not 1 <= section_concurrency <= 5:
             raise ValueError("section_concurrency 必须在 1 到 5 之间")
+        if coding_execution_mode not in {"sequential", "parallel"}:
+            raise ValueError("coding_execution_mode 必须是 sequential 或 parallel")
         if planner_reasoning_effort not in {"high", "max"}:
             raise ValueError("planner_reasoning_effort 必须是 high 或 max")
         if (
@@ -439,8 +441,8 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ValueError("planner_thinking_budget 必须是正整数")
         self.analysis_concurrency = analysis_concurrency
-        self.visualization_concurrency = visualization_concurrency
         self.section_concurrency = section_concurrency
+        self.coding_execution_mode = coding_execution_mode
         self._durable_command_lock = asyncio.Lock()
         self._checkpoint_persist_lock = asyncio.Lock()
         self.datasets = ReportDatasetStore(workspace_service)
@@ -538,7 +540,7 @@ class _ReportWorkflowRuntimeBase:
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
                 "只返回 reportType、中文报告标题、sections 和 assumptions；sections 不得提交 code",
                 "每个章节必须引用一个或多个 outlineContext.analyses 中已注册的 analysisId",
-                "按详细分析计划的重要性组织动态章节；未涉及或无数据领域不得生成空章",
+                OUTLINE_SECTION_COUNT_INSTRUCTION,
                 "section code 由服务端在批准后生成，模型不得提交或猜测 section_NNN",
             ),
         )
@@ -572,6 +574,34 @@ class _ReportWorkflowRuntimeBase:
                 "禁止为汇总展示强行拼接期间语义、事实粒度或关联键不兼容的表",
                 "披露数据差异、期间缺失、零分母和口径限制，不做未授权推算",
                 *HOSPITAL_ANALYSIS_INSTRUCTIONS,
+            ),
+        )
+        self._analysis_evidence_agent = self._planning_agent(
+            report_worker,
+            "report-analysis-evidence-planner",
+            AnalysisEvidencePlan,
+            thinking_profile=planner_high,
+            escalation_thinking_profile=planner_max,
+            stage_instructions=(
+                "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+                "固定事实足够时 missingFacts 必须为空且 script 必须为 null，不得为了探索数据而生成脚本。",
+                "需要补充时只生成一个最小 Python 脚本；脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
+                "evidencePath 必须写为 JSON 对象，且只含 analysisId、datasetIds、findings、reconciliations、warnings；findings 至少一项，reconciliations 至少一项且每项含 name 和 passed。",
+                "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
+                "脚本不得访问网络、环境变量、数据库、工作区其他路径或启动子进程。",
+                "correction 存在时保留原事实缺口，只修正脚本中导致执行或 evidence 校验失败的部分。",
+            ),
+        )
+        self._analysis_summary_agent = self._planning_agent(
+            report_worker,
+            "report-analysis-summary-writer",
+            AnalysisSummaryDraft,
+            thinking_profile=planner_high,
+            escalation_thinking_profile=planner_max,
+            stage_instructions=(
+                "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
+                "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
+                "summary 使用可直接进入报告的中文业务表述，不使用 Markdown 标题；warnings 只保留会影响结论解释的事实限制。",
             ),
         )
         self._sql_agent = self._planning_agent(

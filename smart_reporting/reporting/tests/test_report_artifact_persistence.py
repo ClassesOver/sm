@@ -53,7 +53,7 @@ async def _content(stream) -> bytes:
 
 
 def test_sql_publication_repositories_require_postgresql() -> None:
-    engine = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
 
     for repository_type in (
         SqlAlchemyDownloadGrantRepository,
@@ -778,7 +778,8 @@ async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() 
         {
             "phase": "analysis",
             "taskId": task_ids[1],
-            "workKind": "visualization_finalize",
+            "workKind": "visualization_section",
+            "sectionCode": "section_001",
         },
         {
             "phase": "section",

@@ -2,7 +2,14 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
-from ....quality_warnings import CheckContext, CheckScope, TenantScope, WarningFinding
+from loguru import logger
+
+from ....quality_warnings import (
+    QualityAuditCollector,
+    QualityWarningContractError,
+    TenantScope,
+    WarningAdapter,
+)
 from ..checkpoint import AnalysisEvidenceManifest, SectionArtifact, SectionCitation
 from .base import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -378,6 +385,10 @@ class RuntimePublicationMixin:
         issues: list[dict[str, Any]] = []
         raw_warnings = result.get("sourceWarnings", [])
         warnings = list(raw_warnings) if isinstance(raw_warnings, list) else []
+        audit = QualityAuditCollector(
+            report_run_id=str(run_context.run_id or self._scope(run_context)["externalRunId"]),
+            revision=int(result.get("revision", 0)),
+        )
 
         def issue(code: str, message: str, **details: Any) -> None:
             item: dict[str, Any] = {"code": code, "message": message}
@@ -598,57 +609,51 @@ class RuntimePublicationMixin:
 
         # 质量告警用于后续修复审计，与完整性/身份类发布阻断相互独立；即使正式发布
         # 被 issues 阻断，也必须保留本次检查发现，避免丢失后续修复所需的历史记录。
-        if self.quality_warning_service is not None:
-            scope = self._scope(run_context)
-            tenant = TenantScope(database_name=scope["database"], company_id=scope["companyId"])
-            grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        try:
             for item in warnings:
-                code = item.get("code") if isinstance(item, Mapping) else None
-                details = item.get("details", {}) if isinstance(item, Mapping) else {}
-                subject_id = details.get("claimId") or details.get("chartId")
-                if isinstance(code, str) and isinstance(subject_id, str):
-                    grouped.setdefault(
-                        (code, "section_claim" if "claimId" in details else "analysis_chart"), []
-                    ).append(item)
-            for (code, subject_type), items in grouped.items():
-                findings = tuple(
-                    WarningFinding(
-                        rule_code=code,
-                        subject_type=subject_type,
-                        subject_id=str(
-                            item["details"].get("claimId") or item["details"].get("chartId")
-                        ),
-                        message=str(item.get("message", code)),
-                        details={
-                            k: v
-                            for k, v in item.get("details", {}).items()
-                            if k in {"claimId", "chartId", "metricCode"}
-                        },
-                    )
-                    for item in items
+                if not isinstance(item, Mapping):
+                    continue
+                code = item.get("code")
+                if not isinstance(code, str):
+                    continue
+                notice = _publication_warning_notice(
+                    item,
+                    run_id=audit.report_run_id,
+                    source_phase=("analysis" if code.startswith("analysis_") else "publication"),
                 )
-                covered = tuple(sorted({finding.subject_id for finding in findings}))
-                await self.quality_warning_service.record_successful_check(
-                    tenant=tenant,
-                    check_scope=CheckScope(
-                        domain="reporting",
-                        rule_code=code,
-                        subject_type=subject_type,
-                        covered_subject_ids=covered,
-                    ),
-                    findings=findings,
-                    context=CheckContext(check_id=f"publication:{run_context.run_id}"),
+                audit.add(notice)
+            quality_warning_service = getattr(self, "quality_warning_service", None)
+            if quality_warning_service is not None:
+                scope = self._scope(run_context)
+                tenant = TenantScope(
+                    database_name=scope["database"], company_id=str(scope["companyId"])
                 )
+                await audit.flush(service=quality_warning_service, tenant=tenant)
+        except QualityWarningContractError as error:
+            issue("report_quality_audit_invalid", "发布质量告警不符合审计契约。")
+            logger.warning(
+                "report_quality_audit_invalid report_run_id={} error_type={}",
+                audit.report_run_id,
+                type(error).__name__,
+            )
+        except Exception as error:
+            raise ReportingError(
+                "report_quality_audit_failed", "发布质量告警审计写入失败。"
+            ) from error
+        audit_summary = audit.build().as_dict()
         return {
             "formalReleaseAllowed": not issues,
             "issues": issues,
             "warnings": warnings,
+            "auditSummary": audit_summary,
         }
 
     async def publish_report(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
         feedback = self._feedback(step_input)
         if feedback:
-            await self._run_coding(run_context, feedback=feedback)
+            # 反馈重跑继续走唯一的 Agno CodingAnalysisAndDraftWorkflow 入口，
+            # 避免发布路径维护第二套手写章节循环。
+            await self.run_coding_analysis(step_input, run_context)
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
@@ -664,6 +669,7 @@ class RuntimePublicationMixin:
                 "status": "validated",
                 "formalReleaseAllowed": gate["formalReleaseAllowed"],
                 "publicationGate": gate,
+                "auditSummary": gate.get("auditSummary", {}),
                 "jobId": result["jobId"],
                 "reportId": str(run_context.run_id),
                 "revision": int(result.get("revision", 0)) + 1,
@@ -874,6 +880,44 @@ def _analysis_quality_warnings(
                 }
             )
     return tuple(warnings)
+
+
+def _publication_warning_notice(item: Mapping[str, Any], *, run_id: str, source_phase: str):
+    """按已知 warning 协议显式绑定主体，不从任意 details 字段猜测优先级。"""
+
+    code = item.get("code")
+    if not isinstance(code, str):
+        raise QualityWarningContractError("质量告警缺少 code。")
+    if code.startswith("source_"):
+        return WarningAdapter.from_source_warning(item, source_phase="analysis")
+    details = item.get("details", {})
+    if not isinstance(details, Mapping):
+        details = {}
+    details = dict(details)
+    # 图表检查器历史上将 chartId 放在 warning 顶层；这是已知协议字段，显式搬入
+    # notice details，避免发布边界再通过任意字段优先级推断主体。
+    if isinstance(item.get("chartId"), str) and "chartId" not in details:
+        details["chartId"] = item["chartId"]
+    if isinstance(item.get("sectionCode"), str) and "sectionCode" not in details:
+        details["sectionCode"] = item["sectionCode"]
+    if isinstance(details.get("claimId"), str):
+        subject_type, subject_id = "section_claim", details["claimId"]
+    elif isinstance(details.get("blockId"), str):
+        subject_type, subject_id = "section_block", details["blockId"]
+    elif isinstance(details.get("chartId"), str):
+        subject_type, subject_id = "analysis_chart", details["chartId"]
+    elif isinstance(details.get("metricCode"), str):
+        subject_type, subject_id = "metric", details["metricCode"]
+    elif isinstance(details.get("sectionCode"), str):
+        subject_type, subject_id = "section", details["sectionCode"]
+    else:
+        subject_type, subject_id = "report", run_id
+    return WarningAdapter.from_mapping(
+        {**item, "details": details},
+        source_phase=("analysis" if code.startswith("analysis_") else source_phase),
+        subject_type=subject_type,
+        subject_id=subject_id,
+    )
 
 
 def _citation_presentations(

@@ -22,7 +22,7 @@ from agno.utils.log import log_debug
 from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
-from ..agent_control import AGENT_PLAN_STATE_KEY, AgentControlToolkit, validated_agent_plan
+from ..agent_control import AGENT_PLAN_STATE_KEY, validated_agent_plan
 from ..observability import suppress_expected_probe_tracing
 from ..skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
@@ -34,7 +34,6 @@ from ..skills import (
 from ..workspace import (
     MANAGED_PROCESS_PREFIX,
     MAX_BACKGROUND_EXECUTION_TIMEOUT,
-    MAX_PATCH_FILES,
     MAX_PROCESS_INPUT_BYTES,
     MAX_TOOL_OUTPUT_BYTES,
     WORKSPACE_ROOT,
@@ -78,6 +77,8 @@ MAX_REPORT_TOOL_PREVIEW_BYTES = 16 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
+# read_file 支持分析 evidence 的单次 128 KiB 受控读取；工具输出分页仍使用上面的 64 KiB 窗口。
+MAX_READ_FILE_BYTES = 128 * 1024
 MAX_PARALLEL_READ_TOOLS = 10
 MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
@@ -109,22 +110,6 @@ def normalize_coding_function_call_arguments(
         run_context,
         state_key=CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
         autofix_code="coding_tool_arguments_unwrapped",
-    )
-
-
-def normalize_function_call_arguments(
-    fc: Any,
-    run_context: RunContext | None = None,
-    *,
-    state_key: str,
-    autofix_code: str,
-) -> None:
-    """按 Function schema 解码一层 JSON 传输表示，不修补非法 JSON。"""
-    _normalize_function_call_arguments(
-        fc,
-        run_context,
-        state_key=state_key,
-        autofix_code=autofix_code,
     )
 
 
@@ -238,24 +223,10 @@ class _InstalledValidator:
 TOOL_SPECS = {
     "terminal": ToolSpec("workspace_write", False),
     "process": ToolSpec("process_control", False),
-    "create_file": ToolSpec("workspace_write", False),
-    "create_files": ToolSpec("workspace_write", False),
-    "overwrite_file": ToolSpec("workspace_write", False),
-    "replace_text": ToolSpec("workspace_write", False),
-    "apply_patch": ToolSpec("workspace_write", False),
-    "patch": ToolSpec("workspace_write", False),
-    "verify": ToolSpec("verification", False),
     "finish_task": ToolSpec("finish", False),
-    "update_plan": ToolSpec("workspace_write", False),
     "view_image": ToolSpec("read", True, "media"),
     "read_tool_output": ToolSpec("read", True, "paged_text"),
-    "list_files": ToolSpec("read", True),
     "read_file": ToolSpec("read", True),
-    "read_lines": ToolSpec("read", True),
-    "search_text": ToolSpec("read", True),
-    "tree": ToolSpec("read", True),
-    "git_status": ToolSpec("read", True),
-    "git_diff": ToolSpec("read", True),
 }
 
 NO_PROGRESS_EXEMPT_TOOLS = frozenset(
@@ -631,7 +602,6 @@ class CodingExecutionKernel:
         self.require_finish_verification = True
         self.evaluate_finish_acceptance = True
         self.workspace = WorkspaceToolkit(service)
-        self.plan = AgentControlToolkit(service)
         self._migration_lock = asyncio.Lock()
         self._terminal_runtimes: OrderedDict[tuple[str, str], str] = OrderedDict()
 
@@ -941,19 +911,6 @@ class CodingExecutionKernel:
 
     async def cleanup_disconnect(self, scope: CodingScope, current_epoch: int) -> None:
         await self._cleanup_executions(scope, current_epoch, old_only=False)
-
-    async def cleanup_task_outputs(self, scope: CodingScope) -> None:
-        task_dir = (
-            f"{TOOL_OUTPUT_ROOT}/{hashlib.sha256(scope.external_run_id.encode()).hexdigest()[:24]}"
-        )
-        try:
-            async with self.service._async_client() as client:
-                sandbox = await self.service._asandbox_for(client, scope.thread_id, create=False)
-                if sandbox is None or str(getattr(sandbox, "id", "") or "") != scope.sandbox_id:
-                    return
-                await sandbox.fs.delete_file(task_dir, recursive=True)
-        except (DaytonaNotFoundError, WorkspaceError):
-            pass
 
     async def _cleanup_executions(
         self, scope: CodingScope, current_epoch: int, *, old_only: bool
@@ -1859,11 +1816,6 @@ class CodingExecutionKernel:
             return {**self._public_execution(lost), "code": "execution_lost"}
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
 
-    def apply_patch_sync(self, scope: CodingTaskScope, patch: str) -> dict[str, Any]:
-        changes = build_workspace_changes(self.service, scope.thread_id, patch)
-        result = self.service.apply_changes(scope.thread_id, changes)
-        return {**result, "ok": True, "message": "补丁已应用。"}
-
     @staticmethod
     def _reject_writable_skill_script_copy(
         changes: list[dict[str, Any]], run_context: RunContext | None
@@ -2060,183 +2012,6 @@ class CodingExecutionKernel:
             "execution_id": execution_id,
             "mutation_sequence": mutation_sequence,
             **({"replacements": replacements} if mode == "replace" else {}),
-        }
-
-    async def batch_copy_files(
-        self,
-        copies: list[dict[str, Any]],
-        run_context: RunContext | None,
-        *,
-        _scope: CodingTaskScope | None = None,
-    ) -> dict[str, Any]:
-        """在同一 Task mutation 中归档一组已哈希绑定的普通文件。"""
-        scope = _scope or await self.scope(run_context)
-        if not isinstance(copies, list) or not 1 <= len(copies) <= MAX_PATCH_FILES:
-            raise WorkspaceError(f"批量复制文件必须为 1 至 {MAX_PATCH_FILES} 项。")
-        normalized: list[dict[str, Any]] = []
-        for item in copies:
-            if not isinstance(item, dict) or set(item) != {
-                "source",
-                "destination",
-                "expected_sha256",
-                "expected_size",
-            }:
-                raise WorkspaceError("批量复制参数无效。")
-            source = WorkspaceService.normalize_path(item["source"], allow_root=False)[0]
-            destination = WorkspaceService.normalize_path(item["destination"], allow_root=False)[0]
-            expected_sha256 = self.service._validate_patch_hash(item["expected_sha256"])
-            expected_size = item["expected_size"]
-            if (
-                source == destination
-                or isinstance(expected_size, bool)
-                or not isinstance(expected_size, int)
-                or expected_size < 1
-            ):
-                raise WorkspaceError("批量复制源、目标或预期大小无效。")
-            normalized.append(
-                {
-                    "source": source,
-                    "destination": destination,
-                    "expected_sha256": expected_sha256,
-                    "expected_size": expected_size,
-                }
-            )
-        destinations = [item["destination"] for item in normalized]
-        if len(destinations) != len(set(destinations)):
-            raise WorkspaceError("批量复制目标路径不能重复。")
-
-        identities = await self.service.abatch_hash_files(
-            scope.thread_id,
-            [*(item["source"] for item in normalized), *destinations],
-        )
-        source_identities = identities[: len(normalized)]
-        destination_identities = identities[len(normalized) :]
-        pending: list[dict[str, Any]] = []
-        receipts: list[dict[str, Any]] = []
-        for item, source_identity, destination_identity in zip(
-            normalized, source_identities, destination_identities, strict=True
-        ):
-            if (
-                source_identity.get("missing") is True
-                or source_identity.get("sha256") != item["expected_sha256"]
-                or source_identity.get("size") != item["expected_size"]
-            ):
-                raise WorkspaceError("复制源文件在登记后发生变化，已拒绝归档。")
-            if destination_identity.get("missing") is not True:
-                if (
-                    destination_identity.get("sha256") != item["expected_sha256"]
-                    or destination_identity.get("size") != item["expected_size"]
-                ):
-                    raise WorkspacePathConflict(
-                        f"归档目标“{item['destination']}”已存在且身份不同。"
-                    )
-                receipts.append(
-                    {
-                        "source": item["source"],
-                        "path": item["destination"],
-                        "size": item["expected_size"],
-                        "beforeSha256": item["expected_sha256"],
-                        "afterSha256": item["expected_sha256"],
-                        "sha256": item["expected_sha256"],
-                        "status": "reused",
-                    }
-                )
-                continue
-            pending.append(item)
-
-        if not pending:
-            return {
-                "ok": True,
-                "status": "completed",
-                "files": receipts,
-                "execution_id": None,
-                "mutation_sequence": scope.task.mutation_sequence,
-            }
-
-        mutation_sequence = await self.repository.increment_mutation(
-            scope.external_run_id,
-            lease=scope.lease,
-            internal_run_id=scope.internal_run_id,
-        )
-        execution_id = uuid.uuid4().hex
-        operation_receipt = {
-            "files": [
-                {
-                    "path": item["destination"],
-                    "before_sha256": None,
-                    "after_sha256": item["expected_sha256"],
-                }
-                for item in pending
-            ],
-            "copies": [dict(item) for item in pending],
-        }
-        copy_session_id = (
-            "copy-"
-            + hashlib.sha256(
-                f"{scope.external_run_id}:{scope.attempt_no}:{mutation_sequence}".encode()
-            ).hexdigest()[:32]
-        )
-        await self.repository.reserve_execution(
-            execution_id=execution_id,
-            external_run_id=scope.external_run_id,
-            internal_run_id=scope.internal_run_id,
-            owner_user_id=scope.owner_user_id,
-            thread_id=scope.thread_id,
-            sandbox_id=scope.sandbox_id,
-            daytona_session_id=copy_session_id,
-            mutation_sequence=mutation_sequence,
-            kind="patch",
-            attempt_no=scope.attempt_no,
-            lease_epoch=scope.lease_epoch,
-            operation_receipt=operation_receipt,
-            lease=scope.lease,
-        )
-        await self._check_fence(scope, execution_id)
-        try:
-            for item in pending:
-                copied = await asyncio.to_thread(
-                    self.service.copy_file,
-                    scope.thread_id,
-                    item["source"],
-                    item["destination"],
-                )
-                await self._check_fence(scope, execution_id)
-                if (
-                    copied.get("sha256") != item["expected_sha256"]
-                    or copied.get("size") != item["expected_size"]
-                ):
-                    raise WorkspaceError("复制文件落盘身份与登记值不一致。")
-                receipts.append(
-                    {
-                        "source": item["source"],
-                        "path": item["destination"],
-                        "size": copied["size"],
-                        "beforeSha256": None,
-                        "afterSha256": copied["sha256"],
-                        "sha256": copied["sha256"],
-                        "status": "copied",
-                    }
-                )
-            await self.repository.update_execution(
-                execution_id,
-                status="completed",
-                exit_code=0,
-                operation_receipt={**operation_receipt, "copyReceipts": receipts},
-            )
-        except Exception:
-            await self.repository.update_execution(
-                execution_id,
-                status="failed",
-                exit_code=1,
-                operation_receipt={**operation_receipt, "copyReceipts": receipts},
-            )
-            raise
-        return {
-            "ok": True,
-            "status": "completed",
-            "files": sorted(receipts, key=lambda item: item["path"]),
-            "execution_id": execution_id,
-            "mutation_sequence": mutation_sequence,
         }
 
     async def verify(
@@ -3600,9 +3375,6 @@ class CodingExecutionKernel:
 
 
 class WorkspaceCodingToolkit(_ManagedDaytonaTools):
-    _FILE_MUTATION_TOOLS = frozenset(
-        {"create_file", "create_files", "overwrite_file", "replace_text", "apply_patch", "patch"}
-    )
     _PROCESS_OBSERVE_OR_CLEANUP_ACTIONS = frozenset({"list", "poll", "wait", "kill"})
     _FINISH_FILE_REPAIR_CODES = frozenset(
         {
@@ -3712,7 +3484,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     description=(
                         "执行工作区命令。terminal 必须作为本次 assistant 工具批次中的唯一调用，"
                         "不能与任何其他工具并发。参数必须直接位于顶层，不要包 arguments。"
-                        '示例：{"command":"python3 -m pytest -q","timeout":120}；命令上限为 1 MiB，长文件优先使用 create_files/apply_patch。'
+                        '示例：{"command":"python3 -m pytest -q","timeout":120}；命令上限为 1 MiB。'
                     ),
                     parameters={
                         "type": "object",
@@ -3767,144 +3539,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     entrypoint=self.process,
                 ),
                 Function(
-                    name="create_files",
-                    description=(
-                        "在一次原子补丁中创建一个或多个不存在的文件。"
-                        '示例：{"files":[{"path":"src/app.py","content":"print(1)\\n"}]}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "files": {
-                                "type": "array",
-                                "minItems": 1,
-                                "maxItems": MAX_PATCH_FILES,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "path": {"type": "string", "minLength": 1},
-                                        "content": {"type": "string"},
-                                    },
-                                    "required": ["path", "content"],
-                                    "additionalProperties": False,
-                                },
-                            }
-                        },
-                        "required": ["files"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.create_files,
-                ),
-                Function(
-                    name="overwrite_file",
-                    description=(
-                        "按读取回执中的 SHA-256 覆盖一个文件。"
-                        '示例：{"path":"src/app.py","content":"print(2)\\n",'
-                        '"expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "content": {"type": "string"},
-                            "expected_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-f]{64}$",
-                            },
-                        },
-                        "required": ["path", "content", "expected_sha256"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.overwrite_file,
-                ),
-                Function(
-                    name="replace_text",
-                    description=(
-                        "精确替换文件文本。"
-                        '示例：{"path":"src/app.py","old_string":"print(1)",'
-                        '"new_string":"print(2)"}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "old_string": {"type": "string", "minLength": 1},
-                            "new_string": {"type": "string"},
-                            "replace_all": {"type": "boolean", "default": False},
-                        },
-                        "required": ["path", "old_string", "new_string"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.replace_text,
-                ),
-                Function(
-                    name="apply_patch",
-                    description=(
-                        "应用标准 unified diff；路径使用 a/path 与 b/path。"
-                        '示例：{"patch":"--- a/src/app.py\\n+++ b/src/app.py\\n'
-                        '@@ -1 +1 @@\\n-print(1)\\n+print(2)\\n"}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {"patch": {"type": "string", "minLength": 1}},
-                        "required": ["patch"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.apply_patch,
-                ),
-                Function(
-                    name="verify",
-                    description=(
-                        "在当前工作区执行显式验证，并把回执绑定到当前 mutation。"
-                        "command 与 validator_id 必须且只能提供一个；validator 使用服务端固定配置。"
-                        '示例：{"command":"python3 -m pytest -q tests/test_app.py","timeout":120}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "minLength": 1},
-                            "validator_id": {"type": "string", "minLength": 1},
-                            "artifact_paths": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                                "default": [],
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
-                                "default": DEFAULT_TERMINAL_TIMEOUT,
-                            },
-                        },
-                        "oneOf": [
-                            {"required": ["command"]},
-                            {"required": ["validator_id"]},
-                        ],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.verify,
-                ),
-                Function(
-                    name="list_files",
-                    description=(
-                        "列出当前工作区的直属文件和目录。路径必须相对工作区根目录；"
-                        '列出根目录时 path 传空字符串 ""，禁止传 /workspace 或 '
-                        '/home/daytona/workspace。示例：{"path":"src"}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": ('工作区相对目录；根目录必须传空字符串 ""。'),
-                                "default": "",
-                            }
-                        },
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.coding_list_files,
-                ),
-                Function(
                     name="read_file",
                     description='读取文件字节片段。示例：{"path":"src/app.py","offset":0}',
                     parameters={
@@ -3915,103 +3549,14 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                             "max_bytes": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "maximum": MAX_TOOL_OUTPUT_READ_BYTES,
-                                "default": MAX_TOOL_OUTPUT_READ_BYTES,
+                                "maximum": MAX_READ_FILE_BYTES,
+                                "default": MAX_READ_FILE_BYTES,
                             },
                         },
                         "required": ["path"],
                         "additionalProperties": False,
                     },
                     entrypoint=self.coding_read_file,
-                ),
-                Function(
-                    name="read_lines",
-                    description=(
-                        '按行读取文本文件。示例：{"path":"src/app.py","start_line":1,"end_line":80}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "start_line": {"type": "integer", "minimum": 1, "default": 1},
-                            "end_line": {"type": "integer", "minimum": 1},
-                        },
-                        "required": ["path"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.read_lines,
-                ),
-                Function(
-                    name="search_text",
-                    description=(
-                        "在工作区搜索文本。"
-                        '示例：{"pattern":"render_report_draft","path":"smart_reporting"}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string", "minLength": 1},
-                            "path": {"type": "string", "default": ""},
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 1000,
-                                "default": 100,
-                            },
-                        },
-                        "required": ["pattern"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.search_text,
-                ),
-                Function(
-                    name="tree",
-                    description='列出目录树。示例：{"path":"src","max_depth":3}',
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "default": ""},
-                            "max_depth": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 20,
-                                "default": 4,
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 1000,
-                                "default": 200,
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.tree,
-                ),
-                Function(
-                    name="git_status",
-                    description='读取 Git 状态。示例：{"repo_path":""}',
-                    parameters={
-                        "type": "object",
-                        "properties": {"repo_path": {"type": "string", "default": ""}},
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.git_status,
-                ),
-                Function(
-                    name="git_diff",
-                    description='读取 Git 差异。示例：{"repo_path":"","staged":false}',
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "repo_path": {"type": "string", "default": ""},
-                            "staged": {"type": "boolean", "default": False},
-                            "revision": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            "file_path": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                        },
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.git_diff,
                 ),
                 Function(
                     name="read_tool_output",
@@ -4055,45 +3600,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                         "additionalProperties": False,
                     },
                     entrypoint=self.view_image,
-                ),
-                Function(
-                    name="update_plan",
-                    description=(
-                        "更新编码任务计划；最多 20 步且最多一个步骤处于 in_progress。"
-                        '示例：{"plan":[{"step":"运行定点测试","status":"in_progress"}]}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "plan": {
-                                "type": "array",
-                                "minItems": 1,
-                                "maxItems": 20,
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": False,
-                                    "required": ["step", "status"],
-                                    "properties": {
-                                        "step": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                            "maxLength": 300,
-                                        },
-                                        "status": {
-                                            "type": "string",
-                                            "enum": ["pending", "in_progress", "completed"],
-                                        },
-                                    },
-                                },
-                            },
-                            "explanation": {
-                                "anyOf": [{"type": "string", "maxLength": 1000}, {"type": "null"}]
-                            },
-                        },
-                        "required": ["plan"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.update_plan,
                 ),
                 finish_function,
             ],
@@ -4184,7 +3690,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                             _paths_related(entry["resource"], resource)
                             for resource in argument_resources
                         )
-                        and tool_name in {"terminal", "verify"}
+                        and tool_name == "terminal"
                     ),
                     None,
                 )
@@ -4305,18 +3811,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     run_context,
                     retain=self._retain_bounded_tool_result(scope, tool_name),
                     preview_bytes=self._tool_preview_bytes(scope, tool_name, arguments, result),
-                )
-            if (
-                tool_name == "verify"
-                and isinstance(result, dict)
-                and isinstance(result.get("outputHandle"), str)
-                and isinstance(result.get("execution_id"), str)
-            ):
-                execution = await self.kernel.repository.get_execution(result["execution_id"])
-                receipt = dict(execution.operation_receipt or {}) if execution is not None else {}
-                receipt["output_handle"] = result["outputHandle"]
-                await self.kernel.repository.update_execution(
-                    result["execution_id"], operation_receipt=receipt
                 )
             if not exempt and state is not None:
                 if spec.effect == "read":
@@ -4468,11 +3962,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             # 仅显式关闭 finish 验证的专用 Kernel 可跳过；默认 Coding 门禁仍失败关闭。
             if tool_name == "finish_task" and not self.kernel.require_finish_verification:
                 return None
-            if (
-                TOOL_SPECS[tool_name].effect == "read"
-                or tool_name in self._FILE_MUTATION_TOOLS
-                or tool_name == "verify"
-            ):
+            if TOOL_SPECS[tool_name].effect == "read":
                 return None
             failed_verification = next(
                 (
@@ -4514,34 +4004,18 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             repair_with_files = failure_code in self._FINISH_FILE_REPAIR_CODES or (
                 failure_code.startswith("finish_acceptance_")
             )
-            if failure_code == "finish_plan_incomplete" and tool_name == "update_plan":
-                return None
-            if repair_with_files and (
-                TOOL_SPECS[tool_name].effect == "read"
-                or tool_name in self._FILE_MUTATION_TOOLS
-                or tool_name in {"verify", "update_plan"}
-            ):
+            if repair_with_files and (TOOL_SPECS[tool_name].effect == "read"):
                 return None
             allowed_tools = (
-                ["finish_task", "update_plan"]
+                ["finish_task"]
                 if failure_code == "finish_plan_incomplete"
                 else [
                     "finish_task",
-                    "update_plan",
-                    "verify",
-                    "create_files",
-                    "overwrite_file",
-                    "replace_text",
-                    "apply_patch",
+                    "terminal",
+                    "process",
                     "view_image",
                     "read_tool_output",
-                    "list_files",
                     "read_file",
-                    "read_lines",
-                    "search_text",
-                    "tree",
-                    "git_status",
-                    "git_diff",
                 ]
                 if repair_with_files
                 else ["finish_task"]
@@ -4561,8 +4035,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "requiredActions": list(finish_failure.get("requiredActions") or [])[:10],
                 "retryable": True,
             }
-        if tool_name == "update_plan":
-            return None
         return {
             "ok": False,
             "status": "rejected",
@@ -4571,7 +4043,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             "details": {
                 "mutationSequence": mutation_sequence,
                 "verificationId": verification.execution_id,
-                "allowedTools": ["finish_task", "update_plan"],
+                "allowedTools": ["finish_task"],
                 **(
                     {"finishFailureCode": finish_failure.get("code")}
                     if repairing_finish_failure and isinstance(finish_failure, dict)
@@ -4583,7 +4055,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 if repairing_finish_failure and isinstance(finish_failure, dict)
                 else [
                     "若工作已全部完成，更新计划为 completed 后调用 finish_task；"
-                    "若仍需工作，先用 update_plan 标记下一真实步骤为 in_progress。"
+                    "若仍需工作，先完成当前真实修复步骤，再重新提交任务验收。"
                 ]
             ),
             "retryable": True,
@@ -4622,130 +4094,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             run_context,
         )
 
-    async def coding_create_file(
-        self,
-        path: str,
-        content: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "create_file",
-            {"path": path, "content": content},
-            lambda scope: self.kernel.patch(
-                "create",
-                path,
-                None,
-                None,
-                False,
-                None,
-                run_context,
-                content=content,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def overwrite_file(
-        self,
-        path: str,
-        content: str,
-        expected_sha256: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "overwrite_file",
-            {
-                "path": path,
-                "content": content,
-                "expected_sha256": expected_sha256,
-            },
-            lambda scope: self.kernel.patch(
-                "overwrite",
-                path,
-                None,
-                None,
-                False,
-                None,
-                run_context,
-                content=content,
-                expected_sha256=expected_sha256,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def replace_text(
-        self,
-        path: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "replace_text",
-            {
-                "path": path,
-                "old_string": old_string,
-                "new_string": new_string,
-                "replace_all": replace_all,
-            },
-            lambda scope: self.kernel.patch(
-                "replace",
-                path,
-                old_string,
-                new_string,
-                replace_all,
-                None,
-                run_context,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def apply_patch(
-        self,
-        patch: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "apply_patch",
-            {"patch": patch},
-            lambda scope: self.kernel.patch(
-                "patch",
-                None,
-                None,
-                None,
-                False,
-                patch,
-                run_context,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def create_files(
-        self,
-        files: list[dict[str, str]],
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        patch = create_files_patch(files)
-        return await self._invoke(
-            "create_files",
-            {"files": files},
-            lambda scope: self.kernel.patch(
-                "patch",
-                None,
-                None,
-                None,
-                False,
-                patch,
-                run_context,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
     async def process(
         self,
         action: str,
@@ -4763,81 +4111,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             run_context,
         )
 
-    async def patch(
-        self,
-        mode: str,
-        path: str | None = None,
-        old_string: str | None = None,
-        new_string: str | None = None,
-        replace_all: bool = False,
-        patch: str | None = None,
-        content: str | None = None,
-        expected_sha256: str | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "patch",
-            {
-                "mode": mode,
-                "path": path,
-                "old_string": old_string,
-                "new_string": new_string,
-                "replace_all": replace_all,
-                "patch": patch,
-                "content": content,
-                "expected_sha256": expected_sha256,
-            },
-            lambda scope: self.kernel.patch(
-                mode,
-                path,
-                old_string,
-                new_string,
-                replace_all,
-                patch,
-                run_context,
-                content=content,
-                expected_sha256=expected_sha256,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def verify(
-        self,
-        command: str | None = None,
-        validator_id: str | None = None,
-        artifact_paths: list[str] | None = None,
-        run_context: RunContext | None = None,
-        *,
-        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "verify",
-            {
-                "command": command,
-                "validator_id": validator_id,
-                "artifact_paths": artifact_paths or [],
-                "timeout": timeout,
-            },
-            lambda scope: self.kernel.verify(
-                command,
-                artifact_paths or [],
-                run_context,
-                validator_id=validator_id,
-                timeout=timeout,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def coding_list_files(
-        self, path: str = "", run_context: RunContext | None = None
-    ) -> list[dict[str, Any]]:
-        async def call(scope: CodingTaskScope):
-            return await self.kernel.service.alist_files(scope.thread_id, path)
-
-        return await self._invoke("list_files", {"path": path}, call, run_context)
-
     async def coding_read_file(
         self,
         path: str,
@@ -4850,9 +4123,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         if (
             isinstance(max_bytes, bool)
             or not isinstance(max_bytes, int)
-            or not 1 <= max_bytes <= MAX_TOOL_OUTPUT_READ_BYTES
+            or not 1 <= max_bytes <= MAX_READ_FILE_BYTES
         ):
-            raise WorkspaceError("read_file max_bytes 必须是 1 至 65536 之间的整数。")
+            raise WorkspaceError(
+                f"read_file max_bytes 必须是 1 至 {MAX_READ_FILE_BYTES} 之间的整数。"
+            )
 
         async def call(scope: CodingTaskScope):
             content, _mime = await asyncio.to_thread(
@@ -4885,95 +4160,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             "read_file", {"path": path, "offset": offset, "max_bytes": max_bytes}, call, run_context
         )
 
-    async def read_lines(
-        self,
-        path: str,
-        start_line: int = 1,
-        end_line: int | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        if end_line is not None and end_line < start_line:
-            raise WorkspaceError("read_lines end_line 必须大于等于 start_line。")
-        line_count = 200 if end_line is None else end_line - start_line + 1
-
-        async def call(scope: CodingTaskScope):
-            return await self.kernel.service.aread_lines(
-                scope.thread_id, path, start_line, line_count
-            )
-
-        return await self._invoke(
-            "read_lines",
-            {"path": path, "start_line": start_line, "end_line": end_line},
-            call,
-            run_context,
-        )
-
-    async def search_text(
-        self,
-        pattern: str,
-        path: str = "",
-        limit: int = 100,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        async def call(scope: CodingTaskScope):
-            return await self.kernel.service.asearch_text(
-                scope.thread_id, pattern, path=path, limit=limit
-            )
-
-        return await self._invoke(
-            "search_text",
-            {"pattern": pattern, "path": path, "limit": limit},
-            call,
-            run_context,
-        )
-
-    async def tree(
-        self,
-        path: str = "",
-        max_depth: int = 4,
-        limit: int = 200,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        async def call(scope: CodingTaskScope):
-            return await self.kernel.service.atree(scope.thread_id, path, max_depth, limit)
-
-        return await self._invoke(
-            "tree", {"path": path, "max_depth": max_depth, "limit": limit}, call, run_context
-        )
-
-    async def git_status(
-        self, repo_path: str = "", run_context: RunContext | None = None
-    ) -> dict[str, Any]:
-        async def call(scope: CodingTaskScope):
-            return await self.kernel.service.agit_status(scope.thread_id, repo_path)
-
-        return await self._invoke("git_status", {"repo_path": repo_path}, call, run_context)
-
-    async def git_diff(
-        self,
-        repo_path: str = "",
-        staged: bool = False,
-        revision: str | None = None,
-        file_path: str | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        async def call(scope: CodingTaskScope):
-            return await self.kernel.service.agit_diff(
-                scope.thread_id, repo_path, staged, revision, file_path
-            )
-
-        return await self._invoke(
-            "git_diff",
-            {
-                "repo_path": repo_path,
-                "staged": staged,
-                "revision": revision,
-                "file_path": file_path,
-            },
-            call,
-            run_context,
-        )
-
     async def read_tool_output(
         self,
         handle: str,
@@ -5003,47 +4189,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             return await asyncio.to_thread(self.kernel.service.view_image, scope.thread_id, path)
 
         return await self._invoke("view_image", {"path": path, "detail": detail}, call, run_context)
-
-    async def update_plan(
-        self,
-        plan: list[dict[str, str]] | None = None,
-        explanation: str | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        if plan is None:
-            return {
-                "ok": False,
-                "code": "plan_required",
-                "message": "plan 必须包含 1 至 20 个步骤。",
-            }
-
-        async def call(scope: CodingTaskScope):
-            result = self.kernel.plan.agent_update_plan(plan, explanation, run_context)
-            state = run_context.session_state if run_context is not None else None
-            if isinstance(state, dict) and result.get("ok") is True:
-                if any(item.get("status") != "completed" for item in result.get("plan", [])):
-                    executions = await self.kernel.repository.list_executions(scope.external_run_id)
-                    verified = any(
-                        execution.is_verification
-                        and execution.mutation_sequence == scope.task.mutation_sequence
-                        and execution.status == "completed"
-                        and execution.exit_code == 0
-                        and (execution.operation_receipt or {}).get("valid", True) is not False
-                        for execution in executions
-                    )
-                    if verified:
-                        state[CODING_REWORK_STATE_KEY] = {
-                            "mutationSequence": scope.task.mutation_sequence
-                        }
-                    else:
-                        state.pop(CODING_REWORK_STATE_KEY, None)
-                else:
-                    state.pop(CODING_REWORK_STATE_KEY, None)
-            return result
-
-        return await self._invoke(
-            "update_plan", {"plan": plan, "explanation": explanation}, call, run_context
-        )
 
 
 # 中立名称供不同产品边界复用；旧名称仅保留在 Coding 入口内部。

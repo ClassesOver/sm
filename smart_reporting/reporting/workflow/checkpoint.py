@@ -176,6 +176,21 @@ class AnalysisEvidence(StrictModel):
     )
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_evidence_paths(cls, value: Any) -> Any:
+        """允许 durable 旧提交携带 evidencePaths，但不让路径绕过文件身份校验。
+
+        analysis item 工具历史上提交的是 evidencePaths，服务端随后会把路径解析为
+        带 size/sha256 的 evidenceFiles。下游阶段只信任后者；这里仅移除已被服务端
+        冻结的过渡字段，缺失 evidenceFiles 仍由严格字段校验拒绝。
+        """
+
+        if isinstance(value, Mapping) and "evidencePaths" in value:
+            value = dict(value)
+            value.pop("evidencePaths", None)
+        return value
+
     @model_validator(mode="after")
     def validate_references(self) -> AnalysisEvidence:
         for name, values in (
@@ -308,7 +323,7 @@ class AnalysisDatasetSemantics(StrictModel):
 
 
 class AnalysisEvidenceManifest(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     evidence: tuple[AnalysisEvidence, ...] = Field(min_length=1, max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
@@ -337,12 +352,10 @@ class AnalysisEvidenceManifest(StrictModel):
         known_datasets = {dataset_id for item in self.evidence for dataset_id in item.dataset_ids}
         if any(set(item.chart_ids) - known_charts for item in self.evidence):
             raise ValueError("analysis evidence 引用了未登记图表")
-        if self.version == "2" and not self.dataset_semantics:
-            raise ValueError("v2 AnalysisEvidenceManifest 必须冻结 Dataset 语义")
-        if self.version == "2" and any(
-            item.visual_inspection_receipt is None for item in self.charts
-        ):
-            raise ValueError("v2 AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
+        if not self.dataset_semantics:
+            raise ValueError("AnalysisEvidenceManifest 必须冻结 Dataset 语义")
+        if any(item.visual_inspection_receipt is None for item in self.charts):
+            raise ValueError("AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
         # 未冻结指标属于可修复语义质量问题，由发布检查记录告警。
         if any(item.source_dataset_id not in known_datasets for item in self.charts):
             raise ValueError("AnalysisChart 引用了未冻结 Dataset")
@@ -352,7 +365,7 @@ class AnalysisEvidenceManifest(StrictModel):
 
 
 class AnalysisArtifact(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     report_brief: ReportBrief = Field(alias="reportBrief")
     evidence_manifest: AnalysisEvidenceManifest = Field(alias="evidenceManifest")
     profile_read_receipts: tuple[ProfileReadReceipt, ...] = Field(
@@ -364,8 +377,8 @@ class AnalysisArtifact(StrictModel):
 
     @model_validator(mode="after")
     def validate_nested_version(self) -> AnalysisArtifact:
-        if self.version == "2" and self.evidence_manifest.version != "2":
-            raise ValueError("v2 AnalysisArtifact 只能包含 v2 EvidenceManifest")
+        if self.evidence_manifest.version != "1":
+            raise ValueError("AnalysisArtifact 只能包含 v1 EvidenceManifest")
         return self
 
 
@@ -387,12 +400,11 @@ class SectionWorkItem(StrictModel):
     section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=200)
     objective: str = Field(min_length=1, max_length=4000)
-    report_brief: ReportBrief = Field(alias="reportBrief")
     completion_conditions: tuple[str, ...] = Field(
         alias="completionConditions", min_length=1, max_length=100
     )
     analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2000)
-    evidence: tuple[AnalysisEvidence, ...] = Field(min_length=1, max_length=200)
+    evidence: tuple[AnalysisEvidence, ...] = Field(default=(), max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
     )
@@ -406,7 +418,7 @@ class SectionWorkItem(StrictModel):
         default=(), alias="profileReadReceiptIds", max_length=1000
     )
     charts: tuple[AnalysisChart, ...] = Field(default=(), max_length=100)
-    citations: tuple[SectionCitation, ...] = Field(min_length=1, max_length=2000)
+    citations: tuple[SectionCitation, ...] = Field(default=(), max_length=2000)
     fact_files: tuple[FileIdentity, ...] = Field(default=(), alias="factFiles", max_length=200)
     fact_summaries: tuple[str, ...] = Field(default=(), alias="factSummaries", max_length=200)
     markdown_requirements: tuple[str, ...] = Field(
@@ -416,10 +428,13 @@ class SectionWorkItem(StrictModel):
     @model_validator(mode="after")
     def validate_projection(self) -> SectionWorkItem:
         evidence_ids = tuple(item.analysis_id for item in self.evidence)
-        if evidence_ids != self.analysis_ids or len(self.analysis_ids) != len(
+        expected_evidence_ids = tuple(
+            analysis_id for analysis_id in self.analysis_ids if analysis_id in evidence_ids
+        )
+        if evidence_ids != expected_evidence_ids or len(self.analysis_ids) != len(
             set(self.analysis_ids)
         ):
-            raise ValueError("SectionWorkItem evidence 必须按顺序精确覆盖 analysisIds")
+            raise ValueError("SectionWorkItem evidence 必须按 analysisIds 顺序提供，缺失项允许告警")
         question_refs = tuple(item.ref for item in self.management_question_catalog)
         if question_refs and question_refs != self.analysis_ids:
             raise ValueError("SectionWorkItem 管理问题目录必须按顺序精确覆盖 analysisIds")
@@ -532,7 +547,7 @@ class SectionClaimSubmission(StrictModel):
 
 
 class SectionArtifact(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
     claims: tuple[SectionClaim, ...] = Field(default=(), max_length=500)
@@ -541,8 +556,17 @@ class SectionArtifact(StrictModel):
     @model_validator(mode="after")
     def validate_claim_references(self) -> SectionArtifact:
         known = {claim.claim_id for claim in self.claims}
-        if self.version == "2" and not self.claims:
-            raise ValueError("v2 章节必须提交结构化 claims")
+        if not self.claims:
+            # 工具层会把结构无效的模型 claim 清理掉并留下稳定 warning；此时允许
+            # 先冻结正文降级产物，供上层按 warning 触发重试。正常章节仍必须有 claims。
+            invalid_claims_only = any(
+                item.get("code") == "report_section_claim_invalid"
+                for item in self.warnings
+                if isinstance(item, dict)
+            )
+            if not invalid_claims_only:
+                raise ValueError("章节必须提交结构化 claims")
+            return self
         if len(known) != len(self.claims):
             raise ValueError("章节 claimId 不能重复")
         referenced = {claim_id for block in self.blocks for claim_id in block.claim_ids}
@@ -550,25 +574,18 @@ class SectionArtifact(StrictModel):
             raise ValueError("正文 block 引用了未声明的 claim")
         if known - referenced:
             raise ValueError("章节 claim 必须由正文 block 引用")
-        if self.version == "2" and any(not block.claim_ids for block in self.blocks):
-            raise ValueError("v2 章节的每个正文 block 必须引用至少一个 claim")
+        if any(not block.claim_ids for block in self.blocks):
+            raise ValueError("章节的每个正文 block 必须引用至少一个 claim")
         return self
 
 
-def read_analysis_artifact(
-    payload: Mapping[str, Any], *, running: bool = False
-) -> AnalysisArtifact:
-    """读取内部分析产物；运行中的 v1 不得猜测缺失的 v2 语义字段。"""
-    version = str(payload.get("version", ""))
-    if version == "1" and running:
+def read_analysis_artifact(payload: Mapping[str, Any]) -> AnalysisArtifact:
+    """读取统一 v1 分析产物；旧版本不得进入任何运行或终态路径。"""
+    if str(payload.get("version", "")) != "1":
         raise ReportingError(
             "report_semantic_contract_upgrade_required",
-            "运行中的 v1 分析产物缺少 v2 语义契约，必须重新分析。",
+            "分析产物必须使用统一 v1 语义契约，请重新分析。",
         )
-    if version == "1":
-        legacy = dict(payload)
-        legacy.pop("version", None)
-        return AnalysisArtifact.model_construct(version="1", **legacy)
     return AnalysisArtifact.model_validate(payload)
 
 
@@ -611,12 +628,10 @@ class CheckpointError(StrictModel):
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
     details: dict[str, Any] | None = Field(default=None, max_length=50)
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
-    # visualization_section/visualization_finalize 区分并行章节图表 worker 与汇总 worker。
     work_kind: (
         Literal[
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
             "finalize",
         ]
@@ -636,7 +651,6 @@ class ContextTrace(StrictModel):
         Literal[
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
             "section",
             "finalize",
         ]
@@ -670,7 +684,7 @@ class ContextTrace(StrictModel):
 
 
 class ReportingCheckpoint(StrictModel):
-    version: Literal["1", "2"] = "2"
+    version: Literal["1"] = "1"
     revision: int = Field(ge=1)
     phase: Literal["analysis", "sections", "finalize", "completed"]
     outline_hash: str = Field(alias="outlineHash", pattern=SHA256_PATTERN)
@@ -704,16 +718,8 @@ class ReportingCheckpoint(StrictModel):
 
     @model_validator(mode="after")
     def validate_sections(self) -> ReportingCheckpoint:
-        if self.version == "1" and self.phase != "completed":
-            raise ValueError(
-                "report_semantic_contract_upgrade_required: 运行中的 v1 checkpoint 必须重新分析"
-            )
-        if (
-            self.version == "2"
-            and self.evidence_manifest is not None
-            and self.evidence_manifest.version != "2"
-        ):
-            raise ValueError("v2 ReportingCheckpoint 只能包含 v2 EvidenceManifest")
+        if self.evidence_manifest is not None and self.evidence_manifest.version != "1":
+            raise ValueError("ReportingCheckpoint 只能包含 v1 EvidenceManifest")
         completed = [item.section_code for item in self.completed_sections]
         if len(completed) != len(set(completed)):
             raise ValueError("checkpoint completedSections 不能重复")
@@ -799,7 +805,7 @@ def reporting_phase_task_key(
 ) -> str:
     # 三种 analysis 身份分支与 taskKind 一一绑定，防止把可视化身份伪装成 analysisId：
     # analysis_id 只属于 analysis_item（历史调用不传 taskKind）；section_code 只属于
-    # visualization_section；finalize 只接受固定 task_key "viz-finalize"，不接受任意
+    # visualization_section；章节任务使用稳定 task_key，避免并发重入生成重复回执。
     # 字符串。section phase 维持普通章节身份，不允许携带可视化 taskKind。
     if (
         revision < 1
@@ -821,13 +827,6 @@ def reporting_phase_task_key(
             phase == "analysis"
             and section_code is not None
             and task_kind != "visualization_section"
-        )
-        or (
-            phase == "analysis"
-            and (
-                task_key is not None
-                and (task_key != "viz-finalize" or task_kind != "visualization_finalize")
-            )
         )
     ):
         raise ValueError("Reporting phase task identity 无效")

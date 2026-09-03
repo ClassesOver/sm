@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import io
 import json
 import shlex
 import uuid
@@ -11,6 +12,7 @@ from typing import Any
 
 from agno.run import RunContext
 from daytona.common.errors import DaytonaNotFoundError
+from PIL import Image, UnidentifiedImageError
 
 from ..async_utils import complete_cleanup
 from ..observability import suppress_expected_probe_tracing
@@ -21,17 +23,88 @@ from ..workspace import (
     WorkspaceService,
     _thread,
 )
+from .models import ReportingError
 
 REPORT_JOBS_STATE_KEY = "report_jobs"
 MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
 REPORT_RUNTIME_TIMEOUT_SECONDS = 600
+MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
+
+
+async def inspect_report_chart_file(
+    service: WorkspaceService,
+    *,
+    thread_id: str,
+    path: str,
+) -> dict[str, Any]:
+    """对报表图表文件执行确定性身份和图片内容检查。"""
+    source_path, remote = service.normalize_path(path, allow_root=False)
+    async with service._async_client() as client:
+        sandbox = await service._asandbox_for(client, thread_id)
+        try:
+            await service._avalidate_existing_path(sandbox, source_path)
+        except WorkspaceError as error:
+            raise ReportingError(
+                "report_chart_file_missing",
+                "图表源文件不存在;未生成的图表不得提交登记。",
+                details={"sourcePath": source_path},
+            ) from error
+        info = await service._ainfo(sandbox, remote)
+        if not service._is_regular_file(info):
+            raise ReportingError("report_chart_source_invalid", "图表源路径必须指向普通文件。")
+        size = int(getattr(info, "size", 0) or 0)
+        if not 0 < size <= MAX_REPORT_CHART_BYTES:
+            raise ReportingError(
+                "report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。"
+            )
+        content = await service._adownload_file(sandbox, remote, MAX_REPORT_CHART_BYTES)
+    digest = hashlib.sha256(content).hexdigest()
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.load()
+            image_format = str(image.format or "").upper()
+            width, height = image.size
+            colors = image.convert("RGBA").getcolors(maxcolors=2)
+    except (UnidentifiedImageError, OSError) as error:
+        raise ReportingError(
+            "report_chart_source_invalid", "图表源文件无法解码或图片签名无效。"
+        ) from error
+    suffix = PurePosixPath(source_path).suffix.lower()
+    if image_format == "PNG" and suffix == ".png":
+        media_type, extension = "image/png", ".png"
+    elif image_format == "JPEG" and suffix in {".jpg", ".jpeg"}:
+        media_type, extension = "image/jpeg", ".jpg"
+    else:
+        raise ReportingError(
+            "report_chart_source_invalid", "图表仅允许签名与扩展名一致的 PNG 或 JPEG。"
+        )
+    if width < 1 or height < 1 or (colors is not None and len(colors) <= 1):
+        raise ReportingError("report_chart_blank", "图表图片完全空白，不能登记。")
+    return {
+        "sourcePath": source_path,
+        "size": len(content),
+        "sha256": digest,
+        "format": image_format,
+        "mediaType": media_type,
+        "extension": extension,
+        "width": width,
+        "height": height,
+    }
 
 
 class WorkspaceReportService:
     def __init__(self, service: WorkspaceService, data_sources: Any | None = None):
         self.service = service
         self.data_sources = data_sources
+
+    async def _inspect_chart_file(
+        self,
+        *,
+        thread_id: str,
+        path: str,
+    ) -> dict[str, Any]:
+        return await inspect_report_chart_file(self.service, thread_id=thread_id, path=path)
 
     @staticmethod
     def _session_state(run_context: RunContext | None) -> MutableMapping[str, Any]:

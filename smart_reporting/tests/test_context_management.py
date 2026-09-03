@@ -810,6 +810,8 @@ async def test_projected_model_writes_metrics_inside_non_stream_model_call(monke
     assert len(captured) == 1
     assert captured[0]["canonical_message_count"] == 2
     assert captured[0]["projected_message_count"] == 2
+    assert captured[0]["canonical_context_bytes"] > 0
+    assert captured[0]["projected_context_bytes"] > 0
 
 
 @pytest.mark.anyio
@@ -959,6 +961,72 @@ def test_coding_context_projector_compacts_consumed_tool_pair_without_mutating_r
     assert projected[0].tool_calls[0]["id"] == projected[1].tool_call_id == "call-create"
     assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
     assert projected[3].compressed_content is None
+
+
+def test_coding_context_projector_records_context_composition_without_content():
+    sensitive_prompt = "private-context-prompt"
+    messages = [
+        Message(role="system", content="system instructions"),
+        Message(role="user", content=sensitive_prompt),
+        Message(role="assistant", content="assistant response"),
+        Message(role="tool", tool_name="safe_tool", content='{"ok":true}'),
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "safe_tool", "description": "safe"},
+        }
+    ]
+
+    CodingContextProjector.project(
+        messages,
+        model=CountingModel(),
+        tools=tools,
+        response_format={"type": "json_object"},
+    )
+
+    metrics = CodingContextProjector.last_metrics
+    assert metrics["canonical_system_bytes"] > 0
+    assert metrics["canonical_user_bytes"] > 0
+    assert metrics["canonical_assistant_bytes"] > 0
+    assert metrics["canonical_tool_bytes"] > 0
+    assert metrics["tool_schema_bytes"] > 0
+    assert metrics["response_format_bytes"] > 0
+    assert metrics["canonical_message_bytes"] == sum(
+        metrics[f"canonical_{role}_bytes"]
+        for role in ("system", "user", "assistant", "tool", "other")
+    )
+    assert sensitive_prompt not in str(metrics)
+
+
+@pytest.mark.anyio
+async def test_projected_model_logs_context_composition_without_content(monkeypatch):
+    async def model_call(_self, _messages, *_args, **_kwargs):
+        return ModelResponse(content="private-model-output")
+
+    monkeypatch.setattr(OpenAIChat, "ainvoke", model_call)
+    model = ProjectedOpenAIChat(id="test")
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+
+    try:
+        await model.ainvoke(
+            [
+                Message(role="system", content="private-system"),
+                Message(role="user", content="private-user"),
+            ],
+            tools=[{"type": "function", "function": {"name": "safe_tool"}}],
+        )
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert "model_context_composition" in log_text
+    assert "canonical_system_bytes=" in log_text
+    assert "projected_message_bytes=" in log_text
+    assert "private-system" not in log_text
+    assert "private-user" not in log_text
+    assert "private-model-output" not in log_text
 
 
 def test_coding_context_projector_compacts_create_files_content_without_mutating_raw():

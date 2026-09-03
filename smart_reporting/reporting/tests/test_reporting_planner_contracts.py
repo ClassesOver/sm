@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
+from agno.run import RunContext
 from agno.workflow.step import StepOutput
 from pydantic import ValidationError
 from sqlglot import parse_one
@@ -21,8 +22,14 @@ from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting import contract as reporting_contract
 from smart_reporting.reporting.agent import ReportWorkerOpenAIChat
 from smart_reporting.reporting.contract import ReportPeriod
+from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
+    AnalysisFileIdentity,
+    DatasetAnalysisContext,
     DetailedAnalysisPlan,
+)
+from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
 )
 from smart_reporting.reporting.hospital_operation.outline import (
     ReportOutline,
@@ -37,19 +44,42 @@ from smart_reporting.reporting.model_policy import (
     reporting_thinking_profile_from_model,
 )
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
+from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisEvidence,
+    FileIdentity,
+    MetricDefinition,
+    ProfileCoverageDataset,
+    ProfileCoverageManifest,
+)
 from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     ReportWorkflowRuntime,
 )
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
-from smart_reporting.reporting.workflow.runtime.analysis import _coding_detailed_analysis_plan
+from smart_reporting.reporting.workflow.runtime.analysis import (
+    _analysis_item_complexity,
+    _analysis_item_thinking_policy,
+    _coding_detailed_analysis_plan,
+    _model_facing_deterministic_facts,
+)
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidencePlan,
+    AnalysisSummaryDraft,
+)
 from smart_reporting.reporting.workflow.runtime.base import (
+    OUTLINE_SECTION_COUNT_INSTRUCTION,
+    REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
+    REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
+    REPORT_PROFILE_COVERAGE_STATE_KEY,
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
 )
-from smart_reporting.reporting.workflow.runtime.datasets import _requirement_measure_field_refs
+from smart_reporting.reporting.workflow.runtime.datasets import (
+    RuntimeDatasetsMixin,
+    _requirement_measure_field_refs,
+)
 from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
@@ -187,6 +217,12 @@ def test_publication_gate_accepts_metrics_aligned_to_common_window() -> None:
 def test_planner_trace_names_use_human_display_labels_without_changing_ids() -> None:
     assert _PLANNER_DISPLAY_NAMES["report-outline-planner"] == "报告提纲规划"
     assert _PLANNER_DISPLAY_NAMES["report-sql-planner"] == "取数方案设计"
+
+
+def test_outline_prompt_prioritizes_user_section_count_over_analysis_split() -> None:
+    assert "reportGoal 中明确的章节数量约束" in OUTLINE_SECTION_COUNT_INSTRUCTION
+    assert "高于按 analysisId 拆分章节" in OUTLINE_SECTION_COUNT_INSTRUCTION
+    assert "不超过用户指定数量的章节" in OUTLINE_SECTION_COUNT_INSTRUCTION
 
 
 def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:
@@ -514,6 +550,8 @@ async def _empty_close() -> None:
 def test_analysis_item_instructions_submit_facts_without_model_evidence() -> None:
     instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
 
+    assert "任务 JSON 的 sectionGoal 标识当前分析所属章节" in instructions
+    assert "不得为其他章节生成证据或结论" in instructions
     assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
     assert "evidencePaths 传空数组" in instructions
     assert "deterministicFactFile 直接冻结为 evidence" in instructions
@@ -544,6 +582,107 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
 
 
+@pytest.mark.anyio
+async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps() -> None:
+    context = DatasetAnalysisContext(
+        profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
+        profileModelView={},
+        profileEngineVersion="4.19.1",
+        datasetId="dataset-1",
+        path="datasets/dataset-1.csv",
+        size=1,
+        sha256="b" * 64,
+        rowCount=1,
+        columnCount=3,
+        fields=("month", "department", "amount"),
+        organizationGrain=("department",),
+        metricSemantics=(
+            {
+                "fieldRef": "source.database.income.amount",
+                "aggregation": "sum",
+            },
+        ),
+        numericFields=("amount",),
+        periodValues=("2025-01",),
+        timeSeriesSortField="month",
+    )
+    handle = DatasetHandle(
+        dataset_id="dataset-1",
+        source_id="source-1",
+        path="datasets/dataset-1.csv",
+        row_count=1,
+        size=1,
+        sha256="b" * 64,
+        requirement_id="requirement-1",
+        sql_hash="c" * 64,
+    )
+    coverage = ProfileCoverageManifest(
+        authorizedDatasetCount=1,
+        coveredDatasetCount=1,
+        datasets=(
+            ProfileCoverageDataset(
+                datasetId="dataset-1",
+                datasetPath="datasets/dataset-1.csv",
+                datasetSize=1,
+                datasetSnapshotHash="b" * 64,
+                profileFile=FileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
+                rowCount=1,
+                fieldCount=3,
+                fields=("month", "department", "amount"),
+                periodCoverage=("2025-01",),
+            ),
+        ),
+    )
+    state: dict[str, Any] = {
+        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [context.model_dump(mode="json", by_alias=True)],
+        REPORT_PROFILE_COVERAGE_STATE_KEY: coverage.model_dump(mode="json", by_alias=True),
+        REPORT_ANALYSIS_PLAN_STATE_KEY: [
+            {
+                "code": "income",
+                "description": "收入规模分析",
+                "managementQuestion": "收入规模如何？",
+                "primaryMetricFamily": "收入",
+                "requirementIds": ["requirement-1"],
+            }
+        ],
+        REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]},
+    }
+    runtime: Any = object.__new__(RuntimeDatasetsMixin)
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: SimpleNamespace(
+        domains=("income",), report_goal="分析收入规模"
+    )
+    runtime._profile = lambda _run_context: SimpleNamespace(metrics=())
+    runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
+    runtime._scope = lambda _run_context: {"threadId": "thread-1"}
+    runtime._write_artifact_validation_context = AsyncMock(
+        return_value=FileIdentity(path="analysis/context.json", size=1, sha256="d" * 64)
+    )
+    runtime._apply_durable_command = AsyncMock()
+    runtime._assert_state_safe = lambda _state: None
+
+    output = await runtime.generate_detailed_analysis_plan(
+        SimpleNamespace(), SimpleNamespace(run_id="run-1")
+    )
+
+    analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert (
+        "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"
+        in analysis.actions
+    )
+    assert "deterministicFacts 覆盖当前管理问题时直接提交" in analysis.evidence_summary
+    assert "仅在必需事实缺口时由 Coding 从 CSV 复算并保存补充 evidence" in analysis.evidence_summary
+    assert (
+        "deterministicFacts 覆盖当前管理问题时立即且只调用一次 complete_analysis_item，"
+        "evidencePaths 传空数组" in analysis.completion_conditions
+    )
+    assert (
+        "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，按 analysisId 从 CSV 复算"
+        "并保存最小补充 evidence" in analysis.completion_conditions
+    )
+    assert "按 analysisId 完成 CSV 复算并保存可复现证据" not in analysis.completion_conditions
+
+
 def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task))
     tree = ast.parse(source)
@@ -557,11 +696,251 @@ def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     assert "detailedAnalysisPlan" not in string_keys
 
 
-def test_analysis_item_thinking_effort_follows_worker_retry_policy() -> None:
-    source = inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task)
+def test_worker_thinking_effort_is_high_first_and_on_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.report_worker = SimpleNamespace(
+        model=ReportWorkerOpenAIChat(id="test-model", api_key="test-key")
+    )
 
-    assert "self._worker_thinking_effort(retry=retry)" in source
-    assert 'self._worker_thinking_effort(retry=True) if retry else "off"' not in source
+    class _Profile:
+        enabled = True
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.reporting_thinking_profile_from_model",
+        lambda _model: _Profile(),
+    )
+    assert runtime._worker_thinking_effort(retry=False) == "high"
+    assert runtime._worker_thinking_effort(retry=True) == "high"
+
+
+def test_analysis_item_complexity_uses_structured_plan_fields() -> None:
+    simple = {
+        "datasetIds": ["ds-1"],
+        "fields": ["month"],
+        "metrics": ["income"],
+        "periods": ["2025"],
+        "comparisonBasis": [],
+        "organizationGrain": [],
+        "actions": ["summarize"],
+        "recommendedCharts": [],
+    }
+    complex_plan = {
+        "datasetIds": ["ds-1", "ds-2"],
+        "fields": ["month", "area", "department"],
+        "metrics": ["income", "volume"],
+        "periods": ["2024", "2025"],
+        "comparisonBasis": ["yoy"],
+        "organizationGrain": ["area", "department"],
+        "actions": ["compare", "attribute", "recommend"],
+        "recommendedCharts": ["trend", "contribution"],
+    }
+
+    assert _analysis_item_complexity(simple) == (0, "simple")
+    assert _analysis_item_complexity(complex_plan) == (9, "complex")
+
+    standard = {**simple, "comparisonBasis": ["yoy"], "organizationGrain": ["area"]}
+    assert _analysis_item_complexity(standard) == (3, "standard")
+
+
+def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() -> None:
+    plan = {"metrics": ["income"], "datasetIds": ["ds-1"]}
+
+    assert _analysis_item_thinking_policy(plan, retry=False, retry_reason=None) == (
+        "high",
+        4096,
+        "simple",
+    )
+    assert _analysis_item_thinking_policy(plan, retry=False, retry_reason="schema_validation") == (
+        "high",
+        4096,
+        "simple",
+    )
+    assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
+        "max",
+        8192,
+        "simple",
+    )
+
+
+def test_analysis_evidence_accepts_legacy_evidence_paths_without_bypassing_identity() -> None:
+    payload = {
+        "analysisId": "analysis_001",
+        "summary": "完成摘要",
+        "datasetIds": ["dataset_001"],
+        "evidenceFiles": [
+            {"path": "evidence/analysis_001/facts.json", "size": 1, "sha256": "a" * 64}
+        ],
+        "evidencePaths": ["evidence/analysis_001/facts.json"],
+        "citationIds": ["citation_001"],
+    }
+
+    evidence = AnalysisEvidence.model_validate(payload)
+
+    assert evidence.evidence_files[0].path == "evidence/analysis_001/facts.json"
+    assert "evidencePaths" not in evidence.model_dump(mode="json", by_alias=True)
+
+
+def test_analysis_evidence_still_requires_hashed_evidence_files_when_only_paths_are_present() -> (
+    None
+):
+    with pytest.raises(ValidationError):
+        AnalysisEvidence.model_validate(
+            {
+                "analysisId": "analysis_001",
+                "summary": "完成摘要",
+                "datasetIds": ["dataset_001"],
+                "evidencePaths": ["evidence/analysis_001/facts.json"],
+                "citationIds": ["citation_001"],
+            }
+        )
+
+
+@pytest.mark.anyio
+async def test_analysis_script_repair_temporarily_escalates_to_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_context = RunContext(
+        run_id="task-run-1",
+        session_id="task-session-1",
+        dependencies={
+            "AgentOS 编码任务": {
+                "reportingThinkingEffort": "high",
+                "reportingThinkingBudget": 4096,
+            }
+        },
+    )
+    observed: list[tuple[str, str, int]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace()
+    runtime.task_runner = SimpleNamespace(repository=SimpleNamespace())
+    runtime.state_repository = SimpleNamespace()
+    runtime._analysis_evidence_agent = SimpleNamespace()
+    runtime._analysis_summary_agent = SimpleNamespace()
+
+    async def run_planner(_agent, payload, _parent_context):
+        binding = task_context.dependencies["AgentOS 编码任务"]
+        observed.append(
+            (
+                payload["analysisBlock"]["blockId"],
+                binding["reportingThinkingEffort"],
+                binding["reportingThinkingBudget"],
+            )
+        )
+        if payload["analysisBlock"]["blockId"].endswith(":summary"):
+            return AnalysisSummaryDraft(summary="完成摘要", warnings=())
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason="缺少构成",
+            missingFacts=("构成",),
+            script="print('evidence')",
+        )
+
+    class FakeAnalysisItemWorkflow:
+        def __init__(self, *, plan_evidence, summarize, **_kwargs):
+            self.plan_evidence = plan_evidence
+            self.summarize = summarize
+
+        async def run(self, _payload, _run_context):
+            await self.plan_evidence({}, repair=False)
+            await self.plan_evidence({}, repair=True)
+            await self.summarize({})
+            return SimpleNamespace(output=StepOutput(content={"ok": True}))
+
+    runtime._run_planner = run_planner
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.build_report_worker_tools",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                coding_read_file=AsyncMock(),
+                create_analysis_file=AsyncMock(),
+                overwrite_analysis_file=AsyncMock(),
+                terminal=AsyncMock(),
+                complete_analysis_item=AsyncMock(),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.AnalysisItemWorkflow",
+        FakeAnalysisItemWorkflow,
+    )
+
+    await runtime._execute_analysis_item_workflow(
+        '{"currentAnalysisId":"analysis_001"}',
+        task_context,
+        parent_run_context=RunContext(
+            run_id="report-run-1", session_id="report-session-1", session_state={}
+        ),
+    )
+
+    assert observed == [
+        ("analysis_001:evidence:initial", "high", 4096),
+        ("analysis_001:evidence:repair", "max", 8192),
+        ("analysis_001:summary", "high", 4096),
+    ]
+    assert task_context.dependencies["AgentOS 编码任务"] == {
+        "reportingThinkingEffort": "high",
+        "reportingThinkingBudget": 4096,
+    }
+
+
+def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplicates_warnings() -> (
+    None
+):
+    bundle = DeterministicAnalysisBundle.model_validate(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [
+                {
+                    "datasetId": "dataset-1",
+                    "datasetSha256": "a" * 64,
+                    "profileHash": "b" * 64,
+                    "periodRoles": ["current"],
+                    "metricCodes": ["income_total"],
+                    "field": "income",
+                    "fieldRef": "rj.income",
+                    "aggregation": "sum",
+                    "unit": "元",
+                    "formula": "sum(income)",
+                    "total": 10,
+                    "missingCount": 0,
+                    "zeroCount": 0,
+                    "negativeCount": 0,
+                    "warnings": ["期间不完整", "期间不完整"],
+                },
+                {
+                    "datasetId": "dataset-1",
+                    "datasetSha256": "a" * 64,
+                    "profileHash": "b" * 64,
+                    "periodRoles": ["current"],
+                    "metricCodes": ["income_count"],
+                    "field": "count",
+                    "fieldRef": "rj.count",
+                    "aggregation": "sum",
+                    "unit": "人次",
+                    "formula": "sum(count)",
+                    "total": 5,
+                    "missingCount": 0,
+                    "zeroCount": 0,
+                    "negativeCount": 0,
+                    "warnings": ["期间不完整", "字段缺失"],
+                },
+            ],
+            "warnings": ["期间不完整", "全局告警", "全局告警"],
+        }
+    )
+
+    projected = _model_facing_deterministic_facts(bundle)
+
+    assert all(
+        "datasetSha256" not in item and "profileHash" not in item for item in projected["metrics"]
+    )
+    assert projected["metrics"][0]["warnings"] == ["期间不完整"]
+    assert projected["metrics"][1]["warnings"] == ["字段缺失"]
+    assert projected["warnings"] == ["全局告警"]
+    assert bundle.metrics[0].dataset_sha256 == "a" * 64
+    assert bundle.metrics[0].warnings == ("期间不完整", "期间不完整")
 
 
 def test_instruction_component_bytes_reports_sizes_without_content() -> None:

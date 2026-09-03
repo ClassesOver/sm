@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
-from agno.skills import LocalSkills, Skills
 
 from .artifacts_v1 import ReportArtifactManifest
 
 REPORT_PHASE_CONTRACT_ID = "reporting-phase:contract"
-REPORTING_BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "builtin_skills"
-
-
-def load_reporting_skills(base_skills: Skills | None) -> Skills:
-    loaders = list(base_skills.loaders) if base_skills is not None else []
-    loaders.append(LocalSkills(str(REPORTING_BUILTIN_SKILLS_DIR)))
-    return Skills(loaders=loaders)
 
 
 def build_report_phase_acceptance_contract(
@@ -34,15 +24,11 @@ def build_report_phase_acceptance_contract(
         if task_kind not in {
             "analysis_item",
             "visualization_section",
-            "visualization_finalize",
         }:
             raise ValueError("analysis phase taskKind 无效")
         # citationRegistry 只用于模型指令展示，工具校验只消费 citationIds；visualization
         # 也不需要单项计划映射。避免把重复的大型投影塞进 16 KiB acceptance 参数。
         trusted_phase_contract.pop("citationRegistry", None)
-        if task_kind == "visualization_finalize":
-            trusted_phase_contract.pop("analysisPlans", None)
-            trusted_phase_contract.pop("analysisDatasetIds", None)
         if task_kind == "analysis_item":
             if analysis_output_path or section_output_path or rework_request_path:
                 raise ValueError("analysis item 不得声明阶段输出路径")

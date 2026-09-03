@@ -140,8 +140,6 @@ class ReportingRunState(BaseModel):
             "artifacts": [],
             "profileCoverage": None,
             "profileReadReceipts": [],
-            "charts": [],
-            "chartsRegistered": False,
             "citations": [],
             "metricDefinitions": [],
             "analysisEvidenceManifest": None,
@@ -186,7 +184,14 @@ _TRANSITIONS: dict[ReportingPhase, frozenset[ReportingPhase]] = {
         {ReportingPhase.ANALYSIS_RUNNING, ReportingPhase.FAILED}
     ),
     ReportingPhase.ANALYSIS_RUNNING: frozenset(
-        {ReportingPhase.VISUALIZATION, ReportingPhase.FAILED}
+        {
+            ReportingPhase.VISUALIZATION,
+            ReportingPhase.ANALYSIS_REWORK,
+            # 逐章 Coding 工作流在本阶段内完成分析、图表和章节成稿；最终 Markdown
+            # 由服务端确定性装配并已校验全部章节产物后直接完成，不再经过旧全局阶段。
+            ReportingPhase.COMPLETED,
+            ReportingPhase.FAILED,
+        }
     ),
     ReportingPhase.VISUALIZATION: frozenset(
         {ReportingPhase.ANALYSIS_FREEZING, ReportingPhase.FAILED}
@@ -344,58 +349,16 @@ def apply(
             payload["pendingSections"] = _tuple_unique(
                 [*payload.get("pendingSections", []), *invalid_sections]
             )
-            # targeted rework 只撤销目标 evidence 明确绑定的图表。未受影响图表仍绑定
-            # 原文件身份与视觉回执，必须保留，避免返工把稳定产物重新生成或重复检查；
-            # 若旧 manifest 不具备可判定的 v2 绑定，则失败关闭为清空全部图表。
-            affected_chart_ids: set[str] | None = set()
-            evidence_manifest = payload.get("analysisEvidenceManifest")
-            evidence_items = (
-                evidence_manifest.get("evidence")
-                if isinstance(evidence_manifest, Mapping)
-                else None
-            )
-            if not isinstance(evidence_items, list):
-                affected_chart_ids = None
-            else:
-                for evidence in evidence_items:
-                    if not isinstance(evidence, Mapping):
-                        affected_chart_ids = None
-                        break
-                    if evidence.get("analysisId") not in analysis_ids:
-                        continue
-                    chart_ids = evidence.get("chartIds")
-                    if not isinstance(chart_ids, list) or not all(
-                        isinstance(chart_id, str) and chart_id for chart_id in chart_ids
-                    ):
-                        affected_chart_ids = None
-                        break
-                    assert affected_chart_ids is not None
-                    affected_chart_ids.update(chart_ids)
-            charts = payload.get("charts")
-            retained_charts = (
-                [
-                    dict(chart)
-                    for chart in charts
-                    if isinstance(chart, Mapping)
-                    and affected_chart_ids is not None
-                    and chart.get("chartId") not in affected_chart_ids
+            # 返工只作废受影响章节的图表与章节产物；其它章节的 durable 图表事实保持不变。
+            visualization_sections = payload.get("visualizationSections")
+            if isinstance(visualization_sections, dict):
+                for section_code in invalid_sections:
+                    visualization_sections.pop(section_code, None)
+            completed_visualization = payload.get("completedVisualizationSections")
+            if isinstance(completed_visualization, list):
+                payload["completedVisualizationSections"] = [
+                    item for item in completed_visualization if item not in invalid_sections
                 ]
-                if isinstance(charts, list)
-                else []
-            )
-            payload["charts"] = retained_charts
-            retained_identities = {
-                (chart.get("sourcePath"), chart.get("sha256")) for chart in retained_charts
-            }
-            receipts = payload.get("chartInspectionReceipts")
-            if isinstance(receipts, list):
-                payload["chartInspectionReceipts"] = [
-                    dict(receipt)
-                    for receipt in receipts
-                    if isinstance(receipt, Mapping)
-                    and (receipt.get("sourcePath"), receipt.get("sha256")) in retained_identities
-                ]
-            payload["chartsRegistered"] = False
             payload["reportBrief"] = None
             payload["analysisEvidenceManifest"] = None
             workflow_checkpoint = payload.get("workflowCheckpoint")
@@ -462,8 +425,8 @@ def apply(
             (value for value in plan if value not in completed), None
         )
         effects.append(ReportingEffect("analysis_item_completed", {"analysisId": analysis_id}))
-        if plan and len(completed) == len(plan):
-            next_phase = ReportingPhase.VISUALIZATION
+        # 分析期间按章节交错执行图表和成稿；全局 durable phase 保持
+        # ANALYSIS_RUNNING，最终汇总前不切换到独立 visualization 阶段。
     elif name in {"set_profile_coverage", "profile_coverage_ready"}:
         payload["profileCoverage"] = arguments.get("manifest", arguments)
     elif name in {"record_profile_receipt", "profile_read"}:
@@ -514,13 +477,9 @@ def apply(
     elif name == "submit_visualization_charts":
         # 章节图表草案提交允许零图，但 sectionCode 一旦写入就代表该章节已完成；
         # chartId/sourcePath 必须在所有章节中全局唯一，且登记关闭后不得再改变提交事实。
-        if state.phase is not ReportingPhase.VISUALIZATION:
+        if state.phase not in {ReportingPhase.ANALYSIS_RUNNING, ReportingPhase.VISUALIZATION}:
             raise ReportingStateError(
-                "report_visualization_section_phase_invalid", "章节图表只能在可视化阶段提交。"
-            )
-        if payload.get("chartsRegistered") is True:
-            raise ReportingStateError(
-                "report_visualization_section_closed", "图表登记窗口已关闭，章节草案不可再变更。"
+                "report_visualization_section_phase_invalid", "章节图表只能在分析运行阶段提交。"
             )
         section_code = arguments.get("sectionCode")
         charts = arguments.get("charts")
@@ -613,46 +572,7 @@ def apply(
             )
         if section_code not in completed:
             completed.append(section_code)
-    elif name == "register_charts":
-        if state.phase is not ReportingPhase.VISUALIZATION:
-            raise ReportingStateError(
-                "report_chart_registration_phase_invalid", "图表只能在可视化阶段登记。"
-            )
-        charts = arguments.get("charts")
-        if not isinstance(charts, list) or not charts:
-            raise ReportingStateError("report_chart_invalid", "图表登记批次不能为空。")
-        if payload.get("chartsRegistered") is True or (
-            "chartsRegistered" not in payload and bool(payload.get("charts"))
-        ):
-            raise ReportingStateError(
-                "report_chart_registration_closed", "当前可视化阶段已经完成图表登记。"
-            )
-        registered_chart_ids = [item.get("chartId") for item in charts if isinstance(item, Mapping)]
-        if (
-            len(registered_chart_ids) != len(charts)
-            or any(
-                not isinstance(chart_id, str) or not chart_id for chart_id in registered_chart_ids
-            )
-            or len(set(registered_chart_ids)) != len(registered_chart_ids)
-        ):
-            raise ReportingStateError(
-                "report_chart_registration_duplicate", "图表登记批次包含无效或重复 chartId。"
-            )
-        existing_charts = payload.get("charts")
-        if not isinstance(existing_charts, list):
-            raise ReportingStateError("report_state_invalid", "charts 状态损坏。")
-        retained_chart_ids = {
-            chart.get("chartId") for chart in existing_charts if isinstance(chart, Mapping)
-        }
-        if retained_chart_ids & set(registered_chart_ids):
-            raise ReportingStateError(
-                "report_chart_registration_duplicate", "补充图表与保留图表包含重复 chartId。"
-            )
-        # 返工时只提交缺失图表，并与仍绑定原 evidence 的图表在同一次 CAS 中合并；
-        # chartsRegistered 随后重新关闭登记窗口，保持全局 manifest 冻结边界不变。
-        payload["charts"] = [*existing_charts, *(dict(chart) for chart in charts)]
-        payload["chartsRegistered"] = True
-    elif name in {"set_analysis_artifact", "set_report_brief", "finalize_report_analysis"}:
+    elif name in {"set_analysis_artifact", "set_report_brief"}:
         if "reportBrief" in arguments:
             payload["reportBrief"] = arguments["reportBrief"]
         if "evidenceManifest" in arguments:
@@ -661,9 +581,6 @@ def apply(
             payload["warnings"] = _tuple_unique(
                 [*payload.get("warnings", []), *arguments["warnings"]]
             )
-        if name == "finalize_report_analysis":
-            next_phase = ReportingPhase.ANALYSIS_FREEZING
-            effects.append(ReportingEffect("analysis_frozen", {}))
     elif name == "set_workflow_checkpoint":
         checkpoint = arguments.get("checkpoint")
         if not isinstance(checkpoint, Mapping):
