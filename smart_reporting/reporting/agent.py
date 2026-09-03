@@ -39,6 +39,7 @@ from ..context_management import (
     projected_coding_model,
 )
 from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP, openai_compatible_extra_body
+from ..model_routing import build_model_profiles
 from ..settings import AgentSettings
 from ..skills import (
     create_skill_script_hook,
@@ -2626,8 +2627,16 @@ def _report_model(
     retries: int = 2,
     timeout_seconds: int | None = None,
 ) -> OpenAIChat:
+    profiles = build_model_profiles(
+        fast_model_id=settings.model_fast_id,
+        standard_model_id=settings.model_standard_id,
+        strong_model_id=settings.model_strong_id,
+    )
+    # Worker 的初始模型对应 standard 档位；复杂度和修复升级由独立 Router 决定，
+    # 不在共享 Agent 实例上动态修改 model_id，避免并发任务互相覆盖。
+    standard_profile = profiles["standard"]
     return OpenAIChat(
-        id=settings.model_id,
+        id=standard_profile.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
         timeout=(settings.model_timeout_seconds if timeout_seconds is None else timeout_seconds),
