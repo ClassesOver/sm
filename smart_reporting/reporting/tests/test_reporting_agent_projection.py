@@ -16,6 +16,8 @@ from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
+    REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     bind_reporting_run_context,
     reporting_task_kind_from_acceptance_contract,
     reporting_task_kind_from_run_context,
@@ -76,6 +78,26 @@ def test_worker_request_uses_model_id_selected_by_trusted_route() -> None:
 
     assert worker.id == "deepseek-v4-flash-0731"
     assert request_model.id == "qwen3.6-35b-a3b"
+
+
+def test_worker_request_keeps_thinking_off_when_task_policy_requests_high() -> None:
+    context = _context("analysis", "analysis_item")
+    context.dependencies[REPORTING_TASK_DEPENDENCY].update(
+        {
+            REPORTING_MODEL_TIER_DEPENDENCY_KEY: "strong",
+            REPORTING_MODEL_ID_DEPENDENCY_KEY: "deepseek-v4-flash-0731",
+            REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "high",
+            REPORTING_THINKING_BUDGET_DEPENDENCY_KEY: 8192,
+        }
+    )
+    worker = ReportWorkerOpenAIChat(id="qwen3.6-35b-a3b", api_key="test-key")
+
+    with bind_reporting_run_context(context):
+        request_model = worker._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.id == "deepseek-v4-flash-0731"
+    assert request_model.extra_body == {"enable_thinking": False}
+    assert request_model.reasoning_effort is None
 
 
 def test_unknown_task_kind_is_not_projected() -> None:
