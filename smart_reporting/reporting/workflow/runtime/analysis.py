@@ -31,6 +31,7 @@ from .base import (
     REPORT_OUTLINE_HASH_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
     REPORT_PROFILE_COVERAGE_STATE_KEY,
+    REPORT_VISUAL_THEME,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
@@ -107,6 +108,13 @@ _ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
     {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
 )
+
+
+def _visualization_instruction_theme() -> dict[str, Any]:
+    return {
+        **REPORT_VISUAL_THEME,
+        "chartPalette": list(REPORT_VISUAL_THEME["chartPalette"]),
+    }
 
 
 def _analysis_item_complexity(
@@ -344,6 +352,7 @@ class RuntimeAnalysisMixin:
                 "analysisIds": list(section.analysis_ids),
                 "warnings": section_warnings,
                 "visualInspectionMode": context["visual_inspection_mode"],
+                "reportVisualTheme": _visualization_instruction_theme(),
                 "visualizationFacts": facts,
                 "visualizationWorkspace": {
                     "scriptPath": script_path,
