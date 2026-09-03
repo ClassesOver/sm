@@ -236,7 +236,9 @@ REPORT_OUTLINE_HASH_STATE_KEY = "report_outline_hash"
 REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY = "report_document_generated_date"
 REPORT_WORKFLOW_RESULT_STATE_KEY = "report_workflow_result"
 REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
-MAX_REPORT_SECTION_PHASE_ATTEMPTS = 2
+# 每个章节/分析项的 fresh retry 上限；模型未调用工具、工具拒绝或验收失败都必须
+# 重新创建上下文，最多三次，避免单次模型异常直接拖垮整条报表链路。
+MAX_REPORT_SECTION_PHASE_ATTEMPTS = 3
 MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION = 1
 MAX_SECTION_WORK_ITEM_BYTES = 256 * 1024
 

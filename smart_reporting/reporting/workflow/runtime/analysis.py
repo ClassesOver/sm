@@ -1539,8 +1539,7 @@ class RuntimeAnalysisMixin:
             plan_evidence=plan_evidence,
             summarize=summarize,
             read_file=toolkit.coding_read_file,
-            create_file=toolkit.create_analysis_file,
-            overwrite_file=toolkit.overwrite_analysis_file,
+            apply_patch=toolkit.apply_analysis_patch,
             run_script=toolkit.terminal,
             complete=toolkit.complete_analysis_item,
         )

@@ -137,8 +137,7 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
             "submit_visualization_charts",
             "terminal",
             "view_image",
-            "create_analysis_file",
-            "overwrite_analysis_file",
+            "apply_analysis_patch",
         }
     )
 

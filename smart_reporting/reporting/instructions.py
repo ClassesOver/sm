@@ -90,7 +90,7 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     (
         "完整内联 deterministicFacts 时不得默认调用 query_analysis_facts，应直接使用内联的服务端固定事实；"
         "只有 facts 被标记为 truncated 或当前原子管理问题存在明确事实缺口时，才按缺口调用 query_analysis_facts。"
-        "只有固定事实仍不能满足当前原子管理问题时，才读取授权 CSV 并用 create_analysis_file 创建最小补充脚本和 evidence。"
+        "只有固定事实仍不能满足当前原子管理问题时，才读取授权 CSV 并用 apply_analysis_patch 创建最小补充脚本和 evidence。"
         "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组；"
         "如当前结论绑定已生成的图表，必须在 chartIds 中提交其 chartId。"
         "不得连接数据库、执行 SQL、扩大 Dataset 范围或处理其他 analysisId。"
@@ -130,8 +130,13 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "已明确提供的路径；不要给成功的脚本执行附加探测命令。"
     ),
     (
-        "首次写入使用 create_analysis_file，可用 content 一次提交最长 4 MiB 的完整脚本；"
-        "只有读取已有文件并取得当前 SHA-256 后才使用 overwrite_analysis_file；"
+        "脚本修改统一使用 apply_analysis_patch 提交标准 unified diff；已有文件需在 expected_sha256 中提供当前 SHA-256。"
+        "patch 必须完整包含文件头、hunk 头和每一行内容，直接按以下模板生成，不能只写 @@ hunk：\n"
+        "更新：\n--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@\n-old line\n+new line\n"
+        "新增：\n--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@\n+new line\n"
+        "删除：\n--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old line。\n"
+        "单行文件更新必须使用 @@ -1 +1 @@，不得声明不存在的行；按实际文件行数填写 hunk。"
+        "expected_sha256 的值必须是 64 位小写十六进制字符串；新建文件或不需要基线时省略 expected_sha256，禁止填写 true、false 或其他布尔值。"
         "所有补充脚本和 evidence 必须写入任务 JSON 的 analysisOutputRoot；不要预先拆分。"
         "只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"
     ),
@@ -236,9 +241,14 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
-        "首次创建图表脚本只调用 create_analysis_file，并以 path 和 content 一次提交完整脚本；"
-        "覆盖已有文件只调用 overwrite_analysis_file，且必须附带读取回执中的当前 expected_sha256；不调用任何未注册的底层"
-        "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
+        "图表脚本修改统一调用 apply_analysis_patch，新增文件使用 /dev/null 基线，已有文件附带当前 expected_sha256。"
+        "patch 必须完整包含文件头、hunk 头和每一行内容，直接按以下模板生成，不能只写 @@ hunk：\n"
+        "更新：\n--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@\n-old line\n+new line\n"
+        "新增：\n--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@\n+new line\n"
+        "删除：\n--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old line。\n"
+        "单行文件更新必须使用 @@ -1 +1 @@，不得声明不存在的行；按实际文件行数填写 hunk。"
+        "expected_sha256 的值必须是 64 位小写十六进制字符串；新建文件或不需要基线时省略 expected_sha256，禁止填写 true、false 或其他布尔值。"
+        "不调用任何未注册的底层文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"
         "running 和 session_id 后才可用 process，并且只允许 poll、wait 或 kill 该 session_id。"

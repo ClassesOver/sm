@@ -32,7 +32,6 @@ def test_visualization_worker_exposes_only_its_section_toolset() -> None:
             "submit_visualization_charts",
             "terminal",
             "view_image",
-            "create_analysis_file",
-            "overwrite_analysis_file",
+            "apply_analysis_patch",
         }
     )
