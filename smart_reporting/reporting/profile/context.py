@@ -198,7 +198,9 @@ def build_outline_shape_view(
                 }
             )
     capability_values = [
-        item.model_dump(mode="json", by_alias=True) for item in capabilities.capabilities
+        item.model_dump(mode="json", by_alias=True)
+        for item in capabilities.capabilities
+        if item.available
     ]
     terms = [
         item.model_dump(mode="json", by_alias=True)
