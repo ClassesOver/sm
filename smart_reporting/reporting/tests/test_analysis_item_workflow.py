@@ -210,11 +210,18 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
     )
 
-    with pytest.raises(ReportingError, match="report_analysis_script_failed"):
+    with pytest.raises(ReportingError, match="report_analysis_script_failed") as caught:
         await workflow.run(
             _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
         )
 
+    assert caught.value.details == {
+        "exitCode": 1,
+        "output": "bad csv",
+        "outputTruncated": False,
+        "toolCode": None,
+        "toolMessage": None,
+    }
     assert repairs == [False, True, True]
     assert workflow.run_script.await_count == 3
     assert workflow.overwrite_file.await_count == 2

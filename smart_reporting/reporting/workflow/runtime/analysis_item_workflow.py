@@ -468,11 +468,30 @@ class AnalysisItemWorkflow:
             execution = await self.run_script(
                 command=f"python3 {shlex.quote(script_path)}", run_context=run_context
             )
-            self._require_ok(execution, default_code="report_analysis_script_failed")
             exit_code = execution.get("exitCode", execution.get("exit_code"))
-            if exit_code != 0:
-                raise ReportingError("report_analysis_script_failed", "补充分析脚本执行失败。")
+            if execution.get("ok") is False or exit_code != 0:
+                output = str(execution.get("output") or "")
+                raise ReportingError(
+                    "report_analysis_script_failed",
+                    "补充分析脚本执行失败。",
+                    details={
+                        "exitCode": exit_code,
+                        "output": output[:4000],
+                        "outputTruncated": len(output) > 4000,
+                        "toolCode": execution.get("code"),
+                        "toolMessage": execution.get("message"),
+                    },
+                )
         except ReportingError as error:
+            if error.code == "report_analysis_script_failed" and isinstance(error.details, Mapping):
+                logger.error(
+                    "report_analysis_script_execution_failed analysis_id={} exit_code={} "
+                    "output_truncated={} output={}",
+                    state.instruction.get("currentAnalysisId"),
+                    error.details.get("exitCode"),
+                    error.details.get("outputTruncated"),
+                    error.details.get("output"),
+                )
             state.failure = error
             state.evidence = None
             state.statuses["execute-script"] = "retrying"
