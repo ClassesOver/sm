@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from smart_reporting.reporting.agent import _report_model
 from smart_reporting.settings import DEFAULT_AGENT_DB_URL, DEFAULT_WORKSPACE_SNAPSHOT, AgentSettings
 
 
@@ -29,6 +30,9 @@ def test_settings_defaults():
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.model_vllm_reasoning is False
+    assert current.model_fast_id == "qwen3.6-35b-a3b"
+    assert current.model_standard_id == "deepseek-v4-flash-0731"
+    assert current.model_strong_id == "deepseek-v4-flash-0731"
     assert current.report_coding_enable_thinking is True
     assert current.report_coding_temperature == 0.1
     assert current.report_coding_reasoning_effort == "high"
@@ -112,6 +116,24 @@ def test_vllm_reasoning_flag_is_preserved():
     current = settings(AGENT_MODEL_VLLM_REASONING="true")
 
     assert current.model_vllm_reasoning is True
+
+
+def test_model_tier_ids_come_from_environment():
+    current = settings(
+        AGENT_MODEL_FAST="fast-model",
+        AGENT_MODEL_STANDARD="standard-model",
+        AGENT_MODEL_STRONG="strong-model",
+    )
+
+    assert current.model_fast_id == "fast-model"
+    assert current.model_standard_id == "standard-model"
+    assert current.model_strong_id == "strong-model"
+
+
+def test_report_worker_model_uses_standard_tier_configuration():
+    model = _report_model(settings(AGENT_MODEL_STANDARD="tier-standard"), enable_thinking=True)
+
+    assert model.id == "tier-standard"
 
 
 def test_report_vision_model_comes_from_environment():
