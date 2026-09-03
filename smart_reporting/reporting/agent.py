@@ -2015,18 +2015,19 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
         elif bound_effort in {"high", "max"}:
             budget = base_profile.thinking_budget
-            if budget is None:
-                raise ValueError("Reporting Worker 缺少 thinking_budget，无法应用请求档位")
-            requested_budget = reporting_thinking_budget_from_run_context(
-                current_reporting_run_context()
-            )
-            if requested_budget is not None:
-                budget = min(budget, requested_budget)
-            profile = ReportingThinkingProfile.on(
-                reasoning_effort=bound_effort,
-                thinking_budget=budget,
-                temperature=base_profile.temperature,
-            )
+            if budget is not None:
+                requested_budget = reporting_thinking_budget_from_run_context(
+                    current_reporting_run_context()
+                )
+                if requested_budget is not None:
+                    budget = min(budget, requested_budget)
+                profile = ReportingThinkingProfile.on(
+                    reasoning_effort=bound_effort,
+                    thinking_budget=budget,
+                    temperature=base_profile.temperature,
+                )
+            # 全局关闭 thinking 时，任务契约的 high/max 只是路由复杂度建议，不能反向
+            # 开启模型能力；保留 off profile 使 extra_body 清除历史预算，避免 Agno 重试。
         else:
             escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
             escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
