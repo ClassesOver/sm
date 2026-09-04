@@ -97,6 +97,9 @@ SessionRef:
 
 ### Provider 端口
 
+Provider 端口统一提供异步方法，避免在 FastAPI/AgentOS 事件循环中执行阻塞的 Daytona
+客户端或内网 RPC。同步 SDK 只允许存在于 provider 适配器内部，并通过线程边界隔离。
+
 必需操作：
 
 - `ensure_workspace`：按 thread 绑定幂等创建或恢复 workspace。
@@ -105,11 +108,84 @@ SessionRef:
 - `health_check`：只读检查控制面、内核能力和必要 sandbox 工具是否可用。
 - `capabilities`：声明持久会话、PTY、网络策略、分支复制、资源限制和快照能力。
 
-`SandboxHandle` 按职责提供：
+`WorkspaceBinding` 至少包含 `tenant_id`、`user_id`、`company_id`、`thread_id`、
+`idempotency_key` 和经策略解析后的 profile。Provider 必须在创建、恢复、会话操作和销毁时
+校验绑定范围；调用方不能仅凭 `resource_id` 获取其他租户或 thread 的 workspace。
 
-- filesystem：`stat`、`list`、`read`、`write`、`delete`、`copy`、`move`。
-- execution：受超时、输出和工作目录约束的 `run_python_script`；Workflow 不暴露任意 shell 入口。
-- sessions：Python 后台任务的启动、轮询、输入、PTY 中断和停止。
+`SandboxHandle` 按职责提供，方法名和返回字段尽量贴合 Daytona Toolbox API，但参数和对象类型使用本仓库自己的领域 DTO：
+
+- filesystem：`get_file_info`、`list_files`、`create_folder`、`upload_file`、`download_file`、`download_file_stream`、`delete_file`、`move_files`。
+- process：`exec`、`code_run`、`create_session`、`list_sessions`、`get_session`、`delete_session`、`execute_session_command`、`get_session_command`、`get_session_command_logs` 和 `send_session_command_input`。
+- execution：在 process 之上提供受超时、输出和工作目录约束的 `run_python_script`；Workflow 只使用这个受控入口。
+
+Provider SDK 的下层能力与 Daytona 对齐，但不承诺实现 Daytona 的每个云端特性：
+
+| Daytona 能力 | Provider SDK 统一表面 | LocalProvider 默认状态 |
+| --- | --- | --- |
+| sandbox create/get/list/delete/start | `SandboxClient` 生命周期方法 | 支持，资源绑定 `thread + generation` |
+| `sandbox.fs.*` 文件 API | `SandboxHandle.fs` | 支持，路径和大小沿用 WorkspaceService |
+| `sandbox.process.exec` | `SandboxHandle.process.exec` | 支持，但只允许受控 runner 调用 |
+| `sandbox.process.code_run` | `SandboxHandle.process.code_run`（兼容别名） | 映射到固定 Python runner，不扩大模型权限 |
+| session execute/poll/logs/input/delete | `ProcessSession` API | 支持，session 与 generation 绑定 |
+| PTY attach/interrupt | `pty` 参数和 `send_session_command_input` | 按 profile capability 支持 |
+| snapshot/restore/fork | `SnapshotCapability` | Local 默认不支持，返回 `SandboxCapabilityUnsupported` |
+| Daytona SDK 对象、云端 URL、宿主路径 | 不进入领域契约 | 禁止泄露 |
+
+具体统一接口：
+
+```text
+SandboxClient
+  async ensure_workspace(binding) -> SandboxHandle
+  async get_workspace(ref, binding) -> SandboxHandle
+  async list_workspaces(filter, binding) -> list[SandboxSummary]
+  async start_workspace(ref, binding) -> SandboxHandle
+  async stop_workspace(ref, binding) -> SandboxHandle
+  async destroy_workspace(ref, binding) -> DestroyResult
+  async health_check() -> ProviderHealth
+  async capabilities() -> ProviderCapabilities
+
+SandboxHandle
+  ref: SandboxRef
+  fs: FileSystemApi
+  process: ProcessApi
+  execution: ExecutionApi
+
+FileSystemApi
+  async get_file_info(path)
+  async list_files(path)
+  async create_folder(path, mode)
+  async upload_file(content, path)
+  async download_file(path)
+  async download_file_stream(path, timeout)
+  async delete_file(path, recursive)
+  async move_files(source, destination)
+
+ProcessApi
+  async exec(request: ExecRequest) -> ExecResult
+  async code_run(request: CodeRunRequest) -> ExecResult
+  async create_session(session_id) -> SessionRef
+  async list_sessions() -> list[SessionSummary]
+  async get_session(session_id) -> SessionSummary
+  async delete_session(session_id)
+  async execute_session_command(session_id, request) -> CommandResult
+  async get_session_command(session_id, command_id) -> CommandResult
+  async get_session_command_logs(session_id, command_id) -> CommandLogs
+  async send_session_command_input(session_id, command_id, data)
+
+ExecutionApi
+  async run_python_script(request: RunPythonScriptRequest) -> RunPythonScriptResult
+```
+
+`CodeRunRequest` 的代码字段命名为 `code`，并只允许相对 workspace 工作目录和有界超时、输出参数；`ExecRequest` 的命令字段命名为 `command`。这些 DTO 的结果字段与 Daytona 对齐：保留 `cwd`、`timeout`、`run_async`、`session_id`、`command_id`、`exit_code`、`stdout`、`stderr`、`status`、`offset`、`next_offset` 和 `has_more`。字段使用 snake_case 的内部 DTO，边界序列化时再映射为现有工具契约的 camelCase。`exec` 的 `command` 只允许 provider 或受信服务提交已注册的固定命令；LocalProvider 不接受模型提供的任意 shell 字符串。`code_run` 是 Daytona 语义的兼容别名，LocalProvider 将其映射到同一固定 Python runner。LocalProvider 不能伪造不具备的字段；不支持的 snapshot、fork 或云端生命周期能力必须通过 capability 明确返回不支持。
+
+`ProcessApi` 整体是 Provider 内部和受信服务调用的兼容原语，不直接作为模型工具暴露；
+Reporting 模型只能通过 Reporting 工具调用 `ExecutionApi.run_python_script` 和经过
+`WorkspaceService` 校验的文件操作。后台 session 的创建、命令执行、日志读取和输入也只供
+`TaskExecutionKernel` 等受信服务使用，不能注册成模型可见的通用 terminal。需要执行报告渲染、
+哈希或验收等固定系统任务时，由服务端生成固定 argv/runner 请求，禁止把模型字符串原样透传为
+shell。
+
+Provider SDK 与 Daytona 的兼容目标是“调用语义兼容”，不是“替换导入路径”：上层不得导入 `daytona.Sandbox`、`SessionExecuteRequest` 或 Toolbox API model，也不得依赖 Daytona 的异常类。所有后端异常统一转换为 `SandboxProviderError`、`SandboxNotFound`、`SandboxBusy`、`SandboxTimeout`、`SandboxCapabilityUnsupported` 和 `SandboxPolicyDenied`。
 
 不支持的能力必须返回统一的 `SandboxCapabilityUnsupported`，不得隐式降级到宿主机执行。
 
@@ -130,11 +206,15 @@ RunPythonScriptResult:
   stdout: bounded_text
   stderr: bounded_text
   script_hash: sha256
-  dependency_bundle_digest: sha256
+  dependency_bundle_digest: optional_sha256
 ```
 
 `network`、解释器路径、rootfs 路径和 dependency bundle 不属于请求字段，由 LocalProvider
 策略固定。脚本、工作目录和资源参数在进入 sandboxd 前完成大小、路径、身份和 thread 绑定校验。
+`run_python_script` 接收脚本内容；Provider 在 sandbox 内使用受控临时文件和固定解释器 argv 执行，
+执行结束后清理临时文件。需要保留源码时由 Workflow 另行调用文件 API 写入 workspace，不能把
+宿主路径或解释器路径放进请求。DaytonaProvider 若无法提供 dependency bundle digest，结果字段为
+`null`，不能伪造本地 bundle 身份。
 
 ## Provider 设计
 
@@ -155,25 +235,28 @@ RunPythonScriptResult:
 - 使用固定摘要的 rootfs bundle 和工具链，并由 sandboxd 自动选择经过审核的 dependency bundle；rootfs 和依赖目录只读，workspace 是唯一可写目录。
 - 通过 cgroup v2 限制 CPU、内存、PIDs、文件描述符、磁盘和输出；通过 seccomp 过滤系统调用。
 - Python 脚本经受控 runner 通道执行，支持同步任务、后台任务和 PTY；runner 不接受任意 shell 字符串。
-- runner 默认拒绝 `execve`/`execveat` 等子进程启动路径；只允许 Python 解释器本身及经独立审核的 native 线程能力，脚本中的 `os.system`、`subprocess` 和动态外部命令必须失败。
+- runner 在解释器启动阶段允许一次受控的解释器 `execve`，进入脚本运行阶段后拒绝 `execve`/`execveat` 等子进程启动路径；只允许 Python 解释器本身及经独立审核的 native 线程能力，脚本中的 `os.system`、`subprocess` 和动态外部命令必须失败。
 - 默认无网络；需要访问内网服务时，只能走显式 allowlist 的 egress proxy。
 
 `local-sandboxd` 是唯一可以创建沙箱进程的组件。它不得接受任意 shell、任意宿主路径或未注册的环境变量，并且必须把 workspace、进程和审计事件绑定到 `thread` 与 `generation`。
 
 进程级沙箱不等同于 Kata/VM。对最高风险的任意不可信代码，应继续使用 Daytona 或其他经过独立验证的强隔离后端；LocalProvider 的适用范围必须由租户策略显式控制。
 
-### Agno CodeMode 适配
+### CodeMode 的定位
 
-Agno `3.0.1` 的 `CodeMode` 作为 Python 执行内核使用，不作为隔离边界：
+Agno `3.0.1` 的 `CodeMode` 不进入生产 Reporting 主链路。它是可选的可信用户交互式分析工具，适合需要跨多轮保留 DataFrame、变量和 import 的 notebook 场景；它不提供沙箱、网络隔离、资源隔离或企业 HA。
 
-- `local-sandboxd` 为每个 `thread` 创建一个受限 worker，并在 worker 内复用一个 `CodeMode` 实例；`session_id` 映射到 `thread + generation`。
-- CodeMode 使用 profile 固定的 Python 解释器，通过 `python`、`cwd` 和清洗后的 `env` 启动 IPython kernel；宿主依赖通过策略允许的只读路径提供给该解释器。
-- 生产配置固定 `allow_shell=False`、有界 `timeout`、`max_output_chars` 和 `max_result_bytes`；模型不能直接调用 CodeMode 的 `%%bash` 或 shell 工具。
-- `allow_shell=False` 只关闭 CodeMode 的 shell 魔法命令，不是安全边界；子进程和外部命令仍由 sandboxd 的 seccomp/runner 策略拒绝。
-- Workflow 仍只调用上层结构化 `run_python_script`，由 LocalProvider 转换为 CodeMode 的 `arun(session_id, code)`；CodeMode 的 `Popen`、ZMQ 和 kernel 对象不得泄露到业务层。
-- 模型生成脚本默认不启用 CodeMode snapshot。workspace 文件和执行记录负责持久化；需要恢复内存变量时必须单独评审 dill snapshot 的代码执行风险，并绑定用户、thread 和 generation。
+价值评估：
 
-当前锁定依赖只声明 `agno==3.0.1`；实现 CodeMode 时必须在依赖输入和 `uv.lock` 中纳入同版本的 `agno[code]` 能力（`ipykernel`、`jupyter_client`、`dill`），不得在运行时联网安装。
+- 交互式探索价值高：跨轮次保留变量和 DataFrame，适合可信用户的人工分析和调试。
+- 生产确定性价值低：kernel 生命周期、状态恢复和结果序列化会增加故障面，不能替代一次性 runner。
+- 隔离价值为零：CodeMode 继承所在进程权限，`allow_shell=False` 也不是安全边界。
+
+生产 Reporting 使用一次性 `PythonScriptRunner`：Workflow 将脚本内容交给 Provider，Provider 在
+sandbox 内创建受控临时文件并通过固定的 Python runner 执行；依赖、解释器、资源限制和网络策略
+均由 provider 固定。若未来启用 CodeMode，必须运行在 Daytona 或 `local-sandboxd` 已创建的隔离
+worker 内，固定 `allow_shell=False`、超时和输出上限，默认关闭 dill snapshot，并且不能让模型
+直接接触 CodeMode 对象。
 
 ## 内网部署边界
 
@@ -224,6 +307,11 @@ SANDBOX_ROOTFS_DIGEST=sha256:...              # 固定 rootfs bundle
 ## 脚本依赖解析
 
 `run_python_script` 接口只接收 Python 脚本、工作目录和资源限制，不接收依赖 bundle ID、解释器路径或任意宿主路径。LocalProvider 在创建 workspace 时使用节点侧 dependency catalog 选择一个固定、签名且只读的 bundle：
+
+“访问宿主依赖”只通过离线制品流程实现：管理员从节点已审核的 Python 环境构建 dependency
+bundle，记录版本清单、ABI、SBOM 和 digest，再由 catalog 以只读方式挂载到 sandbox。脚本不能
+通过 `sys.path`、环境变量或绝对路径直接读取宿主 `site-packages`，也不能让 Provider 临时扫描
+或修改宿主环境；这样既保留现有离线依赖，又避免宿主路径穿透沙箱边界。
 
 1. 先按 `profile + arch + python_abi + tenant_policy` 选取默认 reporting bundle。
 2. 对脚本执行受限的 AST import 检查，用于提前发现明显的未知顶层模块；该检查不是安全边界。
@@ -288,19 +376,20 @@ workspace 使用共享存储或对象存储快照；rootfs bundle 在节点间�
 2. 添加 fake provider 与 provider contract tests。
 3. 将现有 Daytona 逻辑封装为 DaytonaProvider，行为保持不变。
 4. 迁移 Workflow 中直接访问 Daytona SDK 对象的调用。
-5. 实现 LocalProvider 与 `local-sandboxd` 的受限 API。
-6. 实现 `LinuxProcessSandboxAdapter`，在受限 worker 内接入 Agno CodeMode，覆盖 rootfs、只读依赖、归档传输、Python 执行、后台任务和 PTY 模型。
-7. 实现 Ubuntu profile 的内核预检、namespace/cgroup/seccomp 策略和节点部署包。
-8. 实现 openEuler profile 的内核预检、工具链适配和 x86_64/aarch64 节点部署包。
-9. 增加 workspace 快照、节点放置、reconciler 和内网 HA 故障恢复。
-10. 删除 Daytona 专属的上层字段、旧入口和无效适配代码。
+5. 定义 Daytona-compatible Provider SDK、领域 DTO、能力矩阵和统一错误映射。
+6. 实现 LocalProvider 与 `local-sandboxd` 的受限 API。
+7. 实现 `LinuxProcessSandboxAdapter` 和一次性 `PythonScriptRunner`，覆盖 rootfs、只读依赖、归档传输、Python 执行、后台任务和 PTY 模型。
+8. 实现 Ubuntu profile 的内核预检、namespace/cgroup/seccomp 策略和节点部署包。
+9. 实现 openEuler profile 的内核预检、工具链适配和 x86_64/aarch64 节点部署包。
+10. 增加 workspace 快照、节点放置、reconciler 和内网 HA 故障恢复。
+11. 删除 Daytona 专属的上层字段、旧入口和无效适配代码。
 
 ## 验证策略
 
 - provider contract tests 覆盖正常、超时、资源丢失、能力不支持、重复创建和重复销毁。
-- Daytona、`local-sandboxd` 和 Agno CodeMode 场景使用隔离集成测试并标记 `integration`。
+- Daytona、`local-sandboxd`、Provider SDK 和 PythonScriptRunner 场景使用隔离集成测试并标记 `integration`。
 - PostgreSQL registry 的迁移、锁、重启恢复和并发绑定使用 PostgreSQL 集成测试。
-- Local 预检覆盖 namespace/cgroup/seccomp 能力缺失、rootfs digest 不匹配、只读依赖挂载失败、CodeMode shell 禁用未生效、网络策略不可用、权限错误和内网 mTLS 失败。
+- Local 预检覆盖 namespace/cgroup/seccomp 能力缺失、rootfs digest 不匹配、只读依赖挂载失败、PythonScriptRunner 子进程拒绝未生效、网络策略不可用、权限错误和内网 mTLS 失败。
 - 迁移期间先运行现有 WorkspaceService、task_execution 和 Reporting Workflow 定点测试，再按跨模块风险扩大。
 
 ## 参考资料
