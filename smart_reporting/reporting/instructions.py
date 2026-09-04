@@ -295,6 +295,8 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
         (
             "当前是 visualization_section Task，只处理任务 JSON 指定章节。脚本只能读取签发的"
             " visualizationFacts 和 evidenceFiles，写入签发的 scriptPath 与 chartOutputRoot；"
+            "必须先调用 apply_analysis_patch 提交 scriptPath，收到成功回执前禁止调用 terminal；"
+            "terminal 只能在脚本提交成功后原样执行签发命令，不得先探测、猜测或重复尝试命令。"
             "完成脚本并执行成功后，随后只调用一次 submit_visualization_charts 提交该章全部图表草案。"
             "不得调用全局图表登记或分析冻结终态。"
         ),
@@ -375,6 +377,11 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
     (
         "完成证据读取后必须立即二选一提交终态工具：证据充足调用 render_report_section，"
         "证据不足调用 request_analysis_rework；禁止以纯文本、分析过程或待办说明结束本轮。"
+    ),
+    (
+        "每个 evidenceFiles 路径最多调用一次 read_file；read_file 成功后不得再次读取同一路径，"
+        "也不得循环读取同一回执。完成当前证据读取后必须立即调用 render_report_section 或"
+        "request_analysis_rework。"
     ),
     (
         "render_report_section 或 request_analysis_rework 接受后，服务端会签发唯一 finish_task 调用。"
