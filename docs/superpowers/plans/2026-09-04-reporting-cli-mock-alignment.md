@@ -113,7 +113,7 @@ adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `Rep
 1. fake repository 实现 Coordinator 所需的 `create_task_with_initial_attempt`、`get_task_snapshot`、`open_initial`、`resume_current`、`attempt_instruction`、`finalize_finish`、`claim_lease`、`release_lease`，保留 state version、lease epoch 和重复终态检查。
 2. 使用 `MockReportingToolRuntime`，输入、数据和输出根目录均为测试内存对象；不接触 SQLite、真实 Daytona 或用户目录。
 3. adapter 内构造最小 `ReportingDraftWorkflow`，其 `run_analysis` 调用生产 AnalysisItem executor，`submit_visualization` 和 `draft_section` 调用生产 `ReportingAgentExecutor`；阶段工具通过 `build_reporting_tools()` 生成，测试只记录生产 schema/hooks，不重写权限表。
-4. adapter 的 `arun()` 返回 `SimpleNamespace(status="completed", content=...)`；提供 `acontinue_run()` 以满足 CLI 协议，但正常闭环不得调用它。
+4. adapter 的 `arun()` 返回 `SimpleNamespace(status="completed", content={"sectionCode": "section-1"})`；提供 `acontinue_run()` 以满足 CLI 协议，但正常闭环不得调用它。
 5. 记录 `RunContext.run_id/session_id/user_id/dependencies[TASK_EXECUTION_DEPENDENCY]`，断言三类阶段共用同形 binding。
 
 - [ ] **Step 4: 运行测试并验证真实边界**
