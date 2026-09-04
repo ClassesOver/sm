@@ -51,6 +51,10 @@ REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
     "agentos_reporting_visualization_production_only"
 )
 REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY = "agentos_reporting_visualization_script_written"
+REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY = (
+    "agentos_reporting_visualization_script_executed"
+)
+REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY = "agentos_reporting_visualization_recovery_read"
 REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
     "agentos_reporting_visualization_script_failure_pending"
 )
@@ -601,6 +605,39 @@ def reporting_visualization_script_session_available_from_run_context(
         isinstance(sessions, Sequence)
         and not isinstance(sessions, (str, bytes))
         and any(isinstance(session_id, str) and session_id for session_id in sessions)
+    )
+
+
+def _reporting_visualization_state_flag(
+    run_context: RunContext | None,
+    key: str,
+) -> bool:
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return False
+    return run_context.session_state.get(key) is True
+
+
+def reporting_visualization_script_written_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    return _reporting_visualization_state_flag(
+        run_context, REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY
+    ) or reporting_visualization_script_session_available_from_run_context(run_context)
+
+
+def reporting_visualization_script_executed_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    return _reporting_visualization_state_flag(
+        run_context, REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY
+    )
+
+
+def reporting_visualization_recovery_read_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    return _reporting_visualization_state_flag(
+        run_context, REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY
     )
 
 

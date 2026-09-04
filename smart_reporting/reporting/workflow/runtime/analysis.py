@@ -446,6 +446,7 @@ class RuntimeAnalysisMixin:
                         )
                     toolkit = toolkits[0]
                     committed_source: str | None = None
+                    committed_sha256: str | None = None
 
                     async def generate(
                         request: Mapping[str, Any], task_context: RunContext
@@ -483,7 +484,7 @@ class RuntimeAnalysisMixin:
                     async def write_script(
                         path: str, source: str, task_context: RunContext
                     ) -> FileIdentity:
-                        nonlocal committed_source
+                        nonlocal committed_sha256, committed_source
                         patch = "".join(
                             difflib.unified_diff(
                                 ([] if committed_source is None else committed_source.splitlines(keepends=True)),
@@ -493,7 +494,11 @@ class RuntimeAnalysisMixin:
                             )
                         )
                         receipt = await toolkit.apply_analysis_patch(
-                            patch, run_context=task_context
+                            patch,
+                            expected_sha256=(
+                                {path: committed_sha256} if committed_sha256 is not None else None
+                            ),
+                            run_context=task_context,
                         )
                         artifacts = receipt.get("artifacts") if isinstance(receipt, Mapping) else None
                         if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
@@ -502,8 +507,10 @@ class RuntimeAnalysisMixin:
                                 str(receipt.get("message", "章节图表脚本写入未被接受。")),
                                 details=dict(receipt) if isinstance(receipt, Mapping) else None,
                             )
+                        identity = FileIdentity.model_validate(artifacts[0])
                         committed_source = source
-                        return FileIdentity.model_validate(artifacts[0])
+                        committed_sha256 = identity.sha256
+                        return identity
 
                     async def execute_script(
                         command: str, task_context: RunContext

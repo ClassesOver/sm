@@ -2,7 +2,7 @@ import ast
 import hashlib
 import inspect
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import fields
@@ -74,9 +74,10 @@ from .phase import (
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
-    REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
@@ -97,9 +98,11 @@ from .phase import (
     reporting_visual_inspection_mode_from_run_context,
     reporting_visualization_exploration_budget_exhausted_from_run_context,
     reporting_visualization_exploration_count,
-    reporting_visualization_production_only_from_run_context,
     reporting_visualization_recovery_from_run_context,
+    reporting_visualization_recovery_read_from_run_context,
+    reporting_visualization_script_executed_from_run_context,
     reporting_visualization_script_session_available_from_run_context,
+    reporting_visualization_script_written_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
 from .tools import build_reporting_tools
@@ -1597,6 +1600,16 @@ async def normalize_reporting_tool_arguments(
             # 绕过去重。首次空回执保留；串行重复会在执行前短路，并行重复在完成时拒绝。
             empty_queries[query_identity] = details
     succeeded = isinstance(result, dict) and result.get("ok") is True
+    if succeeded and isinstance(state, dict) and task_kind == "visualization_section":
+        if reporting_visualization_recovery_from_run_context(run_context) and function_name in {
+            "read_file",
+            "read_tool_output",
+        }:
+            state[REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY] = True
+        if function_name == "terminal" and result.get("status") == "completed":
+            state[REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY] = True
+        if function_name == "process" and result.get("status") == "completed":
+            state[REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY] = True
     if (
         succeeded
         and task_kind == "visualization_section"
@@ -1841,30 +1854,95 @@ def _report_model_tool_name(tool: Any) -> str | None:
     return function_name if isinstance(function_name, str) else None
 
 
+def _visualization_history_state(messages: list[Message]) -> tuple[bool, bool, bool]:
+    """从 Agno 工具回执补齐当前 run 的可视化阶段状态。"""
+
+    recovery_read = script_written = script_executed = False
+    for message in messages:
+        role = getattr(message, "role", None)
+        if role != "tool" and str(role).lower() not in {"tool", "messagerole.tool"}:
+            continue
+        name = getattr(message, "tool_name", None) or getattr(message, "name", None)
+        content = getattr(message, "content", None)
+        payload: Any = content
+        if isinstance(content, str):
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                try:
+                    payload = ast.literal_eval(content)
+                except (SyntaxError, ValueError):
+                    continue
+        elif isinstance(content, Sequence) and not isinstance(content, (bytes, bytearray, str)):
+            for part in content:
+                text = (
+                    part.get("text") if isinstance(part, Mapping) else getattr(part, "text", None)
+                )
+                if isinstance(text, str):
+                    try:
+                        payload = json.loads(text)
+                    except (TypeError, ValueError):
+                        try:
+                            payload = ast.literal_eval(text)
+                        except (SyntaxError, ValueError):
+                            continue
+                    break
+        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+            continue
+        if name in {"read_file", "read_tool_output"}:
+            recovery_read = True
+        elif name == "apply_analysis_patch":
+            script_written = True
+        elif name in {"terminal", "process"} and payload.get("status") == "completed":
+            script_executed = True
+    return recovery_read, script_written, script_executed
+
+
 def _visualization_production_tool_allowed(
     run_context: RunContext | None,
     tool_name: str,
+    *,
+    history_state: tuple[bool, bool, bool] | None = None,
 ) -> bool:
-    if reporting_task_kind_from_run_context(
-        run_context
-    ) != "visualization_section" or not reporting_visualization_production_only_from_run_context(
-        run_context
-    ):
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return True
-    return (
-        tool_name in REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES
-        or (
-            reporting_visualization_recovery_from_run_context(run_context)
-            and tool_name in {"read_file", "read_tool_output"}
-        )
-        or (
-            tool_name == "process"
-            and reporting_visualization_script_session_available_from_run_context(run_context)
-        )
-        or (
-            tool_name == "inspect_chart"
-            and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
-        )
+    # 可视化工具按受信状态逐步开放，避免模型在同一轮看到并提前调用后续动作。
+    # recovery 首轮只能读取已提交脚本；读取成功后只允许重新提交 patch。
+    history_recovery_read, history_written, history_executed = history_state or (
+        False,
+        False,
+        False,
+    )
+    recovery_read = (
+        reporting_visualization_recovery_read_from_run_context(run_context) or history_recovery_read
+    )
+    script_written = (
+        reporting_visualization_script_written_from_run_context(run_context) or history_written
+    )
+    script_executed = (
+        reporting_visualization_script_executed_from_run_context(run_context) or history_executed
+    )
+    if reporting_visualization_recovery_from_run_context(run_context):
+        if not recovery_read:
+            # 首轮同时保留 patch，兼容模型在读取旧脚本后直接提交修复；terminal
+            # 和终态工具仍严格隐藏，避免恢复任务跳过脚本修复。
+            return tool_name in {"read_file", "read_tool_output", "apply_analysis_patch"}
+        if not script_written:
+            return tool_name == "apply_analysis_patch"
+    if not script_written:
+        return tool_name == "apply_analysis_patch"
+    if (
+        reporting_visualization_script_session_available_from_run_context(run_context)
+        and not script_executed
+    ):
+        return tool_name == "process"
+    if not script_executed:
+        return tool_name == "terminal"
+    if tool_name == "inspect_chart":
+        return reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
+    return tool_name == "submit_visualization_charts" or (
+        tool_name == "view_image"
+        and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
     )
 
 
@@ -1895,6 +1973,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
     run_context = current_reporting_run_context()
     task_kind = reporting_task_kind_from_run_context(run_context)
+    history_state = _visualization_history_state(messages)
     if phase is None or tools is None:
         return tools
     return [
@@ -1933,7 +2012,9 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         )
         and not (
             task_kind == "visualization_section"
-            and not _visualization_production_tool_allowed(run_context, name)
+            and not _visualization_production_tool_allowed(
+                run_context, name, history_state=history_state
+            )
         )
     ]
 
@@ -2062,6 +2143,23 @@ def _phase_filtered_model_call(
         )
     elif len(args) >= 3:
         positional[2] = _phase_filtered_report_tools(messages, positional[2])
+    projected_tools = updated_kwargs.get("tools")
+    if projected_tools is None and len(positional) >= 3:
+        projected_tools = positional[2]
+    if (
+        reporting_task_kind_from_run_context(current_reporting_run_context())
+        == "visualization_section"
+    ):
+        visible_names = [
+            name
+            for tool in projected_tools or ()
+            if (name := _report_model_tool_name(tool)) is not None
+        ]
+        if len(visible_names) == 1:
+            updated_kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": visible_names[0]},
+            }
     return tuple(positional), updated_kwargs
 
 
@@ -2447,6 +2545,7 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
         )
         allowed_calls = []
         blocked = []
+        history_state = _visualization_history_state(messages)
         for tool_call in tool_calls:
             function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
             name = function.get("name") if isinstance(function, dict) else None
@@ -2462,7 +2561,9 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
             )
             production_forbidden = isinstance(
                 name, str
-            ) and not _visualization_production_tool_allowed(current_reporting_run_context(), name)
+            ) and not _visualization_production_tool_allowed(
+                current_reporting_run_context(), name, history_state=history_state
+            )
             lifecycle_forbidden = isinstance(
                 name, str
             ) and not _visualization_lifecycle_tool_allowed(current_reporting_run_context(), name)
