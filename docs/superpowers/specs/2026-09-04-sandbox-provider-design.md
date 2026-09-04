@@ -86,6 +86,7 @@ SandboxRef:
   node: optional
   resource_id
   generation
+  dependency_bundle_digest: optional
 
 SessionRef:
   sandbox_ref
@@ -107,10 +108,33 @@ SessionRef:
 `SandboxHandle` 按职责提供：
 
 - filesystem：`stat`、`list`、`read`、`write`、`delete`、`copy`、`move`。
-- execution：受超时、输出和工作目录约束的同步命令。
-- sessions：后台命令启动、轮询、输入、PTY 中断和停止。
+- execution：受超时、输出和工作目录约束的 `run_python_script`；Workflow 不暴露任意 shell 入口。
+- sessions：Python 后台任务的启动、轮询、输入、PTY 中断和停止。
 
 不支持的能力必须返回统一的 `SandboxCapabilityUnsupported`，不得隐式降级到宿主机执行。
+
+### Python 脚本执行契约
+
+Workflow 只调用结构化的 `run_python_script`，不拼接 shell 命令：
+
+```text
+RunPythonScriptRequest:
+  script: string
+  cwd: relative_workspace_path
+  timeout_ms: bounded_integer
+  output_limit_bytes: bounded_integer
+
+RunPythonScriptResult:
+  status: succeeded | failed | timed_out | dependency_unavailable
+  exit_code: optional_integer
+  stdout: bounded_text
+  stderr: bounded_text
+  script_hash: sha256
+  dependency_bundle_digest: sha256
+```
+
+`network`、解释器路径、rootfs 路径和 dependency bundle 不属于请求字段，由 LocalProvider
+策略固定。脚本、工作目录和资源参数在进入 sandboxd 前完成大小、路径、身份和 thread 绑定校验。
 
 ## Provider 设计
 
@@ -128,14 +152,28 @@ SessionRef:
 `LocalProvider` 的唯一执行适配器。每个 thread 对应一个长期存活的 sandbox 进程组，文件和会话契约沿用现有 `WorkspaceService` 约束：
 
 - `local-sandboxd` 为每个 workspace 创建独立的 user、mount、pid 和 net namespace。
-- 使用固定摘要的 rootfs bundle 和工具链；rootfs 只读，workspace 是唯一可写目录。
+- 使用固定摘要的 rootfs bundle 和工具链，并由 sandboxd 自动选择经过审核的 dependency bundle；rootfs 和依赖目录只读，workspace 是唯一可写目录。
 - 通过 cgroup v2 限制 CPU、内存、PIDs、文件描述符、磁盘和输出；通过 seccomp 过滤系统调用。
-- 命令经受控 exec/attach 通道执行，支持同步命令、后台会话和 PTY。
+- Python 脚本经受控 runner 通道执行，支持同步任务、后台任务和 PTY；runner 不接受任意 shell 字符串。
+- runner 默认拒绝 `execve`/`execveat` 等子进程启动路径；只允许 Python 解释器本身及经独立审核的 native 线程能力，脚本中的 `os.system`、`subprocess` 和动态外部命令必须失败。
 - 默认无网络；需要访问内网服务时，只能走显式 allowlist 的 egress proxy。
 
 `local-sandboxd` 是唯一可以创建沙箱进程的组件。它不得接受任意 shell、任意宿主路径或未注册的环境变量，并且必须把 workspace、进程和审计事件绑定到 `thread` 与 `generation`。
 
 进程级沙箱不等同于 Kata/VM。对最高风险的任意不可信代码，应继续使用 Daytona 或其他经过独立验证的强隔离后端；LocalProvider 的适用范围必须由租户策略显式控制。
+
+### Agno CodeMode 适配
+
+Agno `3.0.1` 的 `CodeMode` 作为 Python 执行内核使用，不作为隔离边界：
+
+- `local-sandboxd` 为每个 `thread` 创建一个受限 worker，并在 worker 内复用一个 `CodeMode` 实例；`session_id` 映射到 `thread + generation`。
+- CodeMode 使用 profile 固定的 Python 解释器，通过 `python`、`cwd` 和清洗后的 `env` 启动 IPython kernel；宿主依赖通过策略允许的只读路径提供给该解释器。
+- 生产配置固定 `allow_shell=False`、有界 `timeout`、`max_output_chars` 和 `max_result_bytes`；模型不能直接调用 CodeMode 的 `%%bash` 或 shell 工具。
+- `allow_shell=False` 只关闭 CodeMode 的 shell 魔法命令，不是安全边界；子进程和外部命令仍由 sandboxd 的 seccomp/runner 策略拒绝。
+- Workflow 仍只调用上层结构化 `run_python_script`，由 LocalProvider 转换为 CodeMode 的 `arun(session_id, code)`；CodeMode 的 `Popen`、ZMQ 和 kernel 对象不得泄露到业务层。
+- 模型生成脚本默认不启用 CodeMode snapshot。workspace 文件和执行记录负责持久化；需要恢复内存变量时必须单独评审 dill snapshot 的代码执行风险，并绑定用户、thread 和 generation。
+
+当前锁定依赖只声明 `agno==3.0.1`；实现 CodeMode 时必须在依赖输入和 `uv.lock` 中纳入同版本的 `agno[code]` 能力（`ipykernel`、`jupyter_client`、`dill`），不得在运行时联网安装。
 
 ## 内网部署边界
 
@@ -163,7 +201,7 @@ AgentOS 及其业务容器不直接执行宿主机命令，也不挂载 Docker�
 | `ubuntu` | Ubuntu 22.04/24.04；user/mount/pid/net namespace、cgroup v2、seccomp；bubblewrap 或等效受控启动器 | Ubuntu 固定版本 rootfs bundle | 社区工具链成熟，便于现有 Ubuntu 节点开箱部署。 |
 | `openeuler` | openEuler 22.03 LTS SP4/24.03 LTS；同等 namespace、cgroup v2、seccomp 能力；优先使用发行版提供的 bubblewrap | openEuler 固定版本 rootfs bundle | 满足国产系统和 x86_64/aarch64 适配要求，不绑定容器引擎。 |
 
-配置模板只暴露稳定的控制面、profile 和 rootfs 字段：
+配置模板只暴露稳定的控制面、profile 和 rootfs 字段；依赖 bundle 由 sandboxd 的节点策略管理，不进入模型输入协议：
 
 ```text
 SANDBOX_PROVIDER=daytona|local
@@ -177,10 +215,22 @@ SANDBOX_ROOTFS_DIGEST=sha256:...              # 固定 rootfs bundle
 - `SANDBOX_PROVIDER=daytona` 时使用现有 Daytona 配置；Local 专属字段不得参与资源创建。
 - `SANDBOX_PROVIDER=local` 时，`SANDBOX_LOCAL_PROFILE`、`SANDBOX_LOCAL_ENDPOINT` 和 `SANDBOX_ROOTFS_DIGEST` 必须存在并通过格式校验。
 - `SANDBOX_LOCAL_PROFILE=ubuntu` 或 `openeuler` 只决定受支持的发行版、工具链和内核预检集合；执行协议保持一致。
+- dependency bundle 由节点侧 dependency catalog 按 profile、CPU 架构、Python ABI 和租户策略自动解析；模型不需要也不能提交 bundle ID。
 - namespace、cgroup、seccomp、网络禁用、rootfs 只读和资源上限由 profile 与策略文件固定，不能通过环境变量覆盖。
 - profile 预检失败时启动失败关闭，不自动切换另一发行版、启动器或安全策略。
 
 `nsjail` 和 bubblewrap 仅是沙箱构造工具，不代表完整安全策略。没有官方预构建包或未完成独立验证的工具不得进入默认 profile；不得在运行时静默降级到裸 `subprocess`。
+
+## 脚本依赖解析
+
+`run_python_script` 接口只接收 Python 脚本、工作目录和资源限制，不接收依赖 bundle ID、解释器路径或任意宿主路径。LocalProvider 在创建 workspace 时使用节点侧 dependency catalog 选择一个固定、签名且只读的 bundle：
+
+1. 先按 `profile + arch + python_abi + tenant_policy` 选取默认 reporting bundle。
+2. 对脚本执行受限的 AST import 检查，用于提前发现明显的未知顶层模块；该检查不是安全边界。
+3. 运行时若出现未收录的导入，返回 `DependencyUnavailable` 和规范化模块名；不得联网下载、执行 `pip install` 或切换到宿主任意 `site-packages`。
+4. 实际使用的 bundle digest 写入 sandbox generation、执行记录和审计事件，后续恢复必须复用同一 digest。
+
+管理员通过离线制品流程发布新 bundle（包含版本清单、SBOM、签名和 Ubuntu/openEuler 的架构与 Python ABI 标记），再更新 catalog 的默认映射。bundle 更新创建新的 generation，不修改正在运行的会话。
 
 ## 持久化、幂等与恢复
 
@@ -239,7 +289,7 @@ workspace 使用共享存储或对象存储快照；rootfs bundle 在节点间�
 3. 将现有 Daytona 逻辑封装为 DaytonaProvider，行为保持不变。
 4. 迁移 Workflow 中直接访问 Daytona SDK 对象的调用。
 5. 实现 LocalProvider 与 `local-sandboxd` 的受限 API。
-6. 实现 `LinuxProcessSandboxAdapter`，覆盖 rootfs、归档传输、exec、后台会话和 PTY 模型。
+6. 实现 `LinuxProcessSandboxAdapter`，在受限 worker 内接入 Agno CodeMode，覆盖 rootfs、只读依赖、归档传输、Python 执行、后台任务和 PTY 模型。
 7. 实现 Ubuntu profile 的内核预检、namespace/cgroup/seccomp 策略和节点部署包。
 8. 实现 openEuler profile 的内核预检、工具链适配和 x86_64/aarch64 节点部署包。
 9. 增加 workspace 快照、节点放置、reconciler 和内网 HA 故障恢复。
@@ -248,9 +298,9 @@ workspace 使用共享存储或对象存储快照；rootfs bundle 在节点间�
 ## 验证策略
 
 - provider contract tests 覆盖正常、超时、资源丢失、能力不支持、重复创建和重复销毁。
-- Daytona 和 `local-sandboxd` 场景使用隔离集成测试并标记 `integration`。
+- Daytona、`local-sandboxd` 和 Agno CodeMode 场景使用隔离集成测试并标记 `integration`。
 - PostgreSQL registry 的迁移、锁、重启恢复和并发绑定使用 PostgreSQL 集成测试。
-- Local 预检覆盖 namespace/cgroup/seccomp 能力缺失、rootfs digest 不匹配、网络策略不可用、权限错误和内网 mTLS 失败。
+- Local 预检覆盖 namespace/cgroup/seccomp 能力缺失、rootfs digest 不匹配、只读依赖挂载失败、CodeMode shell 禁用未生效、网络策略不可用、权限错误和内网 mTLS 失败。
 - 迁移期间先运行现有 WorkspaceService、task_execution 和 Reporting Workflow 定点测试，再按跨模块风险扩大。
 
 ## 参考资料
