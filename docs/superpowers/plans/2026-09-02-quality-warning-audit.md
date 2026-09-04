@@ -56,7 +56,7 @@ def test_unknown_rule_is_rejected() -> None:
 
 - [ ] **Step 2: Run the focused tests and verify they fail**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py -k "registered_rule or unknown_rule" -q`
+Run: `.venv/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py -k "registered_rule or unknown_rule" -q`
 
 Expected: FAIL because the rule registry and emitter contract do not exist.
 
@@ -68,7 +68,7 @@ Extend `WarningFinding` with `disposition: Literal["informational", "quality_war
 
 - [ ] **Step 4: Run focused tests and format**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py smart_reporting/tests/test_quality_warnings.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py smart_reporting/tests/test_quality_warnings.py -q`
 
 Expected: PASS for rule lookup, unknown-rule rejection, explicit subject validation, legacy defaults, and existing warning tests.
 
@@ -124,7 +124,7 @@ def test_source_warning_adapter_preserves_dataset_references() -> None:
 
 - [ ] **Step 2: Run tests and verify the new behavior fails**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py -q`
 
 Expected: FAIL because adapter and collector implementations are absent.
 
@@ -138,7 +138,7 @@ Implement `QualityAuditCollector.add()/extend()/build()/flush()`. `build()` sort
 
 - [ ] **Step 4: Verify deterministic and bounded behavior**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py -q`
 
 Expected: PASS, including reversed input order producing identical fingerprints and summaries, duplicate notices collapsing to one finding, source phase union, unknown rule rejection, and notice/detail count limits.
 
@@ -163,7 +163,7 @@ Add tests that call `record_successful_checks()` with two rule groups and assert
 
 - [ ] **Step 2: Run the PostgreSQL-focused tests and verify failure**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warnings_persistence.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/tests/test_quality_warnings_persistence.py -q`
 
 Expected: FAIL because the batch protocol, schema columns, and atomic implementation do not exist. Tests requiring PostgreSQL remain marked `integration` and use the existing isolated database fixture.
 
@@ -181,7 +181,7 @@ Keep `metadata.create_all` for new databases, then execute PostgreSQL `ALTER TAB
 
 - [ ] **Step 6: Verify persistence and commit**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warnings_persistence.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/tests/test_quality_warnings_persistence.py -q`
 
 Expected: PASS for atomicity, idempotency, concurrent ordering, resolution, tenant isolation, and old-row compatibility.
 
@@ -204,7 +204,7 @@ Assert that a `review_required` semantic finding leaves `formalReleaseAllowed` t
 
 - [ ] **Step 2: Run the focused publication tests and verify failure**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_semantic_contract.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_semantic_contract.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q`
 
 Expected: FAIL because publication currently guesses subjects and loops over `record_successful_check()` directly.
 
@@ -218,7 +218,7 @@ Return `auditSummary` containing `total`, `byDisposition`, `bySourcePhase`, `req
 
 - [ ] **Step 5: Verify publication semantics and commit**
 
-Run: `.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_semantic_contract.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q`
+Run: `.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_semantic_contract.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q`
 
 Expected: PASS with unchanged hard-gate behavior and explicit audit summary boundaries.
 
@@ -253,10 +253,10 @@ Use a fake repository to make `flush()` fail once then succeed and assert the co
 Run:
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py smart_reporting/tests/test_quality_warnings.py smart_reporting/tests/test_quality_warnings_persistence.py smart_reporting/reporting/tests/test_reporting_semantic_contract.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q
-.venv-agent/bin/ruff format --check smart_reporting/quality_warnings smart_reporting/reporting/workflow/runtime/publication.py smart_reporting/tests smart_reporting/reporting/tests
-.venv-agent/bin/ruff check smart_reporting/quality_warnings smart_reporting/reporting/workflow/runtime/publication.py smart_reporting/tests smart_reporting/reporting/tests
-.venv-agent/bin/python -m py_compile smart_reporting/quality_warnings/*.py smart_reporting/reporting/workflow/runtime/publication.py
+.venv/bin/python -m pytest smart_reporting/tests/test_quality_warning_audit.py smart_reporting/tests/test_quality_warnings.py smart_reporting/tests/test_quality_warnings_persistence.py smart_reporting/reporting/tests/test_reporting_semantic_contract.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q
+.venv/bin/ruff format --check smart_reporting/quality_warnings smart_reporting/reporting/workflow/runtime/publication.py smart_reporting/tests smart_reporting/reporting/tests
+.venv/bin/ruff check smart_reporting/quality_warnings smart_reporting/reporting/workflow/runtime/publication.py smart_reporting/tests smart_reporting/reporting/tests
+.venv/bin/python -m py_compile smart_reporting/quality_warnings/*.py smart_reporting/reporting/workflow/runtime/publication.py
 git diff --check
 ```
 

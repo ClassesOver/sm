@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-python_bin="${AGENTOS_PYTHON:-${repo_root}/.venv-agent/bin/python}"
+python_bin="${AGENTOS_PYTHON:-${repo_root}/.venv/bin/python}"
 
 cd "${repo_root}"
 "${python_bin}" -c '

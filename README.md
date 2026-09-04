@@ -41,7 +41,7 @@ docker compose up -d --build
 
 ```bash
 TIKTOKEN_CACHE_DIR="$PWD/data/tiktoken-cache" \
-  .venv-agent/bin/python -c 'import tiktoken; tiktoken.get_encoding("o200k_base")'
+  .venv/bin/python -c 'import tiktoken; tiktoken.get_encoding("o200k_base")'
 sha256sum data/tiktoken-cache/fb374d419588a4632f3f557e76b4b70aebbca790
 ```
 
@@ -64,8 +64,8 @@ docker compose up -d --no-build --force-recreate reporting-os
 本地运行：
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-agent uv sync --python 3.12 --no-install-project
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
+UV_PROJECT_ENVIRONMENT=.venv uv sync --python 3.12 --no-install-project
+AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 ```
 
 当前服务使用 Agno 3.0，部署时必须连接全新数据库。不要复用 Agno 2.x 的 PostgreSQL

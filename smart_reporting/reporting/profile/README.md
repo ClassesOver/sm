@@ -316,7 +316,7 @@ Profile 中重复维护机构名称。
 仓库内的 Profile 加载与继承定点测试：
 
 ```bash
-.venv-agent/bin/python -m pytest -q \
+.venv/bin/python -m pytest -q \
   smart_reporting/reporting/tests/test_profile_v1.py \
   smart_reporting/reporting/tests/test_measure_semantics_v1.py
 ```

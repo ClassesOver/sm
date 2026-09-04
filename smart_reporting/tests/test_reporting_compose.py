@@ -14,7 +14,7 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
     service = compose["services"]["reporting-os"]
 
     assert "command" not in service
-    assert 'CMD ["/app/.venv-agent/bin/python", "-m", "smart_reporting.app"]' in (
+    assert 'CMD ["/app/.venv/bin/python", "-m", "smart_reporting.app"]' in (
         repository_root / "Dockerfile"
     ).read_text(encoding="utf-8")
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
