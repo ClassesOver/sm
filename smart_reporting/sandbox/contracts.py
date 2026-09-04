@@ -228,6 +228,7 @@ class ExecutionApi(Protocol):
 
 class SandboxHandle(Protocol):
     ref: SandboxRef
+    state: SandboxState
     fs: FileSystemApi
     process: ProcessApi
     execution: ExecutionApi

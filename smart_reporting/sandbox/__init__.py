@@ -23,6 +23,7 @@ from .contracts import (
     SessionSummary,
     WorkspaceBinding,
 )
+from .daytona import DaytonaProvider
 from .errors import (
     DependencyUnavailable,
     SandboxBusy,
@@ -38,6 +39,7 @@ __all__ = [
     "CodeRunRequest",
     "CommandLogs",
     "CommandResult",
+    "DaytonaProvider",
     "DependencyUnavailable",
     "DestroyResult",
     "ExecRequest",
