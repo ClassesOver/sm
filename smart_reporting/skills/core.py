@@ -20,8 +20,8 @@ from ..task_execution.acceptance import (
     validate_artifact_pattern,
 )
 
-CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_coding_skill_script_receipts"
-CODING_SKILL_SCRIPT_ROOT = "/home/daytona/.agentos/skill-scripts"
+TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_task_execution_skill_script_receipts"
+TASK_EXECUTION_SKILL_SCRIPT_ROOT = "/home/daytona/.agentos/skill-scripts"
 MAX_SKILL_SCRIPT_RECEIPTS = 64
 MAX_SKILL_VALIDATORS = 32
 MAX_SKILL_VALIDATOR_SCRIPT_BYTES = 1024 * 1024
@@ -237,7 +237,7 @@ async def skill_script_receipt_hook(
         if not thread_id:
             return result
         install_digest = hashlib.sha256(f"{skill}:{path}:{digest}".encode()).hexdigest()
-        install_dir = f"{CODING_SKILL_SCRIPT_ROOT}/{install_digest}"
+        install_dir = f"{TASK_EXECUTION_SKILL_SCRIPT_ROOT}/{install_digest}"
         readonly_path = f"{install_dir}/{Path(path).name}"
         lock_key = f"skill-script-install:{workspace_service._hash(thread_id)}"
         async with workspace_service._async_client() as client:
@@ -273,10 +273,18 @@ async def skill_script_receipt_hook(
         result = json.dumps(payload, ensure_ascii=False) if isinstance(result, str) else payload
     if not isinstance(run_context.session_state, dict):
         run_context.session_state = {}
-    receipts = run_context.session_state.setdefault(CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY, {})
+    legacy_receipts = run_context.session_state.pop("agentos_coding_skill_script_receipts", None)
+    if (
+        TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY not in run_context.session_state
+        and isinstance(legacy_receipts, dict)
+    ):
+        run_context.session_state[TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY] = legacy_receipts
+    receipts = run_context.session_state.setdefault(
+        TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY, {}
+    )
     if not isinstance(receipts, dict):
         receipts = {}
-        run_context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY] = receipts
+        run_context.session_state[TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY] = receipts
     key = f"{skill}:{path}"
     receipts.pop(key, None)
     receipts[key] = {

@@ -187,7 +187,7 @@ _TRANSITIONS: dict[ReportingPhase, frozenset[ReportingPhase]] = {
         {
             ReportingPhase.VISUALIZATION,
             ReportingPhase.ANALYSIS_REWORK,
-            # 逐章 Coding 工作流在本阶段内完成分析、图表和章节成稿；最终 Markdown
+            # 逐章 Reporting 工作流在本阶段内完成分析、图表和章节成稿；最终 Markdown
             # 由服务端确定性装配并已校验全部章节产物后直接完成，不再经过旧全局阶段。
             ReportingPhase.COMPLETED,
             ReportingPhase.FAILED,

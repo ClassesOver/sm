@@ -12,7 +12,7 @@ from smart_reporting.reporting.workflow.checkpoint import reporting_phase_task_k
         ("visualization_section", {"section_code": "section_001"}),
     ),
 )
-def test_analysis_task_identity_accepts_current_coding_task_kinds(
+def test_analysis_task_identity_accepts_current_reporting_task_kinds(
     task_kind: str, identity: dict[str, str]
 ) -> None:
     task_key = reporting_phase_task_key("run-1", 1, "analysis", task_kind=task_kind, **identity)

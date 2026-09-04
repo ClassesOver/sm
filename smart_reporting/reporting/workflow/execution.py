@@ -1,9 +1,9 @@
-"""Reporting 专属的单次 Agno worker 执行边界。"""
+"""Reporting 专属的单次 Agno Agent 执行边界。"""
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from inspect import isawaitable
 from threading import Lock
 from typing import Any
@@ -12,17 +12,25 @@ import anyio
 from agno.agent import Agent
 from agno.run import RunContext
 from loguru import logger
+from pydantic import TypeAdapter
 
 from ...async_utils import complete_cleanup
 from ...model_routing import (
     DEFAULT_TASK_POLICIES,
     ModelRouter,
     ModelRouteRequest,
+    ModelTier,
     RouteFailure,
+    TaskPolicy,
 )
-from ...task_execution import TaskExecutionRepository, TaskScope, TaskState
-from ...task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
-from ...task_execution.session import TaskSession
+from ...task_execution import (
+    TASK_EXECUTION_DEPENDENCY,
+    TaskExecutionKernel,
+    TaskExecutionRepository,
+    TaskExecutionScope,
+    TaskSession,
+    TaskState,
+)
 from ..models import ReportingError
 from ..phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
@@ -52,7 +60,6 @@ from ..phase import (
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     bind_reporting_run_context,
     capture_reporting_projection_metrics,
-    record_reporting_tool_event,
     reporting_analysis_fact_budget_contract_from_acceptance_contract,
     reporting_analysis_fact_usage_from_run_context,
     reporting_phase_from_acceptance_contract,
@@ -68,11 +75,9 @@ from ..phase import (
 )
 from .orchestration import record_step_model_metrics
 
-WorkerEventSink = Callable[[TaskScope, str, Any], Awaitable[None]]
-ReportTaskExecutor = Callable[[str, RunContext], Awaitable[Any]]
+ReportingEventSink = Callable[[TaskExecutionScope, str, Any], Awaitable[None]]
+ReportTaskExecutor = Callable[["ReportingTaskInvocation"], Awaitable[Any]]
 MAX_REPORT_INSTRUCTION_BYTES = 512 * 1024
-DEFAULT_REPORT_WORKER_IDLE_TIMEOUT_SECONDS = 900
-MAX_REPORT_WORKER_CONTINUATIONS = 1
 
 _MODEL_TOKEN_FIELDS = (
     ("input_tokens", "inputTokens"),
@@ -82,6 +87,27 @@ _MODEL_TOKEN_FIELDS = (
     ("cache_read_tokens", "cacheReadTokens"),
     ("cache_write_tokens", "cacheWriteTokens"),
 )
+
+
+def _raise_recorded_agent_error(agent: Agent) -> None:
+    """恢复模型适配器记录的结构化输出异常。"""
+
+    report_run_error = getattr(agent.model, "report_run_error", None)
+    error = report_run_error() if callable(report_run_error) else None
+    if isinstance(error, Exception):
+        raise error
+
+
+@dataclass(frozen=True, slots=True)
+class ReportingTaskInvocation:
+    """协调器交给具体 executor 的一次已绑定任务调用。"""
+
+    instruction: str
+    run_context: RunContext
+    continuing: bool
+    scope: TaskExecutionScope
+    parent_run_id: str
+    model_metrics_settlement: _TaskModelMetricsSettlement
 
 
 class _TaskModelMetricsSettlement:
@@ -169,41 +195,24 @@ class _TaskModelMetricsSettlement:
         )
 
 
-def _raise_recorded_agent_error(agent: Agent) -> None:
-    """Agno 最终以 error RunOutput 收敛时，恢复模型边界记录的原异常对象。"""
-
-    report_run_error = getattr(agent.model, "report_run_error", None)
-    error = report_run_error() if callable(report_run_error) else None
-    if isinstance(error, Exception):
-        raise error
-
-
-class ReportTaskRunner:
-    """由 Reporting Workflow 驱动一次 worker run，不复用 Coding Supervisor 状态机。"""
+class ReportingTaskCoordinator:
+    """协调 Reporting Task 生命周期，不持有或构造任何 Agent。"""
 
     def __init__(
         self,
         repository: TaskExecutionRepository,
-        worker: Agent,
         execution_cleanup: TaskExecutionKernel,
         *,
-        event_sink: WorkerEventSink | None = None,
-        idle_timeout_seconds: float = DEFAULT_REPORT_WORKER_IDLE_TIMEOUT_SECONDS,
+        model_profiles: Mapping[ModelTier, Any],
+        task_policies: Mapping[str, TaskPolicy] = DEFAULT_TASK_POLICIES,
     ):
-        if idle_timeout_seconds <= 0:
-            raise ValueError("idle_timeout_seconds 必须大于 0")
         self.repository = repository
-        self.worker = worker
         self.execution_cleanup = execution_cleanup
-        self.event_sink = event_sink
-        self.idle_timeout_seconds = idle_timeout_seconds
-        self._model_profiles = getattr(worker.model, "_report_model_profiles", None)
-        if self._model_profiles is None:
-            raise ValueError("Report Worker 缺少模型档位目录")
+        self._model_router = ModelRouter(model_profiles, task_policies)
 
     async def start(
         self,
-        scope: TaskScope,
+        scope: TaskExecutionScope,
         instruction: str,
         *,
         acceptance_contract: dict[str, Any],
@@ -217,10 +226,10 @@ class ReportTaskRunner:
 
     async def run(
         self,
-        scope: TaskScope,
+        scope: TaskExecutionScope,
         *,
         parent_run_id: str = "",
-        executor: ReportTaskExecutor | None = None,
+        executor: ReportTaskExecutor,
     ) -> dict[str, Any]:
         async with TaskSession(self.repository, scope) as session:
             await self.execution_cleanup.cleanup_old_epoch(scope, session.lease.epoch)
@@ -240,7 +249,7 @@ class ReportTaskRunner:
             continuing = task.state in {TaskState.ACTIVE, TaskState.SUSPENDED}
             reporting_phase: str | None = None
             reporting_task_kind: str | None = None
-            worker_run_context: RunContext | None = None
+            task_run_context: RunContext | None = None
             model_metrics_settlement: _TaskModelMetricsSettlement | None = None
             task_outcome = "failed"
             try:
@@ -291,7 +300,7 @@ class ReportTaskRunner:
                     if reporting_task_kind == "section"
                     else reporting_task_kind
                 )
-                route = ModelRouter(self._model_profiles, DEFAULT_TASK_POLICIES).select(
+                route = self._model_router.select(
                     ModelRouteRequest(
                         task_kind=route_task_kind or "facade",
                         complexity=complexity,
@@ -447,10 +456,10 @@ class ReportTaskRunner:
                     }
                 }
                 initial_session_state: dict[str, Any] = {}
-                worker_session_id = _worker_session_id(scope)
-                worker_run_context = RunContext(
+                task_session_id = _task_session_id(scope, attempt.attempt_no)
+                task_run_context = RunContext(
                     run_id=attempt.internal_run_id,
-                    session_id=worker_session_id,
+                    session_id=task_session_id,
                     user_id=scope.owner_user_id,
                     session_state=(initial_session_state if not continuing else {}),
                     dependencies=dependencies,
@@ -460,25 +469,22 @@ class ReportTaskRunner:
                 # continuation 和模型投影共享同一个可持久化 session_state。
                 with (
                     capture_reporting_projection_metrics() as projection_metrics,
-                    bind_reporting_run_context(worker_run_context),
+                    bind_reporting_run_context(task_run_context),
                 ):
-                    output = await self._execute_task(
-                        executor=executor,
-                        continuing=continuing,
-                        instruction=instruction,
-                        internal_run_id=attempt.internal_run_id,
-                        worker_session_id=worker_session_id,
-                        owner_user_id=scope.owner_user_id,
-                        dependencies=dependencies,
-                        run_context=worker_run_context,
-                        scope=scope,
-                        parent_run_id=parent_run_id,
-                        model_metrics_settlement=model_metrics_settlement,
+                    output = await executor(
+                        ReportingTaskInvocation(
+                            instruction=instruction,
+                            run_context=task_run_context,
+                            continuing=continuing,
+                            scope=scope,
+                            parent_run_id=parent_run_id,
+                            model_metrics_settlement=model_metrics_settlement,
+                        )
                     )
                 session.assert_alive()
                 updated = await self.repository.get_task_snapshot(scope.external_run_id)
                 if updated is None or updated.state is not TaskState.FINISHING:
-                    raise ReportingError("report_worker_failed", "报表 Coding 分析未完成验收。")
+                    raise ReportingError("report_worker_failed", "Reporting Task 未完成验收。")
                 completed = await self.repository.finalize_finish(
                     scope.external_run_id,
                     session.lease,
@@ -500,7 +506,7 @@ class ReportTaskRunner:
                         REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
                         {
                             "queryCount": reporting_analysis_fact_usage_from_run_context(
-                                worker_run_context
+                                task_run_context
                             )
                         },
                     )
@@ -508,7 +514,7 @@ class ReportTaskRunner:
                     setattr(
                         error,
                         REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-                        reporting_visualization_usage_from_run_context(worker_run_context),
+                        reporting_visualization_usage_from_run_context(task_run_context),
                     )
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise
@@ -516,230 +522,7 @@ class ReportTaskRunner:
                 if model_metrics_settlement is not None:
                     model_metrics_settlement.settle(outcome=task_outcome)
 
-    async def _execute_task(
-        self,
-        *,
-        executor: ReportTaskExecutor | None,
-        continuing: bool,
-        instruction: str,
-        internal_run_id: str,
-        worker_session_id: str,
-        owner_user_id: str,
-        dependencies: dict[str, Any],
-        run_context: RunContext,
-        scope: TaskScope,
-        parent_run_id: str,
-        model_metrics_settlement: _TaskModelMetricsSettlement | None = None,
-    ) -> Any:
-        if executor is not None:
-            return await executor(instruction, run_context)
-        return await self._run_worker(
-            continuing=continuing,
-            instruction=instruction,
-            internal_run_id=internal_run_id,
-            worker_session_id=worker_session_id,
-            owner_user_id=owner_user_id,
-            dependencies=dependencies,
-            run_context=run_context,
-            scope=scope,
-            parent_run_id=parent_run_id,
-            model_metrics_settlement=model_metrics_settlement,
-        )
-
-    async def _run_worker(
-        self,
-        *,
-        continuing: bool,
-        instruction: str,
-        internal_run_id: str,
-        worker_session_id: str,
-        owner_user_id: str,
-        dependencies: dict[str, Any],
-        run_context: RunContext,
-        scope: TaskScope,
-        parent_run_id: str,
-        model_metrics_settlement: _TaskModelMetricsSettlement | None = None,
-    ) -> Any:
-        """在同一 Agno run 上恢复非领域异常，禁止重放过期的 Reporting 指令。
-
-        Reporting 工具会推进当前 analysis 游标并写入工作区。Agno Agent.retries 会重新
-        使用原始 run input；失败 run 已启用 tool-batch checkpoint，因此只允许一次公共
-        acontinue_run 从同一 analysis 的持久化消息末尾恢复。新的 analysis 使用独立 Task、
-        run 和 session，不能继承这里的 continuation。
-        """
-
-        use_continuation = continuing
-        binding = dependencies.get(TASK_EXECUTION_DEPENDENCY)
-        task_kind = (
-            binding.get(REPORTING_TASK_KIND_DEPENDENCY_KEY)
-            if isinstance(binding, Mapping)
-            else None
-        )
-        terminal_tools: tuple[str, ...]
-        if task_kind == "analysis_item":
-            terminal_tools = ("complete_analysis_item",)
-        elif task_kind == "visualization_section":
-            terminal_tools = ("submit_visualization_charts",)
-        elif task_kind == "section":
-            terminal_tools = ("render_report_section", "request_analysis_rework")
-        else:
-            terminal_tools = ()
-        for recovery_attempt in range(MAX_REPORT_WORKER_CONTINUATIONS + 1):
-            try:
-                if use_continuation:
-                    if task_kind == "section" and recovery_attempt > 0:
-                        recovery_instruction = (
-                            "先读取当前文件并确认实际内容。服务端已保留本 run 成功读取的证据。"
-                            "立即停止继续读取和推演；"
-                            "证据充足时只调用 render_report_section，证据不足时只调用 "
-                            "request_analysis_rework。不得输出解释性文本。"
-                        )
-                    elif task_kind == "analysis_item" and recovery_attempt > 0:
-                        recovery_instruction = (
-                            "先读取当前文件并确认实际内容。服务端已保留本 run 成功读取和写入的事实。"
-                            "立即停止继续探索；"
-                            "只使用已有事实调用 complete_analysis_item，不得输出解释性文本。"
-                        )
-                    elif task_kind == "visualization_section" and recovery_attempt > 0:
-                        recovery_instruction = (
-                            "服务端已保留本 run 已生成的该章图表文件。立即停止重新探索;"
-                            "脚本尚未执行时先且只执行一次签发的本章脚本;"
-                            "随后只调用一次 submit_visualization_charts 提交该章全部图表草案,"
-                            "缺失的图表不要提交。不得调用 read_file,不得输出解释性文本。"
-                        )
-                    else:
-                        recovery_instruction = (
-                            "先读取当前文件或脚本并确认实际内容，再修正失败动作、执行、检查结果并登记；"
-                            "从失败工具调用后的已持久化消息继续，保留服务端已经接受的 analysis 进度，"
-                            "不得重放原始任务或重新提交已完成 analysisId。"
-                        )
-                    run_result: Any = self.worker.acontinue_run(
-                        run_id=internal_run_id,
-                        input=recovery_instruction,
-                        stream=True,
-                        stream_events=True,
-                        session_id=worker_session_id,
-                        user_id=owner_user_id,
-                        dependencies=dependencies,
-                        run_context=run_context,
-                    )
-                else:
-                    run_result = self.worker.arun(
-                        instruction,
-                        stream=True,
-                        stream_events=True,
-                        run_id=internal_run_id,
-                        session_id=worker_session_id,
-                        user_id=owner_user_id,
-                        dependencies=dependencies,
-                        run_context=run_context,
-                    )
-                output = await self._consume_run(
-                    run_result,
-                    scope,
-                    parent_run_id,
-                    continuation=use_continuation,
-                    model_metrics_settlement=model_metrics_settlement,
-                )
-                _raise_recorded_agent_error(self.worker)
-                if not terminal_tools:
-                    return output
-                updated = await self.repository.get_task_snapshot(scope.external_run_id)
-                if updated is not None and updated.state is TaskState.FINISHING:
-                    return output
-                missing_terminal = ReportingError(
-                    "report_worker_terminal_tool_missing",
-                    "Reporting Worker 以普通文本结束，未提交当前阶段终态工具。",
-                    details={
-                        "taskKind": task_kind,
-                        "requiredTerminalTools": list(terminal_tools),
-                    },
-                )
-                if recovery_attempt >= MAX_REPORT_WORKER_CONTINUATIONS:
-                    raise missing_terminal
-                if task_kind in {"section", "visualization_section"}:
-                    # 阶段提交是一次性终态；普通文本没有推进任何持久化状态。
-                    # 继续同一 Agno run 会把完整历史再次带入模型并放大探索，
-                    # 交给外层 fresh attempt，恢复原始错误和阶段边界。可视化章节
-                    # 已生成的文件和 durable 图表登记会在新 Task 中复用。
-                    raise missing_terminal
-                logger.warning(
-                    "report_worker_terminal_tool_missing_continuation run_id={} task_kind={} "
-                    "required_tools={}",
-                    internal_run_id,
-                    task_kind,
-                    ",".join(terminal_tools),
-                )
-                use_continuation = True
-            except ReportingError:
-                raise
-            except Exception as error:
-                if recovery_attempt >= MAX_REPORT_WORKER_CONTINUATIONS:
-                    raise
-                logger.warning(
-                    "report_worker_error_continuation run_id={} attempt={} max_attempts={} "
-                    "error_type={}",
-                    internal_run_id,
-                    recovery_attempt + 1,
-                    MAX_REPORT_WORKER_CONTINUATIONS,
-                    type(error).__name__,
-                )
-                use_continuation = True
-
-        raise RuntimeError("Reporting Worker continuation 状态不可达。")
-
-    async def _consume_run(
-        self,
-        run_result: Any,
-        scope: TaskScope,
-        parent_run_id: str,
-        *,
-        continuation: bool = False,
-        model_metrics_settlement: _TaskModelMetricsSettlement | None = None,
-    ) -> Any:
-        with anyio.fail_after(self.idle_timeout_seconds):
-            output = await run_result if isawaitable(run_result) else run_result
-        if not hasattr(output, "__aiter__"):
-            return output
-        last_event: Any = None
-        model_response_events: list[Any] = []
-        accept_model_events = not continuation
-        iterator = output.__aiter__()
-        try:
-            while True:
-                try:
-                    # analysis 总时长不设硬上限；只限制相邻事件的空闲时间。这样长报告可
-                    # 持续运行，而模型请求、hook 或持久化永久挂起时会进入 fresh retry。
-                    with anyio.fail_after(self.idle_timeout_seconds):
-                        event = await anext(iterator)
-                except StopAsyncIteration:
-                    break
-                last_event = event
-                record_reporting_tool_event(event)
-                if model_metrics_settlement is not None:
-                    raw_event = getattr(event, "event", None) or getattr(event, "type", None)
-                    event_type = (
-                        str(getattr(raw_event, "value", raw_event) or "").replace("_", "").lower()
-                    )
-                    if event_type == "runcontinued":
-                        # Agno 3.0 的 continuation 在本轮模型请求前发出 RunContinued。
-                        # 重连层可能先重印同一 run 的历史事件，边界前的完成回执必须
-                        # 丢弃；边界后的响应按出现顺序追加稳定 modelResponseIndex。
-                        model_response_events.clear()
-                        accept_model_events = True
-                    elif event_type == "modelrequestcompleted" and accept_model_events:
-                        model_response_events.append(event)
-                if self.event_sink is not None and parent_run_id:
-                    try:
-                        await self.event_sink(scope, parent_run_id, event)
-                    except Exception:
-                        pass
-        finally:
-            if model_metrics_settlement is not None:
-                model_metrics_settlement.record_stream(model_response_events)
-        return last_event
-
-    async def cancel(self, scope: TaskScope) -> None:
+    async def cancel(self, scope: TaskExecutionScope) -> None:
         task = await self.repository.get_task_snapshot(scope.external_run_id)
         if task is None or task.state in {
             TaskState.COMPLETED,
@@ -750,7 +533,7 @@ class ReportTaskRunner:
         await self.repository.cancel_and_reject(scope)
         await self.execution_cleanup.cleanup_disconnect(scope, task.lease_epoch)
 
-    async def _cancel_and_cleanup(self, scope: TaskScope, lease_epoch: int) -> None:
+    async def _cancel_and_cleanup(self, scope: TaskExecutionScope, lease_epoch: int) -> None:
         try:
             await self.repository.cancel_and_reject(scope)
         finally:
@@ -767,7 +550,7 @@ class ReportTaskRunner:
         if not isinstance(receipt, dict):
             raise ReportingError(
                 "report_artifact_acceptance_missing",
-                "报表 Coding 任务缺少正式产物验收回执。",
+                "Reporting Task 缺少正式产物验收回执。",
             )
         result = dict(receipt)
         if model_metrics:
@@ -777,6 +560,59 @@ class ReportTaskRunner:
         return result
 
 
-def _worker_session_id(scope: TaskScope) -> str:
-    digest = hashlib.sha256(f"{scope.thread_id}:{scope.external_run_id}".encode()).hexdigest()[:32]
-    return f"report-worker-{digest}"
+class ReportingStructuredAgentExecutor:
+    """固定阶段的单次结构化 Agent 调用边界。
+
+    该执行器不接收 Toolkit，也不实现 continuation；阶段 Workflow 负责所有副作用和
+    终态提交，Agent 只能返回已声明 schema 的候选对象。
+    """
+
+    def __init__(self, agent: Agent, *, idle_timeout_seconds: float = 900) -> None:
+        self.agent = agent
+        self.idle_timeout_seconds = idle_timeout_seconds
+
+    async def __call__(self, invocation: ReportingTaskInvocation) -> Any:
+        """兼容 ReportingTaskCoordinator 的 executor 协议。"""
+
+        return await self.run(
+            invocation.instruction,
+            scope=invocation.scope,
+            run_context=invocation.run_context,
+        )
+
+    async def run(
+        self,
+        instruction: str,
+        *,
+        scope: TaskExecutionScope,
+        run_context: RunContext,
+    ) -> Any:
+        with anyio.fail_after(self.idle_timeout_seconds):
+            result = self.agent.arun(
+                instruction,
+                stream=False,
+                session_id=_task_session_id(scope, 0),
+                user_id=scope.owner_user_id,
+                run_context=run_context,
+            )
+            output = await result if isawaitable(result) else result
+        content = getattr(output, "content", output)
+        schema = getattr(self.agent, "output_schema", None)
+        if schema is not None:
+            try:
+                valid_instance = isinstance(content, schema)
+            except TypeError:
+                valid_instance = False
+            if not valid_instance:
+                validator = getattr(schema, "model_validate", None)
+                try:
+                    content = validator(content) if callable(validator) else TypeAdapter(schema).validate_python(content)
+                except Exception as error:
+                    raise ReportingError(
+                        "report_phase_output_invalid", "结构化 Agent 未返回声明的阶段结果。"
+                    ) from error
+        return content
+
+
+def _task_session_id(scope: TaskExecutionScope, attempt_no: int) -> str:
+    return f"task-execution:{scope.external_run_id}:attempt:{attempt_no}"

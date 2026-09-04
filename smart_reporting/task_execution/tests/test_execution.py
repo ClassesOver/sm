@@ -23,36 +23,35 @@ from sqlalchemy import text
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
 from smart_reporting.database import create_agent_database
-from smart_reporting.reporting.tools import ReportWorkspaceTaskToolkit
+from smart_reporting.reporting.tools import ReportingToolkit
 from smart_reporting.skills import (
-    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+    TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillValidatorRegistry,
     load_sandbox_execution_skills,
     skill_script_receipt_hook,
 )
 from smart_reporting.task_execution.execution import (
-    CODING_EXECUTION_MIGRATION_STATE_KEY,
-    CODING_FINISH_FAILURE_STATE_KEY,
-    CODING_TASK_DEPENDENCY,
-    CODING_TOOL_FAILURE_STATE_KEY,
-    CODING_TOOL_OUTPUT_STATE_KEY,
-    CODING_TOOL_PROGRESS_STATE_KEY,
     MAX_PARALLEL_READ_TOOLS,
     MAX_TERMINAL_COMMAND_BYTES,
-    CodingExecutionKernel,
-    CodingTaskScope,
-    WorkspaceCodingToolkit,
-    _absolute_paths,
+    TASK_EXECUTION_DEPENDENCY,
+    TASK_EXECUTION_MIGRATION_STATE_KEY,
+    TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY,
+    TaskExecutionKernel,
+    TaskExecutionRuntime,
     _task_tool_parallel_safe,
-    create_coding_tool_scheduler_hook,
-    normalize_coding_function_call_arguments,
+    absolute_paths,
+    create_task_tool_scheduler_hook,
+    normalize_task_function_call_arguments,
 )
 from smart_reporting.task_execution.execution_support import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSIONS_STATE_KEY,
 )
-from smart_reporting.task_execution.models import CodingScope, Lease
-from smart_reporting.task_execution.repository import CodingRepositoryError, CodingTaskRepository
+from smart_reporting.task_execution.models import Lease, TaskExecutionScope
+from smart_reporting.task_execution.repository import (
+    TaskExecutionRepository,
+    TaskExecutionRepositoryError,
+)
 from smart_reporting.task_execution.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncFakeFs,
@@ -77,7 +76,7 @@ async def execution_runtime(tmp_path):
     if not database_url:
         pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务执行集成测试。")
     database = create_agent_database(database_url)
-    repository = CodingTaskRepository(database.async_db)
+    repository = TaskExecutionRepository(database.async_db)
     await repository.initialize()
     async with database.async_engine.begin() as connection:
         await connection.execute(text("TRUNCATE agentos_coding.agentos_coding_tasks CASCADE"))
@@ -91,7 +90,7 @@ async def execution_runtime(tmp_path):
     )
     sandbox_id = str(synchronous.sandbox_for("thread").id)
     task = await repository.create_task_with_initial_attempt(
-        CodingScope("external-run", "user", "thread", sandbox_id, "coding-agent"),
+        TaskExecutionScope("external-run", "user", "thread", sandbox_id, "coding-agent"),
         "执行测试任务",
     )
     lease = await repository.claim_lease("external-run", "request-a")
@@ -103,7 +102,7 @@ async def execution_runtime(tmp_path):
         user_id="user",
         session_state={},
         dependencies={
-            CODING_TASK_DEPENDENCY: {
+            TASK_EXECUTION_DEPENDENCY: {
                 "externalRunId": "external-run",
                 "leaseOwner": "request-a",
                 "leaseEpoch": lease.epoch,
@@ -116,7 +115,7 @@ async def execution_runtime(tmp_path):
         repository=repository,
         synchronous=synchronous,
         workspace=workspace,
-        kernel=CodingExecutionKernel(workspace, repository),
+        kernel=TaskExecutionKernel(workspace, repository),
         context=context,
     )
     async with database.async_engine.begin() as connection:
@@ -146,16 +145,16 @@ async def test_v2_scope_rejects_stale_or_mismatched_snapshot_bindings(
     runtime = execution_runtime
     context = copy(runtime.context)
     context.dependencies = {
-        CODING_TASK_DEPENDENCY: dict(runtime.context.dependencies[CODING_TASK_DEPENDENCY])
+        TASK_EXECUTION_DEPENDENCY: dict(runtime.context.dependencies[TASK_EXECUTION_DEPENDENCY])
     }
     snapshot = await runtime.repository.get_task_snapshot("external-run")
     assert snapshot is not None
     if invalid == "owner":
-        context.dependencies[CODING_TASK_DEPENDENCY]["leaseOwner"] = "other-owner"
+        context.dependencies[TASK_EXECUTION_DEPENDENCY]["leaseOwner"] = "other-owner"
     elif invalid == "epoch":
-        context.dependencies[CODING_TASK_DEPENDENCY]["leaseEpoch"] += 1
+        context.dependencies[TASK_EXECUTION_DEPENDENCY]["leaseEpoch"] += 1
     elif invalid == "epoch_type":
-        context.dependencies[CODING_TASK_DEPENDENCY]["leaseEpoch"] = True
+        context.dependencies[TASK_EXECUTION_DEPENDENCY]["leaseEpoch"] = True
     elif invalid == "expiry":
         expired = replace(
             snapshot, lease_expires_at=execution_module.utcnow() - timedelta(seconds=1)
@@ -168,13 +167,13 @@ async def test_v2_scope_rejects_stale_or_mismatched_snapshot_bindings(
     elif invalid == "internal_run":
         context.run_id = "other-internal-run"
     else:
-        context.dependencies[CODING_TASK_DEPENDENCY]["sandboxId"] = "other-sandbox"
+        context.dependencies[TASK_EXECUTION_DEPENDENCY]["sandboxId"] = "other-sandbox"
 
     async def unexpected_claim(*_args, **_kwargs):
         raise AssertionError("v2 scope 不应重新领取租约")
 
     monkeypatch.setattr(runtime.repository, "claim_lease", unexpected_claim)
-    with pytest.raises(CodingRepositoryError) as rejected:
+    with pytest.raises(TaskExecutionRepositoryError) as rejected:
         await runtime.kernel.scope(context)
     assert rejected.value.code == expected_code
 
@@ -187,7 +186,7 @@ async def test_legacy_scope_keeps_query_bind_and_claim_path(execution_runtime, m
         external_run_id="legacy-run",
         owner_user_id="user",
         thread_id="thread",
-        agent_id="coding-agent",
+        executor_id="coding-agent",
         sandbox_id=sandbox_id,
         deadline_at=execution_module.utcnow() + timedelta(minutes=5),
     )
@@ -197,7 +196,7 @@ async def test_legacy_scope_keeps_query_bind_and_claim_path(execution_runtime, m
         user_id="user",
         session_state={},
         dependencies={
-            CODING_TASK_DEPENDENCY: {
+            TASK_EXECUTION_DEPENDENCY: {
                 "externalRunId": "legacy-run",
                 "leaseOwner": "legacy-owner",
                 "sandboxId": sandbox_id,
@@ -256,7 +255,7 @@ async def test_terminal_runtime_install_is_concurrent_once_and_revalidates_after
 
     monkeypatch.setattr(execution_module, "MAX_TERMINAL_RUNTIME_CACHE_ENTRIES", 1)
     other_sandbox = runtime.synchronous.sandbox_for("other-thread")
-    other_scope = CodingTaskScope(
+    other_scope = TaskExecutionRuntime(
         task=scope.task,
         external_run_id=scope.external_run_id,
         internal_run_id=scope.internal_run_id,
@@ -319,7 +318,7 @@ async def test_terminal_reserves_before_remote_session_and_poll_survives_kernel_
     assert observed == [(f"{MANAGED_PROCESS_PREFIX}{execution_id}", "reserved")]
     finish_remote_execution(runtime, execution_id)
 
-    restarted = CodingExecutionKernel(runtime.workspace, runtime.repository)
+    restarted = TaskExecutionKernel(runtime.workspace, runtime.repository)
     completed = await restarted.poll(execution_id, runtime.context)
     cached = await restarted.poll(execution_id, runtime.context)
 
@@ -439,11 +438,11 @@ async def test_execution_rejects_cross_user_and_imports_legacy_handles_once(exec
     }
 
     first = await runtime.kernel.process("list", None, "", 30, runtime.context)
-    second = await CodingExecutionKernel(runtime.workspace, runtime.repository).process(
+    second = await TaskExecutionKernel(runtime.workspace, runtime.repository).process(
         "list", None, "", 30, runtime.context
     )
 
-    assert runtime.context.session_state[CODING_EXECUTION_MIGRATION_STATE_KEY] is True
+    assert runtime.context.session_state[TASK_EXECUTION_MIGRATION_STATE_KEY] is True
     assert len(first["processes"]) == len(second["processes"]) == 2
     assert {item["status"] for item in first["processes"]} == {"running", "completed"}
     assert {item["output_cursor"] for item in first["processes"]} == {0, 17}
@@ -455,7 +454,7 @@ async def test_execution_rejects_cross_user_and_imports_legacy_handles_once(exec
         session_state={},
         dependencies=runtime.context.dependencies,
     )
-    with pytest.raises(CodingRepositoryError) as rejected:
+    with pytest.raises(TaskExecutionRepositoryError) as rejected:
         await runtime.kernel.process("list", None, "", 30, other_context)
     assert rejected.value.code == "task_scope_mismatch"
 
@@ -474,7 +473,7 @@ async def completed_verification(
     for _attempt in range(100):
         await asyncio.sleep(0)
         executions = await runtime.repository.list_executions(
-            current_context.dependencies[CODING_TASK_DEPENDENCY]["externalRunId"]
+            current_context.dependencies[TASK_EXECUTION_DEPENDENCY]["externalRunId"]
         )
         execution_id = next(
             (
@@ -537,7 +536,7 @@ async def acceptance_runtime(runtime, tmp_path, *, requirements=None):
             }
         ],
     }
-    scope = CodingScope(
+    scope = TaskExecutionScope(
         "acceptance-run",
         "user",
         "thread",
@@ -560,7 +559,7 @@ async def acceptance_runtime(runtime, tmp_path, *, requirements=None):
         user_id="user",
         session_state={AGENT_PLAN_STATE_KEY: {"plan": []}},
         dependencies={
-            CODING_TASK_DEPENDENCY: {
+            TASK_EXECUTION_DEPENDENCY: {
                 "externalRunId": scope.external_run_id,
                 "leaseOwner": "acceptance-request",
                 "leaseEpoch": lease.epoch,
@@ -574,7 +573,7 @@ async def acceptance_runtime(runtime, tmp_path, *, requirements=None):
     return SimpleNamespace(
         context=context,
         contract=contract,
-        kernel=CodingExecutionKernel(
+        kernel=TaskExecutionKernel(
             runtime.workspace,
             runtime.repository,
             validator_registry=registry,
@@ -926,7 +925,7 @@ def test_validator_result_rejects_warnings_outside_bounds(warnings, expected_err
     )
 
     with pytest.raises(ValueError, match=rf"validator_result_{expected_error}$"):
-        CodingExecutionKernel._parse_validator_result(output, requirements)
+        TaskExecutionKernel._parse_validator_result(output, requirements)
 
 
 @pytest.mark.anyio
@@ -953,7 +952,7 @@ async def test_skill_script_is_installed_readonly_and_writable_copy_is_rejected(
     info, installed = sandbox.fs.entries[readonly_path]
     assert installed == body.encode()
     assert info is not None
-    receipt = runtime.context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY][
+    receipt = runtime.context.session_state[TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY][
         "report:validate.py"
     ]
     assert receipt["readonlyPath"] == readonly_path
@@ -1496,7 +1495,7 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
     assert page["content"] == output
     assert page["outputSha256"] == bounded["outputSha256"]
 
-    metadata = runtime.context.session_state["agentos_coding_tool_outputs"]["handles"][
+    metadata = runtime.context.session_state[TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY]["handles"][
         bounded["outputHandle"]
     ]
     metadata["attempt"] += 1
@@ -1506,7 +1505,7 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
 
 @pytest.mark.anyio
 async def test_report_tool_output_honors_explicit_preview_window():
-    kernel = object.__new__(CodingExecutionKernel)
+    kernel = object.__new__(TaskExecutionKernel)
     scope = SimpleNamespace(external_run_id="report-coding-visualization")
     output = "x" * (40 * 1024)
 
@@ -1550,7 +1549,7 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
     runtime = execution_runtime
     external_run_id = "report-coding-retain-test"
     sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
-    scope = CodingScope(external_run_id, "user", "thread", sandbox_id, "report-agent")
+    scope = TaskExecutionScope(external_run_id, "user", "thread", sandbox_id, "report-agent")
     task = await runtime.repository.create_task_with_initial_attempt(
         scope,
         "执行全局分析",
@@ -1582,7 +1581,7 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
         user_id="user",
         session_state={},
         dependencies={
-            CODING_TASK_DEPENDENCY: {
+            TASK_EXECUTION_DEPENDENCY: {
                 "externalRunId": external_run_id,
                 "leaseOwner": "report-request",
                 "leaseEpoch": lease.epoch,
@@ -1590,7 +1589,7 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
             }
         },
     )
-    toolkit = ReportWorkspaceTaskToolkit(
+    toolkit = ReportingToolkit(
         runtime.workspace,
         runtime.repository,
         state_repository=AsyncMock(),
@@ -1625,14 +1624,14 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
 
 
 @pytest.mark.anyio
-async def test_report_coding_tool_output_uses_smaller_preview_and_exact_handle_reads(
+async def test_reporting_tool_output_uses_smaller_preview_and_exact_handle_reads(
     execution_runtime,
 ):
     runtime = execution_runtime
     external_run_id = "report-coding-preview-test"
     sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
     task = await runtime.repository.create_task_with_initial_attempt(
-        CodingScope(external_run_id, "user", "thread", sandbox_id, "coding-agent"),
+        TaskExecutionScope(external_run_id, "user", "thread", sandbox_id, "coding-agent"),
         "生成报表章节",
     )
     lease = await runtime.repository.claim_lease(external_run_id, "report-request")
@@ -1648,7 +1647,7 @@ async def test_report_coding_tool_output_uses_smaller_preview_and_exact_handle_r
         user_id="user",
         session_state={},
         dependencies={
-            CODING_TASK_DEPENDENCY: {
+            TASK_EXECUTION_DEPENDENCY: {
                 "externalRunId": external_run_id,
                 "leaseOwner": "report-request",
                 "leaseEpoch": lease.epoch,
@@ -1707,7 +1706,7 @@ async def test_tool_output_capacity_is_explicit_and_cleanup_removes_internal_fil
     assert all(result["outputDiscarded"] for result in (first, second, third))
     internal_paths = {
         metadata["path"]
-        for metadata in runtime.context.session_state["agentos_coding_tool_outputs"][
+        for metadata in runtime.context.session_state[TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY][
             "handles"
         ].values()
     }
@@ -1741,7 +1740,7 @@ async def test_agno_tool_batch_caps_reads_and_prioritizes_skill_script_execution
 ):
     runtime = execution_runtime
     assert MAX_PARALLEL_READ_TOOLS == 10
-    hook = create_coding_tool_scheduler_hook(runtime.repository)
+    hook = create_task_tool_scheduler_hook(runtime.repository)
     active_reads = 0
     started_reads = 0
     first_batch_started = asyncio.Event()
@@ -1823,7 +1822,7 @@ async def test_agno_tool_batch_caps_reads_and_prioritizes_skill_script_execution
 @pytest.mark.anyio
 async def test_tool_scheduler_is_released_after_hook_failure(execution_runtime):
     runtime = execution_runtime
-    hook = create_coding_tool_scheduler_hook(runtime.repository)
+    hook = create_task_tool_scheduler_hook(runtime.repository)
 
     async def fail(reference_path: str):
         raise RuntimeError(reference_path)
@@ -1837,11 +1836,11 @@ async def test_tool_scheduler_is_released_after_hook_failure(execution_runtime):
 @pytest.mark.anyio
 async def test_reporting_wrapper委托通用工具时同一任务写锁可重入(execution_runtime):
     runtime = execution_runtime
-    hook = create_coding_tool_scheduler_hook(runtime.repository)
+    hook = create_task_tool_scheduler_hook(runtime.repository)
 
     async def verify_report_draft():
         # Reporting 专用工具由 Agno hook 持有外层任务写锁；正式验收随后委托
-        # WorkspaceTaskToolkit.verify，并会再次进入同一任务调度器。两层调用在
+        # Reporting 验收会再次进入同一任务调度器。两层调用在
         # 同一个 asyncio Task 内，必须复用写锁，否则 validator 尚未启动就会死锁。
         async with runtime.kernel.task_scheduler("external-run") as scheduler:
             async with scheduler.write():
@@ -1859,7 +1858,7 @@ async def test_reporting_wrapper委托通用工具时同一任务写锁可重入
 @pytest.mark.anyio
 async def test_create_files_defers_scheduling_to_atomic_patch_kernel():
     repository = object()
-    hook = create_coding_tool_scheduler_hook(repository)  # type: ignore[arg-type]
+    hook = create_task_tool_scheduler_hook(repository)  # type: ignore[arg-type]
     context = RunContext(run_id="run", session_id="thread", user_id="user")
     scheduler_key = (id(repository), "external-run")
 
@@ -1870,95 +1869,6 @@ async def test_create_files_defers_scheduling_to_atomic_patch_kernel():
     files = [{"path": "one.py", "content": "value = 1\n"}]
 
     assert await hook(context, "create_files", create_files, {"files": files}) == files
-
-
-@pytest.mark.anyio
-async def test_view_image_and_file_read_overlap(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    active = 0
-    both_started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def read(name: str):
-        nonlocal active
-        active += 1
-        if active == 2:
-            both_started.set()
-        await release.wait()
-        active -= 1
-        return {"name": name}
-
-    file_read = asyncio.create_task(
-        toolkit._invoke(
-            "read_file",
-            {"path": "source.txt"},
-            lambda _scope: read("file"),
-            runtime.context,
-        )
-    )
-    image_read = asyncio.create_task(
-        toolkit._invoke(
-            "view_image",
-            {"path": "chart.png", "detail": "high"},
-            lambda _scope: read("image"),
-            runtime.context,
-        )
-    )
-
-    await asyncio.wait_for(both_started.wait(), timeout=1)
-    release.set()
-    assert await asyncio.gather(file_read, image_read) == [
-        {"name": "file"},
-        {"name": "image"},
-    ]
-
-
-@pytest.mark.anyio
-async def test_parallel_read_completion_merges_progress_failures_and_output_handles(
-    execution_runtime,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    started = 0
-    both_started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def failed_read(path: str):
-        nonlocal started
-        started += 1
-        if started == 2:
-            both_started.set()
-        await release.wait()
-        return {
-            "ok": False,
-            "exit_code": 1,
-            "output": f"cannot read {path}\n" + (path[-1] * (60 * 1024)),
-        }
-
-    calls = [
-        asyncio.create_task(
-            toolkit._invoke(
-                "terminal",
-                {"command": f"cat {path}"},
-                lambda _scope, path=path: failed_read(path),
-                runtime.context,
-            )
-        )
-        for path in ("/tmp/a", "/tmp/b")
-    ]
-    await asyncio.wait_for(both_started.wait(), timeout=1)
-    release.set()
-    results = await asyncio.gather(*calls)
-
-    progress = runtime.context.session_state[CODING_TOOL_PROGRESS_STATE_KEY]
-    failures = runtime.context.session_state[CODING_TOOL_FAILURE_STATE_KEY]
-    outputs = runtime.context.session_state[CODING_TOOL_OUTPUT_STATE_KEY]
-    assert len(progress["entries"]) == 2
-    assert {entry["resource"] for entry in failures["entries"]} == {"/tmp/a", "/tmp/b"}
-    assert len(outputs["handles"]) == 2
-    assert len(outputs["tasks"]["external-run"]["handles"]) == 2
-    assert len({result["outputHandle"] for result in results}) == 2
 
 
 @pytest.mark.parametrize(
@@ -2086,8 +1996,8 @@ async def test_unknown_foreground_terminal_only_records_real_workspace_mutation(
 async def test_replace_text内容不变时不记录mutation(tmp_path):
     workspace = service(tmp_path)
     workspace.create_file("thread", "result.txt", b"done")
-    kernel = CodingExecutionKernel(workspace, SimpleNamespace())
-    scope = CodingTaskScope(
+    kernel = TaskExecutionKernel(workspace, SimpleNamespace())
+    scope = TaskExecutionRuntime(
         task=SimpleNamespace(mutation_sequence=7),
         external_run_id="external-run",
         internal_run_id="internal-run",
@@ -2116,36 +2026,6 @@ async def test_replace_text内容不变时不记录mutation(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_mutation_zero_finish_failure_still_requires_verification(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    runtime.context.session_state[CODING_FINISH_FAILURE_STATE_KEY] = {
-        "code": "finish_artifact_missing",
-        "details": {"mutationSequence": 0, "missingPaths": ["report.pdf"]},
-        "requiredActions": ["生成缺失产物并验证。"],
-    }
-
-    blocked = await toolkit.terminal("python3 generate.py", run_context=runtime.context)
-
-    assert blocked["code"] == "coding_verification_required"
-    assert await runtime.repository.list_executions("external-run") == []
-
-
-@pytest.mark.anyio
-async def test_repeated_read_only_terminal_is_blocked_without_new_execution(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-
-    first = await toolkit.terminal("pwd && ls", background=True, run_context=runtime.context)
-    second = await toolkit.terminal("pwd && ls", background=True, run_context=runtime.context)
-    blocked = await toolkit.terminal("pwd && ls", background=True, run_context=runtime.context)
-
-    assert first["status"] == second["status"] == "running"
-    assert blocked["code"] == "tool_no_progress"
-    assert len(await runtime.repository.list_executions("external-run")) == 2
-
-
-@pytest.mark.anyio
 def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
     relative = "python3 \u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
     absolute = (
@@ -2153,8 +2033,8 @@ def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
         'report-run-1/analysis.py", line 1'
     )
 
-    assert _absolute_paths(relative) == set()
-    assert _absolute_paths(absolute) == {
+    assert absolute_paths(relative) == set()
+    assert absolute_paths(absolute) == {
         "/home/daytona/workspace/\u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
     }
 
@@ -2174,7 +2054,7 @@ def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
     ],
 )
 def test_read_only_terminal_classifier_is_conservative(command, expected):
-    assert execution_module._is_read_only_terminal_command(command) is expected
+    assert execution_module.is_read_only_terminal_command(command) is expected
 
 
 @pytest.mark.anyio
@@ -2193,39 +2073,6 @@ async def test_workspace_terminal_forwards_selected_shell_to_protected_runtime(e
     sandbox = runtime.synchronous.sandbox_for("thread")
     command = sandbox.process.sessions[execution.daytona_session_id].commands[0].command
     assert "--shell /bin/bash" in command
-
-
-@pytest.mark.anyio
-async def test_finish_entrypoint_stops_registered_agno_function_after_acceptance(
-    execution_runtime,
-    monkeypatch,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    finish_function = toolkit.async_functions["finish_task"]
-    parsed_clone = copy(finish_function)
-
-    async def accepted(*_args, **_kwargs):
-        return {"ok": True, "status": "accepted", "digest": "done"}
-
-    async def no_cleanup(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(toolkit.kernel, "finish_task", accepted)
-    monkeypatch.setattr(toolkit.kernel, "cleanup_tool_outputs", no_cleanup)
-
-    parsed_clone._run_context = runtime.context
-    function_call = FunctionCall(
-        function=parsed_clone,
-        arguments={"summary": "done", "artifact_paths": []},
-        call_id="finish-call",
-    )
-    execution_result = await function_call.aexecute()
-
-    assert execution_result.status == "success"
-    assert execution_result.result["status"] == "accepted"
-    assert finish_function.stop_after_tool_call is True
-    assert parsed_clone.stop_after_tool_call is True
 
 
 @pytest.mark.parametrize(
@@ -2248,7 +2095,7 @@ def test_coding基础工具arguments只做一层等价json规范化(arguments, e
         function=SimpleNamespace(name="create_files"),
     )
 
-    normalize_coding_function_call_arguments(call)
+    normalize_task_function_call_arguments(call)
 
     assert call.arguments == expected
 
@@ -2377,41 +2224,6 @@ async def test_verify_allows_nonfatal_stderr_warning(execution_runtime, monkeypa
     assert execution.operation_receipt["valid"] is True
 
 
-@pytest.mark.anyio
-async def test_toolkit_returns_structured_workspace_errors(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-
-    async def invalid_path(_scope):
-        raise WorkspaceError("工作区路径是绝对路径，请改用相对路径。")
-
-    async def conflict(_scope):
-        raise WorkspacePathConflict("文件内容已变化。")
-
-    invalid = await toolkit._invoke(
-        "read_file", {"path": "/workspace/report"}, invalid_path, runtime.context
-    )
-    conflicted = await toolkit._invoke(
-        "terminal",
-        {"command": "touch /home/daytona/workspace/report.md"},
-        conflict,
-        runtime.context,
-    )
-
-    assert invalid == {
-        "ok": False,
-        "status": "rejected",
-        "code": "workspace_error",
-        "message": "工作区路径是绝对路径，请改用相对路径。",
-        "details": {"tool": "read_file", "suggestedPath": "report"},
-        "requiredActions": ["按错误说明修正参数后重试。"],
-        "retryable": True,
-    }
-    assert conflicted["code"] == "workspace_path_conflict"
-    assert conflicted["details"]["suggestedPath"] == "report.md"
-    assert conflicted["retryable"] is True
-
-
 def test_session_output_prefers_structured_streams_and_strips_fallback_framing():
     toolkit = WorkspaceToolkit.__new__(WorkspaceToolkit)
 
@@ -2466,7 +2278,7 @@ async def test_verify_rejects_modified_loaded_skill_script(execution_runtime):
 async def test_skill_script_verification_uses_server_receipt_without_database(monkeypatch):
     original = b"print('trusted')\n"
     modified = b"print('modified')\n"
-    kernel = CodingExecutionKernel.__new__(CodingExecutionKernel)
+    kernel = TaskExecutionKernel.__new__(TaskExecutionKernel)
     kernel.service = SimpleNamespace(file_bytes=lambda _thread, _path: (modified, "text/plain"))
 
     async def scope(_run_context):
@@ -2498,135 +2310,6 @@ async def test_skill_script_verification_uses_server_receipt_without_database(mo
 
     assert result is not None
     assert result["code"] == "verification_skill_script_modified"
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("writer_tool", "writer_arguments"),
-    [
-        ("terminal", {"command": "touch generated.txt"}),
-    ],
-)
-async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(
-    execution_runtime,
-    monkeypatch,
-    writer_tool,
-    writer_arguments,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    scope = SimpleNamespace(
-        external_run_id="external-run",
-        attempt_no=0,
-        task=SimpleNamespace(mutation_sequence=0),
-    )
-
-    async def resolve_scope(_run_context):
-        return scope
-
-    monkeypatch.setattr(toolkit.kernel, "scope", resolve_scope)
-    both_reads_entered = asyncio.Event()
-    release_reads = asyncio.Event()
-    active_reads = 0
-    write_entered = False
-
-    async def read_call(_scope):
-        nonlocal active_reads
-        active_reads += 1
-        if active_reads == 2:
-            both_reads_entered.set()
-        await release_reads.wait()
-        active_reads -= 1
-        return {"status": "ok"}
-
-    async def write_call(_scope):
-        nonlocal write_entered
-        write_entered = True
-        assert active_reads == 0
-        return {"status": "ok"}
-
-    reads = [
-        asyncio.create_task(
-            toolkit._invoke("read_file", {"path": f"file-{index}"}, read_call, runtime.context)
-        )
-        for index in range(2)
-    ]
-    await both_reads_entered.wait()
-    writer = asyncio.create_task(
-        toolkit._invoke(writer_tool, writer_arguments, write_call, runtime.context)
-    )
-    await asyncio.sleep(0)
-    assert write_entered is False
-    release_reads.set()
-    await asyncio.gather(*reads, writer)
-    assert write_entered is True
-    assert (
-        id(runtime.repository),
-        "external-run",
-    ) not in execution_module._TASK_TOOL_SCHEDULERS
-
-
-@pytest.mark.anyio
-async def test_workspace_tool_scheduler_caps_parallel_reads(execution_runtime, monkeypatch):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    scope = SimpleNamespace(
-        external_run_id="external-run",
-        attempt_no=0,
-        task=SimpleNamespace(mutation_sequence=0),
-    )
-
-    async def resolve_scope(_run_context):
-        return scope
-
-    monkeypatch.setattr(toolkit.kernel, "scope", resolve_scope)
-    active_reads = 0
-    started_reads = 0
-    first_batch_started = asyncio.Event()
-    release_reads = asyncio.Event()
-
-    async def read_call(_scope):
-        nonlocal active_reads, started_reads
-        active_reads += 1
-        started_reads += 1
-        if active_reads == MAX_PARALLEL_READ_TOOLS:
-            first_batch_started.set()
-        await release_reads.wait()
-        active_reads -= 1
-        return {"status": "ok"}
-
-    reads = [
-        asyncio.create_task(
-            toolkit._invoke("read_file", {"path": f"{index}.txt"}, read_call, runtime.context)
-        )
-        for index in range(MAX_PARALLEL_READ_TOOLS + 1)
-    ]
-
-    await asyncio.wait_for(first_batch_started.wait(), timeout=1)
-    await asyncio.sleep(0)
-    assert active_reads == MAX_PARALLEL_READ_TOOLS
-    assert started_reads == MAX_PARALLEL_READ_TOOLS
-
-    release_reads.set()
-    await asyncio.wait_for(asyncio.gather(*reads), timeout=1)
-    assert started_reads == MAX_PARALLEL_READ_TOOLS + 1
-
-
-@pytest.mark.anyio
-async def test_finish_entrypoint_returns_stable_error_when_required_argument_is_missing(
-    execution_runtime,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    finish_function = toolkit.async_functions["finish_task"]
-
-    result = await finish_function.entrypoint(
-        summary="done",
-        artifact_paths=[],
-        run_context=runtime.context,
-    )
-
-    assert result["code"] == "finish_verification_missing"
 
 
 @pytest.mark.anyio

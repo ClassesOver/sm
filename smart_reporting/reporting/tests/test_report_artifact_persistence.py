@@ -594,7 +594,7 @@ def test_runtime_rejects_partial_http_publication_configuration(
     with pytest.raises(ValueError, match="下载授权和产物持久化服务必须同时配置"):
         ReportWorkflowRuntime(
             db=object(),
-            report_worker=object(),  # type: ignore[arg-type]
+            reporting_agent_template=object(),  # type: ignore[arg-type]
             task_runner=object(),  # type: ignore[arg-type]
             workspace_service=object(),  # type: ignore[arg-type]
             registry=object(),  # type: ignore[arg-type]
@@ -611,7 +611,7 @@ def test_runtime_requires_public_base_url_for_http_publication() -> None:
     with pytest.raises(ValueError, match="公开下载基址"):
         ReportWorkflowRuntime(
             db=object(),
-            report_worker=object(),  # type: ignore[arg-type]
+            reporting_agent_template=object(),  # type: ignore[arg-type]
             task_runner=object(),  # type: ignore[arg-type]
             workspace_service=object(),  # type: ignore[arg-type]
             registry=object(),  # type: ignore[arg-type]

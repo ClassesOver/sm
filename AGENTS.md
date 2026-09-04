@@ -46,7 +46,7 @@
 
 ## AgentOS 与 Agno
 
-- 依赖版本以 `smart_reporting/requirements.in` 和锁定的 `requirements*.txt` 为准；不要凭记忆套用其他 Agno 版本的 API。
+- 依赖版本以 `pyproject.toml` 和锁定的 `uv.lock` 为准；不要凭记忆套用其他 Agno 版本的 API。
 - 优先使用 Agno 公共 API。修改相关代码或升级 `agno` 时，必须核对官方文档和源码并补充契约测试。
 - 保持 `AgentOS` 和 `PostgresDb` 的现有职责，不自行复制运行历史或会话持久化。结构化输入输出使用明确的 Pydantic/schema 模型，不手工拼接可结构化的数据。
 - FastAPI 异步入口不得直接执行阻塞 I/O；沿用线程池或异步客户端边界，并覆盖取消、超时和依赖失败路径。

@@ -20,7 +20,7 @@ from sqlglot import parse_one
 
 from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting import contract as reporting_contract
-from smart_reporting.reporting.agent import ReportWorkerOpenAIChat
+from smart_reporting.reporting.agent import ReportingPhaseOpenAIChat
 from smart_reporting.reporting.contract import ReportPeriod
 from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
@@ -37,6 +37,7 @@ from smart_reporting.reporting.hospital_operation.outline import (
 )
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
+    REPORT_SECTION_AGENT_INSTRUCTIONS,
     REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS,
 )
 from smart_reporting.reporting.model_policy import (
@@ -60,14 +61,15 @@ from smart_reporting.reporting.workflow.runtime import planning as reporting_run
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_complexity,
     _analysis_item_thinking_policy,
-    _coding_detailed_analysis_plan,
     _model_facing_deterministic_facts,
+    _reporting_detailed_analysis_plan,
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidencePlan,
     AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
+    MAX_REPORT_SECTION_PHASE_ATTEMPTS,
     OUTLINE_SECTION_COUNT_INSTRUCTION,
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -146,6 +148,10 @@ def test_workflow_runtime_uses_package_boundaries() -> None:
     assert ReportWorkflowRuntime.__module__ == ("smart_reporting.reporting.workflow.runtime.facade")
     assert AnalysisBundle.__module__ == "smart_reporting.reporting.workflow.runtime.models"
     assert DataUnderstandingPlan.__module__ == ("smart_reporting.reporting.workflow.runtime.models")
+
+
+def test_reporting_fresh_retry_budget_allows_three_attempts() -> None:
+    assert MAX_REPORT_SECTION_PHASE_ATTEMPTS == 3
 
 
 def test_runtime_capability_modules_do_not_import_facade() -> None:
@@ -368,7 +374,7 @@ def test_requirement_measure_field_refs_reject_ambiguous_bare_table() -> None:
     assert _requirement_measure_field_refs(requirement, (snapshot,)) == set()
 
 
-def test_coding_analysis_plan_projects_only_unfinished_items() -> None:
+def test_reporting_analysis_plan_projects_only_unfinished_items() -> None:
     plan = DetailedAnalysisPlan.model_validate(
         {
             "datasetIds": ["dataset-1"],
@@ -394,7 +400,7 @@ def test_coding_analysis_plan_projects_only_unfinished_items() -> None:
         }
     )
 
-    projected = _coding_detailed_analysis_plan(
+    projected = _reporting_detailed_analysis_plan(
         plan,
         analysis_ids=("analysis_002",),
     )
@@ -572,14 +578,49 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "不得猜测 /workspace" in instructions
     assert "不得用 pwd、ls、find 或 wc 探测" in instructions
     assert "不要给成功的脚本执行附加探测命令" in instructions
-    assert "首次写入使用 create_analysis_file" in instructions
-    assert "只有读取已有文件并取得当前 SHA-256 后才使用 overwrite_analysis_file" in instructions
+    assert "脚本修改统一使用 apply_analysis_patch" in instructions
     assert (
         "成功脚本的 stdout 仅输出 evidencePath、处理行数、固定事实对账值和核心可比指标"
         in instructions
     )
     assert "完整聚合结果只写入 evidence JSON" in instructions
     assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
+
+
+def test_section_instructions_match_evidence_file_authorization() -> None:
+    instructions = "\n".join(REPORT_SECTION_AGENT_INSTRUCTIONS)
+
+    assert "factSummaries" in instructions
+    assert "evidenceFiles" in instructions
+    assert "factFiles 仅用于事实身份和追溯元数据" in instructions
+    assert "只按 factFiles 定点读取" not in instructions
+    assert "补读原始 facts/evidence" not in instructions
+
+
+def test_phase_instructions_prioritize_signed_execution_directive() -> None:
+    analysis = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
+    visualization = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+    section = "\n".join(REPORT_SECTION_AGENT_INSTRUCTIONS)
+
+    for instructions in (analysis, visualization, section):
+        assert "executionDirective 是本任务的首要动作契约" in instructions
+        assert "不得输出解释文字" in instructions
+    assert "process 不能启动命令" in analysis
+    assert "不得重复完全相同的 patch 参数" in visualization
+    assert "不得使用 read_file 读取 factFiles" in section
+
+
+def test_patch_instructions_include_complete_unified_diff_templates() -> None:
+    analysis_instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
+    visualization_instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+
+    for instructions in (analysis_instructions, visualization_instructions):
+        assert "--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@" in instructions
+        assert "--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@" in instructions
+        assert "--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@" in instructions
+        assert "单行文件更新必须使用 @@ -1 +1 @@" in instructions
+        assert "expected_sha256 的值必须是 64 位小写十六进制字符串" in instructions
+        assert "不需要基线时省略 expected_sha256" in instructions
 
 
 @pytest.mark.anyio
@@ -616,9 +657,28 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
         requirement_id="requirement-1",
         sql_hash="c" * 64,
     )
+    attachment_context = context.model_copy(
+        update={
+            "dataset_id": "attachment-dataset",
+            "path": "reporting-inputs/op/0-input.csv",
+            "sha256": "e" * 64,
+        }
+    )
+    attachment_handle = DatasetHandle(
+        dataset_id="attachment-dataset",
+        source_id="attachment-001",
+        source_type="url_csv",
+        filename="input.csv",
+        path="reporting-inputs/op/0-input.csv",
+        row_count=1,
+        size=1,
+        sha256="e" * 64,
+        requirement_id="attachment-001",
+        sql_hash="f" * 64,
+    )
     coverage = ProfileCoverageManifest(
-        authorizedDatasetCount=1,
-        coveredDatasetCount=1,
+        authorizedDatasetCount=2,
+        coveredDatasetCount=2,
         datasets=(
             ProfileCoverageDataset(
                 datasetId="dataset-1",
@@ -631,10 +691,24 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
                 fields=("month", "department", "amount"),
                 periodCoverage=("2025-01",),
             ),
+            ProfileCoverageDataset(
+                datasetId="attachment-dataset",
+                datasetPath="reporting-inputs/op/0-input.csv",
+                datasetSize=1,
+                datasetSnapshotHash="e" * 64,
+                profileFile=FileIdentity(path="profiles/attachment.json", size=1, sha256="f" * 64),
+                rowCount=1,
+                fieldCount=3,
+                fields=("month", "department", "amount"),
+                periodCoverage=("2025-01",),
+            ),
         ),
     )
     state: dict[str, Any] = {
-        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [context.model_dump(mode="json", by_alias=True)],
+        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [
+            context.model_dump(mode="json", by_alias=True),
+            attachment_context.model_dump(mode="json", by_alias=True),
+        ],
         REPORT_PROFILE_COVERAGE_STATE_KEY: coverage.model_dump(mode="json", by_alias=True),
         REPORT_ANALYSIS_PLAN_STATE_KEY: [
             {
@@ -645,7 +719,9 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
                 "requirementIds": ["requirement-1"],
             }
         ],
-        REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]},
+        REPORT_WORKFLOW_RESULT_STATE_KEY: {
+            "datasets": [handle.public_dict(), attachment_handle.public_dict()]
+        },
     }
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
     runtime._state = lambda _run_context: state
@@ -666,12 +742,15 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
     )
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert analysis.dataset_ids == ("dataset-1", "attachment-dataset")
     assert (
         "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"
         in analysis.actions
     )
     assert "deterministicFacts 覆盖当前管理问题时直接提交" in analysis.evidence_summary
-    assert "仅在必需事实缺口时由 Coding 从 CSV 复算并保存补充 evidence" in analysis.evidence_summary
+    assert (
+        "仅在必需事实缺口时由 Reporting 从 CSV 复算并保存补充 evidence" in analysis.evidence_summary
+    )
     assert (
         "deterministicFacts 覆盖当前管理问题时立即且只调用一次 complete_analysis_item，"
         "evidencePaths 传空数组" in analysis.completion_conditions
@@ -696,23 +775,12 @@ def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     assert "detailedAnalysisPlan" not in string_keys
 
 
-def test_worker_thinking_effort_is_high_first_and_on_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_analysis_thinking_effort_uses_explicit_planner_policy() -> None:
     runtime = object.__new__(ReportWorkflowRuntime)
-    runtime.report_worker = SimpleNamespace(
-        model=ReportWorkerOpenAIChat(id="test-model", api_key="test-key")
-    )
-
-    class _Profile:
-        enabled = True
-
-    monkeypatch.setattr(
-        "smart_reporting.reporting.workflow.runtime.analysis.reporting_thinking_profile_from_model",
-        lambda _model: _Profile(),
-    )
-    assert runtime._worker_thinking_effort(retry=False) == "high"
-    assert runtime._worker_thinking_effort(retry=True) == "high"
+    runtime._analysis_thinking_enabled = True
+    assert runtime._analysis_thinking_effort() == "high"
+    runtime._analysis_thinking_enabled = False
+    assert runtime._analysis_thinking_effort() == "off"
 
 
 def test_analysis_item_complexity_uses_structured_plan_fields() -> None:
@@ -805,7 +873,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         run_id="task-run-1",
         session_id="task-session-1",
         dependencies={
-            "AgentOS 编码任务": {
+            "AgentOS 任务执行": {
                 "reportingThinkingEffort": "high",
                 "reportingThinkingBudget": 4096,
             }
@@ -820,7 +888,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     runtime._analysis_summary_agent = SimpleNamespace()
 
     async def run_planner(_agent, payload, _parent_context):
-        binding = task_context.dependencies["AgentOS 编码任务"]
+        binding = task_context.dependencies["AgentOS 任务执行"]
         observed.append(
             (
                 payload["analysisBlock"]["blockId"],
@@ -850,12 +918,11 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
 
     runtime._run_planner = run_planner
     monkeypatch.setattr(
-        "smart_reporting.reporting.workflow.runtime.analysis.build_report_worker_tools",
+        "smart_reporting.reporting.workflow.runtime.analysis.build_reporting_tools",
         lambda *_args, **_kwargs: [
             SimpleNamespace(
-                coding_read_file=AsyncMock(),
-                create_analysis_file=AsyncMock(),
-                overwrite_analysis_file=AsyncMock(),
+                read_file=AsyncMock(),
+                apply_analysis_patch=AsyncMock(),
                 terminal=AsyncMock(),
                 complete_analysis_item=AsyncMock(),
             )
@@ -879,7 +946,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         ("analysis_001:evidence:repair", "max", 8192),
         ("analysis_001:summary", "high", 4096),
     ]
-    assert task_context.dependencies["AgentOS 编码任务"] == {
+    assert task_context.dependencies["AgentOS 任务执行"] == {
         "reportingThinkingEffort": "high",
         "reportingThinkingBudget": 4096,
     }
@@ -973,7 +1040,7 @@ def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_d
 
 def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
     planner = Agent(
-        model=ReportWorkerOpenAIChat(
+        model=ReportingPhaseOpenAIChat(
             id="deepseek-v4-flash-0731",
             api_key="test",
             reasoning_effort="high",
@@ -1004,8 +1071,8 @@ def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
 
 
 def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
-    worker = Agent(
-        model=ReportWorkerOpenAIChat(
+    agent_template = Agent(
+        model=ReportingPhaseOpenAIChat(
             id="deepseek-v4-flash-0731",
             api_key="test",
             reasoning_effort="high",
@@ -1015,7 +1082,7 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
 
     runtime = ReportWorkflowRuntime(
         db=SimpleNamespace(),
-        report_worker=worker,
+        reporting_agent_template=agent_template,
         task_runner=SimpleNamespace(),
         workspace_service=SimpleNamespace(),
         registry=SimpleNamespace(),
@@ -1046,8 +1113,8 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
 
 
 def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
-    worker = Agent(
-        model=ReportWorkerOpenAIChat(
+    agent_template = Agent(
+        model=ReportingPhaseOpenAIChat(
             id="deepseek-v4-flash-0731",
             api_key="test",
             base_url="http://self-hosted.example/v1",
@@ -1061,7 +1128,7 @@ def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
     )
     runtime = ReportWorkflowRuntime(
         db=SimpleNamespace(),
-        report_worker=worker,
+        reporting_agent_template=agent_template,
         task_runner=SimpleNamespace(),
         workspace_service=SimpleNamespace(),
         registry=SimpleNamespace(),
@@ -1087,7 +1154,7 @@ def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
 
 def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_validation() -> None:
     planner = Agent(
-        model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
     )
     stage = ReportWorkflowRuntime._planning_agent(
         planner,
@@ -1109,7 +1176,7 @@ def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_valida
 
 def test_analysis_planner_rejects_three_part_table_with_unrelated_source_prefix() -> None:
     planner = Agent(
-        model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
     )
     stage = ReportWorkflowRuntime._planning_agent(
         planner,
@@ -1180,7 +1247,7 @@ async def test_planner_schema_validation_uses_agno_agent_retries(monkeypatch) ->
 
     monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", fake_aresponse)
     planner = Agent(
-        model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
         retries=0,
     )
     stage = ReportWorkflowRuntime._planning_agent(
@@ -1228,7 +1295,7 @@ def _duplicate_analysis_outline_payload() -> dict[str, Any]:
 
 def test_outline_validator_attaches_candidate_on_validation_error() -> None:
     """响应校验失败时把候选载荷附在异常上，供纠错循环用作 previousOutput 基线。"""
-    planner = Agent(model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"))
+    planner = Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"))
     stage = ReportWorkflowRuntime._planning_agent(
         planner,
         "report-outline-planner",
@@ -1316,7 +1383,7 @@ def _outline_proposal_with_forbidden_assumption() -> ReportOutlineProposal:
 
 def _outline_planner_stage() -> Agent:
     return ReportWorkflowRuntime._planning_agent(
-        Agent(model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
+        Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
         "report-outline-planner",
         ReportOutlineProposal,
         thinking_profile=ReportingThinkingProfile.off(),

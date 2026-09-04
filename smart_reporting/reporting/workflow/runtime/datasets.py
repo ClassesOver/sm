@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .base import (
     DOMAIN_CODES,
+    MAX_REPORT_INPUTS,
     REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY,
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -56,6 +57,11 @@ class RuntimeDatasetsMixin:
             ApprovedQuery.model_validate(item)
             for item in self._state(run_context)[REPORT_APPROVED_QUERIES_STATE_KEY]
         )
+        attachments = self._envelope(run_context).file_inputs
+        if len(approved) + len(attachments) > MAX_REPORT_INPUTS:
+            raise ReportingError(
+                "report_dataset_count_invalid", "SQL 数据集与 URL CSV 附件总数超过限制。"
+            )
         adapters = {
             source.id: self._adapter(source, run_context) for source in self._sources(run_context)
         }
@@ -66,6 +72,12 @@ class RuntimeDatasetsMixin:
         finally:
             for adapter in adapters.values():
                 await adapter.aclose()
+        attachment_handles, attachment_lineage = await self.datasets.register_external_csv(
+            attachments,
+            run_context=self._tool_context(run_context),
+        )
+        handles = (*handles, *attachment_handles)
+        lineage = (*lineage, *attachment_lineage)
         prepared = await self.report_tools.report_prepare_dataset(
             [item.dataset_id for item in handles], run_context=self._tool_context(run_context)
         )
@@ -439,7 +451,9 @@ class RuntimeDatasetsMixin:
         for initial_item in initial:
             requirement_ids = set(initial_item.requirement_ids)
             referenced_handles = tuple(
-                handle for handle in handles if handle.requirement_id in requirement_ids
+                handle
+                for handle in handles
+                if handle.requirement_id in requirement_ids or handle.source_type == "url_csv"
             )
             if not referenced_handles:
                 raise ReportingError(
@@ -588,7 +602,7 @@ class RuntimeDatasetsMixin:
                         f"计划绑定 {len(referenced_contexts)} 个不可变数据集、"
                         f"{sum(context.row_count for context in referenced_contexts)} 行记录；"
                         f"{profile_signal}deterministicFacts 覆盖当前管理问题时直接提交；"
-                        "仅在必需事实缺口时由 Coding 从 CSV 复算并保存补充 evidence。"
+                        "仅在必需事实缺口时由 Reporting 从 CSV 复算并保存补充 evidence。"
                     ),
                     limitations=item_warnings[:100],
                     recommendedTables=("按期间与组织粒度汇总关键指标",),

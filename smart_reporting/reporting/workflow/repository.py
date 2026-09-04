@@ -58,7 +58,7 @@ def _command_fingerprint(command: ReportingCommand) -> str:
 
 
 class ReportingStateRepository:
-    """Reporting 专属状态仓储；不复用 Coding task 的业务列或 session checkpoint。"""
+    """Reporting 专属状态仓储；不复用 Reporting task 的业务列或 session checkpoint。"""
 
     def __init__(self, db: AsyncBaseDb):
         self.db = db
@@ -95,6 +95,17 @@ class ReportingStateRepository:
             Column("thread_id", String(256), primary_key=True),
             Column("external_run_id", String(256), nullable=False),
             Column("owner_user_id", String(256), nullable=False),
+            Column("created_at", DateTime(timezone=True), nullable=False),
+        )
+        self.mcp_requests = Table(
+            "reporting_mcp_requests",
+            self.metadata,
+            Column("external_run_id", String(256), primary_key=True),
+            Column("request_fingerprint", String(64), nullable=False),
+            Column("thread_id", String(256), nullable=False),
+            Column("owner_user_id", String(256), nullable=False),
+            Column("database", String(256), nullable=False),
+            Column("company_id", String(256), nullable=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
         )
         self._initialized = False
@@ -190,6 +201,46 @@ class ReportingStateRepository:
             except IntegrityError:
                 return False
         return result.scalar_one_or_none() == thread_id
+
+    async def register_external_request(self, **values: str) -> dict[str, Any]:
+        """首次请求永久绑定租户作用域和 payload 指纹，跨进程重试不得改写。"""
+
+        await self.initialize()
+        row_values = {
+            "external_run_id": values["external_run_id"],
+            "request_fingerprint": values["request_fingerprint"],
+            "thread_id": values["thread_id"],
+            "owner_user_id": values["owner_user_id"],
+            "database": values["database"],
+            "company_id": values["company_id"],
+            "created_at": datetime.now(UTC),
+        }
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            statement: Any = postgresql_insert(self.mcp_requests).values(**row_values)
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[self.mcp_requests.c.external_run_id]
+            )
+            await connection.execute(statement)
+            row = (
+                await connection.execute(
+                    select(self.mcp_requests).where(
+                        self.mcp_requests.c.external_run_id == values["external_run_id"]
+                    )
+                )
+            ).first()
+        if row is None:
+            raise ReportingStateError(
+                "report_workflow_reservation_failed", "Reporting MCP 请求幂等记录不存在。"
+            )
+        stored = row._mapping
+        return {
+            "external_run_id": str(stored["external_run_id"]),
+            "request_fingerprint": str(stored["request_fingerprint"]),
+            "thread_id": str(stored["thread_id"]),
+            "owner_user_id": str(stored["owner_user_id"]),
+            "database": str(stored["database"]),
+            "company_id": str(stored["company_id"]),
+        }
 
     async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None:
         """读取 thread owner，供控制器核验旧 run 终态和安全回收孤儿记录。"""

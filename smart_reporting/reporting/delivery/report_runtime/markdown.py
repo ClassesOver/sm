@@ -9,7 +9,7 @@ from typing import Any
 from .validation import ReportFailure
 
 # 视觉主题属于服务端渲染契约，而不是模型自由生成的正文内容。PDF、Word 与
-# Coding 生成的图表共同引用这一份科技蓝颜色事实，避免封面、正文和图表各自选色；
+# Reporting 生成的图表共同引用这一份科技蓝颜色事实，避免封面、正文和图表各自选色；
 # 图表类型、系列数量和强调对象仍由模型根据数据决定，琥珀/绿色仅用于语义强调。
 REPORT_VISUAL_THEME = {
     "name": "enterprise-tech-blue",

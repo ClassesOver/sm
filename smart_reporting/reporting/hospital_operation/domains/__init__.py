@@ -189,7 +189,7 @@ def domain_guidance(stage: str | None = None) -> tuple[dict[str, Any], ...]:
 
 
 def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
-    """生成每阶段单一职责的中文规则，供所有 planner/worker 复用。"""
+    """生成每阶段单一职责的中文规则，供所有 planner/Agent 复用。"""
     input_labels = {
         "request": "输入：用户原始目标、可选领域代码和期间文本。",
         "data_understanding": "输入：已冻结请求范围、Schema/DataShape 和可用领域事实。",

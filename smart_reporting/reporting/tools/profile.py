@@ -134,7 +134,7 @@ class RuntimeProfileMixin:
             raise ReportingError(
                 "report_profile_pointer_invalid", "maxItems 必须在 1 至 200 之间。"
             )
-        scope = await self.kernel.scope(run_context)
+        scope = await self.runtime.scope(run_context)
         parameters, contract = self._phase_parameters(scope, "analysis")
         self._require_phase_tool(
             scope,
@@ -293,7 +293,7 @@ class RuntimeProfileMixin:
                     subject="Profile query",
                 )
             )
-        scope = await self.kernel.scope(run_context)
+        scope = await self.runtime.scope(run_context)
         parameters, contract = self._phase_parameters(scope, "analysis")
         self._require_phase_tool(
             scope,
@@ -433,7 +433,7 @@ class RuntimeProfileMixin:
                 )
             )
         run_context = _agno_run_context
-        scope = await self.kernel.scope(run_context)
+        scope = await self.runtime.scope(run_context)
         parameters, contract = self._phase_parameters(scope, "analysis")
         self._require_phase_tool(
             scope,
@@ -530,7 +530,7 @@ class RuntimeProfileMixin:
                 )
             )
         run_context = _agno_run_context
-        scope = await self.kernel.scope(run_context)
+        scope = await self.runtime.scope(run_context)
         _parameters, contract = self._phase_parameters(scope, "analysis")
         self._require_phase_tool(
             scope,

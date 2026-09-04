@@ -7,15 +7,15 @@ from smart_reporting.database import create_agent_database
 from smart_reporting.task_execution.models import (
     AttemptOutcome,
     AttemptState,
-    CodingScope,
     InstructionState,
     Lease,
+    TaskExecutionScope,
     TaskState,
 )
 from smart_reporting.task_execution.repository import (
     MAX_INSTRUCTION_BYTES,
-    CodingRepositoryError,
-    CodingTaskRepository,
+    TaskExecutionRepository,
+    TaskExecutionRepositoryError,
 )
 
 pytestmark = pytest.mark.integration
@@ -27,7 +27,7 @@ async def repository():
     if not database_url:
         pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
     database = create_agent_database(database_url)
-    repository = CodingTaskRepository(database.async_db)
+    repository = TaskExecutionRepository(database.async_db)
     await repository.initialize()
     try:
         async with database.async_engine.begin() as connection:
@@ -40,14 +40,14 @@ async def repository():
         database.sync_engine.dispose()
 
 
-def scope(run_id: str = "run") -> CodingScope:
-    return CodingScope(run_id, "user", "thread", "sandbox", "coding-agent")
+def scope(run_id: str = "run") -> TaskExecutionScope:
+    return TaskExecutionScope(run_id, "user", "thread", "sandbox", "coding-agent")
 
 
 @pytest.mark.anyio
 async def test_reporting可显式提高单条指令上限且默认边界不变(repository):
     content = "x" * (MAX_INSTRUCTION_BYTES + 1)
-    with pytest.raises(CodingRepositoryError) as rejected:
+    with pytest.raises(TaskExecutionRepositoryError) as rejected:
         await repository.create_task_with_initial_attempt(scope("default-limit"), content)
     assert rejected.value.code == "instruction_too_large"
 
@@ -71,7 +71,7 @@ async def test_create_aggregate_is_idempotent_and_attempt_zero_is_free(repositor
     attempt = await repository.get_attempt(task.current_internal_run_id)
     assert attempt is not None and attempt.state is AttemptState.CREATED
 
-    with pytest.raises(CodingRepositoryError, match="初始目标不一致") as conflict:
+    with pytest.raises(TaskExecutionRepositoryError, match="初始目标不一致") as conflict:
         await repository.create_task_with_initial_attempt(scope(), "另一个目标")
     assert conflict.value.code == "task_initial_instruction_conflict"
 
@@ -127,7 +127,7 @@ async def test_acceptance_contract_is_persisted_and_immutable(repository):
     assert duplicate.acceptance_contract == acceptance_contract
     acceptance_contract["requirements"][0]["parameters"]["currency"] = "USD"
     assert (await repository.get_task_snapshot("run")).acceptance_contract != acceptance_contract
-    with pytest.raises(CodingRepositoryError) as conflict:
+    with pytest.raises(TaskExecutionRepositoryError) as conflict:
         await repository.create_task_with_initial_attempt(
             scope(),
             "实现目标",
@@ -148,7 +148,7 @@ async def test_lease_epoch_fences_old_owner_and_heartbeat_does_not_change_versio
     assert await repository.claim_lease("run", "worker-b") is None
 
     expired = Lease(first.owner, first.epoch - 1, first.expires_at)
-    with pytest.raises(CodingRepositoryError) as stale:
+    with pytest.raises(TaskExecutionRepositoryError) as stale:
         await repository.resume_current("run", expired, task.state_version)
     assert stale.value.code == "task_cas_conflict"
 
@@ -161,7 +161,7 @@ async def test_instruction_inbox_idempotency_conflict_and_atomic_apply(repositor
 
     assert duplicate == first
     assert first.state is InstructionState.PENDING
-    with pytest.raises(CodingRepositoryError) as conflict:
+    with pytest.raises(TaskExecutionRepositoryError) as conflict:
         await repository.submit_instruction(scope(), "instruction-1", "修改成别的内容")
     assert conflict.value.code == "instruction_id_conflict"
 
@@ -199,7 +199,7 @@ async def test_finish_is_two_phase_and_instruction_requires_successor(repository
     assert finishing.state is TaskState.FINISHING
     attempt = await repository.get_attempt(finishing.current_internal_run_id)
     assert attempt is not None and attempt.state is AttemptState.FINISH_REQUESTED
-    with pytest.raises(CodingRepositoryError) as successor:
+    with pytest.raises(TaskExecutionRepositoryError) as successor:
         await repository.submit_instruction(scope(), "late", "继续修改")
     assert successor.value.code == "task_successor_required"
 

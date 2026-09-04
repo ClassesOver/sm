@@ -59,13 +59,12 @@ docker compose up -d --no-build --force-recreate reporting-os
 ```
 
 后续只修改 Python 源码时，执行 `docker compose restart reporting-os` 即可加载新代码。
-若 `smart_reporting/requirements.txt`、基础镜像或系统依赖发生变化，仍需在联网环境重新构建并导入镜像。
+若 `pyproject.toml`、`uv.lock`、基础镜像或系统依赖发生变化，仍需在联网环境重新构建并导入镜像。
 
 本地运行：
 
 ```bash
-uv venv --python 3.12 .venv-agent
-uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements.txt
+UV_PROJECT_ENVIRONMENT=.venv-agent uv sync --python 3.12 --no-install-project
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 ```
 

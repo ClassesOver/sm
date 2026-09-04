@@ -320,7 +320,7 @@ def _measure_semantic_issues(
         )
         # periodColumn 不只是 SQL WHERE 边界，也是 CSV 分析的期间事实来源。
         # 即使指标声明可跨该列相加，也必须保留在 SELECT/GROUP BY 和不可变数据集中；
-        # 否则 Coding 无法判断每行属于哪个月，不能用查询窗口代替行事实。
+        # 否则 Reporting 无法判断每行属于哪个月，不能用查询窗口代替行事实。
         if table.period_column not in requirement.grain_columns:
             missing_grain_columns.add(table.period_column)
         table_prefix = f"{requirement.source_id}.{qualified}.".lower()
@@ -679,7 +679,7 @@ def _normalize_duplicate_requirements(
 ) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
     """合并同一物理窗口的重复取数需求，避免物化后把同一事实当成多来源冲突。
 
-    同一张表的不同分析视角只需要一次包含完整指标和安全粒度的查询；Coding 会按
+    同一张表的不同分析视角只需要一次包含完整指标和安全粒度的查询；Reporting 会按
     详细计划从不可变 CSV 复算。合并只扩展字段集合并改写引用，不对数值
     做加法，也不吞掉真实的跨数据集冲突。
     """

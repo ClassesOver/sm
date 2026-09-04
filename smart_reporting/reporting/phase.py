@@ -51,6 +51,10 @@ REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
     "agentos_reporting_visualization_production_only"
 )
 REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY = "agentos_reporting_visualization_script_written"
+REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY = (
+    "agentos_reporting_visualization_script_executed"
+)
+REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY = "agentos_reporting_visualization_recovery_read"
 REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
     "agentos_reporting_visualization_script_failure_pending"
 )
@@ -65,10 +69,10 @@ REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY = "agentos_reporting_analysis_fact
 REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_budget"
 # 单项分析按计划复杂度可提升到 8 次；4 次是缺少复杂度信息时的安全默认值。
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 4
-REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
+REPORTING_TASK_DEPENDENCY = "AgentOS 任务执行"
 
-# 当前可视化章节 worker 共用受信预算与脚本状态；图表提交和章节收口均在同一章节
-# 子工作流内完成，不再存在独立的全局 finalize worker。
+# 当前可视化章节 Agent 共用受信预算与脚本状态；图表提交和章节收口均在同一章节
+# 子工作流内完成，不再存在独立的全局 finalize Agent。
 REPORTING_VISUALIZATION_TASK_KINDS = frozenset({"visualization_section"})
 REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
 REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
@@ -82,8 +86,7 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
 )
 REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
     {
-        "create_analysis_file",
-        "overwrite_analysis_file",
+        "apply_analysis_patch",
         "terminal",
         "submit_visualization_charts",
     }
@@ -351,7 +354,7 @@ def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple
 
 
 def reporting_visualization_budget_contract_from_acceptance_contract(value: Any) -> dict[str, int]:
-    """读取当前可视化 worker 的服务端签发动态预算，拒绝旧 taskKind。"""
+    """读取当前可视化 Agent 的服务端签发动态预算，拒绝旧 taskKind。"""
 
     contract = _visualization_phase_contract(value)
     if contract is None:
@@ -605,6 +608,39 @@ def reporting_visualization_script_session_available_from_run_context(
     )
 
 
+def _reporting_visualization_state_flag(
+    run_context: RunContext | None,
+    key: str,
+) -> bool:
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return False
+    return run_context.session_state.get(key) is True
+
+
+def reporting_visualization_script_written_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    return _reporting_visualization_state_flag(
+        run_context, REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY
+    ) or reporting_visualization_script_session_available_from_run_context(run_context)
+
+
+def reporting_visualization_script_executed_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    return _reporting_visualization_state_flag(
+        run_context, REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY
+    )
+
+
+def reporting_visualization_recovery_read_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    return _reporting_visualization_state_flag(
+        run_context, REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY
+    )
+
+
 def reporting_visualization_exploration_count(
     run_context: RunContext | None, tool_name: str
 ) -> int:
@@ -697,7 +733,8 @@ def reporting_visualization_budget_from_run_context(
     binding = binding if isinstance(binding, Mapping) else {}
     identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
     budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
-    stored = budgets.get(identity) if isinstance(budgets, Mapping) else {}
+    stored_value = budgets.get(identity) if isinstance(budgets, Mapping) else None
+    stored: Mapping[str, Any] = stored_value if isinstance(stored_value, Mapping) else {}
 
     def count(value: Any) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
@@ -736,7 +773,8 @@ def reporting_visualization_usage_from_run_context(
     binding = binding if isinstance(binding, Mapping) else {}
     identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
     budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
-    stored = budgets.get(identity) if isinstance(budgets, Mapping) else {}
+    stored_value = budgets.get(identity) if isinstance(budgets, Mapping) else None
+    stored: Mapping[str, Any] = stored_value if isinstance(stored_value, Mapping) else {}
 
     def count(value: Any) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0

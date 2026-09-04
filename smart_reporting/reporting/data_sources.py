@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import secrets
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import anyio
+import polars as pl
 from agno.run import RunContext
 
 from ..async_utils import complete_cleanup
 from ..workspace import WorkspaceHashResultError, WorkspaceService, _thread
+from .contract import ReportFileInput
 from .data_source import DataSourceAdapter
 from .models import ReportingError
 from .workflow.query_pipeline import (
@@ -38,16 +41,21 @@ class DatasetHandle:
     sha256: str
     requirement_id: str
     sql_hash: str
+    source_type: Literal["starrocks_materialized", "url_csv"] = "starrocks_materialized"
+    filename: str | None = None
     period_roles: tuple[Literal["current", "yoy", "mom"], ...] = ("current",)
     query_window_id: str = "current"
 
     def __post_init__(self) -> None:
         if (
-            not self.period_roles
+            self.source_type not in {"starrocks_materialized", "url_csv"}
+            or (self.source_type == "url_csv" and not self.filename)
+            or (self.source_type == "starrocks_materialized" and self.filename is not None)
+            or not self.period_roles
             or len(self.period_roles) != len(set(self.period_roles))
             or any(role not in {"current", "yoy", "mom"} for role in self.period_roles)
         ):
-            raise ValueError("数据集句柄 periodRoles 无效")
+            raise ValueError("数据集句柄来源或 periodRoles 无效")
         if not self.query_window_id:
             raise ValueError("数据集句柄 queryWindowId 无效")
 
@@ -55,7 +63,7 @@ class DatasetHandle:
         return {
             "datasetId": self.dataset_id,
             "sourceId": self.source_id,
-            "sourceType": "starrocks_materialized",
+            "sourceType": self.source_type,
             "path": self.path,
             "format": "csv",
             "rowCount": self.row_count,
@@ -66,6 +74,7 @@ class DatasetHandle:
                 "sqlHash": self.sql_hash,
                 "periodRoles": list(self.period_roles),
                 "queryWindowId": self.query_window_id,
+                **({"filename": self.filename} if self.filename is not None else {}),
             },
         }
 
@@ -81,6 +90,10 @@ class DatasetHandle:
             return cls(
                 dataset_id=str(value["datasetId"]),
                 source_id=str(value["sourceId"]),
+                source_type=cast(
+                    Literal["starrocks_materialized", "url_csv"],
+                    str(value.get("sourceType") or "starrocks_materialized"),
+                ),
                 path=str(value["path"]),
                 row_count=int(value["rowCount"]),
                 size=int(value["size"]),
@@ -92,6 +105,9 @@ class DatasetHandle:
                     tuple(raw_period_roles),
                 ),
                 query_window_id=str(provenance.get("queryWindowId") or "current"),
+                filename=(
+                    str(provenance["filename"]) if provenance.get("filename") is not None else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ReportingError("dataset_invalid", "数据集句柄无效，请重新准备。") from error
@@ -109,6 +125,80 @@ class ReportDatasetStore:
 
     def __init__(self, service: WorkspaceService):
         self.service = service
+
+    async def register_external_csv(
+        self,
+        files: tuple[ReportFileInput, ...],
+        *,
+        run_context: RunContext,
+    ) -> tuple[tuple[DatasetHandle, ...], tuple[DatasetLineage, ...]]:
+        """校验 URL 物化文件并登记为同一批不可变补充数据集。"""
+
+        if not files:
+            return (), ()
+        if len(files) > MAX_REPORT_INPUTS:
+            raise ReportingError("report_attachment_count_invalid", "CSV 附件数量无效。")
+        handles: list[DatasetHandle] = []
+        lineages: list[DatasetLineage] = []
+        thread_id = _thread(run_context)
+        for index, file in enumerate(files):
+            if not file.filename.lower().endswith(".csv") or file.media_type not in {
+                None,
+                "text/csv",
+            }:
+                raise ReportingError(
+                    "report_attachment_type_unsupported", "Reporting URL 附件仅支持 CSV。"
+                )
+            current = await self.service.ahash_file(thread_id, file.path)
+            if (
+                current.get("missing")
+                or current.get("size") != file.size
+                or current.get("sha256") != file.sha256
+            ):
+                raise ReportingError("report_attachment_changed", "URL CSV 附件在登记前发生变化。")
+            content, _media_type = await asyncio.to_thread(
+                self.service.file_bytes, thread_id, file.path
+            )
+            try:
+                row_count = pl.read_csv(io.BytesIO(content)).height
+            except (UnicodeDecodeError, pl.exceptions.PolarsError) as error:
+                raise ReportingError(
+                    "report_attachment_csv_invalid", "CSV 附件格式无效。"
+                ) from error
+            requirement_id = f"attachment-{index + 1:03d}"
+            sql_hash = hashlib.sha256(f"url_csv:{file.sha256}".encode()).hexdigest()
+            dataset_id = (
+                "dataset-url-"
+                + hashlib.sha256(f"{index}:{file.filename}:{file.sha256}".encode()).hexdigest()[:28]
+            )
+            handle = DatasetHandle(
+                dataset_id=dataset_id,
+                source_id="mcp-url",
+                source_type="url_csv",
+                path=file.path,
+                row_count=row_count,
+                size=file.size,
+                sha256=file.sha256,
+                requirement_id=requirement_id,
+                sql_hash=sql_hash,
+                filename=file.filename,
+            )
+            handles.append(handle)
+            lineages.append(
+                DatasetLineage(
+                    datasetId=dataset_id,
+                    sourceId=handle.source_id,
+                    sourceType=handle.source_type,
+                    requirementId=requirement_id,
+                    sqlHash=sql_hash,
+                    rowCount=row_count,
+                    size=file.size,
+                    sha256=file.sha256,
+                )
+            )
+        completed = tuple(handles)
+        self._store_handles(completed, run_context)
+        return completed, tuple(lineages)
 
     async def materialize_batch(
         self,

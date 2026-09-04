@@ -1,4 +1,4 @@
-"""按章节编排 Coding 分析、图表提交和章节成稿。"""
+"""按章节编排 Reporting 分析、图表提交和章节成稿。"""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from agno.run import RunContext
 from agno.workflow import Parallel, Step, Steps, Workflow
 from agno.workflow.types import StepInput, StepOutput
 
-CodingExecutionMode = Literal["sequential", "parallel"]
+ReportingExecutionMode = Literal["sequential", "parallel"]
 AnalysisRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
 VisualizationRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
 DraftRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
 
 
 @dataclass(frozen=True)
-class CodingDraftWorkflowResult:
+class ReportingDraftWorkflowResult:
     """章节工作流的服务端结果；不依赖模型历史。"""
 
     section_code: str
@@ -27,7 +27,7 @@ class CodingDraftWorkflowResult:
     draft_output: StepOutput
 
 
-class CodingDraftWorkflow(Workflow):
+class ReportingDraftWorkflow(Workflow):
     """执行一个章节的固定三阶段流程。
 
     ``report_goal`` 和 ``section_goal`` 在每个子任务的输入中重复注入，保证恢复、
@@ -44,7 +44,7 @@ class CodingDraftWorkflow(Workflow):
         run_analysis: AnalysisRunner,
         submit_visualization: VisualizationRunner,
         draft_section: DraftRunner,
-        execution_mode: CodingExecutionMode = "sequential",
+        execution_mode: ReportingExecutionMode = "sequential",
         analysis_limiter: asyncio.Semaphore | None = None,
     ) -> None:
         if execution_mode not in {"sequential", "parallel"}:
@@ -92,10 +92,10 @@ class CodingDraftWorkflow(Workflow):
             self._analysis_outputs[analysis_id] = output
         return output
 
-    async def execute_section(self, run_context: RunContext) -> CodingDraftWorkflowResult:
+    async def execute_section(self, run_context: RunContext) -> ReportingDraftWorkflowResult:
         self._analysis_outputs = {}
         try:
-            analysis_plan = build_coding_draft_steps(self, run_context)
+            analysis_plan = build_reporting_draft_steps(self, run_context)
             await analysis_plan.aexecute(
                 StepInput(input=self._instruction()),
                 run_context=run_context,
@@ -127,7 +127,7 @@ class CodingDraftWorkflow(Workflow):
         draft_output = await self.draft_section(draft_input, run_context)
         if draft_output.success is False:
             raise RuntimeError("章节成稿失败")
-        return CodingDraftWorkflowResult(
+        return ReportingDraftWorkflowResult(
             section_code=str(self.section_goal.get("sectionCode", "")),
             analysis_outputs=tuple(output for output in analysis_outputs if output is not None),
             visualization_output=visualization_output,
@@ -135,7 +135,7 @@ class CodingDraftWorkflow(Workflow):
         )
 
 
-class CodingAnalysisAndDraftWorkflow(Workflow):
+class ReportingAnalysisAndDraftWorkflow(Workflow):
     """根据冻结提纲运行全部章节，并汇总章节结果。"""
 
     def __init__(
@@ -146,7 +146,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
         run_analysis: AnalysisRunner,
         submit_visualization: VisualizationRunner,
         draft_section: DraftRunner,
-        execution_mode: CodingExecutionMode = "sequential",
+        execution_mode: ReportingExecutionMode = "sequential",
         section_concurrency: int = 1,
         analysis_concurrency: int = 1,
     ) -> None:
@@ -155,7 +155,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
         self.execution_mode = execution_mode
         self.section_concurrency = section_concurrency
         limiter = asyncio.Semaphore(analysis_concurrency)
-        built_sections: list[CodingDraftWorkflow] = []
+        built_sections: list[ReportingDraftWorkflow] = []
         assigned_analysis_ids: set[str] = set()
         for section in sections:
             analysis_ids = tuple(section.get("analysisIds", ()))
@@ -165,7 +165,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
                 raise ValueError(f"analysisId {duplicate} 不能归属于多个章节")
             assigned_analysis_ids.update(analysis_ids)
             built_sections.append(
-                CodingDraftWorkflow(
+                ReportingDraftWorkflow(
                     report_goal=report_goal,
                     section_goal=section,
                     analysis_ids=analysis_ids,
@@ -179,7 +179,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
         self.sections = tuple(built_sections)
         super().__init__(
             id="coding-analysis-and-draft",
-            name="Coding 分析与成稿",
+            name="Reporting 分析与成稿",
             steps=[
                 Step(
                     step_id="coding-sections",
@@ -195,14 +195,16 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
             telemetry=False,
         )
 
-    async def _run_sections(self, run_context: RunContext) -> tuple[CodingDraftWorkflowResult, ...]:
+    async def _run_sections(
+        self, run_context: RunContext
+    ) -> tuple[ReportingDraftWorkflowResult, ...]:
         async def execute_batch(
-            batch: Sequence[CodingDraftWorkflow], *, parallel: bool
-        ) -> list[CodingDraftWorkflowResult]:
-            results: list[CodingDraftWorkflowResult] = []
+            batch: Sequence[ReportingDraftWorkflow], *, parallel: bool
+        ) -> list[ReportingDraftWorkflowResult]:
+            results: list[ReportingDraftWorkflowResult] = []
 
             async def execute_section(
-                _input: StepInput, section: CodingDraftWorkflow, **_kwargs: Any
+                _input: StepInput, section: ReportingDraftWorkflow, **_kwargs: Any
             ) -> StepOutput:
                 result = await section.execute_section(run_context)
                 results.append(result)
@@ -212,7 +214,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
             for section in batch:
 
                 async def run_section(
-                    value: StepInput, section: CodingDraftWorkflow = section, **kwargs: Any
+                    value: StepInput, section: ReportingDraftWorkflow = section, **kwargs: Any
                 ) -> StepOutput:
                     return await execute_section(value, section, **kwargs)
 
@@ -257,7 +259,7 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
 
         if self.execution_mode == "sequential":
             return tuple(await execute_batch(self.sections, parallel=False))
-        results: list[CodingDraftWorkflowResult] = []
+        results: list[ReportingDraftWorkflowResult] = []
         for offset in range(0, len(self.sections), self.section_concurrency):
             batch = self.sections[offset : offset + self.section_concurrency]
             results.extend(await execute_batch(batch, parallel=True))
@@ -284,13 +286,13 @@ class CodingAnalysisAndDraftWorkflow(Workflow):
         )
 
 
-def build_coding_draft_steps(
-    workflow: CodingDraftWorkflow,
+def build_reporting_draft_steps(
+    workflow: ReportingDraftWorkflow,
     run_context: RunContext,
 ) -> Steps | Parallel:
     """构造可供 Agno 运行器使用的 Steps/Parallel 计划。
 
-    运行器仍由 ``CodingDraftWorkflow.execute_section`` 执行门禁；该函数用于检查和测试步骤
+    运行器仍由 ``ReportingDraftWorkflow.execute_section`` 执行门禁；该函数用于检查和测试步骤
     结构，所有自定义 Step 均关闭隐式重试。
     """
 

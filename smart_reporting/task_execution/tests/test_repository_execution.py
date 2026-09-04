@@ -10,8 +10,8 @@ from smart_reporting.database import create_agent_database
 from smart_reporting.task_execution.repository import (
     MAX_TERMINAL_OUTPUT_BYTES,
     TASK_SCHEMA_VERSION,
-    CodingRepositoryError,
-    CodingTaskRepository,
+    TaskExecutionRepository,
+    TaskExecutionRepositoryError,
     utcnow,
 )
 
@@ -24,7 +24,7 @@ async def repository():
     if not database_url:
         pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
     database = create_agent_database(database_url)
-    current = CodingTaskRepository(database.async_db)
+    current = TaskExecutionRepository(database.async_db)
     await current.initialize()
     try:
         async with database.async_engine.begin() as connection:
@@ -37,12 +37,12 @@ async def repository():
         database.sync_engine.dispose()
 
 
-async def create_task(repository: CodingTaskRepository, run_id: str = "external-run"):
+async def create_task(repository: TaskExecutionRepository, run_id: str = "external-run"):
     return await repository.create_task(
         external_run_id=run_id,
         owner_user_id="user-7",
         thread_id="thread-9",
-        agent_id="coding-agent",
+        executor_id="coding-agent",
         sandbox_id="sandbox-3",
         deadline_at=utcnow() + timedelta(hours=24),
     )
@@ -115,7 +115,7 @@ async def test_execution_scope_terminal_receipt_and_output_are_persistent_and_bo
             sandbox_id=task.sandbox_id,
         )
     ).status == "completed"
-    with pytest.raises(CodingRepositoryError) as rejected:
+    with pytest.raises(TaskExecutionRepositoryError) as rejected:
         await current.scoped_execution(
             "execution-1",
             owner_user_id="other-user",
@@ -133,7 +133,7 @@ async def test_complete_task_rejects_stale_mutation_and_closes_active_task(repos
     assert await current.claim_lease(task.external_run_id, "request-a") is True
     assert await current.increment_mutation(task.external_run_id) == 1
 
-    with pytest.raises(CodingRepositoryError) as stale:
+    with pytest.raises(TaskExecutionRepositoryError) as stale:
         await current.complete_task(
             task.external_run_id,
             expected_mutation_sequence=0,
@@ -155,7 +155,7 @@ async def test_complete_task_rejects_stale_mutation_and_closes_active_task(repos
     completed = await current.get_task(task.external_run_id)
     assert completed is not None
     assert completed.status == "completed"
-    with pytest.raises(CodingRepositoryError) as closed:
+    with pytest.raises(TaskExecutionRepositoryError) as closed:
         await current.increment_mutation(task.external_run_id)
     assert closed.value.code == "task_not_active"
 
@@ -163,7 +163,7 @@ async def test_complete_task_rejects_stale_mutation_and_closes_active_task(repos
 @pytest.mark.anyio
 async def test_repository_initialization_and_lease_are_safe_across_instances(repository):
     current, database = repository
-    other = CodingTaskRepository(database.async_db)
+    other = TaskExecutionRepository(database.async_db)
     await asyncio.gather(current.initialize(), other.initialize())
     await asyncio.gather(create_task(current), create_task(other))
 
@@ -225,7 +225,7 @@ async def test_postgres_repository_uses_the_same_core_contract():
         pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 任务仓储集成测试。")
     database = create_agent_database(db_url)
     assert database.backend == "postgresql"
-    current = CodingTaskRepository(database.async_db)
+    current = TaskExecutionRepository(database.async_db)
     suffix = uuid.uuid4().hex
     external_run_id = f"integration-{suffix}"
     internal_run_id = f"internal-{suffix}"
@@ -235,7 +235,7 @@ async def test_postgres_repository_uses_the_same_core_contract():
             external_run_id=external_run_id,
             owner_user_id="integration-user",
             thread_id=f"thread-{suffix}",
-            agent_id="coding-agent",
+            executor_id="coding-agent",
             sandbox_id=f"sandbox-{suffix}",
             deadline_at=utcnow() + timedelta(hours=24),
         )

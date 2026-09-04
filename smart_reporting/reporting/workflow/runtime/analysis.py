@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import difflib
 from typing import Literal
 
 from ...phase import (
@@ -9,8 +10,9 @@ from ...phase import (
     REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
 )
-from ...tools import build_report_worker_tools
-from ..checkpoint import CheckpointRetryUsage
+from ...tools import build_reporting_tools
+from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
+from ..execution import ReportingStructuredAgentExecutor, ReportingTaskInvocation
 from .analysis_item_workflow import (
     AnalysisEvidencePlan,
     AnalysisItemWorkflow,
@@ -50,7 +52,6 @@ from .base import (
     DurableReportingPhase,
     FileIdentity,
     Mapping,
-    OpenAIChat,
     ProfileCoverageManifest,
     QueryRequirement,
     ReportingCheckpoint,
@@ -62,15 +63,15 @@ from .base import (
     Sequence,
     StepInput,
     StepOutput,
-    TaskScope,
+    TaskExecutionScope,
     TaskState,
     ValidationError,
     WorkspaceService,
     ZoneInfo,
-    _coding_observed_data_facts,
     _frozen_outline,
     _payload_sha256,
     _report_machine_terms,
+    _reporting_observed_data_facts,
     _source_warnings_from_state,
     anyio,
     asyncio,
@@ -89,17 +90,18 @@ from .base import (
     payload_sha256,
     re,
     reporting_phase_task_key,
-    reporting_thinking_profile_from_model,
     time,
     validate_metric_code_bindings,
 )
-from .coding_draft_workflow import CodingAnalysisAndDraftWorkflow
 from .datasets import _profile_coverage_instruction_projection
+from .phase_models import ChartDraft, VisualizationScriptDraft
+from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
+from .visualization_section_workflow import VisualizationSectionWorkflow
 
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
 
 
-async def _completed_coding_step_output() -> StepOutput:
+async def _completed_reporting_step_output() -> StepOutput:
     """构造章节计划所需的默认成功回调结果。"""
     return StepOutput(content={"status": "ready"})
 
@@ -232,7 +234,7 @@ class RuntimeAnalysisMixin:
     async def _run_visualization_section_task(
         self, section_code: str, *, context: Mapping[str, Any] | None = None
     ) -> None:
-        """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。
+        """执行单章可视化 Agent；章节草案由 durable submit 工具作为唯一完成信号。
 
         失败按 sectionCode 记入 checkpoint 账本并驱动同章 fresh retry(上限
         MAX_REPORT_SECTION_PHASE_ATTEMPTS);重试章继承已消耗预算并关闭探索
@@ -387,12 +389,12 @@ class RuntimeAnalysisMixin:
                 },
                 analysis_output_path=f"{root}/section.json",
             )
-            task_scope = TaskScope(
+            task_scope = TaskExecutionScope(
                 task_id,
                 scope["userId"],
                 scope["threadId"],
                 context["sandbox_id"],
-                str(self.report_worker.id),
+                "reporting-visualization-agent",
             )
             checkpoint = self._update_reporting_checkpoint(
                 checkpoint,
@@ -422,7 +424,148 @@ class RuntimeAnalysisMixin:
                         "report_visualization_section_task_terminal",
                         "章节图表 Task 未完成收尾即终止。",
                     )
-                await self.task_runner.run(task_scope, parent_run_id=str(run_context.run_id or ""))
+                if self.visualization_generator is None:
+                    raise ReportingError(
+                        "report_visualization_executor_missing",
+                        "章节图表结构化生成器未配置。",
+                    )
+
+                async def execute_fixed_visualization(
+                    invocation: ReportingTaskInvocation,
+                ) -> VisualizationScriptDraft:
+                    toolkits = build_reporting_tools(
+                        self.workspace_service,
+                        self.task_runner.repository,
+                        state_repository=self.state_repository,
+                        run_context=invocation.run_context,
+                        vision_reviewer=self.vision_reviewer,
+                    )
+                    if len(toolkits) != 1:
+                        raise ReportingError(
+                            "report_phase_contract_invalid", "章节图表 Toolkit 装配结果无效。"
+                        )
+                    toolkit = toolkits[0]
+                    committed_source: str | None = None
+                    committed_sha256: str | None = None
+
+                    async def generate(
+                        request: Mapping[str, Any], task_context: RunContext
+                    ) -> VisualizationScriptDraft:
+                        payload = json.dumps(
+                            request, ensure_ascii=False, separators=(",", ":")
+                        )
+                        return cast(
+                            VisualizationScriptDraft,
+                            await ReportingStructuredAgentExecutor(
+                                self.visualization_generator
+                            ).run(payload, scope=invocation.scope, run_context=task_context),
+                        )
+
+                    async def recover(
+                        repair: Mapping[str, Any], task_context: RunContext
+                    ) -> VisualizationScriptDraft:
+                        if self.visualization_recovery is None:
+                            raise ReportingError(
+                                "report_visualization_recovery_missing",
+                                "章节图表恢复生成器未配置。",
+                            )
+                        payload = json.dumps(
+                            {**instruction_payload, "recovery": dict(repair)},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        return cast(
+                            VisualizationScriptDraft,
+                            await ReportingStructuredAgentExecutor(
+                                self.visualization_recovery
+                            ).run(payload, scope=invocation.scope, run_context=task_context),
+                        )
+
+                    async def write_script(
+                        path: str, source: str, task_context: RunContext
+                    ) -> FileIdentity:
+                        nonlocal committed_sha256, committed_source
+                        patch = "".join(
+                            difflib.unified_diff(
+                                ([] if committed_source is None else committed_source.splitlines(keepends=True)),
+                                source.splitlines(keepends=True),
+                                fromfile=("/dev/null" if committed_source is None else f"a/{path}"),
+                                tofile=f"b/{path}",
+                            )
+                        )
+                        receipt = await toolkit.apply_analysis_patch(
+                            patch,
+                            expected_sha256=(
+                                {path: committed_sha256} if committed_sha256 is not None else None
+                            ),
+                            run_context=task_context,
+                        )
+                        artifacts = receipt.get("artifacts") if isinstance(receipt, Mapping) else None
+                        if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
+                            raise ReportingError(
+                                str(receipt.get("code", "report_visualization_write_failed")),
+                                str(receipt.get("message", "章节图表脚本写入未被接受。")),
+                                details=dict(receipt) if isinstance(receipt, Mapping) else None,
+                            )
+                        identity = FileIdentity.model_validate(artifacts[0])
+                        committed_source = source
+                        committed_sha256 = identity.sha256
+                        return identity
+
+                    async def execute_script(
+                        command: str, task_context: RunContext
+                    ) -> Mapping[str, Any]:
+                        receipt = await toolkit.terminal(command, run_context=task_context)
+                        if receipt.get("ok") is False:
+                            raise ReportingError(
+                                str(receipt.get("code", "report_visualization_script_failed")),
+                                str(receipt.get("message", "章节图表脚本执行未被接受。")),
+                                details=dict(receipt),
+                            )
+                        return receipt
+
+                    async def inspect_chart(
+                        chart: ChartDraft, task_context: RunContext
+                    ) -> Any:
+                        receipt = await toolkit.inspect_chart(
+                            chart.source_path, run_context=task_context
+                        )
+                        raw = receipt.get("receipt") if isinstance(receipt, Mapping) else None
+                        if receipt.get("ok") is not True or not isinstance(raw, Mapping):
+                            raise ReportingError(
+                                str(receipt.get("code", "report_visualization_review_failed")),
+                                str(receipt.get("message", "章节图表审查未被接受。")),
+                                details=dict(receipt) if isinstance(receipt, Mapping) else None,
+                            )
+                        return ChartVisualInspectionReceipt.model_validate(raw)
+
+                    async def submit(
+                        draft: VisualizationScriptDraft,
+                        _inspections: tuple[ChartVisualInspectionReceipt, ...],
+                        task_context: RunContext,
+                    ) -> Mapping[str, Any]:
+                        return await toolkit.submit_visualization_charts(
+                            section_code,
+                            [item.model_dump(mode="json", by_alias=True) for item in draft.charts],
+                            run_context=task_context,
+                        )
+
+                    return (
+                        await VisualizationSectionWorkflow(
+                            generate=generate,
+                            recover=recover if self.visualization_recovery is not None else None,
+                            write_script=write_script,
+                            execute_script=execute_script,
+                            inspect_chart=(inspect_chart if self.vision_reviewer is not None else None),
+                            submit=submit,
+                        ).run(instruction_payload, invocation.run_context)
+                    ).draft
+
+                await self.task_runner.run(
+                    task_scope,
+                    parent_run_id=str(run_context.run_id or ""),
+                    executor=execute_fixed_visualization,
+                )
                 latest = await self.state_repository.get(
                     str(run_context.run_id or context["external_run_id"])
                 )
@@ -570,7 +713,7 @@ class RuntimeAnalysisMixin:
             else [],
         }
 
-    async def run_coding_analysis(
+    async def run_reporting_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
         feedback = self._feedback(_step_input)
@@ -655,8 +798,8 @@ class RuntimeAnalysisMixin:
         async with self.workspace_service._async_client() as client:
             sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
             sandbox_id = str(getattr(sandbox, "id", "") or "")
-        if not sandbox_id or not self.report_worker.id:
-            raise ReportingError("report_worker_unavailable", "报表 Coding 工作区不可用。")
+        if not sandbox_id:
+            raise ReportingError("report_worker_unavailable", "报表 Reporting 工作区不可用。")
         lineage = tuple(
             DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
         )
@@ -694,10 +837,10 @@ class RuntimeAnalysisMixin:
                 state[REPORT_DATASET_LINEAGE_STATE_KEY],
                 state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
             ),
-            observed_data_facts=_coding_observed_data_facts(
+            observed_data_facts=_reporting_observed_data_facts(
                 self._data_shapes(run_context), requirements, lineage
             ),
-            expected_sections=tuple(item["code"] for item in render_sections),
+            expected_sections=tuple(str(item["code"]) for item in render_sections),
             expected_citation_bindings=tuple(
                 (item.dataset_id, item.requirement_id) for item in citation_bindings
             ),
@@ -743,7 +886,7 @@ class RuntimeAnalysisMixin:
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
         checkpoint_state: dict[str, Any] = checkpoint.model_dump(mode="python")
-        # Coding 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
+        # Reporting 阶段统一由 Agno Workflow 驱动。checkpoint 持久化层自身提供 CAS 锁，
         # 回调不持有跨模型调用的外层锁，从而允许 Parallel 模式真正并发执行分析项和章节。
 
         async def run_analysis_item(
@@ -755,7 +898,9 @@ class RuntimeAnalysisMixin:
             section_goal = instruction.get("sectionGoal")
             if not isinstance(section_goal, Mapping):
                 raise ReportingError("report_analysis_item_unknown", "章节缺少有效 sectionGoal。")
-            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
+            checkpoint = await self._current_reporting_checkpoint(
+                run_context, ReportingCheckpoint.model_validate(checkpoint_state)
+            )
             updated = await self._run_analysis_item_task(
                 run_context,
                 checkpoint=checkpoint,
@@ -786,14 +931,10 @@ class RuntimeAnalysisMixin:
                 raise ReportingError(
                     "report_visualization_section_invalid", "章节缺少有效 sectionCode。"
                 )
-            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
-            visual_inspection_mode = (
-                "vision"
-                if getattr(
-                    getattr(self.report_worker, "model", None), "_report_vision_enabled", True
-                )
-                else "deterministic"
+            checkpoint = await self._current_reporting_checkpoint(
+                run_context, ReportingCheckpoint.model_validate(checkpoint_state)
             )
+            visual_inspection_mode = "vision" if self._vision_enabled else "deterministic"
             visualization_context = {
                 "run_context": run_context,
                 "checkpoint": checkpoint,
@@ -816,8 +957,10 @@ class RuntimeAnalysisMixin:
             if not isinstance(section_code, str):
                 raise ReportingError("report_section_invalid", "章节缺少有效 sectionCode。")
             section = next(item for item in outline.sections if item.code == section_code)
-            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint_state)
-            artifact = await self._build_coding_artifact(
+            checkpoint = await self._current_reporting_checkpoint(
+                run_context, ReportingCheckpoint.model_validate(checkpoint_state)
+            )
+            artifact = await self._build_reporting_artifact(
                 run_context,
                 analysis_ids=section.analysis_ids,
                 detailed_plan=detailed_plan,
@@ -852,7 +995,7 @@ class RuntimeAnalysisMixin:
             checkpoint_state.update(updated.model_dump(mode="python"))
             return StepOutput(content={"sectionCode": section_code, "status": "completed"})
 
-        coding_workflow = CodingAnalysisAndDraftWorkflow(
+        reporting_workflow = ReportingAnalysisAndDraftWorkflow(
             report_goal=self._envelope(run_context).report_goal,
             sections=[
                 {
@@ -866,11 +1009,11 @@ class RuntimeAnalysisMixin:
             run_analysis=run_analysis_item,
             submit_visualization=submit_visualization,
             draft_section=draft_section,
-            execution_mode=getattr(self, "coding_execution_mode", "sequential"),
+            execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
             section_concurrency=getattr(self, "section_concurrency", 1),
             analysis_concurrency=getattr(self, "analysis_concurrency", 1),
         )
-        output = await coding_workflow.arun(
+        output = await reporting_workflow.arun(
             input={"reportGoal": self._envelope(run_context).report_goal},
             run_id=str(run_context.run_id or scope["externalRunId"]),
             session_id=scope["threadId"],
@@ -879,10 +1022,10 @@ class RuntimeAnalysisMixin:
         if not isinstance(content, dict):
             raise ReportingError(
                 "report_coding_workflow_output_invalid",
-                "CodingAnalysisAndDraftWorkflow 未返回有效结果。",
+                "ReportingAnalysisAndDraftWorkflow 未返回有效结果。",
             )
         final_checkpoint = ReportingCheckpoint.model_validate(checkpoint_state)
-        final_artifact = await self._build_coding_artifact(
+        final_artifact = await self._build_reporting_artifact(
             run_context,
             analysis_ids=tuple(item.analysis_id for item in detailed_plan.analyses),
             detailed_plan=detailed_plan,
@@ -1114,15 +1257,15 @@ class RuntimeAnalysisMixin:
                 anonymous_trace.append(trace_item)
         section_errors = dict(current.visualization_section_errors)
         for section_code, error in incoming.visualization_section_errors.items():
-            existing = section_errors.get(section_code)
+            existing_error = section_errors.get(section_code)
             # checkpoint 持久化可乱序回放；同章账本只能由更高 attempt，或同 attempt
-            # 的确定性 taskId 覆盖。否则旧 worker 的失败写回会抹掉新 worker 的恢复预算。
-            if existing is None or (
+            # 的确定性 taskId 覆盖。否则旧执行器的失败写回会抹掉新执行器的恢复预算。
+            if existing_error is None or (
                 error.attempt if error.attempt is not None else -1,
                 error.task_id or "",
             ) >= (
-                existing.attempt if existing.attempt is not None else -1,
-                existing.task_id or "",
+                existing_error.attempt if existing_error.attempt is not None else -1,
+                existing_error.task_id or "",
             ):
                 section_errors[section_code] = error
         for section_code, error in tuple(section_errors.items()):
@@ -1400,14 +1543,8 @@ class RuntimeAnalysisMixin:
             raise ReportingError("report_phase_artifact_changed", "阶段产物在签发后发生变化。")
         return identity
 
-    def _worker_thinking_effort(self, *, retry: bool) -> Literal["off", "high", "max"]:
-        model = self.report_worker.model
-        if not isinstance(model, OpenAIChat):
-            raise TypeError("Report worker requires OpenAIChat")
-        profile = reporting_thinking_profile_from_model(model)
-        if not profile.enabled:
-            return "off"
-        return "high"
+    def _analysis_thinking_effort(self) -> Literal["off", "high"]:
+        return "high" if self._analysis_thinking_enabled else "off"
 
     async def _analysis_item_artifacts_from_receipt(
         self,
@@ -1465,7 +1602,7 @@ class RuntimeAnalysisMixin:
             raise ReportingError(
                 "report_analysis_context_invalid", "单项分析任务输入必须是 JSON 对象。"
             )
-        toolkits = build_report_worker_tools(
+        toolkits = build_reporting_tools(
             self.workspace_service,
             self.task_runner.repository,
             state_repository=self.state_repository,
@@ -1538,9 +1675,8 @@ class RuntimeAnalysisMixin:
         workflow = AnalysisItemWorkflow(
             plan_evidence=plan_evidence,
             summarize=summarize,
-            read_file=toolkit.coding_read_file,
-            create_file=toolkit.create_analysis_file,
-            overwrite_file=toolkit.overwrite_analysis_file,
+            read_file=toolkit.read_file,
+            apply_patch=toolkit.apply_analysis_patch,
             run_script=toolkit.terminal,
             complete=toolkit.complete_analysis_item,
         )
@@ -1588,11 +1724,11 @@ class RuntimeAnalysisMixin:
         selected_citations = tuple(
             item for item in citation_bindings if item.dataset_id in selected_dataset_ids
         )
-        coding_analysis_plan = _coding_detailed_analysis_plan(
+        reporting_analysis_plan = _reporting_detailed_analysis_plan(
             detailed_plan,
             analysis_ids=(analysis_id,),
         )
-        analysis_plan = coding_analysis_plan["analyses"][0]
+        analysis_plan = reporting_analysis_plan["analyses"][0]
         deterministic_facts = cast(
             DeterministicAnalysisBundle,
             await self._read_identity_model(
@@ -1732,8 +1868,8 @@ class RuntimeAnalysisMixin:
                 analysis_plan, retry=retry, retry_reason=effective_retry_reason
             )
             complexity_score, _ = _analysis_item_complexity(analysis_plan)
-            worker_effort = self._worker_thinking_effort(retry=retry)
-            thinking_effort = "off" if worker_effort == "off" else policy_effort
+            analysis_effort = self._analysis_thinking_effort()
+            thinking_effort = "off" if analysis_effort == "off" else policy_effort
             loguru_logger.info(
                 "report_analysis_thinking_policy analysis_id={} effort={} budget={} "
                 "complexity_tier={} complexity_score={} "
@@ -1781,12 +1917,12 @@ class RuntimeAnalysisMixin:
                     ],
                 },
             )
-            task_scope = TaskScope(
+            task_scope = TaskExecutionScope(
                 task_id,
                 scope["userId"],
                 scope["threadId"],
                 sandbox_id,
-                str(self.report_worker.id),
+                "reporting-analysis-workflow",
             )
             if started_trace is None:
                 checkpoint = self._update_reporting_checkpoint(
@@ -1821,13 +1957,18 @@ class RuntimeAnalysisMixin:
                         "report_analysis_task_terminal",
                         f"分析项 {analysis_id} Task 未完成收尾即终止。",
                     )
+
+                async def execute_analysis_item(invocation):
+                    return await self._execute_analysis_item_workflow(
+                        invocation.instruction,
+                        invocation.run_context,
+                        parent_run_context=run_context,
+                    )
+
                 receipt = await self.task_runner.run(
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
-                    executor=partial(
-                        self._execute_analysis_item_workflow,
-                        parent_run_context=run_context,
-                    ),
+                    executor=execute_analysis_item,
                 )
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
@@ -2009,7 +2150,7 @@ class RuntimeAnalysisMixin:
                 checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
                 return checkpoint, fact_files
 
-        # 映射是后续 Worker 的唯一 facts 来源。每次恢复均先核验计划、规范路径和普通
+        # 映射是后续 Reporting Agent 的唯一 facts 来源。每次恢复均先核验计划、规范路径和普通
         # 文件的 size/SHA-256；不允许重新读取 Dataset 重算后覆盖已签发的事实身份。
         if set(fact_files) != set(analysis_ids) or any(
             fact_files[analysis_id].path != expected_paths[analysis_id]
@@ -2164,7 +2305,7 @@ async def _run_bounded(
     items: Sequence[Any],
     *,
     concurrency: int,
-    worker: Callable[[Any], Awaitable[Any]],
+    operation: Callable[[Any], Awaitable[Any]],
 ) -> list[Any]:
     """按输入索引返回并发结果；完成顺序不改变最终提纲顺序。"""
 
@@ -2177,7 +2318,7 @@ async def _run_bounded(
     async def run_one(index: int, item: Any) -> None:
         async with semaphore:
             try:
-                results[index] = await worker(item)
+                results[index] = await operation(item)
             except Exception as error:
                 # 业务失败不能让 TaskGroup 取消已启动的兄弟任务，也不能让 Python 把
                 # 稳定 ReportingError 包成 ExceptionGroup。外部取消仍直接穿透。
@@ -2196,7 +2337,7 @@ async def _run_pending_analysis_items(
     *,
     completed_analysis_ids: set[str],
     concurrency: int,
-    worker: Callable[[str], Awaitable[Any]],
+    executor: Callable[[str], Awaitable[Any]],
 ) -> tuple[str, ...]:
     """并发执行未完成分析项；返回本轮实际调度的稳定计划顺序。"""
 
@@ -2206,14 +2347,14 @@ async def _run_pending_analysis_items(
 
         async def run_one(analysis_id: str) -> None:
             try:
-                await worker(analysis_id)
+                await executor(analysis_id)
             except Exception as error:
                 # 单项业务失败不能取消已经并发运行的其他 analysis；成功项已通过
                 # durable CAS 冻结，下一轮只重试失败项。外部取消仍由 CancelledError
                 # 直接穿透 TaskGroup，确保用户终止不会被吞掉。
                 failures[analysis_id] = error
 
-        await _run_bounded(pending, concurrency=concurrency, worker=run_one)
+        await _run_bounded(pending, concurrency=concurrency, operation=run_one)
         for analysis_id in pending:
             if analysis_id in failures:
                 raise failures[analysis_id]
@@ -2225,7 +2366,7 @@ async def _run_pending_visualization_sections(
     *,
     completed_section_codes: set[str],
     concurrency: int,
-    worker: Callable[[str], Awaitable[None]],
+    executor: Callable[[str], Awaitable[None]],
 ) -> tuple[str, ...]:
     """并发执行未完成图表章节，并在全部兄弟章节收口后汇总失败。"""
 
@@ -2234,14 +2375,14 @@ async def _run_pending_visualization_sections(
 
     async def run_one(section_code: str) -> None:
         try:
-            await worker(section_code)
+            await executor(section_code)
         except Exception as error:
-            # 章节 worker 自己先把稳定错误写入 checkpoint 账本。调度层必须等兄弟章节
+            # 章节执行器自己先把稳定错误写入 checkpoint 账本。调度层必须等兄弟章节
             # 全部结束后再失败，确保成功草案可 durable 冻结并在 fresh attempt 中跳过。
             failures[section_code] = error
 
     if pending:
-        await _run_bounded(pending, concurrency=concurrency, worker=run_one)
+        await _run_bounded(pending, concurrency=concurrency, operation=run_one)
     if failures:
         raise ExceptionGroup(
             "visualization sections failed",
@@ -2410,12 +2551,12 @@ def _checkpoint_retry_usage(
     )
 
 
-def _coding_detailed_analysis_plan(
+def _reporting_detailed_analysis_plan(
     plan: DetailedAnalysisPlan,
     *,
     analysis_ids: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """向成稿 Worker 投影 Codex 风格步骤，完整事实继续由受信上下文承载。"""
+    """向成稿 Agent 投影 Codex 风格步骤，完整事实继续由受信上下文承载。"""
     allowed = set(analysis_ids) if analysis_ids is not None else None
     return {
         "version": plan.version,
@@ -2768,7 +2909,7 @@ def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
             ),
         }
         # 预算终态错误在动态预留点生成，details 对总调用和脚本失败的计数最及时；
-        # read/fact 则只能来自 worker 退出时附加的完整累计快照，两者必须合并。
+        # read/fact 则只能来自执行器退出时附加的完整累计快照，两者必须合并。
         if isinstance(details, Mapping):
             if "totalToolCalls" in details:
                 usage["visualizationToolCalls"] = count(details.get("totalToolCalls"))

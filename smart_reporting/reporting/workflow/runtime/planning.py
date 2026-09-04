@@ -385,7 +385,7 @@ class RuntimePlanningMixin:
             grant=grant,
             base_url=report_public_base_url,
             source_warnings=content["sourceWarnings"],
-            coding_receipts=content["codingReceipts"],
+            task_receipts=content["codingReceipts"],
         )
 
     async def issue_workspace_publication(
@@ -412,7 +412,7 @@ class RuntimePlanningMixin:
             html_size=content["htmlSize"],
             html_sha256=content["htmlSha256"],
             source_warnings=content["sourceWarnings"],
-            coding_receipts=content["codingReceipts"],
+            task_receipts=content["codingReceipts"],
         )
 
     async def confirm_source(self, step_input: StepInput, run_context: RunContext) -> StepOutput:

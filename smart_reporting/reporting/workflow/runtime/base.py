@@ -36,7 +36,7 @@ from pydantic import (
 
 from ....async_utils import complete_cleanup
 from ....quality_warnings.service import QualityWarningService
-from ....task_execution import TaskScope, TaskState
+from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
 from ...contract import (
     FIELD_REF_PATTERN,
@@ -149,6 +149,7 @@ from ...profile import (
 from ...profile import (
     resolve_capabilities as resolve_profile_capabilities,
 )
+from ...vision import ReportVisionReviewer
 from ...workspace import WorkspaceReportService
 from ..checkpoint import (
     AnalysisArtifact,
@@ -175,7 +176,7 @@ from ..checkpoint import (
 )
 from ..execution import (
     MAX_REPORT_INSTRUCTION_BYTES,
-    ReportTaskRunner,
+    ReportingTaskCoordinator,
     _raise_recorded_agent_error,
 )
 from ..orchestration import create_reporting_workflow, record_step_model_metrics
@@ -236,7 +237,9 @@ REPORT_OUTLINE_HASH_STATE_KEY = "report_outline_hash"
 REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY = "report_document_generated_date"
 REPORT_WORKFLOW_RESULT_STATE_KEY = "report_workflow_result"
 REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
-MAX_REPORT_SECTION_PHASE_ATTEMPTS = 2
+# 每个章节/分析项的 fresh retry 上限；模型未调用工具、工具拒绝或验收失败都必须
+# 重新创建上下文，最多三次，避免单次模型异常直接拖垮整条报表链路。
+MAX_REPORT_SECTION_PHASE_ATTEMPTS = 3
 MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION = 1
 MAX_SECTION_WORK_ITEM_BYTES = 256 * 1024
 
@@ -301,7 +304,7 @@ def _frozen_outline(state: Mapping[str, Any]) -> ReportOutline:
     return outline
 
 
-def _coding_observed_data_facts(
+def _reporting_observed_data_facts(
     data_shapes: tuple[DataShape, ...],
     requirements: tuple[QueryRequirement, ...],
     lineage: tuple[DatasetLineage, ...],
@@ -392,8 +395,14 @@ class _ReportWorkflowRuntimeBase:
         self,
         *,
         db: Any,
-        report_worker: Agent,
-        task_runner: ReportTaskRunner,
+        reporting_agent_template: Agent,
+        task_runner: ReportingTaskCoordinator,
+        visualization_generator: Agent | None = None,
+        visualization_recovery: Agent | None = None,
+        section_generator: Agent | None = None,
+        section_recovery: Agent | None = None,
+        vision_reviewer: ReportVisionReviewer | None = None,
+        vision_enabled: bool | None = None,
         workspace_service: WorkspaceService,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
@@ -408,15 +417,26 @@ class _ReportWorkflowRuntimeBase:
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 1,
         section_concurrency: int = 1,
-        coding_execution_mode: str = "sequential",
+        reporting_execution_mode: str = "sequential",
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")
         if download_grants is not None and report_public_base_url is None:
             raise ValueError("启用 HTTP 报表发布时必须配置公开下载基址")
         self.db = db
-        self.report_worker = report_worker
+        self.reporting_agent_template = reporting_agent_template
+        self._analysis_thinking_enabled = planner_enable_thinking
+        self._vision_enabled = (
+            bool(getattr(reporting_agent_template.model, "_report_vision_enabled", True))
+            if vision_enabled is None
+            else vision_enabled
+        )
         self.task_runner = task_runner
+        self.visualization_generator = visualization_generator
+        self.visualization_recovery = visualization_recovery
+        self.section_generator = section_generator
+        self.section_recovery = section_recovery
+        self.vision_reviewer = vision_reviewer
         self.workspace_service = workspace_service
         self.registry = registry
         self.profiles = profiles
@@ -430,8 +450,8 @@ class _ReportWorkflowRuntimeBase:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
         if isinstance(section_concurrency, bool) or not 1 <= section_concurrency <= 5:
             raise ValueError("section_concurrency 必须在 1 到 5 之间")
-        if coding_execution_mode not in {"sequential", "parallel"}:
-            raise ValueError("coding_execution_mode 必须是 sequential 或 parallel")
+        if reporting_execution_mode not in {"sequential", "parallel"}:
+            raise ValueError("reporting_execution_mode 必须是 sequential 或 parallel")
         if planner_reasoning_effort not in {"high", "max"}:
             raise ValueError("planner_reasoning_effort 必须是 high 或 max")
         if (
@@ -442,7 +462,7 @@ class _ReportWorkflowRuntimeBase:
             raise ValueError("planner_thinking_budget 必须是正整数")
         self.analysis_concurrency = analysis_concurrency
         self.section_concurrency = section_concurrency
-        self.coding_execution_mode = coding_execution_mode
+        self.reporting_execution_mode = reporting_execution_mode
         self._durable_command_lock = asyncio.Lock()
         self._checkpoint_persist_lock = asyncio.Lock()
         self.datasets = ReportDatasetStore(workspace_service)
@@ -469,7 +489,7 @@ class _ReportWorkflowRuntimeBase:
         # 分析计划从首次请求就使用 max，因为它必须同时满足指标、粒度、期间和关系约束。
         # SQL 在首次请求关闭 thinking，失败后升到 max；归一化和提纲始终 off。
         self._request_normalizer = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-request-normalizer",
             NormalizedReportPrompt,
             thinking_profile=planner_off,
@@ -483,7 +503,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._data_understanding_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-data-understanding-planner",
             DataUnderstandingPlan,
             thinking_profile=planner_off,
@@ -507,7 +527,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._measure_semantic_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-measure-semantic-proposer",
             MeasureSemanticProposal,
             thinking_profile=planner_off,
@@ -532,7 +552,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._outline_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-outline-planner",
             ReportOutlineProposal,
             thinking_profile=planner_off,
@@ -545,7 +565,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._analysis_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-analysis-planner",
             AnalysisBundle,
             thinking_profile=planner_max,
@@ -577,7 +597,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._analysis_evidence_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-analysis-evidence-planner",
             AnalysisEvidencePlan,
             thinking_profile=planner_high,
@@ -593,7 +613,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._analysis_summary_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-analysis-summary-writer",
             AnalysisSummaryDraft,
             thinking_profile=planner_high,
@@ -605,7 +625,7 @@ class _ReportWorkflowRuntimeBase:
             ),
         )
         self._sql_agent = self._planning_agent(
-            report_worker,
+            reporting_agent_template,
             "report-sql-planner",
             GeneratedQueryBatch,
             thinking_profile=planner_off,
@@ -694,7 +714,7 @@ class _ReportWorkflowRuntimeBase:
                 "telemetry": False,
                 "post_hooks": [],
                 # 规划步骤的输入由 Workflow 每次完整签发，既不依赖历史，也不消费会话
-                # 摘要。若从 Coding Worker 继承摘要配置，Agno 会在每次大目录分析后再次
+                # 摘要。若从 Reporting Agent 继承摘要配置，Agno 会在每次大目录分析后再次
                 # 把整份输入交给摘要模型，即使摘要从未加入下一次规划上下文。这既增加
                 # 成本和延迟，也扩大了无意义的数据暴露面，因此在复制边界显式关闭。
                 "enable_session_summaries": False,
@@ -791,7 +811,7 @@ class _ReportWorkflowRuntimeBase:
             materialize_datasets=self.materialize_datasets,
             prepare_analysis_context=self.prepare_analysis_context,
             generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
-            run_coding_analysis=self.run_coding_analysis,
+            run_reporting_analysis=self.run_reporting_analysis,
             validate_report=self.validate_report,
             finalize_publication=finalize_publication,
         )
@@ -1112,7 +1132,7 @@ class _ReportWorkflowRuntimeBase:
         except Exception as error:
             raise ReportingError(
                 "report_publication_invalid",
-                "报表来源告警或 Coding 回执无效。",
+                "报表来源告警或 Reporting 回执无效。",
             ) from error
         return values
 
