@@ -1613,6 +1613,17 @@ async def normalize_reporting_tool_arguments(
     if (
         succeeded
         and task_kind == "visualization_section"
+        and reporting_visualization_recovery_from_run_context(run_context)
+        and function_name in {"read_file", "read_tool_output"}
+        and isinstance(result, dict)
+    ):
+        # recovery 读取不是终态；把下一动作和 CAS 必填字段放进机器可读回执，
+        # 供模型与上层重放共同消费，避免模型把文件预览误判为任务完成。
+        result["nextTool"] = "apply_analysis_patch"
+        result["requiredFields"] = ["patch", "expected_sha256"]
+    if (
+        succeeded
+        and task_kind == "visualization_section"
         and function_name == "apply_analysis_patch"
         and isinstance(state, dict)
     ):
@@ -1909,6 +1920,25 @@ def _visualization_next_tool(messages: list[Message], run_context: RunContext | 
         or reporting_visualization_script_session_available_from_run_context(run_context)
     ):
         return None
+    for message in reversed(messages):
+        if getattr(message, "role", None) != "tool":
+            continue
+        name = getattr(message, "tool_name", None) or getattr(message, "name", None)
+        if name not in {"read_file", "read_tool_output"}:
+            continue
+        content = getattr(message, "content", None)
+        payload: Any = None
+        if isinstance(content, str):
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                try:
+                    payload = ast.literal_eval(content)
+                except (SyntaxError, ValueError):
+                    payload = None
+        if isinstance(payload, Mapping) and payload.get("nextTool") == "apply_analysis_patch":
+            return "apply_analysis_patch"
+        break
     recovery = reporting_visualization_recovery_from_run_context(run_context)
     if recovery and not recovery_read:
         return "read_file"
