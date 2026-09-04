@@ -36,6 +36,8 @@ from .async_utils import complete_cleanup
 from .http.security import thread_label
 from .runtime.database import AgentDatabase, create_agent_database
 from .runtime.observability import suppress_expected_probe_tracing
+from .sandbox.contracts import WorkspaceBinding
+from .sandbox.errors import SandboxNotFound, SandboxProviderError, SandboxTimeout
 from .sandbox.registry import SandboxBindingRecord
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -602,10 +604,12 @@ class WorkspaceService:
         database: AgentDatabase | None = None,
         snapshot: str = WORKSPACE_SNAPSHOT,
         network_allow_list: str | None = None,
+        provider: Any | None = None,
     ):
         self.secret = secret
         self.snapshot = snapshot
         self.network_allow_list = network_allow_list
+        self._provider = provider
         self._client = client
         self.registry = registry or SandboxRegistry(database.sync_db if database else None)
         self._async_client_override = async_client
@@ -627,6 +631,9 @@ class WorkspaceService:
 
     @asynccontextmanager
     async def _async_client(self):
+        if self._provider is not None:
+            yield None
+            return
         if self._async_client_override is not None:
             yield self._async_client_override
             return
@@ -640,6 +647,9 @@ class WorkspaceService:
 
     @asynccontextmanager
     async def _isolated_async_client(self):
+        if self._provider is not None:
+            yield None
+            return
         if self._async_client_override is not None:
             yield self._async_client_override
             return
@@ -661,6 +671,9 @@ class WorkspaceService:
                 pass
 
     async def aclose(self) -> None:
+        if self._provider is not None:
+            await self._provider.aclose()
+            return
         if self._async_client_override is not None:
             return
         with self._async_client_state_lock:
@@ -674,6 +687,12 @@ class WorkspaceService:
 
     async def check_sandbox_service(self) -> None:
         """通过只读列表请求验证 Daytona Sandbox API 可访问。"""
+
+        if self._provider is not None:
+            health = await self._provider.health_check()
+            if not health.healthy:
+                raise WorkspaceError("sandbox provider 健康检查失败。")
+            return
 
         async with self._async_client() as client:
             # Daytona.list 返回异步生成器；提前取得首项后必须显式关闭，避免分页响应
@@ -877,6 +896,21 @@ class WorkspaceService:
         return sandbox
 
     async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
+        if self._provider is not None:
+            if not create:
+                binding = self._provider_binding(thread)
+                matches = await self._provider.list_workspaces(binding)
+                if not matches:
+                    return None
+                if len(matches) != 1:
+                    raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
+                return await self._provider.get_workspace(matches[0].ref, binding)
+            try:
+                return await self._provider.ensure_workspace(self._provider_binding(thread))
+            except SandboxTimeout as error:
+                raise WorkspaceError("工作区服务超时，请稍后重试。") from error
+            except SandboxProviderError as error:
+                raise WorkspaceError(f"工作区服务失败：{error.message}") from error
         value = await self._ahash(thread)
         sandbox = None
         sandbox_id = self._cached_sandbox_id(value)
@@ -964,8 +998,34 @@ class WorkspaceService:
             return bool(sandboxes)
 
     async def adestroy(self, thread: str) -> bool:
+        if self._provider is not None:
+            binding = self._provider_binding(thread)
+            matches = await self._provider.list_workspaces(binding)
+            deleted = False
+            for summary in matches:
+                result = await self._provider.destroy_workspace(summary.ref, binding)
+                deleted = result.deleted or deleted
+            return deleted
         async with self._async_client() as client:
             return await self._adestroy(client, thread)
+
+    def _provider_binding(self, thread: str) -> WorkspaceBinding:
+        # WorkspaceService 的调用方已经在 HTTP/Workflow 边界完成用户、公司和 thread
+        # 所有权校验；此处只把不含明文身份的 thread scope 固化为 Provider 绑定。
+        # 三个 scope 字段使用不同域分隔摘要，避免它们被误当成可互换标识。
+        base = self._base_hash(thread)
+
+        def scoped(name: str) -> str:
+            return hashlib.sha256(f"{name}:{base}".encode()).hexdigest()
+
+        return WorkspaceBinding(
+            tenant_id=scoped("tenant"),
+            user_id=scoped("user"),
+            company_id=scoped("company"),
+            thread_id=thread,
+            idempotency_key=scoped("workspace"),
+            profile=getattr(getattr(self._provider, "_config", None), "profile", None),
+        )
 
     async def aquarantine(self, thread: str) -> str:
         """隔离当前 workspace generation，使后续请求无法复用旧 sandbox。"""
@@ -1171,7 +1231,7 @@ class WorkspaceService:
             remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
             try:
                 info = self._info(sandbox, remote)
-            except DaytonaNotFoundError as error:
+            except (DaytonaNotFoundError, SandboxNotFound) as error:
                 raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
             if self._is_symlink(info):
                 raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
@@ -1185,7 +1245,7 @@ class WorkspaceService:
             remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
             try:
                 info = await self._ainfo(sandbox, remote)
-            except DaytonaNotFoundError as error:
+            except (DaytonaNotFoundError, SandboxNotFound) as error:
                 raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
             if self._is_symlink(info):
                 raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
@@ -1211,7 +1271,7 @@ class WorkspaceService:
                 return
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 sandbox.fs.create_folder(remote, "700")
                 return
         relative = remote[len(WORKSPACE_ROOT) :].strip("/")
@@ -1226,7 +1286,7 @@ class WorkspaceService:
                     raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 sandbox.fs.create_folder(current, "700")
 
     async def _aensure_directory(self, sandbox, remote: str):
@@ -1239,7 +1299,7 @@ class WorkspaceService:
                 return
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 await sandbox.fs.create_folder(remote, "700")
                 return
         relative = remote[len(WORKSPACE_ROOT) :].strip("/")
@@ -1254,7 +1314,7 @@ class WorkspaceService:
                     raise WorkspaceError("工作区目录路径不是安全目录，请改用普通目录。")
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 await sandbox.fs.create_folder(current, "700")
 
     def list_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
@@ -1281,6 +1341,36 @@ class WorkspaceService:
                     if entry.is_dir
                     else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
                     "modifiedAt": entry.modified_at or entry.mod_time,
+                }
+            )
+        return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
+
+    async def alist_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
+        relative, remote = self.normalize_path(path)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            entries = await sandbox.fs.list_files(remote)
+        if len(entries) > MAX_LIST_ENTRIES:
+            raise WorkspaceError(
+                f"工作区目录包含超过 {MAX_LIST_ENTRIES} 个项目，请进入子目录后重试。"
+            )
+        result = []
+        for entry in entries:
+            if entry.name in (".", "..") or self._is_symlink(entry):
+                continue
+            child = f"{relative}/{entry.name}".strip("/")
+            result.append(
+                {
+                    "path": child,
+                    "name": entry.name,
+                    "isDirectory": bool(entry.is_dir),
+                    "size": int(entry.size or 0),
+                    "mimeType": False
+                    if entry.is_dir
+                    else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
+                    "modifiedAt": getattr(entry, "modified_at", None)
+                    or getattr(entry, "mod_time", None),
                 }
             )
         return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
@@ -1332,6 +1422,36 @@ class WorkspaceService:
         """供 HTTP 上传和系统报表使用，保留覆盖已有文件的语义。"""
         return self._store_file(thread, path, content, "upload")
 
+    async def _astore_file(
+        self, thread: str, path: str, content: bytes, mode: str
+    ) -> dict[str, Any]:
+        self._validate_content(content)
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
+            try:
+                info = await self._ainfo(sandbox, remote)
+            except (DaytonaNotFoundError, SandboxNotFound):
+                info = None
+            if mode == "create" and info is not None:
+                raise WorkspacePathConflict(
+                    f"文件“{relative}”已经存在。如需覆盖，请使用覆盖文件工具并确认。"
+                )
+            if info is not None and (info.is_dir or not self._is_regular_file(info)):
+                raise WorkspaceError("目标路径不是普通文件，请更换文件路径后重试。")
+            await sandbox.fs.upload_file(content, remote)
+        return {"path": relative, "size": len(content), "status": "synced"}
+
+    async def aupload(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
+        return await self._astore_file(thread, path, content, "upload")
+
+    async def acreate_file_locked(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
+        relative, _remote = self.normalize_path(path, allow_root=False)
+        lock_key = f"agent-workspace-file:{await self._ahash(thread)}:{relative}"
+        async with self.async_registry.locked(lock_key):
+            return await self._astore_file(thread, relative, content, "create")
+
     def create_file(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
         return self._store_file(thread, path, content, "create")
 
@@ -1348,6 +1468,19 @@ class WorkspaceService:
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
         return self._file_bytes_from_sandbox(sandbox, relative, remote)
+
+    async def afile_bytes(self, thread: str, path: str) -> tuple[bytes, str]:
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            info = await self._ainfo(sandbox, remote)
+            if info.is_dir:
+                raise WorkspaceError("所选项目是目录，不能作为文件下载，请选择普通文件。")
+            if int(info.size or 0) > MAX_DOWNLOAD_BYTES:
+                raise WorkspaceError("所选文件超过 200 MiB，请缩小文件后重试。")
+            content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+        return content, mimetypes.guess_type(relative)[0] or "application/octet-stream"
 
     def _file_bytes_from_sandbox(
         self, sandbox: Any, relative: str, remote: str
@@ -1974,6 +2107,22 @@ class WorkspaceService:
 
     async def ahash_file(self, thread: str, path: str) -> dict[str, Any]:
         relative, remote = self.normalize_path(path, allow_root=False)
+        if self._provider is not None:
+            async with self._async_client() as client:
+                sandbox = await self._asandbox_for(client, thread)
+                try:
+                    await self._avalidate_existing_path(sandbox, relative)
+                    info = await self._ainfo(sandbox, remote)
+                    if not self._is_regular_file(info):
+                        raise WorkspaceError("工作区路径不是普通文件。")
+                    content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+                except SandboxNotFound as error:
+                    raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
+            return {
+                "path": relative,
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
         quoted = shlex.quote(remote)
         script = (
             f"digest=$(sha256sum -- {quoted}) || exit $?; digest=${{digest%% *}}; "
@@ -2722,6 +2871,16 @@ class WorkspaceService:
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
         self._delete_file_from_sandbox(sandbox, relative, remote, recursive)
+
+    async def adelete_file(self, thread: str, path: str, recursive: bool = False) -> None:
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            info = await self._ainfo(sandbox, remote)
+            if info.is_dir and not recursive:
+                raise WorkspaceError("所选项目是目录；如需删除，请启用递归删除并重新确认。")
+            await sandbox.fs.delete_file(remote, recursive=recursive)
 
     def _delete_file_from_sandbox(
         self,

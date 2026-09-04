@@ -156,7 +156,11 @@ class LocalFileSystemApi:
 
     async def download_file_stream(self, path: str, timeout: int) -> AsyncIterator[bytes]:
         response = await self._action("download", {"path": path, "timeout": timeout})
-        yield response.content
+
+        async def stream() -> AsyncIterator[bytes]:
+            yield response.content
+
+        return stream()
 
     async def delete_file(self, path: str, recursive: bool = False) -> None:
         await self._action("delete", {"path": path, "recursive": recursive})
@@ -263,8 +267,6 @@ class LocalProvider:
         binding_secret: bytes,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        if len(binding_secret) < 32:
-            raise ValueError("sandbox binding secret 至少需要 32 字节。")
         self._config = config
         self._registry = registry
         self._binding_secret = binding_secret
@@ -300,6 +302,10 @@ class LocalProvider:
         )
 
     def _digest(self, binding: WorkspaceBinding) -> str:
+        if len(self._binding_secret) < 32:
+            raise SandboxPolicyDenied(
+                "sandbox binding secret 未安全配置。", reason="invalid_binding_secret"
+            )
         return _binding_digest(binding, self._binding_secret)
 
     def _handle(self, value: dict[str, Any]) -> LocalSandboxHandle:

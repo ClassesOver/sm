@@ -160,17 +160,20 @@ class DaytonaFileSystemApi:
         return content
 
     async def download_file_stream(self, path: str, timeout: int) -> AsyncIterator[bytes]:
-        try:
-            async for chunk in self._filesystem.download_file_stream(path, timeout=timeout):
-                yield chunk
-        except DaytonaNotFoundError as error:
-            raise SandboxNotFound("sandbox 文件不存在。") from error
-        except DaytonaError as error:
-            raise SandboxProviderError(
-                "Daytona 文件流下载失败。",
-                retryable=True,
-                details={"backend": "daytona", "error_type": type(error).__name__},
-            ) from error
+        async def stream() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in self._filesystem.download_file_stream(path, timeout=timeout):
+                    yield chunk
+            except DaytonaNotFoundError as error:
+                raise SandboxNotFound("sandbox 文件不存在。") from error
+            except DaytonaError as error:
+                raise SandboxProviderError(
+                    "Daytona 文件流下载失败。",
+                    retryable=True,
+                    details={"backend": "daytona", "error_type": type(error).__name__},
+                ) from error
+
+        return stream()
 
     async def delete_file(self, path: str, recursive: bool = False) -> None:
         await _daytona_call(
@@ -369,16 +372,26 @@ class DaytonaProvider:
         client: Any | None = None,
         network_allow_list: str | None = None,
     ) -> None:
-        if len(binding_secret) < 32:
-            raise ValueError("sandbox binding secret 至少需要 32 字节。")
         self._registry = registry
         self._snapshot = snapshot
         self._binding_secret = binding_secret
-        self._client = client or AsyncDaytona()
+        self._client_value = client
         self._owns_client = client is None
         self._network_allow_list = network_allow_list
 
+    @property
+    def _client(self) -> Any:
+        # Daytona SDK 构造时立即读取凭据。延迟到首次真实操作，避免仅导入
+        # AgentOS 应用或执行纯配置检查时产生外部依赖副作用。
+        if self._client_value is None:
+            self._client_value = AsyncDaytona()
+        return self._client_value
+
     def _digest(self, binding: WorkspaceBinding) -> str:
+        if len(self._binding_secret) < 32:
+            raise SandboxPolicyDenied(
+                "sandbox binding secret 未安全配置。", reason="invalid_binding_secret"
+            )
         return _binding_digest(binding, self._binding_secret)
 
     def _ref(self, sandbox: Any, binding: WorkspaceBinding) -> SandboxRef:
@@ -537,5 +550,5 @@ class DaytonaProvider:
         )
 
     async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.close()
+        if self._owns_client and self._client_value is not None:
+            await self._client_value.close()

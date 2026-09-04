@@ -16,11 +16,13 @@ from sqlalchemy import delete, select
 
 import smart_reporting.workspace as workspace_module
 from smart_reporting.runtime.database import create_agent_database
+from smart_reporting.sandbox import IsolationKind, ProviderKind, SandboxRef
 from smart_reporting.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
     AsyncFakeFs,
     AsyncFakeProcess,
+    AsyncFakeSandbox,
     AsyncMemoryRegistry,
     FakeClient,
     FakeSandbox,
@@ -48,6 +50,45 @@ from smart_reporting.workspace import (
     WorkspaceService,
     WorkspaceToolkit,
 )
+
+
+@pytest.mark.anyio
+async def test_workspace_service_uses_provider_handle_for_hashing() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.bindings = []
+            raw_sandbox = FakeSandbox("provider-1", {})
+            raw_sandbox.fs.upload_file(b'{"ok":true}', f"{WORKSPACE_ROOT}/result.json")
+            sandbox = AsyncFakeSandbox(raw_sandbox)
+            sandbox.ref = SandboxRef(
+                provider=ProviderKind.LOCAL,
+                isolation=IsolationKind.LINUX_PROCESS,
+                node="node-a",
+                resource_id="provider-1",
+                generation=1,
+                binding_digest="a" * 64,
+            )
+            self.sandbox = sandbox
+
+        async def ensure_workspace(self, binding):
+            self.bindings.append(binding)
+            return self.sandbox
+
+    provider = Provider()
+    current = WorkspaceService(
+        SECRET,
+        provider=provider,
+        async_registry=AsyncMemoryRegistry({}),
+    )
+
+    result = await current.ahash_file("thread", "result.json")
+
+    assert result == {
+        "path": "result.json",
+        "size": 11,
+        "sha256": hashlib.sha256(b'{"ok":true}').hexdigest(),
+    }
+    assert provider.bindings[0].thread_id == "thread"
 
 
 def test_旧_coding_workspace_辅助工具不再注册():
