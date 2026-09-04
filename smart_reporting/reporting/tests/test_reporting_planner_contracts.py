@@ -605,7 +605,7 @@ def test_phase_instructions_prioritize_signed_execution_directive() -> None:
     for instructions in (analysis, visualization, section):
         assert "executionDirective 是本任务的首要动作契约" in instructions
         assert "不得输出解释文字" in instructions
-    assert "process 不能启动命令" in analysis
+    assert "不得构造 shell 命令或选择解释器" in analysis
     assert "不得重复完全相同的 patch 参数" in visualization
     assert "不得使用 read_file 读取 factFiles" in section
 
@@ -923,7 +923,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
             SimpleNamespace(
                 read_file=AsyncMock(),
                 apply_analysis_patch=AsyncMock(),
-                terminal=AsyncMock(),
+                run_python_script=AsyncMock(),
                 complete_analysis_item=AsyncMock(),
             )
         ],

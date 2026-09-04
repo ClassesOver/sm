@@ -116,18 +116,16 @@ class WorkspaceServiceReportingPort:
 
     async def execute_script(
         self,
-        command: str,
+        script_path: str,
         *,
         timeout: int,
         workdir: str | None = None,
         background: bool = False,
     ) -> Mapping[str, Any]:
-        return await self._kernel.terminal(
-            command,
-            background=background,
-            timeout=timeout,
-            workdir=workdir,
-            _scope=self._scope,
+        if background or workdir is not None:
+            raise ReportingWorkspaceError("Python 脚本只支持前台固定工作目录执行。")
+        return await self._kernel.run_python_script(
+            script_path, timeout=timeout, _scope=self._scope
         )
 
     async def send_process_input(

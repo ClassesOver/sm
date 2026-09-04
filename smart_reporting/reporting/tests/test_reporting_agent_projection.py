@@ -190,7 +190,7 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
             "read_file",
             "read_tool_output",
             "submit_visualization_charts",
-            "terminal",
+            "run_python_script",
             "view_image",
             "apply_analysis_patch",
         }

@@ -36,7 +36,7 @@ class ReportingWorkspacePort(Protocol):
 
     async def execute_script(
         self,
-        command: str,
+        script_path: str,
         *,
         timeout: int,
         workdir: str | None = None,

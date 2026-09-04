@@ -34,6 +34,7 @@ from .errors import (
     SandboxProviderError,
     SandboxTimeout,
 )
+from .local.client import LocalProvider
 
 __all__ = [
     "CodeRunRequest",
@@ -47,6 +48,7 @@ __all__ = [
     "ExecutionStatus",
     "FileInfo",
     "IsolationKind",
+    "LocalProvider",
     "ProviderCapabilities",
     "ProviderHealth",
     "ProviderKind",

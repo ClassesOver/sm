@@ -36,8 +36,9 @@ from .async_utils import complete_cleanup
 from .http.security import thread_label
 from .runtime.database import AgentDatabase, create_agent_database
 from .runtime.observability import suppress_expected_probe_tracing
-from .sandbox.contracts import WorkspaceBinding
+from .sandbox.contracts import RunPythonScriptRequest, WorkspaceBinding
 from .sandbox.errors import SandboxNotFound, SandboxProviderError, SandboxTimeout
+from .sandbox.python_runner import PythonScriptRunner
 from .sandbox.registry import SandboxBindingRecord
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -2170,6 +2171,45 @@ class WorkspaceService:
         except ValueError as error:
             raise WorkspaceHashResultError("工作区文件哈希结果无效，请稍后重试。") from error
         return {"path": relative, "size": size, "sha256": digest}
+
+    async def arun_python_script(
+        self, thread: str, script_path: str, *, timeout: int = MAX_EXECUTION_TIMEOUT
+    ) -> dict[str, Any]:
+        relative, remote = self.normalize_path(script_path, allow_root=False)
+        if PurePosixPath(relative).suffix.lower() != ".py":
+            raise WorkspaceError("Python runner 只接受 .py 脚本。")
+        execution_timeout = self._validate_timeout(timeout, MAX_BACKGROUND_EXECUTION_TIMEOUT)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            info = await self._ainfo(sandbox, remote)
+            if not self._is_regular_file(info) or int(info.size or 0) > MAX_UPLOAD_BYTES:
+                raise WorkspaceError("Python 脚本不是允许大小的普通文件。")
+            content = await self._adownload_file(sandbox, remote, MAX_UPLOAD_BYTES)
+            try:
+                script = content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise WorkspaceError("Python 脚本必须使用 UTF-8 编码。") from error
+            result = await PythonScriptRunner(sandbox.execution).run(
+                RunPythonScriptRequest(
+                    script=script,
+                    cwd="",
+                    timeout_ms=execution_timeout * 1000,
+                    output_limit_bytes=MAX_TOOL_OUTPUT_BYTES,
+                )
+            )
+        output = result.stdout
+        if result.stderr:
+            output += ("\n" if output else "") + result.stderr
+        return {
+            "ok": result.exit_code == 0,
+            "status": "completed",
+            "exitCode": result.exit_code,
+            "output": output,
+            "scriptPath": relative,
+            "scriptSha256": result.script_hash,
+            "dependencyBundleDigest": result.dependency_bundle_digest,
+        }
 
     async def aworkspace_fingerprint(self, thread: str) -> str:
         script = "LC_ALL=C find . -xdev -printf '%P\\0%y\\0%s\\0%T@\\0' | sort -z | sha256sum"

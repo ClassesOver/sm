@@ -451,9 +451,7 @@ class RuntimeAnalysisMixin:
                     async def generate(
                         request: Mapping[str, Any], task_context: RunContext
                     ) -> VisualizationScriptDraft:
-                        payload = json.dumps(
-                            request, ensure_ascii=False, separators=(",", ":")
-                        )
+                        payload = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
                         return cast(
                             VisualizationScriptDraft,
                             await ReportingStructuredAgentExecutor(
@@ -476,9 +474,9 @@ class RuntimeAnalysisMixin:
                         )
                         return cast(
                             VisualizationScriptDraft,
-                            await ReportingStructuredAgentExecutor(
-                                self.visualization_recovery
-                            ).run(payload, scope=invocation.scope, run_context=task_context),
+                            await ReportingStructuredAgentExecutor(self.visualization_recovery).run(
+                                payload, scope=invocation.scope, run_context=task_context
+                            ),
                         )
 
                     async def write_script(
@@ -487,7 +485,11 @@ class RuntimeAnalysisMixin:
                         nonlocal committed_sha256, committed_source
                         patch = "".join(
                             difflib.unified_diff(
-                                ([] if committed_source is None else committed_source.splitlines(keepends=True)),
+                                (
+                                    []
+                                    if committed_source is None
+                                    else committed_source.splitlines(keepends=True)
+                                ),
                                 source.splitlines(keepends=True),
                                 fromfile=("/dev/null" if committed_source is None else f"a/{path}"),
                                 tofile=f"b/{path}",
@@ -500,8 +502,14 @@ class RuntimeAnalysisMixin:
                             ),
                             run_context=task_context,
                         )
-                        artifacts = receipt.get("artifacts") if isinstance(receipt, Mapping) else None
-                        if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
+                        artifacts = (
+                            receipt.get("artifacts") if isinstance(receipt, Mapping) else None
+                        )
+                        if (
+                            receipt.get("ok") is not True
+                            or not isinstance(artifacts, list)
+                            or len(artifacts) != 1
+                        ):
                             raise ReportingError(
                                 str(receipt.get("code", "report_visualization_write_failed")),
                                 str(receipt.get("message", "章节图表脚本写入未被接受。")),
@@ -513,9 +521,11 @@ class RuntimeAnalysisMixin:
                         return identity
 
                     async def execute_script(
-                        command: str, task_context: RunContext
+                        script_path: str, task_context: RunContext
                     ) -> Mapping[str, Any]:
-                        receipt = await toolkit.terminal(command, run_context=task_context)
+                        receipt = await toolkit.run_python_script(
+                            script_path, run_context=task_context
+                        )
                         if receipt.get("ok") is False:
                             raise ReportingError(
                                 str(receipt.get("code", "report_visualization_script_failed")),
@@ -524,9 +534,7 @@ class RuntimeAnalysisMixin:
                             )
                         return receipt
 
-                    async def inspect_chart(
-                        chart: ChartDraft, task_context: RunContext
-                    ) -> Any:
+                    async def inspect_chart(chart: ChartDraft, task_context: RunContext) -> Any:
                         receipt = await toolkit.inspect_chart(
                             chart.source_path, run_context=task_context
                         )
@@ -556,7 +564,9 @@ class RuntimeAnalysisMixin:
                             recover=recover if self.visualization_recovery is not None else None,
                             write_script=write_script,
                             execute_script=execute_script,
-                            inspect_chart=(inspect_chart if self.vision_reviewer is not None else None),
+                            inspect_chart=(
+                                inspect_chart if self.vision_reviewer is not None else None
+                            ),
                             submit=submit,
                         ).run(instruction_payload, invocation.run_context)
                     ).draft
@@ -1677,7 +1687,7 @@ class RuntimeAnalysisMixin:
             summarize=summarize,
             read_file=toolkit.read_file,
             apply_patch=toolkit.apply_analysis_patch,
-            run_script=toolkit.terminal,
+            run_script=toolkit.run_python_script,
             complete=toolkit.complete_analysis_item,
         )
         result = await workflow.run(payload, task_run_context)
@@ -2842,9 +2852,9 @@ def _visualization_completion_conditions(
         "visualizationFacts 已提供完整字段目录和真实 dataPaths；图表脚本按 factFile.path 一次读取 facts，"
         "不得调用 query_analysis_facts 或用 read_file 探索 facts/evidence",
         retained_requirement,
-        "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、terminal 或目录探测寻找 citationId",
-        "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 terminal 仅可执行 python3 <scriptPath>；"
-        "不得传 workdir、cd、ls、find、wc、管道、heredoc 或运行其他脚本",
+        "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、run_python_script 或目录探测寻找 citationId",
+        "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 run_python_script 仅可传入该路径；"
+        "不得传解释器、workdir、环境变量、网络选项或 shell 命令",
         "批量读取事实、生成和执行图表脚本；相同文件不得重复读取、执行或视觉检查",
         "按批准提纲生成必要图表并整批登记 citation",
         "最后且只调用一次 submit_visualization_charts 提交当前章节图表",

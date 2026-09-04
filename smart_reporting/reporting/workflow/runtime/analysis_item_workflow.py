@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import difflib
-import shlex
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -456,9 +455,7 @@ class AnalysisItemWorkflow:
                     "report_analysis_script_write_failed", "补充分析脚本缺少写入身份回执。"
                 )
             state.script_sha256 = sha256
-            execution = await self.run_script(
-                command=f"python3 {shlex.quote(script_path)}", run_context=run_context
-            )
+            execution = await self.run_script(script_path=script_path, run_context=run_context)
             exit_code = execution.get("exitCode", execution.get("exit_code"))
             if execution.get("ok") is False or exit_code != 0:
                 output = str(execution.get("output") or "")

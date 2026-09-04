@@ -243,6 +243,7 @@ class _InstalledValidator:
 
 TOOL_SPECS = {
     "terminal": ToolSpec("workspace_write", False),
+    "run_python_script": ToolSpec("workspace_write", False),
     "process": ToolSpec("process_control", False),
     "finish_task": ToolSpec("finish", False),
     "view_image": ToolSpec("read", True, "media"),
@@ -1589,6 +1590,71 @@ class TaskExecutionKernel:
                 "message": message,
             }
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
+
+    async def run_python_script(
+        self,
+        script_path: str,
+        *,
+        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
+        run_context: RunContext | None = None,
+        _scope: TaskExecutionRuntime | None = None,
+    ) -> dict[str, Any]:
+        scope = _scope or await self.scope(run_context)
+        mutation_sequence = await self.repository.increment_mutation(
+            scope.external_run_id,
+            lease=scope.lease,
+            internal_run_id=scope.internal_run_id,
+        )
+        execution_id = uuid.uuid4().hex
+        execution = await self.repository.reserve_execution(
+            execution_id=execution_id,
+            external_run_id=scope.external_run_id,
+            internal_run_id=scope.internal_run_id,
+            owner_user_id=scope.owner_user_id,
+            thread_id=scope.thread_id,
+            sandbox_id=scope.sandbox_id,
+            daytona_session_id=f"python-{execution_id}",
+            mutation_sequence=mutation_sequence,
+            is_verification=False,
+            kind="terminal",
+            attempt_no=scope.attempt_no,
+            lease_epoch=scope.lease_epoch,
+            operation_receipt={"runner": "python", "scriptPath": script_path},
+            lease=scope.lease,
+        )
+        await self._check_fence(scope, execution_id)
+        try:
+            result = await self.service.arun_python_script(
+                scope.thread_id, script_path, timeout=timeout
+            )
+            exit_code = result.get("exitCode")
+            execution = await self.repository.update_execution(
+                execution_id,
+                status="completed" if exit_code == 0 else "failed",
+                output=str(result.get("output", "")),
+                exit_code=exit_code if isinstance(exit_code, int) else 1,
+            )
+            await self.repository.record_execution_mutation(
+                scope.external_run_id,
+                execution.execution_id,
+                execution.mutation_sequence,
+                lease=scope.lease,
+                internal_run_id=scope.internal_run_id,
+            )
+            return {**self._public_execution(execution), **result}
+        except Exception as error:
+            execution = await self.repository.update_execution(
+                execution_id,
+                status="failed",
+                output=str(error)[:1000],
+                exit_code=1,
+            )
+            return {
+                **self._public_execution(execution),
+                "ok": False,
+                "code": getattr(error, "code", "execution_failed"),
+                "message": str(error)[:1000],
+            }
 
     async def _record_terminal_mutation(
         self,
