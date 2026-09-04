@@ -369,13 +369,19 @@ class LocalSandboxRuntime:
         receipt = receipts / hashlib.sha256(idempotency_key.encode()).hexdigest()
         async with self._lock:
             receipts.mkdir(mode=0o700, exist_ok=True)
+            destination = self._path(directory, path)
             if receipt.exists():
                 if json.loads(receipt.read_text(encoding="utf-8")) != receipt_value:
                     raise SandboxPolicyDenied(
                         "上传幂等键已用于不同请求。", reason="idempotency_conflict"
                     )
-                return
-            destination = self._path(directory, path)
+                if destination.is_file():
+                    with destination.open("rb") as persisted:
+                        if (
+                            hashlib.file_digest(persisted, "sha256").hexdigest()
+                            == receipt_value["sha256"]
+                        ):
+                            return
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             temporary = destination.parent / f".sandbox-upload-{uuid.uuid4().hex}"
             descriptor = os.open(
