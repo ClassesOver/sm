@@ -2337,20 +2337,20 @@ async def test_verify_rejects_modified_loaded_skill_script(execution_runtime):
 
 
 @pytest.mark.anyio
-async def test_skill_script_verification_uses_server_receipt_without_database(monkeypatch):
+async def test_skill_script_verification_uses_server_receipt_without_database():
     original = b"print('trusted')\n"
     modified = b"print('modified')\n"
     kernel = TaskExecutionKernel.__new__(TaskExecutionKernel)
-    kernel.service = SimpleNamespace(file_bytes=lambda _thread, _path: (modified, "text/plain"))
+    async_file_bytes = AsyncMock(return_value=(modified, "text/plain"))
+    kernel.service = SimpleNamespace(
+        afile_bytes=async_file_bytes,
+        file_bytes=lambda *_args: pytest.fail("异步校验不得调用同步工作区接口"),
+    )
 
     async def scope(_run_context):
         return SimpleNamespace(thread_id="thread")
 
-    async def inline_to_thread(function, *args):
-        return function(*args)
-
     kernel.scope = scope
-    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
     context = RunContext(
         run_id="run",
         session_id="thread",
@@ -2372,6 +2372,7 @@ async def test_skill_script_verification_uses_server_receipt_without_database(mo
 
     assert result is not None
     assert result["code"] == "verification_skill_script_modified"
+    async_file_bytes.assert_awaited_once_with("thread", "validate_report.py")
 
 
 @pytest.mark.anyio

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
@@ -146,9 +145,7 @@ class ReportingToolkitBase(Toolkit):
             )
 
         async def call(scope: Any) -> dict[str, Any]:
-            content, _mime = await asyncio.to_thread(
-                self.runtime.workspace.file_bytes, scope.thread_id, path
-            )
+            content, _mime = await self.runtime.workspace.afile_bytes(scope.thread_id, path)
             if offset > len(content):
                 raise WorkspaceError("read_file offset 超过文件大小。")
             end = min(len(content), offset + max_bytes)
@@ -411,11 +408,7 @@ class ReportingToolkitBase(Toolkit):
             or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
         ):
             raise ReportingError(identity_code, "受信 JSON 文件身份缺失或无效。")
-        content, _mime = await asyncio.to_thread(
-            self.runtime.workspace.file_bytes,
-            thread_id,
-            identity["path"],
-        )
+        content, _mime = await self.runtime.workspace.afile_bytes(thread_id, identity["path"])
         if (
             len(content) != identity["size"]
             or hashlib.sha256(content).hexdigest() != identity["sha256"]

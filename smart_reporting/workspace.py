@@ -3072,10 +3072,19 @@ class WorkspaceService:
 
     def view_image(self, thread: str, path: str) -> ToolResult:
         relative = self.normalize_path(path, allow_root=False)[0]
+        content, mime_type = self.file_bytes(thread, relative)
+        return self._image_result(relative, content, mime_type)
+
+    async def aview_image(self, thread: str, path: str) -> ToolResult:
+        relative = self.normalize_path(path, allow_root=False)[0]
+        content, mime_type = await self.afile_bytes(thread, relative)
+        return self._image_result(relative, content, mime_type)
+
+    @staticmethod
+    def _image_result(relative: str, content: bytes, mime_type: str) -> ToolResult:
         suffix = PurePosixPath(relative).suffix.lower()
         if suffix not in IMAGE_SUFFIXES:
             raise WorkspaceError("仅支持 PNG、JPEG、GIF 或 WebP 图片。")
-        content, mime_type = self.file_bytes(thread, relative)
         if len(content) > MAX_IMAGE_BYTES:
             raise WorkspaceError("图片超过 10 MiB，请缩小后重试。")
         header = content[:12]

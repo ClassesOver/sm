@@ -1454,9 +1454,7 @@ class TaskExecutionKernel:
         if patch is not None:
             try:
                 assert patch_changes is not None
-                applied = await asyncio.to_thread(
-                    self.service.apply_changes, scope.thread_id, patch_changes
-                )
+                applied = await self.service.aapply_changes(scope.thread_id, patch_changes)
                 result = {**applied, "ok": True, "message": "补丁已应用。"}
                 await self._check_fence(scope, execution_id)
                 execution = await self.repository.update_execution(
@@ -2887,9 +2885,7 @@ class TaskExecutionKernel:
             if relative.startswith(f"{WORKSPACE_ROOT}/"):
                 relative = relative.removeprefix(f"{WORKSPACE_ROOT}/")
             try:
-                content, _mime = await asyncio.to_thread(
-                    self.service.file_bytes, scope.thread_id, relative
-                )
+                content, _mime = await self.service.afile_bytes(scope.thread_id, relative)
             except (DaytonaNotFoundError, WorkspaceError):
                 continue
             actual_sha256 = hashlib.sha256(content).hexdigest()

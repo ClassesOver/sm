@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from agno.run import RunContext
 
+from ...sandbox.contracts import RunPythonScriptRequest
 from ...task_execution import (
     MAX_TOOL_FAILURE_ENTRIES,
     MAX_TOOL_PROGRESS_ENTRIES,
@@ -64,9 +65,7 @@ class WorkspaceServiceReportingPort:
 
     async def read_bytes(self, path: str) -> bytes:
         normalized = self._normalize(path)
-        content, _mime = await asyncio.to_thread(
-            self._service.file_bytes, self.context.thread_id, normalized
-        )
+        content, _mime = await self._service.afile_bytes(self.context.thread_id, normalized)
         return content
 
     async def read_text(self, path: str) -> str:
@@ -169,16 +168,37 @@ class ReportingWorkspaceAdapter:
     async def batch_hash_files(self, thread_id: str, paths: Sequence[str]) -> list[dict[str, Any]]:
         return await self._service.abatch_hash_files(thread_id, list(paths))
 
-    async def execute_isolated(
-        self,
-        thread_id: str,
-        command: str,
-        *,
-        timeout: int,
-    ) -> Any:
+    async def probe_python_modules(self, thread_id: str, names: set[str]) -> set[str]:
+        if (
+            not names
+            or len(names) > 100
+            or any(re.fullmatch(r"[A-Za-z_]\w*", name) is None for name in names)
+        ):
+            raise WorkspaceError("Python 依赖探测参数无效。")
+        encoded_names = json.dumps(sorted(names), separators=(",", ":"))
+        script = (
+            "import importlib.util,json\n"
+            f"names=json.loads({encoded_names!r})\n"
+            "print(json.dumps([name for name in names "
+            "if importlib.util.find_spec(name) is not None],separators=(',',':')))\n"
+        )
         async with self._service._async_client() as client:
             sandbox = await self._service._asandbox_for(client, thread_id)
-            return await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=timeout)
+            execution = getattr(sandbox, "execution", None)
+            if execution is None:
+                raise WorkspaceError("sandbox provider 不支持 Python 依赖探测。")
+            result = await execution.run_python_script(
+                RunPythonScriptRequest(script=script, timeout_ms=30_000)
+            )
+        if result.exit_code != 0:
+            raise WorkspaceError("Python 依赖探测执行失败。")
+        try:
+            value = json.loads(result.stdout)
+        except (TypeError, ValueError) as error:
+            raise WorkspaceError("Python 依赖探测结果无效。") from error
+        if not isinstance(value, list) or any(item not in names for item in value):
+            raise WorkspaceError("Python 依赖探测结果无效。")
+        return {item for item in value if isinstance(item, str)}
 
     async def read_limited_regular_file(
         self,

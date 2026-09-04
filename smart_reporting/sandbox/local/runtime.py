@@ -49,8 +49,16 @@ def _script_path(value: str) -> str:
     return "/workspace/" + "/".join(candidate.parts)
 
 
+def _workspace_cwd(value: str) -> str:
+    candidate = PurePosixPath(value.replace("\\", "/"))
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise SandboxPolicyDenied("Python 工作目录无效。", reason="invalid_cwd")
+    relative = "/".join(part for part in candidate.parts if part not in {"", "."})
+    return "/workspace" + (f"/{relative}" if relative else "")
+
+
 def build_python_argv(
-    policy: LaunchPolicy, script_path: str, *, seccomp_fd: int = 3
+    policy: LaunchPolicy, script_path: str, *, cwd: str = "", seccomp_fd: int = 3
 ) -> tuple[str, ...]:
     return (
         policy.bwrap,
@@ -70,10 +78,14 @@ def build_python_argv(
         "--bind",
         str(policy.workspace),
         "/workspace",
+        "--tmpfs",
+        "/tmp",
         "--proc",
         "/proc",
         "--dev",
         "/dev",
+        "--chdir",
+        _workspace_cwd(cwd),
         "--seccomp",
         str(seccomp_fd),
         "/usr/bin/python3",
@@ -106,7 +118,12 @@ class PythonRuntime:
         try:
             assert self.policy.cgroup is not None
             cgroup_fd = os.open(self.policy.cgroup / "cgroup.procs", os.O_WRONLY | os.O_CLOEXEC)
-            argv = build_python_argv(self.policy, script_path, seccomp_fd=seccomp_fd)
+            argv = build_python_argv(
+                self.policy,
+                script_path,
+                cwd=request.cwd,
+                seccomp_fd=seccomp_fd,
+            )
 
             def enter_cgroup() -> None:
                 # 子进程在 exec bubblewrap 前写入自身 PID。只调用 async-signal-safe 的
@@ -185,6 +202,7 @@ class LocalSandboxRuntime:
             raise ValueError("workspace root 不能是符号链接")
         self._executor_factory = executor_factory
         self._lock = asyncio.Lock()
+        self._execution_locks: dict[str, asyncio.Lock] = {}
 
     def _resource_id(self, binding_digest: str) -> str:
         return "local-" + hashlib.sha256(binding_digest.encode()).hexdigest()[:32]
@@ -278,8 +296,10 @@ class LocalSandboxRuntime:
             return []
 
     async def destroy_workspace(self, resource_id: str, binding_digest: str) -> dict[str, bool]:
-        directory, _metadata = self._require(resource_id, binding_digest)
-        shutil.rmtree(directory)
+        execution_lock = self._execution_locks.setdefault(resource_id, asyncio.Lock())
+        async with execution_lock:
+            directory, _metadata = self._require(resource_id, binding_digest)
+            shutil.rmtree(directory)
         return {"deleted": True}
 
     def _path(self, directory: Path, value: str, *, existing: bool = False) -> Path:
@@ -410,21 +430,30 @@ class LocalSandboxRuntime:
         binding_digest: str,
         request: RunPythonScriptRequest,
     ) -> dict[str, Any]:
-        directory, _metadata = self._require(resource_id, binding_digest)
-        run_directory = directory / ".sandbox-runs"
-        run_directory.mkdir(mode=0o700, exist_ok=True)
-        relative = f".sandbox-runs/{uuid.uuid4().hex}.py"
-        script = self._path(directory, relative)
-        descriptor = os.open(script, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as output:
-                output.write(request.script.encode())
-                output.flush()
-            result = await self._executor_factory(directory).run(request, script_path=relative)
-            return result.model_dump(mode="json")
-        finally:
-            os.close(descriptor)
-            script.unlink(missing_ok=True)
+        execution_lock = self._execution_locks.setdefault(resource_id, asyncio.Lock())
+        # 当前资源策略以 workspace cgroup 为隔离单元，超时通过该 cgroup 的 cgroup.kill
+        # 收敛全部后代进程。因此同一 workspace 必须串行执行，避免一个超时任务误杀同
+        # workspace 的健康脚本；不同 resource_id 使用不同锁，仍可并行。
+        async with execution_lock:
+            directory, _metadata = self._require(resource_id, binding_digest)
+            run_directory = directory / ".sandbox-runs"
+            run_directory.mkdir(mode=0o700, exist_ok=True)
+            relative = f".sandbox-runs/{uuid.uuid4().hex}.py"
+            script = self._path(directory, relative)
+            descriptor = os.open(
+                script,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "wb", closefd=False) as output:
+                    output.write(request.script.encode())
+                    output.flush()
+                result = await self._executor_factory(directory).run(request, script_path=relative)
+                return result.model_dump(mode="json")
+            finally:
+                os.close(descriptor)
+                script.unlink(missing_ok=True)
 
     async def health(self) -> dict[str, Any]:
         return ProviderHealth(

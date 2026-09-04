@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import platform
 import ssl
 from pathlib import Path
@@ -60,6 +61,31 @@ def _signature_verifier(public_key_path: Path):
     return verify
 
 
+def _prepare_delegated_cgroup(root: Path, *, pid: int | None = None) -> None:
+    required = {"cpu", "memory", "pids"}
+    try:
+        available = set((root / "cgroup.controllers").read_text(encoding="utf-8").split())
+    except OSError as error:
+        raise ValueError("cgroup_root 不是可管理的 cgroup v2 委派根。") from error
+    missing = sorted(required - available)
+    if missing:
+        raise ValueError(f"cgroup_root 缺少 controller: {', '.join(missing)}")
+
+    daemon = root / "daemon"
+    daemon.mkdir(exist_ok=True)
+    daemon_procs = daemon / "cgroup.procs"
+    subtree_control = root / "cgroup.subtree_control"
+    if daemon_procs.is_symlink() or subtree_control.is_symlink():
+        raise ValueError("cgroup v2 控制文件不能是符号链接。")
+    try:
+        # cgroup v2 禁止同时在父组承载进程并启用受控子组。daemon 先迁入专属
+        # 子组，再为 workspace 子组启用资源 controller；任一步失败都终止启动。
+        daemon_procs.write_text(str(pid if pid is not None else os.getpid()), encoding="utf-8")
+        subtree_control.write_text("+cpu +memory +pids", encoding="utf-8")
+    except OSError as error:
+        raise ValueError("cgroup v2 委派初始化失败。") from error
+
+
 def build_runtime(config: DaemonConfig) -> LocalSandboxRuntime:
     catalog = DependencyCatalog.load(
         config.catalog_path,
@@ -74,6 +100,7 @@ def build_runtime(config: DaemonConfig) -> LocalSandboxRuntime:
         raise ValueError("workspace_root 必须是预先创建的普通目录。")
     if not config.cgroup_root.is_dir() or config.cgroup_root.is_symlink():
         raise ValueError("cgroup_root 必须是预先委派的 cgroup v2 目录。")
+    _prepare_delegated_cgroup(config.cgroup_root)
 
     def executor(workspace: Path) -> PythonRuntime:
         cgroup = config.cgroup_root / workspace.name
