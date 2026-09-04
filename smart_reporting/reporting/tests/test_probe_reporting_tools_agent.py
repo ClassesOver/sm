@@ -126,21 +126,23 @@ def test_probe_context_matches_production_task_binding() -> None:
 
 
 @pytest.mark.anyio
-async def test_probe_passes_one_bound_production_context_to_agent(
+async def test_probe_passes_one_bound_production_context_to_fixed_analysis_workflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: dict[str, object] = {}
 
-    class FakeAgent:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
+    async def run_fixed_analysis(
+        scenario: object, model: object, recorder: object, run_context: object
+    ) -> None:
+        observed.update(
+            scenario=scenario,
+            model=model,
+            recorder=recorder,
+            run_context=run_context,
+            bound=current_reporting_run_context(),
+        )
 
-        async def arun(self, _prompt: str, **kwargs: object) -> object:
-            observed.update(kwargs)
-            observed["bound"] = current_reporting_run_context()
-            return object()
-
-    monkeypatch.setattr(probe_module, "Agent", FakeAgent)
+    monkeypatch.setattr(probe_module, "_run_fixed_analysis_scenario", run_fixed_analysis)
     monkeypatch.setattr(
         probe_module,
         "_build_model",
@@ -157,12 +159,8 @@ async def test_probe_passes_one_bound_production_context_to_agent(
 
     context = observed["run_context"]
     assert observed["bound"] is context
-    assert observed["run_id"] == context.run_id
-    assert observed["session_id"] == context.session_id
-    assert observed["user_id"] == context.user_id
-    assert observed["dependencies"] is context.dependencies
-    assert observed["stream"] is True
-    assert observed["stream_events"] is True
+    assert observed["scenario"] == probe_scenarios()[0]
+    assert observed["model"].id == "qwen3.6-flash"
     assert result["visible_tool_batches"] == []
     assert result["not_visible_calls"] == []
 
@@ -453,6 +451,10 @@ def test_probe_scenarios_only_require_conditional_tools_after_their_precondition
 
     assert "read_tool_output" not in scenarios["analysis-fixed-facts"].tool_names
     assert "process" not in scenarios["analysis-script-foreground"].tool_names
+    assert "read_file" in scenarios["analysis-fixed-facts"].tool_names
+    assert "query_profile" not in scenarios["analysis-profile-bound-facts"].tool_names
+    assert "query_analysis_facts" not in scenarios["analysis-truncated-output"].tool_names
+    assert "query_analysis_context" not in scenarios["analysis-background-context"].tool_names
     assert scenarios["analysis-truncated-output"].branch == "truncated"
     assert scenarios["analysis-background-context"].branch == "background"
     assert scenarios["visualization-preview-truncated"].branch == "preview"
@@ -483,19 +485,15 @@ def test_probe_analysis_branches_expose_only_their_real_completion_precondition(
     scenarios = {scenario.name: scenario for scenario in probe_scenarios()}
 
     fixed = _cli_stage_input(scenarios["analysis-fixed-facts"])
-    profile = _cli_stage_input(scenarios["analysis-profile-supplement"])
+    profile = _cli_stage_input(scenarios["analysis-profile-bound-facts"])
     truncated = _cli_stage_input(scenarios["analysis-truncated-output"])
 
     assert fixed["deterministicFacts"]["analysisId"] == "analysis_001"
     assert profile["deterministicFacts"]["analysisId"] == "analysis_001"
     assert truncated["deterministicFacts"]["analysisId"] == "analysis_001"
-    assert "明确事实缺口" in truncated["executionDirective"]
-    assert "不得再次 patch、read 或 terminal" in complex_cli_prompt(
-        scenarios["analysis-script-foreground"]
-    )
-    assert "只调用一次 process(action=wait)" in complex_cli_prompt(
-        scenarios["analysis-background-context"]
-    )
+    assert "按 offset 完整读取" in truncated["executionDirective"]
+    assert "固定 Workflow" in complex_cli_prompt(scenarios["analysis-script-foreground"])
+    assert "后台方式运行并等待" in complex_cli_prompt(scenarios["analysis-background-context"])
 
 
 def test_probe_stage_inputs_match_production_phase_projections() -> None:
@@ -505,6 +503,8 @@ def test_probe_stage_inputs_match_production_phase_projections() -> None:
     facts = analysis["deterministicFacts"]
     assert analysis["currentAnalysisId"] == "analysis_001"
     assert analysis["deterministicFactFile"]["path"] == "analysis/facts/analysis_001.json"
+    assert analysis["deterministicFactFile"]["size"] > 100
+    assert len(analysis["deterministicFactFile"]["sha256"]) == 64
     assert facts["analysisId"] == "analysis_001"
     assert facts["metrics"]
     assert facts["derivedMetrics"]

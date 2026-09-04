@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 import difflib
-import inspect
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,7 +22,6 @@ WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
-from agno.agent import Agent  # noqa: E402 - 直接执行脚本时必须先定位 worktree 根目录
 from agno.models.message import Message  # noqa: E402 - 同上
 from agno.run import RunContext  # noqa: E402 - 同上
 from agno.tools import Function  # noqa: E402 - 同上
@@ -95,6 +94,11 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (  # noqa: E
     RenderSectionDecision,
     SectionDecision,
     VisualizationScriptDraft,
+)
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (  # noqa: E402 - 同上
+    AnalysisEvidencePlan,
+    AnalysisItemWorkflow,
+    AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noqa: E402 - 同上
     SectionWorkflow,
@@ -229,22 +233,22 @@ _TOOL_ARGUMENTS: dict[str, dict[str, Any]] = {
 
 
 def probe_scenarios() -> tuple[ProbeScenario, ...]:
-    """十个复杂 CLI 样本，以真实前置条件覆盖当前所有阶段工具。"""
+    """十个复杂 CLI 样本，覆盖三个 Reporting 固定工作流的主要分支。"""
 
     return (
         ProbeScenario(
             "analysis-fixed-facts",
             "analysis",
             "analysis_item",
-            ("complete_analysis_item",),
+            ("read_file", "complete_analysis_item"),
             "complete_analysis_item",
             "fixed_facts",
         ),
         ProbeScenario(
-            "analysis-profile-supplement",
+            "analysis-profile-bound-facts",
             "analysis",
             "analysis_item",
-            ("query_profile", "read_file", "complete_analysis_item"),
+            ("read_file", "complete_analysis_item"),
             "complete_analysis_item",
             "profile",
         ),
@@ -252,7 +256,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "analysis-script-foreground",
             "analysis",
             "analysis_item",
-            ("apply_analysis_patch", "terminal", "complete_analysis_item"),
+            ("read_file", "apply_analysis_patch", "terminal", "complete_analysis_item"),
             "complete_analysis_item",
             "script",
         ),
@@ -260,7 +264,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "analysis-truncated-output",
             "analysis",
             "analysis_item",
-            ("query_analysis_facts", "complete_analysis_item"),
+            ("read_file", "complete_analysis_item"),
             "complete_analysis_item",
             "truncated",
         ),
@@ -268,7 +272,13 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "analysis-background-context",
             "analysis",
             "analysis_item",
-            ("query_analysis_context", "terminal", "process", "complete_analysis_item"),
+            (
+                "read_file",
+                "apply_analysis_patch",
+                "terminal",
+                "process",
+                "complete_analysis_item",
+            ),
             "complete_analysis_item",
             "background",
         ),
@@ -332,49 +342,18 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
     )
 
 
-def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
-    """构造等价于 CLI 下发的阶段任务投影，不使用只为探针服务的工具清单字段。"""
+def _deterministic_facts_payload() -> dict[str, Any]:
+    """返回可被生产 AnalysisItemWorkflow 严格校验的冻结 facts。"""
 
-    common = {
-        "phase": scenario.phase,
-        "taskKind": scenario.task_kind,
-        "reportGoal": "识别某院 2025 年上半年门诊收入与成本变化，形成可执行的经营改进建议。",
-        "sectionGoal": {
-            "sectionCode": "outpatient_operation",
-            "title": "门诊运营与收入质量",
-            "focus": ["收入同比", "次均费用", "成本率", "异常波动"],
-            "analysisIds": ["analysis_001"],
-        },
-        "datasets": [
-            {
-                "datasetId": "dataset-001",
-                "path": "inputs/outpatient_monthly.csv",
-                "period": "2025-01 至 2025-06",
-                "organizationGrain": "院区-月份",
-            }
-        ],
-    }
-    fact_file = {
-        "path": "analysis/facts/analysis_001.json",
-        "size": 100,
-        "sha256": "a" * 64,
-    }
-    evidence_file = {
-        "path": "analysis/evidence/analysis_001.json",
-        "size": 100,
-        "sha256": "b" * 64,
-    }
-    complete_evidence_file = {
-        "path": "analysis/evidence/complete_analysis_001.json",
-        "size": 100,
-        "sha256": "c" * 64,
-    }
-    deterministic_facts = {
+    dataset_sha256 = "d" * 64
+    return {
         "version": "1",
         "analysisId": "analysis_001",
         "metrics": [
             {
                 "datasetId": "dataset-001",
+                "datasetSha256": dataset_sha256,
+                "profileHash": "e" * 64,
                 "periodRoles": ["current"],
                 "metricCodes": ["outpatient_revenue"],
                 "field": "revenue",
@@ -412,6 +391,7 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
                 "unit": "%",
                 "formula": "cost / revenue",
                 "datasetIds": ["dataset-001"],
+                "datasetSha256s": [dataset_sha256],
                 "warnings": [],
             }
         ],
@@ -422,6 +402,8 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
                 "fieldRef": "revenue",
                 "currentDatasetId": "dataset-001",
                 "baselineDatasetId": "dataset-001",
+                "currentDatasetSha256": dataset_sha256,
+                "baselineDatasetSha256": dataset_sha256,
                 "currentTotal": 812,
                 "baselineTotal": 750,
                 "change": 62,
@@ -435,49 +417,99 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
         "correlations": {},
         "warnings": ["2025-04 成本记录缺失，不能用零值替代。"],
     }
+
+
+def _deterministic_facts_bytes() -> bytes:
+    return json.dumps(
+        _deterministic_facts_payload(), ensure_ascii=True, separators=(",", ":")
+    ).encode("ascii")
+
+
+def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
+    """构造等价于 CLI 下发的阶段任务投影，不使用只为探针服务的工具清单字段。"""
+
+    deterministic_facts = _deterministic_facts_payload()
+    fact_bytes = _deterministic_facts_bytes()
+    common = {
+        "phase": scenario.phase,
+        "taskKind": scenario.task_kind,
+        "reportGoal": "识别某院 2025 年上半年门诊收入与成本变化，形成可执行的经营改进建议。",
+        "sectionGoal": {
+            "sectionCode": "outpatient_operation",
+            "title": "门诊运营与收入质量",
+            "focus": ["收入同比", "次均费用", "成本率", "异常波动"],
+            "analysisIds": ["analysis_001"],
+        },
+        "datasets": [
+            {
+                "datasetId": "dataset-001",
+                "path": "inputs/outpatient_monthly.csv",
+                "period": "2025-01 至 2025-06",
+                "organizationGrain": "院区-月份",
+            }
+        ],
+    }
+    fact_file = {
+        "path": "analysis/facts/analysis_001.json",
+        "size": len(fact_bytes),
+        "sha256": hashlib.sha256(fact_bytes).hexdigest(),
+    }
+    evidence_file = {
+        "path": "analysis/evidence/analysis_001.json",
+        "size": 100,
+        "sha256": "b" * 64,
+    }
+    complete_evidence_file = {
+        "path": "analysis/evidence/complete_analysis_001.json",
+        "size": 100,
+        "sha256": "c" * 64,
+    }
     if scenario.task_kind == "analysis_item":
         result: dict[str, Any] = {
             **common,
             "analysisId": "analysis_001",
             "currentAnalysisId": "analysis_001",
             "currentAnalysis": {
+                "analysisId": "analysis_001",
                 "managementQuestion": "门诊收入增长是否伴随成本率恶化，以及主要异常月份是什么？",
+                "datasetIds": ["dataset-001"],
                 "metrics": ["outpatient_revenue", "outpatient_cost", "cost_rate"],
                 "limitations": ["4 月有一条成本记录缺失，不能用零值替代。"],
             },
             "deterministicFactFile": fact_file,
             "deterministicFacts": deterministic_facts,
             "analysisOutputRoot": "analysis/output",
+            "citationRegistry": [{"citationId": "citation-001", "datasetId": "dataset-001"}],
             "completionConditions": ["对缺失成本记录失败关闭。", "提交绑定引用的分析终态。"],
         }
         if scenario.branch == "fixed_facts":
             result["executionDirective"] = (
-                "完整内联固定事实已足够。直接提交 complete_analysis_item，不补读文件、不运行脚本或查询。"
+                "固定 Workflow 必须先校验 deterministicFactFile；完整固定事实已足够，"
+                "规划阶段不得补证，随后生成摘要并提交。"
             )
         elif scenario.branch == "profile":
             result["executionDirective"] = (
-                "固定事实需要画像字段解释；只调用一次 query_profile，随后读取一次指定 CSV，"
-                "立即提交 complete_analysis_item，不再查询 facts/context。"
+                "冻结 facts 已绑定已确认 Profile，当前管理问题不需要额外事实；规划阶段不得补证，"
+                "随后生成摘要并提交。"
             )
         elif scenario.branch == "script":
             result["executionDirective"] = (
-                "需要写入一个核验 Python 脚本并执行。只调用一次 apply_analysis_patch，"
-                "从 artifacts 回执取得脚本路径后只执行一次 python3 <该路径>；"
-                "terminal 成功后必须立即调用 complete_analysis_item，不得再次 patch、read 或 terminal。"
+                "规划阶段必须返回最小补证脚本；由固定 Workflow 写入并执行 supplement.py、"
+                "校验 supplement.json，随后生成摘要并提交。"
             )
             result["executionPlan"] = {"background": False, "waitForCompletion": True}
         elif scenario.branch == "truncated":
             result["executionDirective"] = (
-                "当前原子管理问题有明确事实缺口。只调用一次 query_analysis_facts 获取最小补充事实，"
-                "随后立即提交 complete_analysis_item。"
+                "deterministicFactFile 必须按 offset 完整读取并校验；固定事实已足够，"
+                "不得补证，随后生成摘要并提交。"
             )
         else:
             result["executionDirective"] = (
-                "只调用一次 query_analysis_context；再把已签发核验命令以后台方式执行，"
-                "收到 session_id 后只调用一次 process(action=wait)；完成后立即提交 complete_analysis_item。"
+                "规划阶段必须返回最小补证脚本；固定 Workflow 的执行端口以后台方式运行并等待，"
+                "校验 supplement.json 后生成摘要并提交。"
             )
             result["executionPlan"] = {
-                "command": "python3 analysis/output/background_probe.py",
+                "command": "python3 analysis/output/supplement.py",
                 "background": True,
                 "waitForCompletion": True,
             }
@@ -706,9 +738,12 @@ class ProbeRecorder:
         if self.scenario is None:
             return None
         if self.scenario.task_kind == "analysis_item":
-            if self.scenario.branch == "profile":
-                return {"inputs/outpatient_monthly.csv"}
-            return set()
+            paths = {"analysis/facts/analysis_001.json"}
+            if self.committed_script_path is not None:
+                paths.add(self.committed_script_path)
+            if self.script_completed:
+                paths.add("analysis/output/supplement.json")
+            return paths
         if self.scenario.task_kind == "visualization_section":
             return {self.committed_script_path} if self.committed_script_path is not None else set()
         work_item = _cli_stage_input(self.scenario)["sectionWorkItem"]
@@ -723,12 +758,12 @@ class ProbeRecorder:
             return None
         if self.scenario.task_kind == "visualization_section":
             return "python3 analysis/output/outpatient_chart.py"
-        if self.scenario.branch == "script" and self.committed_script_path is not None:
+        if (
+            self.scenario.task_kind == "analysis_item"
+            and self.committed_script_path is not None
+            and self.scenario.branch in {"profile", "script", "background"}
+        ):
             return f"python3 {self.committed_script_path}"
-        if self.scenario.branch == "truncated":
-            return "python3 analysis/output/truncated_probe.py"
-        if self.scenario.branch == "background":
-            return "python3 analysis/output/background_probe.py"
         return None
 
     def _reject(
@@ -778,17 +813,50 @@ class ProbeRecorder:
                     required_actions=["只读取 details.allowedPaths 中的当前阶段文件。"],
                 )
             try:
-                content = await workspace.read_text(path)
+                raw_content = await workspace.read_bytes(path)
             except Exception:
                 # 生产脚本可以在签发输出根目录生成补充 evidence。探针只在脚本已完成后
                 # 接受这类派生文件，避免将任意不存在路径误报为有效输入。
                 if not self.script_completed or not path.startswith("analysis/output/evidence/"):
-                    raise
+                    if not self.script_completed or path != "analysis/output/supplement.json":
+                        raise
                 identity = await workspace.write_text(
                     path,
-                    '{"status":"completed","outpatientRevenueYoY":0.082,"costRateChange":0.016}',
+                    json.dumps(
+                        {
+                            "analysisId": "analysis_001",
+                            "datasetIds": ["dataset-001"],
+                            "findings": [
+                                {
+                                    "metricCode": "outpatient_cost_rate",
+                                    "value": 0.594,
+                                    "missingMonth": "2025-04",
+                                }
+                            ],
+                            "reconciliations": [{"name": "outpatient_cost_rate", "passed": True}],
+                            "warnings": ["2025-04 成本缺失，未按零值填充。"],
+                        },
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    ),
                 )
-                content = await workspace.read_text(identity.path)
+                raw_content = await workspace.read_bytes(identity.path)
+            if self.scenario is not None and self.scenario.task_kind == "analysis_item":
+                offset = int(arguments.get("offset", 0))
+                max_bytes = int(arguments.get("max_bytes", len(raw_content)))
+                end = min(len(raw_content), offset + max_bytes)
+                if self.scenario.branch == "truncated" and path.endswith("analysis_001.json"):
+                    end = min(end, offset + max(1, len(raw_content) // 2))
+                return {
+                    "ok": True,
+                    "content": raw_content[offset:end].decode("ascii"),
+                    "sha256": hashlib.sha256(raw_content).hexdigest(),
+                    "totalBytes": len(raw_content),
+                    "nextOffset": end,
+                    "hasMore": end < len(raw_content),
+                    "outputTruncated": False,
+                }
+            content = raw_content.decode("utf-8")
             if (
                 self._file_read_truncated()
                 and not self.output_consumed
@@ -974,6 +1042,7 @@ class ProbeRecorder:
                 "receiptId": "chart-receipt-1",
             }
         if name in {
+            "complete_analysis_item",
             "render_report_section",
             "submit_visualization_charts",
             "request_analysis_rework",
@@ -1134,10 +1203,7 @@ def _runtime() -> MockReportingToolRuntime:
             "inputs/outpatient_monthly.csv": (
                 b"month,revenue,cost\n2025-01,120,78\n2025-04,139,\n2025-06,156,101\n"
             ),
-            "analysis/facts/analysis_001.json": (
-                b'{"outpatientRevenueYoY":0.082,"costRateChange":0.016,'
-                b'"missingCostMonth":"2025-04"}'
-            ),
+            "analysis/facts/analysis_001.json": _deterministic_facts_bytes(),
             "analysis/evidence/analysis_001.json": (
                 b'{"evidencePath":"analysis/evidence/analysis_001.json","validated":true}'
             ),
@@ -1150,17 +1216,119 @@ def _runtime() -> MockReportingToolRuntime:
     )
 
 
-async def _consume_probe_run(
-    run_result: Awaitable[Any] | AsyncIterator[Any] | Any,
-) -> Any:
-    if hasattr(run_result, "__aiter__"):
-        last_event = None
-        async for event in run_result:
-            last_event = event
-        return last_event
-    if inspect.isawaitable(run_result):
-        return await run_result
-    return run_result
+async def _run_fixed_analysis_scenario(
+    scenario: ProbeScenario,
+    model: ReportingPhaseOpenAIChat,
+    recorder: ProbeRecorder,
+    run_context: RunContext,
+) -> None:
+    """用生产同形的五阶段 AnalysisItemWorkflow 执行 analysis probe。"""
+
+    stage_input = _cli_stage_input(scenario)
+    supplemental = scenario.branch in {"script", "background"}
+    scope = TaskExecutionScope(
+        str(run_context.run_id),
+        str(run_context.user_id),
+        "probe-thread",
+        "probe-sandbox",
+        "reporting-analysis-agent",
+    )
+    planner = create_reporting_generator_agent(
+        model=model,
+        output_schema=AnalysisEvidencePlan,
+        name=f"probe-{scenario.name}-planner",
+    )
+    summarizer = create_reporting_generator_agent(
+        model=model,
+        output_schema=AnalysisSummaryDraft,
+        name=f"probe-{scenario.name}-summarizer",
+    )
+
+    async def plan_evidence(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
+        instruction = json.dumps(
+            {
+                "stage": "repair_evidence_plan" if repair else "plan_evidence",
+                "requiredDecision": {
+                    "requiresSupplementalEvidence": supplemental,
+                    "missingFacts": (["2025-04 outpatient cost"] if supplemental else []),
+                    "scriptRequirement": (
+                        "Return a Python script that writes the signed evidencePath as valid JSON."
+                        if supplemental
+                        else "script must be null"
+                    ),
+                },
+                "task": stage_input,
+                "input": payload,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return cast(
+            AnalysisEvidencePlan,
+            await ReportingStructuredAgentExecutor(planner).run(
+                instruction,
+                scope=scope,
+                run_context=run_context,
+            ),
+        )
+
+    async def summarize(payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
+        instruction = json.dumps(
+            {
+                "stage": "summarize_analysis",
+                "requirements": [
+                    "Only summarize the supplied deterministic facts and validated evidence.",
+                    "State the 2025-04 missing-cost limitation explicitly.",
+                ],
+                "input": payload,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return cast(
+            AnalysisSummaryDraft,
+            await ReportingStructuredAgentExecutor(summarizer).run(
+                instruction,
+                scope=scope,
+                run_context=run_context,
+            ),
+        )
+
+    async def read_file(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("read_file", arguments)
+
+    async def apply_patch(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("apply_analysis_patch", arguments)
+
+    async def run_script(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        background = scenario.branch == "background"
+        terminal = await recorder.invoke(
+            "terminal",
+            {**arguments, "timeout": 30, **({"background": True} if background else {})},
+        )
+        if terminal.get("ok") is not True or not background:
+            return {"exitCode": terminal.get("exit_code", 0), **terminal}
+        completed = await recorder.invoke(
+            "process",
+            {"action": "wait", "session_id": terminal.get("session_id"), "timeout": 30},
+        )
+        return {"exitCode": 0, **completed}
+
+    async def complete(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("complete_analysis_item", arguments)
+
+    await AnalysisItemWorkflow(
+        plan_evidence=plan_evidence,
+        summarize=summarize,
+        read_file=read_file,
+        apply_patch=apply_patch,
+        run_script=run_script,
+        complete=complete,
+    ).run(stage_input, run_context)
 
 
 async def _run_fixed_visualization_scenario(
@@ -1414,29 +1582,15 @@ async def _run_scenario(
         run_context,
     )
     await recorder.prepare()
-    agent = Agent(
-        model=model, tools=tools, instructions=_agent_instructions(scenario), markdown=False
-    )
 
     async def run_agent() -> Any:
+        if scenario.task_kind == "analysis_item":
+            return await _run_fixed_analysis_scenario(scenario, model, recorder, run_context)
         if scenario.task_kind == "visualization_section":
             return await _run_fixed_visualization_scenario(
                 scenario, prompt, model, recorder, run_context
             )
-        if scenario.task_kind == "section":
-            return await _run_fixed_section_scenario(scenario, model, recorder, run_context)
-        return await _consume_probe_run(
-            agent.arun(
-                prompt,
-                stream=True,
-                stream_events=True,
-                run_id=run_context.run_id,
-                session_id=run_context.session_id,
-                user_id=run_context.user_id,
-                dependencies=run_context.dependencies,
-                run_context=run_context,
-            )
-        )
+        return await _run_fixed_section_scenario(scenario, model, recorder, run_context)
 
     started = time.perf_counter()
     error: str | None = None
@@ -1503,7 +1657,7 @@ async def _run(args: argparse.Namespace) -> int:
     settings = AgentSettings.from_environment()
     scenarios = probe_scenarios()
     if args.runs != len(scenarios):
-        raise ValueError(f"--runs 必须为 {len(scenarios)}，以覆盖全部工具")
+        raise ValueError(f"--runs 必须为 {len(scenarios)}，以覆盖全部固定场景")
     results: list[dict[str, Any]] = []
     for scenario in scenarios:
         result = await _run_scenario(
@@ -1549,7 +1703,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="使用真实模型探测全部 Reporting 工具 schema")
+    parser = argparse.ArgumentParser(description="使用真实模型探测 Reporting 固定工作流")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--model-tier", choices=("fast", "standard"), required=True)
     parser.add_argument("--runs", type=int, default=10)
