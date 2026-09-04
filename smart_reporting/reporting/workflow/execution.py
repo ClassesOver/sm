@@ -606,7 +606,15 @@ class ReportingStructuredAgentExecutor:
             if not valid_instance:
                 validator = getattr(schema, "model_validate", None)
                 try:
-                    content = validator(content) if callable(validator) else TypeAdapter(schema).validate_python(content)
+                    json_validator = getattr(schema, "model_validate_json", None)
+                    if isinstance(content, str) and callable(json_validator):
+                        content = json_validator(content)
+                    else:
+                        content = (
+                            validator(content)
+                            if callable(validator)
+                            else TypeAdapter(schema).validate_python(content)
+                        )
                 except Exception as error:
                     raise ReportingError(
                         "report_phase_output_invalid", "结构化 Agent 未返回声明的阶段结果。"
