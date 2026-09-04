@@ -6,8 +6,7 @@
 
 ```bash
 docker compose up -d reporting-db
-uv venv --python 3.12 .venv-agent
-uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements.txt
+UV_PROJECT_ENVIRONMENT=.venv-agent uv sync --python 3.12 --no-install-project
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 ```
 
@@ -111,7 +110,7 @@ curl -X POST \
 ## 验证
 
 ```bash
-uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements-test.txt
+UV_PROJECT_ENVIRONMENT=.venv-agent uv sync --python 3.12 --no-install-project
 bash scripts/check_agentos.sh
 ```
 
