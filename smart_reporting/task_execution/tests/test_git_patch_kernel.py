@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from smart_reporting.task_execution.tools import build_workspace_changes
+from smart_reporting.task_execution.tools import abuild_workspace_changes, build_workspace_changes
 from smart_reporting.workspace import WorkspaceError
 
 
@@ -95,3 +95,33 @@ def test_git_patch_kernel_rejects_stale_expected_sha256_before_apply() -> None:
             patch,
             expected_sha256={"report.py": "0" * 64},
         )
+
+
+@pytest.mark.anyio
+async def test_async_git_patch_kernel_does_not_use_sync_workspace_reads() -> None:
+    service = _Workspace({"analysis/model.py": "value = 1\n"})
+
+    async def aread_text(thread: str, path: str) -> str:
+        assert thread == "thread"
+        return service.files[path]
+
+    service.aread_text = aread_text  # type: ignore[attr-defined]
+    service.read_text = lambda *_args: pytest.fail("不得调用同步 workspace 读取路径")  # type: ignore[method-assign]
+    patch = """\
+--- a/analysis/model.py
++++ b/analysis/model.py
+@@ -1 +1 @@
+-value = 1
++value = 2
+"""
+
+    changes = await abuild_workspace_changes(service, "thread", patch)
+
+    assert changes == [
+        {
+            "operation": "update",
+            "path": "analysis/model.py",
+            "content": "value = 2\n",
+            "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
+        }
+    ]

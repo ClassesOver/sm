@@ -59,7 +59,7 @@ from .repository_impl import (
     TaskExecutionTask,
     utcnow,
 )
-from .tools import build_workspace_changes
+from .tools import abuild_workspace_changes
 
 TASK_EXECUTION_DEPENDENCY = "AgentOS 任务执行"
 TASK_EXECUTION_FINISH_FAILURE_STATE_KEY = "agentos_task_execution_finish_failure"
@@ -1393,7 +1393,7 @@ class TaskExecutionKernel:
             raise WorkspaceError("apply_patch heredoc 不支持 workdir 或 PTY。")
         scope = _scope or await self.scope(run_context)
         patch_changes = (
-            await asyncio.to_thread(build_workspace_changes, self.service, scope.thread_id, patch)
+            await abuild_workspace_changes(self.service, scope.thread_id, patch)
             if patch is not None
             else None
         )
@@ -1989,44 +1989,39 @@ class TaskExecutionKernel:
         if mode == "patch":
             if not isinstance(patch, str) or not patch.strip():
                 raise WorkspaceError("patch 模式必须提供完整补丁。")
-            changes = await asyncio.to_thread(
-                build_workspace_changes, self.service, scope.thread_id, patch
-            )
+            changes = await abuild_workspace_changes(self.service, scope.thread_id, patch)
         elif mode == "replace":
             if not isinstance(path, str) or not isinstance(old_string, str) or not old_string:
                 raise WorkspaceError("replace 模式必须提供 path 和非空 old_string。")
             if not isinstance(new_string, str) or not isinstance(replace_all, bool):
                 raise WorkspaceError("replace 模式参数无效。")
 
-            def replacement() -> tuple[list[dict[str, Any]], int]:
-                content, _mime = self.service.file_bytes(scope.thread_id, path)
-                try:
-                    original = content.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
-                count = original.count(old_string)
-                if count == 0:
-                    raise WorkspaceError("old_string 在目标文件中不存在。")
-                if count != 1 and not replace_all:
-                    raise WorkspaceError(
-                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
-                    )
-                updated = original.replace(old_string, new_string, -1 if replace_all else 1)
-                if updated == original:
-                    return [], 0
-                return (
-                    [
-                        {
-                            "operation": "update",
-                            "path": path,
-                            "content": updated,
-                            "expected_sha256": hashlib.sha256(content).hexdigest(),
-                        }
-                    ],
-                    count if replace_all else 1,
+            file_content, _mime = await self.service.afile_bytes(scope.thread_id, path)
+            try:
+                original = file_content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
+            count = original.count(old_string)
+            if count == 0:
+                raise WorkspaceError("old_string 在目标文件中不存在。")
+            if count != 1 and not replace_all:
+                raise WorkspaceError(
+                    "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
                 )
-
-            changes, replacements = await asyncio.to_thread(replacement)
+            updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+            changes = (
+                []
+                if updated == original
+                else [
+                    {
+                        "operation": "update",
+                        "path": path,
+                        "content": updated,
+                        "expected_sha256": hashlib.sha256(file_content).hexdigest(),
+                    }
+                ]
+            )
+            replacements = count if replace_all else 1
         elif mode == "create":
             if not isinstance(path, str) or not isinstance(content, str):
                 raise WorkspaceError("create 模式必须提供 path 和 content。")
@@ -2088,7 +2083,7 @@ class TaskExecutionKernel:
         await self._check_fence(scope, execution_id)
         applied = False
         try:
-            result = await asyncio.to_thread(self.service.apply_changes, scope.thread_id, changes)
+            result = await self.service.aapply_changes(scope.thread_id, changes)
             applied = True
             await self._check_fence(scope, execution_id)
             await self.repository.update_execution(

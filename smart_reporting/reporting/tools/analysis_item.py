@@ -19,7 +19,7 @@ from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ...task_execution import build_workspace_changes, parse_unified_diff
+from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -363,7 +363,7 @@ class RuntimeAnalysisMixin:
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
-            raw_operations = build_workspace_changes(
+            raw_operations = await abuild_workspace_changes(
                 self.runtime.workspace,
                 scope.thread_id,
                 canonical["patch"],

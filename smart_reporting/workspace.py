@@ -1559,6 +1559,27 @@ class WorkspaceService:
         except UnicodeDecodeError as error:
             raise WorkspaceError("该文件不是 UTF-8 文本，请下载后使用对应软件打开。") from error
 
+    async def _aread_text_from_sandbox(self, sandbox: Any, relative: str, remote: str) -> str:
+        await self._avalidate_existing_path(sandbox, relative)
+        info = await self._ainfo(sandbox, remote)
+        if info.is_dir:
+            raise WorkspaceError("所选项目是目录，不能作为文本文件读取。")
+        if int(info.size or 0) > MAX_READ_BYTES:
+            raise WorkspaceError("所选文件超过 1 MB，请下载后使用对应软件打开。")
+        content = await self._adownload_file(sandbox, remote, MAX_READ_BYTES)
+        if b"\x00" in content:
+            raise WorkspaceError("该文件包含二进制内容，请下载后使用对应软件打开。")
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise WorkspaceError("该文件不是 UTF-8 文本，请下载后使用对应软件打开。") from error
+
+    async def aread_text(self, thread: str, path: str) -> str:
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            return await self._aread_text_from_sandbox(sandbox, relative, remote)
+
     @staticmethod
     def _validate_page_window(limit: int, offset: int) -> tuple[int, int]:
         if (
@@ -2640,6 +2661,22 @@ class WorkspaceService:
                 raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
         return info
 
+    async def _ainspect_destination_without_writes(self, sandbox: Any, relative: str):
+        parts = relative.split("/")
+        info = None
+        for index in range(1, len(parts) + 1):
+            remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
+            try:
+                with suppress_expected_probe_tracing():
+                    info = await self._ainfo(sandbox, remote)
+            except (DaytonaNotFoundError, SandboxNotFound):
+                return None
+            if self._is_symlink(info):
+                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
+            if index < len(parts) and not bool(getattr(info, "is_dir", False)):
+                raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
+        return info
+
     def apply_changes(self, thread: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
             raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
@@ -2826,6 +2863,194 @@ class WorkspaceService:
                         "变更集执行失败且未能完整回滚，请重新检查所有目标文件。"
                     ) from error
                 raise
+
+        results = []
+        for item in prepared:
+            result = {"operation": item["operation"], "path": item["path"]}
+            if item["operation"] in {"create", "update"}:
+                result.update(
+                    {
+                        "size": len(item["updated"]),
+                        "sha256": hashlib.sha256(item["updated"]).hexdigest(),
+                    }
+                )
+            elif item["operation"] == "move":
+                result["destination"] = item["destination"]
+                result["sha256"] = item["sha256"]
+            else:
+                result["sha256"] = item["sha256"]
+            results.append(result)
+        return {"files": results, "operations": len(results)}
+
+    async def aapply_changes(self, thread: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
+        if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
+            raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
+
+        keys_by_operation = {
+            "create": {"operation", "path", "content"},
+            "update": {"operation", "path", "content", "expected_sha256"},
+            "delete": {"operation", "path", "expected_sha256"},
+            "move": {"operation", "path", "destination", "expected_sha256"},
+        }
+        lock_key = f"agent-workspace-changes:{await self._ahash(thread)}"
+        async with self.async_registry.locked(lock_key):
+            async with self._async_client() as client:
+                sandbox = await self._asandbox_for(client, thread)
+                prepared: list[dict[str, Any]] = []
+                used_paths: set[str] = set()
+                for change in changes:
+                    if not isinstance(change, dict):
+                        raise WorkspaceError("变更集中的每一项都必须是文件操作对象。")
+                    raw_operation = change.get("operation")
+                    if not isinstance(raw_operation, str):
+                        raise WorkspaceError("变更集操作必须是 create、update、delete 或 move。")
+                    operation = raw_operation
+                    required_keys = keys_by_operation.get(operation)
+                    if required_keys is None or set(change) != required_keys:
+                        raise WorkspaceError(
+                            "变更集操作字段无效；请按 create、update、delete 或 move 的字段要求重试。"
+                        )
+                    if not isinstance(change.get("path"), str):
+                        raise WorkspaceError("变更集路径必须是工作区相对路径字符串。")
+                    relative, remote = self.normalize_path(change["path"], allow_root=False)
+                    occupied_paths = [relative]
+                    destination = None
+                    destination_remote = None
+                    if operation == "move":
+                        if not isinstance(change.get("destination"), str):
+                            raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
+                        destination, destination_remote = self.normalize_path(
+                            change["destination"], allow_root=False
+                        )
+                        if destination == relative:
+                            raise WorkspaceError("移动源路径和目标路径不能相同。")
+                        occupied_paths.append(destination)
+                    if any(path in used_paths for path in occupied_paths):
+                        raise WorkspaceError("变更集不能重复使用同一个源路径或目标路径。")
+                    used_paths.update(occupied_paths)
+
+                    if operation == "create":
+                        content = change["content"]
+                        if not isinstance(content, str):
+                            raise WorkspaceError("新建文件内容必须是 UTF-8 文本。")
+                        updated = content.encode("utf-8")
+                        self._validate_content(updated)
+                        if (
+                            await self._ainspect_destination_without_writes(sandbox, relative)
+                            is not None
+                        ):
+                            raise WorkspacePathConflict(
+                                f"文件“{relative}”已经存在，请重新读取变更目标后重试。"
+                            )
+                        prepared.append(
+                            {
+                                "operation": operation,
+                                "path": relative,
+                                "remote": remote,
+                                "updated": updated,
+                            }
+                        )
+                        continue
+
+                    await self._avalidate_existing_path(sandbox, relative)
+                    info = await self._ainfo(sandbox, remote)
+                    if not self._is_regular_file(info):
+                        raise WorkspaceError("变更集只能更新、删除或移动普通文件。")
+                    original = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+                    if operation == "delete" and len(original) > MAX_UPLOAD_BYTES:
+                        raise WorkspaceError(
+                            "变更集不能删除超过 200 MiB 的文件；请使用独立删除工具并确认。"
+                        )
+                    expected_sha256 = self._validate_patch_hash(change["expected_sha256"])
+                    if hashlib.sha256(original).hexdigest() != expected_sha256:
+                        raise WorkspacePathConflict(
+                            "文件内容已变化，请重新读取全部目标文件和哈希后再应用变更集。"
+                        )
+                    item: dict[str, Any] = {
+                        "operation": operation,
+                        "path": relative,
+                        "remote": remote,
+                        "original": original,
+                        "sha256": expected_sha256,
+                    }
+                    if operation == "update":
+                        content = change["content"]
+                        if not isinstance(content, str):
+                            raise WorkspaceError("更新文件内容必须是 UTF-8 文本。")
+                        item["updated"] = content.encode("utf-8")
+                        self._validate_content(item["updated"])
+                    elif operation == "move":
+                        if destination is None or destination_remote is None:
+                            raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
+                        if (
+                            await self._ainspect_destination_without_writes(sandbox, destination)
+                            is not None
+                        ):
+                            raise WorkspacePathConflict(
+                                f"移动目标“{destination}”已经存在，请更换路径后重试。"
+                            )
+                        item["destination"] = destination
+                        item["destination_remote"] = destination_remote
+                    prepared.append(item)
+
+                # 所有路径和内容身份必须在首次写入前完成校验；执行失败时按逆序恢复，
+                # 保持 Reporting 一次补丁要么整体可见、要么回到原状态的不变量。
+                completed: list[dict[str, Any]] = []
+                try:
+                    for item in prepared:
+                        operation = item["operation"]
+                        if operation in {"create", "update"}:
+                            await self._aensure_directory(sandbox, item["remote"].rsplit("/", 1)[0])
+                            await sandbox.fs.upload_file(item["updated"], item["remote"])
+                        elif operation == "delete":
+                            await sandbox.fs.delete_file(item["remote"], recursive=False)
+                        else:
+                            await self._aensure_directory(
+                                sandbox, item["destination_remote"].rsplit("/", 1)[0]
+                            )
+                            await sandbox.fs.move_files(item["remote"], item["destination_remote"])
+                        completed.append(item)
+
+                        if operation in {"create", "update"}:
+                            persisted = await self._adownload_file(
+                                sandbox, item["remote"], MAX_UPLOAD_BYTES
+                            )
+                            if persisted != item["updated"]:
+                                raise WorkspaceError("变更集落盘校验失败，请重新检查目标文件。")
+                        elif operation == "move":
+                            persisted = await self._adownload_file(
+                                sandbox, item["destination_remote"], MAX_UPLOAD_BYTES
+                            )
+                            if persisted != item["original"]:
+                                raise WorkspaceError("变更集移动校验失败，请重新检查目标文件。")
+                except Exception as error:
+                    rollback_failed = False
+                    for item in reversed(completed):
+                        try:
+                            operation = item["operation"]
+                            if operation == "create":
+                                await sandbox.fs.delete_file(item["remote"], recursive=False)
+                            elif operation == "update":
+                                await sandbox.fs.upload_file(item["original"], item["remote"])
+                            elif operation == "delete":
+                                await self._aensure_directory(
+                                    sandbox, item["remote"].rsplit("/", 1)[0]
+                                )
+                                await sandbox.fs.upload_file(item["original"], item["remote"])
+                            else:
+                                await self._aensure_directory(
+                                    sandbox, item["remote"].rsplit("/", 1)[0]
+                                )
+                                await sandbox.fs.move_files(
+                                    item["destination_remote"], item["remote"]
+                                )
+                        except Exception:
+                            rollback_failed = True
+                    if rollback_failed:
+                        raise WorkspaceError(
+                            "变更集执行失败且未能完整回滚，请重新检查所有目标文件。"
+                        ) from error
+                    raise
 
         results = []
         for item in prepared:
