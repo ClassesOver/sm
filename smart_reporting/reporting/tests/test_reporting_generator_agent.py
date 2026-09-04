@@ -12,6 +12,7 @@ def test_reporting_generator_agent_is_structured_and_has_no_tools() -> None:
         name="reporting-visualization-generator",
     )
     assert agent.output_schema is VisualizationScriptDraft
+    assert agent.use_json_mode is True
     assert agent.tools == []
     assert agent.retries == 0
     assert agent.markdown is False

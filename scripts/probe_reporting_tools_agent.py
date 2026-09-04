@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+import difflib
 import inspect
 import json
 import os
@@ -44,6 +45,7 @@ from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_tools,
     _report_model_tool_name,
+    create_reporting_generator_agent,
 )
 from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
     REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY,
@@ -79,8 +81,30 @@ from smart_reporting.reporting.tools.context import ReportingOutputPolicy  # noq
 from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime  # noqa: E402 - 同上
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit  # noqa: E402 - 同上
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository  # noqa: E402 - 同上
+from smart_reporting.reporting.workflow.execution import (  # noqa: E402 - 同上
+    ReportingStructuredAgentExecutor,
+)
+from smart_reporting.reporting.workflow.checkpoint import (  # noqa: E402 - 同上
+    ChartVisualInspectionReceipt,
+    FileIdentity,
+    SectionWorkItem,
+)
+from smart_reporting.reporting.workflow.runtime.phase_models import (  # noqa: E402 - 同上
+    AnalysisReworkDecision,
+    ChartDraft,
+    RenderSectionDecision,
+    SectionDecision,
+    VisualizationScriptDraft,
+)
+from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noqa: E402 - 同上
+    SectionWorkflow,
+)
+from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (  # noqa: E402 - 同上
+    VisualizationSectionWorkflow,
+)
 from smart_reporting.settings import AgentSettings  # noqa: E402 - 同上
 from smart_reporting.workspace import WorkspaceService  # noqa: E402 - 同上
+from smart_reporting.task_execution import TaskExecutionScope  # noqa: E402 - 同上
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,7 +581,7 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
                     ],
                     "citationIds": ["citation-001"],
                     "metrics": ["outpatient_revenue", "outpatient_cost_rate"],
-                    "chartIds": ["chart-outpatient-trend"],
+                    "chartIds": [],
                     "profileReadReceiptIds": [],
                     "warnings": [],
                 }
@@ -571,13 +595,20 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
             ],
             "profileReadReceipts": [],
             "profileReadReceiptIds": [],
-            "citations": [],
+            "citations": [
+                {
+                    "citationId": "citation-001",
+                    "datasetId": "dataset-001",
+                    "requirementId": "requirement-001",
+                    "snapshotHash": "d" * 64,
+                }
+            ],
             "factSummaries": [
                 "门诊收入同比增长 8.2%，成本率上升 1.6 个百分点，证据已覆盖完整期间。"
                 if scenario.branch == "render"
                 else "门诊收入同比增长 8.2%，但 4 月成本证据缺失。"
             ],
-            "charts": ["chart-outpatient-trend"],
+            "charts": [],
             "markdownRequirements": ["明确说明数据缺失限制。"],
         },
         "completionConditions": ["基于冻结证据提交章节正文，或在证据不足时提交返工请求。"],
@@ -771,7 +802,13 @@ class ProbeRecorder:
                     "handle": self.output_handle,
                     "nextOffset": 24,
                 }
-            return {"ok": True, "content": content}
+            response = {"ok": True, "content": content}
+            if self.scenario is not None and self.scenario.branch == "recovery":
+                # 生产 Reporting 包装会在 recovery 读取成功后追加同一机器可读契约；
+                # probe 绕过 Toolkit 执行包装，因此必须在 mock 边界保持回执同形。
+                response["nextTool"] = "apply_analysis_patch"
+                response["requiredFields"] = ["patch", "expected_sha256"]
+            return response
         if name == "terminal":
             background = bool(arguments.get("background", False))
             command = str(arguments["command"])
@@ -1126,6 +1163,226 @@ async def _consume_probe_run(
     return run_result
 
 
+async def _run_fixed_visualization_scenario(
+    scenario: ProbeScenario,
+    prompt: str,
+    model: ReportingPhaseOpenAIChat,
+    recorder: ProbeRecorder,
+    run_context: RunContext,
+) -> None:
+    """用生产同形的固定 Workflow 执行可视化 probe。"""
+
+    signed_script = "analysis/output/outpatient_chart.py"
+    baseline_source: str | None = None
+    if scenario.branch == "recovery":
+        receipt = await recorder.invoke("read_file", {"path": signed_script})
+        if receipt.get("ok") is not True:
+            raise RuntimeError("visualization recovery script read failed")
+        baseline_source = str(receipt.get("content") or "")
+
+    generator = create_reporting_generator_agent(
+        model=model,
+        output_schema=VisualizationScriptDraft,
+        name=f"probe-{scenario.name}-generator",
+    )
+
+    async def generate(
+        _payload: Mapping[str, Any], task_context: RunContext
+    ) -> VisualizationScriptDraft:
+        return cast(
+            VisualizationScriptDraft,
+            await ReportingStructuredAgentExecutor(generator).run(
+                prompt,
+                scope=TaskExecutionScope(
+                    str(task_context.run_id),
+                    str(task_context.user_id),
+                    "probe-thread",
+                    "probe-sandbox",
+                    "reporting-visualization-agent",
+                ),
+                run_context=task_context,
+            ),
+        )
+
+    async def write_script(path: str, source: str, _task_context: RunContext) -> FileIdentity:
+        if path != signed_script:
+            raise RuntimeError("visualization generator changed signed script path")
+        patch = "".join(
+            difflib.unified_diff(
+                [] if baseline_source is None else baseline_source.splitlines(keepends=True),
+                source.splitlines(keepends=True),
+                fromfile="/dev/null" if baseline_source is None else f"a/{path}",
+                tofile=f"b/{path}",
+            )
+        )
+        receipt = await recorder.invoke(
+            "apply_analysis_patch",
+            {
+                "patch": patch,
+                **(
+                    {"expected_sha256": {path: recorder.committed_script_sha256}}
+                    if recorder.committed_script_sha256 is not None
+                    else {}
+                ),
+            },
+        )
+        artifacts = receipt.get("artifacts")
+        if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
+            raise RuntimeError("visualization script write failed")
+        artifact = dict(artifacts[0])
+        artifact.setdefault("size", len(source.encode("utf-8")))
+        return FileIdentity.model_validate(artifact)
+
+    async def execute_script(command: str, _task_context: RunContext) -> Mapping[str, Any]:
+        terminal = await recorder.invoke(
+            "terminal",
+            {
+                "command": command,
+                **({"background": True} if scenario.branch == "background" else {}),
+            },
+        )
+        if terminal.get("ok") is not True:
+            return {"exitCode": 1, **terminal}
+        if scenario.branch != "background":
+            return {"exitCode": 0, **terminal}
+        completed = await recorder.invoke(
+            "process",
+            {"action": "wait", "session_id": terminal.get("session_id"), "timeout": 30},
+        )
+        return {"exitCode": 0, **completed}
+
+    async def inspect_chart(
+        chart: ChartDraft, _task_context: RunContext
+    ) -> ChartVisualInspectionReceipt:
+        tool_name = "view_image" if scenario.branch == "preview" else "inspect_chart"
+        receipt = await recorder.invoke(tool_name, {"path": chart.source_path, "detail": "high"})
+        if receipt.get("ok") is not True:
+            raise RuntimeError("visualization inspection failed")
+        return ChartVisualInspectionReceipt(
+            sourcePath=chart.source_path,
+            sha256=str(receipt.get("sha256") or "a" * 64),
+            inspectionMode="vision",
+            visualReviewStatus="passed",
+            modelId=model.id,
+            reviewed=True,
+            requiresRevision=False,
+        )
+
+    async def submit(
+        draft: VisualizationScriptDraft,
+        _inspections: tuple[ChartVisualInspectionReceipt, ...],
+        _task_context: RunContext,
+    ) -> Mapping[str, Any]:
+        return await recorder.invoke(
+            "submit_visualization_charts",
+            {
+                "sectionCode": "outpatient_operation",
+                "charts": [chart.model_dump(mode="json", by_alias=True) for chart in draft.charts],
+            },
+        )
+
+    await VisualizationSectionWorkflow(
+        generate=generate,
+        recover=None,
+        write_script=write_script,
+        execute_script=execute_script,
+        inspect_chart=inspect_chart,
+        submit=submit,
+    ).run(_cli_stage_input(scenario), run_context)
+
+
+async def _run_fixed_section_scenario(
+    scenario: ProbeScenario,
+    model: ReportingPhaseOpenAIChat,
+    recorder: ProbeRecorder,
+    run_context: RunContext,
+) -> None:
+    """用生产同形的固定 Workflow 执行章节 probe。"""
+
+    stage_input = _cli_stage_input(scenario)
+    work_item = SectionWorkItem.model_validate(stage_input["sectionWorkItem"])
+    output_schema = RenderSectionDecision if scenario.branch == "render" else AnalysisReworkDecision
+    generator = create_reporting_generator_agent(
+        model=model,
+        output_schema=output_schema,
+        name=f"probe-{scenario.name}-generator",
+    )
+    scope = TaskExecutionScope(
+        str(run_context.run_id),
+        str(run_context.user_id),
+        "probe-thread",
+        "probe-sandbox",
+        "reporting-section-agent",
+    )
+
+    async def read_evidence(path: str, offset: int, _task_context: RunContext) -> Mapping[str, Any]:
+        receipt = await recorder.invoke("read_file", {"path": path, "offset": offset})
+        if receipt.get("ok") is not True:
+            return receipt
+        chunks = [str(receipt.get("content") or "")]
+        handle = receipt.get("handle")
+        while receipt.get("truncated") is True and isinstance(handle, str) and handle:
+            receipt = await recorder.invoke(
+                "read_tool_output",
+                {"handle": handle, "offset": int(receipt.get("nextOffset") or 0)},
+            )
+            if receipt.get("ok") is not True:
+                return receipt
+            chunks.append(str(receipt.get("content") or ""))
+            handle = receipt.get("handle")
+        return {"ok": True, "content": "".join(chunks), "hasMore": False}
+
+    async def generate(evidence: Any, task_context: RunContext) -> SectionDecision:
+        payload = json.dumps(
+            {
+                **stage_input,
+                "evidence": evidence.model_dump(mode="json", by_alias=True),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return cast(
+            SectionDecision,
+            await ReportingStructuredAgentExecutor(generator).run(
+                payload,
+                scope=scope,
+                run_context=task_context,
+            ),
+        )
+
+    async def render(
+        decision: RenderSectionDecision, _task_context: RunContext
+    ) -> Mapping[str, Any]:
+        return await recorder.invoke(
+            "render_report_section",
+            {
+                "sectionCode": decision.section_code,
+                "blocks": [item.model_dump(mode="json", by_alias=True) for item in decision.blocks],
+                "claims": [item.model_dump(mode="json", by_alias=True) for item in decision.claims],
+            },
+        )
+
+    async def rework(
+        decision: AnalysisReworkDecision, _task_context: RunContext
+    ) -> Mapping[str, Any]:
+        return await recorder.invoke(
+            "request_analysis_rework",
+            {
+                "analysisIds": list(decision.analysis_ids),
+                "reason": decision.reason,
+                "missingEvidence": list(decision.missing_evidence),
+            },
+        )
+
+    await SectionWorkflow(
+        read_evidence=read_evidence,
+        generate=generate,
+        recover=None,
+        render=render,
+        rework=rework,
+    ).run(work_item, run_context)
+
+
 async def _run_scenario(
     settings: AgentSettings,
     scenario: ProbeScenario,
@@ -1158,13 +1415,16 @@ async def _run_scenario(
     )
     await recorder.prepare()
     agent = Agent(
-        model=model,
-        tools=tools,
-        instructions=_agent_instructions(scenario),
-        markdown=False,
+        model=model, tools=tools, instructions=_agent_instructions(scenario), markdown=False
     )
 
     async def run_agent() -> Any:
+        if scenario.task_kind == "visualization_section":
+            return await _run_fixed_visualization_scenario(
+                scenario, prompt, model, recorder, run_context
+            )
+        if scenario.task_kind == "section":
+            return await _run_fixed_section_scenario(scenario, model, recorder, run_context)
         return await _consume_probe_run(
             agent.arun(
                 prompt,

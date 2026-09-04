@@ -3051,6 +3051,10 @@ def create_reporting_generator_agent(
         role=role or "只返回 Reporting 固定阶段要求的结构化候选内容。",
         model=model,
         output_schema=output_schema,
+        # 部分 OpenAI-compatible 端点接受原生 json_schema 参数却不执行字段约束。
+        # 这里使用 Agno 公共 JSON mode，让 Agno 从同一 Pydantic schema 生成系统提示，
+        # 避免另写一份易漂移的字段协议；Workflow 仍会在副作用前做严格模型校验。
+        use_json_mode=True,
         tools=[],
         add_history_to_context=False,
         enable_session_summaries=False,
