@@ -450,7 +450,9 @@ class LocalSandboxRuntime:
                     output.write(request.script.encode())
                     output.flush()
                 result = await self._executor_factory(directory).run(request, script_path=relative)
-                return result.model_dump(mode="json")
+                return result.model_copy(
+                    update={"dependency_bundle_digest": self.dependency_bundle_digest}
+                ).model_dump(mode="json")
             finally:
                 os.close(descriptor)
                 script.unlink(missing_ok=True)

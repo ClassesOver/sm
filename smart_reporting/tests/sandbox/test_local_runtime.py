@@ -143,7 +143,7 @@ async def test_runtime_serializes_scripts_within_same_workspace_cgroup(tmp_path:
     )
     resource_id = created["ref"]["resource_id"]
 
-    await asyncio.gather(
+    results = await asyncio.gather(
         runtime.run_python_script(
             resource_id, binding, RunPythonScriptRequest(script="print('one')")
         ),
@@ -153,3 +153,4 @@ async def test_runtime_serializes_scripts_within_same_workspace_cgroup(tmp_path:
     )
 
     assert max_active == 1
+    assert {result["dependency_bundle_digest"] for result in results} == {"sha256:" + "b" * 64}
