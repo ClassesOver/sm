@@ -16,7 +16,7 @@
 - Modify: `smart_reporting/reporting/tests/test_reporting_planner_contracts.py`
 - Modify: `smart_reporting/reporting/instructions.py:297-314`
 
-- [ ] **Step 1: 写失败测试，锁定事实摘要与证据文件边界**
+- [x] **Step 1: 写失败测试，锁定事实摘要与证据文件边界**
 
 在现有 planner contract 测试文件中导入 `REPORT_SECTION_AGENT_INSTRUCTIONS`，加入：
 
@@ -31,7 +31,7 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
     assert "补读原始 facts/evidence" not in instructions
 ```
 
-- [ ] **Step 2: 运行测试确认按预期失败**
+- [x] **Step 2: 运行测试确认按预期失败**
 
 运行：
 
@@ -41,11 +41,11 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 
 预期：FAIL，现有指令仍要求按 `factFiles` 读取并补读原始 facts/evidence。
 
-- [ ] **Step 3: 进行最小指令修改**
+- [x] **Step 3: 进行最小指令修改**
 
 把 Section 指令改为：数值事实优先使用内联 `factSummaries`；只有需要证据正文时才使用 `read_file` 读取当前 WorkItem 授权的 `evidenceFiles`；`factFiles` 仅用于事实身份和追溯元数据，不属于 Section 文件读取授权；禁止读取 Dataset 输入、其他章节文件及未列入 `evidenceFiles` 的路径。删除“只按 factFiles 定点读取”和“补读原始 facts/evidence”的原文，不改变工具名、schema 或错误码。
 
-- [ ] **Step 4: 运行定点测试并检查格式**
+- [x] **Step 4: 运行定点测试并检查格式**
 
 运行：
 
@@ -57,7 +57,7 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 
 预期：全部通过。
 
-- [ ] **Step 5: 提交任务 1**
+- [x] **Step 5: 提交任务 1**
 
 ```bash
 git add smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py
@@ -70,7 +70,7 @@ git commit -m "fix(reporting): align section evidence instructions"
 - Create: `smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py`
 - Modify: `smart_reporting/reporting/cli.py` only if the harness exposes a real CLI contract defect
 
-- [ ] **Step 1: 写失败测试，要求输入经过 parse 与 drive**
+- [x] **Step 1: 写失败测试，要求输入经过 parse 与 drive**
 
 在新测试文件中创建测试专属 fake repository、workspace、model executor 和 Workflow adapter。adapter 必须是 Agno `Workflow` 形状，`arun()` 接收 CLI 传入的 `report_input`、`run_id`、`session_id`、`user_id`、`session_state`、`dependencies`，构造生产形状 `RunContext`，调用生产 `ReportingDraftWorkflow` 的阶段回调，并返回带 `status/content` 的结果。测试调用：
 
@@ -96,7 +96,7 @@ assert adapter.production_draft_workflow_called is True
 
 adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `ReportingTaskCoordinator` 路径，不能直接把输入改写成成功结果；外部端口仅使用本测试独立 fake。
 
-- [ ] **Step 2: 运行测试确认 harness 尚未存在**
+- [x] **Step 2: 运行测试确认 harness 尚未存在**
 
 运行：
 
@@ -106,7 +106,7 @@ adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `Rep
 
 预期：FAIL，测试文件或 adapter 尚未实现。
 
-- [ ] **Step 3: 实现最小测试 adapter 与独立 fake**
+- [x] **Step 3: 实现最小测试 adapter 与独立 fake**
 
 在测试文件内部实现仅供该文件使用的 fake，避免为单一消费者新增共享 support 模块：
 
@@ -116,7 +116,7 @@ adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `Rep
 4. adapter 的 `arun()` 返回 `SimpleNamespace(status="completed", content={"sectionCode": "section-1"})`；提供 `acontinue_run()` 以满足 CLI 协议，但正常闭环不得调用它。
 5. 记录 `RunContext.run_id/session_id/user_id/dependencies[TASK_EXECUTION_DEPENDENCY]`，断言三类阶段共用同形 binding。
 
-- [ ] **Step 4: 运行测试并验证真实边界**
+- [x] **Step 4: 运行测试并验证真实边界**
 
 运行：
 
@@ -126,7 +126,7 @@ adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `Rep
 
 预期：通过，并且断言 `parse_report_input()`、`drive_workflow()`、Workflow adapter、`ReportingDraftWorkflow`、Coordinator、生产 Toolkit 均被调用。
 
-- [ ] **Step 5: 提交任务 2**
+- [x] **Step 5: 提交任务 2**
 
 ```bash
 git add smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
@@ -139,7 +139,7 @@ git commit -m "test(reporting): align mock harness with cli workflow"
 - Modify: `smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py`
 - Reuse production code: `smart_reporting/reporting/workflow/execution.py`, `smart_reporting/reporting/workflow/runtime/analysis.py`, `smart_reporting/reporting/workflow/runtime/sections.py`, `smart_reporting/reporting/tools/mock_workspace.py`
 
-- [ ] **Step 1: 先加入失败契约测试**
+- [x] **Step 1: 先加入失败契约测试**
 
 加入以下独立测试（参数使用本文件的 fixture，测试体必须实现真实调用和断言，不得以 `...` 占位）：
 
@@ -184,7 +184,7 @@ async def test_cli_mock_repeated_ten_times_is_deterministic(harness_factory):
 
 其中 analysis 测试使用 `AsyncMock` Worker Agent 并断言 `arun` 与 `acontinue_run` 均未调用；visualization/section 断言 `ReportingAgentExecutor` 选择对应 key；重复测试精确执行 10 次，比较每次结果和调用日志且确认 runtime/repository/workspace 不跨次共享。
 
-- [ ] **Step 2: 运行失败测试确认契约能抓到缺口**
+- [x] **Step 2: 运行失败测试确认契约能抓到缺口**
 
 运行：
 
@@ -194,11 +194,11 @@ async def test_cli_mock_repeated_ten_times_is_deterministic(harness_factory):
 
 预期：新增断言至少有一项失败；失败必须来自缺失的生产边界或 Section 指令契约，而不是测试拼写错误。
 
-- [ ] **Step 3: 以最小改动修复生产缺口**
+- [x] **Step 3: 以最小改动修复生产缺口**
 
 仅在失败明确指向生产实现时修改生产文件；优先修正 adapter 接线或测试 fake。禁止扩大 Section 文件权限、复制状态机、增加 Worker Agent、改变公开工具 schema、错误码、Workflow ID、数据库表或 Daytona 策略。若只需测试调整即可通过，不修改生产代码。
 
-- [ ] **Step 4: 运行 Task 3 定点测试**
+- [x] **Step 4: 运行 Task 3 定点测试**
 
 运行：
 
@@ -210,7 +210,7 @@ async def test_cli_mock_repeated_ten_times_is_deterministic(harness_factory):
 
 预期：全部通过，重复测试报告 10 次且调用日志无泄漏。
 
-- [ ] **Step 5: 提交任务 3**
+- [x] **Step 5: 提交任务 3**
 
 ```bash
 git add smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py smart_reporting/reporting/workflow smart_reporting/reporting/tools
@@ -222,7 +222,7 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 **Files:**
 - Verify only; no broad cleanup or unrelated formatting
 
-- [ ] **Step 1: 运行 Reporting 非集成回归**
+- [x] **Step 1: 运行 Reporting 非集成回归**
 
 ```bash
 .venv-agent/bin/python -m pytest smart_reporting/reporting/tests -m 'not integration' -q
@@ -230,7 +230,7 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 
 预期：通过；若有失败，只修复本轮引入的回归。
 
-- [ ] **Step 2: 运行 task_execution 非集成回归**
+- [x] **Step 2: 运行 task_execution 非集成回归**
 
 ```bash
 .venv-agent/bin/python -m pytest smart_reporting/task_execution/tests -m 'not integration' -q
@@ -238,7 +238,7 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 
 预期：通过，确认 `task_execution` 仍是 Reporting 内部生命周期基础设施。
 
-- [ ] **Step 3: 运行静态检查**
+- [x] **Step 3: 运行静态检查**
 
 ```bash
 .venv-agent/bin/python -m ruff format --check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
@@ -247,7 +247,7 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 git diff --check
 ```
 
-- [ ] **Step 4: 检查旧命名与产物边界**
+- [x] **Step 4: 检查旧命名与产物边界**
 
 运行：
 
@@ -258,6 +258,6 @@ git status --short
 
 只允许既有数据库兼容标识和 `artifacts_v1.codingTaskKey` 出现在明确 allowlist；不得提交 `/tmp` 之外的测试产物、日志、密钥或缓存。
 
-- [ ] **Step 5: 交付报告**
+- [x] **Step 5: 交付报告**
 
 说明实际修改文件、实际执行命令及结果、未执行项目与原因；明确 `task_execution` 未废弃，仍是中立内部执行基础设施。真实模型十场景探针作为后续优化轮次，不冒充本轮 CLI mock 闭环验收结果。
