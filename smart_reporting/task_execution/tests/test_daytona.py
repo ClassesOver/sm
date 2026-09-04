@@ -13,9 +13,9 @@ from sqlalchemy import delete
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.skills import skill_script_receipt_hook
-from smart_reporting.task_execution.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
-from smart_reporting.task_execution.models import CodingScope, Lease
-from smart_reporting.task_execution.repository import CodingTaskRepository
+from smart_reporting.task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
+from smart_reporting.task_execution.models import Lease, TaskExecutionScope
+from smart_reporting.task_execution.repository import TaskExecutionRepository
 from smart_reporting.workspace import (
     WORKSPACE_ROOT,
     WORKSPACE_SNAPSHOT,
@@ -82,8 +82,8 @@ async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_rea
             except DaytonaNotFoundError:
                 await sandbox.fs.create_folder(WORKSPACE_ROOT, "700")
             database = create_agent_database(database_url)
-            repository = CodingTaskRepository(database.async_db)
-            scope = CodingScope(
+            repository = TaskExecutionRepository(database.async_db)
+            scope = TaskExecutionScope(
                 "skill-readonly-integration",
                 "user",
                 "thread",
@@ -102,7 +102,7 @@ async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_rea
                 user_id="user",
                 session_state={},
                 dependencies={
-                    CODING_TASK_DEPENDENCY: {
+                    TASK_EXECUTION_DEPENDENCY: {
                         "externalRunId": scope.external_run_id,
                         "leaseOwner": "integration-request",
                         "leaseEpoch": lease.epoch,
@@ -110,7 +110,7 @@ async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_rea
                     }
                 },
             )
-            kernel = CodingExecutionKernel(service, repository)
+            kernel = TaskExecutionKernel(service, repository)
 
             async def read_script(**_kwargs):
                 return json.dumps(

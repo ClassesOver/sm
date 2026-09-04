@@ -1,4 +1,4 @@
-"""Reporting Worker Toolkit 的阶段化装配。"""
+"""Reporting Toolkit 的阶段化装配。"""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from ...workspace import WorkspaceService
 from ..phase import reporting_phase_from_run_context, reporting_task_kind_from_run_context
 from ..vision import ReportVisionReviewer
 from ..workflow.repository import ReportingStateRepository
-from .toolkit import REPORT_WORKER_TOOLKIT_INSTRUCTIONS, ReportWorkspaceTaskToolkit
+from .toolkit import REPORTING_TOOLKIT_INSTRUCTIONS, ReportingToolkit
 
 
-def build_report_worker_tools(
+def build_reporting_tools(
     workspace_service: WorkspaceService,
     task_repository: Any,
     validator_registry: Any = None,
@@ -24,8 +24,8 @@ def build_report_worker_tools(
     agent: Any | None = None,
     vision_reviewer: ReportVisionReviewer | None = None,
 ) -> list[Toolkit]:
-    """Report Worker 只执行 Coding 分析，不持有数据库或 SQL 工具。"""
-    toolkit = ReportWorkspaceTaskToolkit(
+    """按当前 Reporting 阶段装配最小工具集，不持有数据库或 SQL 工具。"""
+    toolkit = ReportingToolkit(
         workspace_service,
         task_repository,
         state_repository=state_repository,
@@ -45,5 +45,5 @@ def build_report_worker_tools(
         # phase 复核，不能通过直接方法调用绕过服务端边界。finish_task 是阶段提交
         # 工具在服务端收尾时依赖的内部函数对象，即使当前模型不应直接调用，也不能
         # 从 Toolkit 删除；analysis 写入只保留单一 CAS 入口，底层 Kernel 不作为模型工具。
-        toolkit.instructions = REPORT_WORKER_TOOLKIT_INSTRUCTIONS
+        toolkit.instructions = REPORTING_TOOLKIT_INSTRUCTIONS
     return [toolkit]

@@ -62,7 +62,7 @@ def apply_reporting_thinking_profile[ModelT: OpenAIChat](
 ) -> ModelT:
     """原子应用一次请求配置，关闭时清除所有可能继承的 thinking 字段。"""
 
-    # Planner 和 Section 都从 Report Worker 浅复制模型。必须先删除 Worker 的预算，
+    # Planner 和 Section 都从 Report Agent 浅复制模型。必须先删除 Agent 的预算，
     # 再应用当前阶段配置，否则 enable_thinking=false 仍会携带过期 thinking_budget。
     extra_body = dict(model.extra_body or {})
     extra_body.pop("thinking_budget", None)

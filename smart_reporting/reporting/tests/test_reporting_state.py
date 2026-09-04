@@ -437,7 +437,7 @@ def test_complete_analysis_items_can_finish_out_of_order_and_remain_running():
     assert completed.payload["currentAnalysisId"] is None
 
 
-def test_complete_transitions_directly_from_section_coding_phase() -> None:
+def test_complete_transitions_directly_from_section_phase() -> None:
     state = apply_phase(initial_state(), "start_analysis")
 
     completed = ReportingStateReducer.apply(

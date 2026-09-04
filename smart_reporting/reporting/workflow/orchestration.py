@@ -164,7 +164,7 @@ def create_reporting_workflow(
     materialize_datasets: StepExecutor,
     prepare_analysis_context: StepExecutor,
     generate_detailed_analysis_plan: StepExecutor,
-    run_coding_analysis: StepExecutor,
+    run_reporting_analysis: StepExecutor,
     validate_report: StepExecutor,
     finalize_publication: StepExecutor,
 ) -> Workflow:
@@ -173,7 +173,7 @@ def create_reporting_workflow(
     workflow = Workflow(
         id="enterprise-reporting-workflow-v1",
         name="企业智能运营报表",
-        description="来源绑定、分析规划、受控取数、Coding 分析和报告发布。",
+        description="来源绑定、分析规划、受控取数、Reporting 分析和报告发布。",
         db=db,
         # Console 的 Workflow WebSocket 只发送自然语言 message；首步骤继续使用
         # Reporting 自己的严格输入契约完成解析和校验，避免要求通用前端了解领域 Schema。
@@ -201,7 +201,7 @@ def create_reporting_workflow(
                 step_id="confirm-source",
                 name="解析数据来源与数据结构",
                 executor=_timed_step_executor(confirm_source, step_id="confirm-source"),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             # 数据理解计划决定画像范围，画像结果又是后续语义和分析规划的唯一输入。
@@ -212,7 +212,7 @@ def create_reporting_workflow(
                 step_id="prepare-data-profile",
                 name="确定数据范围并执行受限数据画像",
                 executor=_timed_step_executor(prepare_data_profile, step_id="prepare-data-profile"),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             # 指标语义候选与正式提交必须拆成两个 Workflow Step。前一步只允许模型生成
@@ -224,7 +224,7 @@ def create_reporting_workflow(
                 executor=_timed_step_executor(
                     propose_measure_semantics, step_id="propose-measure-semantics"
                 ),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
@@ -242,7 +242,7 @@ def create_reporting_workflow(
                 executor=_timed_step_executor(
                     generate_analysis_plan, step_id="generate-analysis-plan"
                 ),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
@@ -251,7 +251,7 @@ def create_reporting_workflow(
                 executor=_timed_step_executor(
                     generate_query_candidates, step_id="generate-query-candidates"
                 ),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
@@ -267,7 +267,7 @@ def create_reporting_workflow(
                 executor=_timed_step_executor(
                     prepare_analysis_context, step_id="prepare-analysis-context"
                 ),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
@@ -276,14 +276,14 @@ def create_reporting_workflow(
                 executor=_timed_step_executor(
                     generate_detailed_analysis_plan, step_id="generate-detailed-analysis-plan"
                 ),
-                max_retries=0,
+                max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="generate-outline",
                 name="生成动态报告提纲",
                 executor=_timed_step_executor(generate_outline, step_id="generate-outline"),
-                max_retries=0,
+                max_retries=1,
                 # 当前产品入口暂不启用提纲审核交互。这里是直接流向下一节点，不是
                 # 自动批准；保留配置供审核能力上线时恢复，启用前必须补回端到端验收。
                 # human_review=HumanReview(
@@ -295,7 +295,7 @@ def create_reporting_workflow(
                 # ),
                 human_review=HumanReview(on_error=OnError.fail),
             ),
-            create_coding_analysis_step(run_coding_analysis),
+            create_reporting_analysis_step(run_reporting_analysis),
             Step(
                 step_id="validate-report",
                 name="PDF/Word 双格式验收",
@@ -318,12 +318,12 @@ def create_reporting_workflow(
     return workflow
 
 
-def create_coding_analysis_step(executor: StepExecutor) -> Step:
-    """构造生产与历史回放共用的 Coding 分析步骤契约。"""
+def create_reporting_analysis_step(executor: StepExecutor) -> Step:
+    """构造生产与历史回放共用的 Reporting 分析步骤契约。"""
 
     return Step(
         step_id="run-coding-analysis",
-        name="Coding 分析与成稿",
+        name="Reporting 分析与成稿",
         executor=_timed_step_executor(executor, step_id="run-coding-analysis"),
         max_retries=0,
         human_review=HumanReview(on_error=OnError.fail),

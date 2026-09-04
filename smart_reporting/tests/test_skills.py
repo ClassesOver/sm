@@ -6,7 +6,7 @@ from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 
 from smart_reporting.skills import (
-    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+    TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
     SkillValidatorRegistry,
     load_sandbox_execution_skills,
@@ -70,7 +70,7 @@ async def test_skill_script_hook_records_read_content_but_not_execution_output()
     )
 
     assert json.loads(result)["content"] == body
-    assert context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY] == {
+    assert context.session_state[TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY] == {
         "report:validate.py": {
             "skill": "report",
             "path": "validate.py",
@@ -85,7 +85,7 @@ async def test_skill_script_hook_records_read_content_but_not_execution_output()
         read_script,
         {"skill_name": "report", "script_path": "validate.py", "execute": True},
     )
-    assert len(context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY]) == 1
+    assert len(context.session_state[TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY]) == 1
 
 
 def test_load_sandbox_execution_skills_only_loads_additional_directory(tmp_path):

@@ -43,12 +43,12 @@ def utcnow() -> datetime:
 
 
 @dataclass(frozen=True)
-class CodingScope:
+class TaskExecutionScope:
     external_run_id: str
     owner_user_id: str
     thread_id: str
     sandbox_id: str
-    agent_id: str
+    executor_id: str
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ class Lease:
 
 @dataclass(frozen=True)
 class TaskSnapshot:
-    scope: CodingScope
+    scope: TaskExecutionScope
     state: TaskState
     state_version: int
     lease_epoch: int

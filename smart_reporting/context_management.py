@@ -26,23 +26,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 SKILL_CONTENT_WINDOW = 10
 SKILL_PRUNE_MIN_CHARS = 5000
 SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "get_skill_script"})
-# 这是所有 Coding 上下文的绝对顶线，具体 Agent 仍取自身配置与该值的较小者。
+# 这是所有受控任务上下文的绝对顶线，具体 Agent 仍取自身配置与该值的较小者。
 # Reporting 模型已明确支持 1M 上下文；继续固定 256K 会在模型调用前错误拒绝合法的
-# Profile 定点分析与逐章成稿上下文，而普通 Coding Agent 的 262K 配置不会因此扩大。
-CODING_CONTEXT_TOKEN_LIMIT = 1024 * 1024
-CODING_OUTPUT_TOKEN_RESERVE = 32 * 1024
-CODING_RECENT_ASSISTANT_TURNS = 2
-CODING_CHECKPOINT_MAX_BYTES = 32 * 1024
-CODING_CONTEXT_REBASE_THRESHOLD = 0.75
-CODING_CONTEXT_REBASE_TARGET = 0.50
-CODING_TOOL_BATCH_LIMIT = 10
+# Profile 定点分析与逐章成稿上下文，其他 Agent 的配置不会因此扩大。
+TASK_EXECUTION_CONTEXT_TOKEN_LIMIT = 1024 * 1024
+TASK_EXECUTION_OUTPUT_TOKEN_RESERVE = 32 * 1024
+TASK_EXECUTION_RECENT_ASSISTANT_TURNS = 2
+TASK_EXECUTION_CHECKPOINT_MAX_BYTES = 32 * 1024
+TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD = 0.75
+TASK_EXECUTION_CONTEXT_REBASE_TARGET = 0.50
+TASK_EXECUTION_TOOL_BATCH_LIMIT = 10
 TIKTOKEN_O200K_CACHE_KEY = "fb374d419588a4632f3f557e76b4b70aebbca790"
 TIKTOKEN_O200K_SHA256 = "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
 TIKTOKEN_O200K_URL = "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken"
 TIKTOKEN_DOWNLOAD_TIMEOUT = (5, 30)
 TIKTOKEN_DOWNLOAD_MAX_BYTES = 16 * 1024 * 1024
-_PROJECTED_INPUT_TOKEN_BUDGET_ATTR = "_coding_input_token_budget"
-CODING_TOOL_NAMES = frozenset(
+_PROJECTED_INPUT_TOKEN_BUDGET_ATTR = "_task_execution_input_token_budget"
+TASK_EXECUTION_TOOL_NAMES = frozenset(
     {
         "terminal",
         "process",
@@ -599,10 +599,10 @@ class ContextBudgetController(ProtectedCompressionManager):
         *,
         model: Any,
         context_token_budget: int,
-        output_token_reserve: int = CODING_OUTPUT_TOKEN_RESERVE,
+        output_token_reserve: int = TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     ) -> None:
-        self.context_token_limit = min(context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
-        self.output_token_reserve = max(CODING_OUTPUT_TOKEN_RESERVE, output_token_reserve)
+        self.context_token_limit = min(context_token_budget, TASK_EXECUTION_CONTEXT_TOKEN_LIMIT)
+        self.output_token_reserve = max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_token_reserve)
         self.input_token_budget = max(1, self.context_token_limit - self.output_token_reserve)
         # Agno 的 canonical history 仍由 Agent 保留；这里仅把同一输入预算传给模型投影层。
         # 之前投影层使用全局默认 hard cap，Reporting 的压缩预算因此没有真正生效。
@@ -624,9 +624,9 @@ class ContextBudgetController(ProtectedCompressionManager):
             for index, message in enumerate(messages)
             if message.role in {"assistant", "model"}
         ]
-        if len(assistant_indexes) < CODING_RECENT_ASSISTANT_TURNS:
+        if len(assistant_indexes) < TASK_EXECUTION_RECENT_ASSISTANT_TURNS:
             return 0
-        return assistant_indexes[-CODING_RECENT_ASSISTANT_TURNS]
+        return assistant_indexes[-TASK_EXECUTION_RECENT_ASSISTANT_TURNS]
 
     @classmethod
     def _protected_indexes(cls, messages: list[Message]) -> set[int]:
@@ -660,7 +660,7 @@ class ContextBudgetController(ProtectedCompressionManager):
         return protected
 
     @staticmethod
-    def _coding_receipt(message: Message) -> str:
+    def _task_execution_receipt(message: Message) -> str:
         content = str(message.content or "")
         args = dict(message.tool_args) if isinstance(message.tool_args, dict) else {}
         try:
@@ -720,7 +720,7 @@ class ContextBudgetController(ProtectedCompressionManager):
         )
         return json.dumps(
             {
-                "marker": "CODING_TOOL_RECEIPT",
+                "marker": "TASK_EXECUTION_TOOL_RECEIPT",
                 "tool": message.tool_name,
                 "arguments": arguments,
                 "status": status,
@@ -782,7 +782,7 @@ class ContextBudgetController(ProtectedCompressionManager):
                     "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
                     "reload": reload_args,
                 }
-            if message.role != "tool" or message.tool_name not in CODING_TOOL_NAMES:
+            if message.role != "tool" or message.tool_name not in TASK_EXECUTION_TOOL_NAMES:
                 continue
             content = str(message.content or "")
             try:
@@ -851,7 +851,7 @@ class ContextBudgetController(ProtectedCompressionManager):
                             "status": payload.get("status"),
                         }
         payload = {
-            "marker": "CODING_CHECKPOINT",
+            "marker": "TASK_EXECUTION_CHECKPOINT",
             "version": 2,
             "plan": plan,
             "changedFiles": list(changed_files.values())[-50:],
@@ -868,7 +868,7 @@ class ContextBudgetController(ProtectedCompressionManager):
             separators=(",", ":"),
             sort_keys=True,
         )
-        if len(encoded.encode("utf-8")) <= CODING_CHECKPOINT_MAX_BYTES:
+        if len(encoded.encode("utf-8")) <= TASK_EXECUTION_CHECKPOINT_MAX_BYTES:
             return encoded
         payload["plan"] = _bounded_json_value(plan, 4096)
         payload["validator"] = _bounded_json_value(validator, 4096)
@@ -876,7 +876,7 @@ class ContextBudgetController(ProtectedCompressionManager):
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         for field in ("skillReceipts", "changedFiles", "activeProcesses"):
             values = payload[field]
-            while values and len(encoded.encode("utf-8")) > CODING_CHECKPOINT_MAX_BYTES:
+            while values and len(encoded.encode("utf-8")) > TASK_EXECUTION_CHECKPOINT_MAX_BYTES:
                 values.pop(0)
                 encoded = json.dumps(
                     payload,
@@ -942,7 +942,7 @@ class ContextBudgetController(ProtectedCompressionManager):
         self.compress(messages, run_metrics=run_metrics)
 
     def prepare_context(self, messages: list[Message]) -> list[Message]:
-        return CodingContextProjector.project(
+        return TaskExecutionContextProjector.project(
             messages,
             model=self.model,
             hard_cap=self.input_token_budget,
@@ -951,8 +951,8 @@ class ContextBudgetController(ProtectedCompressionManager):
     async def compress_history_message(self, message: Message) -> Message:
         candidate = deepcopy(message)
         candidate.from_history = True
-        if candidate.role == "tool" and candidate.tool_name in CODING_TOOL_NAMES:
-            candidate.compressed_content = self._coding_receipt(candidate)
+        if candidate.role == "tool" and candidate.tool_name in TASK_EXECUTION_TOOL_NAMES:
+            candidate.compressed_content = self._task_execution_receipt(candidate)
         return candidate
 
 
@@ -971,7 +971,10 @@ def _json_payload(value: Any) -> dict[str, Any] | None:
 def _checkpoint_payload(message: Message) -> dict[str, Any] | None:
     for value in (message.compressed_content, message.content):
         payload = _json_payload(value)
-        if payload is not None and payload.get("marker") == "CODING_CHECKPOINT":
+        if payload is not None and payload.get("marker") in {
+            "TASK_EXECUTION_CHECKPOINT",
+            "CODING_CHECKPOINT",
+        }:
             return payload
     return None
 
@@ -987,11 +990,11 @@ def _bounded_json_value(value: Any, max_bytes: int) -> Any:
     }
 
 
-class CodingContextHardLimitError(RuntimeError):
+class TaskExecutionContextHardLimitError(RuntimeError):
     code = "coding_context_hard_limit_exceeded"
 
 
-class CodingContextProjector:
+class TaskExecutionContextProjector:
     _large_argument_fields = {
         "terminal": frozenset({"command"}),
         "verify": frozenset({"command"}),
@@ -1183,7 +1186,7 @@ class CodingContextProjector:
         feedback: dict[str, Any]
         if failure is not None:
             feedback = {
-                "marker": "CODING_RUNTIME_FEEDBACK",
+                "marker": "TASK_EXECUTION_RUNTIME_FEEDBACK",
                 "version": 1,
                 "code": failure.get("code", "coding_runtime_action_required"),
                 "mutation": mutation,
@@ -1193,7 +1196,7 @@ class CodingContextProjector:
             }
         elif pending_steps:
             feedback = {
-                "marker": "CODING_RUNTIME_FEEDBACK",
+                "marker": "TASK_EXECUTION_RUNTIME_FEEDBACK",
                 "version": 1,
                 "code": "coding_runtime_action_required",
                 "mutation": mutation,
@@ -1205,7 +1208,7 @@ class CodingContextProjector:
             }
         elif mutation is not None and verified_mutation != mutation:
             feedback = {
-                "marker": "CODING_RUNTIME_FEEDBACK",
+                "marker": "TASK_EXECUTION_RUNTIME_FEEDBACK",
                 "version": 1,
                 "code": "coding_verification_required",
                 "mutation": mutation,
@@ -1213,7 +1216,7 @@ class CodingContextProjector:
             }
         elif mutation is not None:
             feedback = {
-                "marker": "CODING_RUNTIME_FEEDBACK",
+                "marker": "TASK_EXECUTION_RUNTIME_FEEDBACK",
                 "version": 1,
                 "code": "coding_finish_required",
                 "mutation": mutation,
@@ -1234,14 +1237,14 @@ class CodingContextProjector:
         model: Any = None,
         tools: Any = None,
         response_format: Any = None,
-        hard_cap: int = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE,
+        hard_cap: int = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     ) -> list[Message]:
         projected = deepcopy(messages)
         compact_call_ids = {
             message.tool_call_id
             for message in projected
             if message.role == "tool"
-            and message.tool_name in CODING_TOOL_NAMES
+            and message.tool_name in TASK_EXECUTION_TOOL_NAMES
             and message.compressed_content is not None
             and isinstance(message.tool_call_id, str)
         }
@@ -1263,7 +1266,7 @@ class CodingContextProjector:
         feedback = cls._runtime_feedback(projected)
         if feedback is not None:
             projected.append(feedback)
-        threshold = max(1, int(hard_cap * CODING_CONTEXT_REBASE_THRESHOLD))
+        threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
         projected_tokens = cls._token_count(projected, counting_model, tools, response_format)
         if canonical_tokens <= threshold and projected_tokens <= hard_cap:
             cls.last_metrics = {
@@ -1283,7 +1286,12 @@ class CodingContextProjector:
             message
             for message in projected
             if message.role == "user"
-            and not str(message.content or "").startswith('{"marker":"CODING_RUNTIME_FEEDBACK"')
+            and not str(message.content or "").startswith(
+                (
+                    '{"marker":"TASK_EXECUTION_RUNTIME_FEEDBACK"',
+                    '{"marker":"CODING_RUNTIME_FEEDBACK"',
+                )
+            )
         ]
         prefix = [*system_messages]
         if user_messages:
@@ -1293,14 +1301,14 @@ class CodingContextProjector:
         checkpoint = ContextBudgetController._checkpoint(projected)
         checkpoint_message = Message(role="user", content=checkpoint)
         rounds = cls._complete_rounds(projected)
-        selected_rounds = rounds[-CODING_RECENT_ASSISTANT_TURNS:]
+        selected_rounds = rounds[-TASK_EXECUTION_RECENT_ASSISTANT_TURNS:]
         candidate = [*prefix, checkpoint_message]
         for round_messages in selected_rounds:
             candidate.extend(round_messages)
         if feedback is not None:
             candidate.append(feedback)
 
-        target = max(1, int(hard_cap * CODING_CONTEXT_REBASE_TARGET))
+        target = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_TARGET))
         while (
             selected_rounds
             and cls._token_count(candidate, counting_model, tools, response_format) > target
@@ -1310,7 +1318,7 @@ class CodingContextProjector:
             del candidate[start : start + len(removed)]
         projected_tokens = cls._token_count(candidate, counting_model, tools, response_format)
         if projected_tokens > hard_cap:
-            raise CodingContextHardLimitError(
+            raise TaskExecutionContextHardLimitError(
                 "不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap。"
             )
         cls.last_metrics = {
@@ -1404,7 +1412,7 @@ def _stream_tool_batch_attributes(calls: dict[int, dict[str, Any]]) -> dict[str,
         parsed_calls.append((str(call["name"]), arguments))
     size = len(parsed_calls)
     parallel = size <= 1 or (
-        size <= CODING_TOOL_BATCH_LIMIT
+        size <= TASK_EXECUTION_TOOL_BATCH_LIMIT
         and all(_parallel_safe_tool(name, arguments) for name, arguments in parsed_calls)
     )
     admission = "single" if size <= 1 else "parallel_safe_read" if parallel else "serialized"
@@ -1429,7 +1437,7 @@ def _tool_call_batches(function_calls: list[Any]) -> list[list[Any]]:
     for function_call in function_calls:
         if _parallel_safe_tool_call(function_call):
             reads.append(function_call)
-            if len(reads) == CODING_TOOL_BATCH_LIMIT:
+            if len(reads) == TASK_EXECUTION_TOOL_BATCH_LIMIT:
                 flush_reads()
             continue
         flush_reads()
@@ -1481,32 +1489,32 @@ def _log_context_composition(*, model_id: str, host: str, metrics: dict[str, Any
     )
 
 
-_CODING_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
-    "coding_request_metrics", default=None
+_TASK_EXECUTION_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "task_execution_request_metrics", default=None
 )
 
 
 class ProjectedOpenAIChat(OpenAIChat):
-    _coding_input_token_budget: int | None = None
+    _task_execution_input_token_budget: int | None = None
 
     def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
         hard_cap = getattr(self, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, None)
         if not isinstance(hard_cap, int) or hard_cap < 1:
-            hard_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
-        projected = CodingContextProjector.project(
+            hard_cap = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+        projected = TaskExecutionContextProjector.project(
             messages,
             model=self,
             tools=tools,
             response_format=response_format,
             hard_cap=hard_cap,
         )
-        return projected, dict(CodingContextProjector.last_metrics)
+        return projected, dict(TaskExecutionContextProjector.last_metrics)
 
     def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         params = super().get_request_params(*args, **kwargs)
-        metrics = _CODING_REQUEST_METRICS.get()
+        metrics = _TASK_EXECUTION_REQUEST_METRICS.get()
         if metrics is not None:
             _set_current_span_attributes(metrics)
         return params
@@ -1530,7 +1538,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             str(bool(metrics.get("window_rebased", False))).lower(),
         )
         _log_context_composition(model_id=model_id, host=host, metrics=metrics)
-        token = _CODING_REQUEST_METRICS.set(metrics)
+        token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
         try:
@@ -1555,7 +1563,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 _duration_ms(provider_started_at),
                 str(failed).lower(),
             )
-            _CODING_REQUEST_METRICS.reset(token)
+            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         model_id, host = _model_log_fields(self)
@@ -1576,7 +1584,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             str(bool(metrics.get("window_rebased", False))).lower(),
         )
         _log_context_composition(model_id=model_id, host=host, metrics=metrics)
-        token = _CODING_REQUEST_METRICS.set(metrics)
+        token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
         try:
@@ -1601,7 +1609,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 _duration_ms(provider_started_at),
                 str(failed).lower(),
             )
-            _CODING_REQUEST_METRICS.reset(token)
+            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         model_id, host = _model_log_fields(self)
@@ -1623,7 +1631,7 @@ class ProjectedOpenAIChat(OpenAIChat):
         )
         _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         tool_calls: dict[int, dict[str, Any]] = {}
-        token = _CODING_REQUEST_METRICS.set(metrics)
+        token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         first_chunk_ms: int | None = None
         chunk_count = 0
@@ -1666,7 +1674,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 chunk_count,
                 str(failed).lower(),
             )
-            _CODING_REQUEST_METRICS.reset(token)
+            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
@@ -1690,7 +1698,7 @@ class ProjectedOpenAIChat(OpenAIChat):
         )
         _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         tool_calls: dict[int, dict[str, Any]] = {}
-        token = _CODING_REQUEST_METRICS.set(metrics)
+        token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         first_chunk_ms: int | None = None
         chunk_count = 0
@@ -1733,7 +1741,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 chunk_count,
                 str(failed).lower(),
             )
-            _CODING_REQUEST_METRICS.reset(token)
+            _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):
         for batch in _tool_call_batches(function_calls):
@@ -1747,7 +1755,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 yield event
 
 
-def projected_coding_model(
+def projected_task_execution_model(
     model: OpenAIChat,
     *,
     input_token_budget: int | None = None,

@@ -78,7 +78,7 @@ class TableArtifact(StrictModel):
 class ReportArtifactManifest(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
     revision: int = Field(ge=1)
-    coding_task_key: str = Field(alias="codingTaskKey", min_length=1, max_length=128)
+    task_key: str = Field(alias="codingTaskKey", min_length=1, max_length=128)
     dataset_snapshot_hash: str = Field(alias="datasetSnapshotHash", pattern=SHA256_PATTERN)
     effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     markdown: ArtifactFile
@@ -177,7 +177,7 @@ def build_authoritative_manifest(
     *,
     report_id: str,
     revision: int,
-    coding_task_key: str,
+    task_key: str,
     effective_profile_hash: str,
     markdown_path: str,
     markdown: str,
@@ -239,7 +239,7 @@ def build_authoritative_manifest(
     return ReportArtifactManifest(
         reportId=report_id,
         revision=revision,
-        codingTaskKey=coding_task_key,
+        codingTaskKey=task_key,
         datasetSnapshotHash=dataset_snapshot_hash(lineage),
         effectiveProfileHash=effective_profile_hash,
         markdown=ArtifactFile(

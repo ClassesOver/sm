@@ -18,7 +18,9 @@ RUN apt-get update \
 
 FROM base AS runtime
 
-ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /uvx /bin/
 
 WORKDIR /app
 
@@ -26,8 +28,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-COPY smart_reporting/requirements.txt ./smart_reporting/requirements.txt
-RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r smart_reporting/requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN UV_INDEX_URL="${UV_INDEX_URL}" UV_PROJECT_ENVIRONMENT=/app/.venv-agent \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY smart_reporting ./smart_reporting
 
@@ -40,4 +43,4 @@ ENV AGENT_OS_HOST=0.0.0.0 \
 
 EXPOSE 7777
 
-CMD ["python", "-m", "smart_reporting.app"]
+CMD ["/app/.venv-agent/bin/python", "-m", "smart_reporting.app"]

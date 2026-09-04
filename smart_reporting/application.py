@@ -7,12 +7,15 @@ from dataclasses import dataclass
 from agno.agent import Agent, AgentFactory, RemoteAgent
 from agno.agent.protocol import AgentProtocol
 from agno.os import AgentOS
+from agno.os.config import MCPServerConfig
 from fastapi import FastAPI
+from fastmcp.server.auth import AuthProvider
 
 from .async_utils import complete_cleanup
 from .database import AgentDatabase
-from .settings import AgentSettings
 from .quality_warnings.service import QualityWarningService
+from .reporting.workflow.controller import ReportWorkflowController
+from .settings import AgentSettings
 from .workspace import WorkspaceService
 
 
@@ -23,6 +26,9 @@ class ApplicationContext:
     report_agent: Agent
     database: AgentDatabase | None = None
     quality_warning_service: QualityWarningService | None = None
+    mcp_config: MCPServerConfig | None = None
+    mcp_auth: AuthProvider | None = None
+    report_workflow_controller: ReportWorkflowController | None = None
 
 
 def create_agentos_app(
@@ -63,5 +69,23 @@ def create_agentos_app(
         cors_allowed_origins=list(context.settings.cors_allowed_origins),
         lifespan=lifespan,
         telemetry=False,
+        mcp_server=context.mcp_config or False,
+        mcp_auth=context.mcp_auth,
     )
-    return agent_os, agent_os.get_app()
+    application = agent_os.get_app()
+    report_workflow_controller = context.report_workflow_controller
+    if report_workflow_controller is not None:
+        agentos_lifespan = application.router.lifespan_context
+
+        @asynccontextmanager
+        async def reporting_lifespan(app: FastAPI):
+            # AgentOS 把数据库 lifespan 放在用户 lifespan 内层；在最终应用外包一层，
+            # 才能保证 Reporting 自建后台任务先停止并完成持久化，然后 Agno 再关库。
+            async with agentos_lifespan(app):
+                try:
+                    yield
+                finally:
+                    await report_workflow_controller.aclose()
+
+        application.router.lifespan_context = reporting_lifespan
+    return agent_os, application

@@ -265,6 +265,30 @@ async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
 
 @pytest.mark.integration
 @pytest.mark.anyio
+async def test_reporting_postgres_mcp_request_fingerprint_is_immutable() -> None:
+    database = create_agent_database(_integration_database_url())
+    first = ReportingStateRepository(database.async_db)
+    second = ReportingStateRepository(database.async_db)
+    suffix = uuid4().hex
+    external_run_id = f"integration-mcp-request-{suffix}"
+    values = {
+        "external_run_id": external_run_id,
+        "request_fingerprint": "a" * 64,
+        "thread_id": f"integration-thread-{suffix}",
+        "owner_user_id": "integration-user",
+        "database": "integration-db",
+        "company_id": "11",
+    }
+
+    created = await first.register_external_request(**values)
+    replayed = await second.register_external_request(**{**values, "request_fingerprint": "b" * 64})
+
+    assert created == values
+    assert replayed == values
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
 async def test_reporting_postgres_owner_claim_release_matrix() -> None:
     database = create_agent_database(_integration_database_url())
     first = ReportingStateRepository(database.async_db)

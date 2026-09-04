@@ -40,16 +40,16 @@ from .models import (
     AttemptOutcome,
     AttemptSnapshot,
     AttemptState,
-    CodingScope,
     InstructionReceipt,
     InstructionState,
     Lease,
+    TaskExecutionScope,
     TaskSnapshot,
     TaskState,
 )
 
 TASK_SCHEMA_VERSION = "2.1.0"
-CODING_DB_SCHEMA = "agentos_coding"
+TASK_EXECUTION_DB_SCHEMA = "agentos_coding"
 MAX_CONTINUATIONS = 20
 MAX_TERMINAL_OUTPUT_BYTES = 256 * 1024
 MAX_EXECUTION_RECEIPT_BYTES = 512 * 1024
@@ -64,7 +64,7 @@ ACTIVE_TASK_STATUSES = frozenset({"pending", "running", "suspended"})
 TERMINAL_EXECUTION_STATUSES = frozenset({"completed", "failed", "cancelled", "lost", "terminated"})
 
 
-class CodingRepositoryError(ValueError):
+class TaskExecutionRepositoryError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
@@ -92,12 +92,12 @@ def error_fingerprint(value: BaseException | str) -> str:
 
 
 @dataclass(frozen=True)
-class CodingTask:
+class TaskExecutionTask:
     external_run_id: str
     current_internal_run_id: str | None
     owner_user_id: str
     thread_id: str
-    agent_id: str
+    executor_id: str
     sandbox_id: str
     status: str
     continuation_count: int
@@ -111,7 +111,7 @@ class CodingTask:
 
 
 @dataclass(frozen=True)
-class CodingExecution:
+class TaskExecution:
     execution_id: str
     external_run_id: str
     internal_run_id: str
@@ -133,14 +133,14 @@ class CodingExecution:
     operation_receipt: dict[str, Any] | None = None
 
 
-def _task_from_row(row: Any) -> CodingTask:
+def _task_from_row(row: Any) -> TaskExecutionTask:
     value = row._mapping
-    return CodingTask(
+    return TaskExecutionTask(
         external_run_id=value["external_run_id"],
         current_internal_run_id=value["current_internal_run_id"],
         owner_user_id=value["owner_user_id"],
         thread_id=value["thread_id"],
-        agent_id=value["agent_id"],
+        executor_id=value["agent_id"],
         sandbox_id=value["sandbox_id"],
         status=value["status"],
         continuation_count=value["continuation_count"],
@@ -154,9 +154,9 @@ def _task_from_row(row: Any) -> CodingTask:
     )
 
 
-def _execution_from_row(row: Any) -> CodingExecution:
+def _execution_from_row(row: Any) -> TaskExecution:
     value = row._mapping
-    return CodingExecution(
+    return TaskExecution(
         execution_id=value["execution_id"],
         external_run_id=value["external_run_id"],
         internal_run_id=value["internal_run_id"],
@@ -179,13 +179,13 @@ def _execution_from_row(row: Any) -> CodingExecution:
     )
 
 
-class CodingTaskRepository:
+class TaskExecutionRepository:
     def __init__(self, db: AsyncBaseDb):
         if db.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
             raise ValueError("任务执行仓储只支持 PostgreSQL。")
         self.db = db
         self._legacy_schema = getattr(db, "db_schema", None)
-        self.metadata = MetaData(schema=CODING_DB_SCHEMA)
+        self.metadata = MetaData(schema=TASK_EXECUTION_DB_SCHEMA)
         self.schema_versions = Table(
             "agentos_coding_schema_versions",
             self.metadata,
@@ -346,7 +346,9 @@ class CodingTaskRepository:
                 return
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
                 await connection.execute(text("SELECT pg_advisory_xact_lock(1735812441)"))
-                await connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{CODING_DB_SCHEMA}"'))
+                await connection.execute(
+                    text(f'CREATE SCHEMA IF NOT EXISTS "{TASK_EXECUTION_DB_SCHEMA}"')
+                )
                 await self._move_legacy_schema(connection)
                 await connection.run_sync(self.metadata.create_all)
                 await self._migrate_schema(connection)
@@ -383,21 +385,21 @@ class CodingTaskRepository:
 
         source_tables = await connection.run_sync(table_names, source_schema)
         target_tables = await connection.run_sync(table_names, target_schema)
-        coding_tables = [
+        compatibility_tables = [
             self.tasks.name,
             self.runs.name,
             self.executions.name,
             self.instructions.name,
         ]
-        conflicts = (source_tables & target_tables).intersection(coding_tables)
+        conflicts = (source_tables & target_tables).intersection(compatibility_tables)
         if conflicts:
-            raise CodingRepositoryError(
+            raise TaskExecutionRepositoryError(
                 "migration_schema_conflict",
-                "新旧 Coding schema 同时包含同名表，迁移已停止。",
+                "兼容 schema 与目标 schema 同时包含同名表，迁移已停止。",
             )
 
         preparer = connection.dialect.identifier_preparer
-        for table_name in coding_tables:
+        for table_name in compatibility_tables:
             if table_name not in source_tables:
                 continue
             await connection.execute(
@@ -480,9 +482,9 @@ class CodingTaskRepository:
             )
         ).first()
         if duplicate is not None:
-            raise CodingRepositoryError(
+            raise TaskExecutionRepositoryError(
                 "migration_duplicate_attempt",
-                "旧编码任务包含重复 Attempt 编号，迁移已停止。",
+                "旧执行任务包含重复 Attempt 编号，迁移已停止。",
             )
         await connection.execute(
             text(
@@ -500,11 +502,11 @@ class CodingTaskRepository:
         external_run_id: str,
         owner_user_id: str,
         thread_id: str,
-        agent_id: str,
+        executor_id: str,
         sandbox_id: str,
         deadline_at: datetime,
         acceptance_contract: dict[str, Any] | None = None,
-    ) -> CodingTask:
+    ) -> TaskExecutionTask:
         await self.initialize()
         normalized_contract = self._normalize_acceptance_contract(acceptance_contract)
         now = utcnow()
@@ -515,7 +517,7 @@ class CodingTaskRepository:
                         external_run_id=external_run_id,
                         owner_user_id=owner_user_id,
                         thread_id=thread_id,
-                        agent_id=agent_id,
+                        agent_id=executor_id,
                         sandbox_id=sandbox_id,
                         status="pending",
                         continuation_count=0,
@@ -531,17 +533,17 @@ class CodingTaskRepository:
             pass
         task = await self.get_task(external_run_id)
         if task is None:
-            raise CodingRepositoryError("task_create_failed", "编码任务状态创建失败。")
+            raise TaskExecutionRepositoryError("task_create_failed", "执行任务状态创建失败。")
         self._assert_scope(task, owner_user_id, thread_id, sandbox_id)
-        if task.agent_id != agent_id:
-            raise CodingRepositoryError("task_agent_mismatch", "编码任务智能体绑定不一致。")
+        if task.executor_id != executor_id:
+            raise TaskExecutionRepositoryError("task_agent_mismatch", "执行任务智能体绑定不一致。")
         if task.acceptance_contract != normalized_contract:
-            raise CodingRepositoryError(
-                "task_acceptance_contract_conflict", "编码任务验收契约不可修改。"
+            raise TaskExecutionRepositoryError(
+                "task_acceptance_contract_conflict", "执行任务验收契约不可修改。"
             )
         return task
 
-    async def get_task(self, external_run_id: str) -> CodingTask | None:
+    async def get_task(self, external_run_id: str) -> TaskExecutionTask | None:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
             row = (
@@ -553,15 +555,19 @@ class CodingTaskRepository:
 
     @staticmethod
     def _assert_scope(
-        task: CodingTask,
+        task: TaskExecutionTask,
         owner_user_id: str,
         thread_id: str,
         sandbox_id: str | None = None,
     ) -> None:
         if task.owner_user_id != owner_user_id or task.thread_id != thread_id:
-            raise CodingRepositoryError("task_scope_mismatch", "编码任务不属于当前用户或对话。")
+            raise TaskExecutionRepositoryError(
+                "task_scope_mismatch", "执行任务不属于当前用户或对话。"
+            )
         if sandbox_id is not None and task.sandbox_id != sandbox_id:
-            raise CodingRepositoryError("task_sandbox_mismatch", "编码任务不属于当前工作区。")
+            raise TaskExecutionRepositoryError(
+                "task_sandbox_mismatch", "执行任务不属于当前工作区。"
+            )
 
     async def claim_lease(
         self,
@@ -622,7 +628,7 @@ class CodingTaskRepository:
                 )
             ).first()
             if row is None:
-                raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+                raise TaskExecutionRepositoryError("task_not_found", "执行任务不存在。")
             value = row._mapping
             if value["status"] not in {
                 TaskState.NEW,
@@ -677,7 +683,9 @@ class CodingTaskRepository:
                 .values(lease_owner=None, lease_expires_at=None, updated_at=utcnow())
             )
 
-    async def bind_initial_run(self, external_run_id: str, internal_run_id: str) -> CodingTask:
+    async def bind_initial_run(
+        self, external_run_id: str, internal_run_id: str
+    ) -> TaskExecutionTask:
         await self.initialize()
         now = utcnow()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -707,9 +715,11 @@ class CodingTaskRepository:
                 )
         task = await self.get_task(external_run_id)
         if task is None:
-            raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+            raise TaskExecutionRepositoryError("task_not_found", "执行任务不存在。")
         if task.current_internal_run_id != internal_run_id:
-            raise CodingRepositoryError("task_run_conflict", "编码任务已由其他内部运行接管。")
+            raise TaskExecutionRepositoryError(
+                "task_run_conflict", "执行任务已由其他内部运行接管。"
+            )
         return task
 
     async def complete_task(
@@ -746,7 +756,9 @@ class CodingTaskRepository:
                 )
             )
             if result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "编码任务在验收期间发生变化。")
+                raise TaskExecutionRepositoryError(
+                    "task_cas_conflict", "执行任务在验收期间发生变化。"
+                )
             if retained_ids:
                 retained = await connection.execute(
                     update(self.executions)
@@ -758,7 +770,9 @@ class CodingTaskRepository:
                     .values(retained_service=True, updated_at=now)
                 )
                 if retained.rowcount != len(retained_ids):
-                    raise CodingRepositoryError("task_cas_conflict", "保留服务在验收期间发生变化。")
+                    raise TaskExecutionRepositoryError(
+                        "task_cas_conflict", "保留服务在验收期间发生变化。"
+                    )
 
     async def increment_mutation(
         self,
@@ -797,7 +811,7 @@ class CodingTaskRepository:
                 )
             ).scalar_one_or_none()
         if value is None:
-            raise CodingRepositoryError("task_not_active", "编码任务已结束，不能继续修改。")
+            raise TaskExecutionRepositoryError("task_not_active", "执行任务已结束，不能继续修改。")
         return int(value)
 
     async def record_execution_mutation(
@@ -837,7 +851,7 @@ class CodingTaskRepository:
                 )
             ).scalar_one_or_none()
             if value is None:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "execution_mutation_conflict", "Execution mutation 序号已变化。"
                 )
             execution = await connection.execute(
@@ -851,7 +865,7 @@ class CodingTaskRepository:
                 .values(mutation_sequence=value, updated_at=utcnow())
             )
             if execution.rowcount != 1:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "execution_mutation_conflict", "Execution mutation 绑定已变化。"
                 )
         return int(value)
@@ -873,7 +887,7 @@ class CodingTaskRepository:
         lease_epoch: int = 0,
         operation_receipt: dict[str, Any] | None = None,
         lease: Lease | None = None,
-    ) -> CodingExecution:
+    ) -> TaskExecution:
         await self.initialize()
         now = utcnow()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -886,7 +900,7 @@ class CodingTaskRepository:
                     lease,
                 )
                 if int(task._mapping["mutation_sequence"] or 0) != mutation_sequence:
-                    raise CodingRepositoryError(
+                    raise TaskExecutionRepositoryError(
                         "execution_mutation_conflict", "Execution mutation 序号已变化。"
                     )
             await connection.execute(
@@ -922,7 +936,7 @@ class CodingTaskRepository:
         lease: Lease,
         *,
         allow_finishing: bool = False,
-    ) -> CodingExecution:
+    ) -> TaskExecution:
         await self.initialize()
         states = [TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]
         if allow_finishing:
@@ -948,7 +962,9 @@ class CodingTaskRepository:
                 )
             ).first()
         if row is None:
-            raise CodingRepositoryError("execution_fenced", "Execution 已被新的任务租约隔离。")
+            raise TaskExecutionRepositoryError(
+                "execution_fenced", "Execution 已被新的任务租约隔离。"
+            )
         return _execution_from_row(row)
 
     async def _locked_task_for_execution(
@@ -973,10 +989,12 @@ class CodingTaskRepository:
             )
         ).first()
         if row is None:
-            raise CodingRepositoryError("execution_fenced", "Execution 已被新的任务租约隔离。")
+            raise TaskExecutionRepositoryError(
+                "execution_fenced", "Execution 已被新的任务租约隔离。"
+            )
         return row
 
-    async def get_execution(self, execution_id: str) -> CodingExecution | None:
+    async def get_execution(self, execution_id: str) -> TaskExecution | None:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
             row = (
@@ -993,16 +1011,18 @@ class CodingTaskRepository:
         owner_user_id: str,
         thread_id: str,
         sandbox_id: str,
-    ) -> CodingExecution:
+    ) -> TaskExecution:
         execution = await self.get_execution(execution_id)
         if execution is None:
-            raise CodingRepositoryError("execution_not_found", "执行句柄不存在。")
+            raise TaskExecutionRepositoryError("execution_not_found", "执行句柄不存在。")
         if (
             execution.owner_user_id != owner_user_id
             or execution.thread_id != thread_id
             or execution.sandbox_id != sandbox_id
         ):
-            raise CodingRepositoryError("execution_scope_mismatch", "执行句柄不属于当前工作区。")
+            raise TaskExecutionRepositoryError(
+                "execution_scope_mismatch", "执行句柄不属于当前工作区。"
+            )
         return execution
 
     async def update_execution(
@@ -1018,11 +1038,11 @@ class CodingTaskRepository:
         operation_receipt: dict[str, Any] | None = None,
         expected_output_cursor: int | None = None,
         expected_status: str | None = None,
-    ) -> CodingExecution:
+    ) -> TaskExecution:
         await self.initialize()
         existing = await self.get_execution(execution_id)
         if existing is None:
-            raise CodingRepositoryError("execution_not_found", "执行句柄不存在。")
+            raise TaskExecutionRepositoryError("execution_not_found", "执行句柄不存在。")
         values: dict[str, Any] = {"updated_at": utcnow()}
         if status is not None:
             values["status"] = status
@@ -1041,7 +1061,9 @@ class CodingTaskRepository:
         if operation_receipt is not None:
             encoded_receipt = json.dumps(operation_receipt, sort_keys=True, separators=(",", ":"))
             if len(encoded_receipt.encode()) > MAX_EXECUTION_RECEIPT_BYTES:
-                raise CodingRepositoryError("execution_receipt_too_large", "Execution 回执过大。")
+                raise TaskExecutionRepositoryError(
+                    "execution_receipt_too_large", "Execution 回执过大。"
+                )
             values["operation_receipt"] = operation_receipt
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
             conditions = [self.executions.c.execution_id == execution_id]
@@ -1053,14 +1075,14 @@ class CodingTaskRepository:
                 update(self.executions).where(*conditions).values(**values)
             )
         if result.rowcount != 1:
-            raise CodingRepositoryError(
+            raise TaskExecutionRepositoryError(
                 "execution_cas_conflict", "执行输出已被其他实例读取，请使用最新游标重试。"
             )
         updated = await self.get_execution(execution_id)
         assert updated is not None
         return updated
 
-    async def list_executions(self, external_run_id: str) -> list[CodingExecution]:
+    async def list_executions(self, external_run_id: str) -> list[TaskExecution]:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
             rows = (
@@ -1158,12 +1180,12 @@ class CodingTaskRepository:
     @staticmethod
     def _task_snapshot(row: Any) -> TaskSnapshot:
         value = row._mapping
-        scope = CodingScope(
+        scope = TaskExecutionScope(
             external_run_id=value["external_run_id"],
             owner_user_id=value["owner_user_id"],
             thread_id=value["thread_id"],
             sandbox_id=value["sandbox_id"],
-            agent_id=value["agent_id"],
+            executor_id=value["agent_id"],
         )
         return TaskSnapshot(
             scope=scope,
@@ -1241,7 +1263,7 @@ class CodingTaskRepository:
 
     async def create_task_with_initial_attempt(
         self,
-        scope: CodingScope,
+        scope: TaskExecutionScope,
         initial_instruction: str,
         predecessor_task_id: str | None = None,
         *,
@@ -1268,14 +1290,16 @@ class CodingTaskRepository:
                         )
                     ).first()
                     if predecessor is None:
-                        raise CodingRepositoryError("predecessor_not_found", "前序编码任务不存在。")
+                        raise TaskExecutionRepositoryError(
+                            "predecessor_not_found", "前序执行任务不存在。"
+                        )
                     predecessor_scope = predecessor._mapping
                     if (
                         predecessor_scope["owner_user_id"] != scope.owner_user_id
                         or predecessor_scope["thread_id"] != scope.thread_id
                         or predecessor_scope["sandbox_id"] != scope.sandbox_id
                     ):
-                        raise CodingRepositoryError(
+                        raise TaskExecutionRepositoryError(
                             "predecessor_scope_mismatch", "前序任务不属于当前工作区范围。"
                         )
                 await connection.execute(
@@ -1284,7 +1308,7 @@ class CodingTaskRepository:
                         current_internal_run_id=internal_run_id,
                         owner_user_id=scope.owner_user_id,
                         thread_id=scope.thread_id,
-                        agent_id=scope.agent_id,
+                        agent_id=scope.executor_id,
                         sandbox_id=scope.sandbox_id,
                         status=TaskState.NEW,
                         state_version=1,
@@ -1329,14 +1353,14 @@ class CodingTaskRepository:
         except IntegrityError:
             existing = await self.get_task_snapshot(scope.external_run_id)
             if existing is None:
-                raise CodingRepositoryError("task_create_failed", "编码任务状态创建失败。")
+                raise TaskExecutionRepositoryError("task_create_failed", "执行任务状态创建失败。")
             if existing.scope != scope or existing.predecessor_task_id != predecessor_task_id:
-                raise CodingRepositoryError(
-                    "task_scope_conflict", "外部 run 已绑定到其他编码任务。"
+                raise TaskExecutionRepositoryError(
+                    "task_scope_conflict", "外部 run 已绑定到其他执行任务。"
                 )
             if existing.acceptance_contract != normalized_contract:
-                raise CodingRepositoryError(
-                    "task_acceptance_contract_conflict", "编码任务验收契约不可修改。"
+                raise TaskExecutionRepositoryError(
+                    "task_acceptance_contract_conflict", "执行任务验收契约不可修改。"
                 )
             async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
                 stored_hash = (
@@ -1348,7 +1372,7 @@ class CodingTaskRepository:
                     )
                 ).scalar_one_or_none()
             if stored_hash != content_hash:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "task_initial_instruction_conflict", "外部 run 的初始目标不一致。"
                 )
             return existing
@@ -1365,7 +1389,7 @@ class CodingTaskRepository:
         try:
             return normalize_acceptance_contract(acceptance_contract)
         except AcceptanceContractError as error:
-            raise CodingRepositoryError("acceptance_contract_invalid", str(error)) from error
+            raise TaskExecutionRepositoryError("acceptance_contract_invalid", str(error)) from error
 
     @staticmethod
     def _validate_instruction(
@@ -1379,24 +1403,24 @@ class CodingTaskRepository:
             or not instruction_id
             or len(instruction_id) > MAX_INSTRUCTION_ID_LENGTH
         ):
-            raise CodingRepositoryError("instruction_id_invalid", "instruction_id 无效。")
+            raise TaskExecutionRepositoryError("instruction_id_invalid", "instruction_id 无效。")
         if not isinstance(content, str) or not content.strip():
-            raise CodingRepositoryError("instruction_content_invalid", "指令内容不能为空。")
+            raise TaskExecutionRepositoryError("instruction_content_invalid", "指令内容不能为空。")
         if (
             isinstance(max_instruction_bytes, bool)
             or not isinstance(max_instruction_bytes, int)
             or not MAX_INSTRUCTION_BYTES <= max_instruction_bytes <= MAX_EXTENDED_INSTRUCTION_BYTES
         ):
-            raise CodingRepositoryError("instruction_limit_invalid", "指令大小上限无效。")
+            raise TaskExecutionRepositoryError("instruction_limit_invalid", "指令大小上限无效。")
         if len(content.encode("utf-8")) > max_instruction_bytes:
-            raise CodingRepositoryError(
+            raise TaskExecutionRepositoryError(
                 "instruction_too_large",
                 f"单条指令超过 {max_instruction_bytes // 1024} KiB。",
             )
 
     async def submit_instruction(
         self,
-        scope: CodingScope,
+        scope: TaskExecutionScope,
         instruction_id: str,
         content: str,
     ) -> InstructionReceipt:
@@ -1412,7 +1436,7 @@ class CodingTaskRepository:
                 )
             ).first()
             if task is None:
-                raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+                raise TaskExecutionRepositoryError("task_not_found", "执行任务不存在。")
             value = task._mapping
             if any(
                 value[key] != expected
@@ -1420,10 +1444,10 @@ class CodingTaskRepository:
                     ("owner_user_id", scope.owner_user_id),
                     ("thread_id", scope.thread_id),
                     ("sandbox_id", scope.sandbox_id),
-                    ("agent_id", scope.agent_id),
+                    ("agent_id", scope.executor_id),
                 )
             ):
-                raise CodingRepositoryError("task_scope_mismatch", "编码任务范围不匹配。")
+                raise TaskExecutionRepositoryError("task_scope_mismatch", "执行任务范围不匹配。")
             existing = (
                 await connection.execute(
                     select(self.instructions).where(
@@ -1435,7 +1459,7 @@ class CodingTaskRepository:
             if existing is not None:
                 stored = existing._mapping
                 if stored["content_hash"] != content_hash:
-                    raise CodingRepositoryError(
+                    raise TaskExecutionRepositoryError(
                         "instruction_id_conflict", "instruction_id 已绑定到不同内容。"
                     )
                 return InstructionReceipt(
@@ -1446,7 +1470,7 @@ class CodingTaskRepository:
                     stored["applied_attempt_no"],
                 )
             if value["status"] == TaskState.FINISHING or value["finish_receipt"] is not None:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "task_successor_required", "任务已进入完成阶段，请创建 successor task。"
                 )
             if value["status"] in {
@@ -1454,7 +1478,7 @@ class CodingTaskRepository:
                 TaskState.FAILED,
                 TaskState.CANCELLED,
             }:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "task_successor_required", "任务已结束，请创建 successor task。"
                 )
             pending = (
@@ -1468,11 +1492,11 @@ class CodingTaskRepository:
                 )
             ).one()
             if int(pending[0]) >= MAX_PENDING_INSTRUCTIONS:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "instruction_pending_limit", "待处理指令已达到 50 条上限。"
                 )
             if int(pending[1]) + content_bytes > MAX_PENDING_INSTRUCTION_BYTES:
-                raise CodingRepositoryError(
+                raise TaskExecutionRepositoryError(
                     "instruction_pending_bytes_limit", "待处理指令总大小超过 256 KiB。"
                 )
             sequence = int(value["instruction_sequence"] or 0) + 1
@@ -1491,7 +1515,7 @@ class CodingTaskRepository:
                 )
             )
             if result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "任务状态已发生变化。")
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态已发生变化。")
             await connection.execute(
                 insert(self.instructions).values(
                     external_run_id=scope.external_run_id,
@@ -1578,7 +1602,9 @@ class CodingTaskRepository:
                 )
             )
             if attempt_result.rowcount != 1:
-                raise CodingRepositoryError("attempt_cas_conflict", "初始 Attempt 状态已变化。")
+                raise TaskExecutionRepositoryError(
+                    "attempt_cas_conflict", "初始 Attempt 状态已变化。"
+                )
             task_result = await connection.execute(
                 update(self.tasks)
                 .where(
@@ -1592,7 +1618,7 @@ class CodingTaskRepository:
                 )
             )
             if task_result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "任务状态已发生变化。")
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态已发生变化。")
         return await self._required_current(external_run_id)
 
     async def heartbeat_lease(
@@ -1620,7 +1646,7 @@ class CodingTaskRepository:
                 .values(lease_expires_at=expires_at, updated_at=now)
             )
         if result.rowcount != 1:
-            raise CodingRepositoryError("task_lease_lost", "编码任务租约已失效。")
+            raise TaskExecutionRepositoryError("task_lease_lost", "执行任务租约已失效。")
         return Lease(lease.owner, lease.epoch, expires_at)
 
     async def resume_current(
@@ -1637,7 +1663,7 @@ class CodingTaskRepository:
             )
             value = task._mapping
             if value["status"] not in {TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED}:
-                raise CodingRepositoryError("task_not_runnable", "编码任务当前不可恢复。")
+                raise TaskExecutionRepositoryError("task_not_runnable", "执行任务当前不可恢复。")
             run_id = value["current_internal_run_id"]
             attempt = (
                 await connection.execute(
@@ -1653,7 +1679,9 @@ class CodingTaskRepository:
                 AttemptState.RUNNING,
                 AttemptState.PAUSED,
             }:
-                raise CodingRepositoryError("attempt_not_resumable", "当前 Attempt 不可恢复。")
+                raise TaskExecutionRepositoryError(
+                    "attempt_not_resumable", "当前 Attempt 不可恢复。"
+                )
             await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.internal_run_id == run_id)
@@ -1698,7 +1726,7 @@ class CodingTaskRepository:
             )
             value = task._mapping
             if value["status"] == TaskState.FINISHING:
-                raise CodingRepositoryError("task_finishing", "任务已进入完成阶段。")
+                raise TaskExecutionRepositoryError("task_finishing", "任务已进入完成阶段。")
             run_id = value["current_internal_run_id"]
             fingerprint = error_fingerprint(error) if error is not None else None
             await connection.execute(
@@ -1740,8 +1768,8 @@ class CodingTaskRepository:
             next_attempt_no = int(value["continuation_count"] or 0) + 1
             if create_next:
                 if next_attempt_no > MAX_CONTINUATIONS:
-                    raise CodingRepositoryError(
-                        "task_continuation_exhausted", "编码任务已达到续跑上限。"
+                    raise TaskExecutionRepositoryError(
+                        "task_continuation_exhausted", "执行任务已达到续跑上限。"
                     )
                 next_run_id = self.internal_run_id(external_run_id, next_attempt_no)
                 await connection.execute(
@@ -1793,7 +1821,7 @@ class CodingTaskRepository:
                 )
             )
             if result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "任务状态已发生变化。")
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态已发生变化。")
         snapshot = await self.get_task_snapshot(external_run_id)
         assert snapshot is not None
         return snapshot
@@ -1811,7 +1839,7 @@ class CodingTaskRepository:
         await self.initialize()
         encoded_receipt = json.dumps(finish_receipt, sort_keys=True, separators=(",", ":"))
         if len(encoded_receipt.encode()) > MAX_EXECUTION_RECEIPT_BYTES:
-            raise CodingRepositoryError("finish_receipt_too_large", "完成回执超过 512 KiB。")
+            raise TaskExecutionRepositoryError("finish_receipt_too_large", "完成回执超过 512 KiB。")
         now = utcnow()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
             task = await self._locked_task(
@@ -1820,7 +1848,9 @@ class CodingTaskRepository:
             value = task._mapping
             if value["finish_receipt"] is not None:
                 if value["finish_receipt"] != finish_receipt:
-                    raise CodingRepositoryError("finish_receipt_conflict", "完成回执不可修改。")
+                    raise TaskExecutionRepositoryError(
+                        "finish_receipt_conflict", "完成回执不可修改。"
+                    )
                 return self._task_snapshot(task)
             pending = (
                 await connection.execute(
@@ -1833,7 +1863,9 @@ class CodingTaskRepository:
                 )
             ).scalar_one()
             if pending:
-                raise CodingRepositoryError("finish_instruction_pending", "存在待处理的新指令。")
+                raise TaskExecutionRepositoryError(
+                    "finish_instruction_pending", "存在待处理的新指令。"
+                )
             run_id = value["current_internal_run_id"]
             attempt_result = await connection.execute(
                 update(self.runs)
@@ -1846,7 +1878,9 @@ class CodingTaskRepository:
                 .values(status=AttemptState.FINISH_REQUESTED, updated_at=now)
             )
             if attempt_result.rowcount != 1:
-                raise CodingRepositoryError("attempt_cas_conflict", "Attempt 状态已发生变化。")
+                raise TaskExecutionRepositoryError(
+                    "attempt_cas_conflict", "Attempt 状态已发生变化。"
+                )
             retained = set(retained_execution_ids)
             if retained:
                 retained_result = await connection.execute(
@@ -1859,7 +1893,9 @@ class CodingTaskRepository:
                     .values(retained_service=True, updated_at=now)
                 )
                 if retained_result.rowcount != len(retained):
-                    raise CodingRepositoryError("task_cas_conflict", "保留服务状态已发生变化。")
+                    raise TaskExecutionRepositoryError(
+                        "task_cas_conflict", "保留服务状态已发生变化。"
+                    )
             result = await connection.execute(
                 update(self.tasks)
                 .where(
@@ -1876,7 +1912,7 @@ class CodingTaskRepository:
                 )
             )
             if result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "任务状态已发生变化。")
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态已发生变化。")
         updated_task = await self.get_task_snapshot(external_run_id)
         assert updated_task is not None
         return updated_task
@@ -1897,7 +1933,7 @@ class CodingTaskRepository:
             )
             value = task._mapping
             if value["status"] != TaskState.FINISHING or value["finish_receipt"] is None:
-                raise CodingRepositoryError("finish_not_requested", "任务没有有效完成回执。")
+                raise TaskExecutionRepositoryError("finish_not_requested", "任务没有有效完成回执。")
             await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.internal_run_id == value["current_internal_run_id"])
@@ -1925,12 +1961,12 @@ class CodingTaskRepository:
                 )
             )
             if result.rowcount != 1:
-                raise CodingRepositoryError("task_cas_conflict", "任务状态已发生变化。")
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态已发生变化。")
         snapshot = await self.get_task_snapshot(external_run_id)
         assert snapshot is not None
         return snapshot
 
-    async def cancel_and_reject(self, scope: CodingScope) -> TaskSnapshot:
+    async def cancel_and_reject(self, scope: TaskExecutionScope) -> TaskSnapshot:
         await self.initialize()
         now = utcnow()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -1940,7 +1976,7 @@ class CodingTaskRepository:
                 )
             ).first()
             if task is None:
-                raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+                raise TaskExecutionRepositoryError("task_not_found", "执行任务不存在。")
             value = task._mapping
             if any(
                 value[key] != expected
@@ -1948,10 +1984,10 @@ class CodingTaskRepository:
                     ("owner_user_id", scope.owner_user_id),
                     ("thread_id", scope.thread_id),
                     ("sandbox_id", scope.sandbox_id),
-                    ("agent_id", scope.agent_id),
+                    ("agent_id", scope.executor_id),
                 )
             ):
-                raise CodingRepositoryError("task_scope_mismatch", "编码任务范围不匹配。")
+                raise TaskExecutionRepositoryError("task_scope_mismatch", "执行任务范围不匹配。")
             if value["status"] in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
                 return self._task_snapshot(task)
             await connection.execute(
@@ -1994,7 +2030,7 @@ class CodingTaskRepository:
         return snapshot
 
     async def fail_indeterminate_mutation(
-        self, scope: CodingScope, current_epoch: int
+        self, scope: TaskExecutionScope, current_epoch: int
     ) -> TaskSnapshot:
         await self.initialize()
         now = utcnow()
@@ -2006,7 +2042,7 @@ class CodingTaskRepository:
                         self.tasks.c.owner_user_id == scope.owner_user_id,
                         self.tasks.c.thread_id == scope.thread_id,
                         self.tasks.c.sandbox_id == scope.sandbox_id,
-                        self.tasks.c.agent_id == scope.agent_id,
+                        self.tasks.c.executor_id == scope.executor_id,
                         self.tasks.c.lease_epoch == current_epoch,
                         self.tasks.c.status.in_(
                             [TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]
@@ -2015,7 +2051,7 @@ class CodingTaskRepository:
                 )
             ).first()
             if task is None:
-                raise CodingRepositoryError("task_cas_conflict", "任务 epoch 已发生变化。")
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务 epoch 已发生变化。")
             value = task._mapping
             await connection.execute(
                 update(self.runs)
@@ -2077,16 +2113,16 @@ class CodingTaskRepository:
             )
         ).first()
         if task is None:
-            raise CodingRepositoryError("task_cas_conflict", "任务状态或租约已发生变化。")
+            raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态或租约已发生变化。")
         return task
 
     async def _required_current(self, external_run_id: str) -> tuple[TaskSnapshot, AttemptSnapshot]:
         task = await self.get_task_snapshot(external_run_id)
         if task is None:
-            raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+            raise TaskExecutionRepositoryError("task_not_found", "执行任务不存在。")
         attempt = await self.get_attempt(task.current_internal_run_id)
         if attempt is None:
-            raise CodingRepositoryError("attempt_not_found", "当前 Attempt 不存在。")
+            raise TaskExecutionRepositoryError("attempt_not_found", "当前 Attempt 不存在。")
         return task, attempt
 
 
@@ -2103,10 +2139,10 @@ __all__ = [
     "TASK_SCHEMA_VERSION",
     "TERMINAL_EXECUTION_STATUSES",
     "TERMINAL_TASK_STATUSES",
-    "CodingExecution",
-    "CodingRepositoryError",
-    "CodingTask",
-    "CodingTaskRepository",
+    "TaskExecution",
+    "TaskExecutionRepositoryError",
+    "TaskExecutionTask",
+    "TaskExecutionRepository",
     "bounded_output",
     "error_fingerprint",
     "utcnow",

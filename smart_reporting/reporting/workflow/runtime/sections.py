@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...tools import build_reporting_tools
 from ..checkpoint import ChartVisualInspectionReceipt, CheckpointError, ProfileReadReceipt
+from ..execution import ReportingStructuredAgentExecutor, ReportingTaskInvocation
 from .analysis import (
-    _coding_detailed_analysis_plan,
     _finalize_semantic_catalog,
+    _reporting_detailed_analysis_plan,
     _run_bounded,
 )
 from .base import (
@@ -49,7 +51,7 @@ from .base import (
     SectionWorkItem,
     Sequence,
     SourceWarning,
-    TaskScope,
+    TaskExecutionScope,
     TaskState,
     ValidationError,
     _frozen_outline,
@@ -63,14 +65,16 @@ from .base import (
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
+from .phase_models import AnalysisReworkDecision, RenderSectionDecision, SectionDecision
 from .publication import _accepted_artifacts_match_manifest
+from .section_workflow import SectionWorkflow
 
 
 async def _run_section_batches_until_rework(
     items: Sequence[Any],
     *,
     concurrency: int,
-    worker: Callable[[Any], Awaitable[Any]],
+    executor: Callable[[Any], Awaitable[Any]],
 ) -> list[Any]:
     """每批只启动 concurrency 个章节；批内返工会阻止下一批启动。"""
 
@@ -79,7 +83,7 @@ async def _run_section_batches_until_rework(
         batch_results = await _run_bounded(
             items[offset : offset + concurrency],
             concurrency=concurrency,
-            worker=worker,
+            operation=executor,
         )
         results.extend(batch_results)
         if any(result[2] is not None for result in batch_results):
@@ -200,7 +204,7 @@ class RuntimeSectionsMixin:
         revision: int,
         rework_results: Sequence[tuple[ReportingCheckpoint, AnalysisReworkRequest]],
     ) -> tuple[ReportingCheckpoint, AnalysisReworkRequest]:
-        """批内 worker 全部结束后，一次性提交返工并撤销受影响章节。"""
+        """批内章节执行器全部结束后，一次性提交返工并撤销受影响章节。"""
 
         requests = tuple(request for _candidate, request in rework_results)
         affected_analysis_ids = tuple(
@@ -467,6 +471,10 @@ class RuntimeSectionsMixin:
         scope = self._scope(run_context)
         work_item_payload = work_item.model_dump(mode="json", by_alias=True)
         work_item_hash = payload_sha256(work_item_payload)
+        model_work_item_payload = dict(work_item_payload)
+        # factFiles 仍进入 durable work item 与身份 hash，保证恢复和追溯语义不变；章节
+        # Agent 没有读取这些文件的授权，因此模型输入只暴露可直接使用的 factSummaries。
+        model_work_item_payload.pop("factFiles", None)
         restored = await self._durable_completed_section(
             run_context,
             revision=revision,
@@ -587,7 +595,7 @@ class RuntimeSectionsMixin:
                     "focus": list(work_item.completion_conditions),
                     "analysisIds": list(work_item.analysis_ids),
                 },
-                "sectionWorkItem": work_item_payload,
+                "sectionWorkItem": model_work_item_payload,
                 "completionConditions": list(work_item.completion_conditions),
                 "claimAuthoringContract": _section_claim_authoring_contract(work_item),
                 "sectionOutputPath": section_output_path,
@@ -618,12 +626,12 @@ class RuntimeSectionsMixin:
                 section_output_path=section_output_path,
                 rework_request_path=rework_request_path,
             )
-            task_scope = TaskScope(
+            task_scope = TaskExecutionScope(
                 task_id,
                 scope["userId"],
                 scope["threadId"],
                 sandbox_id,
-                str(self.report_worker.id),
+                "reporting-section-agent",
             )
             if started_trace is None:
                 checkpoint = self._update_reporting_checkpoint(
@@ -655,8 +663,111 @@ class RuntimeSectionsMixin:
                         "report_section_task_terminal",
                         f"章节 {work_item.section_code} task 未签发阶段产物即终止。",
                     )
+                if self.section_generator is None:
+                    raise ReportingError(
+                        "report_section_executor_missing", "章节结构化生成器未配置。"
+                    )
+
+                async def execute_fixed_section(
+                    invocation: ReportingTaskInvocation,
+                ) -> SectionDecision:
+                    toolkits = build_reporting_tools(
+                        self.workspace_service,
+                        self.task_runner.repository,
+                        state_repository=self.state_repository,
+                        run_context=invocation.run_context,
+                    )
+                    if len(toolkits) != 1:
+                        raise ReportingError(
+                            "report_phase_contract_invalid", "章节 Toolkit 装配结果无效。"
+                        )
+                    toolkit = toolkits[0]
+
+                    async def read_evidence(
+                        path: str, offset: int, task_context: RunContext
+                    ) -> Mapping[str, Any]:
+                        receipt = await toolkit.read_file(
+                            path, offset=offset, run_context=task_context
+                        )
+                        if receipt.get("ok") is False:
+                            raise ReportingError(
+                                str(receipt.get("code", "report_section_evidence_invalid")),
+                                str(receipt.get("message", "章节证据读取未被接受。")),
+                                details=dict(receipt),
+                            )
+                        return receipt
+
+                    async def generate(
+                        evidence: Any, task_context: RunContext
+                    ) -> SectionDecision:
+                        payload = json.dumps(
+                            {
+                                **instruction_payload,
+                                "evidence": evidence.model_dump(mode="json", by_alias=True),
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        return cast(
+                            SectionDecision,
+                            await ReportingStructuredAgentExecutor(self.section_generator).run(
+                                payload, scope=invocation.scope, run_context=task_context
+                            ),
+                        )
+
+                    async def recover(
+                        repair: Mapping[str, Any], task_context: RunContext
+                    ) -> SectionDecision:
+                        if self.section_recovery is None:
+                            raise ReportingError(
+                                "report_section_recovery_missing", "章节恢复生成器未配置。"
+                            )
+                        payload = json.dumps(
+                            {**instruction_payload, "recovery": dict(repair)},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        return cast(
+                            SectionDecision,
+                            await ReportingStructuredAgentExecutor(self.section_recovery).run(
+                                payload, scope=invocation.scope, run_context=task_context
+                            ),
+                        )
+
+                    async def render(
+                        decision: RenderSectionDecision, task_context: RunContext
+                    ) -> Mapping[str, Any]:
+                        return await toolkit.render_report_section(
+                            decision.section_code,
+                            [item.model_dump(mode="json", by_alias=True) for item in decision.blocks],
+                            [item.model_dump(mode="json", by_alias=True) for item in decision.claims],
+                            run_context=task_context,
+                        )
+
+                    async def rework(
+                        decision: AnalysisReworkDecision, task_context: RunContext
+                    ) -> Mapping[str, Any]:
+                        return await toolkit.request_analysis_rework(
+                            list(decision.analysis_ids),
+                            decision.reason,
+                            list(decision.missing_evidence),
+                            run_context=task_context,
+                        )
+
+                    return (
+                        await SectionWorkflow(
+                            read_evidence=read_evidence,
+                            generate=generate,
+                            recover=recover if self.section_recovery is not None else None,
+                            render=render,
+                            rework=rework,
+                        ).run(work_item, invocation.run_context)
+                    ).decision
+
                 receipt = await self.task_runner.run(
-                    task_scope, parent_run_id=str(run_context.run_id or "")
+                    task_scope,
+                    parent_run_id=str(run_context.run_id or ""),
+                    executor=execute_fixed_section,
                 )
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 identity = await self._phase_artifact_from_receipt(
@@ -954,7 +1065,7 @@ class RuntimeSectionsMixin:
             lineage=lineage,
             source_warnings=source_warnings,
             revision=revision,
-            coding_task_key=analysis_task_id,
+            task_key=analysis_task_id,
             section_numbers=rendered.section_numbers,
             heading_numbers=rendered.heading_numbers,
             run_context=run_context,
@@ -1001,7 +1112,7 @@ class RuntimeSectionsMixin:
         await self._persist_reporting_checkpoint(run_context, checkpoint)
         return checkpoint, manifest
 
-    async def _build_coding_artifact(
+    async def _build_reporting_artifact(
         self,
         run_context: RunContext,
         *,
@@ -1013,7 +1124,7 @@ class RuntimeSectionsMixin:
     ) -> AnalysisArtifact:
         """从本次运行的 durable analysisItems 和章节图表确定性构造分析产物。
 
-        章节 worker 只能消费这里派生的 facts/evidence/charts；模型没有第二个全局登记
+        章节 Agent 只能消费这里派生的 facts/evidence/charts；模型没有第二个全局登记
         入口。Dataset/evidence 文件身份漂移由既有工具记录为 warning，不改变发布路径。
         """
         scope = self._scope(run_context)
@@ -1069,9 +1180,9 @@ class RuntimeSectionsMixin:
             dict.fromkeys(dataset_id for item in evidence for dataset_id in item.dataset_ids)
         )
         plans = {
-            analysis_id: _coding_detailed_analysis_plan(detailed_plan, analysis_ids=(analysis_id,))[
-                "analyses"
-            ][0]
+            analysis_id: _reporting_detailed_analysis_plan(
+                detailed_plan, analysis_ids=(analysis_id,)
+            )["analyses"][0]
             for analysis_id in selected_ids
             if analysis_id in plans_by_id
         }
@@ -1106,9 +1217,9 @@ class RuntimeSectionsMixin:
                     if not isinstance(raw_chart, Mapping):
                         continue
                     source_path = raw_chart.get("sourcePath")
-                    source_file = (
-                        file_by_path.get(source_path) if isinstance(source_path, str) else None
-                    )
+                    if not isinstance(source_path, str):
+                        continue
+                    source_file = file_by_path.get(source_path)
                     if source_file is None:
                         continue
                     inspection = ChartVisualInspectionReceipt(

@@ -76,29 +76,29 @@ def test_v1_artifact_uses_unified_schema() -> None:
 
 def test_v1_checkpoint_is_valid() -> None:
     checkpoint = ReportingCheckpoint.model_validate(
-            {
-                "version": "1",
-                "revision": 1,
-                "phase": "analysis",
-                "outlineHash": "0" * 64,
-                "profileCoverage": {
-                    "authorizedDatasetCount": 1,
-                    "coveredDatasetCount": 1,
-                    "datasets": [
-                        {
-                            "datasetId": "d1",
-                            "datasetPath": "d.csv",
-                            "datasetSize": 1,
-                            "datasetSnapshotHash": "1" * 64,
-                            "profileFile": {"path": "p.json", "size": 1, "sha256": "2" * 64},
-                            "rowCount": 1,
-                            "fieldCount": 1,
-                            "fields": ["x"],
-                        }
-                    ],
-                },
-            }
-        )
+        {
+            "version": "1",
+            "revision": 1,
+            "phase": "analysis",
+            "outlineHash": "0" * 64,
+            "profileCoverage": {
+                "authorizedDatasetCount": 1,
+                "coveredDatasetCount": 1,
+                "datasets": [
+                    {
+                        "datasetId": "d1",
+                        "datasetPath": "d.csv",
+                        "datasetSize": 1,
+                        "datasetSnapshotHash": "1" * 64,
+                        "profileFile": {"path": "p.json", "size": 1, "sha256": "2" * 64},
+                        "rowCount": 1,
+                        "fieldCount": 1,
+                        "fields": ["x"],
+                    }
+                ],
+            },
+        }
+    )
     assert checkpoint.version == "1"
 
 

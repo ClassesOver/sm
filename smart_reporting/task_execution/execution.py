@@ -9,7 +9,7 @@ import shlex
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -22,10 +22,10 @@ from agno.utils.log import log_debug
 from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
-from ..agent_control import AGENT_PLAN_STATE_KEY, validated_agent_plan
+from ..agent_control import AGENT_PLAN_STATE_KEY
 from ..observability import suppress_expected_probe_tracing
 from ..skills import (
-    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+    TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
     SkillValidator,
     SkillValidatorRegistry,
@@ -38,7 +38,6 @@ from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     WORKSPACE_ROOT,
     WorkspaceError,
-    WorkspacePathConflict,
     WorkspaceProcessNotFound,
     WorkspaceService,
     WorkspaceToolkit,
@@ -51,21 +50,21 @@ from .execution_support import (
     extract_apply_patch_command,
     validate_command_policy,
 )
-from .models import CodingScope, Lease, TaskSnapshot
+from .models import Lease, TaskExecutionScope, TaskSnapshot
 from .repository_impl import (
     TERMINAL_EXECUTION_STATUSES,
-    CodingExecution,
-    CodingRepositoryError,
-    CodingTask,
-    CodingTaskRepository,
+    TaskExecution,
+    TaskExecutionRepository,
+    TaskExecutionRepositoryError,
+    TaskExecutionTask,
     utcnow,
 )
-from .tools import PURE_CODING_TOOLKIT_INSTRUCTIONS, _ManagedDaytonaTools, build_workspace_changes
+from .tools import build_workspace_changes
 
-CODING_TASK_DEPENDENCY = "AgentOS 编码任务"
-CODING_FINISH_FAILURE_STATE_KEY = "agentos_coding_finish_failure"
-CODING_FINISH_STATE_KEY = "agentos_coding_finish"
-CODING_EXECUTION_MIGRATION_STATE_KEY = "agentos_coding_execution_migrated"
+TASK_EXECUTION_DEPENDENCY = "AgentOS 任务执行"
+TASK_EXECUTION_FINISH_FAILURE_STATE_KEY = "agentos_task_execution_finish_failure"
+TASK_EXECUTION_FINISH_STATE_KEY = "agentos_task_execution_finish"
+TASK_EXECUTION_MIGRATION_STATE_KEY = "agentos_task_execution_migrated"
 DEFAULT_TERMINAL_TIMEOUT = 900
 MAX_FINISH_ARTIFACTS = 50
 MAX_VERIFICATION_IDS = 20
@@ -81,11 +80,22 @@ MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
 MAX_READ_FILE_BYTES = 128 * 1024
 MAX_PARALLEL_READ_TOOLS = 10
 MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
-CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
-CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
-CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
-CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY = "agentos_coding_tool_argument_autofixes"
-CODING_REWORK_STATE_KEY = "agentos_coding_rework"
+TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY = "agentos_task_execution_tool_outputs"
+TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY = "agentos_task_execution_tool_progress"
+TASK_EXECUTION_TOOL_FAILURE_STATE_KEY = "agentos_task_execution_tool_failures"
+TASK_EXECUTION_TOOL_ARGUMENT_AUTOFIX_STATE_KEY = "agentos_task_execution_tool_argument_autofixes"
+TASK_EXECUTION_REWORK_STATE_KEY = "agentos_task_execution_rework"
+_LEGACY_TASK_EXECUTION_STATE_KEYS = {
+    "agentos_coding_finish_failure": TASK_EXECUTION_FINISH_FAILURE_STATE_KEY,
+    "agentos_coding_finish": TASK_EXECUTION_FINISH_STATE_KEY,
+    "agentos_coding_execution_migrated": TASK_EXECUTION_MIGRATION_STATE_KEY,
+    "agentos_coding_tool_outputs": TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY,
+    "agentos_coding_tool_progress": TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY,
+    "agentos_coding_tool_failures": TASK_EXECUTION_TOOL_FAILURE_STATE_KEY,
+    "agentos_coding_tool_argument_autofixes": TASK_EXECUTION_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
+    "agentos_coding_rework": TASK_EXECUTION_REWORK_STATE_KEY,
+    "agentos_coding_skill_script_receipts": TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+}
 TOOL_OUTPUT_ROOT = "/home/daytona/.agentos/tool-output"
 VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
 READONLY_RUNTIME_ROOT = "/home/daytona/.agentos/runtime"
@@ -100,17 +110,28 @@ READONLY_SCRIPT_RUNTIME = Path(__file__).with_name("readonly_script_runtime.py")
 READONLY_SCRIPT_RUNTIME_SHA256 = hashlib.sha256(READONLY_SCRIPT_RUNTIME).hexdigest()
 
 
-def normalize_coding_function_call_arguments(
+def normalize_task_function_call_arguments(
     fc: Any,
     run_context: RunContext | None = None,
 ) -> None:
     """在 Agno 建立工具执行链前规范化 JSON 等价参数。"""
+    if run_context is not None and isinstance(run_context.session_state, dict):
+        _migrate_legacy_task_execution_state(run_context.session_state)
     _normalize_function_call_arguments(
         fc,
         run_context,
-        state_key=CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
+        state_key=TASK_EXECUTION_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
         autofix_code="coding_tool_arguments_unwrapped",
     )
+
+
+def _migrate_legacy_task_execution_state(state: dict[str, Any]) -> None:
+    """一次性吸收旧运行状态键；兼容标识不再向新上下文传播。"""
+
+    for legacy_key, current_key in _LEGACY_TASK_EXECUTION_STATE_KEYS.items():
+        if current_key not in state and legacy_key in state:
+            state[current_key] = state[legacy_key]
+        state.pop(legacy_key, None)
 
 
 def _normalize_function_call_arguments(
@@ -169,7 +190,7 @@ def _normalize_function_call_arguments(
     state = run_context.session_state if run_context is not None else None
     if not isinstance(state, dict):
         return
-    progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY)
+    progress = state.get(TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY)
     mutation_sequence = int(progress.get("mutation", 0)) if isinstance(progress, dict) else 0
     entry = {
         "code": autofix_code,
@@ -272,40 +293,40 @@ VOLATILE_PROGRESS_RESULT_KEYS = frozenset(
 )
 
 
-def _stable_progress_result(value: Any) -> Any:
+def stable_progress_result(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: _stable_progress_result(item)
+            key: stable_progress_result(item)
             for key, item in value.items()
             if key not in VOLATILE_PROGRESS_RESULT_KEYS
         }
     if isinstance(value, list):
-        return [_stable_progress_result(item) for item in value]
+        return [stable_progress_result(item) for item in value]
     return value
 
 
-def _absolute_paths(value: Any) -> set[str]:
+def absolute_paths(value: Any) -> set[str]:
     paths: set[str] = set()
     if isinstance(value, dict):
         for item in value.values():
-            paths.update(_absolute_paths(item))
+            paths.update(absolute_paths(item))
         return paths
     if isinstance(value, list):
         for item in value:
-            paths.update(_absolute_paths(item))
+            paths.update(absolute_paths(item))
         return paths
     return set(ABSOLUTE_PATH_RE.findall(value)) if isinstance(value, str) else set()
 
 
-def _paths_related(first: str, second: str) -> bool:
+def paths_related(first: str, second: str) -> bool:
     first_parts = tuple(part for part in first.split("/") if part)
     second_parts = tuple(part for part in second.split("/") if part)
     shorter = min(len(first_parts), len(second_parts))
     return first_parts[:shorter] == second_parts[:shorter]
 
 
-def _suggested_workspace_path(arguments: dict[str, Any]) -> str | None:
-    for path in sorted(_absolute_paths(arguments), key=len, reverse=True):
+def suggested_workspace_path(arguments: dict[str, Any]) -> str | None:
+    for path in sorted(absolute_paths(arguments), key=len, reverse=True):
         for root in (WORKSPACE_ROOT, "/workspace"):
             if path == root:
                 return ""
@@ -326,7 +347,7 @@ def _deterministic_output_error(output: str) -> tuple[str, str] | None:
     return "python_traceback", last_line[:500]
 
 
-def _failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]:
+def failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]:
     if not isinstance(result, dict):
         return []
     exit_code = result.get("exit_code")
@@ -338,20 +359,20 @@ def _failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str
     if not failed:
         return []
     output = result.get("output") or result.get("message") or ""
-    argument_paths = _absolute_paths(arguments)
-    output_paths = _absolute_paths(output)
+    argument_paths = absolute_paths(arguments)
+    output_paths = absolute_paths(output)
     resources = {
         output_path
         for argument_path in argument_paths
         for output_path in output_paths
-        if _paths_related(argument_path, output_path)
+        if paths_related(argument_path, output_path)
         and output_path != WORKSPACE_ROOT
         and not output_path.startswith(f"{WORKSPACE_ROOT}/")
     }
     return sorted(resources)[:4]
 
 
-def _is_read_only_terminal_command(command: str) -> bool:
+def is_read_only_terminal_command(command: str) -> bool:
     if not isinstance(command, str) or not command.strip():
         return False
     if any(marker in command for marker in ("\n", "\r", "`", "$", "\\\n")):
@@ -427,7 +448,7 @@ _PARALLEL_REPORT_TOOLS = frozenset(
         "read_profile_pointer",
     }
 )
-_CODING_TOOL_SCHEDULER_MARKER = "_agentos_coding_tool_scheduler"
+_TASK_TOOL_SCHEDULER_MARKER = "_agentos_task_execution_tool_scheduler"
 
 
 def _task_tool_parallel_safe(function_name: str, arguments: dict[str, Any]) -> bool:
@@ -527,18 +548,18 @@ def _bound_external_run_id(run_context: RunContext | None) -> str | None:
         if run_context is not None and isinstance(run_context.dependencies, dict)
         else {}
     )
-    binding = dependencies.get(CODING_TASK_DEPENDENCY)
+    binding = dependencies.get(TASK_EXECUTION_DEPENDENCY)
     external_run_id = binding.get("externalRunId") if isinstance(binding, dict) else None
     return external_run_id if isinstance(external_run_id, str) and external_run_id else None
 
 
-def create_coding_tool_scheduler_hook(
-    repository: CodingTaskRepository,
+def create_task_tool_scheduler_hook(
+    repository: TaskExecutionRepository,
 ) -> Callable[
     [RunContext, str, Callable[..., Any], dict[str, Any]],
     Coroutine[Any, Any, Any],
 ]:
-    async def coding_tool_scheduler_hook(
+    async def task_tool_scheduler_hook(
         run_context: RunContext,
         function_name: str,
         function_call: Callable[..., Any],
@@ -548,7 +569,7 @@ def create_coding_tool_scheduler_hook(
             result = function_call(**arguments)
             return await result if isawaitable(result) else result
 
-        # WorkspaceCodingToolkit applies the same scheduler after it resolves the Task scope.
+        # Reporting runtime applies the same scheduler after it resolves the Task scope.
         if function_name in TOOL_SPECS:
             return await invoke()
         external_run_id = _bound_external_run_id(run_context)
@@ -563,17 +584,17 @@ def create_coding_tool_scheduler_hook(
             async with lock:
                 return await invoke()
 
-    setattr(coding_tool_scheduler_hook, _CODING_TOOL_SCHEDULER_MARKER, True)
-    return coding_tool_scheduler_hook
+    setattr(task_tool_scheduler_hook, _TASK_TOOL_SCHEDULER_MARKER, True)
+    return task_tool_scheduler_hook
 
 
-def is_coding_tool_scheduler_hook(hook: Callable[..., Any]) -> bool:
-    return getattr(hook, _CODING_TOOL_SCHEDULER_MARKER, False) is True
+def is_task_tool_scheduler_hook(hook: Callable[..., Any]) -> bool:
+    return getattr(hook, _TASK_TOOL_SCHEDULER_MARKER, False) is True
 
 
 @dataclass(frozen=True)
-class CodingTaskScope:
-    task: CodingTask | TaskSnapshot
+class TaskExecutionRuntime:
+    task: TaskExecutionTask | TaskSnapshot
     external_run_id: str
     internal_run_id: str
     owner_user_id: str
@@ -585,13 +606,13 @@ class CodingTaskScope:
     lease: Lease | None = None
 
 
-class CodingExecutionKernel:
+class TaskExecutionKernel:
     _task_locks = _TASK_TOOL_SCHEDULERS
 
     def __init__(
         self,
         service: WorkspaceService,
-        repository: CodingTaskRepository,
+        repository: TaskExecutionRepository,
         *,
         validator_registry: SkillValidatorRegistry | None = None,
     ):
@@ -611,16 +632,16 @@ class CodingExecutionKernel:
     @staticmethod
     def bound_external_run_id(run_context: RunContext | None) -> str:
         if run_context is None or not run_context.run_id or not run_context.user_id:
-            raise CodingRepositoryError("task_context_missing", "缺少编码任务运行上下文。")
+            raise TaskExecutionRepositoryError("task_context_missing", "缺少执行任务运行上下文。")
         dependencies = (
             run_context.dependencies
             if run_context is not None and isinstance(run_context.dependencies, dict)
             else {}
         )
-        binding = dependencies.get(CODING_TASK_DEPENDENCY)
+        binding = dependencies.get(TASK_EXECUTION_DEPENDENCY)
         external_run_id = binding.get("externalRunId") if isinstance(binding, dict) else None
         if not isinstance(external_run_id, str) or not external_run_id:
-            raise CodingRepositoryError("task_binding_missing", "当前运行没有绑定编码任务。")
+            raise TaskExecutionRepositoryError("task_binding_missing", "当前运行没有绑定执行任务。")
         return external_run_id
 
     @staticmethod
@@ -637,7 +658,7 @@ class CodingExecutionKernel:
 
     async def bound_tool_result(
         self,
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         result: Any,
         run_context: RunContext | None,
         *,
@@ -711,7 +732,9 @@ class CodingExecutionKernel:
             path = f"{TOOL_OUTPUT_ROOT}/{hashlib.sha256(scope.external_run_id.encode()).hexdigest()[:24]}/{handle}"
             now = time.time()
             async with scheduler.state():
-                root = state.setdefault(CODING_TOOL_OUTPUT_STATE_KEY, {"handles": {}, "tasks": {}})
+                root = state.setdefault(
+                    TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY, {"handles": {}, "tasks": {}}
+                )
                 handles = root.setdefault("handles", {})
                 tasks = root.setdefault("tasks", {})
                 task_state = tasks.setdefault(scope.external_run_id, {"bytes": 0, "handles": []})
@@ -756,7 +779,7 @@ class CodingExecutionKernel:
                         await sandbox.fs.upload_file(raw[:stored_bytes], path)
             except Exception:
                 async with scheduler.state():
-                    current_root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {})
+                    current_root = state.get(TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY, {})
                     current_handles = (
                         current_root.get("handles", {}) if isinstance(current_root, dict) else {}
                     )
@@ -800,7 +823,7 @@ class CodingExecutionKernel:
         max_bytes: int,
         run_context: RunContext | None,
         *,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         if not isinstance(handle, str) or not handle:
             raise WorkspaceError("output handle 无效。")
@@ -851,7 +874,7 @@ class CodingExecutionKernel:
         handle: str,
         run_context: RunContext | None,
         *,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> tuple[bytes, dict[str, Any]]:
         """读取当前 Task/Attempt 的完整工具资源，并复核受信存储身份。"""
 
@@ -859,7 +882,9 @@ class CodingExecutionKernel:
             raise WorkspaceError("output handle 无效。")
         scope = _scope or await self.scope(run_context)
         state = run_context.session_state if run_context is not None else None
-        root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {}) if isinstance(state, dict) else {}
+        root = (
+            state.get(TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY, {}) if isinstance(state, dict) else {}
+        )
         metadata = root.get("handles", {}).get(handle) if isinstance(root, dict) else None
         if (
             not isinstance(metadata, dict)
@@ -887,10 +912,10 @@ class CodingExecutionKernel:
         return raw, dict(metadata)
 
     async def cleanup_tool_outputs(
-        self, scope: CodingTaskScope, run_context: RunContext | None
+        self, scope: TaskExecutionRuntime, run_context: RunContext | None
     ) -> None:
         state = run_context.session_state if run_context is not None else None
-        root = state.get(CODING_TOOL_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
+        root = state.get(TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
         if isinstance(root, dict):
             task_state = root.get("tasks", {}).pop(scope.external_run_id, None)
             handles = root.get("handles", {})
@@ -906,14 +931,14 @@ class CodingExecutionKernel:
         except Exception:
             pass
 
-    async def cleanup_old_epoch(self, scope: CodingScope, current_epoch: int) -> None:
+    async def cleanup_old_epoch(self, scope: TaskExecutionScope, current_epoch: int) -> None:
         await self._cleanup_executions(scope, current_epoch, old_only=True)
 
-    async def cleanup_disconnect(self, scope: CodingScope, current_epoch: int) -> None:
+    async def cleanup_disconnect(self, scope: TaskExecutionScope, current_epoch: int) -> None:
         await self._cleanup_executions(scope, current_epoch, old_only=False)
 
     async def _cleanup_executions(
-        self, scope: CodingScope, current_epoch: int, *, old_only: bool
+        self, scope: TaskExecutionScope, current_epoch: int, *, old_only: bool
     ) -> None:
         executions = await self.repository.list_executions(scope.external_run_id)
         for execution in executions:
@@ -943,7 +968,7 @@ class CodingExecutionKernel:
                 status = "lost"
             await self.repository.update_execution(execution.execution_id, status=status)
 
-    async def _coordinate_patch(self, execution: CodingExecution) -> str:
+    async def _coordinate_patch(self, execution: TaskExecution) -> str:
         receipt = execution.operation_receipt or {}
         files = receipt.get("files")
         if not isinstance(files, list) or not files:
@@ -969,15 +994,17 @@ class CodingExecutionKernel:
             return "not_applied"
         return "indeterminate"
 
-    async def scope(self, run_context: RunContext | None) -> CodingTaskScope:
+    async def scope(self, run_context: RunContext | None) -> TaskExecutionRuntime:
         if run_context is None or not run_context.run_id or not run_context.user_id:
-            raise CodingRepositoryError("task_context_missing", "缺少编码任务运行上下文。")
+            raise TaskExecutionRepositoryError("task_context_missing", "缺少执行任务运行上下文。")
+        if isinstance(run_context.session_state, dict):
+            _migrate_legacy_task_execution_state(run_context.session_state)
         dependencies = (
             run_context.dependencies if isinstance(run_context.dependencies, dict) else {}
         )
-        binding = dependencies.get(CODING_TASK_DEPENDENCY)
+        binding = dependencies.get(TASK_EXECUTION_DEPENDENCY)
         if not isinstance(binding, dict):
-            raise CodingRepositoryError("task_binding_missing", "当前运行没有绑定编码任务。")
+            raise TaskExecutionRepositoryError("task_binding_missing", "当前运行没有绑定执行任务。")
         external_run_id = binding.get("externalRunId")
         lease_owner = binding.get("leaseOwner")
         lease_epoch = binding.get("leaseEpoch")
@@ -1001,13 +1028,13 @@ class CodingExecutionKernel:
                 and (not isinstance(bound_sandbox_id, str) or not bound_sandbox_id)
             )
         ):
-            raise CodingRepositoryError("task_binding_invalid", "当前编码任务绑定无效。")
+            raise TaskExecutionRepositoryError("task_binding_invalid", "当前执行任务绑定无效。")
         snapshot = await self.repository.get_task_snapshot(external_run_id)
-        task: CodingTask | TaskSnapshot | None = snapshot
+        task: TaskExecutionTask | TaskSnapshot | None = snapshot
         if task is None:
             task = await self.repository.get_task(external_run_id)
         if task is None:
-            raise CodingRepositoryError("task_not_found", "编码任务必须由 Supervisor 创建。")
+            raise TaskExecutionRepositoryError("task_not_found", "执行任务必须由 协调器 创建。")
         task_sandbox_id = (
             task.scope.sandbox_id if isinstance(task, TaskSnapshot) else task.sandbox_id
         )
@@ -1020,15 +1047,15 @@ class CodingExecutionKernel:
                 or task.scope.thread_id != thread_id
                 or task.scope.sandbox_id != sandbox_id
             ):
-                raise CodingRepositoryError("task_scope_mismatch", "编码任务范围不匹配。")
+                raise TaskExecutionRepositoryError("task_scope_mismatch", "执行任务范围不匹配。")
         else:
             self.repository._assert_scope(task, str(run_context.user_id), thread_id, sandbox_id)
         internal_run_id = str(run_context.run_id)
         if not isinstance(task, TaskSnapshot) and task.current_internal_run_id is None:
             task = await self.repository.bind_initial_run(external_run_id, internal_run_id)
         elif internal_run_id != task.current_internal_run_id:
-            raise CodingRepositoryError(
-                "task_run_mismatch", "当前内部运行不是编码任务的活动 checkpoint。"
+            raise TaskExecutionRepositoryError(
+                "task_run_mismatch", "当前内部运行不是执行任务的活动 checkpoint。"
             )
         if isinstance(task, TaskSnapshot):
             if (
@@ -1038,14 +1065,18 @@ class CodingExecutionKernel:
                 or task.lease_expires_at is None
                 or task.lease_expires_at <= utcnow()
             ):
-                raise CodingRepositoryError("task_lease_binding_invalid", "编码任务租约绑定无效。")
+                raise TaskExecutionRepositoryError(
+                    "task_lease_binding_invalid", "执行任务租约绑定无效。"
+                )
             active_lease = Lease(lease_owner, lease_epoch, task.lease_expires_at)
         else:
             claimed = await self.repository.claim_lease(external_run_id, lease_owner)
             if not claimed:
-                raise CodingRepositoryError("task_lease_conflict", "编码任务正在由另一连接处理。")
+                raise TaskExecutionRepositoryError(
+                    "task_lease_conflict", "执行任务正在由另一连接处理。"
+                )
             active_lease = claimed if isinstance(claimed, Lease) else None
-        scope = CodingTaskScope(
+        scope = TaskExecutionRuntime(
             task=task,
             external_run_id=external_run_id,
             internal_run_id=internal_run_id,
@@ -1066,7 +1097,7 @@ class CodingExecutionKernel:
 
     async def _migrate_legacy_executions(
         self,
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         run_context: RunContext,
     ) -> None:
         async with self._migration_lock:
@@ -1074,11 +1105,11 @@ class CodingExecutionKernel:
 
     async def _migrate_legacy_executions_locked(
         self,
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         run_context: RunContext,
     ) -> None:
         state = run_context.session_state if isinstance(run_context.session_state, dict) else None
-        if state is None or state.get(CODING_EXECUTION_MIGRATION_STATE_KEY) is True:
+        if state is None or state.get(TASK_EXECUTION_MIGRATION_STATE_KEY) is True:
             return
         active = state.get(CODEX_EXEC_SESSIONS_STATE_KEY)
         closed = state.get(CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY)
@@ -1092,7 +1123,7 @@ class CodingExecutionKernel:
                     str(raw_entry.get("thread") or "") != scope.thread_id
                     or str(raw_entry.get("user_id") or "") != scope.owner_user_id
                 ):
-                    raise CodingRepositoryError(
+                    raise TaskExecutionRepositoryError(
                         "legacy_execution_scope_mismatch",
                         "旧执行句柄不属于当前用户或对话。",
                     )
@@ -1157,23 +1188,23 @@ class CodingExecutionKernel:
                         else None
                     ),
                 )
-        state[CODING_EXECUTION_MIGRATION_STATE_KEY] = True
+        state[TASK_EXECUTION_MIGRATION_STATE_KEY] = True
 
-    async def _sandbox(self, scope: CodingTaskScope):
+    async def _sandbox(self, scope: TaskExecutionRuntime):
         async with self.service._async_client() as client:
             sandbox = await self.service._asandbox_for(client, scope.thread_id)
             if str(getattr(sandbox, "id", "") or "") != scope.sandbox_id:
-                raise CodingRepositoryError(
-                    "task_sandbox_mismatch", "当前 Daytona 工作区与编码任务绑定不一致。"
+                raise TaskExecutionRepositoryError(
+                    "task_sandbox_mismatch", "当前 Daytona 工作区与执行任务绑定不一致。"
                 )
             yield sandbox
 
-    async def _check_fence(self, scope: CodingTaskScope, execution_id: str) -> None:
+    async def _check_fence(self, scope: TaskExecutionRuntime, execution_id: str) -> None:
         if scope.lease is not None:
             await self.repository.validate_execution_fence(execution_id, scope.lease)
 
     @staticmethod
-    def _public_execution(execution: CodingExecution, *, cached: bool = False) -> dict[str, Any]:
+    def _public_execution(execution: TaskExecution, *, cached: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
             "execution_id": execution.execution_id,
             "status": execution.status,
@@ -1212,8 +1243,8 @@ class CodingExecutionKernel:
         self,
         execution_id: str,
         run_context: RunContext | None,
-        scope: CodingTaskScope | None = None,
-    ) -> tuple[CodingTaskScope, CodingExecution]:
+        scope: TaskExecutionRuntime | None = None,
+    ) -> tuple[TaskExecutionRuntime, TaskExecution]:
         scope = scope or await self.scope(run_context)
         execution = await self.repository.scoped_execution(
             execution_id,
@@ -1222,7 +1253,9 @@ class CodingExecutionKernel:
             sandbox_id=scope.sandbox_id,
         )
         if execution.external_run_id != scope.external_run_id:
-            raise CodingRepositoryError("execution_scope_mismatch", "执行句柄不属于当前编码任务。")
+            raise TaskExecutionRepositoryError(
+                "execution_scope_mismatch", "执行句柄不属于当前执行任务。"
+            )
         return scope, execution
 
     @staticmethod
@@ -1263,7 +1296,7 @@ class CodingExecutionKernel:
     async def _read_remote(
         self,
         process: Any,
-        execution: CodingExecution,
+        execution: TaskExecution,
         *,
         wait_ms: int = 0,
     ) -> dict[str, Any]:
@@ -1297,9 +1330,9 @@ class CodingExecutionKernel:
     async def _persist_result(
         self,
         process: Any,
-        execution: CodingExecution,
+        execution: TaskExecution,
         result: dict[str, Any],
-    ) -> CodingExecution:
+    ) -> TaskExecution:
         remote_status = result.get("status")
         has_more = bool(result.get("hasMore"))
         exit_code = result.get("exitCode")
@@ -1321,7 +1354,7 @@ class CodingExecutionKernel:
                 exit_code=exit_code if isinstance(exit_code, int) else None,
                 expected_output_cursor=execution.output_cursor,
             )
-        except CodingRepositoryError as error:
+        except TaskExecutionRepositoryError as error:
             if error.code != "execution_cas_conflict":
                 raise
             latest = await self.repository.get_execution(execution.execution_id)
@@ -1347,7 +1380,7 @@ class CodingExecutionKernel:
         _verification: bool = False,
         _artifact_paths: list[str] | None = None,
         _read_only: bool | None = None,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         selected_shell = shell or "/bin/sh"
         if selected_shell not in {"/bin/sh", "/bin/bash"}:
@@ -1372,7 +1405,7 @@ class CodingExecutionKernel:
         read_only = (
             _read_only
             if _read_only is not None
-            else patch is None and _is_read_only_terminal_command(command)
+            else patch is None and is_read_only_terminal_command(command)
         )
         deferred_mutation = bool(
             patch is None and not read_only and not background and not _verification
@@ -1435,7 +1468,7 @@ class CodingExecutionKernel:
             except Exception as error:
                 message = (
                     str(error)
-                    if isinstance(error, (CodingRepositoryError, WorkspaceError))
+                    if isinstance(error, (TaskExecutionRepositoryError, WorkspaceError))
                     else "补丁执行失败。"
                 )
                 execution = await self.repository.update_execution(
@@ -1527,7 +1560,7 @@ class CodingExecutionKernel:
                         exit_code=1 if status == "failed" else None,
                         expected_status=current.status,
                     )
-                except CodingRepositoryError as conflict:
+                except TaskExecutionRepositoryError as conflict:
                     if conflict.code != "execution_cas_conflict":
                         raise
                     current = await self.repository.get_execution(execution_id)
@@ -1536,7 +1569,7 @@ class CodingExecutionKernel:
                     try:
                         async for sandbox in self._sandbox(scope):
                             await sandbox.process.delete_session(current.daytona_session_id)
-                    except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
+                    except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError):
                         pass
             assert current is not None
             if deferred_mutation and current.mutation_sequence == scope.task.mutation_sequence:
@@ -1559,10 +1592,10 @@ class CodingExecutionKernel:
 
     async def _record_terminal_mutation(
         self,
-        scope: CodingTaskScope,
-        execution: CodingExecution,
+        scope: TaskExecutionRuntime,
+        execution: TaskExecution,
         fingerprint_before: str | None,
-    ) -> CodingExecution:
+    ) -> TaskExecution:
         fingerprint_after: str | None = None
         if execution.status in TERMINAL_EXECUTION_STATUSES:
             try:
@@ -1582,7 +1615,7 @@ class CodingExecutionKernel:
         assert updated is not None
         return updated
 
-    async def _install_terminal_runtime(self, scope: CodingTaskScope) -> str:
+    async def _install_terminal_runtime(self, scope: TaskExecutionRuntime) -> str:
         runtime_dir = f"{READONLY_RUNTIME_ROOT}/{READONLY_SCRIPT_RUNTIME_SHA256}"
         runtime_path = f"{runtime_dir}/readonly_script_runtime.py"
         cache_key = (scope.sandbox_id, READONLY_SCRIPT_RUNTIME_SHA256)
@@ -1636,7 +1669,7 @@ class CodingExecutionKernel:
         run_context: RunContext | None,
         *,
         wait_ms: int = 0,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope, execution = await self._scoped_execution(execution_id, run_context, _scope)
         if execution.status in TERMINAL_EXECUTION_STATUSES:
@@ -1658,7 +1691,7 @@ class CodingExecutionKernel:
                     status="lost",
                     expected_status=execution.status,
                 )
-            except CodingRepositoryError as error:
+            except TaskExecutionRepositoryError as error:
                 if error.code != "execution_cas_conflict":
                     raise
                 latest_execution = await self.repository.get_execution(execution_id)
@@ -1675,7 +1708,7 @@ class CodingExecutionKernel:
         timeout: int,
         run_context: RunContext | None,
         *,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = _scope or await self.scope(run_context)
         if action == "list":
@@ -1727,7 +1760,7 @@ class CodingExecutionKernel:
                     status="terminated",
                     expected_status=execution.status,
                 )
-            except CodingRepositoryError as error:
+            except TaskExecutionRepositoryError as error:
                 if error.code != "execution_cas_conflict":
                     raise
                 latest_execution = await self.repository.get_execution(execution_id)
@@ -1807,7 +1840,7 @@ class CodingExecutionKernel:
                     status="lost",
                     expected_status=execution.status,
                 )
-            except CodingRepositoryError as error:
+            except TaskExecutionRepositoryError as error:
                 if error.code != "execution_cas_conflict":
                     raise
                 latest_execution = await self.repository.get_execution(execution_id)
@@ -1825,7 +1858,8 @@ class CodingExecutionKernel:
             if run_context is not None and isinstance(run_context.session_state, dict)
             else {}
         )
-        receipts = state.get(CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY)
+        _migrate_legacy_task_execution_state(state)
+        receipts = state.get(TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY)
         if not isinstance(receipts, dict):
             return
         script_digests = {
@@ -1883,7 +1917,7 @@ class CodingExecutionKernel:
         *,
         content: str | None = None,
         expected_sha256: str | None = None,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = _scope or await self.scope(run_context)
         if mode == "patch":
@@ -2022,7 +2056,7 @@ class CodingExecutionKernel:
         *,
         validator_id: str | None = None,
         timeout: int = DEFAULT_TERMINAL_TIMEOUT,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = _scope or await self.scope(run_context)
         if (
@@ -2133,12 +2167,12 @@ class CodingExecutionKernel:
         validator_id: str,
         artifact_paths: list[str],
         run_context: RunContext | None,
-        scope: CodingTaskScope | None = None,
+        scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = scope or await self.scope(run_context)
         task = await self.repository.get_task(scope.external_run_id)
         if task is None:
-            raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+            raise TaskExecutionRepositoryError("task_not_found", "执行任务不存在。")
         contract = task.acceptance_contract
         if contract is None:
             return self._verification_error(
@@ -2177,7 +2211,7 @@ class CodingExecutionKernel:
         def log_phase(phase: str, **details: Any) -> None:
             suffix = " ".join(f"{key}={value}" for key, value in details.items())
             log_debug(
-                "coding_validator_verify "
+                "task_execution_validator_verify "
                 f"phase={phase} validator_id={validator_id} "
                 f"external_run_id={scope.external_run_id} "
                 f"artifact_count={len(normalized_paths)} "
@@ -2486,7 +2520,7 @@ class CodingExecutionKernel:
 
     async def _install_validator(
         self,
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         validator: SkillValidator,
         request: bytes,
     ) -> _InstalledValidator:
@@ -2530,7 +2564,7 @@ class CodingExecutionKernel:
                         ),
                     ):
                         log_debug(
-                            "coding_validator_install "
+                            "task_execution_validator_install "
                             f"phase=digest_download_started validator_id={validator.validator_id} "
                             f"file={kind}"
                         )
@@ -2541,7 +2575,7 @@ class CodingExecutionKernel:
                             timeout=MAX_VALIDATOR_DOWNLOAD_TIMEOUT,
                         )
                         log_debug(
-                            "coding_validator_install "
+                            "task_execution_validator_install "
                             f"phase=digest_download_completed validator_id={validator.validator_id} "
                             f"file={kind}"
                         )
@@ -2558,7 +2592,8 @@ class CodingExecutionKernel:
                     )
         except TimeoutError as error:
             log_debug(
-                f"coding_validator_install phase=timed_out validator_id={validator.validator_id}"
+                "task_execution_validator_install phase=timed_out "
+                f"validator_id={validator.validator_id}"
             )
             raise WorkspaceError("validator 安装超时，请稍后重试。") from error
         return _InstalledValidator(
@@ -2573,7 +2608,7 @@ class CodingExecutionKernel:
 
     async def _validator_scripts_unchanged(
         self,
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         installed: _InstalledValidator,
         script_sha256: str,
     ) -> bool:
@@ -2597,11 +2632,13 @@ class CodingExecutionKernel:
                         if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
                             return False
                     return True
-        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
+        except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
             return False
         return False
 
-    async def _delete_validator_install(self, scope: CodingTaskScope, validator_dir: str) -> None:
+    async def _delete_validator_install(
+        self, scope: TaskExecutionRuntime, validator_dir: str
+    ) -> None:
         if not validator_dir.startswith(f"{VALIDATOR_ROOT}/"):
             return
         try:
@@ -2617,7 +2654,7 @@ class CodingExecutionKernel:
                         await sandbox.fs.delete_file(validator_dir, recursive=True)
                     except DaytonaNotFoundError:
                         pass
-        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
+        except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
             pass
 
     @staticmethod
@@ -2755,7 +2792,7 @@ class CodingExecutionKernel:
         self,
         command: str,
         run_context: RunContext | None,
-        scope: CodingTaskScope | None = None,
+        scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any] | None:
         scope = scope or await self.scope(run_context)
         state = (
@@ -2763,7 +2800,8 @@ class CodingExecutionKernel:
             if run_context is not None and isinstance(run_context.session_state, dict)
             else {}
         )
-        receipts = state.get(CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY)
+        _migrate_legacy_task_execution_state(state)
+        receipts = state.get(TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY)
         if not isinstance(receipts, dict) or not receipts:
             return None
         try:
@@ -2826,7 +2864,7 @@ class CodingExecutionKernel:
         run_context: RunContext | None,
         finish_function: Function,
         *,
-        _scope: CodingTaskScope | None = None,
+        _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = _scope or await self.scope(run_context)
         if isinstance(scope.task, TaskSnapshot) and scope.task.finish_receipt is not None:
@@ -2867,7 +2905,7 @@ class CodingExecutionKernel:
             service_sessions,
             executions,
         )
-        previous_failure = state.get(CODING_FINISH_FAILURE_STATE_KEY)
+        previous_failure = state.get(TASK_EXECUTION_FINISH_FAILURE_STATE_KEY)
         if (
             isinstance(previous_failure, dict)
             and previous_failure.get("observationFingerprint", previous_failure.get("fingerprint"))
@@ -2961,13 +2999,13 @@ class CodingExecutionKernel:
                 isinstance(previous_failure, dict)
                 and previous_failure.get("gateFingerprint") == gate_fingerprint
             ):
-                state[CODING_FINISH_FAILURE_STATE_KEY] = failure_state
+                state[TASK_EXECUTION_FINISH_FAILURE_STATE_KEY] = failure_state
                 return self._finish_no_progress(
                     code,
                     result["details"],
                     result["requiredActions"],
                 )
-            state[CODING_FINISH_FAILURE_STATE_KEY] = failure_state
+            state[TASK_EXECUTION_FINISH_FAILURE_STATE_KEY] = failure_state
             return result
 
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 4000:
@@ -3052,7 +3090,7 @@ class CodingExecutionKernel:
         try:
             async for _sandbox in self._sandbox(scope):
                 pass
-        except (CodingRepositoryError, WorkspaceError, DaytonaNotFoundError):
+        except (TaskExecutionRepositoryError, WorkspaceError, DaytonaNotFoundError):
             return reject(
                 "finish_sandbox_changed",
                 "当前 Daytona 工作区与任务绑定不一致。",
@@ -3205,7 +3243,7 @@ class CodingExecutionKernel:
             )
             async for _sandbox in self._sandbox(scope):
                 pass
-        except (CodingRepositoryError, WorkspaceError, DaytonaNotFoundError):
+        except (TaskExecutionRepositoryError, WorkspaceError, DaytonaNotFoundError):
             return reject(
                 "finish_sandbox_changed",
                 "当前工作区或交付产物在验收期间发生变化。",
@@ -3256,7 +3294,7 @@ class CodingExecutionKernel:
                     finish_payload=payload,
                     retained_execution_ids=list(declared_services),
                 )
-        except CodingRepositoryError as error:
+        except TaskExecutionRepositoryError as error:
             if error.code == "finish_instruction_pending":
                 finish_function.stop_after_tool_call = True
                 return reject(
@@ -3273,21 +3311,21 @@ class CodingExecutionKernel:
                 required_actions=["基于最新任务状态重新运行验证后提交验收。"],
                 progress_state={"stateChanged": True},
             )
-        state[CODING_FINISH_STATE_KEY] = payload
-        state.pop(CODING_FINISH_FAILURE_STATE_KEY, None)
+        state[TASK_EXECUTION_FINISH_STATE_KEY] = payload
+        state.pop(TASK_EXECUTION_FINISH_FAILURE_STATE_KEY, None)
         finish_function.stop_after_tool_call = True
         return {"ok": True, "status": "accepted", **payload}
 
     @staticmethod
     def _finish_fingerprint(
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         mutation_sequence: int,
         plan: Any,
         summary: Any,
         artifact_paths: Any,
         verification_ids: Any,
         service_sessions: Any,
-        executions: list[CodingExecution],
+        executions: list[TaskExecution],
     ) -> str:
         payload = {
             "attemptNo": scope.attempt_no,
@@ -3327,7 +3365,7 @@ class CodingExecutionKernel:
 
     @staticmethod
     def _finish_gate_fingerprint(
-        scope: CodingTaskScope,
+        scope: TaskExecutionRuntime,
         code: str,
         progress_state: Any,
     ) -> str:
@@ -3372,829 +3410,3 @@ class CodingExecutionKernel:
             "requiredActions": (required_actions or ["修正验收错误后重试 finish_task。"])[:10],
             "retryable": True,
         }
-
-
-class WorkspaceCodingToolkit(_ManagedDaytonaTools):
-    _PROCESS_OBSERVE_OR_CLEANUP_ACTIONS = frozenset({"list", "poll", "wait", "kill"})
-    _FINISH_FILE_REPAIR_CODES = frozenset(
-        {
-            "finish_artifact_missing",
-            "finish_artifact_changed",
-            "finish_verification_missing",
-            "finish_verification_failed",
-            "finish_verification_stale",
-            "finish_service_unhealthy",
-        }
-    )
-
-    def __init__(
-        self,
-        service: WorkspaceService,
-        repository: CodingTaskRepository,
-        *,
-        validator_registry: SkillValidatorRegistry | None = None,
-    ):
-        self.kernel = CodingExecutionKernel(
-            service,
-            repository,
-            validator_registry=validator_registry,
-        )
-        finish_function = Function(
-            name="finish_task",
-            description=(
-                "提交最终任务验收；验收失败时按稳定错误码修复后再次调用。"
-                '示例：{"summary":"任务已完成","artifact_paths":["output/report.md"]}'
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
-                    "artifact_paths": {
-                        "type": "array",
-                        "maxItems": MAX_FINISH_ARTIFACTS,
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                    "verification_ids": {
-                        "type": "array",
-                        "maxItems": MAX_VERIFICATION_IDS,
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                    "service_sessions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["session_id", "healthcheck_execution_id"],
-                            "properties": {
-                                "session_id": {"type": "string", "minLength": 1},
-                                "healthcheck_execution_id": {"type": "string", "minLength": 1},
-                            },
-                        },
-                        "default": [],
-                    },
-                },
-                "required": ["summary", "artifact_paths"],
-                "additionalProperties": False,
-            },
-        )
-
-        async def finish_entrypoint(
-            summary: str | None = None,
-            artifact_paths: list[str] | None = None,
-            verification_ids: list[str] | None = None,
-            service_sessions: list[dict[str, str]] | None = None,
-            run_context: RunContext | None = None,
-        ) -> dict[str, Any]:
-            result = await self._invoke(
-                "finish_task",
-                {
-                    "summary": summary,
-                    "artifact_paths": artifact_paths,
-                    "verification_ids": verification_ids,
-                    "service_sessions": service_sessions or [],
-                },
-                lambda scope: self.kernel.finish_task(
-                    summary,
-                    artifact_paths,
-                    verification_ids,
-                    service_sessions or [],
-                    run_context,
-                    finish_function,
-                    _scope=scope,
-                ),
-                run_context,
-            )
-            if isinstance(result, dict) and result.get("ok") is True:
-                registered = self.async_functions.get("finish_task")
-                if registered is not None:
-                    registered.stop_after_tool_call = True
-            return result
-
-        def finish_post_hook(fc: Any) -> None:
-            if isinstance(fc.result, dict) and fc.result.get("status") == "accepted":
-                fc.function.stop_after_tool_call = True
-
-        finish_function.entrypoint = finish_entrypoint
-        finish_function.post_hook = finish_post_hook
-        super().__init__(
-            name="workspace_coding",
-            tools=[
-                Function(
-                    name="terminal",
-                    description=(
-                        "执行工作区命令。terminal 必须作为本次 assistant 工具批次中的唯一调用，"
-                        "不能与任何其他工具并发。参数必须直接位于顶层，不要包 arguments。"
-                        '示例：{"command":"python3 -m pytest -q","timeout":120}；命令上限为 1 MiB。'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": MAX_TERMINAL_COMMAND_BYTES,
-                            },
-                            "background": {"type": "boolean", "default": False},
-                            "timeout": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
-                                "default": DEFAULT_TERMINAL_TIMEOUT,
-                            },
-                            "workdir": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            "pty": {"type": "boolean", "default": False},
-                            "shell": {
-                                "type": "string",
-                                "enum": ["/bin/sh", "/bin/bash"],
-                                "default": "/bin/sh",
-                            },
-                        },
-                        "required": ["command"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.terminal,
-                ),
-                Function(
-                    name="process",
-                    description='管理后台进程。示例：{"action":"list"}',
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["list", "poll", "wait", "kill", "write", "submit"],
-                            },
-                            "session_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            "data": {"type": "string", "maxLength": MAX_PROCESS_INPUT_BYTES},
-                            "timeout": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
-                                "default": 30,
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.process,
-                ),
-                Function(
-                    name="read_file",
-                    description='读取文件字节片段。示例：{"path":"src/app.py","offset":0}',
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "offset": {"type": "integer", "minimum": 0, "default": 0},
-                            "max_bytes": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_READ_FILE_BYTES,
-                                "default": MAX_READ_FILE_BYTES,
-                            },
-                        },
-                        "required": ["path"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.coding_read_file,
-                ),
-                Function(
-                    name="read_tool_output",
-                    description=(
-                        "继续读取被截断的工具输出。"
-                        '示例：{"handle":"tool-output-123","offset":65536}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "handle": {"type": "string", "minLength": 1},
-                            "offset": {"type": "integer", "minimum": 0, "default": 0},
-                            "max_bytes": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_TOOL_OUTPUT_READ_BYTES,
-                                "default": MAX_TOOL_OUTPUT_READ_BYTES,
-                            },
-                        },
-                        "required": ["handle"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.read_tool_output,
-                ),
-                Function(
-                    name="view_image",
-                    description=(
-                        '检查工作区图片。示例：{"path":"analysis/charts/trend.png","detail":"high"}'
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "detail": {
-                                "type": "string",
-                                "enum": ["high", "original"],
-                                "default": "high",
-                            },
-                        },
-                        "required": ["path"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.view_image,
-                ),
-                finish_function,
-            ],
-            instructions=PURE_CODING_TOOLKIT_INSTRUCTIONS,
-        )
-        for function in (*self.functions.values(), *self.async_functions.values()):
-            if function.pre_hook is None:
-                function.pre_hook = normalize_coding_function_call_arguments
-
-    async def _invoke(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        call: Callable[[CodingTaskScope], Awaitable[Any]],
-        run_context: RunContext | None,
-    ) -> Any:
-        external_run_id = self.kernel.bound_external_run_id(run_context)
-        progress_name = (
-            f"process:{arguments.get('action')}" if tool_name == "process" else tool_name
-        )
-        spec = TOOL_SPECS[tool_name]
-        if tool_name == "process" and arguments.get("action") in {"list", "poll", "wait"}:
-            spec = ToolSpec("read", True)
-        elif tool_name == "terminal" and _is_read_only_terminal_command(
-            str(arguments.get("command") or "")
-        ):
-            spec = ToolSpec("read", True)
-        async with (
-            self.kernel.task_scheduler(external_run_id) as lock,
-            lock.read() if spec.parallel_safe else lock.write(),
-        ):
-            scope = await self.kernel.scope(run_context)
-            state = (
-                run_context.session_state
-                if run_context is not None and isinstance(run_context.session_state, dict)
-                else None
-            )
-            mutation_before = scope.task.mutation_sequence
-            admission_rejection = await self._state_admission_rejection(
-                scope,
-                tool_name,
-                arguments,
-                state,
-            )
-            if admission_rejection is not None:
-                return admission_rejection
-            args_hash = hashlib.sha256(
-                json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str).encode()
-            ).hexdigest()
-            exempt = (
-                progress_name in NO_PROGRESS_EXEMPT_TOOLS
-                or tool_name == "finish_task"
-                or self._no_progress_exempt(
-                    scope=scope,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    run_context=run_context,
-                )
-            )
-            async with lock.state():
-                progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY) if state is not None else None
-                entries = (
-                    list(progress["entries"])
-                    if isinstance(progress, dict)
-                    and progress.get("attempt") == scope.attempt_no
-                    and progress.get("mutation") == mutation_before
-                    and isinstance(progress.get("entries"), list)
-                    else []
-                )
-                failure_state = (
-                    state.get(CODING_TOOL_FAILURE_STATE_KEY) if state is not None else None
-                )
-                failure_entries = (
-                    list(failure_state["entries"])
-                    if isinstance(failure_state, dict)
-                    and failure_state.get("attempt") == scope.attempt_no
-                    and isinstance(failure_state.get("entries"), list)
-                    else []
-                )
-                argument_resources = _absolute_paths(arguments)
-                blocked_failure = next(
-                    (
-                        entry
-                        for entry in reversed(failure_entries)
-                        if isinstance(entry, dict)
-                        and isinstance(entry.get("resource"), str)
-                        and any(
-                            _paths_related(entry["resource"], resource)
-                            for resource in argument_resources
-                        )
-                        and tool_name == "terminal"
-                    ),
-                    None,
-                )
-                if isinstance(blocked_failure, dict):
-                    return {
-                        "ok": False,
-                        "code": "tool_no_progress",
-                        "message": "当前 Attempt 已确认该绝对路径不可用，本次未执行。",
-                        "details": {
-                            "failedResource": blocked_failure["resource"],
-                            "workspaceRoot": WORKSPACE_ROOT,
-                            "failureFingerprint": blocked_failure["fingerprint"],
-                        },
-                        "requiredActions": [
-                            "使用工作区相对路径重新执行。",
-                            f"需要绝对路径时使用 {WORKSPACE_ROOT}。",
-                        ],
-                        "retryable": True,
-                    }
-                previous = next(
-                    (
-                        entry
-                        for entry in reversed(entries)
-                        if isinstance(entry, dict)
-                        and entry.get("tool") == progress_name
-                        and entry.get("argsHash") == args_hash
-                    ),
-                    None,
-                )
-                if not exempt and isinstance(previous, dict) and int(previous.get("count", 0)) >= 2:
-                    return {
-                        "ok": False,
-                        "code": "tool_no_progress",
-                        "message": "相同工具和参数已连续两次返回相同结果，本次未执行。",
-                        "requiredActions": [
-                            "修改参数或使用其他只读工具收集新证据。",
-                            "先完成真实工作区修改，再重试该调用。",
-                        ],
-                        "retryable": True,
-                    }
-            try:
-                result = await call(scope)
-            except WorkspacePathConflict as error:
-                details: dict[str, Any] = {"tool": tool_name}
-                suggested_path = _suggested_workspace_path(arguments)
-                if suggested_path is not None:
-                    details["suggestedPath"] = suggested_path
-                return {
-                    "ok": False,
-                    "status": "rejected",
-                    "code": "workspace_path_conflict",
-                    "message": str(error)[:1000],
-                    "details": details,
-                    "requiredActions": ["重新读取目标路径及最新哈希后再重试。"],
-                    "retryable": True,
-                }
-            except WorkspaceError as error:
-                details = {"tool": tool_name}
-                suggested_path = _suggested_workspace_path(arguments)
-                if suggested_path is not None:
-                    details["suggestedPath"] = suggested_path
-                return {
-                    "ok": False,
-                    "status": "rejected",
-                    "code": "workspace_error",
-                    "message": str(error)[:1000],
-                    "details": details,
-                    "requiredActions": ["按错误说明修正参数后重试。"],
-                    "retryable": True,
-                }
-            failed_resources = _failed_result_resources(arguments, result)
-            if state is not None and failed_resources:
-                fingerprint = hashlib.sha256(
-                    json.dumps(
-                        {
-                            "exitCode": result.get("exit_code")
-                            if isinstance(result, dict)
-                            else None,
-                            "output": result.get("output") if isinstance(result, dict) else None,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        default=str,
-                    ).encode()
-                ).hexdigest()
-                async with lock.state():
-                    failure_state = state.get(CODING_TOOL_FAILURE_STATE_KEY)
-                    failure_entries = (
-                        list(failure_state["entries"])
-                        if isinstance(failure_state, dict)
-                        and failure_state.get("attempt") == scope.attempt_no
-                        and isinstance(failure_state.get("entries"), list)
-                        else []
-                    )
-                    for resource in failed_resources:
-                        failure_entries = [
-                            entry
-                            for entry in failure_entries
-                            if not isinstance(entry, dict) or entry.get("resource") != resource
-                        ]
-                        failure_entries.append({"resource": resource, "fingerprint": fingerprint})
-                    state[CODING_TOOL_FAILURE_STATE_KEY] = {
-                        "attempt": scope.attempt_no,
-                        "entries": failure_entries[-MAX_TOOL_FAILURE_ENTRIES:],
-                    }
-            result_hash = hashlib.sha256(
-                json.dumps(
-                    _stable_progress_result(result),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode()
-            ).hexdigest()
-            if spec.output_policy == "bounded_text":
-                result = await self.kernel.bound_tool_result(
-                    scope,
-                    result,
-                    run_context,
-                    retain=self._retain_bounded_tool_result(scope, tool_name),
-                    preview_bytes=self._tool_preview_bytes(scope, tool_name, arguments, result),
-                )
-            if not exempt and state is not None:
-                if spec.effect == "read":
-                    mutation_after = mutation_before
-                else:
-                    latest_snapshot = await self.kernel.repository.get_task_snapshot(
-                        scope.external_run_id
-                    )
-                    latest_task: TaskSnapshot | CodingTask | None = latest_snapshot
-                    if latest_task is None:
-                        latest_task = await self.kernel.repository.get_task(scope.external_run_id)
-                    mutation_after = (
-                        latest_task.mutation_sequence if latest_task is not None else -1
-                    )
-                async with lock.state():
-                    progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY)
-                    entries = (
-                        list(progress["entries"])
-                        if isinstance(progress, dict)
-                        and progress.get("attempt") == scope.attempt_no
-                        and progress.get("mutation") == mutation_after
-                        and isinstance(progress.get("entries"), list)
-                        else []
-                    )
-                    previous = next(
-                        (
-                            entry
-                            for entry in reversed(entries)
-                            if isinstance(entry, dict)
-                            and entry.get("tool") == progress_name
-                            and entry.get("argsHash") == args_hash
-                        ),
-                        None,
-                    )
-                    same = bool(
-                        isinstance(previous, dict)
-                        and previous.get("resultHash") == result_hash
-                        and mutation_before == mutation_after
-                    )
-                    entry = {
-                        "attempt": scope.attempt_no,
-                        "tool": progress_name,
-                        "argsHash": args_hash,
-                        "resultHash": result_hash,
-                        "mutation": mutation_after,
-                        "count": int((previous or {}).get("count", 0)) + 1 if same else 1,
-                    }
-                    if previous in entries:
-                        entries.remove(previous)
-                    entries.append(entry)
-                    state[CODING_TOOL_PROGRESS_STATE_KEY] = {
-                        "attempt": scope.attempt_no,
-                        "mutation": mutation_after,
-                        "entries": entries[-MAX_TOOL_PROGRESS_ENTRIES:],
-                    }
-            if tool_name == "finish_task" and isinstance(result, dict) and result.get("ok"):
-                await self.kernel.cleanup_tool_outputs(scope, run_context)
-            return result
-
-    def _retain_bounded_tool_result(self, scope: CodingTaskScope, tool_name: str) -> bool:
-        """由专用 Toolkit 显式扩大可恢复性，普通 Coding 保持原行为。"""
-
-        _ = scope, tool_name
-        return False
-
-    def _tool_preview_bytes(
-        self,
-        scope: CodingTaskScope,
-        tool_name: str,
-        arguments: Mapping[str, Any],
-        result: Any,
-    ) -> int | None:
-        """允许专用 Toolkit 精确扩大单个工具回执，默认边界保持不变。"""
-
-        _ = scope, tool_name, arguments, result
-        return None
-
-    def _no_progress_exempt(
-        self,
-        *,
-        scope: CodingTaskScope,
-        tool_name: str,
-        arguments: Mapping[str, Any],
-        run_context: RunContext | None,
-    ) -> bool:
-        """允许专用 Toolkit 让权威状态机授权优先于通用 Attempt 防重。"""
-
-        _ = scope, tool_name, arguments, run_context
-        return False
-
-    async def _state_admission_rejection(
-        self,
-        scope: CodingTaskScope,
-        tool_name: str,
-        arguments: dict[str, Any],
-        state: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        mutation_sequence = scope.task.mutation_sequence
-        if tool_name == "process" and arguments.get("action") in (
-            self._PROCESS_OBSERVE_OR_CLEANUP_ACTIONS
-        ):
-            return None
-
-        finish_failure = state.get(CODING_FINISH_FAILURE_STATE_KEY) if state is not None else None
-        raw_finish_failure_details = (
-            finish_failure.get("details") if isinstance(finish_failure, dict) else None
-        )
-        finish_failure_details: dict[str, Any] = (
-            dict(raw_finish_failure_details) if isinstance(raw_finish_failure_details, dict) else {}
-        )
-        repairing_finish_failure = bool(
-            finish_failure_details.get("mutationSequence") == mutation_sequence
-        )
-        if mutation_sequence == 0 and not repairing_finish_failure:
-            return None
-
-        current_plan = (
-            validated_agent_plan(state.get(AGENT_PLAN_STATE_KEY))
-            if isinstance(state, dict)
-            else None
-        )
-        rework = state.get(CODING_REWORK_STATE_KEY) if state is not None else None
-        if (
-            not repairing_finish_failure
-            and not isinstance(rework, dict)
-            and current_plan is not None
-            and any(item["status"] != "completed" for item in current_plan["plan"])
-        ):
-            return None
-
-        if isinstance(rework, dict) and rework.get("mutationSequence") == mutation_sequence:
-            return None
-
-        executions = await self.kernel.repository.list_executions(scope.external_run_id)
-        verification = next(
-            (
-                execution
-                for execution in reversed(executions)
-                if execution.is_verification
-                and execution.mutation_sequence == mutation_sequence
-                and execution.status == "completed"
-                and execution.exit_code == 0
-                and (execution.operation_receipt or {}).get("valid", True) is not False
-            ),
-            None,
-        )
-        if verification is None:
-            # Reporting 在 finalize 后由独立 Workflow 完成产物验收，因此不提供 verify。
-            # 仅显式关闭 finish 验证的专用 Kernel 可跳过；默认 Coding 门禁仍失败关闭。
-            if tool_name == "finish_task" and not self.kernel.require_finish_verification:
-                return None
-            if TOOL_SPECS[tool_name].effect == "read":
-                return None
-            failed_verification = next(
-                (
-                    execution
-                    for execution in reversed(executions)
-                    if execution.is_verification
-                    and execution.mutation_sequence == mutation_sequence
-                    and (
-                        execution.status in TERMINAL_EXECUTION_STATUSES
-                        or (execution.operation_receipt or {}).get("valid") is False
-                    )
-                ),
-                None,
-            )
-            return {
-                "ok": False,
-                "status": "rejected",
-                "code": "coding_verification_required",
-                "message": "当前工作区修改尚未通过验证，本次工具调用未执行。",
-                "details": {
-                    "mutationSequence": mutation_sequence,
-                    **(
-                        {"failedVerificationId": failed_verification.execution_id}
-                        if failed_verification is not None
-                        else {}
-                    ),
-                },
-                "requiredActions": [
-                    "如验证失败，仅修改失败项，然后调用 verify 重新验证。",
-                    "如尚未验证，立即调用 verify 执行与本次修改对应的检查。",
-                ],
-                "retryable": True,
-            }
-
-        if tool_name == "finish_task":
-            return None
-        if repairing_finish_failure and isinstance(finish_failure, dict):
-            failure_code = str(finish_failure.get("code") or "finish_rejected")
-            repair_with_files = failure_code in self._FINISH_FILE_REPAIR_CODES or (
-                failure_code.startswith("finish_acceptance_")
-            )
-            if repair_with_files and (TOOL_SPECS[tool_name].effect == "read"):
-                return None
-            allowed_tools = (
-                ["finish_task"]
-                if failure_code == "finish_plan_incomplete"
-                else [
-                    "finish_task",
-                    "terminal",
-                    "process",
-                    "view_image",
-                    "read_tool_output",
-                    "read_file",
-                ]
-                if repair_with_files
-                else ["finish_task"]
-            )
-            return {
-                "ok": False,
-                "status": "rejected",
-                "code": "coding_finish_repair_required",
-                "message": "上次 finish_task 未通过；本次工具与失败项修复无关，未执行。",
-                "details": {
-                    **finish_failure_details,
-                    "mutationSequence": mutation_sequence,
-                    "verificationId": verification.execution_id,
-                    "finishFailureCode": failure_code,
-                    "allowedTools": allowed_tools,
-                },
-                "requiredActions": list(finish_failure.get("requiredActions") or [])[:10],
-                "retryable": True,
-            }
-        return {
-            "ok": False,
-            "status": "rejected",
-            "code": "coding_finish_required",
-            "message": "当前工作区修改已通过验证，应提交任务验收，本次工具调用未执行。",
-            "details": {
-                "mutationSequence": mutation_sequence,
-                "verificationId": verification.execution_id,
-                "allowedTools": ["finish_task"],
-                **(
-                    {"finishFailureCode": finish_failure.get("code")}
-                    if repairing_finish_failure and isinstance(finish_failure, dict)
-                    else {}
-                ),
-            },
-            "requiredActions": (
-                list(finish_failure.get("requiredActions") or [])[:10]
-                if repairing_finish_failure and isinstance(finish_failure, dict)
-                else [
-                    "若工作已全部完成，更新计划为 completed 后调用 finish_task；"
-                    "若仍需工作，先完成当前真实修复步骤，再重新提交任务验收。"
-                ]
-            ),
-            "retryable": True,
-        }
-
-    async def terminal(
-        self,
-        command: str,
-        background: bool = False,
-        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
-        workdir: str | None = None,
-        pty: bool = False,
-        shell: str | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "terminal",
-            {
-                "command": command,
-                "background": background,
-                "timeout": timeout,
-                "workdir": workdir,
-                "pty": pty,
-                "shell": shell,
-            },
-            lambda scope: self.kernel.terminal(
-                command,
-                background=background,
-                timeout=timeout,
-                workdir=workdir,
-                pty=pty,
-                shell=shell,
-                run_context=run_context,
-                _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def process(
-        self,
-        action: str,
-        session_id: str | None = None,
-        data: str = "",
-        timeout: int = 30,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "process",
-            {"action": action, "session_id": session_id, "data": data, "timeout": timeout},
-            lambda scope: self.kernel.process(
-                action, session_id, data, timeout, run_context, _scope=scope
-            ),
-            run_context,
-        )
-
-    async def coding_read_file(
-        self,
-        path: str,
-        offset: int = 0,
-        max_bytes: int = MAX_TOOL_OUTPUT_READ_BYTES,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-            raise WorkspaceError("read_file offset 必须是大于等于 0 的整数。")
-        if (
-            isinstance(max_bytes, bool)
-            or not isinstance(max_bytes, int)
-            or not 1 <= max_bytes <= MAX_READ_FILE_BYTES
-        ):
-            raise WorkspaceError(
-                f"read_file max_bytes 必须是 1 至 {MAX_READ_FILE_BYTES} 之间的整数。"
-            )
-
-        async def call(scope: CodingTaskScope):
-            content, _mime = await asyncio.to_thread(
-                self.kernel.service.file_bytes, scope.thread_id, path
-            )
-            if offset > len(content):
-                raise WorkspaceError("read_file offset 超过文件大小。")
-            end = min(len(content), offset + max_bytes)
-            while end > offset:
-                try:
-                    selected = content[offset:end].decode("utf-8")
-                    break
-                except UnicodeDecodeError:
-                    end -= 1
-            else:
-                selected = ""
-            if not selected and offset < len(content):
-                raise WorkspaceError("read_file max_bytes 不足以读取下一个 UTF-8 字符。")
-            return {
-                "path": WorkspaceService.normalize_path(path, allow_root=False)[0],
-                "offset": offset,
-                "nextOffset": end,
-                "totalBytes": len(content),
-                "content": selected,
-                "hasMore": end < len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
-            }
-
-        return await self._invoke(
-            "read_file", {"path": path, "offset": offset, "max_bytes": max_bytes}, call, run_context
-        )
-
-    async def read_tool_output(
-        self,
-        handle: str,
-        offset: int = 0,
-        max_bytes: int = MAX_TOOL_OUTPUT_READ_BYTES,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "read_tool_output",
-            {"handle": handle, "offset": offset, "max_bytes": max_bytes},
-            lambda scope: self.kernel.read_tool_output(
-                handle, offset, max_bytes, run_context, _scope=scope
-            ),
-            run_context,
-        )
-
-    async def view_image(
-        self,
-        path: str,
-        detail: str = "high",
-        run_context: RunContext | None = None,
-    ):
-        if detail not in {"high", "original"}:
-            raise WorkspaceError("图片 detail 必须是 high 或 original。")
-
-        async def call(scope: CodingTaskScope):
-            return await asyncio.to_thread(self.kernel.service.view_image, scope.thread_id, path)
-
-        return await self._invoke("view_image", {"path": path, "detail": detail}, call, run_context)
-
-
-# 中立名称供不同产品边界复用；旧名称仅保留在 Coding 入口内部。
-TASK_EXECUTION_DEPENDENCY = CODING_TASK_DEPENDENCY
-TaskExecutionKernel = CodingExecutionKernel
-WorkspaceTaskToolkit = WorkspaceCodingToolkit
-
-create_task_tool_scheduler_hook = create_coding_tool_scheduler_hook
-is_task_tool_scheduler_hook = is_coding_tool_scheduler_hook

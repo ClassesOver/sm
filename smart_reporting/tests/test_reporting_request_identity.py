@@ -214,9 +214,7 @@ async def test_reporting_run_binds_all_odoo_identity_fields() -> None:
     assert response.json() == {
         "requestUserId": "7",
         "requestSessionId": "thread-1",
-        "requestDependencies": {
-            "AgentOS 报表工作流": {"database": "odoo", "companyId": "3"}
-        },
+        "requestDependencies": {"AgentOS 报表工作流": {"database": "odoo", "companyId": "3"}},
     }
 
 

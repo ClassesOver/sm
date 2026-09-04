@@ -13,7 +13,7 @@ from smart_reporting.reporting.tools.capabilities import tools_for_task
         ("section", "section", "render_report_section"),
     ),
 )
-def test_worker_task_kind_exposes_its_own_terminal_tool(
+def test_agent_task_kind_exposes_its_own_terminal_tool(
     phase: str, task_kind: str, required_terminal: str
 ) -> None:
     tools = tools_for_task(phase, task_kind)
@@ -21,7 +21,7 @@ def test_worker_task_kind_exposes_its_own_terminal_tool(
     assert required_terminal in tools
 
 
-def test_visualization_worker_exposes_only_its_section_toolset() -> None:
+def test_visualization_agent_exposes_only_its_section_toolset() -> None:
     tools = tools_for_task("analysis", "visualization_section")
     assert tools == frozenset(
         {
@@ -32,7 +32,6 @@ def test_visualization_worker_exposes_only_its_section_toolset() -> None:
             "submit_visualization_charts",
             "terminal",
             "view_image",
-            "create_analysis_file",
-            "overwrite_analysis_file",
+            "apply_analysis_patch",
         }
     )

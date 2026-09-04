@@ -8,7 +8,7 @@ from smart_reporting.task_execution.acceptance import (
     normalize_acceptance_contract,
     requirement_digest,
 )
-from smart_reporting.task_execution.repository_impl import CodingExecution
+from smart_reporting.task_execution.repository_impl import TaskExecution
 
 
 def contract(*requirements):
@@ -40,7 +40,7 @@ def execution(
     artifacts=None,
 ):
     current_requirement = requirement_value or requirement()
-    return CodingExecution(
+    return TaskExecution(
         execution_id=execution_id,
         external_run_id="run",
         internal_run_id="attempt",

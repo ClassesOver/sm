@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -94,6 +95,8 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["workflows"] == []
     assert created[0].values["interfaces"] == []
     assert created[0].values["telemetry"] is False
+    assert created[0].values["mcp_server"] is False
+    assert created[0].values["mcp_auth"] is None
 
 
 def test_application_passes_trace_database_to_agentos(monkeypatch):
@@ -147,6 +150,50 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
         assert workspace.close_calls == 0
     assert workspace.close_calls == 1
     assert workspace.cleanup_stopped.is_set()
+
+
+@pytest.mark.anyio
+async def test_application_closes_reporting_tasks_before_agentos_database(monkeypatch):
+    events: list[str] = []
+
+    class Controller:
+        async def aclose(self) -> None:
+            events.append("controller-close")
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            self.values = values
+
+        def get_app(self):
+            app = self.values["base_app"]
+
+            @asynccontextmanager
+            async def agentos_lifespan(_app):
+                events.append("database-open")
+                yield
+                events.append("database-close")
+
+            app.router.lifespan_context = agentos_lifespan
+            return app
+
+    monkeypatch.setattr("smart_reporting.application.AgentOS", FakeAgentOS)
+    context = ApplicationContext(
+        AgentSettings.from_environment({}, load_env_file=False),
+        FakeWorkspace("lifespan"),
+        FakeAssistant(),
+        report_workflow_controller=Controller(),  # type: ignore[arg-type]
+    )
+
+    _agent_os, app = create_agentos_app(context, FastAPI())
+    async with app.router.lifespan_context(app):
+        events.append("serving")
+
+    assert events == [
+        "database-open",
+        "serving",
+        "controller-close",
+        "database-close",
+    ]
 
 
 @pytest.mark.anyio

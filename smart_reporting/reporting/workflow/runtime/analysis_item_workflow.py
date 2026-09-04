@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import shlex
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -28,6 +29,17 @@ _STAGE_NAMES = (
     "validate-evidence",
     "complete-analysis",
 )
+
+
+def _script_patch(path: str, content: str, previous: str | None) -> str:
+    """生成标准 unified diff；首次写入以 /dev/null 作为基线。"""
+    before = [] if previous is None else previous.splitlines(keepends=True)
+    after = content.splitlines(keepends=True)
+    if previous is None:
+        before_name, after_name = "/dev/null", f"b/{path}"
+    else:
+        before_name, after_name = f"a/{path}", f"b/{path}"
+    return "".join(difflib.unified_diff(before, after, fromfile=before_name, tofile=after_name))
 
 
 class _StrictModel(BaseModel):
@@ -118,16 +130,14 @@ class AnalysisItemWorkflow:
         plan_evidence: PlanEvidence,
         summarize: Summarize,
         read_file: ToolCall,
-        create_file: ToolCall,
-        overwrite_file: ToolCall,
+        apply_patch: ToolCall,
         run_script: ToolCall,
         complete: ToolCall,
     ) -> None:
         self.plan_evidence = plan_evidence
         self.summarize = summarize
         self.read_file = read_file
-        self.create_file = create_file
-        self.overwrite_file = overwrite_file
+        self.apply_patch = apply_patch
         self.run_script = run_script
         self.complete = complete
 
@@ -419,42 +429,23 @@ class AnalysisItemWorkflow:
                 "report_analysis_evidence_plan_invalid", "补充 evidence 计划缺少可执行脚本。"
             )
         script_path = self._script_path(state)
-        if state.script_sha256 is None:
-            write = await self.create_file(
-                path=script_path, content=plan.script, run_context=run_context
-            )
-            if (
-                write.get("ok") is False
-                and write.get("code") == "report_analysis_write_path_conflict"
-            ):
-                details = write.get("details")
-                current_files = (
-                    details.get("currentFiles") if isinstance(details, Mapping) else None
-                )
-                current = next(
-                    (
-                        item
-                        for item in current_files or ()
-                        if isinstance(item, Mapping) and item.get("path") == script_path
-                    ),
-                    None,
-                )
-                current_sha256 = current.get("sha256") if isinstance(current, Mapping) else None
-                if isinstance(current_sha256, str):
-                    state.script_sha256 = current_sha256
-                    write = await self.overwrite_file(
-                        path=script_path,
-                        content=plan.script,
-                        expected_sha256=current_sha256,
-                        run_context=run_context,
-                    )
-        else:
-            write = await self.overwrite_file(
+        previous = None
+        if state.script_sha256 is not None:
+            current = await self.read_file(
                 path=script_path,
-                content=plan.script,
-                expected_sha256=state.script_sha256,
+                max_bytes=MAX_ANALYSIS_SCRIPT_REPAIRS * 131072,
                 run_context=run_context,
             )
+            self._require_ok(current, default_code="report_analysis_script_read_failed")
+            previous = current.get("content")
+            if not isinstance(previous, str):
+                raise ReportingError("report_analysis_script_read_failed", "无法读取待修复脚本。")
+        patch = _script_patch(script_path, plan.script, previous)
+        write = await self.apply_patch(
+            patch=patch,
+            expected_sha256=({script_path: state.script_sha256} if state.script_sha256 else None),
+            run_context=run_context,
+        )
         try:
             self._require_ok(write, default_code="report_analysis_script_write_failed")
             artifacts = write.get("artifacts")
