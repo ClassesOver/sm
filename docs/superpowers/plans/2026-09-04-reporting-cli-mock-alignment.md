@@ -94,7 +94,7 @@ assert result["status"] == "completed"
 assert adapter.production_draft_workflow_called is True
 ```
 
-adapter 的阶段回调必须进入生产 `ReportTaskRuntime`/`ReportTaskCoordinator` 路径，不能直接把输入改写成成功结果；外部端口仅使用本测试独立 fake。
+adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `ReportingTaskCoordinator` 路径，不能直接把输入改写成成功结果；外部端口仅使用本测试独立 fake。
 
 - [ ] **Step 2: 运行测试确认 harness 尚未存在**
 
@@ -141,26 +141,45 @@ git commit -m "test(reporting): align mock harness with cli workflow"
 
 - [ ] **Step 1: 先加入失败契约测试**
 
-加入以下独立测试：
+加入以下独立测试（参数使用本文件的 fixture，测试体必须实现真实调用和断言，不得以 `...` 占位）：
 
 ```python
 @pytest.mark.anyio
-async def test_analysis_executor_never_calls_worker_agent(...): ...
+async def test_analysis_executor_never_calls_worker_agent(harness):
+    await harness.run_phase("analysis_item")
+    harness.worker_agent.arun.assert_not_awaited()
+    harness.worker_agent.acontinue_run.assert_not_awaited()
 
 @pytest.mark.anyio
-async def test_visualization_and_section_select_reporting_agents(...): ...
+async def test_visualization_and_section_select_reporting_agents(harness):
+    await harness.run_phase("visualization_section")
+    await harness.run_phase("section")
+    assert harness.selected_agent_kinds == ["visualization_section", "section"]
 
 @pytest.mark.anyio
-async def test_all_phase_contexts_share_task_execution_binding(...): ...
+async def test_all_phase_contexts_share_task_execution_binding(harness):
+    await harness.run_all_phases()
+    assert {item["runId"] for item in harness.context_bindings} == {"cli-run-1"}
+    assert {item["sessionId"] for item in harness.context_bindings} == {"cli-session-1"}
+    assert all("task_execution" in item["dependencies"] for item in harness.context_bindings)
 
 @pytest.mark.anyio
-async def test_background_process_requires_returned_session(...): ...
+async def test_background_process_requires_returned_session(harness):
+    result = await harness.start_background_process()
+    assert result["status"] == "running"
+    await harness.send_process_input(result["session_id"], "", submit=True)
 
 @pytest.mark.anyio
-async def test_recovery_rejects_changed_signed_script_sha(...): ...
+async def test_recovery_rejects_changed_signed_script_sha(harness):
+    await harness.sign_script()
+    await harness.mutate_signed_script()
+    with pytest.raises(ReportingError, match="哈希"):
+        await harness.recover_script()
 
 @pytest.mark.anyio
-async def test_cli_mock_repeated_ten_times_is_deterministic(...): ...
+async def test_cli_mock_repeated_ten_times_is_deterministic(harness_factory):
+    observations = [await harness_factory().run_once() for _ in range(10)]
+    assert all(item == observations[0] for item in observations)
 ```
 
 其中 analysis 测试使用 `AsyncMock` Worker Agent 并断言 `arun` 与 `acontinue_run` 均未调用；visualization/section 断言 `ReportingAgentExecutor` 选择对应 key；重复测试精确执行 10 次，比较每次结果和调用日志且确认 runtime/repository/workspace 不跨次共享。
@@ -242,4 +261,3 @@ git status --short
 - [ ] **Step 5: 交付报告**
 
 说明实际修改文件、实际执行命令及结果、未执行项目与原因；明确 `task_execution` 未废弃，仍是中立内部执行基础设施。真实模型十场景探针作为后续优化轮次，不冒充本轮 CLI mock 闭环验收结果。
-
