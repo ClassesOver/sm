@@ -18,11 +18,12 @@ ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=no
+Delegate=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-ReadWritePaths=/var/lib/local-sandboxd /run/local-sandboxd /sys/fs/cgroup/local-sandboxd
+ReadWritePaths=/var/lib/local-sandboxd /run/local-sandboxd /sys/fs/cgroup/system.slice/local-sandboxd.service
 CapabilityBoundingSet=
 AmbientCapabilities=
 

@@ -8,7 +8,7 @@
   "artifact_root": "/opt/local-sandboxd/artifacts",
   "catalog_public_key": "/etc/local-sandboxd/catalog-ed25519.pub",
   "workspace_root": "/var/lib/local-sandboxd/workspaces",
-  "cgroup_root": "/sys/fs/cgroup/local-sandboxd",
+  "cgroup_root": "/sys/fs/cgroup/system.slice/local-sandboxd.service",
   "seccomp_path": "/opt/local-sandboxd/artifacts/python-seccomp.bpf",
   "bwrap": "/usr/bin/bwrap",
   "listener": "unix:///run/local-sandboxd/local-sandboxd.sock",

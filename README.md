@@ -9,6 +9,16 @@
 - 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。
 - `docker/docker-compose.yaml`：Daytona OSS 核心栈。
 
+生产环境默认使用 `SANDBOX_PROVIDER=daytona`。DaytonaProvider 负责外部工作区生命周期，适合
+AgentOS 多副本和企业高可用部署。完全离线的内网可改用 `SANDBOX_PROVIDER=local`，由独立
+`local-sandboxd` 在 Ubuntu 或 openEuler 节点通过 namespace、cgroup v2、seccomp 和只读离线
+依赖 bundle 执行 Python；AgentOS 不需要也不得挂载 Docker、iSulad 或 containerd socket。
+
+当前 LocalProvider 是 `node_scoped` 单节点后端，不包含共享 workspace、快照恢复、跨节点
+control plane 或 PostgreSQL leader election，不能作为跨节点 HA 方案。AgentOS 运行在容器内时，
+生产接入优先使用内网 HTTPS+mTLS；UDS 只适用于能安全挂载单个受限 socket 的同机部署。详细制品
+和内核要求见 [deploy/local-sandboxd/README.md](deploy/local-sandboxd/README.md)。
+
 AgentOS 的持久化数据使用根目录 `data/`；Daytona 的 PostgreSQL、Redis、MinIO 和 Dex 使用
 Docker 命名卷，卷名由 `docker/.env` 中的 `DAYTONA_VOLUME_PREFIX` 决定，Runner 和 Registry
 继续使用 `docker/data/` 下的 bind mount。

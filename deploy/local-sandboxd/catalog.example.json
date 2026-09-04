@@ -14,7 +14,16 @@
       "manifest_digest": "sha256:REPLACE_WITH_MANIFEST_SHA256",
       "sbom_digest": "sha256:REPLACE_WITH_SBOM_SHA256",
       "signature": "REPLACE_WITH_BASE64_ED25519_SIGNATURE",
-      "modules": ["pandas", "numpy", "matplotlib"]
+      "modules": [
+        "smart_reporting",
+        "pandas",
+        "numpy",
+        "polars",
+        "matplotlib",
+        "pypdf",
+        "weasyprint",
+        "docx"
+      ]
     }
   ]
 }
