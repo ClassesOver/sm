@@ -29,13 +29,14 @@ from daytona import (
 )
 from daytona.common.errors import DaytonaNotFoundError
 from loguru import logger
-from sqlalchemy import Column, DateTime, MetaData, String, Table, insert, select, update
+from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, insert, select, update
 from sqlalchemy.sql import func
 
 from .async_utils import complete_cleanup
 from .http.security import thread_label
 from .runtime.database import AgentDatabase, create_agent_database
 from .runtime.observability import suppress_expected_probe_tracing
+from .sandbox.registry import SandboxBindingRecord
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
 WORKSPACE_SNAPSHOT = "sandbox-tools"
@@ -155,6 +156,17 @@ class SandboxRegistry:
             self.metadata,
             Column("thread_hash", String(64), primary_key=True),
             Column("sandbox_id", String(256), nullable=False),
+            Column("provider", String(32), nullable=False, server_default="daytona"),
+            Column(
+                "isolation",
+                String(32),
+                nullable=False,
+                server_default="provider_managed",
+            ),
+            Column("node", String(256), nullable=True),
+            Column("resource_id", String(256), nullable=False),
+            Column("generation", Integer, nullable=False, server_default="1"),
+            Column("dependency_bundle_digest", String(71), nullable=True),
             Column(
                 "updated_at",
                 DateTime(timezone=True),
@@ -180,7 +192,31 @@ class SandboxRegistry:
                 ("agent-workspace:initialize",),
             )
             self.metadata.create_all(connection)
-        self.db.upsert_schema_version(self.table.name, "1.0.0")
+            table_name = connection.dialect.identifier_preparer.format_table(self.table)
+            # create_all 不会扩展既有表。迁移必须与 advisory lock 位于同一事务，
+            # 否则多副本启动时可能观察到只增加了一部分字段的中间状态。
+            for definition in (
+                "provider VARCHAR(32)",
+                "isolation VARCHAR(32)",
+                "node VARCHAR(256)",
+                "resource_id VARCHAR(256)",
+                "generation INTEGER",
+                "dependency_bundle_digest VARCHAR(71)",
+            ):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {definition}"
+                )
+            connection.exec_driver_sql(
+                f"UPDATE {table_name} SET provider = COALESCE(provider, 'daytona'), "
+                "isolation = COALESCE(isolation, 'provider_managed'), "
+                "resource_id = COALESCE(resource_id, sandbox_id), "
+                "generation = COALESCE(generation, 1)"
+            )
+            for column in ("provider", "isolation", "resource_id", "generation"):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {table_name} ALTER COLUMN {column} SET NOT NULL"
+                )
+        self.db.upsert_schema_version(self.table.name, "2.0.0")
         self._initialized = True
 
     def workspace_label(self, base_label: str) -> str:
@@ -223,9 +259,56 @@ class SandboxRegistryTransaction:
         statement = (
             update(self.table)
             .where(self.table.c.thread_hash == value)
-            .values(sandbox_id=sandbox_id, updated_at=func.current_timestamp())
+            .values(
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+                updated_at=func.current_timestamp(),
+            )
             if exists
-            else insert(self.table).values(thread_hash=value, sandbox_id=sandbox_id)
+            else insert(self.table).values(
+                thread_hash=value,
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+            )
+        )
+        self.connection.execute(statement)
+
+    def get_binding(self, value: str) -> SandboxBindingRecord | None:
+        row = self.connection.execute(
+            select(
+                self.table.c.provider,
+                self.table.c.isolation,
+                self.table.c.node,
+                self.table.c.resource_id,
+                self.table.c.generation,
+                self.table.c.dependency_bundle_digest,
+            ).where(self.table.c.thread_hash == value)
+        ).first()
+        if row is None:
+            return None
+        return SandboxBindingRecord(binding_digest=value, **row._mapping)
+
+    def set_binding(self, record: SandboxBindingRecord) -> None:
+        values = record.model_dump(mode="json", exclude={"binding_digest"})
+        values["sandbox_id"] = record.resource_id
+        values["updated_at"] = func.current_timestamp()
+        exists = self.connection.execute(
+            select(self.table.c.thread_hash).where(
+                self.table.c.thread_hash == record.binding_digest
+            )
+        ).first()
+        statement = (
+            update(self.table)
+            .where(self.table.c.thread_hash == record.binding_digest)
+            .values(**values)
+            if exists
+            else insert(self.table).values(thread_hash=record.binding_digest, **values)
         )
         self.connection.execute(statement)
 
@@ -255,6 +338,17 @@ class AsyncSandboxRegistry:
             self.metadata,
             Column("thread_hash", String(64), primary_key=True),
             Column("sandbox_id", String(256), nullable=False),
+            Column("provider", String(32), nullable=False, server_default="daytona"),
+            Column(
+                "isolation",
+                String(32),
+                nullable=False,
+                server_default="provider_managed",
+            ),
+            Column("node", String(256), nullable=True),
+            Column("resource_id", String(256), nullable=False),
+            Column("generation", Integer, nullable=False, server_default="1"),
+            Column("dependency_bundle_digest", String(71), nullable=True),
             Column(
                 "updated_at",
                 DateTime(timezone=True),
@@ -287,7 +381,29 @@ class AsyncSandboxRegistry:
                         ("agent-workspace:initialize",),
                     )
                     await connection.run_sync(self.metadata.create_all)
-            await self.db.upsert_schema_version(self.table.name, "1.0.0")
+                    table_name = connection.dialect.identifier_preparer.format_table(self.table)
+                    for definition in (
+                        "provider VARCHAR(32)",
+                        "isolation VARCHAR(32)",
+                        "node VARCHAR(256)",
+                        "resource_id VARCHAR(256)",
+                        "generation INTEGER",
+                        "dependency_bundle_digest VARCHAR(71)",
+                    ):
+                        await connection.exec_driver_sql(
+                            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {definition}"
+                        )
+                    await connection.exec_driver_sql(
+                        f"UPDATE {table_name} SET provider = COALESCE(provider, 'daytona'), "
+                        "isolation = COALESCE(isolation, 'provider_managed'), "
+                        "resource_id = COALESCE(resource_id, sandbox_id), "
+                        "generation = COALESCE(generation, 1)"
+                    )
+                    for column in ("provider", "isolation", "resource_id", "generation"):
+                        await connection.exec_driver_sql(
+                            f"ALTER TABLE {table_name} ALTER COLUMN {column} SET NOT NULL"
+                        )
+            await self.db.upsert_schema_version(self.table.name, "2.0.0")
             self._initialized = True
 
     async def workspace_label(self, base_label: str) -> str:
@@ -414,9 +530,60 @@ class AsyncSandboxRegistryTransaction:
         statement = (
             update(self.table)
             .where(self.table.c.thread_hash == value)
-            .values(sandbox_id=sandbox_id, updated_at=func.current_timestamp())
+            .values(
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+                updated_at=func.current_timestamp(),
+            )
             if exists
-            else insert(self.table).values(thread_hash=value, sandbox_id=sandbox_id)
+            else insert(self.table).values(
+                thread_hash=value,
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+            )
+        )
+        await self.connection.execute(statement)
+
+    async def get_binding(self, value: str) -> SandboxBindingRecord | None:
+        row = (
+            await self.connection.execute(
+                select(
+                    self.table.c.provider,
+                    self.table.c.isolation,
+                    self.table.c.node,
+                    self.table.c.resource_id,
+                    self.table.c.generation,
+                    self.table.c.dependency_bundle_digest,
+                ).where(self.table.c.thread_hash == value)
+            )
+        ).first()
+        if row is None:
+            return None
+        return SandboxBindingRecord(binding_digest=value, **row._mapping)
+
+    async def set_binding(self, record: SandboxBindingRecord) -> None:
+        values = record.model_dump(mode="json", exclude={"binding_digest"})
+        values["sandbox_id"] = record.resource_id
+        values["updated_at"] = func.current_timestamp()
+        exists = (
+            await self.connection.execute(
+                select(self.table.c.thread_hash).where(
+                    self.table.c.thread_hash == record.binding_digest
+                )
+            )
+        ).first()
+        statement = (
+            update(self.table)
+            .where(self.table.c.thread_hash == record.binding_digest)
+            .values(**values)
+            if exists
+            else insert(self.table).values(thread_hash=record.binding_digest, **values)
         )
         await self.connection.execute(statement)
 
