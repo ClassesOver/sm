@@ -1090,6 +1090,11 @@ class WorkspaceService:
                 )
             await asyncio.sleep(WORKSPACE_CLEANUP_INTERVAL_SECONDS)
 
+    async def run_provider_reconcile_loop(self) -> None:
+        reconcile = getattr(self._provider, "run_reconcile_loop", None)
+        if callable(reconcile):
+            await reconcile()
+
     async def _abranch_inventory(self, client: Any, thread: str):
         sandbox = await self._asandbox_for(client, thread, create=False)
         if sandbox is None:
