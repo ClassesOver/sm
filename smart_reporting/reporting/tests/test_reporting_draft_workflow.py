@@ -8,10 +8,10 @@ from agno.run import RunContext
 from agno.workflow import Workflow
 from agno.workflow.types import StepOutput
 
-from smart_reporting.reporting.workflow.runtime.coding_draft_workflow import (
-    CodingAnalysisAndDraftWorkflow,
-    CodingDraftWorkflow,
-    build_coding_draft_steps,
+from smart_reporting.reporting.workflow.runtime.reporting_draft_workflow import (
+    ReportingAnalysisAndDraftWorkflow,
+    ReportingDraftWorkflow,
+    build_reporting_draft_steps,
 )
 
 
@@ -20,7 +20,7 @@ def _ok(value: str) -> StepOutput:
 
 
 @pytest.mark.anyio
-async def test_coding_workflow_is_agno_workflow_and_injects_goals() -> None:
+async def test_reporting_draft_workflow_is_agno_workflow_and_injects_goals() -> None:
     seen: list[tuple[str, dict]] = []
 
     async def analysis(instruction, _context):
@@ -35,7 +35,7 @@ async def test_coding_workflow_is_agno_workflow_and_injects_goals() -> None:
         seen.append(("draft", instruction))
         return _ok("draft")
 
-    workflow = CodingAnalysisAndDraftWorkflow(
+    workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal="分析收入变化原因",
         sections=[
             {
@@ -70,7 +70,7 @@ async def test_coding_workflow_is_agno_workflow_and_injects_goals() -> None:
 async def test_failed_analysis_blocks_visualization_and_draft() -> None:
     visualization = AsyncMock(return_value=_ok("visualization"))
     draft = AsyncMock(return_value=_ok("draft"))
-    workflow = CodingDraftWorkflow(
+    workflow = ReportingDraftWorkflow(
         report_goal="目标",
         section_goal={"sectionCode": "section_001"},
         analysis_ids=["a1"],
@@ -85,10 +85,10 @@ async def test_failed_analysis_blocks_visualization_and_draft() -> None:
     draft.assert_not_awaited()
 
 
-def test_coding_workflow_rejects_analysis_id_assigned_to_two_sections() -> None:
+def test_reporting_draft_workflow_rejects_analysis_id_assigned_to_two_sections() -> None:
     callback = AsyncMock(return_value=_ok("ok"))
     with pytest.raises(ValueError, match="不能归属于多个章节"):
-        CodingAnalysisAndDraftWorkflow(
+        ReportingAnalysisAndDraftWorkflow(
             report_goal="目标",
             sections=[
                 {"sectionCode": "section_001", "analysisIds": ["a1"]},
@@ -113,7 +113,7 @@ async def test_parallel_sections_share_analysis_limiter() -> None:
         active -= 1
         return _ok("analysis")
 
-    workflow = CodingAnalysisAndDraftWorkflow(
+    workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal="目标",
         sections=[
             {"sectionCode": "section_001", "analysisIds": ["a1"]},
@@ -141,7 +141,7 @@ async def test_parallel_section_failure_stops_following_batches() -> None:
             raise RuntimeError("section failed")
         return _ok("analysis")
 
-    workflow = CodingAnalysisAndDraftWorkflow(
+    workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal="目标",
         sections=[
             {"sectionCode": "section_001", "analysisIds": ["a1"]},
@@ -160,8 +160,8 @@ async def test_parallel_section_failure_stops_following_batches() -> None:
 
 
 @pytest.mark.anyio
-async def test_coding_workflow_arun_uses_agno_public_entrypoint() -> None:
-    workflow = CodingAnalysisAndDraftWorkflow(
+async def test_reporting_draft_workflow_arun_uses_agno_public_entrypoint() -> None:
+    workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal="目标",
         sections=[{"sectionCode": "section_001", "analysisIds": ["a1"]}],
         run_analysis=AsyncMock(return_value=_ok("analysis")),
@@ -186,7 +186,7 @@ async def test_coding_workflow_arun_uses_agno_public_entrypoint() -> None:
 
 
 def test_parallel_plan_uses_agno_parallel_container() -> None:
-    workflow = CodingDraftWorkflow(
+    workflow = ReportingDraftWorkflow(
         report_goal="目标",
         section_goal={"sectionCode": "section_001"},
         analysis_ids=["a1"],
@@ -198,6 +198,6 @@ def test_parallel_plan_uses_agno_parallel_container() -> None:
     from agno.workflow import Parallel
 
     assert isinstance(
-        build_coding_draft_steps(workflow, RunContext(run_id="run-1", session_id="session-1")),
+        build_reporting_draft_steps(workflow, RunContext(run_id="run-1", session_id="session-1")),
         Parallel,
     )

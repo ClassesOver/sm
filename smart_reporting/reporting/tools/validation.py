@@ -1,4 +1,4 @@
-"""Reporting Worker 工具的无状态输入校验与规范化。"""
+"""Reporting 工具的无状态输入校验与规范化。"""
 
 from __future__ import annotations
 

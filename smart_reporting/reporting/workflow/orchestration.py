@@ -164,7 +164,7 @@ def create_reporting_workflow(
     materialize_datasets: StepExecutor,
     prepare_analysis_context: StepExecutor,
     generate_detailed_analysis_plan: StepExecutor,
-    run_coding_analysis: StepExecutor,
+    run_reporting_analysis: StepExecutor,
     validate_report: StepExecutor,
     finalize_publication: StepExecutor,
 ) -> Workflow:
@@ -173,7 +173,7 @@ def create_reporting_workflow(
     workflow = Workflow(
         id="enterprise-reporting-workflow-v1",
         name="企业智能运营报表",
-        description="来源绑定、分析规划、受控取数、Coding 分析和报告发布。",
+        description="来源绑定、分析规划、受控取数、Reporting 分析和报告发布。",
         db=db,
         # Console 的 Workflow WebSocket 只发送自然语言 message；首步骤继续使用
         # Reporting 自己的严格输入契约完成解析和校验，避免要求通用前端了解领域 Schema。
@@ -295,7 +295,7 @@ def create_reporting_workflow(
                 # ),
                 human_review=HumanReview(on_error=OnError.fail),
             ),
-            create_coding_analysis_step(run_coding_analysis),
+            create_reporting_analysis_step(run_reporting_analysis),
             Step(
                 step_id="validate-report",
                 name="PDF/Word 双格式验收",
@@ -318,12 +318,12 @@ def create_reporting_workflow(
     return workflow
 
 
-def create_coding_analysis_step(executor: StepExecutor) -> Step:
-    """构造生产与历史回放共用的 Coding 分析步骤契约。"""
+def create_reporting_analysis_step(executor: StepExecutor) -> Step:
+    """构造生产与历史回放共用的 Reporting 分析步骤契约。"""
 
     return Step(
         step_id="run-coding-analysis",
-        name="Coding 分析与成稿",
+        name="Reporting 分析与成稿",
         executor=_timed_step_executor(executor, step_id="run-coding-analysis"),
         max_retries=0,
         human_review=HumanReview(on_error=OnError.fail),

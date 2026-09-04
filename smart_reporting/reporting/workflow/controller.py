@@ -1663,7 +1663,7 @@ class ReportWorkflowToolkit(Toolkit):
                 "report_workflow_approve，由 AgentOS 原生确认收集批准或拒绝；request "
                 "阶段使用 report_workflow_review 收集补充输入。"
                 "不得在文本回答中代替用户审批，不得绕过 Workflow 审核或自行执行取数和 "
-                "Coding 分析。"
+                "Reporting 分析。"
             ),
             add_instructions=True,
         )

@@ -36,7 +36,7 @@ __all__ = [
     "RequirementTable",
     "TableDataShape",
     "approve_query_batch",
-    "coding_task_key",
+    "task_key",
     "normalized_sql_hash",
     "require_approved_sql",
     "resolve_schema_snapshot",
@@ -1072,8 +1072,8 @@ def normalized_sql_hash(sql: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()
 
 
-def coding_task_key(workflow_run_id: str) -> str:
-    """暂停、恢复和报告 revision 共用同一 CodingTask。"""
+def task_key(workflow_run_id: str) -> str:
+    """暂停、恢复和报告 revision 共用同一 TaskExecutionTask。"""
 
     digest = hashlib.sha256(workflow_run_id.encode()).hexdigest()[:32]
     return f"report-coding-{digest}"

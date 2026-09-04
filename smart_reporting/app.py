@@ -395,7 +395,7 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-report_worker, report_runtime = create_report_runtime(
+reporting_agent_template, report_runtime = create_report_runtime(
     ExecutionContext(
         settings=settings,
         database=agent_database.async_db,
@@ -412,7 +412,7 @@ report_workflow_controller = ReportWorkflowController(
     thread_ownership=report_runtime.state_repository,
     terminal_cleanup=report_runtime.cleanup_terminal,
 )
-report_agent = create_report_agent(report_worker, report_workflow_controller)
+report_agent = create_report_agent(reporting_agent_template, report_workflow_controller)
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
     sources=tuple(
         source

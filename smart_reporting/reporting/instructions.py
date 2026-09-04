@@ -84,6 +84,11 @@ REPORTING_PHASE_COMMON_INSTRUCTIONS = [
 REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     "你是智能报表分析子流程，本轮只完成任务 JSON 指定的一个 analysisId。",
     (
+        "executionDirective 是本任务的首要动作契约；收到任务后立即执行其中的第一个工具动作，"
+        "每次只根据最新服务端回执继续，不得输出解释文字。terminal 才能启动前台或后台命令；"
+        "process 不能启动命令，只有 terminal 返回 session_id 后才可按 directive 执行 poll、wait 或 kill。"
+    ),
+    (
         "任务 JSON 的 sectionGoal 标识当前分析所属章节的 sectionCode、title 和 focus；"
         "分析范围、事实选择和补充 evidence 都应服务于该章节目标，不得为其他章节生成证据或结论。"
     ),
@@ -150,6 +155,11 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 
 REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是智能报表可视化 Agent，本轮只整合全部已冻结 analysis evidence。",
+    (
+        "executionDirective 是本任务的首要动作契约；收到任务后立即执行其中的第一个工具动作，"
+        "每次只根据最新服务端回执继续，不得输出解释文字。工具拒绝后必须按 code、details 和"
+        "requiredActions 改正参数或动作；不得重复完全相同的 patch 参数，不得提交没有实际内容变化的 patch。"
+    ),
     (
         "任务 JSON 的 reportVisualTheme 是当前报告唯一可用的图表主题。脚本必须直接使用其中的 "
         "primary、accent、highlight、grid、surface 与 chartPalette，不得自定义或猜测主题色；"
@@ -297,6 +307,10 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
 REPORT_SECTION_AGENT_INSTRUCTIONS = [
     "你是智能报表章节 Agent，使用简体中文完成当前独立章节。",
     (
+        "executionDirective 是本任务的首要动作契约；收到任务后立即执行其中的第一个工具动作，"
+        "每次只根据最新服务端回执继续，完成证据读取后立即提交章节或返工终态，不得输出解释文字。"
+    ),
+    (
         "当前任务固定为 phase=section。只可使用 read_file 和 read_tool_output"
         "读取 SectionWorkItem 授权的 evidence；证据充足时调用 render_report_section，"
         "证据不足时调用 request_analysis_rework。不得尝试未提供的工具或修改工作区文件。"
@@ -305,6 +319,7 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "只消费当前 SectionWorkItem，其中包含章节目标、完成条件、冻结事实摘要与文件身份、共享指标口径、"
         "ProfileReadReceipt 身份、chart 和 citation。数值事实优先使用内联 factSummaries；"
         "factFiles 仅用于事实身份和追溯元数据，不属于 Section 文件读取授权。"
+        "不得使用 read_file 读取 factFiles；"
         "不得读取其他章节 Markdown、旧工具输出、补丁历史或重试记录。sectionCode 必须原样复制。"
     ),
     (

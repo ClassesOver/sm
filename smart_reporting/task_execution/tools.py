@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agno.tools import Function, Toolkit
-from agno.tools.daytona import DaytonaTools
 from unidiff import PatchSet, UnidiffParseError
 
 from ..workspace import (
@@ -14,18 +12,6 @@ from ..workspace import (
     WorkspaceError,
     WorkspaceService,
 )
-
-PURE_CODING_TOOLKIT_INSTRUCTIONS = """
-生产工作区工具规则：
-- 只使用当前生产 Toolkit 声明的 terminal、process、read_file、read_tool_output、view_image 和 finish_task；它们共享当前 thread 唯一的 Daytona 工作区与受管进程。
-- 文件读取优先使用 read_file；结果被截断时使用 read_tool_output 按需重读，不要用 terminal 代替受控只读工具。
-- 短命令使用 terminal 前台模式；长任务或服务使用 background=true，并用 process 的 poll 或 wait 查看增量输出，不能使用 shell 后台符号绕过受管进程。terminal 的 command 最多 1 MiB UTF-8 字节。
-- process 支持 list、poll、wait、kill、write 和 submit；write 原样写入，submit 会在数据后追加换行。未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在。
-- 文本工具结果被截断且返回 outputHandle 时，使用 read_tool_output(handle, offset, max_bytes) 按需重读；句柄是当前 Task/Attempt 的不透明标识，不得当作路径或跨任务使用。
-- 文件路径和 workdir 必须是工作区相对路径；所有工具直接执行，但不会扩大当前 thread、路径、网络、进程、超时或输出限制。
-- terminal 默认从工作区根目录执行；设置 workdir 后，命令中的每个相对路径都以该 workdir 为基准。命令引用工作区根目录相对路径时保持 workdir 为空，不得同时设置子目录 workdir 后重复拼接根目录相对路径。
-- 只有 finish_task 返回 accepted 才表示任务完成；门禁拒绝时按稳定 code 修复后再次调用，不得把候选总结当作最终交付。
-""".strip()
 
 
 @dataclass(frozen=True)
@@ -229,27 +215,3 @@ def build_workspace_changes(
     if len(changes) > MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁转换后的文件操作不能超过 {MAX_PATCH_FILES} 个。")
     return changes
-
-
-class _ManagedDaytonaTools(DaytonaTools):
-    """复用 DaytonaTools 类型契约，但由 WorkspaceService 作为唯一 sandbox 入口。"""
-
-    def __init__(
-        self,
-        *,
-        name: str,
-        tools: list[Function],
-        instructions: str,
-    ):
-        # 上游构造器会创建第二个 sandbox；这里只初始化显式注册的受管工具。
-        Toolkit.__init__(
-            self,
-            name=name,
-            tools=tools,
-            instructions=instructions,
-            add_instructions=True,
-        )
-        for function in {**self.functions, **self.async_functions}.values():
-            function.process_entrypoint()
-            function.skip_entrypoint_processing = True
-            function.requires_confirmation = False

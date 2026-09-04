@@ -704,7 +704,7 @@ class ReportingCheckpoint(StrictModel):
     warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
     last_error: CheckpointError | None = Field(default=None, alias="lastError")
     # 按章保存 visualization_section 失败与预算账本;并发合并时按键合并,
-    # 不复用标量 last_error(后者保留给汇总 worker 的全局终态失败)。
+    # 不复用标量 last_error（后者保留给汇总阶段的全局终态失败）。
     visualization_section_errors: dict[str, CheckpointError] = Field(
         default_factory=dict, alias="visualizationSectionErrors", max_length=200
     )

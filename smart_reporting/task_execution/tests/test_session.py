@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import pytest
 
-from smart_reporting.task_execution.models import CodingScope, Lease, utcnow
+from smart_reporting.task_execution.models import Lease, TaskExecutionScope, utcnow
 from smart_reporting.task_execution.session import TaskSession
 
 
@@ -29,7 +29,7 @@ async def test_task_session_cleans_expired_tasks_once_before_claiming_lease():
         async def release_lease(self, external_run_id, lease_owner):
             calls.append(("release", external_run_id, lease_owner))
 
-    scope = CodingScope("run", "user", "thread", "sandbox", "coding-agent")
+    scope = TaskExecutionScope("run", "user", "thread", "sandbox", "coding-agent")
     session = TaskSession(
         cast(Any, Repository()),
         scope,

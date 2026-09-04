@@ -9,7 +9,6 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
-from agno.agent import Agent
 from agno.run import RunContext
 from agno.workflow.types import StepOutput
 
@@ -20,7 +19,6 @@ from smart_reporting.reporting.tools import build_reporting_tools
 from smart_reporting.reporting.tools.context import ReportingOutputPolicy
 from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime
 from smart_reporting.reporting.workflow.execution import (
-    ReportingAgentExecutor,
     ReportingTaskCoordinator,
 )
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
@@ -167,20 +165,6 @@ class _CliDraftAdapter:
             cast(TaskExecutionKernel, self.execution_kernel),
             model_profiles=DEFAULT_MODEL_PROFILES,
         )
-        fake_model = SimpleNamespace(report_run_error=lambda: None)
-        self.section_agent = SimpleNamespace(
-            model=fake_model, arun=AsyncMock(), acontinue_run=AsyncMock()
-        )
-        self.visualization_agent = SimpleNamespace(
-            model=fake_model, arun=AsyncMock(), acontinue_run=AsyncMock()
-        )
-        self.agent_executor = ReportingAgentExecutor(
-            cast(TaskExecutionRepository, self.repository),
-            {
-                "section": cast(Agent, self.section_agent),
-                "visualization_section": cast(Agent, self.visualization_agent),
-            },
-        )
         self.production_draft_workflow_called = False
 
     def _project_tools(self, task_kind: str, run_context: RunContext) -> None:
@@ -257,23 +241,7 @@ class _CliDraftAdapter:
             self.repository.finish(task_id, task_kind)
             return SimpleNamespace(status="completed")
 
-        async def agent_run(*_args: Any, **call: Any) -> Any:
-            run_context = call["run_context"]
-            self.contexts.append(run_context)
-            self._project_tools(task_kind, run_context)
-            self.repository.finish(task_id, task_kind)
-            return SimpleNamespace(status="completed")
-
-        if task_kind == "analysis_item":
-            executor = analysis_executor
-        else:
-            agent = (
-                self.visualization_agent
-                if task_kind == "visualization_section"
-                else self.section_agent
-            )
-            agent.arun.side_effect = agent_run
-            executor = self.agent_executor
+        executor = analysis_executor
         receipt = await self.coordinator.run(
             scope, parent_run_id=str(parent_context.run_id), executor=executor
         )
@@ -394,10 +362,6 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
             ),
         ),
     ]
-    assert adapter.section_agent.arun.await_count == 1
-    assert adapter.visualization_agent.arun.await_count == 1
-    adapter.section_agent.acontinue_run.assert_not_awaited()
-    adapter.visualization_agent.acontinue_run.assert_not_awaited()
 
 
 @pytest.mark.anyio

@@ -7,13 +7,13 @@ import pytest
 from agno.run import RunContext
 
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.tools.toolkit import ReportWorkspaceTaskToolkit
+from smart_reporting.reporting.tools.toolkit import ReportingToolkit
 
 
-def _toolkit(*, durable_payload: dict | None = None) -> ReportWorkspaceTaskToolkit:
+def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
     scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=7))
-    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.kernel = SimpleNamespace(
+    toolkit = object.__new__(ReportingToolkit)
+    toolkit.runtime = SimpleNamespace(
         scope=AsyncMock(return_value=scope),
         finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
     )
@@ -116,10 +116,35 @@ def test_visualization_terminal_forbidden_returns_allowed_command() -> None:
         details={"allowedCommand": "python3 analysis/charts/section_001/charts.py"},
     )
 
-    result = ReportWorkspaceTaskToolkit._failure(error, retryable=False)
+    result = ReportingToolkit._failure(error, retryable=False)
 
     assert result["details"] == {"allowedCommand": "python3 analysis/charts/section_001/charts.py"}
     assert result["requiredActions"] == [
         "保持 workdir 为空，仅使用 details.allowedCommand 原样执行签发脚本；"
         "不要改写命令、添加 cd 或执行其他 terminal 命令。"
     ]
+
+
+@pytest.mark.anyio
+async def test_visualization_terminal_settlement_uses_runtime_repository() -> None:
+    toolkit = object.__new__(ReportingToolkit)
+    repository = SimpleNamespace(
+        list_executions=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    execution_id="execution-1",
+                    internal_run_id="internal-1",
+                    kind="terminal",
+                    status="running",
+                )
+            ]
+        )
+    )
+    toolkit.runtime = SimpleNamespace(repository=repository)
+    scope = SimpleNamespace(external_run_id="external-1", internal_run_id="internal-1")
+
+    with pytest.raises(ReportingError) as rejected:
+        await toolkit._ensure_visualization_terminal_settled(scope)
+
+    assert rejected.value.code == "report_visualization_script_running"
+    repository.list_executions.assert_awaited_once_with("external-1")

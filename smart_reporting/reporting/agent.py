@@ -30,13 +30,13 @@ from pydantic import ValidationError
 
 from ..agent_control import AGENT_PLAN_STATE_KEY
 from ..context_management import (
-    CODING_CONTEXT_TOKEN_LIMIT,
-    CODING_OUTPUT_TOKEN_RESERVE,
-    CodingContextProjector,
+    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
+    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     ContextBudgetController,
     ProjectedOpenAIChat,
+    TaskExecutionContextProjector,
     clear_terminal_reasoning,
-    projected_coding_model,
+    projected_task_execution_model,
 )
 from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP, openai_compatible_extra_body
 from ..model_routing import build_model_profiles
@@ -46,8 +46,9 @@ from ..skills import (
     is_skill_script_hook,
     load_sandbox_execution_skills,
 )
-from ..task_execution import TaskExecutionRepository
-from ..task_execution.execution import (
+from ..task_execution import (
+    TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY,
+    TaskExecutionRepository,
     create_task_tool_scheduler_hook,
     is_task_tool_scheduler_hook,
 )
@@ -101,7 +102,7 @@ from .phase import (
     reporting_visualization_script_session_available_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
-from .tools import build_report_worker_tools
+from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 from .workflow.repository import ReportingStateRepository
@@ -168,9 +169,9 @@ _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 64 * 1024
 _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
-# 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
+# 后端异常却可能持续数分钟才返回。Agent 仍保留既有一次同 run continuation，
 # 这里与 900 秒模型请求配置保持一致，避免长结构化规划请求在上游返回前被截断。
-_REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS = 900
+_REPORTING_PHASE_MODEL_TIMEOUT_CAP_SECONDS = 900
 _REPORT_MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error",
     default=None,
@@ -251,7 +252,9 @@ def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
 
 
 def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
-    progress = state.get("agentos_coding_tool_progress") if isinstance(state, dict) else None
+    progress = (
+        state.get(TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY) if isinstance(state, dict) else None
+    )
     return int(progress.get("mutation", 0)) if isinstance(progress, dict) else 0
 
 
@@ -896,7 +899,7 @@ def _stop_exhausted_reporting_tool_budget(
         details=details,
     )
     # Agno 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
-    # 不会越过模型工具批次。同步记录领域错误，由 ReportWorkerOpenAIChat 在同一批次
+    # 不会越过模型工具批次。同步记录领域错误，由 ReportingPhaseOpenAIChat 在同一批次
     # 恢复并交给 Workflow 的 fresh retry，禁止退化成笼统的“未完成验收”。
     _record_reporting_tool_run_error(run_context, error)
     serialized = json.dumps(
@@ -921,7 +924,7 @@ def _stop_rejected_analysis_patch(
     run_context: RunContext,
     result: Mapping[str, Any],
 ) -> None:
-    """关闭当前 Coding attempt，让阶段层用新上下文重新读取并生成补丁。
+    """关闭当前 Reporting attempt，让阶段层用新上下文重新读取并生成补丁。
 
     patch 拒绝说明模型持有的文件上下文、SHA 或 diff 结构已经不能继续使用；在同一
     上下文里让模型修补会把错误 hunk 和过期事实继续累积，容易形成长尾死循环。这里只
@@ -1225,19 +1228,19 @@ def _report_tool_argument_details(
 
 
 def _reporting_progress_fingerprint(state: dict[str, Any]) -> str:
-    coding_progress = state.get("agentos_coding_tool_progress")
+    execution_progress = state.get(TASK_EXECUTION_TOOL_PROGRESS_STATE_KEY)
     agent_plan = state.get(AGENT_PLAN_STATE_KEY)
-    coding_progress = coding_progress if isinstance(coding_progress, dict) else {}
+    execution_progress = execution_progress if isinstance(execution_progress, dict) else {}
     agent_plan = agent_plan if isinstance(agent_plan, dict) else {}
     plan_steps = agent_plan.get("plan")
     plan_steps = plan_steps if isinstance(plan_steps, list) else []
     snapshot = {
-        # 通用 Coding Toolkit 会把失败回执也写入 progress.entries；若把这些 entry
+        # 通用 Reporting Toolkit 会把失败回执也写入 progress.entries；若把这些 entry
         # 纳入指纹，不同参数的连续拒绝会被误判为真实进展并永久重置阶段失败计数。
         # Reporting 成功工具已在 _enforce_reporting_no_progress 中显式清空失败状态，
         # 因此这里只信任耐久 mutation 和模型计划状态，不信任失败调用生成的观测记录。
-        "codingProgress": {
-            "mutation": coding_progress.get("mutation"),
+        "taskExecutionProgress": {
+            "mutation": execution_progress.get("mutation"),
         },
         "agentPlan": [
             {"step": item.get("step"), "status": item.get("status")}
@@ -1935,7 +1938,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     ]
 
 
-def _report_worker_tools_cache_key(run_context: RunContext) -> str:
+def _reporting_tools_cache_key(run_context: RunContext) -> str:
     """按调用者与受信阶段隔离 Agno callable-tool 缓存。"""
 
     identity = run_context.user_id or run_context.session_id or str(run_context.run_id)
@@ -1944,12 +1947,12 @@ def _report_worker_tools_cache_key(run_context: RunContext) -> str:
     task_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
     phase = reporting_phase_from_run_context(run_context) or "unbound"
     task_kind = reporting_task_kind_from_run_context(run_context) or "unbound"
-    return f"report-worker:{identity}:{task_id or run_context.run_id}:{phase}:{task_kind}"
+    return f"report-agent:{identity}:{task_id or run_context.run_id}:{phase}:{task_kind}"
 
 
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
     phase = _reporting_phase_from_messages(messages)
-    # Reporting 各阶段的约束均由静态指令提供，不向 Worker 投影通用 Skill 提示。
+    # Reporting 各阶段的约束均由静态指令提供，不向 Agent 投影通用 Skill 提示。
     if phase not in {"analysis", "section"}:
         return messages
     projected: list[Message] | None = None
@@ -2068,7 +2071,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
     _report_raw_tool_argument_errors = False
 
     def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
-        """为单次请求生成隔离配置，禁止并发 Section 修改共享 Worker 模型。"""
+        """为单次请求生成隔离配置，禁止并发 Section 修改共享 Agent 模型。"""
 
         base_profile = reporting_thinking_profile_from_model(self)
         profile = base_profile
@@ -2130,15 +2133,23 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod
-    def _phase_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _phase_request_kwargs(
+        messages: list[Message],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
         run_context = current_reporting_run_context()
-        if reporting_task_kind_from_run_context(run_context) not in {
-            "visualization_section",
-        }:
+        task_kind = reporting_task_kind_from_run_context(run_context)
+        if task_kind == "visualization_section":
+            return {**kwargs, "tool_choice": "required"}
+        if task_kind not in {"analysis_item", "section"}:
             return kwargs
-        # visualization 没有合法的纯文本终态，每一轮都必须通过当前生命周期投影出的
-        # 工具推进。使用 Agno 公共 tool_choice 契约保留工具选择自由，同时阻止模型把
-        # 整个生成窗口耗在规划文本后才尝试调用工具。
+        has_tool_history = any(
+            message.role == "tool" or bool(message.tool_calls) for message in messages
+        )
+        if has_tool_history:
+            return kwargs
+        # 分析和章节首轮没有合法的纯文本终态，必须先通过投影出的工具推进；一旦已有
+        # 工具回执则恢复 auto，允许 Agno 正常结束，避免成功读取后被 required 逼入循环。
         return {**kwargs, "tool_choice": "required"}
 
     @staticmethod
@@ -2168,7 +2179,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> ModelResponse:
         request_model = self._phase_request_model(messages)
-        kwargs = self._phase_request_kwargs(kwargs)
+        kwargs = self._phase_request_kwargs(messages, kwargs)
         self._clear_report_run_error()
         try:
             response = ProjectedOpenAIChat.response(request_model, messages, *args, **kwargs)
@@ -2185,7 +2196,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> ModelResponse:
         request_model = self._phase_request_model(messages)
-        kwargs = self._phase_request_kwargs(kwargs)
+        kwargs = self._phase_request_kwargs(messages, kwargs)
         self._clear_report_run_error()
         try:
             response = await ProjectedOpenAIChat.aresponse(
@@ -2214,7 +2225,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> Iterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
         request_model = self._phase_request_model(messages)
-        kwargs = self._phase_request_kwargs(kwargs)
+        kwargs = self._phase_request_kwargs(messages, kwargs)
         self._clear_report_run_error()
         try:
             yield from ProjectedOpenAIChat.response_stream(
@@ -2235,7 +2246,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> AsyncIterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
         request_model = self._phase_request_model(messages)
-        kwargs = self._phase_request_kwargs(kwargs)
+        kwargs = self._phase_request_kwargs(messages, kwargs)
         self._clear_report_run_error()
         try:
             async for response in ProjectedOpenAIChat.aresponse_stream(
@@ -2361,8 +2372,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         )
 
 
-class ReportWorkerOpenAIChat(ReportingOpenAIChat):
-    """Reporting Worker 在通过正式验收后确定性收敛到 finish_task。"""
+class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
+    """Reporting Agent 在通过正式验收后确定性收敛到 finish_task。"""
 
     _report_vision_enabled = True
     _report_raw_tool_argument_errors = True
@@ -2492,7 +2503,7 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "ok": False,
                                 "status": "skipped",
                                 "code": "report_vision_disabled",
-                                "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+                                "message": "当前 Reporting Agent 未启用图片视觉工具，继续使用文本和文件证据。",
                                 "requiredActions": [
                                     "继续使用已注册的文本和文件工具；不得重复调用视觉工具。"
                                 ],
@@ -2544,13 +2555,15 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
     def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-        configured_cap = getattr(self, "_coding_input_token_budget", None)
+        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
         if (
             isinstance(configured_cap, bool)
             or not isinstance(configured_cap, int)
             or configured_cap < 1
         ):
-            configured_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
+            configured_cap = (
+                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+            )
         phase = _reporting_phase_from_messages(messages)
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
         # Visualization 的首个请求已携带全局冻结 facts，后续还需要保留脚本执行和图片检查
@@ -2578,14 +2591,14 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
 
         tools = filter_and_bind_tools(tools)
         identity_messages = _with_reporting_durable_identities(messages)
-        projected = CodingContextProjector.project(
+        projected = TaskExecutionContextProjector.project(
             identity_messages,
             model=self,
             tools=tools,
             response_format=response_format,
             hard_cap=hard_cap,
         )
-        metrics = dict(CodingContextProjector.last_metrics)
+        metrics = dict(TaskExecutionContextProjector.last_metrics)
         record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
         return projected, metrics
 
@@ -2668,25 +2681,25 @@ def _report_facade_model(model: ProjectedOpenAIChat) -> ReportFacadeOpenAIChat:
     facade = ReportFacadeOpenAIChat(
         **{field.name: getattr(model, field.name) for field in fields(model)}
     )
-    budget = getattr(model, "_coding_input_token_budget", None)
+    budget = getattr(model, "_task_execution_input_token_budget", None)
     if isinstance(budget, int) and budget > 0:
-        facade._coding_input_token_budget = budget
+        facade._task_execution_input_token_budget = budget
     return facade
 
 
-def _report_worker_model(
+def _reporting_phase_model(
     model: OpenAIChat,
     *,
     input_token_budget: int | None = None,
-) -> ReportWorkerOpenAIChat:
-    projected = projected_coding_model(model, input_token_budget=input_token_budget)
-    worker = ReportWorkerOpenAIChat(
+) -> ReportingPhaseOpenAIChat:
+    projected = projected_task_execution_model(model, input_token_budget=input_token_budget)
+    agent = ReportingPhaseOpenAIChat(
         **{field.name: getattr(projected, field.name) for field in fields(projected)}
     )
-    budget = getattr(projected, "_coding_input_token_budget", None)
+    budget = getattr(projected, "_task_execution_input_token_budget", None)
     if isinstance(budget, int) and budget > 0:
-        worker._coding_input_token_budget = budget
-    return worker
+        agent._task_execution_input_token_budget = budget
+    return agent
 
 
 def _report_model(
@@ -2701,7 +2714,7 @@ def _report_model(
         standard_model_id=settings.model_standard_id,
         strong_model_id=settings.model_strong_id,
     )
-    # Worker 的初始模型对应 standard 档位；复杂度和修复升级由独立 Router 决定，
+    # Agent 的初始模型对应 standard 档位；复杂度和修复升级由独立 Router 决定，
     # 不在共享 Agent 实例上动态修改 model_id，避免并发任务互相覆盖。
     standard_profile = profiles["standard"]
     return OpenAIChat(
@@ -2725,7 +2738,7 @@ def _report_model(
     )
 
 
-def create_report_worker(
+def create_reporting_phase_agent(
     settings: AgentSettings,
     database: AsyncBaseDb,
     workspace_service: WorkspaceService,
@@ -2733,89 +2746,84 @@ def create_report_worker(
     *,
     state_repository: ReportingStateRepository,
 ) -> Agent:
-    # settings 是 Report Worker 的唯一配置事实源。直接构造与 AgentOS 装配必须使用
-    # 同一组 Reporting 预算，不能静默退回普通 Coding Agent 的 256K/32K 默认值。
+    # settings 是 Report Agent 的唯一配置事实源。直接构造与 AgentOS 装配必须使用
+    # 同一组 Reporting 预算，不能静默退回普通 Reporting Agent 的 256K/32K 默认值。
     context_token_budget = settings.report_context_token_budget
     output_token_reserve = settings.report_output_token_reserve
-    worker_skills = load_sandbox_execution_skills(settings.skills_dir)
+    phase_skills = load_sandbox_execution_skills(settings.skills_dir)
     vision_reviewer = (
         ReportVisionReviewer(settings, workspace_service) if settings.report_enable_vision else None
     )
     input_token_budget = max(
         1,
-        min(context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
-        - max(CODING_OUTPUT_TOKEN_RESERVE, output_token_reserve),
+        min(context_token_budget, TASK_EXECUTION_CONTEXT_TOKEN_LIMIT)
+        - max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_token_reserve),
     )
-    worker_model = _report_worker_model(
+    phase_model = _reporting_phase_model(
         _report_model(
             settings,
-            enable_thinking=settings.report_coding_enable_thinking,
+            enable_thinking=settings.report_phase_enable_thinking,
             retries=0,
             timeout_seconds=min(
                 settings.model_timeout_seconds,
-                _REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS,
+                _REPORTING_PHASE_MODEL_TIMEOUT_CAP_SECONDS,
             ),
         ),
         input_token_budget=input_token_budget,
     )
-    worker_model._report_vision_enabled = settings.report_enable_vision
-    worker_model._report_model_profiles = build_model_profiles(
-        fast_model_id=settings.model_fast_id,
-        standard_model_id=settings.model_standard_id,
-        strong_model_id=settings.model_strong_id,
-    )
-    worker_model.max_tokens = output_token_reserve
-    worker_profile = (
+    phase_model._report_vision_enabled = settings.report_enable_vision
+    phase_model.max_tokens = output_token_reserve
+    phase_profile = (
         ReportingThinkingProfile.on(
             reasoning_effort=cast(
                 ReportingReasoningEffort,
-                settings.report_coding_reasoning_effort,
+                settings.report_phase_reasoning_effort,
             ),
-            thinking_budget=settings.report_coding_thinking_budget,
-            temperature=settings.report_coding_temperature,
+            thinking_budget=settings.report_phase_thinking_budget,
+            temperature=settings.report_phase_temperature,
         )
-        if settings.report_coding_enable_thinking
-        else ReportingThinkingProfile.off(temperature=settings.report_coding_temperature)
+        if settings.report_phase_enable_thinking
+        else ReportingThinkingProfile.off(temperature=settings.report_phase_temperature)
     )
-    apply_reporting_thinking_profile(worker_model, worker_profile)
-    worker_model.top_p = 0.95
-    worker_compression_manager = (
+    apply_reporting_thinking_profile(phase_model, phase_profile)
+    phase_model.top_p = 0.95
+    phase_compression_manager = (
         ContextBudgetController(
-            model=worker_model,
+            model=phase_model,
             context_token_budget=context_token_budget,
             output_token_reserve=output_token_reserve,
         )
         if settings.enable_tool_result_compression
         else None
     )
-    worker = Agent(
-        id="report-worker",
-        name="智能报表 Worker",
-        role="根据已批准的分析计划和不可变数据集执行受控 Coding 分析。",
-        model=worker_model,
+    agent = Agent(
+        id="report-agent",
+        name="智能报表 Agent",
+        role="根据已批准的分析计划和不可变数据集执行受控 Reporting 分析。",
+        model=phase_model,
         instructions=build_report_agent_instructions,
         use_instruction_tags=True,
-        skills=worker_skills,
+        skills=phase_skills,
         tools=partial(
-            build_report_worker_tools,
+            build_reporting_tools,
             workspace_service,
             task_repository,
             state_repository=state_repository,
             vision_reviewer=vision_reviewer,
         ),
-        callable_tools_cache_key=_report_worker_tools_cache_key,
+        callable_tools_cache_key=_reporting_tools_cache_key,
         db=database,
         checkpoint="tool-batch",
         add_history_to_context=False,
         # 每个 Reporting Task 使用独立 session，恢复事实来自 durable state 和
         # Agno checkpoint；摘要既不加入上下文，也没有后续消费者。若沿用全局开关，
         # Agno 会在工具完成后再次把整份分析/图表上下文提交给摘要模型，单次超时还会
-        # 按模型重试策略阻塞 Workflow，因此在 Report Worker 边界固定关闭。
+        # 按模型重试策略阻塞 Workflow，因此在 Report Agent 边界固定关闭。
         enable_session_summaries=False,
         add_session_summary_to_context=False,
         session_summary_manager=None,
         compress_tool_results=settings.enable_tool_result_compression,
-        compression_manager=worker_compression_manager,
+        compression_manager=phase_compression_manager,
         retries=0,
         exponential_backoff=False,
         post_hooks=[clear_terminal_reasoning],
@@ -2831,18 +2839,43 @@ def create_report_worker(
         send_media_to_model=False,
         tool_choice="auto",
     )
-    worker.num_history_runs = None
-    return worker
+    agent.num_history_runs = None
+    return agent
+
+
+def create_reporting_generator_agent(
+    *, model: Any, output_schema: type[Any], name: str, role: str | None = None
+) -> Agent:
+    """创建固定阶段的无工具结构化候选生成器。
+
+    生成器只负责返回阶段契约对应的 Pydantic 结果；脚本执行、证据读取和终态提交
+    均由 Reporting Workflow 完成，因此这里明确关闭工具、历史和 Agent 重试。
+    """
+
+    return Agent(
+        id=name,
+        name=name,
+        role=role or "只返回 Reporting 固定阶段要求的结构化候选内容。",
+        model=model,
+        output_schema=output_schema,
+        tools=[],
+        add_history_to_context=False,
+        enable_session_summaries=False,
+        retries=0,
+        exponential_backoff=False,
+        markdown=False,
+        telemetry=False,
+    )
 
 
 def create_report_agent(
-    report_worker: Agent,
+    reporting_agent_template: Agent,
     controller: ReportWorkflowController,
 ) -> Agent:
-    """创建公开 facade；实际分析只由 Workflow 内的 report-worker 执行。"""
-    if not isinstance(report_worker.model, ProjectedOpenAIChat):
+    """创建公开 facade；实际分析只由 Workflow 内的 report-agent 执行。"""
+    if not isinstance(reporting_agent_template.model, ProjectedOpenAIChat):
         raise TypeError("Report facade requires ProjectedOpenAIChat")
-    facade_model = _report_facade_model(report_worker.model)
+    facade_model = _report_facade_model(reporting_agent_template.model)
     apply_reporting_thinking_profile(
         facade_model,
         ReportingThinkingProfile.off(temperature=1.0),
@@ -2851,17 +2884,17 @@ def create_report_agent(
     facade_model.retries = 2
     facade_model.exponential_backoff = True
     facade_compression_manager = None
-    if report_worker.compress_tool_results:
-        if not isinstance(report_worker.compression_manager, ContextBudgetController):
-            raise TypeError("Report worker requires ContextBudgetController")
+    if reporting_agent_template.compress_tool_results:
+        if not isinstance(reporting_agent_template.compression_manager, ContextBudgetController):
+            raise TypeError("Report agent requires ContextBudgetController")
         facade_compression_manager = ContextBudgetController(
             model=facade_model,
-            context_token_budget=report_worker.compression_manager.context_token_limit,
-            output_token_reserve=report_worker.compression_manager.output_token_reserve,
+            context_token_budget=reporting_agent_template.compression_manager.context_token_limit,
+            output_token_reserve=reporting_agent_template.compression_manager.output_token_reserve,
         )
     facade_tool_hooks = [
         hook
-        for hook in (report_worker.tool_hooks or [])
+        for hook in (reporting_agent_template.tool_hooks or [])
         if hook is not propagate_reporting_tool_errors
         and not is_skill_script_hook(hook)
         and not is_task_tool_scheduler_hook(hook)
@@ -2888,7 +2921,7 @@ def create_report_agent(
         )
         return tools
 
-    facade = report_worker.deep_copy(
+    facade = reporting_agent_template.deep_copy(
         update={
             "id": "smart-reporting",
             "name": "智能报表",
@@ -2902,7 +2935,7 @@ def create_report_agent(
                 "普通聊天问题直接回答，不调用报表工具；只有用户明确要求生成、分析或导出报表时，才调用"
                 "无参数的 report_workflow_start。该工具会读取受信服务端 Envelope，或把当前"
                 "最后一条用户消息按 CLI 相同规则解析为自然语言或 ReportRequestEnvelope JSON，再交给 "
-                "Workflow 首步。不得自行解析期间、改写目标、取数、执行 Coding "
+                "Workflow 首步。不得自行解析期间、改写目标、取数、执行 Reporting "
                 "或生成报告。Workflow 返回 request 阶段 paused 时，向用户"
                 "展示 clarificationQuestion，并由 report_workflow_review 的 AgentOS 用户输入收集补充原文，"
                 "使 Workflow 首步按官方 HumanReview retry 继续归一化。",

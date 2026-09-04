@@ -1,0 +1,1313 @@
+"""用真实模型验证当前 Reporting 工具 schema 的受控 test agent。"""
+# ruff: noqa: E402, I001
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from collections.abc import AsyncIterator, Awaitable
+from copy import deepcopy
+from dataclasses import dataclass, field
+import inspect
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+from typing import Any, Literal, cast
+
+WORKTREE_ROOT = Path(__file__).resolve().parents[1]
+if str(WORKTREE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKTREE_ROOT))
+
+from agno.agent import Agent  # noqa: E402 - 直接执行脚本时必须先定位 worktree 根目录
+from agno.models.message import Message  # noqa: E402 - 同上
+from agno.run import RunContext  # noqa: E402 - 同上
+from agno.tools import Function  # noqa: E402 - 同上
+
+from smart_reporting.model_config import (  # noqa: E402 - 同上
+    OPENAI_COMPATIBLE_ROLE_MAP,
+    openai_compatible_extra_body,
+)
+from smart_reporting.model_routing.policy import build_model_profiles  # noqa: E402 - 同上
+from smart_reporting.reporting.model_policy import (
+    ReportingThinkingProfile,
+    apply_reporting_thinking_profile,
+)  # noqa: E402 - 同上
+from smart_reporting.reporting.instructions import (  # noqa: E402 - 同上
+    REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
+    REPORT_SECTION_AGENT_INSTRUCTIONS,
+    REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS,
+)
+from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
+    ReportingPhaseOpenAIChat,
+    _phase_filtered_report_tools,
+    _report_model_tool_name,
+)
+from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
+    REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
+    REPORTING_MODEL_ID_DEPENDENCY_KEY,
+    REPORTING_MODEL_TIER_DEPENDENCY_KEY,
+    REPORTING_PHASE_DEPENDENCY_KEY,
+    REPORTING_TASK_DEPENDENCY,
+    REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
+    REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
+    ReportingPhase,
+    ReportingTaskKind,
+    bind_reporting_run_context,
+)
+from smart_reporting.reporting.vision import ReportVisionReviewer  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.context import ReportingOutputPolicy  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.toolkit import ReportingToolkit  # noqa: E402 - 同上
+from smart_reporting.reporting.workflow.repository import ReportingStateRepository  # noqa: E402 - 同上
+from smart_reporting.settings import AgentSettings  # noqa: E402 - 同上
+from smart_reporting.workspace import WorkspaceService  # noqa: E402 - 同上
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeScenario:
+    """一次真实模型调用应完成的、由回执驱动的 CLI 分支。"""
+
+    name: str
+    phase: ReportingPhase
+    task_kind: ReportingTaskKind
+    required_tools: tuple[str, ...]
+    terminal_tool: str
+    branch: Literal[
+        "fixed_facts",
+        "profile",
+        "script",
+        "truncated",
+        "background",
+        "recovery",
+        "preview",
+        "render",
+        "rework",
+    ]
+
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        """兼容探针报告的旧字段名，实际语义为当前分支的必要调用。"""
+
+        return self.required_tools
+
+
+@dataclass(slots=True)
+class ProbeToolProjection:
+    """记录每次真实模型请求可见的动态工具集合。"""
+
+    batches: list[list[str]] = field(default_factory=list)
+    not_visible_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def record(self, tools: Any) -> None:
+        self.batches.append(
+            sorted(name for name in (_report_model_tool_name(tool) for tool in tools or ()) if name)
+        )
+
+
+class ProbeReportingPhaseOpenAIChat(ReportingPhaseOpenAIChat):
+    """仅记录探针观测值，动态过滤仍委托生产模型实现。"""
+
+    _probe_projection: ProbeToolProjection
+
+    def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
+        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        self._probe_projection.record(_phase_filtered_report_tools(messages, tools))
+        return super()._project(messages, args, kwargs)
+
+    def get_function_calls_to_run(
+        self,
+        assistant_message: Message,
+        messages: list[Message],
+        functions: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        visible_tools = self._probe_projection.batches[-1] if self._probe_projection.batches else []
+        for tool_call in assistant_message.tool_calls or ():
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str) and name not in visible_tools:
+                self._probe_projection.not_visible_calls.append(
+                    {
+                        "name": name,
+                        "call_id": tool_call.get("id"),
+                        "visible_tools": list(visible_tools),
+                    }
+                )
+        return super().get_function_calls_to_run(assistant_message, messages, functions)
+
+
+_TOOL_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "terminal": {"command": "python3 -c \"print('probe')\"", "timeout": 30},
+    "process": {"action": "list"},
+    "read_file": {"path": "inputs/source.txt", "offset": 0, "max_bytes": 1024},
+    "read_tool_output": {"handle": "mock-output-1", "offset": 0, "max_bytes": 1024},
+    "apply_analysis_patch": {
+        "patch": "--- /dev/null\n+++ b/analysis/output/probe_patch.txt\n@@ -0,0 +1 @@\n+value = 1"
+    },
+    "query_profile": {
+        "datasetId": "dataset-001",
+        "query": "values(variables)[0]",
+        "purpose": "读取测试画像",
+        "maxItems": 1,
+    },
+    "query_analysis_context": {
+        "query": "datasets[0]",
+        "purpose": "读取测试上下文",
+        "maxItems": 1,
+    },
+    "query_analysis_facts": {
+        "query": "metrics[0]",
+        "purpose": "读取测试事实",
+        "maxItems": 1,
+    },
+    "complete_analysis_item": {
+        "analysisId": "analysis_001",
+        "summary": "测试摘要。",
+        "datasetIds": ["dataset-001"],
+        "evidencePaths": [],
+        "citationIds": ["citation-001"],
+        "profileReadReceiptIds": [],
+        "warnings": [],
+    },
+    "view_image": {"path": "analysis/charts/probe.png", "detail": "high"},
+    "inspect_chart": {"path": "analysis/charts/probe.png", "detail": "high"},
+    "submit_visualization_charts": {"sectionCode": "overview", "charts": []},
+    "request_analysis_rework": {
+        "analysisIds": ["analysis_001"],
+        "reason": "测试返工。",
+        "missingEvidence": ["测试证据"],
+    },
+    "render_report_section": {
+        "sectionCode": "overview",
+        "blocks": [{"blockId": "block-1", "markdown": "测试正文。"}],
+        "claims": [],
+    },
+}
+
+
+def probe_scenarios() -> tuple[ProbeScenario, ...]:
+    """十个复杂 CLI 样本，以真实前置条件覆盖当前所有阶段工具。"""
+
+    return (
+        ProbeScenario(
+            "analysis-fixed-facts",
+            "analysis",
+            "analysis_item",
+            ("complete_analysis_item",),
+            "complete_analysis_item",
+            "fixed_facts",
+        ),
+        ProbeScenario(
+            "analysis-profile-supplement",
+            "analysis",
+            "analysis_item",
+            ("query_profile", "read_file", "complete_analysis_item"),
+            "complete_analysis_item",
+            "profile",
+        ),
+        ProbeScenario(
+            "analysis-script-foreground",
+            "analysis",
+            "analysis_item",
+            ("apply_analysis_patch", "terminal", "complete_analysis_item"),
+            "complete_analysis_item",
+            "script",
+        ),
+        ProbeScenario(
+            "analysis-truncated-output",
+            "analysis",
+            "analysis_item",
+            ("query_analysis_facts", "complete_analysis_item"),
+            "complete_analysis_item",
+            "truncated",
+        ),
+        ProbeScenario(
+            "analysis-background-context",
+            "analysis",
+            "analysis_item",
+            ("query_analysis_context", "terminal", "process", "complete_analysis_item"),
+            "complete_analysis_item",
+            "background",
+        ),
+        ProbeScenario(
+            "visualization-recovery",
+            "analysis",
+            "visualization_section",
+            (
+                "read_file",
+                "apply_analysis_patch",
+                "terminal",
+                "inspect_chart",
+                "submit_visualization_charts",
+            ),
+            "submit_visualization_charts",
+            "recovery",
+        ),
+        ProbeScenario(
+            "visualization-preview-truncated",
+            "analysis",
+            "visualization_section",
+            (
+                "apply_analysis_patch",
+                "terminal",
+                "view_image",
+                "submit_visualization_charts",
+            ),
+            "submit_visualization_charts",
+            "preview",
+        ),
+        ProbeScenario(
+            "visualization-background",
+            "analysis",
+            "visualization_section",
+            (
+                "apply_analysis_patch",
+                "terminal",
+                "process",
+                "inspect_chart",
+                "submit_visualization_charts",
+            ),
+            "submit_visualization_charts",
+            "background",
+        ),
+        ProbeScenario(
+            "section-render-truncated-evidence",
+            "section",
+            "section",
+            ("read_file", "read_tool_output", "render_report_section"),
+            "render_report_section",
+            "render",
+        ),
+        ProbeScenario(
+            "section-evidence-rework",
+            "section",
+            "section",
+            ("read_file", "request_analysis_rework"),
+            "request_analysis_rework",
+            "rework",
+        ),
+    )
+
+
+def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
+    """构造等价于 CLI 下发的阶段任务投影，不使用只为探针服务的工具清单字段。"""
+
+    common = {
+        "phase": scenario.phase,
+        "taskKind": scenario.task_kind,
+        "reportGoal": "识别某院 2025 年上半年门诊收入与成本变化，形成可执行的经营改进建议。",
+        "sectionGoal": {
+            "sectionCode": "outpatient_operation",
+            "title": "门诊运营与收入质量",
+            "focus": ["收入同比", "次均费用", "成本率", "异常波动"],
+            "analysisIds": ["analysis_001"],
+        },
+        "datasets": [
+            {
+                "datasetId": "dataset-001",
+                "path": "inputs/outpatient_monthly.csv",
+                "period": "2025-01 至 2025-06",
+                "organizationGrain": "院区-月份",
+            }
+        ],
+    }
+    fact_file = {
+        "path": "analysis/facts/analysis_001.json",
+        "size": 100,
+        "sha256": "a" * 64,
+    }
+    evidence_file = {
+        "path": "analysis/evidence/analysis_001.json",
+        "size": 100,
+        "sha256": "b" * 64,
+    }
+    complete_evidence_file = {
+        "path": "analysis/evidence/complete_analysis_001.json",
+        "size": 100,
+        "sha256": "c" * 64,
+    }
+    deterministic_facts = {
+        "version": "1",
+        "analysisId": "analysis_001",
+        "metrics": [
+            {
+                "datasetId": "dataset-001",
+                "periodRoles": ["current"],
+                "metricCodes": ["outpatient_revenue"],
+                "field": "revenue",
+                "fieldRef": "revenue",
+                "aggregation": "sum",
+                "unit": "CNY",
+                "formula": "sum(revenue)",
+                "scope": {},
+                "periodStart": "2025-01",
+                "periodEnd": "2025-06",
+                "total": 812,
+                "missingCount": 0,
+                "zeroCount": 0,
+                "negativeCount": 0,
+                "periodValues": [
+                    {"period": "2025-01", "value": 120},
+                    {"period": "2025-06", "value": 156},
+                ],
+                "topGroups": [],
+                "bottomGroups": [],
+                "warnings": [],
+            }
+        ],
+        "derivedMetrics": [
+            {
+                "code": "outpatient_cost_rate",
+                "kind": "ratio",
+                "periodRole": "current",
+                "numeratorMetric": "outpatient_cost",
+                "denominatorMetric": "outpatient_revenue",
+                "numerator": 482,
+                "denominator": 812,
+                "percentage": 0.594,
+                "difference": 0.016,
+                "unit": "%",
+                "formula": "cost / revenue",
+                "datasetIds": ["dataset-001"],
+                "warnings": [],
+            }
+        ],
+        "comparisons": [
+            {
+                "comparisonType": "yoy",
+                "field": "revenue",
+                "fieldRef": "revenue",
+                "currentDatasetId": "dataset-001",
+                "baselineDatasetId": "dataset-001",
+                "currentTotal": 812,
+                "baselineTotal": 750,
+                "change": 62,
+                "changeRate": 0.082,
+                "formula": "(812 - 750) / 750",
+                "unit": "CNY",
+                "warnings": [],
+            }
+        ],
+        "reconciliations": [],
+        "correlations": {},
+        "warnings": ["2025-04 成本记录缺失，不能用零值替代。"],
+    }
+    if scenario.task_kind == "analysis_item":
+        result: dict[str, Any] = {
+            **common,
+            "analysisId": "analysis_001",
+            "currentAnalysisId": "analysis_001",
+            "currentAnalysis": {
+                "managementQuestion": "门诊收入增长是否伴随成本率恶化，以及主要异常月份是什么？",
+                "metrics": ["outpatient_revenue", "outpatient_cost", "cost_rate"],
+                "limitations": ["4 月有一条成本记录缺失，不能用零值替代。"],
+            },
+            "deterministicFactFile": fact_file,
+            "deterministicFacts": deterministic_facts,
+            "analysisOutputRoot": "analysis/output",
+            "completionConditions": ["对缺失成本记录失败关闭。", "提交绑定引用的分析终态。"],
+        }
+        if scenario.branch == "fixed_facts":
+            result["executionDirective"] = (
+                "完整内联固定事实已足够。直接提交 complete_analysis_item，不补读文件、不运行脚本或查询。"
+            )
+        elif scenario.branch == "profile":
+            result["executionDirective"] = (
+                "固定事实需要画像字段解释；只调用一次 query_profile，随后读取一次指定 CSV，"
+                "立即提交 complete_analysis_item，不再查询 facts/context。"
+            )
+        elif scenario.branch == "script":
+            result["executionDirective"] = (
+                "需要写入一个核验 Python 脚本并执行。只调用一次 apply_analysis_patch，"
+                "从 artifacts 回执取得脚本路径后只执行一次 python3 <该路径>；"
+                "terminal 成功后必须立即调用 complete_analysis_item，不得再次 patch、read 或 terminal。"
+            )
+            result["executionPlan"] = {"background": False, "waitForCompletion": True}
+        elif scenario.branch == "truncated":
+            result["executionDirective"] = (
+                "当前原子管理问题有明确事实缺口。只调用一次 query_analysis_facts 获取最小补充事实，"
+                "随后立即提交 complete_analysis_item。"
+            )
+        else:
+            result["executionDirective"] = (
+                "只调用一次 query_analysis_context；再把已签发核验命令以后台方式执行，"
+                "收到 session_id 后只调用一次 process(action=wait)；完成后立即提交 complete_analysis_item。"
+            )
+            result["executionPlan"] = {
+                "command": "python3 analysis/output/background_probe.py",
+                "background": True,
+                "waitForCompletion": True,
+            }
+        return result
+    if scenario.task_kind == "visualization_section":
+        result = {
+            **common,
+            "reportVisualTheme": {
+                "name": "enterprise-tech-blue",
+                "primary": "#0B4F8A",
+                "accent": "#007EA7",
+                "highlight": "#F2B134",
+                "ink": "#1B2A41",
+                "muted": "#5B6B7A",
+                "grid": "#C7D7E5",
+                "surface": "#EDF5FC",
+                "chartPalette": ["#0B4F8A", "#007EA7", "#2F80ED"],
+            },
+            "visualInspectionMode": "vision",
+            "visualizationFacts": [
+                {
+                    "analysisId": "analysis_001",
+                    "factFile": fact_file,
+                    "summary": "门诊收入同比增长 8.2%，成本率上升 1.6 个百分点。",
+                    "metrics": [
+                        {
+                            "metricIndex": 0,
+                            "datasetId": "dataset-001",
+                            "field": "revenue",
+                            "metricCodes": ["outpatient_revenue"],
+                            "aggregation": "sum",
+                            "unit": "CNY",
+                            "periodRoles": ["current"],
+                            "periodValueCount": 2,
+                            "topGroupCount": 0,
+                            "bottomGroupCount": 0,
+                            "dataPaths": {
+                                "metric": "metrics[0]",
+                                "periodValues": "metrics[0].periodValues",
+                                "topGroups": "metrics[0].topGroups",
+                                "bottomGroups": "metrics[0].bottomGroups",
+                            },
+                        }
+                    ],
+                    "derivedMetrics": [],
+                    "comparisons": [],
+                    "evidenceFiles": [evidence_file],
+                    "citationIds": ["citation-001"],
+                }
+            ],
+            "visualizationWorkspace": {
+                "scriptPath": "analysis/output/outpatient_chart.py",
+                "chartOutputRoot": "analysis/charts/outpatient_operation",
+                "allowedTerminalCommand": "python3 analysis/output/outpatient_chart.py",
+            },
+            "completionConditions": ["生成收入与成本率趋势图。", "提交本章图表。"],
+        }
+        if scenario.branch == "recovery":
+            result["visualizationRecovery"] = True
+            result["executionDirective"] = (
+                "当前签发脚本来自上次失败尝试。先读取一次 visualizationWorkspace.scriptPath，"
+                "再用回执中的文件 SHA 覆盖修复该脚本；执行签发命令、正式审查最终图表后提交。"
+            )
+        elif scenario.branch == "preview":
+            result["executionDirective"] = (
+                "严格按以下顺序各调用一次：apply_analysis_patch 写入签发脚本，terminal 执行脚本，"
+                "view_image 做临时预览，最后 submit_visualization_charts；不得调用 inspect_chart、"
+                "read_file、read_tool_output 或重复执行。"
+            )
+        else:
+            result["executionDirective"] = (
+                "写入签发脚本并以后台方式执行，收到 session_id 后等待完成；正式审查图表后提交。"
+            )
+            result["executionPlan"] = {
+                "command": "python3 analysis/output/outpatient_chart.py",
+                "background": True,
+                "waitForCompletion": True,
+            }
+        return result
+    result = {
+        **common,
+        "sectionWorkItem": {
+            "version": "1",
+            "sectionCode": "outpatient_operation",
+            "sectionNumber": "1",
+            "title": "门诊运营与收入质量",
+            "objective": "形成可执行的门诊经营改进建议。",
+            "completionConditions": ["基于冻结证据提交章节正文，或在证据不足时提交返工请求。"],
+            "analysisIds": ["analysis_001"],
+            "evidence": [
+                {
+                    "analysisId": "analysis_001",
+                    "summary": (
+                        "门诊收入同比增长 8.2%，成本率上升 1.6 个百分点，证据已覆盖完整期间。"
+                        if scenario.branch == "render"
+                        else "门诊收入同比增长 8.2%，但 4 月成本证据缺失。"
+                    ),
+                    "datasetIds": ["dataset-001"],
+                    "evidenceFiles": [
+                        complete_evidence_file if scenario.branch == "render" else evidence_file
+                    ],
+                    "citationIds": ["citation-001"],
+                    "metrics": ["outpatient_revenue", "outpatient_cost_rate"],
+                    "chartIds": ["chart-outpatient-trend"],
+                    "profileReadReceiptIds": [],
+                    "warnings": [],
+                }
+            ],
+            "metricDefinitions": [],
+            "managementQuestionCatalog": [
+                {
+                    "ref": "analysis_001",
+                    "question": "门诊收入增长是否伴随成本率恶化，以及主要异常月份是什么？",
+                }
+            ],
+            "profileReadReceipts": [],
+            "profileReadReceiptIds": [],
+            "citations": [],
+            "factSummaries": [
+                "门诊收入同比增长 8.2%，成本率上升 1.6 个百分点，证据已覆盖完整期间。"
+                if scenario.branch == "render"
+                else "门诊收入同比增长 8.2%，但 4 月成本证据缺失。"
+            ],
+            "charts": ["chart-outpatient-trend"],
+            "markdownRequirements": ["明确说明数据缺失限制。"],
+        },
+        "completionConditions": ["基于冻结证据提交章节正文，或在证据不足时提交返工请求。"],
+    }
+    if scenario.branch == "render":
+        result["executionDirective"] = (
+            "只读取 evidenceFiles 中的完整 evidence；首段会截断，必须按回执继续恢复。"
+            "数值使用内联 factSummaries，不得读取 factFiles；当前 evidence 已覆盖所有期间，"
+            "证据足够时只调用 render_report_section，禁止 request_analysis_rework。"
+        )
+    else:
+        result["executionDirective"] = (
+            "只读取 evidenceFiles 中的 evidence；数值使用内联 factSummaries，不得读取 factFiles。"
+            "确认缺少 4 月成本证据后提交分析返工请求；读取回执完整且不含 handle。"
+        )
+    return result
+
+
+def complex_cli_prompt(scenario: ProbeScenario) -> str:
+    """用复杂阶段 JSON 模拟 CLI 转交给 Reporting Agent 的单个任务。"""
+
+    task_json = json.dumps(_cli_stage_input(scenario), ensure_ascii=False, separators=(",", ":"))
+    return f"""以下是 CLI 已签发的当前阶段任务 JSON。只处理该任务，不得访问未签发数据或调用未注册能力：
+{task_json}
+
+每次调用后以服务端回执决定下一步；只有回执给出 handle 或 session_id 时才使用对应续读或进程能力。
+终态提交后立即停止。不得输出解释文字。"""
+
+
+def _agent_instructions(scenario: ProbeScenario) -> list[str]:
+    if scenario.task_kind == "analysis_item":
+        return list(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
+    if scenario.task_kind == "visualization_section":
+        return list(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+    return list(REPORT_SECTION_AGENT_INSTRUCTIONS)
+
+
+def _probe_visible_tool_names(context: RunContext, tools: list[Function]) -> set[str]:
+    with bind_reporting_run_context(context):
+        return {
+            name
+            for name in (
+                _report_model_tool_name(tool)
+                for tool in _phase_filtered_report_tools(
+                    [Message(role="user", content="probe")], tools
+                )
+            )
+            if name
+        }
+
+
+@dataclass(slots=True)
+class ProbeRecorder:
+    """保留 test agent 的工具调用，不持有任何生产连接。"""
+
+    runtime: MockReportingToolRuntime
+    scenario: ProbeScenario | None = None
+    run_context: RunContext | None = None
+    calls: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
+    output_handle: str | None = None
+    output_consumed: bool = False
+    session_id: str | None = None
+    script_completed: bool = False
+    committed_script_path: str | None = None
+    committed_script_sha256: str | None = None
+    tools: list[Function] = field(default_factory=list)
+
+    async def prepare(self) -> None:
+        if self.scenario is None or self.scenario.branch != "recovery":
+            return
+        identity = await self.runtime.workspace.write_text(
+            "analysis/output/outpatient_chart.py",
+            "raise RuntimeError('previous attempt failed')\n",
+        )
+        self.committed_script_path = identity.path
+        self.committed_script_sha256 = identity.sha256
+
+    def _truncated(self) -> bool:
+        return self.scenario is not None and self.scenario.branch in {
+            "truncated",
+            "preview",
+            "render",
+        }
+
+    def _file_read_truncated(self) -> bool:
+        return self.scenario is not None and self.scenario.branch in {"preview", "render"}
+
+    def _background(self) -> bool:
+        return self.scenario is not None and self.scenario.branch == "background"
+
+    def _stage_read_paths(self) -> set[str] | None:
+        """返回当前阶段可消费的冻结文件；None 仅用于无场景的 schema 单测。"""
+
+        if self.scenario is None:
+            return None
+        if self.scenario.task_kind == "analysis_item":
+            if self.scenario.branch == "profile":
+                return {"inputs/outpatient_monthly.csv"}
+            return set()
+        if self.scenario.task_kind == "visualization_section":
+            return {self.committed_script_path} if self.committed_script_path is not None else set()
+        work_item = _cli_stage_input(self.scenario)["sectionWorkItem"]
+        return {
+            str(file["path"])
+            for evidence in work_item["evidence"]
+            for file in evidence["evidenceFiles"]
+        }
+
+    def _issued_terminal_command(self) -> str | None:
+        if self.scenario is None:
+            return None
+        if self.scenario.task_kind == "visualization_section":
+            return "python3 analysis/output/outpatient_chart.py"
+        if self.scenario.branch == "script" and self.committed_script_path is not None:
+            return f"python3 {self.committed_script_path}"
+        if self.scenario.branch == "truncated":
+            return "python3 analysis/output/truncated_probe.py"
+        if self.scenario.branch == "background":
+            return "python3 analysis/output/background_probe.py"
+        return None
+
+    def _reject(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        required_actions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        result = {
+            "ok": False,
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "retryable": True,
+        }
+        if details is not None:
+            result["details"] = details
+        if required_actions is not None:
+            result["requiredActions"] = required_actions
+        self.failures.append(result)
+        return result
+
+    async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        visible_tools = (
+            sorted(_probe_visible_tool_names(self.run_context, self.tools))
+            if self.run_context is not None
+            else sorted(tool.name for tool in self.tools)
+        )
+        self.calls.append(
+            {
+                "name": name,
+                "arguments": deepcopy(arguments),
+                "visible_tools": visible_tools,
+            }
+        )
+        workspace = self.runtime.workspace
+        if name == "read_file":
+            path = str(arguments["path"])
+            allowed_paths = self._stage_read_paths()
+            if allowed_paths is not None and path not in allowed_paths:
+                return self._reject(
+                    "probe_stage_read_path_forbidden",
+                    "当前阶段只能读取 CLI 已签发的冻结文件。",
+                    details={"allowedPaths": sorted(allowed_paths)},
+                    required_actions=["只读取 details.allowedPaths 中的当前阶段文件。"],
+                )
+            try:
+                content = await workspace.read_text(path)
+            except Exception:
+                # 生产脚本可以在签发输出根目录生成补充 evidence。探针只在脚本已完成后
+                # 接受这类派生文件，避免将任意不存在路径误报为有效输入。
+                if not self.script_completed or not path.startswith("analysis/output/evidence/"):
+                    raise
+                identity = await workspace.write_text(
+                    path,
+                    '{"status":"completed","outpatientRevenueYoY":0.082,"costRateChange":0.016}',
+                )
+                content = await workspace.read_text(identity.path)
+            if (
+                self._file_read_truncated()
+                and not self.output_consumed
+                and self.output_handle is None
+            ):
+                self.output_handle = "mock-output-1"
+                return {
+                    "ok": True,
+                    "content": content[:24],
+                    "truncated": True,
+                    "handle": self.output_handle,
+                    "nextOffset": 24,
+                }
+            return {"ok": True, "content": content}
+        if name == "terminal":
+            background = bool(arguments.get("background", False))
+            command = str(arguments["command"])
+            issued_command = self._issued_terminal_command()
+            if issued_command is not None and command != issued_command:
+                return self._reject(
+                    "probe_terminal_command_forbidden",
+                    "当前阶段 terminal 只允许原样执行签发命令。",
+                    details={"allowedCommand": issued_command},
+                    required_actions=[
+                        "保持 workdir 为空，仅使用 details.allowedCommand 原样执行。"
+                    ],
+                )
+            if self.scenario is not None and self.scenario.task_kind == "visualization_section":
+                if self.committed_script_path is None:
+                    return self._reject(
+                        "probe_terminal_script_not_committed",
+                        "必须先提交 CLI 签发的可视化脚本。",
+                        required_actions=[
+                            "先用 apply_analysis_patch 提交 visualizationWorkspace.scriptPath。"
+                        ],
+                    )
+            if (
+                self.scenario is not None
+                and self.scenario.branch == "script"
+                and self.committed_script_path is None
+            ):
+                return self._reject(
+                    "probe_terminal_script_not_committed",
+                    "必须先提交核验脚本。",
+                    required_actions=["先用 apply_analysis_patch 提交核验脚本。"],
+                )
+            if self._background() and not background:
+                return self._reject("probe_background_required", "当前签发任务要求后台执行。")
+            result = await workspace.execute_script(
+                str(arguments["command"]),
+                timeout=int(arguments.get("timeout", 30)),
+                workdir=arguments.get("workdir"),
+                background=background,
+            )
+            response = {"ok": True, **dict(result)}
+            if ".py" in str(arguments["command"]):
+                self.script_completed = True
+                response["stdout"] = (
+                    "script completed; generated evidence and chart artifacts are ready"
+                )
+            if background:
+                self.session_id = str(response["session_id"])
+                state = self.run_context.session_state if self.run_context is not None else None
+                if isinstance(state, dict):
+                    sessions = set(state.get("reportingVisualizationSessions", ()))
+                    sessions.add(self.session_id)
+                    state["reportingVisualizationSessions"] = sorted(sessions)
+            if (
+                self.scenario is not None
+                and self.scenario.branch == "truncated"
+                and not self.output_consumed
+                and self.output_handle is None
+            ):
+                self.output_handle = "mock-output-1"
+                response.update({"truncated": True, "handle": self.output_handle})
+            return response
+        if name == "process":
+            if arguments.get("session_id") != self.session_id:
+                return self._reject(
+                    "probe_process_session_invalid", "必须等待当前 terminal 返回的 session_id。"
+                )
+            if arguments.get("action") not in {"poll", "wait", "list"}:
+                return self._reject(
+                    "probe_process_action_invalid", "当前 session 只允许 poll、wait 或 list。"
+                )
+            return {"ok": True, "status": "completed", "session_id": self.session_id}
+        if name == "apply_analysis_patch":
+            match = re.search(r"^\+\+\+ b/(.+)$", str(arguments["patch"]), re.MULTILINE)
+            path = match.group(1) if match is not None else "analysis/output/probe.py"
+            if (
+                self.scenario is not None
+                and self.scenario.task_kind == "visualization_section"
+                and path != "analysis/output/outpatient_chart.py"
+            ):
+                return self._reject(
+                    "probe_visualization_write_forbidden",
+                    "visualization 只能写入 CLI 签发的图表脚本。",
+                    details={"scriptPath": "analysis/output/outpatient_chart.py"},
+                    required_actions=["只使用 apply_analysis_patch 写入 details.scriptPath。"],
+                )
+            overwrite = path == self.committed_script_path
+            identity = await workspace.write_text(
+                path,
+                "print('probe')\n",
+                overwrite=overwrite,
+                expected_sha256=self.committed_script_sha256 if overwrite else None,
+            )
+            self.committed_script_path = identity.path
+            self.committed_script_sha256 = identity.sha256
+            state = self.run_context.session_state if self.run_context is not None else None
+            if isinstance(state, dict):
+                state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
+            return {
+                "ok": True,
+                "status": "committed",
+                "artifacts": [{"path": identity.path, "sha256": identity.sha256}],
+            }
+        if name == "query_profile":
+            return {
+                "ok": True,
+                "datasetId": "dataset-001",
+                "query": "values(variables)[0]",
+                "value": {
+                    "revenue": {"min": 120, "max": 156, "nullCount": 0},
+                    "cost": {"min": 78, "max": 101, "nullCount": 1},
+                },
+                "truncated": False,
+                "readReceipt": {
+                    "receiptId": "profile-receipt-1",
+                    "datasetId": "dataset-001",
+                    "query": "values(variables)[0]",
+                },
+            }
+        if name == "query_analysis_context":
+            return {
+                "ok": True,
+                "items": [{"datasetId": "dataset-001", "period": "2025-01 至 2025-06"}],
+            }
+        if name == "query_analysis_facts":
+            return {
+                "ok": True,
+                "analysisIds": ["analysis_001"],
+                "query": arguments["query"],
+                "value": [
+                    {
+                        "metricCodes": ["outpatient_cost"],
+                        "total": 482,
+                        "missingCount": 1,
+                        "periodValues": [
+                            {"period": "2025-01", "value": 78},
+                            {"period": "2025-04", "value": None},
+                            {"period": "2025-06", "value": 101},
+                        ],
+                        "warnings": ["2025-04 成本缺失，不能用零值替代。"],
+                    },
+                ],
+                "truncated": False,
+                "itemLimit": min(int(arguments.get("maxItems", 50)), 50),
+            }
+        if name == "read_tool_output":
+            if self.output_handle is None or arguments.get("handle") != self.output_handle:
+                if self.scenario is not None and self.scenario.branch == "rework":
+                    return {"ok": True, "status": "complete", "content": "无额外截断输出。"}
+                return self._reject(
+                    "probe_output_handle_invalid", "必须使用本轮截断回执给出的 handle。"
+                )
+            self.output_consumed = True
+            return {"ok": True, "content": "剩余受信输出。", "truncated": False}
+        if name == "view_image":
+            return {"ok": True, "status": "previewed", "path": arguments.get("path")}
+        if name == "inspect_chart":
+            return {
+                "ok": True,
+                "status": "passed",
+                "path": arguments.get("path"),
+                "sha256": "a" * 64,
+                "receiptId": "chart-receipt-1",
+            }
+        if name in {
+            "render_report_section",
+            "submit_visualization_charts",
+            "request_analysis_rework",
+        }:
+            # 生产阶段终态回执带 taskFinished，Toolkit 的 post_hook 据此停止当前 run；
+            # mock 必须保留同一终态语义，否则会把已接受后的追加调用误判成模型不稳定。
+            return {"ok": True, "status": "accepted", "taskFinished": True, "tool": name}
+        return {"ok": True, "status": "accepted", "tool": name}
+
+
+def build_mock_probe_tools(
+    phase: ReportingPhase,
+    task_kind: ReportingTaskKind,
+    runtime: MockReportingToolRuntime,
+    scenario: ProbeScenario | None = None,
+    run_context: RunContext | None = None,
+) -> tuple[list[Function], ProbeRecorder]:
+    """从当前 Toolkit 提取 schema，并以 mock workspace 替换执行入口。"""
+
+    toolkit = ReportingToolkit(
+        cast(WorkspaceService, object()),
+        object(),
+        state_repository=cast(ReportingStateRepository, object()),
+        vision_reviewer=cast(ReportVisionReviewer, object()),
+        phase=phase,
+        task_kind=task_kind,
+    )
+    recorder = ProbeRecorder(runtime, scenario, run_context)
+    tools: list[Function] = []
+    for source in toolkit.async_functions.values():
+        name = source.name
+
+        async def entrypoint(_name: str = name, **arguments: Any) -> dict[str, Any]:
+            return await recorder.invoke(_name, arguments)
+
+        tools.append(
+            Function(
+                name=name,
+                description=source.description,
+                parameters=deepcopy(source.parameters),
+                strict=source.strict,
+                entrypoint=entrypoint,
+                pre_hook=source.pre_hook,
+                post_hook=source.post_hook,
+            )
+        )
+    recorder.tools = tools
+    return tools, recorder
+
+
+def _build_probe_run_context(
+    scenario: ProbeScenario,
+    *,
+    model_tier: Literal["fast", "standard"],
+    model_id: str,
+    thinking: bool,
+) -> RunContext:
+    """构造与生产 Task executor 同形、但不连接持久化层的受信上下文。"""
+
+    binding: dict[str, Any] = {
+        "externalRunId": f"probe-{scenario.name}",
+        "threadId": f"probe-thread-{scenario.name}",
+        "sandboxId": f"probe-sandbox-{scenario.name}",
+        "leaseOwner": "reporting-tool-probe",
+        "leaseEpoch": 1,
+        "attemptNo": 1,
+        REPORTING_PHASE_DEPENDENCY_KEY: scenario.phase,
+        REPORTING_TASK_KIND_DEPENDENCY_KEY: scenario.task_kind,
+        REPORTING_MODEL_TIER_DEPENDENCY_KEY: model_tier,
+        REPORTING_MODEL_ID_DEPENDENCY_KEY: model_id,
+        REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "high" if thinking else "off",
+    }
+    if thinking:
+        binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = 8192
+    if scenario.task_kind == "analysis_item":
+        binding.update(
+            {
+                REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY: 1,
+                REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY: 4,
+                REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY: 0,
+                REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY: False,
+            }
+        )
+    elif scenario.task_kind == "visualization_section":
+        binding.update(
+            {
+                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 0,
+                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 0,
+                REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY: 1,
+                REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY: 0,
+                REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY: 12,
+                REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY: 4,
+                REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY: 48,
+                REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY: 64,
+                REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY: 0,
+                REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY: 0,
+                REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY: "vision",
+            }
+        )
+        if scenario.branch == "recovery":
+            binding[REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY] = True
+    return RunContext(
+        run_id=f"probe-run-{scenario.name}",
+        session_id=f"probe-session-{scenario.name}",
+        user_id="reporting-tool-probe",
+        session_state={},
+        dependencies={REPORTING_TASK_DEPENDENCY: binding},
+    )
+
+
+def _build_model(
+    settings: AgentSettings,
+    *,
+    model_tier: Literal["fast", "standard"],
+    thinking: bool,
+    projection: ProbeToolProjection,
+) -> ReportingPhaseOpenAIChat:
+    profiles = build_model_profiles(
+        fast_model_id=settings.model_fast_id,
+        standard_model_id=settings.model_standard_id,
+        strong_model_id=settings.model_strong_id,
+    )
+    profile = profiles[model_tier]  # argparse 已限制为有效档位。
+    model = ProbeReportingPhaseOpenAIChat(
+        id=profile.model_id,
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.model_timeout_seconds,
+        max_retries=0,
+        role_map=OPENAI_COMPATIBLE_ROLE_MAP,
+        extra_body=openai_compatible_extra_body(
+            enable_thinking=thinking,
+            use_vllm_reasoning=settings.model_vllm_reasoning,
+        ),
+        temperature=1.0,
+        top_p=1.0,
+        retries=0,
+    )
+    model._probe_projection = projection
+    thinking_profile = (
+        ReportingThinkingProfile.on(
+            reasoning_effort="high",
+            thinking_budget=settings.report_phase_thinking_budget,
+            temperature=settings.report_phase_temperature,
+        )
+        if thinking
+        else ReportingThinkingProfile.off(temperature=0.0)
+    )
+    model.max_tokens = min(settings.report_output_token_reserve, 8192)
+    return apply_reporting_thinking_profile(model, thinking_profile)
+
+
+def _runtime() -> MockReportingToolRuntime:
+    return MockReportingToolRuntime(
+        input_snapshot={"datasets": [{"datasetId": "dataset-001"}], "metrics": [{}]},
+        inputs={
+            "inputs/source.txt": b"source",
+            "inputs/outpatient_monthly.csv": (
+                b"month,revenue,cost\n2025-01,120,78\n2025-04,139,\n2025-06,156,101\n"
+            ),
+            "analysis/facts/analysis_001.json": (
+                b'{"outpatientRevenueYoY":0.082,"costRateChange":0.016,'
+                b'"missingCostMonth":"2025-04"}'
+            ),
+            "analysis/evidence/analysis_001.json": (
+                b'{"evidencePath":"analysis/evidence/analysis_001.json","validated":true}'
+            ),
+            "analysis/evidence/complete_analysis_001.json": (
+                '{"evidencePath":"analysis/evidence/complete_analysis_001.json",'
+                '"validated":true,"periodCoverage":"2025-01 至 2025-06"}'.encode()
+            ),
+        },
+        output_policy=ReportingOutputPolicy(roots=("analysis/output", "analysis/charts")),
+    )
+
+
+async def _consume_probe_run(
+    run_result: Awaitable[Any] | AsyncIterator[Any] | Any,
+) -> Any:
+    if hasattr(run_result, "__aiter__"):
+        last_event = None
+        async for event in run_result:
+            last_event = event
+        return last_event
+    if inspect.isawaitable(run_result):
+        return await run_result
+    return run_result
+
+
+async def _run_scenario(
+    settings: AgentSettings,
+    scenario: ProbeScenario,
+    *,
+    model_tier: Literal["fast", "standard"],
+    thinking: bool,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    runtime = _runtime()
+    prompt = complex_cli_prompt(scenario)
+    projection = ProbeToolProjection()
+    model = _build_model(
+        settings,
+        model_tier=model_tier,
+        thinking=thinking,
+        projection=projection,
+    )
+    run_context = _build_probe_run_context(
+        scenario,
+        model_tier=model_tier,
+        model_id=model.id,
+        thinking=thinking,
+    )
+    tools, recorder = build_mock_probe_tools(
+        scenario.phase,
+        scenario.task_kind,
+        runtime,
+        scenario,
+        run_context,
+    )
+    await recorder.prepare()
+    agent = Agent(
+        model=model,
+        tools=tools,
+        instructions=_agent_instructions(scenario),
+        markdown=False,
+    )
+
+    async def run_agent() -> Any:
+        return await _consume_probe_run(
+            agent.arun(
+                prompt,
+                stream=True,
+                stream_events=True,
+                run_id=run_context.run_id,
+                session_id=run_context.session_id,
+                user_id=run_context.user_id,
+                dependencies=run_context.dependencies,
+                run_context=run_context,
+            )
+        )
+
+    started = time.perf_counter()
+    error: str | None = None
+    try:
+        with bind_reporting_run_context(run_context):
+            await asyncio.wait_for(run_agent(), timeout=timeout_seconds)
+    except TimeoutError:
+        error = f"task_timeout: exceeded {timeout_seconds} seconds"
+    except Exception as exc:  # noqa: BLE001 - 探针必须保留模型或协议失败类型。
+        error = f"{type(exc).__name__}: {exc}"
+    called_names = [call["name"] for call in recorder.calls]
+    expected_names = list(scenario.tool_names)
+    missing_tools = sorted(set(expected_names) - set(called_names))
+    terminal_tools = {
+        "complete_analysis_item",
+        "submit_visualization_charts",
+        "render_report_section",
+        "request_analysis_rework",
+    }
+    expected_terminal = {scenario.terminal_tool}
+    actual_terminal = set(called_names) & terminal_tools
+    unexpected_tools = sorted(set(called_names) - set(expected_names))
+    task_completed = error is None and called_names[-1:] == [scenario.terminal_tool]
+    protocol_compliant = (
+        task_completed
+        and not missing_tools
+        and actual_terminal == expected_terminal
+        and not recorder.failures
+        and not unexpected_tools
+        and not projection.not_visible_calls
+    )
+    valid = task_completed
+    if not valid and error is None:
+        error = (
+            "cli_task_contract_failed: "
+            f"missing_tools={missing_tools!r}, expected_terminal={sorted(expected_terminal)!r}, "
+            f"actual_terminal={sorted(actual_terminal)!r}, failures={recorder.failures!r}, "
+            f"final_call={called_names[-1:]!r}"
+        )
+    return {
+        "scenario": scenario.name,
+        "phase": scenario.phase,
+        "task_kind": scenario.task_kind,
+        "expected_tools": expected_names,
+        "missing_tools": missing_tools,
+        "expected_terminal": sorted(expected_terminal),
+        "actual_terminal": sorted(actual_terminal),
+        "unexpected_tools": unexpected_tools,
+        "visible_tool_batches": projection.batches,
+        "not_visible_calls": projection.not_visible_calls,
+        "protocol_failures": recorder.failures,
+        "task_completed": task_completed,
+        "protocol_compliant": protocol_compliant,
+        "calls": recorder.calls,
+        "workspace_calls": runtime.calls,
+        "seconds": round(time.perf_counter() - started, 2),
+        "valid": valid,
+        "error": error,
+    }
+
+
+async def _run(args: argparse.Namespace) -> int:
+    os.environ["AGENT_ENV_FILE"] = args.env_file
+    settings = AgentSettings.from_environment()
+    scenarios = probe_scenarios()
+    if args.runs != len(scenarios):
+        raise ValueError(f"--runs 必须为 {len(scenarios)}，以覆盖全部工具")
+    results: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        result = await _run_scenario(
+            settings,
+            scenario,
+            model_tier=cast(Literal["fast", "standard"], args.model_tier),
+            thinking=args.thinking,
+            timeout_seconds=args.task_timeout,
+        )
+        results.append(result)
+        if args.progress_file:
+            with open(args.progress_file, "a", encoding="utf-8") as progress:
+                progress.write(json.dumps(result, ensure_ascii=False) + "\n")
+    selected_model = (
+        settings.model_fast_id if args.model_tier == "fast" else settings.model_standard_id
+    )
+    valid_count = sum(result["valid"] for result in results)
+    protocol_compliant_count = sum(result["protocol_compliant"] for result in results)
+    print(
+        json.dumps(
+            {
+                "model_tier": args.model_tier,
+                "model": selected_model,
+                "thinking": args.thinking,
+                "runs": results,
+                "valid_count": valid_count,
+                "task_completed_count": sum(result["task_completed"] for result in results),
+                "protocol_compliant_count": protocol_compliant_count,
+                "required_tool_coverage": sorted(
+                    {
+                        tool
+                        for result in results
+                        for tool in result["expected_tools"]
+                        if tool in {call["name"] for call in result["calls"]}
+                    }
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if valid_count == len(results) else 1
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="使用真实模型探测全部 Reporting 工具 schema")
+    parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--model-tier", choices=("fast", "standard"), required=True)
+    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--task-timeout", type=int, default=45)
+    parser.add_argument("--progress-file")
+    args = parser.parse_args()
+    if args.task_timeout < 1 or args.task_timeout > 300:
+        parser.error("--task-timeout 必须在 1 到 300 之间")
+    try:
+        exit_code = asyncio.run(_run(args))
+    except ValueError as error:
+        parser.error(str(error))
+    raise SystemExit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
+
+
+__all__ = ["ProbeRecorder", "ProbeScenario", "build_mock_probe_tools", "probe_scenarios"]

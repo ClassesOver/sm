@@ -41,7 +41,7 @@ DEFAULT_TENANT_COMPANY_ID = "default"
 
 
 class _CliProgressSink:
-    """把 Worker 流式事件转换为不含参数和结果正文的 CLI 进度。"""
+    """把 Reporting Agent 流式事件转换为不含参数和结果正文的 CLI 进度。"""
 
     def __init__(
         self,
@@ -56,7 +56,9 @@ class _CliProgressSink:
         self._last_write = clock()
         self._event_count = 0
 
-    async def emit_worker(self, _scope: Any, _workflow_run_id: str, raw_event: Any) -> None:
+    async def emit_reporting_event(
+        self, _scope: Any, _workflow_run_id: str, raw_event: Any
+    ) -> None:
         event_value = getattr(raw_event, "event", None) or getattr(raw_event, "type", None)
         event_type = str(getattr(event_value, "value", event_value) or "")
         phase = {
@@ -95,7 +97,7 @@ class _CliProgressSink:
         ):
             return
         fields = [
-            "Coding 进度:",
+            "Reporting 进度:",
             f"tool={tool_name}",
             f"status={phase}",
             f"events={self._event_count}",
@@ -480,10 +482,10 @@ async def run_cli(
     current_settings = _cli_settings(current_settings, debug=debug)
     context = create_execution_context(current_settings)
     progress_sink = _CliProgressSink(write)
-    report_worker, runtime = create_report_runtime(
+    reporting_agent_template, runtime = create_report_runtime(
         context,
         context.settings,
-        worker_event_sink=progress_sink.emit_worker,
+        reporting_event_sink=progress_sink.emit_reporting_event,
     )
     workflow = runtime.workflow()
     run_id = resume_run_id or f"cli-report-{uuid4().hex}"
@@ -517,7 +519,7 @@ async def run_cli(
             )
         write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
-        await complete_cleanup(close_execution_resources(context, report_worker))
+        await complete_cleanup(close_execution_resources(context, reporting_agent_template))
     return result
 
 

@@ -43,10 +43,10 @@ from .base import (
     StepInput,
     StepOutput,
     ValidationError,
-    _coding_observed_data_facts,
     _frozen_outline,
     _human_label,
     _report_pdf_filename,
+    _reporting_observed_data_facts,
     _source_warnings_from_state,
     authoritative_citations,
     build_authoritative_manifest,
@@ -171,7 +171,7 @@ class RuntimePublicationMixin:
         analyses = tuple(
             AnalysisItem.model_validate(item) for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]
         )
-        observed_facts = _coding_observed_data_facts(
+        observed_facts = _reporting_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
         await self.report_tools.bind_citation_presentations(
@@ -652,9 +652,9 @@ class RuntimePublicationMixin:
     async def publish_report(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
         feedback = self._feedback(step_input)
         if feedback:
-            # 反馈重跑继续走唯一的 Agno CodingAnalysisAndDraftWorkflow 入口，
+            # 反馈重跑继续走唯一的 Agno ReportingAnalysisAndDraftWorkflow 入口，
             # 避免发布路径维护第二套手写章节循环。
-            await self.run_coding_analysis(step_input, run_context)
+            await self.run_reporting_analysis(step_input, run_context)
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
@@ -698,7 +698,7 @@ class RuntimePublicationMixin:
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
         revision: int,
-        coding_task_key: str,
+        task_key: str,
         section_numbers: tuple[str, ...],
         heading_numbers: tuple[HeadingNumber, ...],
         run_context: RunContext,
@@ -767,7 +767,7 @@ class RuntimePublicationMixin:
             manifest = build_authoritative_manifest(
                 report_id=str(run_context.run_id),
                 revision=revision,
-                coding_task_key=coding_task_key,
+                task_key=task_key,
                 effective_profile_hash=self._profile(run_context).effective_profile_hash,
                 markdown_path=markdown_path,
                 markdown=markdown_bytes.decode("utf-8"),

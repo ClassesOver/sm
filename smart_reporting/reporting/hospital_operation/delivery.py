@@ -1,4 +1,4 @@
-"""Dataset 级来源告警与 Coding 执行回执。"""
+"""Dataset 级来源告警与 Reporting 执行回执。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class SourceWarning(HospitalOperationSchema):
 
 
 class SourceBinding(HospitalOperationSchema):
-    """Coding 计算实际使用的数据来源。"""
+    """Reporting 计算实际使用的数据来源。"""
 
     policy: SourcePolicy = Field(default="csv", alias="sourcePolicy")
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
@@ -56,7 +56,7 @@ class SourceBinding(HospitalOperationSchema):
 
 
 class PlanExecutionReceipt(HospitalOperationSchema):
-    """Coding 对单个 analysisId 的可追溯执行回执。"""
+    """Reporting 对单个 analysisId 的可追溯执行回执。"""
 
     plan_id: str = Field(alias="planId", min_length=1, max_length=128)
     plan_hash: str = Field(alias="planHash", pattern=SHA256_PATTERN)

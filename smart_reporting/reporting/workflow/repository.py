@@ -58,7 +58,7 @@ def _command_fingerprint(command: ReportingCommand) -> str:
 
 
 class ReportingStateRepository:
-    """Reporting 专属状态仓储；不复用 Coding task 的业务列或 session checkpoint。"""
+    """Reporting 专属状态仓储；不复用 Reporting task 的业务列或 session checkpoint。"""
 
     def __init__(self, db: AsyncBaseDb):
         self.db = db

@@ -19,8 +19,8 @@ from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ...task_execution.changes import build_workspace_changes, parse_unified_diff
-from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
+from ...task_execution import build_workspace_changes, parse_unified_diff
+from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
     MetricDefinition,
@@ -31,12 +31,11 @@ from .validation import (
     _stable_digest,
     analysis_patch_parameters,
 )
+from .visualization import MAX_VISUALIZATION_SCRIPT_BYTES
 
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
 MAX_ANALYSIS_PYTHON_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_ANALYSIS_WRITE_INTENT_BYTES = 4 * 1024 * 1024
-MAX_VISUALIZATION_SCRIPT_BYTES = 64 * 1024
-
 _ANALYSIS_SUMMARY_PERIOD_PATTERN = re.compile(
     r"(?P<year>\d{4})年(?:(?P<full>全年)|(?P<start>\d{1,2})(?:[-—–至到](?P<end>\d{1,2}))?月)"
 )
@@ -170,20 +169,32 @@ class RuntimeAnalysisMixin:
         operations = parse_unified_diff(raw["patch"])
         expected_sha256 = raw.get("expected_sha256", {})
         if not isinstance(expected_sha256, dict):
-            raise ReportingError("report_analysis_write_intent_invalid", "expected_sha256 必须是对象。")
+            raise ReportingError(
+                "report_analysis_write_intent_invalid", "expected_sha256 必须是对象。"
+            )
         normalized_expected: dict[str, str] = {}
         for path, digest in expected_sha256.items():
             if not isinstance(path, str) or not isinstance(digest, str):
-                raise ReportingError("report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。")
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。"
+                )
             normalized_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
-            if normalized_path in normalized_expected or len(digest) != 64 or any(
-                character not in "0123456789abcdef" for character in digest
+            if (
+                normalized_path in normalized_expected
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
             ):
-                raise ReportingError("report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。")
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。"
+                )
             normalized_expected[normalized_path] = digest
-        operation_paths = {WorkspaceService.normalize_path(item.path, allow_root=False)[0] for item in operations}
+        operation_paths = {
+            WorkspaceService.normalize_path(item.path, allow_root=False)[0] for item in operations
+        }
         if set(normalized_expected) - operation_paths:
-            raise ReportingError("report_analysis_write_intent_invalid", "基线 SHA-256 包含非补丁目标路径。")
+            raise ReportingError(
+                "report_analysis_write_intent_invalid", "基线 SHA-256 包含非补丁目标路径。"
+            )
         for operation in operations:
             add_path(operation.path, "present")
         raw["expected_sha256"] = normalized_expected
@@ -226,7 +237,7 @@ class RuntimeAnalysisMixin:
     ) -> list[dict[str, Any]]:
         """读取写入回执；基础设施异常保留原类型交由 Agent retry。"""
 
-        return await self.kernel.service.abatch_hash_files(thread_id, list(paths))
+        return await self.runtime.workspace.batch_hash_files(thread_id, paths)
 
     async def _recover_pending_analysis_write(
         self,
@@ -342,7 +353,10 @@ class RuntimeAnalysisMixin:
         """保存固定操作的写入意图、执行写入并返回文件身份。"""
 
         canonical_tool_name = "apply_analysis_patch"
-        canonical_input = {"patch": patch, **({"expected_sha256": expected_sha256} if expected_sha256 else {})}
+        canonical_input = {
+            "patch": patch,
+            **({"expected_sha256": expected_sha256} if expected_sha256 else {}),
+        }
 
         async def call(scope: Any) -> dict[str, Any]:
             _parameters, contract = self._phase_parameters(scope, "analysis")
@@ -350,7 +364,7 @@ class RuntimeAnalysisMixin:
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
             raw_operations = build_workspace_changes(
-                self.kernel.service,
+                self.runtime.workspace,
                 scope.thread_id,
                 canonical["patch"],
                 canonical.get("expected_sha256"),
@@ -419,7 +433,7 @@ class RuntimeAnalysisMixin:
                 command_id=f"write-intent:{intent_sha256}",
             )
             try:
-                result = await self.kernel.patch(
+                result = await self.runtime.patch(
                     "patch", None, None, None, False, canonical["patch"], run_context, _scope=scope
                 )
             except WorkspacePathConflict as error:
@@ -467,15 +481,15 @@ class RuntimeAnalysisMixin:
                 command_id=f"write-commit:{intent_sha256}",
             )
             if len(json.dumps(response, ensure_ascii=False).encode("utf-8")) > 8 * 1024:
-                return await self.kernel.bound_tool_result(
+                return await self.runtime.bound_tool_result(
                     scope, response, run_context, retain=True
                 )
             return response
 
         try:
-            external_run_id = self.kernel.bound_external_run_id(run_context)
-            async with self.kernel.task_scheduler(external_run_id) as scheduler, scheduler.write():
-                scope = await self.kernel.scope(run_context)
+            external_run_id = self.runtime.bound_external_run_id(run_context)
+            async with self.runtime.task_scheduler(external_run_id) as scheduler, scheduler.write():
+                scope = await self.runtime.scope(run_context)
                 self._require_phase_tool(
                     scope,
                     allowed=frozenset({"analysis"}),
@@ -485,7 +499,6 @@ class RuntimeAnalysisMixin:
                 return await call(scope)
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error)
-
 
     @staticmethod
     def _direct_python_script_path(command: Any, workdir: Any) -> str | None:
@@ -528,9 +541,7 @@ class RuntimeAnalysisMixin:
             "print(json.dumps([name for name in names if importlib.util.find_spec(name) is not None]))"
         )
         command = shlex.join(["python3", "-I", "-c", probe, json.dumps(sorted(module_names))])
-        async with self.kernel.service._async_client() as client:
-            sandbox = await self.kernel.service._asandbox_for(client, thread_id)
-            result = await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=30)
+        result = await self.runtime.workspace.execute_isolated(thread_id, command, timeout=30)
         if getattr(result, "exit_code", None) != 0:
             raise ReportingError(
                 "report_analysis_dependency_probe_failed",
@@ -550,20 +561,11 @@ class RuntimeAnalysisMixin:
         )
 
     async def _analysis_python_source(self, *, thread_id: str, path: str) -> bytes:
-        relative, remote = WorkspaceService.normalize_path(path, allow_root=False)
-        async with self.kernel.service._async_client() as client:
-            sandbox = await self.kernel.service._asandbox_for(client, thread_id)
-            await self.kernel.service._avalidate_existing_path(sandbox, relative)
-            info = await self.kernel.service._ainfo(sandbox, remote)
-            if not self.kernel.service._is_regular_file(info):
-                raise WorkspaceError("分析脚本依赖必须是普通文件。")
-            if int(getattr(info, "size", 0) or 0) > MAX_ANALYSIS_PYTHON_SOURCE_BYTES:
-                raise WorkspaceError("单个分析脚本依赖不能超过 2 MiB。")
-            return await self.kernel.service._adownload_file(
-                sandbox,
-                remote,
-                MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
-            )
+        return await self.runtime.workspace.read_limited_regular_file(
+            thread_id,
+            path,
+            max_bytes=MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
+        )
 
     async def _analysis_python_dependency_rejection(
         self,
@@ -639,7 +641,7 @@ class RuntimeAnalysisMixin:
                         WorkspaceService.normalize_path(path, allow_root=False)[0]
                         for path in dict.fromkeys(candidates)
                     )
-                    identities = await self.kernel.service.abatch_hash_files(
+                    identities = await self.runtime.workspace.batch_hash_files(
                         scope.thread_id, list(normalized)
                     )
                     local_path = next(
@@ -720,7 +722,7 @@ class RuntimeAnalysisMixin:
         """
 
         try:
-            scope = await self.kernel.scope(run_context)
+            scope = await self.runtime.scope(run_context)
             _parameters, contract = self._phase_parameters(scope, "analysis")
             if contract.get("taskKind") != "analysis_item":
                 raise ReportingError(
@@ -816,7 +818,9 @@ class RuntimeAnalysisMixin:
                     "report_profile_receipt_dataset_mismatch",
                     "analysis item 绑定的 ProfileReadReceipt 不属于其 Dataset 范围。",
                 )
-            identities = await self.kernel.service.abatch_hash_files(scope.thread_id, evidencePaths)
+            identities = await self.runtime.workspace.batch_hash_files(
+                scope.thread_id, evidencePaths
+            )
             _durable, evidence_warnings = await self._ensure_registered_analysis_evidence(
                 scope=scope, identities=identities
             )
@@ -839,7 +843,7 @@ class RuntimeAnalysisMixin:
                 )
             next_id = durable.payload.get("currentAnalysisId")
             self._complete_phase_plan(self._session_state(run_context))
-            finish_result = await self.kernel.finish_task(
+            finish_result = await self.runtime.finish_task(
                 f"分析项 {analysisId} 已提交冻结事实与证据。",
                 [item["path"] for item in identities],
                 None,

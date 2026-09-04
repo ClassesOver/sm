@@ -515,7 +515,7 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
         materialize_datasets=executor,
         prepare_analysis_context=executor,
         generate_detailed_analysis_plan=executor,
-        run_coding_analysis=executor,
+        run_reporting_analysis=executor,
         validate_report=executor,
         finalize_publication=executor,
     )
@@ -550,7 +550,7 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
         materialize_datasets=executor,
         prepare_analysis_context=executor,
         generate_detailed_analysis_plan=executor,
-        run_coding_analysis=executor,
+        run_reporting_analysis=executor,
         validate_report=executor,
         finalize_publication=executor,
     )
@@ -603,7 +603,7 @@ async def test_outline直接流向coding节点而不暂停() -> None:
         materialize_datasets=executor("materialize-datasets"),
         prepare_analysis_context=executor("prepare-analysis-context"),
         generate_detailed_analysis_plan=executor("generate-detailed-analysis-plan"),
-        run_coding_analysis=executor("run-coding-analysis"),
+        run_reporting_analysis=executor("run-coding-analysis"),
         validate_report=executor("validate-report"),
         finalize_publication=executor("finalize-publication"),
     )
@@ -719,7 +719,7 @@ async def test_cli_progress_sink_reports_safe_high_signal_and_throttled_progress
     clock_values = iter((0.0, 1.0, 31.0, 32.0))
     sink = _CliProgressSink(writes.append, clock=lambda: next(clock_values))
 
-    await sink.emit_worker(
+    await sink.emit_reporting_event(
         None,
         "run-1",
         SimpleNamespace(
@@ -731,7 +731,7 @@ async def test_cli_progress_sink_reports_safe_high_signal_and_throttled_progress
             ),
         ),
     )
-    await sink.emit_worker(
+    await sink.emit_reporting_event(
         None,
         "run-1",
         SimpleNamespace(
@@ -743,7 +743,7 @@ async def test_cli_progress_sink_reports_safe_high_signal_and_throttled_progress
             ),
         ),
     )
-    await sink.emit_worker(
+    await sink.emit_reporting_event(
         None,
         "run-1",
         SimpleNamespace(
@@ -762,8 +762,8 @@ async def test_cli_progress_sink_reports_safe_high_signal_and_throttled_progress
     )
 
     assert writes == [
-        "Coding 进度: tool=query_profile status=accepted events=2",
-        "Coding 进度: tool=complete_analysis_item status=rejected events=3 "
+        "Reporting 进度: tool=query_profile status=accepted events=2",
+        "Reporting 进度: tool=complete_analysis_item status=rejected events=3 "
         "analysisId=analysis_003 code=report_analysis_evidence_identity_mismatch",
     ]
     assert "不得输出" not in "".join(writes)

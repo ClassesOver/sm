@@ -104,7 +104,7 @@ def _contains_shell_background_operator(root: Node) -> bool:
 
 
 def validate_command_policy(cmd: str, selected_shell: str) -> None:
-    """执行 Coding/Task Kernel 共用的 Shell 安全策略。"""
+    """执行 TaskExecution Kernel 的 Shell 安全策略。"""
     if not isinstance(cmd, str) or not cmd.strip():
         raise WorkspaceError("Shell 命令不能为空。")
     source = cmd.encode("utf-8")

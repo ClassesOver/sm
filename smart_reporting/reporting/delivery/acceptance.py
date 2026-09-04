@@ -65,7 +65,7 @@ def build_report_phase_acceptance_contract(
         "requirements": [
             {
                 "id": f"report-{phase}-phase",
-                # Report Worker 已关闭通用 acceptance validator；requirement 仅作为
+                # Report Agent 已关闭通用 acceptance validator；requirement 仅作为
                 # 不可变 phase 参数载体，由阶段工具自行核验产物哈希。
                 "validatorId": REPORT_PHASE_CONTRACT_ID,
                 "parameters": {

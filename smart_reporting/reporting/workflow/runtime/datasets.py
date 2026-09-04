@@ -602,7 +602,7 @@ class RuntimeDatasetsMixin:
                         f"计划绑定 {len(referenced_contexts)} 个不可变数据集、"
                         f"{sum(context.row_count for context in referenced_contexts)} 行记录；"
                         f"{profile_signal}deterministicFacts 覆盖当前管理问题时直接提交；"
-                        "仅在必需事实缺口时由 Coding 从 CSV 复算并保存补充 evidence。"
+                        "仅在必需事实缺口时由 Reporting 从 CSV 复算并保存补充 evidence。"
                     ),
                     limitations=item_warnings[:100],
                     recommendedTables=("按期间与组织粒度汇总关键指标",),

@@ -944,7 +944,7 @@ def publication_result(
     grant: ReportDownloadGrant,
     base_url: str,
     source_warnings: list[dict[str, object]] | None = None,
-    coding_receipts: list[dict[str, object]] | None = None,
+    task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "reportId": report_id,
@@ -966,7 +966,7 @@ def publication_result(
             "expiresAt": grant.expires_at.isoformat(),
         },
         "sourceWarnings": list(source_warnings or ()),
-        "codingReceipts": list(coding_receipts or ()),
+        "codingReceipts": list(task_receipts or ()),
     }
 
 
@@ -982,7 +982,7 @@ def cli_result(
     html_size: int,
     html_sha256: str,
     source_warnings: list[dict[str, object]] | None = None,
-    coding_receipts: list[dict[str, object]] | None = None,
+    task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "path": path,
@@ -991,7 +991,7 @@ def cli_result(
         "word": {"path": word_path, "size": word_size, "sha256": word_sha256},
         "html": {"path": html_path, "size": html_size, "sha256": html_sha256},
         "sourceWarnings": list(source_warnings or ()),
-        "codingReceipts": list(coding_receipts or ()),
+        "codingReceipts": list(task_receipts or ()),
     }
 
 

@@ -15,24 +15,24 @@ from loguru import logger
 
 import smart_reporting.context_management as context_management_module
 from smart_reporting.context_management import (
-    CODING_CHECKPOINT_MAX_BYTES,
-    CODING_TOOL_BATCH_LIMIT,
     COMPRESSIBLE_HISTORY_TOOLS,
     SKILL_PRUNE_MIN_CHARS,
+    TASK_EXECUTION_CHECKPOINT_MAX_BYTES,
+    TASK_EXECUTION_TOOL_BATCH_LIMIT,
     TIKTOKEN_DOWNLOAD_TIMEOUT,
     TIKTOKEN_O200K_CACHE_KEY,
-    CodingContextHardLimitError,
-    CodingContextProjector,
     ContextBudgetController,
     ProjectedOpenAIChat,
     ProtectedCompressionManager,
     RollingSessionSummaryManager,
     RollingSummaryResponse,
+    TaskExecutionContextHardLimitError,
+    TaskExecutionContextProjector,
     ToolCompressionResponse,
     _parse_rolling_summary,
     clear_terminal_reasoning,
     clear_terminal_session_reasoning,
-    projected_coding_model,
+    projected_task_execution_model,
     validate_configured_tiktoken_cache,
 )
 
@@ -43,14 +43,14 @@ def test_coding_process_outputs_are_compressible_history():
     )
 
 
-def test_projected_coding_model_enables_parallel_calls_without_mutating_base_model():
+def test_projected_task_execution_model_enables_parallel_calls_without_mutating_base_model():
     base = OpenAIChat(
         id="coding-model",
         request_params={"temperature": 0},
         extra_body={"enable_thinking": True},
     )
 
-    projected = projected_coding_model(base)
+    projected = projected_task_execution_model(base)
 
     assert projected is not base
     assert projected.id == base.id
@@ -63,16 +63,16 @@ def test_projected_coding_model_enables_parallel_calls_without_mutating_base_mod
     assert projected.get_request_params()["parallel_tool_calls"] is True
 
 
-def test_projected_coding_model_使用Reporting输入预算作为投影hard_cap(monkeypatch):
+def test_projected_task_execution_model_使用Reporting输入预算作为投影hard_cap(monkeypatch):
     base = OpenAIChat(id="budgeted-model")
-    projected = projected_coding_model(base, input_token_budget=1234)
+    projected = projected_task_execution_model(base, input_token_budget=1234)
     observed = {}
 
     def project(messages, **kwargs):
         observed["hard_cap"] = kwargs["hard_cap"]
         return messages
 
-    monkeypatch.setattr(context_management_module.CodingContextProjector, "project", project)
+    monkeypatch.setattr(context_management_module.TaskExecutionContextProjector, "project", project)
     projected._project([Message(role="user", content="继续")], (), {})
 
     assert observed["hard_cap"] == 1234
@@ -333,7 +333,7 @@ def test_context_projection_logs_safe_token_count_fallback() -> None:
     sink_id = logger.add(records.append, level="INFO", format="{message}")
 
     try:
-        projected = CodingContextProjector.project(
+        projected = TaskExecutionContextProjector.project(
             [Message(role="user", content=sensitive_prompt)],
             model=FailingTokenModel(),
         )
@@ -371,8 +371,8 @@ def test_coding_context_projection_keeps_append_only_provider_prefix_stable():
         Message(role="assistant", content="继续检查"),
     ]
 
-    first = CodingContextProjector.project(messages)
-    second = CodingContextProjector.project(
+    first = TaskExecutionContextProjector.project(messages)
+    second = TaskExecutionContextProjector.project(
         [*messages, Message(role="assistant", content="准备下一步")]
     )
 
@@ -388,9 +388,9 @@ def test_coding_context_projection_keeps_append_only_provider_prefix_stable():
         provider_value(message) for message in second[: len(first)]
     ]
 
-    messages[1].compressed_content = ContextBudgetController._coding_receipt(messages[1])
-    rebased_first = CodingContextProjector.project(messages)
-    rebased_second = CodingContextProjector.project(
+    messages[1].compressed_content = ContextBudgetController._task_execution_receipt(messages[1])
+    rebased_first = TaskExecutionContextProjector.project(messages)
+    rebased_second = TaskExecutionContextProjector.project(
         [*messages, Message(role="assistant", content="压缩后继续")]
     )
 
@@ -410,12 +410,12 @@ def test_coding_context_controller_defers_skill_pruning_until_budget_rebase():
     assert stable[0].compressed_content is None
     assert old.compressed_content is None
 
-    rebased = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=2_000)
+    rebased = TaskExecutionContextProjector.project(messages, model=CountingModel(), hard_cap=2_000)
 
     checkpoint = next(
         json.loads(message.content)
         for message in rebased
-        if isinstance(message.content, str) and "CODING_CHECKPOINT" in message.content
+        if isinstance(message.content, str) and "TASK_EXECUTION_CHECKPOINT" in message.content
     )
     assert checkpoint["skillReceipts"][0]["path"] == "SKILL.md"
     assert old.compressed_content is None
@@ -441,14 +441,16 @@ def test_coding_context_controller_emits_structured_checkpoint_when_over_budget(
         Message(role="assistant", content="padding " + "x" * 2_000),
     ]
 
-    prepared = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=1_500)
+    prepared = TaskExecutionContextProjector.project(
+        messages, model=CountingModel(), hard_cap=1_500
+    )
 
     checkpoint = next(
         json.loads(message.content)
         for message in prepared
-        if isinstance(message.content, str) and "CODING_CHECKPOINT" in message.content
+        if isinstance(message.content, str) and "TASK_EXECUTION_CHECKPOINT" in message.content
     )
-    assert checkpoint["marker"] == "CODING_CHECKPOINT"
+    assert checkpoint["marker"] == "TASK_EXECUTION_CHECKPOINT"
     assert checkpoint["version"] == 2
     assert checkpoint["changedFiles"] == [{"path": "app.py"}]
     assert checkpoint["mutation"] == 3
@@ -467,10 +469,12 @@ def test_coding_context_controller_uses_fallback_count_when_tokenizer_fails():
 
     assert controller.should_compress(messages) is True
 
-    prepared = CodingContextProjector.project(messages, model=BrokenCountingModel(), hard_cap=400)
+    prepared = TaskExecutionContextProjector.project(
+        messages, model=BrokenCountingModel(), hard_cap=400
+    )
 
     assert any(
-        json.loads(message.content).get("marker") == "CODING_CHECKPOINT"
+        json.loads(message.content).get("marker") == "TASK_EXECUTION_CHECKPOINT"
         for message in prepared
         if isinstance(message.content, str) and message.content.startswith("{")
     )
@@ -509,22 +513,24 @@ def test_coding_context_projector_rebases_1000_rounds_without_mutating_canonical
         messages.extend(_tool_round(index, "x" * 100))
     canonical = [message.model_dump() for message in messages]
 
-    projected = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=64 * 1024)
+    projected = TaskExecutionContextProjector.project(
+        messages, model=CountingModel(), hard_cap=64 * 1024
+    )
 
     assert [message.model_dump() for message in messages] == canonical
     assert CountingModel().count_tokens(projected) <= 64 * 1024
-    assert CodingContextProjector.last_metrics["canonical_message_count"] == len(messages)
-    assert CodingContextProjector.last_metrics["window_rebased"] is True
-    assert CodingContextProjector.last_metrics["dropped_complete_rounds"] > 0
+    assert TaskExecutionContextProjector.last_metrics["canonical_message_count"] == len(messages)
+    assert TaskExecutionContextProjector.last_metrics["window_rebased"] is True
+    assert TaskExecutionContextProjector.last_metrics["dropped_complete_rounds"] > 0
     checkpoint_message = next(
         message
         for message in projected
         if isinstance(message.content, str)
         and '"version":2' in message.content
-        and "CODING_CHECKPOINT" in message.content
+        and "TASK_EXECUTION_CHECKPOINT" in message.content
     )
     checkpoint = json.loads(checkpoint_message.content)
-    assert len(checkpoint_message.content.encode()) <= CODING_CHECKPOINT_MAX_BYTES
+    assert len(checkpoint_message.content.encode()) <= TASK_EXECUTION_CHECKPOINT_MAX_BYTES
     assert "toolReceipts" not in checkpoint
     assistant_call_ids = {
         call["id"]
@@ -546,8 +552,8 @@ def test_coding_context_projector_counts_tool_schema_and_rejects_irreducible_pre
 
     messages = [Message(role="system", content="required"), Message(role="user", content="goal")]
 
-    with pytest.raises(CodingContextHardLimitError) as rejected:
-        CodingContextProjector.project(
+    with pytest.raises(TaskExecutionContextHardLimitError) as rejected:
+        TaskExecutionContextProjector.project(
             messages,
             model=SchemaCountingModel(),
             tools=[{"name": "large", "description": "x" * 1_000}],
@@ -574,13 +580,15 @@ def test_coding_checkpoint_v2_reads_v1_state_and_stays_bounded():
         Message(role="assistant", content="x" * 4_000),
     ]
 
-    projected = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=2_000)
+    projected = TaskExecutionContextProjector.project(
+        messages, model=CountingModel(), hard_cap=2_000
+    )
     checkpoint_message = next(
         message
         for message in projected
         if isinstance(message.content, str)
         and '"version":2' in message.content
-        and "CODING_CHECKPOINT" in message.content
+        and "TASK_EXECUTION_CHECKPOINT" in message.content
     )
     checkpoint = json.loads(checkpoint_message.content)
 
@@ -588,7 +596,7 @@ def test_coding_checkpoint_v2_reads_v1_state_and_stays_bounded():
     assert checkpoint["mutation"] == 7
     assert checkpoint["changedFiles"] == [{"path": "legacy.py"}]
     assert "toolReceipts" not in checkpoint
-    assert len(checkpoint_message.content.encode()) <= CODING_CHECKPOINT_MAX_BYTES
+    assert len(checkpoint_message.content.encode()) <= TASK_EXECUTION_CHECKPOINT_MAX_BYTES
 
 
 def test_runtime_feedback_replaces_older_failure_with_latest_success_state():
@@ -614,10 +622,10 @@ def test_runtime_feedback_replaces_older_failure_with_latest_success_state():
         ),
     ]
 
-    projected = CodingContextProjector.project(messages, model=CountingModel())
+    projected = TaskExecutionContextProjector.project(messages, model=CountingModel())
     feedback = json.loads(projected[-1].content)
 
-    assert feedback["marker"] == "CODING_RUNTIME_FEEDBACK"
+    assert feedback["marker"] == "TASK_EXECUTION_RUNTIME_FEEDBACK"
     assert feedback["code"] == "coding_finish_required"
 
 
@@ -643,10 +651,10 @@ def test_runtime_feedback_keeps_incomplete_plan_in_working_state_after_verificat
         ),
     ]
 
-    projected = CodingContextProjector.project(messages, model=CountingModel())
+    projected = TaskExecutionContextProjector.project(messages, model=CountingModel())
     feedback = json.loads(projected[-1].content)
 
-    assert feedback["marker"] == "CODING_RUNTIME_FEEDBACK"
+    assert feedback["marker"] == "TASK_EXECUTION_RUNTIME_FEEDBACK"
     assert feedback["code"] == "coding_runtime_action_required"
     assert feedback["pendingSteps"] == ["生成清单"]
     assert feedback["requiredActions"] == [
@@ -665,7 +673,7 @@ def _function_call(name, entrypoint, index, arguments=None):
 @pytest.mark.anyio
 async def test_projected_model_runs_ten_safe_reads_in_parallel_and_keeps_result_order():
     model = ProjectedOpenAIChat(id="test")
-    assert CODING_TOOL_BATCH_LIMIT == 10
+    assert TASK_EXECUTION_TOOL_BATCH_LIMIT == 10
     entered = 0
     all_entered = asyncio.Event()
     release = asyncio.Event()
@@ -673,14 +681,14 @@ async def test_projected_model_runs_ten_safe_reads_in_parallel_and_keeps_result_
     async def read_file(path):
         nonlocal entered
         entered += 1
-        if entered == CODING_TOOL_BATCH_LIMIT:
+        if entered == TASK_EXECUTION_TOOL_BATCH_LIMIT:
             all_entered.set()
         await release.wait()
         return path
 
     calls = [
         _function_call("read_file", read_file, index, {"path": str(index)})
-        for index in range(CODING_TOOL_BATCH_LIMIT)
+        for index in range(TASK_EXECUTION_TOOL_BATCH_LIMIT)
     ]
     results = []
 
@@ -694,7 +702,7 @@ async def test_projected_model_runs_ten_safe_reads_in_parallel_and_keeps_result_
     await asyncio.wait_for(task, timeout=1)
 
     assert [message.tool_call_id for message in results] == [
-        f"call-{index}" for index in range(CODING_TOOL_BATCH_LIMIT)
+        f"call-{index}" for index in range(TASK_EXECUTION_TOOL_BATCH_LIMIT)
     ]
 
 
@@ -946,10 +954,10 @@ def test_coding_context_projector_compacts_consumed_tool_pair_without_mutating_r
         ),
         Message(role="assistant", content="continue"),
     ]
-    receipt = ContextBudgetController._coding_receipt(messages[1])
+    receipt = ContextBudgetController._task_execution_receipt(messages[1])
     messages[1].compressed_content = receipt
 
-    projected = CodingContextProjector.project(messages)
+    projected = TaskExecutionContextProjector.project(messages)
 
     assert messages[0].tool_calls[0]["function"]["arguments"] == create_args
     assert messages[1].compressed_content == receipt
@@ -957,7 +965,7 @@ def test_coding_context_projector_compacts_consumed_tool_pair_without_mutating_r
     assert compact_args["path"] == "report.md"
     assert "CONTEXT_PRUNED" in compact_args["content"]
     assert large_content not in projected[0].tool_calls[0]["function"]["arguments"]
-    assert json.loads(projected[1].compressed_content)["marker"] == "CODING_TOOL_RECEIPT"
+    assert json.loads(projected[1].compressed_content)["marker"] == "TASK_EXECUTION_TOOL_RECEIPT"
     assert projected[0].tool_calls[0]["id"] == projected[1].tool_call_id == "call-create"
     assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
     assert projected[3].compressed_content is None
@@ -978,14 +986,14 @@ def test_coding_context_projector_records_context_composition_without_content():
         }
     ]
 
-    CodingContextProjector.project(
+    TaskExecutionContextProjector.project(
         messages,
         model=CountingModel(),
         tools=tools,
         response_format={"type": "json_object"},
     )
 
-    metrics = CodingContextProjector.last_metrics
+    metrics = TaskExecutionContextProjector.last_metrics
     assert metrics["canonical_system_bytes"] > 0
     assert metrics["canonical_user_bytes"] > 0
     assert metrics["canonical_assistant_bytes"] > 0
@@ -1040,7 +1048,7 @@ def test_coding_context_projector_compacts_create_files_content_without_mutating
         }
     )
 
-    compacted = CodingContextProjector._compact_arguments("create_files", arguments)
+    compacted = TaskExecutionContextProjector._compact_arguments("create_files", arguments)
 
     payload = json.loads(compacted)
     assert json.loads(arguments)["files"][0]["content"] == large_content
@@ -1089,7 +1097,7 @@ def test_coding_context_projector_keeps_recent_read_facts_after_another_tool_cal
         ),
     ]
 
-    projected = CodingContextProjector.project(messages)
+    projected = TaskExecutionContextProjector.project(messages)
 
     assert projected[1].content == facts
     assert projected[1].compressed_content is None
@@ -1144,9 +1152,9 @@ def test_coding_context_projector_keeps_uncompressed_latest_mutation_arguments()
         ),
         Message(role="assistant", content="continue"),
     ]
-    messages[1].compressed_content = ContextBudgetController._coding_receipt(messages[1])
+    messages[1].compressed_content = ContextBudgetController._task_execution_receipt(messages[1])
 
-    projected = CodingContextProjector.project(messages)
+    projected = TaskExecutionContextProjector.project(messages)
 
     assert "CONTEXT_PRUNED" in projected[0].tool_calls[0]["function"]["arguments"]
     assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
@@ -1176,7 +1184,7 @@ def test_coding_tool_receipt_preserves_bounded_continuation_state():
         ),
     )
 
-    receipt = json.loads(ContextBudgetController._coding_receipt(message))
+    receipt = json.loads(ContextBudgetController._task_execution_receipt(message))
 
     assert receipt["state"] == {
         "execution_id": "execution-1",

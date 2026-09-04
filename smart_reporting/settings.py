@@ -186,10 +186,10 @@ class AgentSettings:
     daytona_network_allow_list: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
-    report_coding_enable_thinking: bool
-    report_coding_temperature: float
-    report_coding_reasoning_effort: str
-    report_coding_thinking_budget: int
+    report_phase_enable_thinking: bool
+    report_phase_temperature: float
+    report_phase_reasoning_effort: str
+    report_phase_thinking_budget: int
     report_enable_thinking: bool
     report_planner_reasoning_effort: str
     report_planner_thinking_budget: int
@@ -202,7 +202,7 @@ class AgentSettings:
     report_output_token_reserve: int
     report_analysis_concurrency: int
     report_section_concurrency: int
-    report_coding_execution_mode: str
+    reporting_execution_mode: str
 
     @classmethod
     def from_environment(
@@ -262,10 +262,10 @@ class AgentSettings:
             1,
             maximum=5,
         )
-        report_coding_execution_mode = (
+        reporting_execution_mode = (
             values.get("AGENT_REPORT_CODING_EXECUTION_MODE", "sequential").strip().lower()
         )
-        if report_coding_execution_mode not in {"sequential", "parallel"}:
+        if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         return cls(
@@ -326,14 +326,14 @@ class AgentSettings:
             enable_session_summaries=_flag(
                 values.get("AGENT_ENABLE_SESSION_SUMMARIES"), default=True
             ),
-            report_coding_enable_thinking=_flag(
+            report_phase_enable_thinking=_flag(
                 values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True
             ),
-            report_coding_temperature=_temperature(values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1),
-            report_coding_reasoning_effort=_report_reasoning_effort(
+            report_phase_temperature=_temperature(values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1),
+            report_phase_reasoning_effort=_report_reasoning_effort(
                 values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="high"
             ),
-            report_coding_thinking_budget=_positive_int(
+            report_phase_thinking_budget=_positive_int(
                 values, "AGENT_REPORT_CODING_THINKING_BUDGET", 8192, maximum=131072
             ),
             report_enable_thinking=_flag(values.get("AGENT_REPORT_ENABLE_THINKING"), default=True),
@@ -355,5 +355,5 @@ class AgentSettings:
             report_output_token_reserve=report_output_token_reserve,
             report_analysis_concurrency=report_analysis_concurrency,
             report_section_concurrency=report_section_concurrency,
-            report_coding_execution_mode=report_coding_execution_mode,
+            reporting_execution_mode=reporting_execution_mode,
         )

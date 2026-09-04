@@ -90,7 +90,7 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
 | `AGENT_DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
-| `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting worker thinking 开关 |
+| `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting 阶段 Agent thinking 开关（兼容配置名） |
 | `AGENT_REPORT_ENABLE_THINKING` | Reporting planner thinking 开关 |
 | `AGENT_REPORT_ENABLE_VISION` | 图表视觉审查开关 |
 | `AGENT_REPORT_DATA_SOURCES_DIR` | Reporting 数据源配置目录 |

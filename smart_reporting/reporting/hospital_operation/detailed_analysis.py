@@ -294,7 +294,7 @@ def profile_csv_dataset(
                 report = ProfileReport(
                     profile_dataframe_pandas,
                     # 同一期间存在多行时属于面板数据。原始行顺序不代表业务时间序列，
-                    # 因此关闭上游 tsmode；Coding 必须从不可变 CSV 按月和适当组织粒度
+                    # 因此关闭上游 tsmode；Reporting 必须从不可变 CSV 按月和适当组织粒度
                     # 聚合后再执行趋势、ACF、PACF 或季节性分析。
                     tsmode=time_series_sort_field is not None and not duplicate_time_index,
                     sortby=time_series_sort_field if not duplicate_time_index else None,
@@ -635,8 +635,8 @@ def _append_time_series_statistics(
     """把 ACF、PACF 和季节性数值写入完整 JSON Profile。
 
     fg-data-profiling 的默认 ACF/PACF 只在 HTML 渲染器中绘图，`to_json()` 不会
-    暴露图上的数值。这里复用同一 statsmodels 算法生成有界数值序列，供 Worker
-    定位分析重点；图表仍由 Coding Worker 从 CSV 自行生成，Profile 不产出图片。
+    暴露图上的数值。这里复用同一 statsmodels 算法生成有界数值序列，供 Reporting Agent
+    定位分析重点；图表仍由可视化 Agent 从 CSV 自行生成，Profile 不产出图片。
     """
     if sort_field is None or parsed_time_index is None:
         profile["time_series_analysis"] = {

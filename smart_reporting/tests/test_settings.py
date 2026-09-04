@@ -34,10 +34,10 @@ def test_settings_defaults():
     assert current.model_fast_id == "qwen3.6-35b-a3b"
     assert current.model_standard_id == "deepseek-v4-flash-0731"
     assert current.model_strong_id == "deepseek-v4-flash-0731"
-    assert current.report_coding_enable_thinking is True
-    assert current.report_coding_temperature == 0.1
-    assert current.report_coding_reasoning_effort == "high"
-    assert current.report_coding_thinking_budget == 8192
+    assert current.report_phase_enable_thinking is True
+    assert current.report_phase_temperature == 0.1
+    assert current.report_phase_reasoning_effort == "high"
+    assert current.report_phase_thinking_budget == 8192
     assert current.report_enable_thinking is True
     assert current.report_planner_reasoning_effort == "high"
     assert current.report_planner_thinking_budget == 8192
@@ -80,10 +80,10 @@ def test_agent_feature_flags_can_be_disabled():
 
     assert current.enable_tool_result_compression is False
     assert current.enable_session_summaries is False
-    assert current.report_coding_enable_thinking is False
-    assert current.report_coding_temperature == 0.35
-    assert current.report_coding_reasoning_effort == "max"
-    assert current.report_coding_thinking_budget == 4096
+    assert current.report_phase_enable_thinking is False
+    assert current.report_phase_temperature == 0.35
+    assert current.report_phase_reasoning_effort == "max"
+    assert current.report_phase_thinking_budget == 4096
     assert current.report_enable_thinking is False
     assert current.report_planner_reasoning_effort == "high"
     assert current.report_planner_thinking_budget == 2048
@@ -131,7 +131,7 @@ def test_model_tier_ids_come_from_environment():
     assert current.model_strong_id == "strong-model"
 
 
-def test_report_worker_model_uses_standard_tier_configuration():
+def test_reporting_phase_model_uses_standard_tier_configuration():
     model = _report_model(settings(AGENT_MODEL_STANDARD="tier-standard"), enable_thinking=True)
 
     assert model.id == "tier-standard"
@@ -145,7 +145,7 @@ def test_report_vision_model_comes_from_environment():
 
 @pytest.mark.parametrize("name", ["AGENT_REPORT_CODING_TEMPERATURE"])
 @pytest.mark.parametrize("value", ["invalid", "-0.1", "2.1"])
-def test_invalid_coding_temperature_is_rejected(name, value):
+def test_invalid_reporting_phase_temperature_is_rejected(name, value):
     with pytest.raises(ValueError, match=name):
         settings(**{name: value})
 
@@ -157,7 +157,7 @@ def test_invalid_coding_temperature_is_rejected(name, value):
         "AGENT_REPORT_PLANNER_REASONING_EFFORT",
     ],
 )
-def test_invalid_coding_reasoning_effort_is_rejected(name):
+def test_invalid_reporting_phase_reasoning_effort_is_rejected(name):
     with pytest.raises(ValueError, match=name):
         settings(**{name: "unbounded"})
 
@@ -183,7 +183,7 @@ def test_reporting_reasoning_effort_only_accepts_deepseek_v4_levels(name, value)
     ],
 )
 @pytest.mark.parametrize("value", ["invalid", "0", "131073"])
-def test_invalid_coding_thinking_budget_is_rejected(name, value):
+def test_invalid_reporting_phase_thinking_budget_is_rejected(name, value):
     with pytest.raises(ValueError, match=name):
         settings(**{name: value})
 

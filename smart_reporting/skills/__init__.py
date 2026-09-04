@@ -1,7 +1,7 @@
 """Skill 能力的稳定公共入口。"""
 
 from .core import (
-    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+    TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
     SkillValidator,
     SkillValidatorRegistry,
@@ -15,7 +15,7 @@ from .core import (
 )
 
 __all__ = [
-    "CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY",
+    "TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY",
     "SkillAcceptanceError",
     "SkillValidator",
     "SkillValidatorRegistry",

@@ -597,6 +597,19 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
     assert "补读原始 facts/evidence" not in instructions
 
 
+def test_phase_instructions_prioritize_signed_execution_directive() -> None:
+    analysis = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
+    visualization = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+    section = "\n".join(REPORT_SECTION_AGENT_INSTRUCTIONS)
+
+    for instructions in (analysis, visualization, section):
+        assert "executionDirective 是本任务的首要动作契约" in instructions
+        assert "不得输出解释文字" in instructions
+    assert "process 不能启动命令" in analysis
+    assert "不得重复完全相同的 patch 参数" in visualization
+    assert "不得使用 read_file 读取 factFiles" in section
+
+
 def test_patch_instructions_include_complete_unified_diff_templates() -> None:
     analysis_instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
     visualization_instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
@@ -644,9 +657,28 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
         requirement_id="requirement-1",
         sql_hash="c" * 64,
     )
+    attachment_context = context.model_copy(
+        update={
+            "dataset_id": "attachment-dataset",
+            "path": "reporting-inputs/op/0-input.csv",
+            "sha256": "e" * 64,
+        }
+    )
+    attachment_handle = DatasetHandle(
+        dataset_id="attachment-dataset",
+        source_id="attachment-001",
+        source_type="url_csv",
+        filename="input.csv",
+        path="reporting-inputs/op/0-input.csv",
+        row_count=1,
+        size=1,
+        sha256="e" * 64,
+        requirement_id="attachment-001",
+        sql_hash="f" * 64,
+    )
     coverage = ProfileCoverageManifest(
-        authorizedDatasetCount=1,
-        coveredDatasetCount=1,
+        authorizedDatasetCount=2,
+        coveredDatasetCount=2,
         datasets=(
             ProfileCoverageDataset(
                 datasetId="dataset-1",
@@ -659,10 +691,24 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
                 fields=("month", "department", "amount"),
                 periodCoverage=("2025-01",),
             ),
+            ProfileCoverageDataset(
+                datasetId="attachment-dataset",
+                datasetPath="reporting-inputs/op/0-input.csv",
+                datasetSize=1,
+                datasetSnapshotHash="e" * 64,
+                profileFile=FileIdentity(path="profiles/attachment.json", size=1, sha256="f" * 64),
+                rowCount=1,
+                fieldCount=3,
+                fields=("month", "department", "amount"),
+                periodCoverage=("2025-01",),
+            ),
         ),
     )
     state: dict[str, Any] = {
-        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [context.model_dump(mode="json", by_alias=True)],
+        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [
+            context.model_dump(mode="json", by_alias=True),
+            attachment_context.model_dump(mode="json", by_alias=True),
+        ],
         REPORT_PROFILE_COVERAGE_STATE_KEY: coverage.model_dump(mode="json", by_alias=True),
         REPORT_ANALYSIS_PLAN_STATE_KEY: [
             {
@@ -673,7 +719,9 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
                 "requirementIds": ["requirement-1"],
             }
         ],
-        REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]},
+        REPORT_WORKFLOW_RESULT_STATE_KEY: {
+            "datasets": [handle.public_dict(), attachment_handle.public_dict()]
+        },
     }
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
     runtime._state = lambda _run_context: state
@@ -694,6 +742,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
     )
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert analysis.dataset_ids == ("dataset-1", "attachment-dataset")
     assert (
         "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"
         in analysis.actions

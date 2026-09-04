@@ -1,4 +1,4 @@
-"""Reporting Worker 的唯一阶段工具能力矩阵。"""
+"""Reporting 的唯一阶段工具能力矩阵。"""
 
 REPORTING_SECTION_TOOL_NAMES = frozenset(
     {"read_file", "read_tool_output", "render_report_section", "request_analysis_rework"}
@@ -16,8 +16,8 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
         "terminal",
     }
 )
-# 可视化按章节归属：章节 worker 直接提交本章图表，服务端在提交时完成身份校验；
-# 不再暴露全局登记/冻结 worker，最终分析产物由服务端确定性汇总。
+# 可视化按章节归属：章节 Agent 直接提交本章图表，服务端在提交时完成身份校验；
+# 不再暴露全局登记/冻结 Agent，最终分析产物由服务端确定性汇总。
 REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
     {
         "inspect_chart",
