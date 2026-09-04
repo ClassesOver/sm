@@ -12,8 +12,9 @@ from smart_reporting.sandbox.local.config import LocalProviderConfig
 
 
 class MemoryRegistryTransaction:
-    def __init__(self, values: dict[str, str]) -> None:
+    def __init__(self, values: dict[str, str], bindings: dict[str, object]) -> None:
         self.values = values
+        self.bindings = bindings
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
@@ -24,14 +25,20 @@ class MemoryRegistryTransaction:
     async def delete(self, key: str) -> None:
         self.values.pop(key, None)
 
+    async def set_binding(self, record: object) -> None:
+        digest = record.binding_digest  # type: ignore[attr-defined]
+        self.bindings[digest] = record
+        self.values[digest] = record.resource_id  # type: ignore[attr-defined]
+
 
 class MemoryRegistry:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.bindings: dict[str, object] = {}
 
     @asynccontextmanager
     async def locked(self, _key: str):
-        yield MemoryRegistryTransaction(self.values)
+        yield MemoryRegistryTransaction(self.values, self.bindings)
 
 
 def _binding() -> WorkspaceBinding:
@@ -48,6 +55,7 @@ def _binding() -> WorkspaceBinding:
 @pytest.mark.anyio
 async def test_local_client_sends_binding_on_every_workspace_request() -> None:
     requests: list[httpx.Request] = []
+    registry = MemoryRegistry()
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -73,7 +81,7 @@ async def test_local_client_sends_binding_on_every_workspace_request() -> None:
             endpoint="unix:///run/local-sandboxd.sock",
             rootfs_digest="sha256:" + "a" * 64,
         ),
-        registry=MemoryRegistry(),
+        registry=registry,
         binding_secret=b"0123456789abcdef0123456789abcdef",
         transport=httpx.MockTransport(respond),
     )
@@ -84,6 +92,8 @@ async def test_local_client_sends_binding_on_every_workspace_request() -> None:
     assert requests[0].headers["x-sandbox-binding"] == handle.ref.binding_digest
     assert requests[0].headers["idempotency-key"] == "request-00000001"
     assert json.loads(requests[0].content)["profile"] == "ubuntu"
+    assert registry.bindings[handle.ref.binding_digest].provider == ProviderKind.LOCAL
+    assert registry.bindings[handle.ref.binding_digest].node == "node-a"  # type: ignore[attr-defined]
 
 
 @pytest.mark.anyio

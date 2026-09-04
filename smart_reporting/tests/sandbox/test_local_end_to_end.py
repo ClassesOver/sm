@@ -33,6 +33,9 @@ class _RegistryTransaction:
     async def delete(self, key: str) -> None:
         self.values.pop(key, None)
 
+    async def set_binding(self, record) -> None:
+        self.values[record.binding_digest] = record.resource_id
+
 
 class _Registry:
     def __init__(self) -> None:

@@ -47,6 +47,7 @@ from .errors import (
     SandboxPolicyDenied,
     SandboxProviderError,
 )
+from .registry import SandboxBindingRecord
 
 DAYTONA_WORKSPACE_ROOT = "/home/daytona/workspace"
 _STARTING_STATES = {
@@ -441,7 +442,18 @@ class DaytonaProvider:
                 if len(matches) > 1:
                     raise SandboxProviderError("当前绑定关联了多个 Daytona workspace。")
                 sandbox = matches[0] if matches else await self._create(digest)
-                await registry.set(digest, str(sandbox.id))
+                ref = self._ref(sandbox, binding)
+                await registry.set_binding(
+                    SandboxBindingRecord(
+                        binding_digest=ref.binding_digest,
+                        provider=ref.provider,
+                        isolation=ref.isolation,
+                        node=ref.node,
+                        resource_id=ref.resource_id,
+                        generation=ref.generation,
+                        dependency_bundle_digest=ref.dependency_bundle_digest,
+                    )
+                )
         if _state(sandbox.state) == SandboxState.STOPPED:
             await self._client.start(sandbox)
         if _state(sandbox.state) != SandboxState.STARTED:

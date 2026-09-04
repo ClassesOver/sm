@@ -40,6 +40,7 @@ from ..errors import (
     SandboxProviderError,
     SandboxTimeout,
 )
+from ..registry import SandboxBindingRecord
 from .config import LocalProviderConfig
 
 _ERROR_TYPES = {
@@ -338,7 +339,17 @@ class LocalProvider:
         )
         handle = self._handle(response.json())
         async with self._registry.locked(digest) as registry:
-            await registry.set(digest, handle.ref.resource_id)
+            await registry.set_binding(
+                SandboxBindingRecord(
+                    binding_digest=handle.ref.binding_digest,
+                    provider=handle.ref.provider,
+                    isolation=handle.ref.isolation,
+                    node=handle.ref.node,
+                    resource_id=handle.ref.resource_id,
+                    generation=handle.ref.generation,
+                    dependency_bundle_digest=handle.ref.dependency_bundle_digest,
+                )
+            )
         return handle
 
     async def get_workspace(self, ref: SandboxRef, binding: WorkspaceBinding) -> LocalSandboxHandle:

@@ -22,8 +22,9 @@ from smart_reporting.sandbox import (
 
 
 class MemoryRegistryTransaction:
-    def __init__(self, values: dict[str, str]) -> None:
+    def __init__(self, values: dict[str, str], bindings: dict[str, Any]) -> None:
         self.values = values
+        self.bindings = bindings
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
@@ -34,14 +35,19 @@ class MemoryRegistryTransaction:
     async def delete(self, key: str) -> None:
         self.values.pop(key, None)
 
+    async def set_binding(self, record: Any) -> None:
+        self.bindings[record.binding_digest] = record
+        self.values[record.binding_digest] = record.resource_id
+
 
 class MemoryRegistry:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.bindings: dict[str, Any] = {}
 
     @asynccontextmanager
     async def locked(self, key: str):
-        yield MemoryRegistryTransaction(self.values)
+        yield MemoryRegistryTransaction(self.values, self.bindings)
 
 
 class FakeFileSystem:
@@ -184,9 +190,10 @@ def binding(thread_id: str = "thread-1") -> WorkspaceBinding:
 @pytest.mark.anyio
 async def test_daytona_provider_ensures_one_workspace_per_binding() -> None:
     client = FakeDaytonaClient()
+    registry = MemoryRegistry()
     provider = DaytonaProvider(
         client=client,
-        registry=MemoryRegistry(),
+        registry=registry,
         snapshot="sandbox-tools",
         binding_secret=b"0123456789abcdef0123456789abcdef",
     )
@@ -198,6 +205,7 @@ async def test_daytona_provider_ensures_one_workspace_per_binding() -> None:
     assert first.ref.provider == ProviderKind.DAYTONA
     assert first.ref.binding_digest != binding().thread_id
     assert client.created == 1
+    assert registry.bindings[first.ref.binding_digest].provider == ProviderKind.DAYTONA
 
 
 @pytest.mark.anyio
