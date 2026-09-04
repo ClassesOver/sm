@@ -3,6 +3,7 @@ from os import getenv
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
+from agno.os.config import MCPServerConfig
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from loguru import logger as loguru_logger
@@ -49,6 +50,11 @@ from .reporting_identity import (
     apply_report_identity,
     requires_workspace_capability,
 )
+from .reporting_mcp import (
+    ReportingMcpAdapter,
+    create_reporting_mcp_tools,
+)
+from .reporting_mcp.identity import CapabilityTokenVerifier
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .workspace import (
@@ -441,6 +447,15 @@ application_context = ApplicationContext(
     report_agent,
     database=agent_database,
     quality_warning_service=quality_warning_service,
+    mcp_config=MCPServerConfig(
+        tools=create_reporting_mcp_tools(
+            ReportingMcpAdapter(report_workflow_controller, workspace_service)
+        ),
+        enable_builtin_tools=False,
+        allowed_hosts=list(settings.reporting_mcp_allowed_hosts),
+    ),
+    mcp_auth=CapabilityTokenVerifier(settings.workspace_hmac_secret),
+    report_workflow_controller=report_workflow_controller,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

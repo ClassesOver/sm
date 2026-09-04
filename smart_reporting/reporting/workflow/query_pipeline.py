@@ -69,6 +69,9 @@ class ApprovedQuery(StrictModel):
 class DatasetLineage(StrictModel):
     dataset_id: str = Field(alias="datasetId", min_length=1, max_length=128)
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
+    source_type: Literal["starrocks_materialized", "url_csv"] = Field(
+        default="starrocks_materialized", alias="sourceType"
+    )
     requirement_id: str = Field(alias="requirementId", min_length=1, max_length=128)
     sql_hash: str = Field(alias="sqlHash", pattern=r"^[0-9a-f]{64}$")
     row_count: int = Field(alias="rowCount", ge=0)

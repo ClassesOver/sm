@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -28,6 +30,7 @@ def _context() -> RunContext:
 class _ThreadOwnership:
     def __init__(self) -> None:
         self.owners: dict[str, tuple[str, str]] = {}
+        self.external_requests: dict[str, dict[str, str]] = {}
         self.lock = asyncio.Lock()
         self.execution_locks: dict[str, asyncio.Lock] = {}
 
@@ -52,6 +55,11 @@ class _ThreadOwnership:
     async def is_workflow_run_active(self, external_run_id: str) -> bool:
         lock = self.execution_locks.get(external_run_id)
         return bool(lock and lock.locked())
+
+    async def register_external_request(self, **values: str) -> dict[str, str]:
+        external_run_id = values["external_run_id"]
+        async with self.lock:
+            return self.external_requests.setdefault(external_run_id, dict(values))
 
     async def claim_workflow_thread(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
@@ -139,6 +147,977 @@ async def test_controller_fails_closed_when_execution_lock_is_missing() -> None:
 
     assert error.value.code == "report_workflow_runtime_invalid"
     assert run_calls == 0
+
+
+@pytest.mark.anyio
+async def test_external_background_start_returns_before_workflow_completes() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        def __init__(self) -> None:
+            self.output = None
+
+        async def arun(self, *_args, **kwargs):
+            started.set()
+            await release.wait()
+            self.output = SimpleNamespace(
+                status=RunStatus.completed,
+                user_id=kwargs["user_id"],
+                metadata=kwargs["metadata"],
+                content=None,
+            )
+            return self.output
+
+        async def aget_run(self, *_args, **_kwargs):
+            return self.output
+
+    workflow = Workflow()
+    controller = ReportWorkflowController(
+        lambda: workflow,
+        thread_ownership=_ThreadOwnership(),
+    )
+
+    accepted = await controller.start_external_background(
+        ReportingWorkflowInput(prompt="生成报表"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+
+    assert accepted == {"ok": True, "status": "running"}
+    assert await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    ) == {"ok": True, "status": "running"}
+
+    release.set()
+    await controller._background_tasks["external-run"]
+    completed = await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+    assert completed == {"ok": True, "status": "completed"}
+
+
+@pytest.mark.anyio
+async def test_external_background_keeps_preclaimed_owner_without_early_cleanup() -> None:
+    started = asyncio.Event()
+    cleanup_calls: list[str] = []
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def cleanup(scope, *_args) -> None:
+        cleanup_calls.append(scope["external_run_id"])
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=_ThreadOwnership(),
+        terminal_cleanup=cleanup,
+    )
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="生成报表"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+        prepare=lambda: asyncio.sleep(0, result=ReportingWorkflowInput(prompt="已物化请求")),
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+    cleanup_before_cancel = len(cleanup_calls)
+
+    await controller.cancel_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert cleanup_before_cancel == 0
+
+
+@pytest.mark.anyio
+async def test_external_background_active_run_rejects_changed_fingerprint() -> None:
+    started = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=_ThreadOwnership(),
+    )
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="第一个请求"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+    conflict: ReportingError | None = None
+    try:
+        await controller.start_external_background(
+            ReportingWorkflowInput(prompt="被改写的请求"),
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            request_fingerprint="b" * 64,
+        )
+    except ReportingError as error:
+        conflict = error
+    finally:
+        await controller.cancel_external(
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+
+    assert conflict is not None
+    assert conflict.code == "report_mcp_idempotency_conflict"
+
+
+@pytest.mark.anyio
+async def test_external_reserved_request_is_queryable_while_attachments_download() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=_ThreadOwnership(),
+    )
+    created = await controller.reserve_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    result = await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert created is False
+    assert result == {"ok": True, "status": "running"}
+
+
+@pytest.mark.anyio
+async def test_external_reservation_blocks_cross_controller_owner_reclaim() -> None:
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def prepare() -> ReportingWorkflowInput:
+        prepare_started.set()
+        await release_prepare.wait()
+        return ReportingWorkflowInput(prompt="物化后的请求")
+
+    ownership = _ThreadOwnership()
+    first = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    second = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    first_start = asyncio.create_task(
+        first.start_external_background(
+            ReportingWorkflowInput(prompt="第一个请求"),
+            external_run_id="external-run-1",
+            request_fingerprint="a" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            prepare=prepare,
+        )
+    )
+    await prepare_started.wait()
+
+    with pytest.raises(ReportingError) as error:
+        await second.start_external_background(
+            ReportingWorkflowInput(prompt="第二个请求"),
+            external_run_id="external-run-2",
+            request_fingerprint="b" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+
+    assert error.value.code == "report_workflow_active"
+    assert ownership.owners == {"thread": ("external-run-1", "user")}
+    release_prepare.set()
+    await first_start
+    await first.cancel_external(
+        external_run_id="external-run-1",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+
+@pytest.mark.anyio
+async def test_external_get_observes_cross_controller_attachment_reservation() -> None:
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def prepare() -> ReportingWorkflowInput:
+        prepare_started.set()
+        await release_prepare.wait()
+        return ReportingWorkflowInput(prompt="物化后的请求")
+
+    scope_digest = hashlib.sha256(
+        json.dumps(
+            ["odoo", "11", "user", "thread"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    operation_id = scope_digest + hashlib.sha256(b"request-1").hexdigest()
+    ownership = _ThreadOwnership()
+    first = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    second = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    first_start = asyncio.create_task(
+        first.start_external_background(
+            ReportingWorkflowInput(prompt="原始请求"),
+            external_run_id=operation_id,
+            request_fingerprint="a" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            prepare=prepare,
+        )
+    )
+    await prepare_started.wait()
+
+    result = await second.get_external(
+        external_run_id=operation_id,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert result == {"ok": True, "status": "running"}
+    release_prepare.set()
+    await first_start
+    await first.cancel_external(
+        external_run_id=operation_id,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+
+@pytest.mark.anyio
+async def test_external_get_rejects_cross_tenant_attachment_reservation() -> None:
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def prepare() -> ReportingWorkflowInput:
+        prepare_started.set()
+        await release_prepare.wait()
+        return ReportingWorkflowInput(prompt="物化后的请求")
+
+    scope_digest = hashlib.sha256(
+        json.dumps(
+            ["odoo", "11", "user", "thread"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    operation_id = scope_digest + hashlib.sha256(b"request-1").hexdigest()
+    ownership = _ThreadOwnership()
+    first = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    second = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    first_start = asyncio.create_task(
+        first.start_external_background(
+            ReportingWorkflowInput(prompt="原始请求"),
+            external_run_id=operation_id,
+            request_fingerprint="a" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            prepare=prepare,
+        )
+    )
+    await prepare_started.wait()
+
+    with pytest.raises(ReportingError) as error:
+        await second.get_external(
+            external_run_id=operation_id,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="12",
+        )
+
+    assert error.value.code == "report_workflow_scope_mismatch"
+    release_prepare.set()
+    await first_start
+    await first.cancel_external(
+        external_run_id=operation_id,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+
+@pytest.mark.anyio
+async def test_external_reservation_rejects_second_run_for_same_thread() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    await controller.reserve_external_request(
+        external_run_id="external-run-1",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await controller.reserve_external_request(
+            external_run_id="external-run-2",
+            request_fingerprint="b" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+
+    assert error.value.code == "report_workflow_active"
+    assert ownership.owners == {"thread": ("external-run-1", "user")}
+
+
+@pytest.mark.anyio
+async def test_external_request_fingerprint_survives_controller_restart() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    first = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    await first.reserve_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+    await first.release_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+    )
+    restarted = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    with pytest.raises(ReportingError) as error:
+        await restarted.reserve_external_request(
+            external_run_id="external-run",
+            request_fingerprint="b" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+
+    assert error.value.code == "report_mcp_idempotency_conflict"
+
+
+@pytest.mark.anyio
+async def test_external_get_rejects_run_without_mcp_metadata() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.completed,
+                user_id="user",
+                metadata=None,
+                content=None,
+            )
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=_ThreadOwnership(),
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await controller.get_external(
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+
+    assert error.value.code == "report_workflow_scope_mismatch"
+
+
+@pytest.mark.anyio
+async def test_external_cancel_stops_active_background_task() -> None:
+    started = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=ownership,
+    )
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="生成报表"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+
+    with pytest.raises(ReportingError) as scope_error:
+        await controller.cancel_external(
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="12",
+        )
+    assert scope_error.value.code == "report_workflow_scope_mismatch"
+
+    result = await controller.cancel_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert result == {"ok": True, "status": "cancelled"}
+    assert ownership.owners == {}
+    assert await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    ) == {"ok": True, "status": "cancelled"}
+
+
+@pytest.mark.anyio
+async def test_external_cancel_releases_preclaimed_thread_before_task_runs() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    await controller.reserve_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="生成报表"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+        thread_preclaimed=True,
+    )
+
+    result = await controller.cancel_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert result == {"ok": True, "status": "cancelled"}
+    assert ownership.owners == {}
+
+
+@pytest.mark.anyio
+async def test_preclaimed_background_start_holds_execution_lock_before_accepting() -> None:
+    started = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    await controller.reserve_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="生成报表"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+        thread_preclaimed=True,
+    )
+
+    assert await ownership.is_workflow_run_active("external-run") is True
+    assert started.is_set()
+    await controller.cancel_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+
+@pytest.mark.anyio
+async def test_external_background_prepares_request_under_single_execution_lock() -> None:
+    from contextlib import asynccontextmanager
+
+    class SingleSlotOwnership(_ThreadOwnership):
+        def __init__(self) -> None:
+            super().__init__()
+            self.single_lock = asyncio.Lock()
+
+        def workflow_execution_lock(self, _external_run_id: str):
+            @asynccontextmanager
+            async def locked():
+                if self.single_lock.locked():
+                    raise ReportingError(
+                        "report_workflow_run_conflict", "Reporting run 正由其他进程执行。"
+                    )
+                await self.single_lock.acquire()
+                try:
+                    yield
+                finally:
+                    self.single_lock.release()
+
+            return locked()
+
+        async def is_workflow_run_active(self, _external_run_id: str) -> bool:
+            return self.single_lock.locked()
+
+    started = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def prepare() -> ReportingWorkflowInput:
+        return ReportingWorkflowInput(prompt="物化后的报表请求")
+
+    ownership = SingleSlotOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    result = await controller.start_external_background(
+        ReportingWorkflowInput(prompt="原始请求"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+        prepare=prepare,
+    )
+
+    assert result == {"ok": True, "status": "running"}
+    assert started.is_set()
+    await controller.cancel_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+
+@pytest.mark.anyio
+async def test_external_background_cleans_prepared_inputs_when_preflight_fails() -> None:
+    reads = 0
+    cleanup_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return None
+            raise RuntimeError("postgres read failed")
+
+    async def prepare() -> ReportingWorkflowInput:
+        return ReportingWorkflowInput(prompt="物化后的报表请求")
+
+    async def cleanup_prepared_inputs() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    accepted = await controller.start_external_background(
+        ReportingWorkflowInput(prompt="原始请求"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+        prepare=prepare,
+        prepared_input_cleanup=cleanup_prepared_inputs,
+    )
+
+    assert accepted == {"ok": True, "status": "running"}
+    with pytest.raises(RuntimeError, match="postgres read failed"):
+        await controller._background_tasks["external-run"]
+    assert cleanup_calls == 1
+    assert ownership.owners == {}
+
+
+@pytest.mark.anyio
+async def test_external_background_recovers_workspace_after_attachment_cleanup_failure() -> None:
+    terminal_cleanup_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def prepare() -> ReportingWorkflowInput:
+        raise ReportingError(
+            "report_attachment_cleanup_failed",
+            "报表附件清理失败。",
+        )
+
+    async def terminal_cleanup(*_args, **_kwargs) -> None:
+        nonlocal terminal_cleanup_calls
+        terminal_cleanup_calls += 1
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=ownership,
+        terminal_cleanup=terminal_cleanup,
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await controller.start_external_background(
+            ReportingWorkflowInput(prompt="原始请求"),
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            request_fingerprint="a" * 64,
+            prepare=prepare,
+        )
+
+    assert error.value.code == "report_attachment_cleanup_failed"
+    assert terminal_cleanup_calls == 1
+    assert ownership.owners == {}
+
+
+@pytest.mark.anyio
+async def test_external_background_keeps_owner_when_attachment_quarantine_fails() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def prepare() -> ReportingWorkflowInput:
+        raise ReportingError(
+            "report_attachment_cleanup_failed",
+            "报表附件清理失败。",
+        )
+
+    async def terminal_cleanup(*_args, **_kwargs) -> None:
+        raise ReportingError(
+            "report_sandbox_quarantine_failed",
+            "报表运行环境无法隔离。",
+        )
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=ownership,
+        terminal_cleanup=terminal_cleanup,
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await controller.start_external_background(
+            ReportingWorkflowInput(prompt="原始请求"),
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            request_fingerprint="a" * 64,
+            prepare=prepare,
+        )
+
+    assert error.value.code == "report_attachment_cleanup_failed"
+    assert isinstance(error.value.__cause__, ReportingError)
+    assert error.value.__cause__.code == "report_sandbox_quarantine_failed"
+    assert ownership.owners == {"thread": ("external-run", "user")}
+
+
+@pytest.mark.anyio
+async def test_external_background_rejects_when_capacity_is_exhausted(monkeypatch) -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(controller_module, "_MAX_ACTIVE_BACKGROUND_TASKS", 1)
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=_ThreadOwnership())
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="第一个请求"),
+        external_run_id="external-run-1",
+        thread_id="thread-1",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await controller.start_external_background(
+            ReportingWorkflowInput(prompt="第二个请求"),
+            external_run_id="external-run-2",
+            thread_id="thread-2",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+            request_fingerprint="b" * 64,
+        )
+
+    assert error.value.code == "report_workflow_capacity_exceeded"
+    await controller.cancel_external(
+        external_run_id="external-run-1",
+        thread_id="thread-1",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+
+@pytest.mark.anyio
+async def test_external_cancel_keeps_owner_when_workspace_quarantine_fails() -> None:
+    started = asyncio.Event()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def cleanup(*_args, **_kwargs) -> None:
+        raise ReportingError(
+            "report_sandbox_quarantine_failed",
+            "报表工作流已结束，但失败运行环境无法隔离，请稍后重试。",
+        )
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=ownership,
+        terminal_cleanup=cleanup,
+    )
+    await controller.reserve_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+    await controller.start_external_background(
+        ReportingWorkflowInput(prompt="生成报表"),
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+        request_fingerprint="a" * 64,
+        thread_preclaimed=True,
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+
+    with pytest.raises(ReportingError) as error:
+        await controller.cancel_external(
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+
+    assert error.value.code == "report_sandbox_quarantine_failed"
+    assert ownership.owners == {"thread": ("external-run", "user")}
+
+
+@pytest.mark.anyio
+async def test_external_reservation_recovers_stale_preclaim_after_restart() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    assert await ownership.claim_workflow_thread(
+        thread_id="thread",
+        external_run_id="external-run",
+        owner_user_id="user",
+    )
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    existing = await controller.reserve_external_request(
+        external_run_id="external-run",
+        request_fingerprint="a" * 64,
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert existing is False
+    assert ownership.owners == {"thread": ("external-run", "user")}
 
 
 @pytest.mark.anyio

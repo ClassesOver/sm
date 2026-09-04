@@ -174,6 +174,7 @@ class AgentSettings:
     log_file_backup_count: int
     debug: bool
     cors_allowed_origins: tuple[str, ...]
+    reporting_mcp_allowed_hosts: tuple[str, ...]
     database_url: str
     skills_dir: str | None
     report_data_sources_dir: str | None
@@ -300,6 +301,11 @@ class AgentSettings:
             log_file_backup_count=_positive_int(values, "AGENT_LOG_FILE_BACKUP_COUNT", 5),
             debug=_flag(values.get("AGENT_DEBUG")),
             cors_allowed_origins=origins,
+            reporting_mcp_allowed_hosts=tuple(
+                item.strip()
+                for item in values.get("AGENT_REPORTING_MCP_ALLOWED_HOSTS", "").split(",")
+                if item.strip()
+            ),
             database_url=database_url_from_environment(values),
             skills_dir=values.get("AGENT_SKILLS_DIR"),
             report_data_sources_dir=(

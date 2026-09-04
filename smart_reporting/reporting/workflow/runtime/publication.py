@@ -424,6 +424,7 @@ class RuntimePublicationMixin:
                 continue
             if (
                 handle.source_id != source.source_id
+                or handle.source_type != source.source_type
                 or handle.requirement_id != source.requirement_id
                 or handle.size != source.size
                 or handle.sha256 != source.sha256

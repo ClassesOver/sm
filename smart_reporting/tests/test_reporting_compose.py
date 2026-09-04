@@ -18,6 +18,9 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
         repository_root / "Dockerfile"
     ).read_text(encoding="utf-8")
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
+    assert service["environment"]["AGENT_REPORTING_MCP_ALLOWED_HOSTS"] == (
+        "${AGENT_REPORTING_MCP_ALLOWED_HOSTS:-}"
+    )
 
 
 def test_reporting_compose_disables_fg_data_profiling_analytics():

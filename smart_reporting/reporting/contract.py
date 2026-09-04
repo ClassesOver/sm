@@ -111,6 +111,14 @@ class SchemaInput(StrictModel):
         return self
 
 
+class ReportFileInput(StrictModel):
+    path: str = Field(min_length=1, max_length=1024)
+    filename: str = Field(min_length=1, max_length=255)
+    size: PositiveInt
+    sha256: str = Field(pattern=SHA256_PATTERN)
+    media_type: str | None = Field(default=None, alias="mediaType", max_length=128)
+
+
 class ReportRequestEnvelope(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
@@ -122,6 +130,7 @@ class ReportRequestEnvelope(StrictModel):
     comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
         default=("yoy",), alias="comparisonRoles", max_length=2
     )
+    file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
 
     @field_validator("report_goal")
     @classmethod
@@ -246,6 +255,9 @@ class ReportingWorkflowInput(StrictModel):
     comparison_roles: tuple[Literal["yoy", "mom"], ...] | None = Field(
         default=None, alias="comparisonRoles", max_length=2
     )
+    file_inputs: tuple[ReportFileInput, ...] | None = Field(
+        default=None, alias="fileInputs", max_length=20
+    )
 
     @model_validator(mode="after")
     def validate_variant(self) -> ReportingWorkflowInput:
@@ -260,6 +272,7 @@ class ReportingWorkflowInput(StrictModel):
                     self.source_ids,
                     self.schema_input,
                     self.comparison_roles,
+                    self.file_inputs,
                 )
             ):
                 raise ValueError("prompt 输入不能混用 Envelope 字段")

@@ -27,6 +27,7 @@ def test_settings_defaults():
         "http://127.0.0.1:18069",
         "http://localhost:18069",
     )
+    assert current.reporting_mcp_allowed_hosts == ()
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.model_vllm_reasoning is False
@@ -334,6 +335,15 @@ def test_cors_discards_empty_entries():
     ).cors_allowed_origins == (
         "https://one.example",
         "https://two.example",
+    )
+
+
+def test_reporting_mcp_allowed_hosts_discards_empty_entries():
+    assert settings(
+        AGENT_REPORTING_MCP_ALLOWED_HOSTS=" reporting.internal:7777, ,localhost:7777 "
+    ).reporting_mcp_allowed_hosts == (
+        "reporting.internal:7777",
+        "localhost:7777",
     )
 
 

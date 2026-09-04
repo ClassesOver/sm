@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -29,10 +31,16 @@ from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
 REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
+REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY = "Reporting MCP 请求指纹"
+REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY = "Reporting MCP 已占用 thread"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 _THREAD_CLAIM_WAIT_SECONDS = 2.0
 _THREAD_CLAIM_RETRY_DELAY_SECONDS = 0.1
+_MAX_RETAINED_BACKGROUND_TASKS = 1024
+# 每个活跃后台 run 会持有一条 PostgreSQL session advisory lock 连接；硬上限
+# 必须显著低于默认 async pool 容量，为 Agno 持久化和状态查询保留连接余量。
+_MAX_ACTIVE_BACKGROUND_TASKS = 4
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
 ReviewStage = Literal["request", "outline"]
 
@@ -45,6 +53,37 @@ def reporting_workflow_ids(
         :32
     ]
     return f"report-session-{session_digest}", f"report-run-{run_digest}"
+
+
+def reporting_external_operation_id(
+    *,
+    database: str,
+    company_id: str,
+    user_id: str,
+    thread_id: str,
+    client_request_id: str,
+) -> str:
+    """生成同时绑定租户作用域与客户端幂等键的不透明 MCP operation ID。"""
+
+    scope = _external_operation_scope_digest(
+        database=database,
+        company_id=company_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    request = hashlib.sha256(client_request_id.encode()).hexdigest()
+    return f"{scope}{request}"
+
+
+def _external_operation_scope_digest(
+    *, database: str, company_id: str, user_id: str, thread_id: str
+) -> str:
+    payload = json.dumps(
+        [database, company_id, user_id, thread_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 class ReviewableWorkflow(Protocol):
@@ -60,6 +99,8 @@ class ReviewableWorkflow(Protocol):
 
 
 class WorkflowThreadOwnership(Protocol):
+    async def register_external_request(self, **values: str) -> dict[str, Any]: ...
+
     async def claim_workflow_thread(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
     ) -> bool: ...
@@ -81,6 +122,7 @@ class WorkflowThreadOwnership(Protocol):
 
 WorkflowFactory = Callable[[], ReviewableWorkflow]
 TerminalCleanup = Callable[[dict[str, str], str, str], Awaitable[None]]
+PreparedInputCleanup = Callable[[], Awaitable[None]]
 
 
 class ReportWorkflowController:
@@ -96,6 +138,692 @@ class ReportWorkflowController:
         self._workflow_factory = workflow_factory
         self._thread_ownership = thread_ownership
         self._terminal_cleanup = terminal_cleanup
+        self._external_request_lock = asyncio.Lock()
+        self._external_request_fingerprints: dict[str, str] = {}
+        self._background_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._background_scopes: dict[str, tuple[str, str, str, str]] = {}
+        self._background_request_fingerprints: dict[str, str] = {}
+
+    async def start_external(
+        self,
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
+        *,
+        external_run_id: str,
+        thread_id: str,
+        user_id: str,
+        database: str = "default",
+        company_id: str = "default",
+        request_fingerprint: str | None = None,
+        thread_preclaimed: bool = False,
+    ) -> dict[str, Any]:
+        context = self._external_run_context(
+            external_run_id=external_run_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            database=database,
+            company_id=company_id,
+            request_fingerprint=request_fingerprint,
+            thread_preclaimed=thread_preclaimed,
+        )
+        return await self.start(workflow_input, context)
+
+    async def reserve_external_request(
+        self,
+        *,
+        external_run_id: str,
+        request_fingerprint: str,
+        thread_id: str,
+        user_id: str,
+        database: str,
+        company_id: str,
+        run_lock_held: bool = False,
+    ) -> bool:
+        """在附件下载前固定幂等请求；返回 True 表示同参数请求已存在。"""
+
+        async with self._external_request_lock:
+            self._prune_background_tasks()
+            current = self._external_request_fingerprints.get(external_run_id)
+            if current is not None:
+                if current != request_fingerprint:
+                    raise ReportingError(
+                        "report_mcp_idempotency_conflict",
+                        "同一 clientRequestId 不得提交不同的报表请求。",
+                    )
+                self._assert_background_scope(
+                    external_run_id,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    database=database,
+                    company_id=company_id,
+                )
+                return True
+            for reserved_run_id, reserved_scope in self._background_scopes.items():
+                reserved_task = self._background_tasks.get(reserved_run_id)
+                if (
+                    reserved_run_id != external_run_id
+                    and reserved_scope[0] == thread_id
+                    and (reserved_task is None or not reserved_task.done())
+                ):
+                    raise ReportingError(
+                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                    )
+            scope = {
+                "external_run_id": external_run_id,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "database": database,
+                "company_id": company_id,
+            }
+            await self._register_external_request(scope, request_fingerprint)
+            session_id, run_id = self._workflow_ids(scope)
+            output = await self._load_run_output(self._workflow(), run_id, session_id)
+            if output is not None:
+                stored_user = getattr(output, "user_id", None)
+                metadata = getattr(output, "metadata", None)
+                stored_fingerprint = (
+                    metadata.get("mcpRequestFingerprint") if isinstance(metadata, dict) else None
+                )
+                if stored_user is not None and str(stored_user) != user_id:
+                    raise ReportingError(
+                        "report_workflow_scope_mismatch", "报表工作流不属于当前用户。"
+                    )
+                self._assert_mcp_metadata_scope(metadata, scope)
+                if stored_fingerprint != request_fingerprint:
+                    raise ReportingError(
+                        "report_mcp_idempotency_conflict",
+                        "同一 clientRequestId 不得提交不同的报表请求。",
+                    )
+                self._external_request_fingerprints[external_run_id] = request_fingerprint
+                return True
+            claimed = await self._thread_ownership.claim_workflow_thread(
+                thread_id=thread_id,
+                external_run_id=external_run_id,
+                owner_user_id=user_id,
+            )
+            if not claimed:
+                owner = await self._get_thread_owner(thread_id)
+                if owner is None:
+                    raise ReportingError(
+                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                    )
+                same_run = (
+                    str(owner.get("external_run_id")),
+                    str(owner.get("owner_user_id")),
+                ) == (external_run_id, user_id)
+                owner_active = (
+                    False
+                    if same_run and run_lock_held
+                    else await self._owner_run_active(str(owner.get("external_run_id") or ""))
+                )
+                if owner_active:
+                    raise ReportingError(
+                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                    )
+                owner_output = await self._load_owner_output(owner)
+                if not await self._reclaim_inactive_owner(
+                    owner, owner_output, same_run=same_run
+                ) or not await self._thread_ownership.claim_workflow_thread(
+                    thread_id=thread_id,
+                    external_run_id=external_run_id,
+                    owner_user_id=user_id,
+                ):
+                    raise ReportingError(
+                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                    )
+            self._external_request_fingerprints[external_run_id] = request_fingerprint
+            self._background_scopes[external_run_id] = (
+                thread_id,
+                user_id,
+                database,
+                company_id,
+            )
+            return False
+
+    async def release_external_request(
+        self, *, external_run_id: str, request_fingerprint: str
+    ) -> None:
+        scope: tuple[str, str, str, str] | None = None
+        async with self._external_request_lock:
+            if self._external_request_fingerprints.get(external_run_id) == request_fingerprint:
+                self._external_request_fingerprints.pop(external_run_id, None)
+                scope = self._background_scopes.get(external_run_id)
+                if external_run_id not in self._background_tasks:
+                    self._background_scopes.pop(external_run_id, None)
+        if scope is not None:
+            thread_id, user_id, _database, _company_id = scope
+            await self._thread_ownership.release_workflow_thread(
+                thread_id=thread_id,
+                external_run_id=external_run_id,
+                owner_user_id=user_id,
+            )
+
+    async def start_external_background(
+        self,
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
+        *,
+        external_run_id: str,
+        thread_id: str,
+        user_id: str,
+        database: str,
+        company_id: str,
+        request_fingerprint: str,
+        thread_preclaimed: bool = False,
+        prepare: Callable[
+            [], Awaitable[ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any]]
+        ]
+        | None = None,
+        prepared_input_cleanup: PreparedInputCleanup | None = None,
+    ) -> dict[str, Any]:
+        """使用现有确定性 run ID 在后台执行，避免 MCP tools/call 长时间占用。"""
+
+        # 入队前完成强 schema 校验，不能把无效请求伪装成已接受的后台任务。
+        self._prune_background_tasks()
+        validated = (
+            workflow_input
+            if isinstance(workflow_input, (ReportingWorkflowInput, ReportRequestEnvelope))
+            else ReportingWorkflowInput.model_validate(workflow_input)
+        )
+        current = self._background_tasks.get(external_run_id)
+        if current is not None and not current.done():
+            self._assert_background_scope(
+                external_run_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                database=database,
+                company_id=company_id,
+            )
+            if self._background_request_fingerprints.get(external_run_id) != request_fingerprint:
+                raise ReportingError(
+                    "report_mcp_idempotency_conflict",
+                    "同一 clientRequestId 不得提交不同的报表请求。",
+                )
+            return {"ok": True, "status": "running"}
+        ready: asyncio.Future[dict[str, Any]] | None = None
+        active_count = sum(not task.done() for task in self._background_tasks.values())
+        if active_count >= _MAX_ACTIVE_BACKGROUND_TASKS:
+            raise ReportingError(
+                "report_workflow_capacity_exceeded",
+                "Reporting 后台任务容量已满，请稍后重试。",
+            )
+        context = self._external_run_context(
+            external_run_id=external_run_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            database=database,
+            company_id=company_id,
+            request_fingerprint=request_fingerprint,
+            thread_preclaimed=thread_preclaimed,
+        )
+        ready = asyncio.get_running_loop().create_future()
+        run = self._run_external_background(
+            validated,
+            context,
+            request_fingerprint=request_fingerprint,
+            thread_preclaimed=thread_preclaimed,
+            prepare=prepare,
+            prepared_input_cleanup=prepared_input_cleanup,
+            ready=ready,
+        )
+        task = asyncio.create_task(
+            run,
+            name=f"reporting-mcp-{external_run_id[:16]}",
+        )
+        self._background_tasks[external_run_id] = task
+        self._background_scopes[external_run_id] = (
+            thread_id,
+            user_id,
+            database,
+            company_id,
+        )
+        self._background_request_fingerprints[external_run_id] = request_fingerprint
+        task.add_done_callback(
+            lambda completed: self._log_background_result(external_run_id, completed)
+        )
+        try:
+            return await asyncio.shield(ready)
+        except BaseException:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    async def _run_external_background(
+        self,
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope,
+        context: RunContext,
+        *,
+        request_fingerprint: str,
+        thread_preclaimed: bool,
+        prepare: Callable[
+            [], Awaitable[ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any]]
+        ]
+        | None,
+        prepared_input_cleanup: PreparedInputCleanup | None,
+        ready: asyncio.Future[dict[str, Any]],
+    ) -> dict[str, Any]:
+        scope = self._scope(context)
+        inputs_prepared = False
+        workflow_started = False
+
+        def mark_workflow_started() -> None:
+            nonlocal workflow_started
+            workflow_started = True
+
+        try:
+            async with self._execution_lock(scope["external_run_id"]):
+                if thread_preclaimed:
+                    await self._ensure_thread_owner(scope)
+                    existing = False
+                else:
+                    existing = await self.reserve_external_request(
+                        external_run_id=scope["external_run_id"],
+                        request_fingerprint=request_fingerprint,
+                        thread_id=scope["thread_id"],
+                        user_id=scope["user_id"],
+                        database=scope["database"],
+                        company_id=scope["company_id"],
+                        run_lock_held=True,
+                    )
+                    if not existing:
+                        # reservation 已在同一执行锁内持久化并占用 thread。必须把该
+                        # 事实传给 _start_unlocked；再次 claim 会把自身误判为孤儿，
+                        # 在 Workflow 读取物化附件前触发终态 workspace 清理。
+                        assert context.dependencies is not None
+                        context.dependencies[REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY] = True
+                if existing:
+                    result = await self._start_unlocked(workflow_input, context)
+                    if not ready.done():
+                        ready.set_result(result)
+                    return result
+                prepared_input = await prepare() if prepare is not None else workflow_input
+                validated = (
+                    prepared_input
+                    if isinstance(prepared_input, (ReportingWorkflowInput, ReportRequestEnvelope))
+                    else ReportingWorkflowInput.model_validate(prepared_input)
+                )
+                inputs_prepared = True
+                if not ready.done():
+                    ready.set_result({"ok": True, "status": "running"})
+                return await self._start_unlocked(
+                    validated,
+                    context,
+                    on_workflow_start=mark_workflow_started,
+                )
+        except BaseException as error:
+            cleanup_error: BaseException | None = None
+            if inputs_prepared and not workflow_started and prepared_input_cleanup is not None:
+                try:
+                    await prepared_input_cleanup()
+                except BaseException as failure:
+                    cleanup_error = failure
+            needs_workspace_recovery = cleanup_error is not None or self._contains_error_code(
+                error, "report_attachment_cleanup_failed"
+            )
+            if needs_workspace_recovery:
+                if self._terminal_cleanup is None:
+                    if not ready.done():
+                        ready.set_exception(error)
+                    raise error from cleanup_error
+                workflow_session_id, workflow_run_id = self._workflow_ids(scope)
+                try:
+                    # operation 目录删除失败后，只有完整 workspace 已销毁或成功隔离，
+                    # 才能释放 thread owner；否则下一次运行会重新接触残留附件。
+                    await self._cleanup_terminal_allowing_deferred(
+                        scope, workflow_session_id, workflow_run_id
+                    )
+                except BaseException as finalization_error:
+                    if not ready.done():
+                        ready.set_exception(error)
+                    raise error from finalization_error
+            if not self._contains_quarantine_failure(error):
+                await self.release_external_request(
+                    external_run_id=scope["external_run_id"],
+                    request_fingerprint=request_fingerprint,
+                )
+            if not ready.done():
+                ready.set_exception(error)
+            raise
+
+    @staticmethod
+    def _contains_quarantine_failure(error: BaseException) -> bool:
+        return ReportWorkflowController._contains_error_code(
+            error, "report_sandbox_quarantine_failed"
+        )
+
+    @staticmethod
+    def _contains_error_code(error: BaseException, code: str) -> bool:
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, ReportingError) and current.code == code:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    @staticmethod
+    def _external_run_context(
+        *,
+        external_run_id: str,
+        thread_id: str,
+        user_id: str,
+        database: str,
+        company_id: str,
+        request_fingerprint: str | None,
+        thread_preclaimed: bool,
+    ) -> RunContext:
+        dependencies: dict[str, Any] = {
+            REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+                "database": database,
+                "companyId": company_id,
+            }
+        }
+        if request_fingerprint is not None:
+            dependencies[REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY] = request_fingerprint
+        if thread_preclaimed:
+            dependencies[REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY] = True
+        return RunContext(
+            run_id=external_run_id,
+            session_id=thread_id,
+            user_id=user_id,
+            dependencies=dependencies,
+            session_state={},
+        )
+
+    async def get_external(
+        self,
+        *,
+        external_run_id: str,
+        thread_id: str,
+        user_id: str,
+        database: str,
+        company_id: str,
+    ) -> dict[str, Any]:
+        scope = {
+            "external_run_id": external_run_id,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "database": database,
+            "company_id": company_id,
+        }
+        task = self._background_tasks.get(external_run_id)
+        if task is not None and not task.done():
+            self._assert_background_scope(
+                external_run_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                database=database,
+                company_id=company_id,
+            )
+            return {"ok": True, "status": "running"}
+        session_id, run_id = self._workflow_ids(scope)
+        output = await self._load_run_output(self._workflow(), run_id, session_id)
+        if output is None:
+            task = self._background_tasks.get(external_run_id)
+            if task is None and external_run_id not in self._external_request_fingerprints:
+                inflight = await self._external_inflight_result(scope)
+                if inflight is not None:
+                    return inflight
+                # owner/执行锁可能恰好在首次读取后完成交接；二次读取持久化
+                # output，避免把刚完成或刚暂停的 run 短暂误报为不存在。
+                output = await self._load_run_output(self._workflow(), run_id, session_id)
+                if output is None:
+                    raise ReportingError(
+                        "report_workflow_not_found", "报表工作流不存在或已经失效。"
+                    )
+            if output is None:
+                if task is None:
+                    self._assert_background_scope(
+                        external_run_id,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        database=database,
+                        company_id=company_id,
+                    )
+                    return {"ok": True, "status": "running"}
+                self._assert_background_scope(
+                    external_run_id,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    database=database,
+                    company_id=company_id,
+                )
+                if not task.done():
+                    return {"ok": True, "status": "running"}
+                if task.cancelled():
+                    return {"ok": True, "status": "cancelled"}
+                try:
+                    return task.result()
+                except BaseException:
+                    return {"ok": False, "status": "failed"}
+        stored_user = getattr(output, "user_id", None)
+        if stored_user is not None and str(stored_user) != user_id:
+            raise ReportingError("report_workflow_scope_mismatch", "报表工作流不属于当前用户。")
+        self._assert_mcp_metadata_scope(getattr(output, "metadata", None), scope)
+        control = self._control_from_output(output, scope, session_id, run_id)
+        await self._finalize_control(control, scope)
+        return self._result(control, output)
+
+    async def _register_external_request(
+        self, scope: dict[str, str], request_fingerprint: str
+    ) -> None:
+        register = getattr(self._thread_ownership, "register_external_request", None)
+        if not callable(register):
+            raise ReportingError(
+                "report_workflow_runtime_invalid",
+                "Reporting runtime 缺少 MCP 请求幂等仓储。",
+            )
+        try:
+            stored = await register(
+                external_run_id=scope["external_run_id"],
+                request_fingerprint=request_fingerprint,
+                thread_id=scope["thread_id"],
+                owner_user_id=scope["user_id"],
+                database=scope["database"],
+                company_id=scope["company_id"],
+            )
+        except Exception as error:
+            raise ReportingError(
+                "report_workflow_reservation_failed",
+                "无法持久化 Reporting MCP 请求，请稍后重试。",
+            ) from error
+        if not isinstance(stored, dict):
+            raise ReportingError(
+                "report_workflow_reservation_failed", "Reporting MCP 请求幂等记录无效。"
+            )
+        stored_scope = (
+            str(stored.get("thread_id") or ""),
+            str(stored.get("owner_user_id") or ""),
+            str(stored.get("database") or ""),
+            str(stored.get("company_id") or ""),
+        )
+        expected_scope = (
+            scope["thread_id"],
+            scope["user_id"],
+            scope["database"],
+            scope["company_id"],
+        )
+        if stored_scope != expected_scope:
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "报表工作流不属于当前租户或 thread。"
+            )
+        if str(stored.get("request_fingerprint") or "") != request_fingerprint:
+            raise ReportingError(
+                "report_mcp_idempotency_conflict",
+                "同一 clientRequestId 不得提交不同的报表请求。",
+            )
+
+    async def _external_inflight_result(self, scope: dict[str, str]) -> dict[str, Any] | None:
+        expected_scope = _external_operation_scope_digest(
+            database=scope["database"],
+            company_id=scope["company_id"],
+            user_id=scope["user_id"],
+            thread_id=scope["thread_id"],
+        )
+        operation_id = scope["external_run_id"]
+        if len(operation_id) != 128 or not hmac.compare_digest(operation_id[:64], expected_scope):
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "报表工作流不属于当前租户或 thread。"
+            )
+        owner = await self._get_thread_owner(scope["thread_id"])
+        if owner is None or (
+            str(owner.get("external_run_id")),
+            str(owner.get("owner_user_id")),
+        ) != (operation_id, scope["user_id"]):
+            return None
+        if await self._owner_run_active(operation_id):
+            return {"ok": True, "status": "running"}
+        return None
+
+    async def cancel_external(
+        self,
+        *,
+        external_run_id: str,
+        thread_id: str,
+        user_id: str,
+        database: str,
+        company_id: str,
+    ) -> dict[str, Any]:
+        task = self._background_tasks.get(external_run_id)
+        if task is not None and not task.done():
+            self._assert_background_scope(
+                external_run_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                database=database,
+                company_id=company_id,
+            )
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError as error:
+                if error.__cause__ is not None:
+                    raise error.__cause__
+            await self._thread_ownership.release_workflow_thread(
+                thread_id=thread_id,
+                external_run_id=external_run_id,
+                owner_user_id=user_id,
+            )
+            return {"ok": True, "status": "cancelled"}
+        context = await self.external_context(
+            external_run_id=external_run_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            database=database,
+            company_id=company_id,
+        )
+        return await self.cancel(context)
+
+    def _assert_background_scope(
+        self,
+        external_run_id: str,
+        *,
+        thread_id: str,
+        user_id: str,
+        database: str,
+        company_id: str,
+    ) -> None:
+        if self._background_scopes.get(external_run_id) != (
+            thread_id,
+            user_id,
+            database,
+            company_id,
+        ):
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "报表工作流不属于当前租户或 thread。"
+            )
+
+    def _prune_background_tasks(self) -> None:
+        overflow = len(self._background_tasks) - _MAX_RETAINED_BACKGROUND_TASKS
+        if overflow < 0:
+            return
+        for external_run_id, task in tuple(self._background_tasks.items()):
+            if not task.done():
+                continue
+            self._background_tasks.pop(external_run_id, None)
+            self._background_scopes.pop(external_run_id, None)
+            self._background_request_fingerprints.pop(external_run_id, None)
+            self._external_request_fingerprints.pop(external_run_id, None)
+            overflow -= 1
+            if overflow < 0:
+                break
+
+    async def aclose(self) -> None:
+        active = tuple(
+            (external_run_id, task)
+            for external_run_id, task in self._background_tasks.items()
+            if not task.done()
+        )
+        for _external_run_id, task in active:
+            task.cancel()
+        results = (
+            await asyncio.gather(
+                *(task for _, task in active),
+                return_exceptions=True,
+            )
+            if active
+            else ()
+        )
+        for (external_run_id, _task), result in zip(active, results, strict=True):
+            if isinstance(result, BaseException) and result.__cause__ is not None:
+                continue
+            scope = self._background_scopes.get(external_run_id)
+            if scope is None:
+                continue
+            thread_id, user_id, _database, _company_id = scope
+            await self._thread_ownership.release_workflow_thread(
+                thread_id=thread_id,
+                external_run_id=external_run_id,
+                owner_user_id=user_id,
+            )
+
+    @staticmethod
+    def _log_background_result(external_run_id: str, task: asyncio.Task[dict[str, Any]]) -> None:
+        if task.cancelled():
+            logger.warning("report_mcp_background_cancelled external_run_id={}", external_run_id)
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "report_mcp_background_failed external_run_id={} error_type={}",
+                external_run_id,
+                type(error).__name__,
+            )
+
+    async def external_context(
+        self,
+        *,
+        external_run_id: str,
+        thread_id: str,
+        user_id: str,
+        database: str = "default",
+        company_id: str = "default",
+    ) -> RunContext:
+        scope = {
+            "external_run_id": external_run_id,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "database": database,
+            "company_id": company_id,
+        }
+        session_id, run_id = self._workflow_ids(scope)
+        output = await self._load_run_output(self._workflow(), run_id, session_id)
+        if output is None:
+            raise ReportingError("report_workflow_not_found", "报表工作流不存在或已经失效。")
+        stored_user = getattr(output, "user_id", None)
+        if stored_user is not None and str(stored_user) != user_id:
+            raise ReportingError("report_workflow_scope_mismatch", "报表工作流不属于当前用户。")
+        self._assert_mcp_metadata_scope(getattr(output, "metadata", None), scope)
+        control = self._control_from_output(output, scope, session_id, run_id)
+        return RunContext(
+            run_id=external_run_id,
+            session_id=thread_id,
+            user_id=user_id,
+            dependencies={
+                REPORT_WORKFLOW_SCOPE_DEPENDENCY: {"database": database, "companyId": company_id}
+            },
+            session_state={REPORT_WORKFLOW_CONTROL_STATE_KEY: control.public_dict()},
+        )
 
     async def start(
         self,
@@ -204,6 +932,8 @@ class ReportWorkflowController:
         self,
         workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
         run_context: RunContext | None,
+        *,
+        on_workflow_start: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         request = (
             workflow_input
@@ -281,7 +1011,14 @@ class ReportWorkflowController:
                     await self._finalize_control(control, scope, state=state)
                 state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
                 return self._result(control, persisted_output)
-        owned_output = await self._claim_thread_with_recovery(scope)
+        thread_preclaimed = bool(
+            (run_context.dependencies or {}).get(REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY)
+        )
+        if thread_preclaimed:
+            await self._ensure_thread_owner(scope)
+            owned_output = None
+        else:
+            owned_output = await self._claim_thread_with_recovery(scope)
         if owned_output is not None:
             control = self._control_from_output(
                 owned_output, scope, workflow_session_id, workflow_run_id
@@ -291,6 +1028,8 @@ class ReportWorkflowController:
                 await self._finalize_control(control, scope, state=state)
                 state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
             return self._result(control, owned_output)
+        if on_workflow_start is not None:
+            on_workflow_start()
         try:
             output = await workflow.arun(
                 payload,
@@ -303,6 +1042,7 @@ class ReportWorkflowController:
                     ]
                 },
                 dependencies=self._workflow_dependencies(scope),
+                metadata=self._workflow_metadata(run_context, scope),
                 stream=False,
             )
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
@@ -563,6 +1303,43 @@ class ReportWorkflowController:
                 ),
             }
         }
+
+    @staticmethod
+    def _workflow_metadata(
+        run_context: RunContext | None, scope: dict[str, str]
+    ) -> dict[str, str] | None:
+        value = (
+            (run_context.dependencies or {}).get(REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY)
+            if run_context is not None
+            else None
+        )
+        if not isinstance(value, str) or not value:
+            return None
+        return {
+            "mcpRequestFingerprint": value,
+            "mcpDatabase": scope["database"],
+            "mcpCompanyId": scope["company_id"],
+            "mcpThreadId": scope["thread_id"],
+        }
+
+    @staticmethod
+    def _assert_mcp_metadata_scope(metadata: Any, scope: dict[str, str]) -> None:
+        if not isinstance(metadata, dict) or "mcpRequestFingerprint" not in metadata:
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "报表工作流不属于 Reporting MCP。"
+            )
+        if (
+            str(metadata.get("mcpDatabase") or ""),
+            str(metadata.get("mcpCompanyId") or ""),
+            str(metadata.get("mcpThreadId") or ""),
+        ) != (
+            scope["database"],
+            scope["company_id"],
+            scope["thread_id"],
+        ):
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "报表工作流不属于当前租户或 thread。"
+            )
 
     @staticmethod
     def _thread_scope_key(scope: dict[str, str]) -> str:

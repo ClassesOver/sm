@@ -20,6 +20,7 @@ services:
       - "33046:7777"
     environment:
       AGENT_OS_WORKERS: "1"
+      AGENT_REPORTING_MCP_ALLOWED_HOSTS: ${AGENT_REPORTING_MCP_ALLOWED_HOSTS:-}
       AGNO_TELEMETRY: "false"
       YDATA_PROFILING_NO_ANALYTICS: "true"
       AGENT_LOG_FILE: /var/log/agentos/agentos.log

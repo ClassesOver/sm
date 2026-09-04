@@ -30,6 +30,30 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 `odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
 `user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
 
+## Reporting MCP
+
+AgentOS 在同一服务内以 Streamable HTTP 暴露 `/mcp`，并关闭 Agno 内置通用工具，只提供
+`reporting_start`、`reporting_get`、`reporting_review` 和 `reporting_cancel`。DSH 使用
+`Authorization: Bearer <workspace capability>` 连接；capability 必须与每次工具参数中的
+`threadId` 一致，用户、公司和数据库只取验签后的 claims，工具参数不能覆盖。
+
+DSH 的 MCP 配置只需指向 `http(s)://<reporting-host>/mcp`，transport 选择
+`streamable-http`。生产部署必须把客户端实际发送的 Host（含非默认端口）加入
+`AGENT_REPORTING_MCP_ALLOWED_HOSTS`，多个值用逗号分隔。未配置有效
+`AGENT_REPORTING_MCP_ALLOWED_HOSTS` 时仅允许 Agno 内置的 localhost Host；未配置有效
+`AGENT_WORKSPACE_HMAC_SECRET` 时 Bearer 验证失败关闭。
+
+`reporting_start` 在请求校验和可选附件物化后返回稳定 `operationId`，报表 Workflow 本身在
+后台执行，DSH 通过 `reporting_get` 轮询；暂停后使用 `reporting_review` 审批或拒绝。附件不提供 MCP 上传工具，只接受 `attachments[].url` 的
+HTTPS CSV：最多 4 个、单个最多 50 MiB、合计最多 200 MiB，不跟随重定向、不使用环境代理。
+下载后的 CSV 会作为补充 Dataset 进入与 StarRocks 数据相同的不可变校验、Profile、分析和
+发布血缘链路；`reportRequest.fileInputs` 不对 MCP 调用方开放。
+
+`operationId` 是绑定 database、company、user、thread 和 clientRequestId 的不透明值，不应由
+客户端解析。首次请求的 payload 指纹持久化在 `agentos_reporting.reporting_mcp_requests`，同一
+clientRequestId 即使跨进程或重启也不能改写请求。当前后台 task 的主动取消仍是进程内操作，部署时
+同一 AgentOS PostgreSQL 数据库只能运行一个 Reporting 服务实例，且 `AGENT_OS_WORKERS` 必须为 1。
+
 AgentOS 中的 Reporting 正常发布时会将 PDF、Word 和自包含 HTML 持久化到 PostgreSQL、签发默认
 30 天有效的公开 bearer 下载授权，并返回基于 `AGENT_REPORT_PUBLIC_BASE_URL` 的完整下载 URL；
 HTML 回执字段为 `html.previewUrl`。持久化成功后删除对应 Daytona sandbox。过期授权会被删除，
@@ -63,6 +87,7 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
 | `AGENT_MODEL_STRONG` | Reporting strong 档模型，默认 `deepseek-v4-flash-0731` |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
+| `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
 | `AGENT_DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting worker thinking 开关 |
