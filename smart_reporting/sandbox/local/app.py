@@ -9,7 +9,12 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..contracts import RunPythonScriptRequest
-from ..errors import SandboxNotFound, SandboxPolicyDenied, SandboxProviderError
+from ..errors import (
+    SandboxCapabilityUnsupported,
+    SandboxNotFound,
+    SandboxPolicyDenied,
+    SandboxProviderError,
+)
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
@@ -91,6 +96,8 @@ def create_local_sandbox_app(runtime: Any) -> FastAPI:
             if isinstance(error, SandboxNotFound)
             else 403
             if isinstance(error, SandboxPolicyDenied)
+            else 422
+            if isinstance(error, SandboxCapabilityUnsupported)
             else 503
         )
         return JSONResponse(
@@ -227,6 +234,18 @@ def create_local_sandbox_app(runtime: Any) -> FastAPI:
         x_sandbox_binding: str | None = Header(default=None),
     ) -> Any:
         return await runtime.run_python_script(resource_id, _binding(x_sandbox_binding), body)
+
+    @app.post("/v1/workspaces/{resource_id}/process/{action:path}")
+    async def process_action(
+        resource_id: str,
+        action: str,
+        request: Request,
+        x_sandbox_binding: str | None = Header(default=None),
+    ) -> Any:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid_process_request")
+        return await runtime.process_action(resource_id, _binding(x_sandbox_binding), action, body)
 
     @app.get("/v1/health")
     async def health() -> Any:

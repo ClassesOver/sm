@@ -9,6 +9,7 @@ Group=local-sandboxd
 ExecStart=/opt/reporting/.venv/bin/python -m smart_reporting.sandbox.local --config /etc/local-sandboxd/config.json
 Restart=on-failure
 RestartSec=5s
+UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import uuid
@@ -21,7 +22,13 @@ from ..contracts import (
     RunPythonScriptRequest,
     RunPythonScriptResult,
 )
-from ..errors import SandboxNotFound, SandboxPolicyDenied, SandboxTimeout
+from ..errors import (
+    DependencyUnavailable,
+    SandboxCapabilityUnsupported,
+    SandboxNotFound,
+    SandboxPolicyDenied,
+    SandboxTimeout,
+)
 from .preflight import inspect_host, run_preflight
 
 
@@ -87,40 +94,65 @@ class PythonRuntime:
             raise ValueError("seccomp BPF 制品无效")
         if policy.cgroup is None or not (policy.cgroup / "cgroup.kill").exists():
             raise ValueError("必须提供可管理的 cgroup v2")
+        for control in ("cpu.max", "memory.max", "pids.max", "cgroup.procs"):
+            if not (policy.cgroup / control).exists():
+                raise ValueError(f"cgroup v2 缺少 {control}")
 
     async def run(
         self, request: RunPythonScriptRequest, *, script_path: str
     ) -> RunPythonScriptResult:
         seccomp_fd = os.open(self.policy.seccomp, os.O_RDONLY | os.O_CLOEXEC)
+        cgroup_fd = -1
         try:
+            assert self.policy.cgroup is not None
+            cgroup_fd = os.open(self.policy.cgroup / "cgroup.procs", os.O_WRONLY | os.O_CLOEXEC)
             argv = build_python_argv(self.policy, script_path, seccomp_fd=seccomp_fd)
+
+            def enter_cgroup() -> None:
+                # 子进程在 exec bubblewrap 前写入自身 PID。只调用 async-signal-safe 的
+                # os.write，避免“先启动、再由父进程迁移”留下绕过资源限制的竞态窗口。
+                os.write(cgroup_fd, b"0")
+
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={"PATH": "/usr/bin", "PYTHONPATH": "/opt/reporting-deps"},
-                pass_fds=(seccomp_fd,),
+                pass_fds=(seccomp_fd, cgroup_fd),
+                preexec_fn=enter_cgroup,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=request.timeout_ms / 1000
                 )
             except TimeoutError as error:
-                assert self.policy.cgroup is not None
                 (self.policy.cgroup / "cgroup.kill").write_text("1")
                 await process.wait()
                 raise SandboxTimeout("Python 脚本执行超时。") from error
         finally:
             os.close(seccomp_fd)
+            if cgroup_fd >= 0:
+                os.close(cgroup_fd)
+        missing = re.search(rb"No module named ['\"]([^'\"]+)['\"]", stderr)
+        if missing is not None:
+            raise DependencyUnavailable(missing.group(1).decode("utf-8", errors="replace"))
         limit = request.output_limit_bytes
+
+        def bounded(value: bytes) -> str:
+            marker = b"\n[output truncated]"
+            selected = (
+                value if len(value) <= limit else value[: max(0, limit - len(marker))] + marker
+            )
+            return selected.decode("utf-8", errors="replace")
+
         return RunPythonScriptResult(
             status=(
                 ExecutionStatus.SUCCEEDED if process.returncode == 0 else ExecutionStatus.FAILED
             ),
             exit_code=process.returncode,
-            stdout=stdout[:limit].decode("utf-8", errors="replace"),
-            stderr=stderr[:limit].decode("utf-8", errors="replace"),
+            stdout=bounded(stdout),
+            stderr=bounded(stderr),
             script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
         )
 
@@ -329,22 +361,42 @@ class LocalSandboxRuntime:
         binding_digest: str,
         path: str,
         content: bytes,
-        _idempotency_key: str,
+        idempotency_key: str,
     ) -> None:
         directory, _metadata = self._require(resource_id, binding_digest)
-        destination = self._path(directory, path)
-        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = destination.parent / f".sandbox-upload-{uuid.uuid4().hex}"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as output:
-                output.write(content)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, destination)
-        finally:
-            os.close(descriptor)
-            temporary.unlink(missing_ok=True)
+        receipt_value = {"path": path, "sha256": hashlib.sha256(content).hexdigest()}
+        receipts = directory / ".sandbox-upload-receipts"
+        receipt = receipts / hashlib.sha256(idempotency_key.encode()).hexdigest()
+        async with self._lock:
+            receipts.mkdir(mode=0o700, exist_ok=True)
+            if receipt.exists():
+                if json.loads(receipt.read_text(encoding="utf-8")) != receipt_value:
+                    raise SandboxPolicyDenied(
+                        "上传幂等键已用于不同请求。", reason="idempotency_conflict"
+                    )
+                return
+            destination = self._path(directory, path)
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary = destination.parent / f".sandbox-upload-{uuid.uuid4().hex}"
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "wb", closefd=False) as output:
+                    output.write(content)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, destination)
+                receipt.write_text(
+                    json.dumps(receipt_value, sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                os.chmod(receipt, 0o600)
+            finally:
+                os.close(descriptor)
+                temporary.unlink(missing_ok=True)
 
     async def run_python_script(
         self,
@@ -375,6 +427,16 @@ class LocalSandboxRuntime:
             node=self.node_id,
             message="local-sandboxd 可用。",
         ).model_dump(mode="json")
+
+    async def process_action(
+        self,
+        resource_id: str,
+        binding_digest: str,
+        _action: str,
+        _body: dict[str, Any],
+    ) -> None:
+        self._require(resource_id, binding_digest)
+        raise SandboxCapabilityUnsupported("persistent_sessions")
 
     async def capabilities(self) -> dict[str, Any]:
         return ProviderCapabilities(
