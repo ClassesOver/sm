@@ -1898,6 +1898,57 @@ def _visualization_history_state(messages: list[Message]) -> tuple[bool, bool, b
     return recovery_read, script_written, script_executed
 
 
+def _visualization_next_tool(messages: list[Message], run_context: RunContext | None) -> str | None:
+    """根据已完成工具回执确定下一步，避免模型在阶段边界自行停顿。"""
+
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
+        return None
+    recovery_read, script_written, script_executed = _visualization_history_state(messages)
+    if not (recovery_read or script_written or script_executed) and not (
+        reporting_visualization_script_written_from_run_context(run_context)
+        or reporting_visualization_script_session_available_from_run_context(run_context)
+    ):
+        return None
+    recovery = reporting_visualization_recovery_from_run_context(run_context)
+    if recovery and not recovery_read:
+        return "read_file"
+    if not script_written:
+        return "apply_analysis_patch"
+    if (
+        reporting_visualization_script_session_available_from_run_context(run_context)
+        and not script_executed
+    ):
+        return "process"
+    if not script_executed:
+        return "terminal"
+    successful_names = set()
+    preview_required = False
+    for message in messages:
+        if getattr(message, "role", None) != "tool":
+            continue
+        name = getattr(message, "tool_name", None) or getattr(message, "name", None)
+        if name not in {"inspect_chart", "view_image", "submit_visualization_charts"}:
+            continue
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                try:
+                    payload = ast.literal_eval(content)
+                except (SyntaxError, ValueError):
+                    payload = None
+            if isinstance(payload, Mapping) and payload.get("ok") is True:
+                successful_names.add(name)
+                if name == "terminal" and payload.get("truncated") is True:
+                    preview_required = True
+    if successful_names & {"inspect_chart", "view_image"}:
+        return "submit_visualization_charts"
+    if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
+        return "view_image" if preview_required else "inspect_chart"
+    return "submit_visualization_charts"
+
+
 def _visualization_production_tool_allowed(
     run_context: RunContext | None,
     tool_name: str,
@@ -2238,6 +2289,17 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         run_context = current_reporting_run_context()
         task_kind = reporting_task_kind_from_run_context(run_context)
         if task_kind == "visualization_section":
+            next_tool = _visualization_next_tool(messages, run_context)
+            if next_tool is not None and any(
+                message.role == "tool" or bool(message.tool_calls) for message in messages
+            ):
+                return {
+                    **kwargs,
+                    "tool_choice": {
+                        "type": "function",
+                        "function": {"name": next_tool},
+                    },
+                }
             return {**kwargs, "tool_choice": "required"}
         if task_kind not in {"analysis_item", "section"}:
             return kwargs
