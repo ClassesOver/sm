@@ -15,7 +15,7 @@ from pypdf import PdfWriter
 from sqlalchemy import delete, select
 
 import smart_reporting.workspace as workspace_module
-from smart_reporting.database import create_agent_database
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,

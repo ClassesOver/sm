@@ -9,8 +9,8 @@ from fastapi import FastAPI, UploadFile
 from loguru import logger as loguru_logger
 from starlette.requests import Request
 
-from smart_reporting.application import ApplicationContext, create_agentos_app
-from smart_reporting.settings import AgentSettings
+from smart_reporting.runtime.application import ApplicationContext, create_agentos_app
+from smart_reporting.runtime.settings import AgentSettings
 
 
 class FakeAssistant:
@@ -61,7 +61,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         def get_app(self):
             return self.values["base_app"]
 
-    monkeypatch.setattr("smart_reporting.application.AgentOS", FakeAgentOS)
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     settings = AgentSettings.from_environment({}, load_env_file=False)
     first_base = FastAPI()
     second_base = FastAPI()
@@ -110,7 +110,7 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
             return captured["base_app"]
 
     database = type("Database", (), {"async_db": object()})()
-    monkeypatch.setattr("smart_reporting.application.AgentOS", FakeAgentOS)
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     settings = AgentSettings.from_environment({}, load_env_file=False)
     context = ApplicationContext(
         settings,
@@ -135,7 +135,7 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
         def get_app(self):
             return captured["base_app"]
 
-    monkeypatch.setattr("smart_reporting.application.AgentOS", FakeAgentOS)
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     settings = AgentSettings.from_environment({}, load_env_file=False)
     workspace = FakeWorkspace("lifespan")
     context = ApplicationContext(
@@ -176,7 +176,7 @@ async def test_application_closes_reporting_tasks_before_agentos_database(monkey
             app.router.lifespan_context = agentos_lifespan
             return app
 
-    monkeypatch.setattr("smart_reporting.application.AgentOS", FakeAgentOS)
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
         FakeWorkspace("lifespan"),

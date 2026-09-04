@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from .context_management import clear_terminal_session_reasoning
+from ..context_management import clear_terminal_session_reasoning
 from .settings import DEFAULT_AGENT_DB_URL as SETTINGS_DEFAULT_AGENT_DB_URL
 from .settings import database_url_from_environment
 

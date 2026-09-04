@@ -23,7 +23,7 @@ from smart_reporting.reporting.model_policy import (  # noqa: E402 - 同上
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
 )
-from smart_reporting.settings import AgentSettings  # noqa: E402 - 同上
+from smart_reporting.runtime.settings import AgentSettings  # noqa: E402 - 同上
 from smart_reporting.task_execution.tools import parse_unified_diff  # noqa: E402 - 同上
 
 

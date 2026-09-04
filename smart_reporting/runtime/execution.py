@@ -7,11 +7,11 @@ from typing import Any
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
 
-from .agno_function_arguments import install_agno_function_argument_decoder
+from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
+from ..workspace import WorkspaceService
 from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
 from .settings import AgentSettings
-from .workspace import WorkspaceService
 
 
 @dataclass(frozen=True)

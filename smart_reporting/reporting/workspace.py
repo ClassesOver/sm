@@ -15,7 +15,7 @@ from daytona.common.errors import DaytonaNotFoundError
 from PIL import Image, UnidentifiedImageError
 
 from ..async_utils import complete_cleanup
-from ..observability import suppress_expected_probe_tracing
+from ..runtime.observability import suppress_expected_probe_tracing
 from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     WORKSPACE_ROOT,

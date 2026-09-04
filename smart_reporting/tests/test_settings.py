@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from smart_reporting.reporting.agent import _report_model
-from smart_reporting.settings import DEFAULT_AGENT_DB_URL, DEFAULT_WORKSPACE_SNAPSHOT, AgentSettings
+from smart_reporting.runtime.settings import (
+    DEFAULT_AGENT_DB_URL,
+    DEFAULT_WORKSPACE_SNAPSHOT,
+    AgentSettings,
+)
 
 
 def settings(values=None, **overrides):

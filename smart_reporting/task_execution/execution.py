@@ -23,7 +23,7 @@ from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
 from ..agent_control import AGENT_PLAN_STATE_KEY
-from ..observability import suppress_expected_probe_tracing
+from ..runtime.observability import suppress_expected_probe_tracing
 from ..skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,

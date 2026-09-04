@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import pytest
 
-from smart_reporting.database import create_agent_database
 from smart_reporting.quality_warnings import (
     CheckContext,
     CheckScope,
@@ -17,6 +16,7 @@ from smart_reporting.quality_warnings import (
     WarningQuery,
 )
 from smart_reporting.quality_warnings.repository import SqlAlchemyQualityWarningRepository
+from smart_reporting.runtime.database import create_agent_database
 
 
 def test_sql_quality_warning_repository_requires_postgresql() -> None:

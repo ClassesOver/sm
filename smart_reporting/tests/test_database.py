@@ -5,7 +5,7 @@ import pytest
 from agno.db.postgres import AsyncPostgresDb
 from loguru import logger
 
-from smart_reporting.database import (
+from smart_reporting.runtime.database import (
     DEFAULT_AGENT_DB_URL,
     SerializedAsyncPostgresDb,
     agent_db_url,

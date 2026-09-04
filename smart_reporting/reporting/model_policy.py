@@ -7,7 +7,7 @@ from typing import Literal
 
 from agno.models.openai import OpenAIChat
 
-from ..model_config import reasoning_transport_fields
+from ..integrations.model_config import reasoning_transport_fields
 
 ReportingReasoningEffort = Literal["high", "max"]
 

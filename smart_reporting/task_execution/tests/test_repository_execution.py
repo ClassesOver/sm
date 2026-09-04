@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import delete, select
 
-from smart_reporting.database import create_agent_database
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution.repository import (
     MAX_TERMINAL_OUTPUT_BYTES,
     TASK_SCHEMA_VERSION,

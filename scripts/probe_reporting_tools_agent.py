@@ -26,7 +26,7 @@ from agno.models.message import Message  # noqa: E402 - 同上
 from agno.run import RunContext  # noqa: E402 - 同上
 from agno.tools import Function  # noqa: E402 - 同上
 
-from smart_reporting.model_config import (  # noqa: E402 - 同上
+from smart_reporting.integrations.model_config import (  # noqa: E402 - 同上
     OPENAI_COMPATIBLE_ROLE_MAP,
     openai_compatible_extra_body,
 )
@@ -106,7 +106,7 @@ from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noq
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (  # noqa: E402 - 同上
     VisualizationSectionWorkflow,
 )
-from smart_reporting.settings import AgentSettings  # noqa: E402 - 同上
+from smart_reporting.runtime.settings import AgentSettings  # noqa: E402 - 同上
 from smart_reporting.workspace import WorkspaceService  # noqa: E402 - 同上
 from smart_reporting.task_execution import TaskExecutionScope  # noqa: E402 - 同上
 

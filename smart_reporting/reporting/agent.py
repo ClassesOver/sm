@@ -38,9 +38,9 @@ from ..context_management import (
     clear_terminal_reasoning,
     projected_task_execution_model,
 )
-from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP, openai_compatible_extra_body
+from ..integrations.model_config import OPENAI_COMPATIBLE_ROLE_MAP, openai_compatible_extra_body
 from ..model_routing import build_model_profiles
-from ..settings import AgentSettings
+from ..runtime.settings import AgentSettings
 from ..skills import (
     create_skill_script_hook,
     is_skill_script_hook,

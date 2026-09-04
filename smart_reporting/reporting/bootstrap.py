@@ -2,10 +2,10 @@
 
 from agno.agent import Agent
 
-from ..execution_context import ExecutionContext
 from ..model_routing import build_model_profiles
 from ..quality_warnings.service import QualityWarningService
-from ..settings import AgentSettings
+from ..runtime.execution import ExecutionContext
+from ..runtime.settings import AgentSettings
 from ..task_execution import TaskExecutionKernel, TaskExecutionRepository
 from .agent import create_reporting_generator_agent, create_reporting_phase_agent
 from .data_source import load_configured_report_source_registry

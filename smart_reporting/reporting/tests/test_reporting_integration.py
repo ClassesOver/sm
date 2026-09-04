@@ -14,13 +14,13 @@ from agno.run.base import RunStatus
 from agno.workflow import Step, Workflow
 from daytona.common.errors import DaytonaNotFoundError
 
-from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.contract import ReportingWorkflowInput
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
 from smart_reporting.reporting.workspace import WorkspaceReportService
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.workspace import WorkspaceError
 
 
