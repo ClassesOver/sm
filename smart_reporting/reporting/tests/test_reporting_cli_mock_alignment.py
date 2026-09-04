@@ -1,18 +1,42 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
+from agno.agent import Agent
 from agno.run import RunContext
 from agno.workflow.types import StepOutput
 
+from smart_reporting.model_routing import DEFAULT_MODEL_PROFILES
 from smart_reporting.reporting.cli import drive_workflow, parse_report_input
+from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
+from smart_reporting.reporting.tools import build_reporting_tools
 from smart_reporting.reporting.tools.context import ReportingOutputPolicy
 from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime
+from smart_reporting.reporting.workflow.execution import (
+    ReportingAgentExecutor,
+    ReportingTaskCoordinator,
+)
+from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.runtime.reporting_draft_workflow import (
     ReportingDraftWorkflow,
+)
+from smart_reporting.task_execution import (
+    TASK_EXECUTION_DEPENDENCY,
+    AttemptSnapshot,
+    AttemptState,
+    Lease,
+    TaskExecutionKernel,
+    TaskExecutionRepository,
+    TaskExecutionScope,
+    TaskSnapshot,
+    TaskState,
 )
 
 
@@ -29,12 +53,231 @@ class _Runtime:
         self.cleaned = True
 
 
+class _TaskRepository:
+    def __init__(self) -> None:
+        self.tasks: dict[str, TaskSnapshot] = {}
+        self.instructions: dict[str, str] = {}
+
+    async def create_task_with_initial_attempt(
+        self,
+        scope: TaskExecutionScope,
+        instruction: str,
+        *,
+        acceptance_contract: dict[str, Any],
+        max_instruction_bytes: int,
+    ) -> None:
+        assert len(instruction.encode()) <= max_instruction_bytes
+        self.instructions[scope.external_run_id] = instruction
+        self.tasks[scope.external_run_id] = TaskSnapshot(
+            scope=scope,
+            state=TaskState.NEW,
+            state_version=1,
+            lease_epoch=0,
+            continuation_count=0,
+            instruction_sequence=1,
+            current_internal_run_id=f"internal-{scope.external_run_id}",
+            current_attempt_no=0,
+            deadline_at=datetime.now(UTC) + timedelta(hours=1),
+            acceptance_contract=acceptance_contract,
+        )
+
+    async def cleanup_expired(self, *, lease_owner: str) -> None:
+        assert lease_owner
+
+    async def claim_lease(self, external_run_id: str, owner: str, *, ttl: timedelta) -> Lease:
+        assert external_run_id in self.tasks
+        return Lease(owner, 1, datetime.now(UTC) + ttl)
+
+    async def release_lease(self, external_run_id: str, owner: str) -> None:
+        assert external_run_id in self.tasks
+        assert owner
+
+    async def get_task_snapshot(self, external_run_id: str) -> TaskSnapshot | None:
+        return self.tasks.get(external_run_id)
+
+    async def open_initial(
+        self, external_run_id: str, lease: Lease, expected_state_version: int
+    ) -> tuple[TaskSnapshot, AttemptSnapshot]:
+        task = self.tasks[external_run_id]
+        assert task.state is TaskState.NEW
+        assert task.state_version == expected_state_version
+        task = replace(
+            task,
+            state=TaskState.ACTIVE,
+            state_version=expected_state_version + 1,
+            lease_epoch=lease.epoch,
+        )
+        self.tasks[external_run_id] = task
+        return task, AttemptSnapshot(
+            internal_run_id=task.current_internal_run_id,
+            external_run_id=external_run_id,
+            attempt_no=0,
+            state=AttemptState.RUNNING,
+            resume_count=0,
+            lease_epoch=lease.epoch,
+        )
+
+    async def attempt_instruction(self, external_run_id: str, attempt_no: int) -> str:
+        assert attempt_no == 0
+        return self.instructions[external_run_id]
+
+    async def finalize_finish(
+        self,
+        external_run_id: str,
+        lease: Lease,
+        expected_state_version: int,
+        *,
+        agno_status: str,
+    ) -> TaskSnapshot:
+        task = self.tasks[external_run_id]
+        assert task.state is TaskState.FINISHING
+        assert task.state_version == expected_state_version
+        assert task.lease_epoch == lease.epoch
+        assert agno_status == "completed"
+        task = replace(task, state=TaskState.COMPLETED, state_version=expected_state_version + 1)
+        self.tasks[external_run_id] = task
+        return task
+
+    async def cancel_and_reject(self, scope: TaskExecutionScope) -> None:
+        task = self.tasks[scope.external_run_id]
+        self.tasks[scope.external_run_id] = replace(task, state=TaskState.CANCELLED)
+
+    def finish(self, external_run_id: str, task_kind: str) -> None:
+        task = self.tasks[external_run_id]
+        self.tasks[external_run_id] = replace(
+            task,
+            state=TaskState.FINISHING,
+            state_version=task.state_version + 1,
+            finish_receipt={"summary": f"{task_kind} completed", "artifactPaths": []},
+        )
+
+
 class _CliDraftAdapter:
     def __init__(self) -> None:
         self.received_input: dict[str, Any] | None = None
         self.received_scope: dict[str, Any] | None = None
         self.contexts: list[RunContext] = []
+        self.tool_projections: list[tuple[str, tuple[str, ...]]] = []
+        self.repository = _TaskRepository()
+        self.execution_kernel = SimpleNamespace(
+            cleanup_old_epoch=AsyncMock(), cleanup_disconnect=AsyncMock()
+        )
+        self.coordinator = ReportingTaskCoordinator(
+            cast(TaskExecutionRepository, self.repository),
+            cast(TaskExecutionKernel, self.execution_kernel),
+            model_profiles=DEFAULT_MODEL_PROFILES,
+        )
+        fake_model = SimpleNamespace(report_run_error=lambda: None)
+        self.section_agent = SimpleNamespace(
+            model=fake_model, arun=AsyncMock(), acontinue_run=AsyncMock()
+        )
+        self.visualization_agent = SimpleNamespace(
+            model=fake_model, arun=AsyncMock(), acontinue_run=AsyncMock()
+        )
+        self.agent_executor = ReportingAgentExecutor(
+            cast(TaskExecutionRepository, self.repository),
+            {
+                "section": cast(Agent, self.section_agent),
+                "visualization_section": cast(Agent, self.visualization_agent),
+            },
+        )
         self.production_draft_workflow_called = False
+
+    def _project_tools(self, task_kind: str, run_context: RunContext) -> None:
+        toolkit = build_reporting_tools(
+            cast(Any, object()),
+            self.repository,
+            state_repository=cast(ReportingStateRepository, object()),
+            run_context=run_context,
+        )[0]
+        self.tool_projections.append((task_kind, tuple(sorted(toolkit.async_functions))))
+
+    async def _run_task(
+        self, task_kind: str, payload: Mapping[str, Any], parent_context: RunContext
+    ) -> StepOutput:
+        task_id = f"{parent_context.run_id}:{task_kind}"
+        scope = TaskExecutionScope(
+            external_run_id=task_id,
+            owner_user_id=str(parent_context.user_id),
+            thread_id=str(parent_context.session_id),
+            sandbox_id=f"sandbox-{task_kind}",
+            executor_id=f"reporting-{task_kind}",
+        )
+        phase = "analysis" if task_kind != "section" else "section"
+        phase_contract: dict[str, Any] = {
+            "reportRunId": str(parent_context.run_id),
+            "taskKind": task_kind,
+        }
+        output_options: dict[str, str] = {}
+        if task_kind == "analysis_item":
+            phase_contract.update(
+                {
+                    "analysisIds": ["analysis-1"],
+                    "analysisOutputRoot": "reports/analysis-1",
+                }
+            )
+        elif task_kind == "visualization_section":
+            phase_contract.update(
+                {
+                    "visualizationBudgetVersion": 1,
+                    "visualizationEvidenceReadUnits": 0,
+                    "visualizationReadLimit": 12,
+                    "visualizationFactQueryLimit": 4,
+                    "visualizationAttemptToolLimit": 48,
+                    "visualizationTotalToolLimit": 64,
+                    "visualizationReadUnitsUsed": 0,
+                    "visualizationFactQueriesUsed": 0,
+                    "visualizationToolCalls": 0,
+                    "visualizationScriptFailures": 0,
+                }
+            )
+            output_options["analysis_output_path"] = "reports/section-1/charts.json"
+        else:
+            output_options.update(
+                {
+                    "section_output_path": "reports/section-1/section.json",
+                    "rework_request_path": "reports/section-1/rework.json",
+                }
+            )
+        contract = build_report_phase_acceptance_contract(
+            phase=phase,
+            validation_context_file={
+                "path": "reports/validation.json",
+                "size": 2,
+                "sha256": "a" * 64,
+            },
+            phase_contract=phase_contract,
+            **output_options,
+        )
+        await self.coordinator.start(scope, str(payload), acceptance_contract=contract)
+
+        async def analysis_executor(invocation: Any) -> Any:
+            self.contexts.append(invocation.run_context)
+            self._project_tools(task_kind, invocation.run_context)
+            self.repository.finish(task_id, task_kind)
+            return SimpleNamespace(status="completed")
+
+        async def agent_run(*_args: Any, **call: Any) -> Any:
+            run_context = call["run_context"]
+            self.contexts.append(run_context)
+            self._project_tools(task_kind, run_context)
+            self.repository.finish(task_id, task_kind)
+            return SimpleNamespace(status="completed")
+
+        if task_kind == "analysis_item":
+            executor = analysis_executor
+        else:
+            agent = (
+                self.visualization_agent
+                if task_kind == "visualization_section"
+                else self.section_agent
+            )
+            agent.arun.side_effect = agent_run
+            executor = self.agent_executor
+        receipt = await self.coordinator.run(
+            scope, parent_run_id=str(parent_context.run_id), executor=executor
+        )
+        return StepOutput(content=receipt)
 
     async def arun(self, report_input: dict[str, Any], **kwargs: Any) -> Any:
         self.received_input = report_input
@@ -47,17 +290,22 @@ class _CliDraftAdapter:
             dependencies=kwargs["dependencies"],
         )
 
-        async def stage(_payload: dict[str, Any], run_context: RunContext) -> StepOutput:
-            self.contexts.append(run_context)
-            return StepOutput(content={"ok": True})
+        async def analysis(payload: Mapping[str, Any], run_context: RunContext) -> StepOutput:
+            return await self._run_task("analysis_item", payload, run_context)
+
+        async def visualization(payload: Mapping[str, Any], run_context: RunContext) -> StepOutput:
+            return await self._run_task("visualization_section", payload, run_context)
+
+        async def section(payload: Mapping[str, Any], run_context: RunContext) -> StepOutput:
+            return await self._run_task("section", payload, run_context)
 
         workflow = ReportingDraftWorkflow(
             report_goal=report_input["prompt"],
             section_goal={"sectionCode": "section-1"},
             analysis_ids=("analysis-1",),
-            run_analysis=stage,
-            submit_visualization=stage,
-            draft_section=stage,
+            run_analysis=analysis,
+            submit_visualization=visualization,
+            draft_section=section,
         )
         self.production_draft_workflow_called = True
         await workflow.execute_section(context)
@@ -103,8 +351,22 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
     assert result["status"] == "completed"
     assert adapter.production_draft_workflow_called is True
     assert len(adapter.contexts) == 3
-    assert all(context.run_id == "cli-run-1" for context in adapter.contexts)
-    assert all(context.session_id == "cli-session-1" for context in adapter.contexts)
+    assert all(context.user_id == "cli-user-1" for context in adapter.contexts)
+    assert all(context.dependencies is not None for context in adapter.contexts)
+    assert all(
+        cast(dict[str, Any], context.dependencies)[TASK_EXECUTION_DEPENDENCY]["threadId"]
+        == "cli-session-1"
+        for context in adapter.contexts
+    )
+    assert [kind for kind, _tools in adapter.tool_projections] == [
+        "analysis_item",
+        "visualization_section",
+        "section",
+    ]
+    assert adapter.section_agent.arun.await_count == 1
+    assert adapter.visualization_agent.arun.await_count == 1
+    adapter.section_agent.acontinue_run.assert_not_awaited()
+    adapter.visualization_agent.acontinue_run.assert_not_awaited()
 
 
 @pytest.mark.anyio
