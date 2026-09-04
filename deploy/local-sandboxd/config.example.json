@@ -1,0 +1,18 @@
+{
+  "node_id": "sandbox-node-a",
+  "profile": "ubuntu",
+  "arch": "x86_64",
+  "python_abi": "cp312",
+  "policy": "reporting",
+  "catalog_path": "/opt/local-sandboxd/artifacts/catalog.json",
+  "artifact_root": "/opt/local-sandboxd/artifacts",
+  "catalog_public_key": "/etc/local-sandboxd/catalog-ed25519.pub",
+  "workspace_root": "/var/lib/local-sandboxd/workspaces",
+  "cgroup_root": "/sys/fs/cgroup/local-sandboxd",
+  "seccomp_path": "/opt/local-sandboxd/artifacts/python-seccomp.bpf",
+  "bwrap": "/usr/bin/bwrap",
+  "listener": "unix:///run/local-sandboxd/local-sandboxd.sock",
+  "cpu_max": "200000 100000",
+  "memory_max": 2147483648,
+  "pids_max": 128
+}

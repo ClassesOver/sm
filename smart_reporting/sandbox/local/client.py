@@ -73,13 +73,19 @@ class _LocalApi:
         idempotency_key: str | None = None,
         json_body: dict[str, Any] | None = None,
         content: bytes | None = None,
+        params: dict[str, str] | None = None,
     ) -> httpx.Response:
         headers = {"x-sandbox-binding": binding_digest}
         if idempotency_key:
             headers["idempotency-key"] = idempotency_key
         try:
             response = await self.client.request(
-                method, path, headers=headers, json=json_body, content=content
+                method,
+                path,
+                headers=headers,
+                json=json_body,
+                content=content,
+                params=params,
             )
         except httpx.TimeoutException as error:
             raise SandboxTimeout("local-sandboxd 请求超时。") from error
@@ -145,11 +151,10 @@ class LocalFileSystemApi:
             "PUT",
             f"/v1/workspaces/{self._ref.resource_id}/files/content",
             binding_digest=self._ref.binding_digest,
-            json_body=None,
             content=content,
             idempotency_key=hashlib.sha256(path.encode() + content).hexdigest(),
+            params={"path": path},
         )
-        await self._action("commit-upload", {"path": path})
 
     async def download_file(self, path: str) -> bytes:
         return (await self._action("download", {"path": path})).content

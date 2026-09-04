@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "bundles": [
+    {
+      "profile": "ubuntu",
+      "arch": "x86_64",
+      "python_abi": "cp312",
+      "policy": "reporting",
+      "rootfs_path": "/opt/local-sandboxd/artifacts/ubuntu-rootfs",
+      "rootfs_digest": "sha256:REPLACE_WITH_ROOTFS_SHA256",
+      "bundle_path": "/opt/local-sandboxd/artifacts/reporting-cp312",
+      "digest": "sha256:REPLACE_WITH_MANIFEST_SHA256",
+      "manifest_path": "/opt/local-sandboxd/artifacts/reporting-cp312.manifest",
+      "manifest_digest": "sha256:REPLACE_WITH_MANIFEST_SHA256",
+      "sbom_digest": "sha256:REPLACE_WITH_SBOM_SHA256",
+      "signature": "REPLACE_WITH_BASE64_ED25519_SIGNATURE",
+      "modules": ["pandas", "numpy", "matplotlib"]
+    }
+  ]
+}

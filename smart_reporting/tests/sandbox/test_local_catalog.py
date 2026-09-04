@@ -24,6 +24,7 @@ def _write_catalog(tmp_path: Path) -> tuple[Path, str]:
                 "python_abi": "cp312",
                 "policy": "reporting",
                 "rootfs_path": str(rootfs),
+                "rootfs_digest": "sha256:" + "a" * 64,
                 "bundle_path": str(bundle),
                 "digest": digest,
                 "manifest_path": str(marker),

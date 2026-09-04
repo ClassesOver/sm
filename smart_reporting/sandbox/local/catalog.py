@@ -16,6 +16,7 @@ class DependencyBundle(BaseModel):
     python_abi: str = Field(pattern=r"^cp[0-9]{3}$")
     policy: str = Field(min_length=1, max_length=64)
     rootfs_path: Path
+    rootfs_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     bundle_path: Path
     digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     manifest_path: Path

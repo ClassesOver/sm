@@ -1,0 +1,10 @@
+{
+  "profile": "openeuler",
+  "python_abi": "cp312",
+  "network": "disabled",
+  "require_user_namespace": true,
+  "require_cgroup_v2": true,
+  "require_seccomp": true,
+  "readonly_rootfs": true,
+  "readonly_dependency_bundle": true
+}
