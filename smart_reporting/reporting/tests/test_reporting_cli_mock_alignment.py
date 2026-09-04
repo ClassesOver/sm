@@ -358,10 +358,41 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
         == "cli-session-1"
         for context in adapter.contexts
     )
-    assert [kind for kind, _tools in adapter.tool_projections] == [
-        "analysis_item",
-        "visualization_section",
-        "section",
+    assert adapter.tool_projections == [
+        (
+            "analysis_item",
+            (
+                "apply_analysis_patch",
+                "complete_analysis_item",
+                "process",
+                "query_analysis_context",
+                "query_analysis_facts",
+                "query_profile",
+                "read_file",
+                "read_tool_output",
+                "terminal",
+            ),
+        ),
+        (
+            "visualization_section",
+            (
+                "apply_analysis_patch",
+                "process",
+                "read_file",
+                "read_tool_output",
+                "submit_visualization_charts",
+                "terminal",
+            ),
+        ),
+        (
+            "section",
+            (
+                "read_file",
+                "read_tool_output",
+                "render_report_section",
+                "request_analysis_rework",
+            ),
+        ),
     ]
     assert adapter.section_agent.arun.await_count == 1
     assert adapter.visualization_agent.arun.await_count == 1
