@@ -36,6 +36,17 @@ _NON_RECOVERABLE_CODES = frozenset(
 )
 
 
+def _section_recovery_diagnostic(error: Exception) -> dict[str, Any]:
+    """保留服务端拒绝码与修复动作，避免 recovery Agent 只看到外层摘要。"""
+
+    diagnostic: dict[str, Any] = {"message": str(error)[:2000]}
+    if isinstance(error, ReportingError):
+        diagnostic["code"] = error.code
+        if isinstance(error.details, Mapping):
+            diagnostic["details"] = dict(error.details)
+    return diagnostic
+
+
 @dataclass(frozen=True, slots=True)
 class SectionWorkflowResult:
     status: str
@@ -104,10 +115,12 @@ class SectionWorkflow:
 
     async def run(self, work_item: SectionWorkItem, context: RunContext) -> SectionWorkflowResult:
         bundle = await self._read_bundle(work_item, context)
-        decision = await self.generate(bundle, context)
+        decision: SectionDecision | None = None
         recovery_used = False
         for attempt in range(2):
             try:
+                if decision is None:
+                    decision = await self.generate(bundle, context)
                 if decision.section_code != work_item.section_code:
                     raise ReportingError(
                         "report_section_artifact_invalid", "章节决定没有绑定当前 sectionCode。"
@@ -133,7 +146,7 @@ class SectionWorkflow:
                 decision = await self.recover(
                     {
                         "evidence": bundle.model_dump(mode="json", by_alias=True),
-                        "diagnostic": str(error)[:2000],
+                        "diagnostic": _section_recovery_diagnostic(error),
                     },
                     context,
                 )

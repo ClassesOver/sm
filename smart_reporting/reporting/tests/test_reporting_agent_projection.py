@@ -4,6 +4,7 @@ import pytest
 from agno.models.message import Message
 from agno.run import RunContext
 
+from smart_reporting.context_management import TaskExecutionContextProjector
 from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_messages,
@@ -133,6 +134,48 @@ def test_phase_agent_request_uses_model_id_selected_by_trusted_route() -> None:
 
     assert phase_model.id == "deepseek-v4-flash-0731"
     assert request_model.id == "qwen3.6-35b-a3b"
+
+
+def test_visualization_section_request_keeps_full_script_output_budget() -> None:
+    phase_model = ReportingPhaseOpenAIChat(
+        id="qwen3.6-flash",
+        api_key="test-key",
+        max_tokens=64 * 1024,
+    )
+
+    with bind_reporting_run_context(_context("analysis", "visualization_section")):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.max_tokens == 64 * 1024
+
+
+def test_analysis_item_request_respects_verified_model_output_budget() -> None:
+    phase_model = ReportingPhaseOpenAIChat(
+        id="qwen3.6-flash",
+        api_key="test-key",
+        max_tokens=96 * 1024,
+    )
+
+    with bind_reporting_run_context(_context("analysis", "analysis_item")):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.max_tokens == 64 * 1024
+
+
+def test_section_projection_uses_configured_report_input_budget(monkeypatch) -> None:
+    phase_model = ReportingPhaseOpenAIChat(id="qwen3.6-flash", api_key="test-key")
+    phase_model._task_execution_input_token_budget = 196_608
+    observed: dict[str, int] = {}
+
+    def project(messages, **kwargs):
+        observed["hard_cap"] = kwargs["hard_cap"]
+        return messages
+
+    monkeypatch.setattr(TaskExecutionContextProjector, "project", project)
+    with bind_reporting_run_context(_context("section", "section")):
+        phase_model._project([Message(role="user", content="test")], (), {})
+
+    assert observed["hard_cap"] == 196_608
 
 
 def test_phase_agent_request_keeps_thinking_off_when_task_policy_requests_high() -> None:

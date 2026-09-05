@@ -15,6 +15,7 @@ from agno.workflow.types import StepInput, StepOutput
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ....task_execution import MAX_READ_FILE_BYTES
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...models import ReportingError
 
@@ -33,6 +34,11 @@ _STAGE_NAMES = (
 
 def _script_patch(path: str, content: str, previous: str | None) -> str:
     """生成标准 unified diff；首次写入以 /dev/null 作为基线。"""
+    # 结构化模型输出中的脚本通常不带末尾换行；difflib 不会自动补写 Git 所需的
+    # no-newline 标记，导致语法可解析的 diff 在 git apply 阶段被判为 corrupt。
+    # 服务端统一签发 POSIX 文本，后续修复读取到的基线也因此保持同一格式。
+    if content and not content.endswith("\n"):
+        content += "\n"
     before = [] if previous is None else previous.splitlines(keepends=True)
     after = content.splitlines(keepends=True)
     if previous is None:
@@ -52,7 +58,27 @@ class AnalysisEvidencePlan(_StrictModel):
     requires_supplemental_evidence: bool = Field(alias="requiresSupplementalEvidence")
     reason: str = Field(min_length=1, max_length=2_000)
     missing_facts: tuple[str, ...] = Field(alias="missingFacts", max_length=20)
-    script: str | None = Field(default=None, max_length=262_144)
+    script: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_empty_missing_facts(cls, value: Any) -> Any:
+        """固定事实明确足够时，把模型遗漏的空数组规范化为唯一合法值。"""
+
+        if not isinstance(value, Mapping):
+            return value
+        requires_supplement = value.get(
+            "requiresSupplementalEvidence",
+            value.get("requires_supplemental_evidence"),
+        )
+        if (
+            requires_supplement is False
+            and value.get("script") is None
+            and "missingFacts" not in value
+            and "missing_facts" not in value
+        ):
+            return {**value, "missingFacts": []}
+        return value
 
     @model_validator(mode="after")
     def validate_supplement(self) -> AnalysisEvidencePlan:
@@ -62,6 +88,47 @@ class AnalysisEvidencePlan(_StrictModel):
         elif self.missing_facts or self.script is not None:
             raise ValueError("固定事实足够时不得提供事实缺口或脚本")
         return self
+
+
+class AnalysisEvidenceDecision(_StrictModel):
+    """只判断固定事实是否存在必要缺口，不承载代码。"""
+
+    requires_supplemental_evidence: bool = Field(alias="requiresSupplementalEvidence")
+    reason: str = Field(min_length=1, max_length=2_000)
+    missing_facts: tuple[str, ...] = Field(alias="missingFacts", max_length=20)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_empty_missing_facts(cls, value: Any) -> Any:
+        """固定事实明确足够时，把模型遗漏的空数组规范化为唯一合法值。"""
+
+        if not isinstance(value, Mapping):
+            return value
+        requires_supplement = value.get(
+            "requiresSupplementalEvidence",
+            value.get("requires_supplemental_evidence"),
+        )
+        if (
+            requires_supplement is False
+            and "missingFacts" not in value
+            and "missing_facts" not in value
+        ):
+            return {**value, "missingFacts": []}
+        return value
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> AnalysisEvidenceDecision:
+        if self.requires_supplemental_evidence and not self.missing_facts:
+            raise ValueError("需要补充 evidence 时必须明确事实缺口")
+        if not self.requires_supplemental_evidence and self.missing_facts:
+            raise ValueError("固定事实足够时不得声明事实缺口")
+        return self
+
+
+class AnalysisScriptDraft(_StrictModel):
+    """根据已冻结事实缺口生成的单一脚本。"""
+
+    script: str = Field(min_length=1)
 
 
 class AnalysisSummaryDraft(_StrictModel):
@@ -119,6 +186,7 @@ class _AnalysisItemState:
     failure: Exception | None = None
     warnings: list[str] = field(default_factory=list)
     repair_count: int = 0
+    supplement_abandoned: bool = False
 
 
 class AnalysisItemWorkflow:
@@ -398,7 +466,7 @@ class AnalysisItemWorkflow:
                             if state.plan is not None
                             else None
                         ),
-                        "error": str(state.failure) if state.failure is not None else "",
+                        "error": self._repair_error(state.failure),
                     }
                 }
                 if repair
@@ -420,7 +488,7 @@ class AnalysisItemWorkflow:
     ) -> StepOutput:
         if state.failure is not None:
             if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
-                return StepOutput(content={"status": "repair_exhausted"})
+                return self._abandon_supplement(state)
             state.repair_count += 1
             await self._plan_evidence(state, repair=True)
         plan = state.plan
@@ -431,16 +499,19 @@ class AnalysisItemWorkflow:
         script_path = self._script_path(state)
         previous = None
         if state.script_sha256 is not None:
-            current = await self.read_file(
-                path=script_path,
-                max_bytes=MAX_ANALYSIS_SCRIPT_REPAIRS * 131072,
-                run_context=run_context,
-            )
-            self._require_ok(current, default_code="report_analysis_script_read_failed")
-            previous = current.get("content")
-            if not isinstance(previous, str):
-                raise ReportingError("report_analysis_script_read_failed", "无法读取待修复脚本。")
+            previous = await self._read_existing_script(state, script_path, run_context)
         patch = _script_patch(script_path, plan.script, previous)
+        if not patch:
+            state.failure = ReportingError(
+                "report_analysis_script_repair_no_change",
+                "补证脚本修复结果与失败脚本完全相同。",
+                details={"repairCount": state.repair_count},
+            )
+            state.evidence = None
+            if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
+                return self._abandon_supplement(state)
+            state.statuses["execute-script"] = "retrying"
+            return StepOutput(content={"status": "retry", "code": state.failure.code})
         write = await self.apply_patch(
             patch=patch,
             expected_sha256=({script_path: state.script_sha256} if state.script_sha256 else None),
@@ -485,14 +556,60 @@ class AnalysisItemWorkflow:
                 )
             state.failure = error
             state.evidence = None
+            if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
+                return self._abandon_supplement(state)
             state.statuses["execute-script"] = "retrying"
             return StepOutput(content={"status": "retry", "code": error.code})
         state.statuses["execute-script"] = "completed"
         return StepOutput(content={"status": "executed", "scriptPath": script_path})
 
+    async def _read_existing_script(
+        self,
+        state: _AnalysisItemState,
+        script_path: str,
+        run_context: RunContext,
+    ) -> str:
+        """在工具单次读取上限内恢复待修复脚本，并验证读取期间身份不变。"""
+
+        chunks: list[str] = []
+        offset = 0
+        total_bytes: int | None = None
+        while total_bytes is None or offset < total_bytes:
+            current = await self.read_file(
+                path=script_path,
+                offset=offset,
+                max_bytes=MAX_READ_FILE_BYTES,
+                run_context=run_context,
+            )
+            self._require_ok(current, default_code="report_analysis_script_read_failed")
+            content = current.get("content")
+            next_offset = current.get("nextOffset")
+            current_total = current.get("totalBytes")
+            if (
+                not isinstance(content, str)
+                or not isinstance(next_offset, int)
+                or isinstance(next_offset, bool)
+                or not isinstance(current_total, int)
+                or isinstance(current_total, bool)
+                or not offset < next_offset <= current_total
+                or (total_bytes is not None and current_total != total_bytes)
+                or current.get("sha256") != state.script_sha256
+            ):
+                raise ReportingError(
+                    "report_analysis_script_read_failed",
+                    "待修复脚本的身份、大小或读取游标无效。",
+                )
+            chunks.append(content)
+            offset = next_offset
+            total_bytes = current_total
+        return "".join(chunks)
+
     async def _validate_evidence(
         self, state: _AnalysisItemState, run_context: RunContext
     ) -> StepOutput:
+        if state.supplement_abandoned:
+            state.statuses["validate-evidence"] = "completed"
+            return StepOutput(content={"status": "skipped_after_repair_exhausted"})
         if state.failure is not None:
             state.statuses["validate-evidence"] = "retrying"
             return StepOutput(content={"status": "skipped_after_script_error"})
@@ -559,6 +676,21 @@ class AnalysisItemWorkflow:
             content={"status": "validated", "evidencePath": self._evidence_path(state)}
         )
 
+    @staticmethod
+    def _abandon_supplement(state: _AnalysisItemState) -> StepOutput:
+        error = state.failure
+        code = error.code if isinstance(error, ReportingError) else type(error).__name__
+        message = error.message if isinstance(error, ReportingError) else str(error)
+        state.warnings.append(
+            f"report_analysis_supplement_abandoned: 补证脚本修复耗尽，"
+            f"仅使用确定性事实完成分析（{code}: {message}）。"
+        )
+        state.failure = None
+        state.evidence = None
+        state.supplement_abandoned = True
+        state.statuses["execute-script"] = "completed"
+        return StepOutput(content={"status": "degraded", "code": code})
+
     async def _complete_analysis(
         self, state: _AnalysisItemState, run_context: RunContext
     ) -> StepOutput:
@@ -583,6 +715,7 @@ class AnalysisItemWorkflow:
             ),
             "reviewFeedback": state.instruction.get("reviewFeedback"),
             "analysisReworkRequest": state.instruction.get("analysisReworkRequest"),
+            "evidenceWarnings": list(state.warnings),
         }
         draft = await self.summarize(summary_payload)
         warnings = list(dict.fromkeys((*draft.warnings, *state.warnings)))
@@ -619,7 +752,22 @@ class AnalysisItemWorkflow:
         raise ReportingError(
             str(result.get("code") or default_code),
             str(result.get("message") or "单项分析工具调用失败。"),
+            details=(
+                dict(details) if isinstance((details := result.get("details")), Mapping) else None
+            ),
         )
+
+    @staticmethod
+    def _repair_error(error: Exception | None) -> dict[str, Any] | None:
+        if error is None:
+            return None
+        if isinstance(error, ReportingError):
+            return {
+                "code": error.code,
+                "message": error.message,
+                **({"details": error.details} if error.details is not None else {}),
+            }
+        return {"code": type(error).__name__, "message": str(error)[:4_000]}
 
     @staticmethod
     def _dataset_ids(state: _AnalysisItemState) -> list[str]:
@@ -659,9 +807,11 @@ class AnalysisItemWorkflow:
 
 
 __all__ = [
+    "AnalysisEvidenceDecision",
     "AnalysisEvidencePlan",
     "AnalysisItemWorkflow",
     "AnalysisItemWorkflowResult",
+    "AnalysisScriptDraft",
     "AnalysisSummaryDraft",
     "MAX_ANALYSIS_SCRIPT_REPAIRS",
 ]

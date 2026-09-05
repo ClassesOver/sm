@@ -10,6 +10,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     ChartDraft,
     RenderSectionDecision,
     SectionDecisionAdapter,
+    SectionDecisionOutput,
     VisualizationScriptDraft,
 )
 
@@ -37,7 +38,9 @@ def test_visualization_script_draft_accepts_bound_chart_paths() -> None:
     assert draft.charts[0].chart_id == "chart_001"
 
 
-@pytest.mark.parametrize("path", ["/tmp/chart.png", "../chart.png", "charts\\chart.png", "chart.svg"])
+@pytest.mark.parametrize(
+    "path", ["/tmp/chart.png", "../chart.png", "charts\\chart.png", "chart.svg"]
+)
 def test_chart_draft_rejects_unsafe_source_path(path: str) -> None:
     with pytest.raises(ValidationError):
         _chart(path)
@@ -66,6 +69,8 @@ def test_section_decision_is_a_render_or_rework_union() -> None:
     )
     parsed = SectionDecisionAdapter.validate_python(rendered.model_dump(mode="json", by_alias=True))
     assert isinstance(parsed, RenderSectionDecision)
+    output = SectionDecisionOutput.model_validate_json(rendered.model_dump_json(by_alias=True))
+    assert isinstance(output.root, RenderSectionDecision)
 
     with pytest.raises(ValidationError):
         AnalysisReworkDecision(
@@ -74,6 +79,65 @@ def test_section_decision_is_a_render_or_rework_union() -> None:
             reason="缺少证据",
             missingEvidence=("dataset_001",),
         )
+
+
+def test_section_decision_normalizes_single_render_wrapper() -> None:
+    output = SectionDecisionOutput.model_validate(
+        {
+            "render": {
+                "sectionCode": "section_001",
+                "blocks": [
+                    {
+                        "blockId": "block_001",
+                        "markdown": "收入保持增长。",
+                        "citationIds": ["citation_001"],
+                        "claimIds": ["claim_001"],
+                    }
+                ],
+                "claims": [
+                    {
+                        "claimId": "claim_001",
+                        "metricCode": "revenue",
+                        "value": 100,
+                        "managementQuestionRef": "analysis_001",
+                        "citationIds": ["citation_001"],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert isinstance(output.root, RenderSectionDecision)
+    assert output.root.kind == "render"
+
+
+def test_section_decision_normalizes_numeric_comparison_display_value() -> None:
+    output = SectionDecisionOutput.model_validate(
+        {
+            "kind": "render",
+            "sectionCode": "section_001",
+            "blocks": [
+                {
+                    "blockId": "block_001",
+                    "markdown": "收入下降。",
+                    "citationIds": ["citation_001"],
+                    "claimIds": ["claim_001"],
+                }
+            ],
+            "claims": [
+                {
+                    "claimId": "claim_001",
+                    "metricCode": "revenue",
+                    "value": 100,
+                    "comparison": -40000000,
+                    "managementQuestionRef": "analysis_001",
+                    "citationIds": ["citation_001"],
+                }
+            ],
+        }
+    )
+
+    assert output.root.claims[0].comparison == "-40000000"
 
 
 def test_file_identity_keeps_existing_safe_path_contract() -> None:

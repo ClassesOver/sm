@@ -1,4 +1,4 @@
-"""Reporting 模型请求的 thinking 配置策略。"""
+"""Reporting 模型请求能力与 thinking 配置策略。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,15 @@ from agno.models.openai import OpenAIChat
 from ..integrations.model_config import reasoning_transport_fields
 
 ReportingReasoningEffort = Literal["high", "max"]
+
+
+def reporting_model_output_token_limit(model_id: str | None) -> int | None:
+    """返回已由真实端点验证的单次输出上限，未知模型不做推测性限制。"""
+
+    family = str(model_id or "").strip().lower().rsplit("/", 1)[-1]
+    if family.startswith(("qwen3.6", "qwen3.8")):
+        return 64 * 1024
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +78,20 @@ def apply_reporting_thinking_profile[ModelT: OpenAIChat](
     extra_body["enable_thinking"] = profile.enabled
     if profile.enabled:
         extra_body["thinking_budget"] = profile.thinking_budget
+    transport_effort: str | None = profile.reasoning_effort
+    if (
+        transport_effort == "max"
+        and str(model.id or "").strip().lower().startswith("qwen")
+        and not isinstance(extra_body.get("chat_template_kwargs"), dict)
+    ):
+        # Reporting 领域策略沿用 DeepSeek 的 high/max 两档；Qwen 的 OpenAI-compatible
+        # 顶层协议把最高档命名为 xhigh。这里只转换传输值，内部策略和 vLLM
+        # chat_template_kwargs 仍保持 max，避免模型路由改变业务复杂度语义。
+        transport_effort = "xhigh"
     model.extra_body, model.reasoning_effort = reasoning_transport_fields(
         extra_body=extra_body,
         enabled=profile.enabled,
-        reasoning_effort=profile.reasoning_effort,
+        reasoning_effort=transport_effort,
     )
     model.temperature = profile.temperature
     return model
@@ -94,7 +113,9 @@ def reporting_thinking_profile_from_model(model: OpenAIChat) -> ReportingThinkin
     budget = extra_body.get("thinking_budget")
     if raw_effort == "high":
         effort: ReportingReasoningEffort = "high"
-    elif raw_effort == "max":
+    elif raw_effort == "max" or (
+        raw_effort == "xhigh" and str(model.id or "").strip().lower().startswith("qwen")
+    ):
         effort = "max"
     else:
         raise ValueError("Reporting 模型开启 thinking 时缺少 high/max reasoning_effort")

@@ -118,6 +118,7 @@ from ...hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
     freeze_outline,
+    normalize_outline_proposal_candidate,
 )
 from ...instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
@@ -149,6 +150,7 @@ from ...profile import (
 from ...profile import (
     resolve_capabilities as resolve_profile_capabilities,
 )
+from ...structured_output import ReportingStructuredOutputExecutor
 from ...vision import ReportVisionReviewer
 from ...workspace import WorkspaceReportService
 from ..checkpoint import (
@@ -177,7 +179,6 @@ from ..checkpoint import (
 from ..execution import (
     MAX_REPORT_INSTRUCTION_BYTES,
     ReportingTaskCoordinator,
-    _raise_recorded_agent_error,
 )
 from ..orchestration import create_reporting_workflow, record_step_model_metrics
 from ..query_pipeline import (
@@ -185,13 +186,18 @@ from ..query_pipeline import (
     DatasetLineage,
     QueryRequirement,
     approve_query_batch,
+    project_measure_semantics_to_query_outputs,
     resolve_schema_snapshot,
     state_contains_connection_data,
 )
 from ..repository import ReportingStateRepository
 from ..state import ReportingCommand, ReportingStateError
 from ..state import ReportingPhase as DurableReportingPhase
-from .analysis_item_workflow import AnalysisEvidencePlan, AnalysisSummaryDraft
+from .analysis_item_workflow import (
+    AnalysisEvidenceDecision,
+    AnalysisScriptDraft,
+    AnalysisSummaryDraft,
+)
 from .models import (
     AnalysisBundle,
     AnalysisItem,
@@ -375,6 +381,7 @@ _PLANNER_DISPLAY_NAMES = {
     "report-measure-semantic-proposer": "指标口径整理",
     "report-analysis-planner": "分析计划设计",
     "report-analysis-evidence-planner": "补充证据规划",
+    "report-analysis-script-writer": "补证脚本生成",
     "report-analysis-summary-writer": "单项分析总结",
     "report-sql-planner": "取数方案设计",
     "report-outline-planner": "报告提纲规划",
@@ -599,17 +606,31 @@ class _ReportWorkflowRuntimeBase:
         self._analysis_evidence_agent = self._planning_agent(
             reporting_agent_template,
             "report-analysis-evidence-planner",
-            AnalysisEvidencePlan,
+            AnalysisEvidenceDecision,
             thinking_profile=planner_high,
             escalation_thinking_profile=planner_max,
             stage_instructions=(
                 "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
-                "固定事实足够时 missingFacts 必须为空且 script 必须为 null，不得为了探索数据而生成脚本。",
-                "需要补充时只生成一个最小 Python 脚本；脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
+                "只返回 requiresSupplementalEvidence、reason、missingFacts，不得生成 script 或任何代码。",
+                "固定事实足够时 missingFacts 必须为空数组，不得为了探索数据而声明缺口。",
+            ),
+        )
+        self._analysis_script_agent = self._planning_agent(
+            reporting_agent_template,
+            "report-analysis-script-writer",
+            AnalysisScriptDraft,
+            thinking_profile=planner_high,
+            escalation_thinking_profile=planner_max,
+            stage_instructions=(
+                "只针对 evidenceDecision.missingFacts 生成一个最小 Python 脚本；不得重新判断事实缺口。",
+                "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
+                "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
+                "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得把 currentAnalysis.fields 或其他 Dataset 的字段用于该 CSV。",
                 "evidencePath 必须写为 JSON 对象，且只含 analysisId、datasetIds、findings、reconciliations、warnings；findings 至少一项，reconciliations 至少一项且每项含 name 和 passed。",
                 "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
                 "脚本不得访问网络、环境变量、数据库、工作区其他路径或启动子进程。",
-                "correction 存在时保留原事实缺口，只修正脚本中导致执行或 evidence 校验失败的部分。",
+                "correction 存在时保留 evidenceDecision，不改变事实缺口，只修正导致执行或 evidence 校验失败的代码。",
+                "correction.error 是服务端结构化失败事实；必须逐项读取 code、message 和 details.path，不得原样返回与 previousScript 相同的脚本。",
             ),
         )
         self._analysis_summary_agent = self._planning_agent(
@@ -621,6 +642,7 @@ class _ReportWorkflowRuntimeBase:
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
                 "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
+                "supplementalEvidence 为 null 且 evidenceWarnings 声明补证已放弃时，只能使用 deterministicFacts；不得声称缺失事实已经验证。",
                 "summary 使用可直接进入报告的中文业务表述，不使用 Markdown 标题；warnings 只保留会影响结论解释的事实限制。",
             ),
         )
@@ -674,16 +696,22 @@ class _ReportWorkflowRuntimeBase:
             candidate = _planner_candidate(content)
             if output_schema is AnalysisBundle:
                 candidate = _normalize_analysis_bundle_table_refs(candidate)
+            elif output_schema is ReportOutlineProposal:
+                candidate = normalize_outline_proposal_candidate(candidate)
             try:
                 return output_schema.model_validate(candidate)
             except ValidationError as error:
-                # 把候选载荷附在异常上。Agno 的 Agent 重试只对同一输入盲重试，无法把
-                # 结构错误回灌给模型；规划层的纠错循环需要 previousOutput 基线和
-                # 逐项 issues，因此在校验边界先捕获候选，避免重试时丢失原输出。
+                # 把候选载荷附在异常上。Reporting 结构化执行器据此向同一模型回灌
+                # previousOutput 和逐项 issues；候选不进入日志或公开错误 details。
                 error._report_candidate = candidate  # type: ignore[attr-defined]
                 raise
 
         setattr(planner_model, "_report_response_validator", validate_response)
+        agent_retries = (
+            0
+            if output_schema in {AnalysisBundle, AnalysisEvidenceDecision, AnalysisScriptDraft}
+            else 2
+        )
         agent = planner.deep_copy(
             update={
                 "id": agent_id,
@@ -691,14 +719,12 @@ class _ReportWorkflowRuntimeBase:
                 "name": _PLANNER_DISPLAY_NAMES.get(agent_id, agent_id),
                 "role": "只根据已批准的结构、术语和画像生成结构化报表规划。",
                 "model": planner_model,
-                "retries": 2,
-                "exponential_backoff": True,
+                # 结构化执行器会显式回灌 ValidationError；这些阶段关闭 Agno 对同一
+                # 输入的盲重试，其他 planner 继续沿用既有 Agno retry 边界。
+                "retries": agent_retries,
+                "exponential_backoff": agent_retries > 0,
                 "instructions": [
-                    f"实际输出契约：{_compact_output_schema(output_schema)}",
-                    (
-                        "上述契约已完整列出且与运行时 output_schema 同源；不得声称契约缺失或不可见，"
-                        "不得按惯例猜测字段；只返回与其匹配的 JSON。"
-                    ),
+                    "只返回与 output_schema 匹配的 JSON。",
                     "不得输出分析过程、解释、Markdown 或 schema 之外的字段。",
                     "字符串字段只写最终可用的业务值；不得写占位符、变量名、生成过程或修正元数据。",
                     "发现候选值错误时直接替换或删除；不得把 correction、removed、clean 等修正标记追加到字段值或数组。",
@@ -846,14 +872,20 @@ class _ReportWorkflowRuntimeBase:
             len(input_bytes),
             input_sha256,
         )
-        output = await agent.arun(
-            serialized_payload,
-            session_id=f"report-planning-{digest}",
-            user_id=scope["userId"],
-            stream=False,
-        )
-        _raise_recorded_agent_error(agent)
-        content = getattr(output, "content", None)
+        try:
+            structured = await ReportingStructuredOutputExecutor(agent).execute(
+                serialized_payload,
+                routing_context=run_context,
+                session_id=f"report-planning-{digest}",
+                user_id=scope["userId"],
+                # Planner 维持既有的无外层 session_state 语义；模型路由只从
+                # routing_context 读取，不把任务工具上下文传入无工具规划器。
+                agent_run_context=None,
+            )
+        except ReportingError:
+            raise
+        output = structured.run_output
+        content = structured.content
         if isinstance(content, str) and (
             "不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap" in content
         ):
@@ -1216,22 +1248,6 @@ def _planner_candidate(content: Any) -> Any:
         return json.loads(decoded)
     except ValueError:
         return decoded
-
-
-def _compact_output_schema(output_schema: type[BaseModel]) -> str:
-    def compact(value: Any, *, preserve_keys: bool = False) -> Any:
-        if isinstance(value, dict):
-            return {
-                key: compact(item, preserve_keys=key in {"$defs", "properties"})
-                for key, item in value.items()
-                if preserve_keys or key not in {"default", "description", "title"}
-            }
-        if isinstance(value, list):
-            return [compact(item) for item in value]
-        return value
-
-    schema = compact(output_schema.model_json_schema(by_alias=True))
-    return json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
 
 
 def _payload_bytes(value: Any) -> bytes:

@@ -25,6 +25,72 @@ def _looks_like_serialized_structure(value: str) -> bool:
     return isinstance(parsed, (dict, list)) or bool(_SERIALIZED_MEMBER_PATTERN.search(normalized))
 
 
+def _deduplicate_values(values: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def normalize_outline_proposal_candidate(candidate: Any) -> Any:
+    """消除不改变提纲语义的模型重复项，严格字段校验仍由 Pydantic 完成。"""
+
+    if not isinstance(candidate, Mapping) or not isinstance(candidate.get("sections"), list):
+        return candidate
+
+    normalized = dict(candidate)
+    assumptions = normalized.get("assumptions")
+    if isinstance(assumptions, list):
+        normalized["assumptions"] = _deduplicate_values(assumptions)
+
+    sections: list[Any] = []
+    analysis_owners: dict[str, int] = {}
+    for raw_section in candidate["sections"]:
+        if not isinstance(raw_section, Mapping):
+            sections.append(raw_section)
+            continue
+        section = dict(raw_section)
+        focus = section.get("focus")
+        if isinstance(focus, list):
+            section["focus"] = _deduplicate_values(focus)
+        analysis_ids = section.get("analysisIds")
+        if not isinstance(analysis_ids, list):
+            sections.append(section)
+            continue
+
+        unique_ids: list[Any] = []
+        existing_owner_indexes: list[int] = []
+        for analysis_id in _deduplicate_values(analysis_ids):
+            if isinstance(analysis_id, str) and analysis_id in analysis_owners:
+                existing_owner_indexes.append(analysis_owners[analysis_id])
+                continue
+            unique_ids.append(analysis_id)
+        if unique_ids:
+            owner_index = len(sections)
+            for analysis_id in unique_ids:
+                if isinstance(analysis_id, str):
+                    analysis_owners[analysis_id] = owner_index
+            section["analysisIds"] = unique_ids
+            sections.append(section)
+            continue
+
+        # 同一 analysisId 只能归属一个章节。模型把同一原子分析复制成多个章节时，
+        # 保留首次归属并合并后续 focus，既不重复执行证据，也不丢失模型声明的关注点。
+        if existing_owner_indexes and len(set(existing_owner_indexes)) == 1:
+            owner = sections[existing_owner_indexes[0]]
+            owner_focus = owner.get("focus") if isinstance(owner, dict) else None
+            duplicate_focus = section.get("focus")
+            if isinstance(owner_focus, list) and isinstance(duplicate_focus, list):
+                owner["focus"] = _deduplicate_values([*owner_focus, *duplicate_focus])
+            continue
+        section["analysisIds"] = unique_ids
+        sections.append(section)
+
+    normalized["sections"] = sections
+    return normalized
+
+
 class ReportOutlineSection(HospitalOperationSchema):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
@@ -222,4 +288,5 @@ __all__ = [
     "ReportOutlineProposal",
     "ReportOutlineSection",
     "freeze_outline",
+    "normalize_outline_proposal_candidate",
 ]

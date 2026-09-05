@@ -237,7 +237,7 @@ def _dataset_facts(
     semantics_by_field: dict[str, list[Mapping[str, Any]]] = {}
     for raw_semantic in dataset.context.metric_semantics:
         field_ref = str(raw_semantic.get("fieldRef", ""))
-        field = field_ref.rsplit(".", 1)[-1]
+        field = str(raw_semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
         if field not in dataset.frame.columns or (
             requested_fields and field.casefold() not in requested_fields
         ):
@@ -265,7 +265,7 @@ def _dataset_facts(
             continue
         semantic = candidates[0]
         field_ref = str(semantic["fieldRef"])
-        field = field_ref.rsplit(".", 1)[-1]
+        field = str(semantic.get("datasetField") or field_ref.rsplit(".", 1)[-1])
         aggregation = _aggregation(semantic)
         scoped_frame, scope_warnings = _apply_scope(dataset, semantic)
         period_values = _period_values(scoped_frame, field, period_field, aggregation)

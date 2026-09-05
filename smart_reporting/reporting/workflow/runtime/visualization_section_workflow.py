@@ -38,6 +38,15 @@ _NON_RECOVERABLE_CODES = frozenset(
 )
 
 
+def _recovery_diagnostic(error: Exception) -> dict[str, Any]:
+    diagnostic: dict[str, Any] = {"message": str(error)[:2000]}
+    if isinstance(error, ReportingError):
+        diagnostic["code"] = error.code
+        if isinstance(error.details, Mapping):
+            diagnostic["details"] = dict(error.details)
+    return diagnostic
+
+
 @dataclass(frozen=True, slots=True)
 class VisualizationWorkflowResult:
     status: str
@@ -70,10 +79,12 @@ class VisualizationSectionWorkflow:
     async def run(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
-        draft = await self.generate(payload, run_context)
+        draft: VisualizationScriptDraft | None = None
         recovery_used = False
         for attempt in range(2):
             try:
+                if draft is None:
+                    draft = await self.generate(payload, run_context)
                 script_file = await self.write_script(
                     draft.script_path, draft.python_source, run_context
                 )
@@ -132,11 +143,11 @@ class VisualizationSectionWorkflow:
                 if attempt == 1 or self.recover is None:
                     raise
                 recovery_used = True
+                repair: dict[str, Any] = {"diagnostic": _recovery_diagnostic(error)}
+                if draft is not None:
+                    repair["draft"] = draft.model_dump(mode="json", by_alias=True)
                 draft = await self.recover(
-                    {
-                        "draft": draft.model_dump(mode="json", by_alias=True),
-                        "diagnostic": str(error)[:2000],
-                    },
+                    repair,
                     run_context,
                 )
         raise RuntimeError("可视化固定 Workflow 状态不可达")

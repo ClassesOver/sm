@@ -84,6 +84,9 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 | `AGENT_MODEL_FAST` | Reporting fast 档模型，默认 `qwen3.6-35b-a3b` |
 | `AGENT_MODEL_STANDARD` | Reporting standard 档模型，默认 `deepseek-v4-flash-0731` |
 | `AGENT_MODEL_STRONG` | Reporting strong 档模型，默认 `deepseek-v4-flash-0731` |
+| `AGENT_MODEL_FAST_STRUCTURED_MODE` | fast 档结构化协议：`json_object`（默认）或 `json_schema` |
+| `AGENT_MODEL_STANDARD_STRUCTURED_MODE` | standard 档结构化协议：`json_object`（默认）或 `json_schema` |
+| `AGENT_MODEL_STRONG_STRUCTURED_MODE` | strong 档结构化协议：`json_object`（默认）或 `json_schema` |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |

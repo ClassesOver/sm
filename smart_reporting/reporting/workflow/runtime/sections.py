@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
+from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ..checkpoint import ChartVisualInspectionReceipt, CheckpointError, ProfileReadReceipt
-from ..execution import ReportingStructuredAgentExecutor, ReportingTaskInvocation
+from ..execution import ReportingTaskInvocation
 from .analysis import (
     _finalize_semantic_catalog,
     _reporting_detailed_analysis_plan,
@@ -65,7 +66,12 @@ from .base import (
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
-from .phase_models import AnalysisReworkDecision, RenderSectionDecision, SectionDecision
+from .phase_models import (
+    AnalysisReworkDecision,
+    RenderSectionDecision,
+    SectionDecision,
+    SectionDecisionOutput,
+)
 from .publication import _accepted_artifacts_match_manifest
 from .section_workflow import SectionWorkflow
 
@@ -697,9 +703,7 @@ class RuntimeSectionsMixin:
                             )
                         return receipt
 
-                    async def generate(
-                        evidence: Any, task_context: RunContext
-                    ) -> SectionDecision:
+                    async def generate(evidence: Any, task_context: RunContext) -> SectionDecision:
                         payload = json.dumps(
                             {
                                 **instruction_payload,
@@ -708,12 +712,19 @@ class RuntimeSectionsMixin:
                             ensure_ascii=False,
                             separators=(",", ":"),
                         )
-                        return cast(
-                            SectionDecision,
-                            await ReportingStructuredAgentExecutor(self.section_generator).run(
-                                payload, scope=invocation.scope, run_context=task_context
-                            ),
+                        output = await ReportingStructuredOutputExecutor(
+                            self.section_generator
+                        ).run(
+                            payload,
+                            scope=invocation.scope,
+                            run_context=task_context,
                         )
+                        if not isinstance(output, SectionDecisionOutput):
+                            raise ReportingError(
+                                "report_phase_output_invalid",
+                                "章节结构化 Agent 未返回声明的决策结果。",
+                            )
+                        return output.root
 
                     async def recover(
                         repair: Mapping[str, Any], task_context: RunContext
@@ -727,20 +738,31 @@ class RuntimeSectionsMixin:
                             ensure_ascii=False,
                             separators=(",", ":"),
                         )
-                        return cast(
-                            SectionDecision,
-                            await ReportingStructuredAgentExecutor(self.section_recovery).run(
-                                payload, scope=invocation.scope, run_context=task_context
-                            ),
+                        output = await ReportingStructuredOutputExecutor(self.section_recovery).run(
+                            payload,
+                            scope=invocation.scope,
+                            run_context=task_context,
                         )
+                        if not isinstance(output, SectionDecisionOutput):
+                            raise ReportingError(
+                                "report_phase_output_invalid",
+                                "章节恢复 Agent 未返回声明的决策结果。",
+                            )
+                        return output.root
 
                     async def render(
                         decision: RenderSectionDecision, task_context: RunContext
                     ) -> Mapping[str, Any]:
                         return await toolkit.render_report_section(
                             decision.section_code,
-                            [item.model_dump(mode="json", by_alias=True) for item in decision.blocks],
-                            [item.model_dump(mode="json", by_alias=True) for item in decision.claims],
+                            [
+                                item.model_dump(mode="json", by_alias=True)
+                                for item in decision.blocks
+                            ],
+                            [
+                                item.model_dump(mode="json", by_alias=True)
+                                for item in decision.claims
+                            ],
                             run_context=task_context,
                         )
 

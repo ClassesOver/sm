@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic import ConfigDict, Field, RootModel, TypeAdapter, field_validator, model_validator
 
 from ...contract import StrictModel
 from ...delivery.draft_v1 import ReportDraftBlock
@@ -29,6 +30,24 @@ class ChartDraft(StrictModel):
     source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_reference_comparison(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        comparison_type = value.get("comparisonType", value.get("comparison_type"))
+        if value.get("comparability") != "reference_only" or comparison_type not in {
+            "yoy",
+            "mom",
+        }:
+            return value
+        # reference_only 仍可展示两个期间，但不能把不可严格比较的数据标记为同比或
+        # 环比。转换为普通期间对比只收窄结论强度，不改写数值、期间或证据绑定。
+        normalized = dict(value)
+        key = "comparisonType" if "comparisonType" in value else "comparison_type"
+        normalized[key] = "period"
+        return normalized
 
     @field_validator("source_path")
     @classmethod
@@ -106,7 +125,29 @@ SectionDecision = Annotated[
     RenderSectionDecision | AnalysisReworkDecision,
     Field(discriminator="kind"),
 ]
-SectionDecisionAdapter = TypeAdapter(SectionDecision)
+SectionDecisionAdapter: TypeAdapter[SectionDecision] = TypeAdapter(SectionDecision)
+
+
+class SectionDecisionOutput(RootModel[SectionDecision]):
+    """Agno output_schema 只接受 BaseModel 类型，根 JSON 仍保持原判别联合形状。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_single_decision_wrapper(cls, value: Any) -> Any:
+        """展开模型偶发生成的单键决策包装，随后仍由原判别联合完整校验。"""
+
+        if not isinstance(value, Mapping) or len(value) != 1:
+            return value
+        kind, payload = next(iter(value.items()))
+        if kind not in {"render", "rework"} or not isinstance(payload, Mapping):
+            return value
+        declared_kind = payload.get("kind")
+        if declared_kind not in {None, kind}:
+            return value
+        return {**payload, "kind": kind}
+
 
 __all__ = [
     "AnalysisReworkDecision",
@@ -114,6 +155,7 @@ __all__ = [
     "RenderSectionDecision",
     "SectionDecision",
     "SectionDecisionAdapter",
+    "SectionDecisionOutput",
     "SectionEvidenceBundle",
     "SectionEvidenceFile",
     "VisualizationScriptDraft",

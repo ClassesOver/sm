@@ -674,6 +674,110 @@ def _normalize_comparison_roles(
     )
 
 
+def _normalize_unsafe_multi_table_requirements(
+    bundle: AnalysisBundle,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
+    """把服务端已证明无法安全关联的多表需求拆成独立单表需求。"""
+
+    normalized_requirements: list[QueryRequirement] = []
+    replacement: dict[str, tuple[str, ...]] = {}
+    repairs: list[dict[str, Any]] = []
+    used_ids = {item.requirement_id for item in bundle.requirements}
+
+    def split_id(original: str, table_index: int) -> str:
+        collision = 0
+        while True:
+            suffix = f"__table_{table_index + 1}" + (f"_{collision}" if collision else "")
+            candidate = f"{original[: 128 - len(suffix)]}{suffix}"
+            if candidate not in used_ids:
+                used_ids.add(candidate)
+                return candidate
+            collision += 1
+
+    for requirement_index, requirement in enumerate(bundle.requirements):
+        if len(requirement.tables) <= 1:
+            normalized_requirements.append(requirement)
+            continue
+        semantic_issues = _measure_semantic_issues(requirement, requirement_index, snapshots)
+        has_unsafe_grain = any(
+            issue.get("path") == f"requirements[{requirement_index}].grainColumns"
+            and isinstance(issue.get("targetValues"), Mapping)
+            for issue in semantic_issues
+        )
+        relation_issues = _multi_table_requirement_issues(
+            requirement,
+            requirement_index,
+            snapshots,
+        )
+        if not has_unsafe_grain and not relation_issues:
+            normalized_requirements.append(requirement)
+            continue
+
+        split_ids: list[str] = []
+        for table_index, table in enumerate(requirement.tables):
+            table_columns = set(
+                _analysis_table_columns(requirement.source_id, table.table, snapshots)
+            )
+            dimensions = tuple(
+                column for column in requirement.dimension_columns if column in table_columns
+            )
+            grain = tuple(
+                column
+                for column in requirement.grain_columns
+                if column in table_columns and column in dimensions
+            )
+            requirement_id = split_id(requirement.requirement_id, table_index)
+            split_ids.append(requirement_id)
+            normalized_requirements.append(
+                requirement.model_copy(
+                    update={
+                        "requirement_id": requirement_id,
+                        "tables": (table,),
+                        "dimension_columns": dimensions,
+                        "grain_columns": grain,
+                        "relations": (),
+                    }
+                )
+            )
+        replacement[requirement.requirement_id] = tuple(split_ids)
+        repairs.append(
+            {
+                "removedRequirementId": requirement.requirement_id,
+                "splitRequirementIds": split_ids,
+                "tables": [table.table for table in requirement.tables],
+            }
+        )
+
+    if not repairs:
+        return bundle, []
+    analyses = [
+        analysis.model_copy(
+            update={
+                "requirement_ids": tuple(
+                    dict.fromkeys(
+                        replacement_id
+                        for requirement_id in analysis.requirement_ids
+                        for replacement_id in replacement.get(requirement_id, (requirement_id,))
+                    )
+                )
+            }
+        )
+        for analysis in bundle.analyses
+    ]
+    return (
+        AnalysisBundle.model_validate(
+            {
+                "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
+                "requirements": [
+                    item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
+                ],
+            }
+        ),
+        repairs,
+    )
+
+
 def _normalize_duplicate_requirements(
     bundle: AnalysisBundle,
 ) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
@@ -854,6 +958,7 @@ __all__ = [
     "_normalize_requirement_columns",
     "_normalize_requirement_columns_in_payload",
     "_normalize_requirement_periods",
+    "_normalize_unsafe_multi_table_requirements",
     "_validate_requirements_match_understanding",
 ]
 

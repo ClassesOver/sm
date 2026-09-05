@@ -58,6 +58,7 @@ from .model_policy import (
     ReportingReasoningEffort,
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
+    reporting_model_output_token_limit,
     reporting_thinking_profile_from_model,
 )
 from .models import ReportingError
@@ -67,7 +68,6 @@ from .phase import (
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY,
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
-    REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES,
@@ -104,6 +104,9 @@ from .phase import (
     reporting_visualization_script_session_available_from_run_context,
     reporting_visualization_script_written_from_run_context,
     reporting_visualization_usage_from_run_context,
+)
+from .structured_output.policy import (
+    REPORTING_STRUCTURED_MODES_MODEL_ATTR,
 )
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
@@ -164,13 +167,12 @@ _REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
-# 章节与单项分析只需提交一个有界终态工具，16K 足以覆盖工具参数；可视化汇总需要
-# 更长的脚本参数和 ReportBrief。真实 CLI 已证明 32K 会在工具调用前截断，因此
-# visualization 使用 64K；仍不直接放开到全局 reserve，避免兼容后端过量预分配。
-_REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT = 16 * 1024
-_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 64 * 1024
-_REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
-_REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
+# 复杂综合报告的单章输入会合并多个分析证据，真实 CLI 已观察到 16K 输出在完整
+# SectionDecision JSON 结束前被截断。章节和可视化统一允许 128K，实际请求仍取该
+# 上限与 AGENT_REPORT_OUTPUT_TOKEN_RESERVE 的较小值。
+_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 128 * 1024
+_REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
+_REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Agent 仍保留既有一次同 run continuation，
 # 这里与 900 秒模型请求配置保持一致，避免长结构化规划请求在上游返回前被截断。
@@ -2294,21 +2296,22 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             _, routed_model_id = model_route
             request_model.id = routed_model_id
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
-        if task_kind == "analysis_item":
-            output_limit = _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT
-        elif task_kind == "visualization_section":
+        if task_kind == "visualization_section":
             output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
         elif task_kind == "section":
             output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
         else:
             output_limit = None
-        if output_limit is not None:
-            configured = request_model.max_tokens
-            request_model.max_tokens = (
-                min(configured, output_limit)
-                if isinstance(configured, int) and configured > 0
-                else output_limit
+        limits = [
+            value
+            for value in (
+                request_model.max_tokens,
+                output_limit,
+                reporting_model_output_token_limit(request_model.id),
             )
+            if isinstance(value, int) and value > 0
+        ]
+        request_model.max_tokens = min(limits) if limits else None
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod
@@ -2768,8 +2771,6 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
             not in {
                 "visualization_section",
             }
-            else REPORTING_SECTION_INPUT_TOKEN_HARD_CAP
-            if phase == "section"
             else None
         )
         hard_cap = min(configured_cap, phase_cap) if phase_cap is not None else configured_cap
@@ -2892,6 +2893,9 @@ def _reporting_phase_model(
     budget = getattr(projected, "_task_execution_input_token_budget", None)
     if isinstance(budget, int) and budget > 0:
         agent._task_execution_input_token_budget = budget
+    structured_modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
+    if isinstance(structured_modes, Mapping):
+        setattr(agent, REPORTING_STRUCTURED_MODES_MODEL_ATTR, dict(structured_modes))
     return agent
 
 
@@ -2910,7 +2914,7 @@ def _report_model(
     # Agent 的初始模型对应 standard 档位；复杂度和修复升级由独立 Router 决定，
     # 不在共享 Agent 实例上动态修改 model_id，避免并发任务互相覆盖。
     standard_profile = profiles["standard"]
-    return OpenAIChat(
+    model = OpenAIChat(
         id=standard_profile.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
@@ -2929,6 +2933,16 @@ def _report_model(
         retries=retries,
         exponential_backoff=retries > 0,
     )
+    setattr(
+        model,
+        REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+        {
+            "fast": settings.model_fast_structured_mode,
+            "standard": settings.model_standard_structured_mode,
+            "strong": settings.model_strong_structured_mode,
+        },
+    )
+    return model
 
 
 def create_reporting_phase_agent(
@@ -3045,16 +3059,49 @@ def create_reporting_generator_agent(
     均由 Reporting Workflow 完成，因此这里明确关闭工具、历史和 Agent 重试。
     """
 
+    instructions = [
+        "只返回一个严格满足 output_schema 的 JSON 对象，不得返回推理、解释、Markdown 或代码围栏。",
+        "所有必填顶层字段必须各出现一次；不得把 schema 顶层字段只写入其他字段。",
+        "长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
+    ]
+    if getattr(output_schema, "__name__", "") == "VisualizationScriptDraft":
+        instructions[1] = (
+            "所有必填顶层字段必须各出现一次；不得把 charts 等顶层字段只写入 pythonSource。"
+        )
+        instructions[2] = (
+            "pythonSource 等长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。"
+        )
+        instructions.append(
+            "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
+            ".png、.jpg 或 .jpeg 后缀的具体文件；pythonSource 必须写入完全相同的路径。"
+        )
+    elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
+        instructions[1] = (
+            "根 JSON 必须直接包含 kind（render 或 rework）及该分支字段；不得输出 render/rework 单键包装对象。"
+        )
+        instructions.append(
+            "必须遵循受信 executionDirective：明确证据充足或禁止返工时只能返回 render；"
+            "明确缺少必要证据并要求返工时只能返回 rework。"
+        )
+    elif getattr(output_schema, "__name__", "") == "AnalysisEvidencePlan":
+        instructions[1] = (
+            "字段必须形成互斥分支：requiresSupplementalEvidence=true 时 missingFacts 必须非空且 script 必须是完整 Python 源码；false 时 missingFacts 必须为空数组且 script 必须为 null。"
+        )
+        instructions[2] = (
+            "script 必须是完整、合法的 JSON 字符串；所有后续读取的局部变量必须在条件分支前初始化，并确保每个分支都赋值。"
+        )
+
     return Agent(
         id=name,
         name=name,
         role=role or "只返回 Reporting 固定阶段要求的结构化候选内容。",
         model=model,
         output_schema=output_schema,
-        # 部分 OpenAI-compatible 端点接受原生 json_schema 参数却不执行字段约束。
-        # 这里使用 Agno 公共 JSON mode，让 Agno 从同一 Pydantic schema 生成系统提示，
-        # 避免另写一份易漂移的字段协议；Workflow 仍会在副作用前做严格模型校验。
-        use_json_mode=True,
+        instructions=instructions,
+        # 实际传输方式由结构化输出执行器根据路由后的模型能力选择；基础 Agent
+        # 保持原生模式，禁止 Agno 把完整 Schema 注入 system prompt。
+        structured_outputs=True,
+        use_json_mode=False,
         tools=[],
         add_history_to_context=False,
         enable_session_summaries=False,

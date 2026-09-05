@@ -11,7 +11,11 @@ from smart_reporting.reporting.workflow.checkpoint import (
     SectionCitation,
     SectionWorkItem,
 )
+from smart_reporting.reporting.workflow.runtime.analysis import (
+    _has_chartable_visualization_facts,
+)
 from smart_reporting.reporting.workflow.runtime.phase_models import (
+    AnalysisReworkDecision,
     ChartDraft,
     RenderSectionDecision,
     VisualizationScriptDraft,
@@ -43,6 +47,15 @@ def _chart() -> ChartDraft:
 def _visualization_draft() -> VisualizationScriptDraft:
     return VisualizationScriptDraft(
         scriptPath="charts/charts.py", pythonSource="print('ok')", charts=(_chart(),)
+    )
+
+
+def test_visualization_requires_structured_facts_before_generating_chart() -> None:
+    assert not _has_chartable_visualization_facts(
+        [{"metrics": [], "derivedMetrics": [], "comparisons": [], "evidenceFiles": [{}]}]
+    )
+    assert _has_chartable_visualization_facts(
+        [{"metrics": [{"metricCodes": ["revenue"], "periodValueCount": 12}]}]
     )
 
 
@@ -208,6 +221,64 @@ async def test_section_workflow_reads_evidence_before_generation() -> None:
     ).run(_section_work_item(), _context())
     assert result.status == "accepted"
     assert events == ["read:evidence/a.json:0", "generate", "render"]
+
+
+@pytest.mark.anyio
+async def test_section_workflow_preserves_rejection_details_for_recovery() -> None:
+    rejected = {
+        "status": "rejected",
+        "code": "report_analysis_rework_unresolvable",
+        "message": "零行数据无法通过返工补算。",
+        "requiredActions": ["提交受限 claim。"],
+    }
+
+    async def recover(repair, _context):
+        assert repair["diagnostic"]["code"] == "report_section_submit_rejected"
+        assert repair["diagnostic"]["details"] == rejected
+        return RenderSectionDecision.model_construct(
+            section_code="section_001", blocks=(), claims=()
+        )
+
+    result = await SectionWorkflow(
+        read_evidence=AsyncMock(return_value={"content": "证据正文", "nextOffset": None}),
+        generate=AsyncMock(
+            return_value=AnalysisReworkDecision(
+                sectionCode="section_001",
+                analysisIds=("analysis_001",),
+                reason="缺少月度收入事实",
+                missingEvidence=("月度收入事实",),
+            )
+        ),
+        recover=recover,
+        render=AsyncMock(return_value={"status": "accepted"}),
+        rework=AsyncMock(return_value=rejected),
+    ).run(_section_work_item(), _context())
+
+    assert result.status == "accepted"
+    assert result.recovery_used is True
+
+
+@pytest.mark.anyio
+async def test_section_workflow_recovers_when_initial_generation_is_invalid() -> None:
+    recover = AsyncMock(
+        return_value=RenderSectionDecision.model_construct(
+            section_code="section_001", blocks=(), claims=()
+        )
+    )
+    generate = AsyncMock(side_effect=ReportingError("report_phase_output_invalid", "invalid"))
+
+    result = await SectionWorkflow(
+        read_evidence=AsyncMock(return_value={"content": "证据正文", "nextOffset": None}),
+        generate=generate,
+        recover=recover,
+        render=AsyncMock(return_value={"status": "accepted"}),
+        rework=AsyncMock(),
+    ).run(_section_work_item(), _context())
+
+    assert result.status == "accepted"
+    assert result.recovery_used is True
+    recover.assert_awaited_once()
+    assert recover.await_args.args[0]["diagnostic"]["code"] == "report_phase_output_invalid"
 
 
 @pytest.mark.anyio

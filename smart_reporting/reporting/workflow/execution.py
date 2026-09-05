@@ -1,18 +1,15 @@
-"""Reporting 专属的单次 Agno Agent 执行边界。"""
+"""Reporting Task 生命周期协调边界。"""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from inspect import isawaitable
 from threading import Lock
 from typing import Any
 
 import anyio
-from agno.agent import Agent
 from agno.run import RunContext
 from loguru import logger
-from pydantic import TypeAdapter
 
 from ...async_utils import complete_cleanup
 from ...model_routing import (
@@ -87,15 +84,6 @@ _MODEL_TOKEN_FIELDS = (
     ("cache_read_tokens", "cacheReadTokens"),
     ("cache_write_tokens", "cacheWriteTokens"),
 )
-
-
-def _raise_recorded_agent_error(agent: Agent) -> None:
-    """恢复模型适配器记录的结构化输出异常。"""
-
-    report_run_error = getattr(agent.model, "report_run_error", None)
-    error = report_run_error() if callable(report_run_error) else None
-    if isinstance(error, Exception):
-        raise error
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,68 +546,6 @@ class ReportingTaskCoordinator:
         if projection_metrics is not None:
             result["projectionMetrics"] = dict(projection_metrics)
         return result
-
-
-class ReportingStructuredAgentExecutor:
-    """固定阶段的单次结构化 Agent 调用边界。
-
-    该执行器不接收 Toolkit，也不实现 continuation；阶段 Workflow 负责所有副作用和
-    终态提交，Agent 只能返回已声明 schema 的候选对象。
-    """
-
-    def __init__(self, agent: Agent, *, idle_timeout_seconds: float = 900) -> None:
-        self.agent = agent
-        self.idle_timeout_seconds = idle_timeout_seconds
-
-    async def __call__(self, invocation: ReportingTaskInvocation) -> Any:
-        """兼容 ReportingTaskCoordinator 的 executor 协议。"""
-
-        return await self.run(
-            invocation.instruction,
-            scope=invocation.scope,
-            run_context=invocation.run_context,
-        )
-
-    async def run(
-        self,
-        instruction: str,
-        *,
-        scope: TaskExecutionScope,
-        run_context: RunContext,
-    ) -> Any:
-        with anyio.fail_after(self.idle_timeout_seconds):
-            result = self.agent.arun(
-                instruction,
-                stream=False,
-                session_id=_task_session_id(scope, 0),
-                user_id=scope.owner_user_id,
-                run_context=run_context,
-            )
-            output = await result if isawaitable(result) else result
-        content = getattr(output, "content", output)
-        schema = getattr(self.agent, "output_schema", None)
-        if schema is not None:
-            try:
-                valid_instance = isinstance(content, schema)
-            except TypeError:
-                valid_instance = False
-            if not valid_instance:
-                validator = getattr(schema, "model_validate", None)
-                try:
-                    json_validator = getattr(schema, "model_validate_json", None)
-                    if isinstance(content, str) and callable(json_validator):
-                        content = json_validator(content)
-                    else:
-                        content = (
-                            validator(content)
-                            if callable(validator)
-                            else TypeAdapter(schema).validate_python(content)
-                        )
-                except Exception as error:
-                    raise ReportingError(
-                        "report_phase_output_invalid", "结构化 Agent 未返回声明的阶段结果。"
-                    ) from error
-        return content
 
 
 def _task_session_id(scope: TaskExecutionScope, attempt_no: int) -> str:

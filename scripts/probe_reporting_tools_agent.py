@@ -79,10 +79,11 @@ from smart_reporting.reporting.vision import ReportVisionReviewer  # noqa: E402 
 from smart_reporting.reporting.tools.context import ReportingOutputPolicy  # noqa: E402 - 同上
 from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime  # noqa: E402 - 同上
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit  # noqa: E402 - 同上
-from smart_reporting.reporting.workflow.repository import ReportingStateRepository  # noqa: E402 - 同上
-from smart_reporting.reporting.workflow.execution import (  # noqa: E402 - 同上
-    ReportingStructuredAgentExecutor,
+from smart_reporting.reporting.structured_output import (  # noqa: E402 - 同上
+    REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+    ReportingStructuredOutputExecutor,
 )
+from smart_reporting.reporting.workflow.repository import ReportingStateRepository  # noqa: E402 - 同上
 from smart_reporting.reporting.workflow.checkpoint import (  # noqa: E402 - 同上
     ChartVisualInspectionReceipt,
     FileIdentity,
@@ -93,11 +94,14 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (  # noqa: E
     ChartDraft,
     RenderSectionDecision,
     SectionDecision,
+    SectionDecisionOutput,
     VisualizationScriptDraft,
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (  # noqa: E402 - 同上
+    AnalysisEvidenceDecision,
     AnalysisEvidencePlan,
     AnalysisItemWorkflow,
+    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noqa: E402 - 同上
@@ -1182,6 +1186,15 @@ def _build_model(
         retries=0,
     )
     model._probe_projection = projection
+    setattr(
+        model,
+        REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+        {
+            "fast": settings.model_fast_structured_mode,
+            "standard": settings.model_standard_structured_mode,
+            "strong": settings.model_strong_structured_mode,
+        },
+    )
     thinking_profile = (
         ReportingThinkingProfile.on(
             reasoning_effort="high",
@@ -1233,10 +1246,15 @@ async def _run_fixed_analysis_scenario(
         "probe-sandbox",
         "reporting-analysis-agent",
     )
-    planner = create_reporting_generator_agent(
+    decision_agent = create_reporting_generator_agent(
         model=model,
-        output_schema=AnalysisEvidencePlan,
-        name=f"probe-{scenario.name}-planner",
+        output_schema=AnalysisEvidenceDecision,
+        name=f"probe-{scenario.name}-decision",
+    )
+    script_agent = create_reporting_generator_agent(
+        model=model,
+        output_schema=AnalysisScriptDraft,
+        name=f"probe-{scenario.name}-script",
     )
     summarizer = create_reporting_generator_agent(
         model=model,
@@ -1245,31 +1263,75 @@ async def _run_fixed_analysis_scenario(
     )
 
     async def plan_evidence(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
+        previous_plan = None
+        if repair:
+            correction = payload.get("correction")
+            if isinstance(correction, Mapping):
+                previous_plan = AnalysisEvidencePlan.model_validate(correction.get("previousPlan"))
+        decision = (
+            AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason=previous_plan.reason,
+                missingFacts=previous_plan.missing_facts,
+            )
+            if previous_plan is not None
+            else cast(
+                AnalysisEvidenceDecision,
+                await ReportingStructuredOutputExecutor(decision_agent).run(
+                    json.dumps(
+                        {
+                            "stage": "decide_supplemental_evidence",
+                            "requiredDecision": {
+                                "requiresSupplementalEvidence": supplemental,
+                                "missingFacts": (
+                                    ["2025-04 outpatient cost"] if supplemental else []
+                                ),
+                            },
+                            "task": stage_input,
+                            "input": payload,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    scope=scope,
+                    run_context=run_context,
+                ),
+            )
+        )
+        if not decision.requires_supplemental_evidence:
+            return AnalysisEvidencePlan(
+                requiresSupplementalEvidence=False,
+                reason=decision.reason,
+                missingFacts=(),
+                script=None,
+            )
         instruction = json.dumps(
             {
-                "stage": "repair_evidence_plan" if repair else "plan_evidence",
-                "requiredDecision": {
-                    "requiresSupplementalEvidence": supplemental,
-                    "missingFacts": (["2025-04 outpatient cost"] if supplemental else []),
-                    "scriptRequirement": (
-                        "Return a Python script that writes the signed evidencePath as valid JSON."
-                        if supplemental
-                        else "script must be null"
-                    ),
-                },
+                "stage": "repair_evidence_script" if repair else "write_evidence_script",
+                "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
+                "previousScript": previous_plan.script if previous_plan is not None else None,
+                "scriptRequirement": (
+                    "Return a Python script that writes the signed evidencePath as valid JSON."
+                ),
                 "task": stage_input,
                 "input": payload,
             },
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        return cast(
-            AnalysisEvidencePlan,
-            await ReportingStructuredAgentExecutor(planner).run(
+        draft = cast(
+            AnalysisScriptDraft,
+            await ReportingStructuredOutputExecutor(script_agent).run(
                 instruction,
                 scope=scope,
                 run_context=run_context,
             ),
+        )
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason=decision.reason,
+            missingFacts=decision.missing_facts,
+            script=draft.script,
         )
 
     async def summarize(payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
@@ -1287,7 +1349,7 @@ async def _run_fixed_analysis_scenario(
         )
         return cast(
             AnalysisSummaryDraft,
-            await ReportingStructuredAgentExecutor(summarizer).run(
+            await ReportingStructuredOutputExecutor(summarizer).run(
                 instruction,
                 scope=scope,
                 run_context=run_context,
@@ -1359,7 +1421,7 @@ async def _run_fixed_visualization_scenario(
     ) -> VisualizationScriptDraft:
         return cast(
             VisualizationScriptDraft,
-            await ReportingStructuredAgentExecutor(generator).run(
+            await ReportingStructuredOutputExecutor(generator).run(
                 prompt,
                 scope=TaskExecutionScope(
                     str(task_context.run_id),
@@ -1469,10 +1531,9 @@ async def _run_fixed_section_scenario(
 
     stage_input = _cli_stage_input(scenario)
     work_item = SectionWorkItem.model_validate(stage_input["sectionWorkItem"])
-    output_schema = RenderSectionDecision if scenario.branch == "render" else AnalysisReworkDecision
     generator = create_reporting_generator_agent(
         model=model,
-        output_schema=output_schema,
+        output_schema=SectionDecisionOutput,
         name=f"probe-{scenario.name}-generator",
     )
     scope = TaskExecutionScope(
@@ -1509,14 +1570,14 @@ async def _run_fixed_section_scenario(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        return cast(
-            SectionDecision,
-            await ReportingStructuredAgentExecutor(generator).run(
-                payload,
-                scope=scope,
-                run_context=task_context,
-            ),
+        output = await ReportingStructuredOutputExecutor(generator).run(
+            payload,
+            scope=scope,
+            run_context=task_context,
         )
+        if not isinstance(output, SectionDecisionOutput):
+            raise RuntimeError("section generator did not return SectionDecisionOutput")
+        return cast(SectionDecision, output.root)
 
     async def render(
         decision: RenderSectionDecision, _task_context: RunContext

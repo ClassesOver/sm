@@ -10,10 +10,13 @@ from agno.run import RunContext
 
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidenceDecision,
     AnalysisEvidencePlan,
     AnalysisItemWorkflow,
+    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
+from smart_reporting.task_execution import MAX_READ_FILE_BYTES
 
 
 def _instruction() -> dict[str, Any]:
@@ -183,6 +186,8 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
 
     assert [status for _, status in result.stage_statuses] == ["completed"] * 5
     assert events == ["plan", "create", "execute", "summarize", "complete"]
+    submitted_patch = apply_patch.await_args.kwargs["patch"]
+    assert submitted_patch.endswith("+print('write evidence')\n")
     assert complete.await_args.kwargs["evidencePaths"] == [
         "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
     ]
@@ -201,10 +206,25 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
             script=f"print({len(repairs)})",
         )
 
+    script_reads = [
+        _tool_result(
+            content=f"print({index})\n",
+            sha256=sha256 * 64,
+            totalBytes=9,
+            nextOffset=9,
+            hasMore=False,
+        )
+        for index, sha256 in ((1, "b"), (2, "c"))
+    ]
+    read_file = AsyncMock(side_effect=[_facts_read_result(), *script_reads])
+    summarize = AsyncMock(
+        return_value=AnalysisSummaryDraft(summary="仅使用确定性事实完成摘要。", warnings=())
+    )
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     workflow = AnalysisItemWorkflow(
         plan_evidence=plan,
-        summarize=AsyncMock(),
-        read_file=AsyncMock(return_value=_facts_read_result()),
+        summarize=summarize,
+        read_file=read_file,
         apply_patch=AsyncMock(
             side_effect=[
                 _tool_result(artifacts=[{"path": "supplement.py", "sha256": "b" * 64}]),
@@ -213,25 +233,31 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
             ]
         ),
         run_script=AsyncMock(return_value=_tool_result(exitCode=1, output="bad csv")),
-        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+        complete=complete,
     )
 
-    with pytest.raises(ReportingError, match="report_analysis_script_failed") as caught:
-        await workflow.run(
-            _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
-        )
+    result = await workflow.run(
+        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+    )
 
-    assert caught.value.details == {
-        "exitCode": 1,
-        "output": "bad csv",
-        "outputTruncated": False,
-        "toolCode": None,
-        "toolMessage": None,
-    }
+    assert [status for _, status in result.stage_statuses] == ["completed"] * 5
     assert repairs == [False, True, True]
     assert workflow.run_script.await_count == 3
     assert workflow.apply_patch.await_count == 3
-    workflow.complete.assert_not_awaited()
+    assert [call.kwargs["max_bytes"] for call in read_file.await_args_list[1:]] == [
+        MAX_READ_FILE_BYTES,
+        MAX_READ_FILE_BYTES,
+    ]
+    assert summarize.await_args.args[0]["supplementalEvidence"] is None
+    assert any(
+        "report_analysis_supplement_abandoned" in warning
+        for warning in summarize.await_args.args[0]["evidenceWarnings"]
+    )
+    assert complete.await_args.kwargs["evidencePaths"] == []
+    assert any(
+        "report_analysis_supplement_abandoned" in warning
+        for warning in complete.await_args.kwargs["warnings"]
+    )
 
 
 @pytest.mark.anyio
@@ -388,3 +414,57 @@ async def test_analysis_item_workflow_reads_deterministic_facts_in_chunks() -> N
     await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
 
     assert [call.kwargs["offset"] for call in reads.await_args_list] == [0, split]
+
+
+def test_evidence_plan_normalizes_omitted_empty_missing_facts() -> None:
+    plan = AnalysisEvidencePlan.model_validate(
+        {
+            "requiresSupplementalEvidence": False,
+            "reason": "固定事实已足够。",
+            "script": None,
+        }
+    )
+
+    assert plan.missing_facts == ()
+
+
+def test_analysis_script_models_do_not_impose_an_artificial_length_limit() -> None:
+    plan_script_schema = AnalysisEvidencePlan.model_json_schema()["properties"]["script"]
+    draft_script_schema = AnalysisScriptDraft.model_json_schema()["properties"]["script"]
+
+    assert "maxLength" not in json.dumps(plan_script_schema)
+    assert "maxLength" not in json.dumps(draft_script_schema)
+
+
+def test_evidence_decision_normalizes_omitted_empty_missing_facts() -> None:
+    decision = AnalysisEvidenceDecision.model_validate(
+        {
+            "requiresSupplementalEvidence": False,
+            "reason": "固定事实已足够。",
+        }
+    )
+
+    assert decision.missing_facts == ()
+
+
+def test_analysis_item_workflow_preserves_structured_tool_error_for_repair() -> None:
+    with pytest.raises(ReportingError) as raised:
+        AnalysisItemWorkflow._require_ok(
+            {
+                "ok": False,
+                "code": "report_analysis_write_intent_invalid",
+                "message": "参数不符合公开 schema。",
+                "details": {"path": "arguments.patch", "validator": "minLength"},
+            },
+            default_code="report_analysis_script_write_failed",
+        )
+
+    assert raised.value.details == {
+        "path": "arguments.patch",
+        "validator": "minLength",
+    }
+    assert AnalysisItemWorkflow._repair_error(raised.value) == {
+        "code": "report_analysis_write_intent_invalid",
+        "message": "参数不符合公开 schema。",
+        "details": {"path": "arguments.patch", "validator": "minLength"},
+    }

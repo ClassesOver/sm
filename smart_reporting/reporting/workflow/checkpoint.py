@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
@@ -534,6 +535,17 @@ class SectionClaimSubmission(StrictModel):
     entity_grain: str | None = Field(
         default=None, alias="entityGrain", min_length=1, max_length=128
     )
+
+    @field_validator("comparison", mode="before")
+    @classmethod
+    def normalize_numeric_comparison(cls, value: Any) -> Any:
+        """兼容模型把展示型 comparison 直接输出为有限数值。"""
+
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return value
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("comparison 数值必须有限")
+        return str(value)
 
     @model_validator(mode="after")
     def validate_submission(self) -> SectionClaimSubmission:

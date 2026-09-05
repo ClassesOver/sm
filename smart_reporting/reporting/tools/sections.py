@@ -867,7 +867,6 @@ class RuntimeSectionsMixin:
                 ]
             return result
 
-    @staticmethod
     async def render_report_section(
         self,
         sectionCode: str,

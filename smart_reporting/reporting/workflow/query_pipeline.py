@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from sqlglot import exp, parse_one
+from sqlglot.errors import SqlglotError
+from sqlglot.lineage import lineage as column_lineage
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from ..contract import (
@@ -36,11 +38,12 @@ __all__ = [
     "RequirementTable",
     "TableDataShape",
     "approve_query_batch",
-    "task_key",
     "normalized_sql_hash",
+    "project_measure_semantics_to_query_outputs",
     "require_approved_sql",
     "resolve_schema_snapshot",
     "state_contains_connection_data",
+    "task_key",
     "validate_lineage",
 ]
 
@@ -214,6 +217,78 @@ class QueryRequirement(StrictModel):
             if connected != table_names:
                 raise ValueError("relations 必须连接全部 requirement 数据表")
         return self
+
+
+def project_measure_semantics_to_query_outputs(
+    query: ApprovedQuery,
+    semantics: tuple[MeasureSemantic, ...],
+) -> tuple[dict[str, Any], ...]:
+    """把权威源字段语义绑定到物化查询唯一的顶层输出列。"""
+
+    if not semantics:
+        return ()
+    statement = parse_one(query.sql, read="mysql")
+    if not isinstance(statement, exp.Query):
+        raise ReportingError(
+            "report_query_measure_projection_invalid",
+            "SQL 指标输出血缘只能从查询语句生成。",
+        )
+    origins_by_output: dict[str, set[tuple[str, str, str]]] = {}
+    output_names: dict[str, str] = {}
+    try:
+        for projection in statement.selects:
+            output_name = str(projection.alias_or_name)
+            if not output_name or output_name == "*":
+                raise ReportingError(
+                    "report_query_measure_projection_invalid",
+                    "SQL 顶层投影必须显式命名指标输出列。",
+                )
+            output_key = output_name.casefold()
+            output_names[output_key] = output_name
+            origins = origins_by_output.setdefault(output_key, set())
+            for node in column_lineage(
+                output_name,
+                statement,
+                dialect="mysql",
+                copy=True,
+            ).walk():
+                if not isinstance(node.expression, exp.Table):
+                    continue
+                origins.add(
+                    (
+                        str(node.expression.db or "").casefold(),
+                        str(node.expression.name).casefold(),
+                        node.name.rsplit(".", 1)[-1].casefold(),
+                    )
+                )
+    except SqlglotError as error:
+        raise ReportingError(
+            "report_query_measure_projection_invalid",
+            "无法确定 SQL 指标输出列的源字段血缘。",
+        ) from error
+
+    projected: list[dict[str, Any]] = []
+    for semantic in semantics:
+        _source_id, database, table, column = semantic.field_ref.casefold().split(".", 3)
+        matching_outputs = {
+            output
+            for output, origins in origins_by_output.items()
+            if any(
+                origin_table == table
+                and origin_column == column
+                and (not origin_database or origin_database == database)
+                for origin_database, origin_table, origin_column in origins
+            )
+        }
+        if len(matching_outputs) != 1:
+            raise ReportingError(
+                "report_query_measure_projection_invalid",
+                f"指标 {semantic.field_ref} 必须唯一映射到 SQL 顶层输出列。",
+            )
+        payload = semantic.model_dump(mode="json", by_alias=True)
+        payload["datasetField"] = output_names[next(iter(matching_outputs))]
+        projected.append(payload)
+    return tuple(projected)
 
 
 def _normalized_identifiers(value: tuple[str, ...], label: str) -> tuple[str, ...]:

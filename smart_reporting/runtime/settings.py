@@ -66,6 +66,15 @@ def _report_reasoning_effort(
     return value
 
 
+def _structured_output_mode(
+    values: MutableMapping[str, str], name: str, default: str = "json_object"
+) -> str:
+    value = values.get(name, default).strip().lower()
+    if value not in {"json_object", "json_schema"}:
+        raise ValueError(f"{name} 必须是 json_object 或 json_schema")
+    return value
+
+
 def _database_url(values: MutableMapping[str, str]) -> str:
     configured = values.get("AGENT_DB_URL") or values.get("DATABASE_URL")
     if configured:
@@ -203,6 +212,9 @@ class AgentSettings:
     report_analysis_concurrency: int
     report_section_concurrency: int
     reporting_execution_mode: str
+    model_fast_structured_mode: str = "json_object"
+    model_standard_structured_mode: str = "json_object"
+    model_strong_structured_mode: str = "json_object"
 
     @classmethod
     def from_environment(
@@ -356,4 +368,13 @@ class AgentSettings:
             report_analysis_concurrency=report_analysis_concurrency,
             report_section_concurrency=report_section_concurrency,
             reporting_execution_mode=reporting_execution_mode,
+            model_fast_structured_mode=_structured_output_mode(
+                values, "AGENT_MODEL_FAST_STRUCTURED_MODE"
+            ),
+            model_standard_structured_mode=_structured_output_mode(
+                values, "AGENT_MODEL_STANDARD_STRUCTURED_MODE"
+            ),
+            model_strong_structured_mode=_structured_output_mode(
+                values, "AGENT_MODEL_STRONG_STRUCTURED_MODE"
+            ),
         )
