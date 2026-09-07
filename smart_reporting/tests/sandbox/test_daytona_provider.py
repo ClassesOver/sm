@@ -145,14 +145,22 @@ class FakeDaytonaClient:
         self.sandboxes: dict[str, FakeSandbox] = {}
         self.created = 0
         self.closed = False
+        self.failure_operation: str | None = None
+        self.failure: DaytonaError | None = None
+
+    def _raise_failure(self, operation: str) -> None:
+        if self.failure_operation == operation and self.failure is not None:
+            raise self.failure
 
     async def get(self, resource_id: str) -> FakeSandbox:
+        self._raise_failure("get")
         try:
             return self.sandboxes[resource_id]
         except KeyError as error:
             raise DaytonaNotFoundError("missing") from error
 
     async def list(self, query: Any = None):
+        self._raise_failure("list")
         labels = getattr(query, "labels", None) or {}
         expected = labels.get("agent-thread")
         for sandbox in self.sandboxes.values():
@@ -167,12 +175,15 @@ class FakeDaytonaClient:
         return sandbox
 
     async def start(self, sandbox: FakeSandbox) -> None:
+        self._raise_failure("start")
         sandbox.state = "started"
 
     async def stop(self, sandbox: FakeSandbox) -> None:
+        self._raise_failure("stop")
         sandbox.state = "stopped"
 
     async def delete(self, sandbox: FakeSandbox) -> None:
+        self._raise_failure("delete")
         self.sandboxes.pop(sandbox.id, None)
 
     async def close(self) -> None:
@@ -414,3 +425,97 @@ async def test_daytona_process_error_is_normalized() -> None:
 
     assert raised.value.details == {"backend": "daytona", "error_type": "DaytonaError"}
     assert "secret backend detail" not in str(raised.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("provider_operation", "sdk_operation"),
+    [
+        ("ensure_list", "list"),
+        ("list_workspaces", "list"),
+        ("ensure_get", "get"),
+        ("ensure_start", "start"),
+        ("start_workspace", "start"),
+        ("stop_workspace", "stop"),
+        ("destroy_get", "get"),
+        ("destroy_delete", "delete"),
+    ],
+)
+async def test_daytona_provider_normalizes_lifecycle_errors(
+    provider_operation: str, sdk_operation: str
+) -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = None
+    if provider_operation != "ensure_list":
+        handle = await provider.ensure_workspace(binding())
+    if provider_operation == "ensure_start":
+        assert handle is not None
+        client.sandboxes[handle.ref.resource_id].state = "stopped"
+    client.failure_operation = sdk_operation
+    client.failure = DaytonaError("secret backend detail")
+
+    with pytest.raises(SandboxProviderError) as raised:
+        if provider_operation in {"ensure_list", "ensure_get", "ensure_start"}:
+            await provider.ensure_workspace(binding())
+        elif provider_operation == "list_workspaces":
+            await provider.list_workspaces(binding())
+        elif provider_operation == "start_workspace":
+            assert handle is not None
+            await provider.start_workspace(handle.ref, binding())
+        elif provider_operation == "stop_workspace":
+            assert handle is not None
+            await provider.stop_workspace(handle.ref, binding())
+        else:
+            assert handle is not None
+            await provider.destroy_workspace(handle.ref, binding())
+
+    assert raised.value.details == {"backend": "daytona", "error_type": "DaytonaError"}
+    assert "secret backend detail" not in str(raised.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("sdk_operation", ["start", "stop", "delete"])
+async def test_daytona_provider_normalizes_lifecycle_not_found(
+    sdk_operation: str,
+) -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    client.failure_operation = sdk_operation
+    client.failure = DaytonaNotFoundError("missing")
+
+    with pytest.raises(SandboxNotFound):
+        if sdk_operation == "start":
+            await provider.start_workspace(handle.ref, binding())
+        elif sdk_operation == "stop":
+            await provider.stop_workspace(handle.ref, binding())
+        else:
+            await provider.destroy_workspace(handle.ref, binding())
+
+
+@pytest.mark.anyio
+async def test_daytona_provider_destroy_missing_workspace_remains_idempotent() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    client.sandboxes.pop(handle.ref.resource_id)
+
+    result = await provider.destroy_workspace(handle.ref, binding())
+
+    assert result.deleted is False

@@ -80,6 +80,22 @@ async def _daytona_call[T](
         ) from error
 
 
+async def _daytona_list[T](
+    operation: AsyncIterator[T],
+    *,
+    action: str,
+    missing_message: str | None = None,
+) -> list[T]:
+    async def collect() -> list[T]:
+        return [value async for value in operation]
+
+    return await _daytona_call(
+        collect(),
+        action=action,
+        missing_message=missing_message,
+    )
+
+
 def _binding_digest(binding: WorkspaceBinding, secret: bytes) -> str:
     payload = binding.model_dump(mode="json", exclude={"idempotency_key"})
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -148,9 +164,7 @@ class DaytonaFileSystemApi:
     async def create_folder(self, path: str, mode: str) -> None:
         await _daytona_call(self._filesystem.create_folder(path, mode), action="目录创建")
 
-    async def upload_file(
-        self, content: bytes, path: str, *, timeout: int | None = None
-    ) -> None:
+    async def upload_file(self, content: bytes, path: str, *, timeout: int | None = None) -> None:
         kwargs = {} if timeout is None else {"timeout": timeout}
         await _daytona_call(
             self._filesystem.upload_file(content, path, **kwargs), action="文件上传"
@@ -438,16 +452,18 @@ class DaytonaProvider:
             sandbox = None
             if resource_id is not None:
                 try:
-                    sandbox = await self._client.get(resource_id)
-                except DaytonaNotFoundError:
+                    sandbox = await _daytona_call(
+                        self._client.get(resource_id),
+                        action="workspace 查询",
+                        missing_message="Daytona workspace 不存在。",
+                    )
+                except SandboxNotFound:
                     await registry.delete(digest)
             if sandbox is None:
-                matches = [
-                    value
-                    async for value in self._client.list(
-                        ListSandboxesQuery(labels={"agent-thread": digest}, limit=2)
-                    )
-                ]
+                matches = await _daytona_list(
+                    self._client.list(ListSandboxesQuery(labels={"agent-thread": digest}, limit=2)),
+                    action="workspace 列表查询",
+                )
                 if len(matches) > 1:
                     raise SandboxProviderError("当前绑定关联了多个 Daytona workspace。")
                 sandbox = matches[0] if matches else await self._create(digest)
@@ -464,7 +480,11 @@ class DaytonaProvider:
                     )
                 )
         if _state(sandbox.state) == SandboxState.STOPPED:
-            await self._client.start(sandbox)
+            await _daytona_call(
+                self._client.start(sandbox),
+                action="workspace 启动",
+                missing_message="Daytona workspace 不存在。",
+            )
         if _state(sandbox.state) != SandboxState.STARTED:
             raise SandboxProviderError("Daytona workspace 尚未就绪。", retryable=True)
         return DaytonaSandboxHandle.from_sandbox(sandbox, self._ref(sandbox, binding))
@@ -508,8 +528,9 @@ class DaytonaProvider:
         digest = self._digest(binding)
         return [
             SandboxSummary(ref=self._ref(sandbox, binding), state=_state(sandbox.state))
-            async for sandbox in self._client.list(
-                ListSandboxesQuery(labels={"agent-thread": digest})
+            for sandbox in await _daytona_list(
+                self._client.list(ListSandboxesQuery(labels={"agent-thread": digest})),
+                action="workspace 列表查询",
             )
         ]
 
@@ -518,7 +539,11 @@ class DaytonaProvider:
     ) -> DaytonaSandboxHandle:
         self._require_binding(ref, binding)
         sandbox = await self._get_raw(ref.resource_id)
-        await self._client.start(sandbox)
+        await _daytona_call(
+            self._client.start(sandbox),
+            action="workspace 启动",
+            missing_message="Daytona workspace 不存在。",
+        )
         return DaytonaSandboxHandle.from_sandbox(sandbox, ref)
 
     async def stop_workspace(
@@ -526,16 +551,28 @@ class DaytonaProvider:
     ) -> DaytonaSandboxHandle:
         self._require_binding(ref, binding)
         sandbox = await self._get_raw(ref.resource_id)
-        await self._client.stop(sandbox)
+        await _daytona_call(
+            self._client.stop(sandbox),
+            action="workspace 停止",
+            missing_message="Daytona workspace 不存在。",
+        )
         return DaytonaSandboxHandle.from_sandbox(sandbox, ref)
 
     async def destroy_workspace(self, ref: SandboxRef, binding: WorkspaceBinding) -> DestroyResult:
         self._require_binding(ref, binding)
         try:
-            sandbox = await self._client.get(ref.resource_id)
-        except DaytonaNotFoundError:
+            sandbox = await _daytona_call(
+                self._client.get(ref.resource_id),
+                action="workspace 查询",
+                missing_message="Daytona workspace 不存在。",
+            )
+        except SandboxNotFound:
             return DestroyResult(deleted=False)
-        await self._client.delete(sandbox)
+        await _daytona_call(
+            self._client.delete(sandbox),
+            action="workspace 删除",
+            missing_message="Daytona workspace 不存在。",
+        )
         digest = self._digest(binding)
         async with self._registry.locked(digest) as registry:
             if await registry.get(digest) == ref.resource_id:
