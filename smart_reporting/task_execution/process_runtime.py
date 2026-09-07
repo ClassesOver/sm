@@ -9,6 +9,12 @@ from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
 from ..async_utils import complete_cleanup
+from ..sandbox import (
+    ExecutionStatus,
+    SandboxNotFound,
+    SessionCommandRequest,
+    SessionRef,
+)
 from ..workspace import (
     MANAGED_PROCESS_PREFIX,
     MAX_TOOL_OUTPUT_BYTES,
@@ -52,15 +58,16 @@ class ManagedProcessRuntime:
         session_id, command_id = cls._validate_ids(session_id, command_id)
         try:
             session = await process.get_session(session_id)
-        except DaytonaNotFoundError as error:
+        except (DaytonaNotFoundError, SandboxNotFound) as error:
             raise WorkspaceProcessNotFound("后台进程不属于当前会话或已经结束。") from error
-        if command_id not in {
-            str(getattr(command, "id", "") or "") for command in getattr(session, "commands", [])
+        commands = getattr(session, "commands", None)
+        if commands is not None and command_id not in {
+            str(getattr(command, "id", "") or "") for command in commands
         }:
             raise WorkspaceProcessNotFound("后台进程不属于当前会话或已经结束。")
         try:
             return await process.get_session_command(session_id, command_id)
-        except DaytonaNotFoundError as error:
+        except (DaytonaNotFoundError, SandboxNotFound) as error:
             raise WorkspaceProcessNotFound("后台进程不属于当前会话或已经结束。") from error
 
     async def start_session(
@@ -77,7 +84,12 @@ class ManagedProcessRuntime:
                 existing_session_id = str(getattr(session, "session_id", "") or "")
                 if not existing_session_id.startswith(MANAGED_PROCESS_PREFIX):
                     continue
-                commands = list(getattr(session, "commands", []) or [])
+                commands = getattr(session, "commands", None)
+                if commands is None:
+                    if getattr(session, "status", None) == ExecutionStatus.RUNNING:
+                        active += 1
+                    continue
+                commands = list(commands)
                 if not commands:
                     await process.delete_session(existing_session_id)
                 elif any(getattr(command, "exit_code", None) is None for command in commands):
@@ -88,10 +100,24 @@ class ManagedProcessRuntime:
                 )
             session_id = session_id or f"{MANAGED_PROCESS_PREFIX}{uuid.uuid4().hex}"
             self._validate_ids(session_id, "pending")
-            await process.create_session(session_id)
+            session = await process.create_session(session_id)
             try:
-                value = await process.execute_session_command(session_id, request, timeout=5)
-                command_id = str(getattr(value, "cmd_id", "") or "")
+                # provider 返回 SessionRef，并只接受仓库内的稳定命令契约；旧 Daytona SDK
+                # create_session 返回 None，且启动调用仍需 5 秒传输超时。这里以返回类型
+                # 区分两条仍在使用的边界，避免通过捕获 TypeError 掩盖后端真实参数错误。
+                if isinstance(session, SessionRef):
+                    value = await process.execute_session_command(
+                        session_id,
+                        SessionCommandRequest(
+                            command=request.command,
+                            run_async=bool(request.run_async),
+                            suppress_input_echo=bool(request.suppress_input_echo),
+                        ),
+                    )
+                    command_id = str(getattr(value, "command_id", "") or "")
+                else:
+                    value = await process.execute_session_command(session_id, request, timeout=5)
+                    command_id = str(getattr(value, "cmd_id", "") or "")
                 self._validate_ids(session_id, command_id)
             except BaseException:
                 try:
