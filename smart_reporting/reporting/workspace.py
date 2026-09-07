@@ -1,10 +1,10 @@
 """报表工作区工具。"""
 
+import asyncio
 import copy
 import hashlib
 import io
 import json
-import shlex
 import uuid
 from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
@@ -16,9 +16,10 @@ from PIL import Image, UnidentifiedImageError
 
 from ..async_utils import complete_cleanup
 from ..runtime.observability import suppress_expected_probe_tracing
+from ..sandbox.contracts import RunPythonScriptRequest
+from ..sandbox.errors import SandboxNotFound
 from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
-    WORKSPACE_ROOT,
     WorkspaceError,
     WorkspaceService,
     _thread,
@@ -30,6 +31,18 @@ MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
 REPORT_RUNTIME_TIMEOUT_SECONDS = 600
 MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
+
+
+def _report_runtime_digest() -> str:
+    from .delivery.report_runtime import runtime as report_runtime
+
+    package_root = Path(report_runtime.__file__).parent
+    digest = hashlib.sha256()
+    for path in sorted(package_root.glob("*.py")):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 async def inspect_report_chart_file(
@@ -231,53 +244,70 @@ class WorkspaceReportService:
         payload: dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
-        from .delivery.report_runtime import runtime as report_runtime
-
-        package_root = Path(report_runtime.__file__).parent
-        runtime_files = [
-            (path.name, path.read_bytes()) for path in sorted(package_root.glob("*.py"))
-        ]
-        digest = hashlib.sha256()
-        for name, content in runtime_files:
-            digest.update(name.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(content)
-        remote_root = f"/tmp/workspace-report-runtime-{digest.hexdigest()}"
-        remote_package = f"{remote_root}/report_runtime"
+        if action not in {"render_markdown", "validate_pdf"}:
+            raise WorkspaceError("报表运行时 action 无效。")
+        try:
+            payload_text = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise WorkspaceError("报表运行时 payload 无效。") from error
+        expected_runtime_digest = await asyncio.to_thread(_report_runtime_digest)
+        # 入口代码和模块路径由服务端固定，payload 只作为结构化数据传给已预装 runtime。
+        # Daytona snapshot 与 Local 离线 dependency bundle 必须包含同版本包；这里不上传
+        # 可替换模块，也不接收 shell、argv、环境变量或解释器路径。
+        script = (
+            "import hashlib,importlib.util,json\n"
+            "from pathlib import Path\n"
+            "spec=importlib.util.find_spec("
+            "'smart_reporting.reporting.delivery.report_runtime.runtime')\n"
+            "if spec is None or spec.origin is None:\n"
+            " print(json.dumps({'error':'报表运行时不可用'},ensure_ascii=False));raise SystemExit(1)\n"
+            "root=Path(spec.origin).parent\n"
+            "digest=hashlib.sha256()\n"
+            "for path in sorted(root.glob('*.py')):\n"
+            " digest.update(path.name.encode('utf-8'));digest.update(b'\\0');"
+            "digest.update(path.read_bytes())\n"
+            f"if digest.hexdigest()!={expected_runtime_digest!r}:\n"
+            " print(json.dumps({'error':'报表运行时版本不匹配'},ensure_ascii=False));"
+            "raise SystemExit(1)\n"
+            "from smart_reporting.reporting.delivery.report_runtime.cli import main\n"
+            f"raise SystemExit(main([{action!r}, {payload_text!r}]))\n"
+        )
         async with self.service._async_client() as client:
             sandbox = await self.service._asandbox_for(client, _thread(run_context))
-            created = await sandbox.process.exec(
-                self.service._shell_command(f"mkdir -p -- {shlex.quote(remote_package)}"),
-                cwd=WORKSPACE_ROOT,
-                timeout=30,
+            execution = getattr(sandbox, "execution", None)
+            if execution is None:
+                raise WorkspaceError("sandbox provider 不支持受控 Python runtime。")
+            value = await execution.run_python_script(
+                RunPythonScriptRequest(
+                    script=script,
+                    timeout_ms=REPORT_RUNTIME_TIMEOUT_SECONDS * 1000,
+                    output_limit_bytes=MAX_TOOL_OUTPUT_BYTES,
+                )
             )
-            if getattr(created, "exit_code", None) != 0:
-                raise WorkspaceError("报表运行时目录创建失败。")
-            for name, content in runtime_files:
-                await sandbox.fs.upload_file(content, f"{remote_package}/{name}")
-            command = (
-                f"PYTHONPATH={shlex.quote(remote_root)} python -m report_runtime.cli "
-                f"{shlex.quote(action)} "
-                f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
-            )
-            value = await sandbox.process.exec(
-                command,
-                cwd=WORKSPACE_ROOT,
-                timeout=REPORT_RUNTIME_TIMEOUT_SECONDS,
-            )
-        result = self.service._bounded_output(value)
-        if result["exitCode"] != 0:
+        stdout = str(value.stdout or "")
+        stderr = str(value.stderr or "")
+        if value.exit_code != 0:
             try:
                 failure = json.loads(
-                    next(line for line in reversed(result["output"].splitlines()) if line.strip())
+                    next(
+                        line
+                        for line in reversed((stdout + "\n" + stderr).splitlines())
+                        if line.strip()
+                    )
                 )
             except (StopIteration, json.JSONDecodeError):
                 failure = None
             message = failure.get("error") if isinstance(failure, dict) else None
             raise WorkspaceError(str(message or "报表运行失败。"))
         try:
-            output = next(line for line in reversed(result["output"].splitlines()) if line.strip())
-            parsed = json.loads(output)
+            result_line = next(line for line in reversed(stdout.splitlines()) if line.strip())
+            parsed = json.loads(result_line)
         except (StopIteration, json.JSONDecodeError) as error:
             raise WorkspaceError("报表运行时返回无效结果。") from error
         if not isinstance(parsed, dict):
@@ -451,8 +481,6 @@ class WorkspaceReportService:
         invocation = uuid.uuid4().hex
         temporary_root = f"/tmp/workspace-report-{invocation}-render"
         temporary_pdf = f"{temporary_root}/render.pdf"
-        temporary_word = f"{temporary_root}/render.docx"
-        temporary_html = f"{temporary_root}/render.html"
         staging_directory = output.parent.with_name(f".{output.parent.name}.{invocation}.tmp")
         staging_relative = staging_directory.as_posix()
         _normalized_staging, remote_staging = self.service.normalize_path(
@@ -461,15 +489,6 @@ class WorkspaceReportService:
         staged_pdf_relative = str(staging_directory / output.name)
         staged_word_relative = str(staging_directory / word_output.name)
         staged_html_relative = str(staging_directory / html_output.name)
-        _staged_pdf, remote_staged_pdf = self.service.normalize_path(
-            staged_pdf_relative, allow_root=False
-        )
-        _staged_word, remote_staged_word = self.service.normalize_path(
-            staged_word_relative, allow_root=False
-        )
-        _staged_html, remote_staged_html = self.service.normalize_path(
-            staged_html_relative, allow_root=False
-        )
         final_directory_relative = output.parent.as_posix()
         _normalized_final, remote_final_directory = self.service.normalize_path(
             final_directory_relative, allow_root=False
@@ -485,7 +504,7 @@ class WorkspaceReportService:
                 for candidate in (remote_final_directory, remote_staging):
                     try:
                         await self.service._ainfo(sandbox, candidate)
-                    except DaytonaNotFoundError:
+                    except (DaytonaNotFoundError, SandboxNotFound):
                         continue
                     raise WorkspaceError("报告 revision 输出目录已经存在，请使用新的 revision。")
             result = await self._run_report_runtime(
@@ -493,45 +512,22 @@ class WorkspaceReportService:
                 {
                     "job": job,
                     "markdown_path": markdown_path,
-                    "output_path": output_path,
+                    "output_path": staged_pdf_relative,
                     "temporary_path": temporary_pdf,
                     "page_layout": job.get("_pageLayout"),
-                    "word_output_path": relative_word,
-                    "html_output_path": relative_html,
+                    "word_output_path": staged_word_relative,
+                    "html_output_path": staged_html_relative,
                 },
                 run_context,
             )
             render = result.pop("render", None)
             if (
                 not isinstance(render, dict)
-                or render.get("pdf", {}).get("path") != relative_output
-                or render.get("word", {}).get("path") != relative_word
-                or render.get("html", {}).get("path") != relative_html
+                or render.get("pdf", {}).get("path") != staged_pdf_relative
+                or render.get("word", {}).get("path") != staged_word_relative
+                or render.get("html", {}).get("path") != staged_html_relative
             ):
                 raise WorkspaceError("报表运行时返回无效产物。")
-            async with self.service._async_client() as client:
-                sandbox = await self.service._asandbox_for(client, _thread(run_context))
-                created = await sandbox.process.exec(
-                    self.service._shell_command(f"mkdir -- {shlex.quote(remote_staging)}"),
-                    cwd=WORKSPACE_ROOT,
-                    timeout=30,
-                )
-                if getattr(created, "exit_code", None) != 0:
-                    raise WorkspaceError("三格式报告暂存目录创建失败。")
-                for source, target in (
-                    (temporary_pdf, remote_staged_pdf),
-                    (temporary_word, remote_staged_word),
-                    (temporary_html, remote_staged_html),
-                ):
-                    copied = await sandbox.process.exec(
-                        self.service._shell_command(
-                            f"cp --no-clobber -- {shlex.quote(source)} {shlex.quote(target)}"
-                        ),
-                        cwd=WORKSPACE_ROOT,
-                        timeout=30,
-                    )
-                    if getattr(copied, "exit_code", None) != 0:
-                        raise WorkspaceError("三格式报告暂存失败。")
             staged_pdf = await self.service.ahash_file(_thread(run_context), staged_pdf_relative)
             staged_word = await self.service.ahash_file(_thread(run_context), staged_word_relative)
             staged_html = await self.service.ahash_file(_thread(run_context), staged_html_relative)
@@ -568,16 +564,9 @@ class WorkspaceReportService:
                 raise WorkspaceError("PDF/Word/HTML 联合验收未通过。")
             async with self.service._async_client() as client:
                 sandbox = await self.service._asandbox_for(client, _thread(run_context))
-                publish_result = await sandbox.process.exec(
-                    self.service._shell_command(
-                        f"mv -T -- {shlex.quote(remote_staging)} "
-                        f"{shlex.quote(remote_final_directory)}"
-                    ),
-                    cwd=WORKSPACE_ROOT,
-                    timeout=30,
-                )
-            if getattr(publish_result, "exit_code", None) != 0:
-                raise WorkspaceError("三格式报告 revision 原子发布失败。")
+                # staging 内三种格式已完成身份与联合验收；Provider 的目录 rename 是唯一
+                # 发布动作，LocalProvider 和 DaytonaProvider 均不需要任意 shell 权限。
+                await sandbox.fs.move_files(remote_staging, remote_final_directory)
             published = True
             current_pdf = await self.service.ahash_file(_thread(run_context), relative_output)
             current_word = await self.service.ahash_file(_thread(run_context), relative_word)

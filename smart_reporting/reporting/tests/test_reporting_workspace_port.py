@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 from agno.tools import Toolkit
 
+from smart_reporting.reporting.tools.analysis_item import RuntimeAnalysisMixin
+from smart_reporting.reporting.tools.base import ReportingToolkitBase
 from smart_reporting.reporting.tools.context import (
     ReportingFileRef,
     ReportingOutputPolicy,
@@ -163,6 +165,78 @@ async def test_production_port_treats_data_as_readonly() -> None:
 
     with pytest.raises(ReportingWorkspaceError, match="只读"):
         await port.write_text("data/source.csv", "changed")
+
+
+@pytest.mark.anyio
+async def test_production_port_reads_through_async_workspace_api() -> None:
+    class AsyncReadService:
+        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+            raise AssertionError("异步 Reporting 端口不得调用同步工作区接口")
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
+            return b"source", "text/plain"
+
+    context = ReportingToolContext(
+        external_run_id="report-run-1",
+        thread_id="thread-1",
+        attempt_no=1,
+        output_policy=ReportingOutputPolicy(roots=("output",)),
+        input_snapshot={},
+    )
+    port = WorkspaceServiceReportingPort(
+        AsyncReadService(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        context,
+        SimpleNamespace(),
+    )
+
+    assert await port.read_bytes("inputs/source.txt") == b"source"
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_reads_through_async_workspace_api() -> None:
+    class AsyncReadService:
+        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+            raise AssertionError("异步 Reporting 工具不得调用同步工作区接口")
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
+            return b"source", "text/plain"
+
+    class ToolHarness:
+        runtime = SimpleNamespace(workspace=AsyncReadService())
+
+        async def _invoke(self, _name, _arguments, call, _run_context):
+            return await call(SimpleNamespace(thread_id="thread-1"))
+
+    result = await ReportingToolkitBase.read_file(  # type: ignore[arg-type]
+        ToolHarness(), "inputs/source.txt"
+    )
+
+    assert result["content"] == "source"
+
+
+@pytest.mark.anyio
+async def test_analysis_dependency_probe_uses_structured_workspace_operation() -> None:
+    class Workspace:
+        async def probe_python_modules(self, thread_id: str, names: set[str]) -> set[str]:
+            assert thread_id == "thread-1"
+            assert names == {"numpy", "missing"}
+            return {"numpy"}
+
+        async def execute_isolated(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("依赖探测不得调用通用命令执行")
+
+    harness = SimpleNamespace(runtime=SimpleNamespace(workspace=Workspace()))
+
+    installed = await RuntimeAnalysisMixin._installed_python_modules(
+        harness,  # type: ignore[arg-type]
+        thread_id="thread-1",
+        module_names={"numpy", "missing"},
+    )
+
+    assert installed == {"numpy"}
 
 
 @pytest.mark.anyio

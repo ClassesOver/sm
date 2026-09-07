@@ -192,7 +192,7 @@ class ProbeReportingPhaseOpenAIChat(ReportingPhaseOpenAIChat):
 
 
 _TOOL_ARGUMENTS: dict[str, dict[str, Any]] = {
-    "terminal": {"command": "python3 -c \"print('probe')\"", "timeout": 30},
+    "run_python_script": {"script_path": "analysis/output/probe.py", "timeout": 30},
     "process": {"action": "list"},
     "read_file": {"path": "inputs/source.txt", "offset": 0, "max_bytes": 1024},
     "read_tool_output": {"handle": "mock-output-1", "offset": 0, "max_bytes": 1024},
@@ -264,7 +264,12 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "analysis-script-foreground",
             "analysis",
             "analysis_item",
-            ("read_file", "apply_analysis_patch", "terminal", "complete_analysis_item"),
+            (
+                "read_file",
+                "apply_analysis_patch",
+                "run_python_script",
+                "complete_analysis_item",
+            ),
             "complete_analysis_item",
             "script",
         ),
@@ -283,7 +288,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             (
                 "read_file",
                 "apply_analysis_patch",
-                "terminal",
+                "run_python_script",
                 "process",
                 "complete_analysis_item",
             ),
@@ -297,7 +302,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             (
                 "read_file",
                 "apply_analysis_patch",
-                "terminal",
+                "run_python_script",
                 "inspect_chart",
                 "submit_visualization_charts",
             ),
@@ -310,7 +315,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "visualization_section",
             (
                 "apply_analysis_patch",
-                "terminal",
+                "run_python_script",
                 "view_image",
                 "submit_visualization_charts",
             ),
@@ -323,7 +328,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "visualization_section",
             (
                 "apply_analysis_patch",
-                "terminal",
+                "run_python_script",
                 "process",
                 "inspect_chart",
                 "submit_visualization_charts",
@@ -900,11 +905,12 @@ class ProbeRecorder:
                 response["nextTool"] = "apply_analysis_patch"
                 response["requiredFields"] = ["patch", "expected_sha256"]
             return response
-        if name == "terminal":
+        if name == "run_python_script":
             background = bool(arguments.get("background", False))
-            command = str(arguments["command"])
+            command = str(arguments["script_path"])
             issued_command = self._issued_terminal_command()
-            if issued_command is not None and command != issued_command:
+            issued_script = issued_command.removeprefix("python3 ") if issued_command else None
+            if issued_script is not None and command != issued_script:
                 return self._reject(
                     "probe_terminal_command_forbidden",
                     "当前阶段 terminal 只允许原样执行签发命令。",
@@ -935,13 +941,13 @@ class ProbeRecorder:
             if self._background() and not background:
                 return self._reject("probe_background_required", "当前签发任务要求后台执行。")
             result = await workspace.execute_script(
-                str(arguments["command"]),
+                str(arguments["script_path"]),
                 timeout=int(arguments.get("timeout", 30)),
                 workdir=arguments.get("workdir"),
                 background=background,
             )
             response = {"ok": True, **dict(result)}
-            if ".py" in str(arguments["command"]):
+            if ".py" in str(arguments["script_path"]):
                 self.script_completed = True
                 response["stdout"] = (
                     "script completed; generated evidence and chart artifacts are ready"
@@ -1388,7 +1394,7 @@ async def _run_fixed_analysis_scenario(
         arguments.pop("run_context", None)
         background = scenario.branch == "background"
         terminal = await recorder.invoke(
-            "terminal",
+            "run_python_script",
             {**arguments, "timeout": 30, **({"background": True} if background else {})},
         )
         if terminal.get("ok") is not True or not background:
@@ -1483,11 +1489,11 @@ async def _run_fixed_visualization_scenario(
         artifact.setdefault("size", len(source.encode("utf-8")))
         return FileIdentity.model_validate(artifact)
 
-    async def execute_script(command: str, _task_context: RunContext) -> Mapping[str, Any]:
+    async def execute_script(script_path: str, _task_context: RunContext) -> Mapping[str, Any]:
         terminal = await recorder.invoke(
-            "terminal",
+            "run_python_script",
             {
-                "command": command,
+                "script_path": script_path,
                 **({"background": True} if scenario.branch == "background" else {}),
             },
         )

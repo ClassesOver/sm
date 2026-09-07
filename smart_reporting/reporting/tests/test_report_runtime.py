@@ -5,6 +5,7 @@ import shutil
 import uuid
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,7 +32,8 @@ from smart_reporting.reporting.tests.workspace_fakes import (
     AsyncMemoryRegistry,
     service,
 )
-from smart_reporting.reporting.workspace import WorkspaceReportService
+from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
+from smart_reporting.sandbox import ExecutionStatus, RunPythonScriptResult
 from smart_reporting.workspace import WorkspaceService
 
 
@@ -182,6 +184,11 @@ def test_render_markdown_returns_html_artifact_identity(
         return digest
 
     monkeypatch.setattr(runtime_module, "_sha256", capture_sha256)
+    monkeypatch.setattr(
+        Path,
+        "replace",
+        lambda *_args, **_kwargs: pytest.fail("私有 /tmp 与 workspace 之间不得使用 rename"),
+    )
 
     temporary_root = Path(f"/tmp/workspace-report-{uuid.uuid4().hex}")
     try:
@@ -199,10 +206,13 @@ def test_render_markdown_returns_html_artifact_identity(
     assert result["htmlSize"] == len(html_bytes)
     assert result["htmlSha256"] == hashlib.sha256(html_bytes).hexdigest()
     assert html_bytes.startswith(b"<!doctype html>")
+    assert output.is_file()
+    assert output.with_suffix(".docx").is_file()
+    assert output.with_suffix(".html").read_bytes() == html_bytes
 
 
 @pytest.mark.anyio
-async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_path: Path) -> None:
+async def test_report_runtime_uses_preinstalled_fixed_python_entrypoint(tmp_path: Path) -> None:
     current = service(tmp_path)
     workspace = WorkspaceService(
         current.secret,
@@ -212,11 +222,30 @@ async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_p
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
     report_workspace = WorkspaceReportService(workspace)
-    workspace._bounded_output = lambda _value: {
-        "exitCode": 0,
-        "output": '{"status":"ok"}',
-        "truncated": False,
-    }
+
+    class Execution:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def run_python_script(self, request):
+            self.requests.append(request)
+            return RunPythonScriptResult(
+                status=ExecutionStatus.SUCCEEDED,
+                exit_code=0,
+                stdout='{"status":"ok"}\n',
+                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+            )
+
+    class Process:
+        async def exec(self, *_args, **_kwargs):
+            raise AssertionError("报表运行时不得使用任意 Shell")
+
+    execution = Execution()
+
+    async def sandbox_for(_client, _thread):
+        return SimpleNamespace(execution=execution, process=Process())
+
+    workspace._asandbox_for = sandbox_for  # type: ignore[method-assign]
 
     result = await report_workspace._run_report_runtime(
         "validate_pdf",
@@ -224,22 +253,15 @@ async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_p
         RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
     )
 
-    sandbox = next(iter(current.client.sandboxes.values()))
-    uploaded = {
-        Path(path).name
-        for path in sandbox.fs.entries
-        if "/report_runtime/" in path and path.endswith(".py")
-    }
-    assert uploaded == {
-        "__init__.py",
-        "cli.py",
-        "docx.py",
-        "markdown.py",
-        "pdf.py",
-        "runtime.py",
-        "validation.py",
-    }
-    assert "python -m report_runtime.cli validate_pdf" in sandbox.process.calls[-1]["command"]
+    assert len(execution.requests) == 1
+    request = execution.requests[0]
+    assert (
+        "from smart_reporting.reporting.delivery.report_runtime.cli import main" in request.script
+    )
+    assert _report_runtime_digest() in request.script
+    assert "报表运行时版本不匹配" in request.script
+    assert "validate_pdf" in request.script
+    assert request.timeout_ms == 600_000
     assert result == {"status": "ok"}
 
 

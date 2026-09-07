@@ -338,7 +338,7 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
                 "query_profile",
                 "read_file",
                 "read_tool_output",
-                "terminal",
+                "run_python_script",
             ),
         ),
         (
@@ -348,8 +348,8 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
                 "process",
                 "read_file",
                 "read_tool_output",
+                "run_python_script",
                 "submit_visualization_charts",
-                "terminal",
             ),
         ),
         (

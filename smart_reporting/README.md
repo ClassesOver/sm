@@ -90,6 +90,13 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 | `AGENT_MODEL_STRUCTURED_STRICT` | 是否对 JSON Schema 启用 strict；默认 `true`，兼容端点不支持时可设为 `false` |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
+| `SANDBOX_PROVIDER` | `daytona`（默认、企业 HA 优先）或 `local`（内网离线、当前仅 node-scoped） |
+| `SANDBOX_LOCAL_PROFILE` | Local 固定发行版 profile：`ubuntu` 或 `openeuler` |
+| `SANDBOX_LOCAL_ENDPOINT` | Local 绝对 UDS 地址或内网 HTTPS+mTLS 地址 |
+| `SANDBOX_ROOTFS_DIGEST` | Local 管理员签名 catalog 中固定 rootfs 的 `sha256:` 摘要 |
+| `SANDBOX_LOCAL_CA_CERT` | Local HTTPS 服务端 CA；HTTPS 模式必填 |
+| `SANDBOX_LOCAL_CLIENT_CERT` | Local mTLS 客户端证书；HTTPS 模式必填 |
+| `SANDBOX_LOCAL_CLIENT_KEY` | Local mTLS 客户端私钥；HTTPS 模式必填 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
 | `AGENT_DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
@@ -100,7 +107,7 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 
 ## Reporting 依赖诊断
 
-诊断接口检查服务端配置的 `REPORT_STARROCKS_DSN`、`AGENT_REPORT_METADATA_URL` 和 Daytona Sandbox API，不接受调用方传入连接参数，也不返回连接信息、凭据或上游响应正文：
+诊断接口检查服务端配置的 `REPORT_STARROCKS_DSN`、`AGENT_REPORT_METADATA_URL` 和当前 Sandbox Provider，不接受调用方传入连接参数，也不返回连接信息、凭据或上游响应正文：
 
 ```bash
 curl -X POST \

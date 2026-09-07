@@ -174,7 +174,7 @@ def test_probe_records_model_call_that_is_not_visible_in_current_projection() ->
         thinking=False,
     )
     projection = ProbeToolProjection(
-        batches=[["apply_analysis_patch", "terminal", "submit_visualization_charts"]]
+        batches=[["apply_analysis_patch", "run_python_script", "submit_visualization_charts"]]
     )
     model = ProbeReportingPhaseOpenAIChat(id="test", api_key="test")
     model._probe_projection = projection
@@ -241,9 +241,9 @@ async def test_probe_background_terminal_makes_only_its_context_process_visible(
     )
     await recorder.invoke("apply_analysis_patch", _chart_patch())
     receipt = await recorder.invoke(
-        "terminal",
+        "run_python_script",
         {
-            "command": "python3 analysis/output/outpatient_chart.py",
+            "script_path": "analysis/output/outpatient_chart.py",
             "timeout": 30,
             "background": True,
         },
@@ -279,9 +279,9 @@ async def test_probe_mock_runtime_is_isolated_across_ten_runs() -> None:
         assert runtime.calls == []
         await recorder.invoke("apply_analysis_patch", _chart_patch())
         await recorder.invoke(
-            "terminal",
+            "run_python_script",
             {
-                "command": "python3 analysis/output/outpatient_chart.py",
+                "script_path": "analysis/output/outpatient_chart.py",
                 "timeout": 30,
                 "background": True,
             },
@@ -329,15 +329,15 @@ async def test_probe_tools_use_mock_workspace_for_file_and_command_calls() -> No
     by_name = {tool.name: tool for tool in tools}
 
     read_result = await by_name["read_file"].entrypoint(path="inputs/source.txt")
-    command_result = await by_name["terminal"].entrypoint(
-        command="python3 -c 'print(1)'", timeout=30
+    command_result = await by_name["run_python_script"].entrypoint(
+        script_path="analysis/output/probe.py", timeout=30
     )
 
     assert read_result["ok"] is True
     assert read_result["content"] == "source"
     assert command_result["ok"] is True
     assert [call["operation"] for call in runtime.calls] == ["read_bytes", "execute_script"]
-    assert [call["name"] for call in recorder.calls] == ["read_file", "terminal"]
+    assert [call["name"] for call in recorder.calls] == ["read_file", "run_python_script"]
 
 
 @pytest.mark.anyio
@@ -371,7 +371,8 @@ async def test_probe_rejects_terminal_before_visualization_script_is_committed()
     recorder = ProbeRecorder(runtime, scenario)
 
     result = await recorder.invoke(
-        "terminal", {"command": "python3 analysis/output/outpatient_chart.py", "timeout": 30}
+        "run_python_script",
+        {"script_path": "analysis/output/outpatient_chart.py", "timeout": 30},
     )
 
     assert result["ok"] is False
@@ -401,7 +402,9 @@ async def test_probe_rejects_terminal_command_other_than_committed_script() -> N
         },
     )
 
-    result = await recorder.invoke("terminal", {"command": "pwd", "timeout": 30})
+    result = await recorder.invoke(
+        "run_python_script", {"script_path": "analysis/output/other.py", "timeout": 30}
+    )
 
     assert result["ok"] is False
     assert result["status"] == "rejected"

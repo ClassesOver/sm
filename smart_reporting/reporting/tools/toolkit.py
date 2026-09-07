@@ -10,7 +10,6 @@ from agno.tools import Function
 from ...task_execution import (
     DEFAULT_TERMINAL_TIMEOUT,
     MAX_READ_FILE_BYTES,
-    MAX_TERMINAL_COMMAND_BYTES,
     MAX_TOOL_OUTPUT_READ_BYTES,
     normalize_task_function_call_arguments,
 )
@@ -147,39 +146,31 @@ class ReportingToolkit(
             name="report_workspace_task",
             tools=[
                 Function(
-                    name="terminal",
+                    name="run_python_script",
                     description=(
-                        "执行工作区命令。terminal 必须作为本次 assistant 工具批次中的唯一调用，"
-                        "不能与任何其他工具并发。参数必须直接位于顶层，不要包 arguments。"
-                        '示例：{"command":"python3 -m pytest -q","timeout":120}；命令上限为 1 MiB。'
+                        "执行已提交到当前工作区的 Python 脚本。参数必须直接位于顶层，"
+                        "不要包 arguments，也不能与其他工具并发。"
                     ),
                     parameters={
                         "type": "object",
                         "properties": {
-                            "command": {
+                            "script_path": {
                                 "type": "string",
                                 "minLength": 1,
-                                "maxLength": MAX_TERMINAL_COMMAND_BYTES,
+                                "maxLength": 1024,
+                                "pattern": "^[^\\x00]+\\.py$",
                             },
-                            "background": {"type": "boolean", "default": False},
                             "timeout": {
                                 "type": "integer",
                                 "minimum": 1,
                                 "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
                                 "default": DEFAULT_TERMINAL_TIMEOUT,
                             },
-                            "workdir": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            "pty": {"type": "boolean", "default": False},
-                            "shell": {
-                                "type": "string",
-                                "enum": ["/bin/sh", "/bin/bash"],
-                                "default": "/bin/sh",
-                            },
                         },
-                        "required": ["command"],
+                        "required": ["script_path"],
                         "additionalProperties": False,
                     },
-                    entrypoint=self.terminal,
+                    entrypoint=self.run_python_script,
                 ),
                 Function(
                     name="process",

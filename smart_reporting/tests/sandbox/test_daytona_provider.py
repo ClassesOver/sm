@@ -1,0 +1,339 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from daytona.common.errors import DaytonaError, DaytonaNotFoundError
+
+from smart_reporting.sandbox import (
+    CodeRunRequest,
+    DaytonaProvider,
+    ExecRequest,
+    ExecutionStatus,
+    ProviderKind,
+    SandboxNotFound,
+    SandboxPolicyDenied,
+    SandboxProviderError,
+    SessionCommandRequest,
+    WorkspaceBinding,
+)
+
+
+class MemoryRegistryTransaction:
+    def __init__(self, values: dict[str, str], bindings: dict[str, Any]) -> None:
+        self.values = values
+        self.bindings = bindings
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(self, key: str, resource_id: str) -> None:
+        self.values[key] = resource_id
+
+    async def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
+    async def set_binding(self, record: Any) -> None:
+        self.bindings[record.binding_digest] = record
+        self.values[record.binding_digest] = record.resource_id
+
+
+class MemoryRegistry:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.bindings: dict[str, Any] = {}
+
+    @asynccontextmanager
+    async def locked(self, key: str):
+        yield MemoryRegistryTransaction(self.values, self.bindings)
+
+
+class FakeFileSystem:
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    async def get_file_info(self, path: str) -> Any:
+        if path not in self.files:
+            raise DaytonaNotFoundError("missing")
+        return SimpleNamespace(
+            name=path.rsplit("/", 1)[-1], is_dir=False, size=len(self.files[path]), mode="-644"
+        )
+
+    async def list_files(self, path: str) -> list[Any]:
+        prefix = path.rstrip("/") + "/"
+        return [
+            SimpleNamespace(
+                name=name.removeprefix(prefix), is_dir=False, size=len(content), mode="-644"
+            )
+            for name, content in self.files.items()
+            if name.startswith(prefix) and "/" not in name.removeprefix(prefix)
+        ]
+
+    async def create_folder(self, path: str, mode: str) -> None:
+        return None
+
+    async def upload_file(self, content: bytes, path: str) -> None:
+        self.files[path] = content
+
+    async def download_file(self, path: str) -> bytes:
+        return self.files[path]
+
+    async def download_file_stream(self, path: str, timeout: int = 1800):
+        yield self.files[path]
+
+    async def delete_file(self, path: str, recursive: bool = False) -> None:
+        self.files.pop(path, None)
+
+    async def move_files(self, source: str, destination: str) -> None:
+        self.files[destination] = self.files.pop(source)
+
+
+class FakeProcess:
+    def __init__(self) -> None:
+        self.sessions: dict[str, SimpleNamespace] = {}
+        self.inputs: list[tuple[str, str, str]] = []
+
+    async def exec(self, command: str, cwd: str | None = None, timeout: int | None = None) -> Any:
+        return SimpleNamespace(exit_code=0, result=f"exec:{command}")
+
+    async def code_run(self, code: str, params: Any = None, timeout: int | None = None) -> Any:
+        return SimpleNamespace(exit_code=0, result=f"code:{code}")
+
+    async def create_session(self, session_id: str) -> None:
+        self.sessions[session_id] = SimpleNamespace(session_id=session_id, commands=[])
+
+    async def list_sessions(self) -> list[Any]:
+        return list(self.sessions.values())
+
+    async def get_session(self, session_id: str) -> Any:
+        return self.sessions[session_id]
+
+    async def delete_session(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
+
+    async def execute_session_command(
+        self, session_id: str, request: Any, timeout: int | None = None
+    ) -> Any:
+        command = SimpleNamespace(id="command-1", command=request.command, exit_code=None)
+        self.sessions[session_id].commands.append(command)
+        return SimpleNamespace(cmd_id=command.id, exit_code=None, stdout="started", stderr="")
+
+    async def get_session_command(self, session_id: str, command_id: str) -> Any:
+        return next(item for item in self.sessions[session_id].commands if item.id == command_id)
+
+    async def get_session_command_logs(self, session_id: str, command_id: str) -> Any:
+        return SimpleNamespace(stdout="out", stderr="err", output=None)
+
+    async def send_session_command_input(self, session_id: str, command_id: str, data: str) -> None:
+        self.inputs.append((session_id, command_id, data))
+
+
+class FakeSandbox:
+    def __init__(self, resource_id: str, *, state: str = "started") -> None:
+        self.id = resource_id
+        self.state = state
+        self.fs = FakeFileSystem()
+        self.process = FakeProcess()
+
+
+class FakeDaytonaClient:
+    def __init__(self) -> None:
+        self.sandboxes: dict[str, FakeSandbox] = {}
+        self.created = 0
+        self.closed = False
+
+    async def get(self, resource_id: str) -> FakeSandbox:
+        try:
+            return self.sandboxes[resource_id]
+        except KeyError as error:
+            raise DaytonaNotFoundError("missing") from error
+
+    async def list(self, query: Any = None):
+        labels = getattr(query, "labels", None) or {}
+        expected = labels.get("agent-thread")
+        for sandbox in self.sandboxes.values():
+            if expected is None or getattr(sandbox, "binding_label", None) == expected:
+                yield sandbox
+
+    async def create(self, params: Any) -> FakeSandbox:
+        self.created += 1
+        sandbox = FakeSandbox(f"sandbox-{self.created}")
+        sandbox.binding_label = params.labels["agent-thread"]
+        self.sandboxes[sandbox.id] = sandbox
+        return sandbox
+
+    async def start(self, sandbox: FakeSandbox) -> None:
+        sandbox.state = "started"
+
+    async def stop(self, sandbox: FakeSandbox) -> None:
+        sandbox.state = "stopped"
+
+    async def delete(self, sandbox: FakeSandbox) -> None:
+        self.sandboxes.pop(sandbox.id, None)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def binding(thread_id: str = "thread-1") -> WorkspaceBinding:
+    return WorkspaceBinding(
+        tenant_id="database-a",
+        user_id="user-1",
+        company_id="company-1",
+        thread_id=thread_id,
+        idempotency_key="request-00000001",
+    )
+
+
+@pytest.mark.anyio
+async def test_daytona_provider_ensures_one_workspace_per_binding() -> None:
+    client = FakeDaytonaClient()
+    registry = MemoryRegistry()
+    provider = DaytonaProvider(
+        client=client,
+        registry=registry,
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+
+    first = await provider.ensure_workspace(binding())
+    second = await provider.ensure_workspace(binding())
+
+    assert first.ref == second.ref
+    assert first.ref.provider == ProviderKind.DAYTONA
+    assert first.ref.binding_digest != binding().thread_id
+    assert client.created == 1
+    assert registry.bindings[first.ref.binding_digest].provider == ProviderKind.DAYTONA
+
+
+@pytest.mark.anyio
+async def test_daytona_provider_starts_and_stops_workspace() -> None:
+    provider = DaytonaProvider(
+        client=FakeDaytonaClient(),
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+
+    stopped = await provider.stop_workspace(handle.ref, binding())
+    assert stopped.state.value == "stopped"
+
+    started = await provider.start_workspace(handle.ref, binding())
+    assert started.state.value == "started"
+
+
+@pytest.mark.anyio
+async def test_daytona_handle_normalizes_files_and_process_results() -> None:
+    provider = DaytonaProvider(
+        client=FakeDaytonaClient(),
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+
+    await handle.fs.upload_file(b"data", "/home/daytona/workspace/data.txt")
+    info = await handle.fs.get_file_info("/home/daytona/workspace/data.txt")
+    executed = await handle.process.exec(ExecRequest(command="fixed-runner"))
+    code = await handle.process.code_run(CodeRunRequest(code="print('ok')"))
+
+    assert info.path == "/home/daytona/workspace/data.txt"
+    assert info.size == 4
+    assert executed.stdout == "exec:fixed-runner"
+    assert executed.status == ExecutionStatus.SUCCEEDED
+    assert code.stdout == "code:print('ok')"
+
+
+@pytest.mark.anyio
+async def test_daytona_handle_normalizes_session_commands_and_logs() -> None:
+    provider = DaytonaProvider(
+        client=FakeDaytonaClient(),
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+
+    session_ref = await handle.process.create_session("session-1")
+    command = await handle.process.execute_session_command(
+        "session-1", SessionCommandRequest(command="fixed-runner", run_async=True)
+    )
+    logs = await handle.process.get_session_command_logs("session-1", command.command_id)
+    await handle.process.send_session_command_input("session-1", command.command_id, "input")
+
+    assert session_ref.provider_session_id == "session-1"
+    assert command.status == ExecutionStatus.RUNNING
+    assert logs.stdout == "out"
+    assert logs.stderr == "err"
+    assert logs.next_offset == len(b"outerr")
+
+
+@pytest.mark.anyio
+async def test_daytona_provider_rejects_binding_mismatch_before_backend_access() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+
+    with pytest.raises(SandboxPolicyDenied):
+        await provider.get_workspace(handle.ref, binding("other-thread"))
+
+
+@pytest.mark.anyio
+async def test_daytona_provider_normalizes_missing_workspace() -> None:
+    provider = DaytonaProvider(
+        client=FakeDaytonaClient(),
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    await provider.destroy_workspace(handle.ref, binding())
+
+    with pytest.raises(SandboxNotFound):
+        await provider.get_workspace(handle.ref, binding())
+
+
+@pytest.mark.anyio
+async def test_daytona_provider_does_not_close_injected_client() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+
+    await provider.aclose()
+
+    assert client.closed is False
+
+
+@pytest.mark.anyio
+async def test_daytona_process_error_is_normalized() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+
+    async def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise DaytonaError("secret backend detail")
+
+    client.sandboxes[handle.ref.resource_id].process.exec = fail
+
+    with pytest.raises(SandboxProviderError) as raised:
+        await handle.process.exec(ExecRequest(command="fixed-runner"))
+
+    assert raised.value.details == {"backend": "daytona", "error_type": "DaytonaError"}
+    assert "secret backend detail" not in str(raised.value)

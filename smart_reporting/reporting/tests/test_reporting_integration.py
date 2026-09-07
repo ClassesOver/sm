@@ -98,18 +98,23 @@ def test_publication_artifact_identity_checks_html_size_and_hash() -> None:
 
 
 class _ReportPairProcess:
-    def __init__(self) -> None:
-        self.commands: list[str] = []
+    async def exec(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise AssertionError("报表发布不得使用任意 Shell")
 
-    async def exec(self, command: str, **_kwargs: object) -> SimpleNamespace:
-        self.commands.append(command)
-        return SimpleNamespace(exit_code=0)
+
+class _ReportPairFs:
+    def __init__(self) -> None:
+        self.moves: list[tuple[str, str]] = []
+
+    async def move_files(self, source: str, destination: str) -> None:
+        self.moves.append((source, destination))
 
 
 class _ReportPairService:
     def __init__(self, identities: dict[str, dict[str, object]]) -> None:
         self.identities = identities
         self.process = _ReportPairProcess()
+        self.fs = _ReportPairFs()
 
     def normalize_path(self, path: str, *, allow_root: bool) -> tuple[str, str]:
         assert not allow_root
@@ -123,7 +128,7 @@ class _ReportPairService:
         yield object()
 
     async def _asandbox_for(self, _client: object, _thread_id: str) -> SimpleNamespace:
-        return SimpleNamespace(process=self.process)
+        return SimpleNamespace(process=self.process, fs=self.fs)
 
     async def _aensure_directory(self, _sandbox: object, _path: str) -> None:
         return None
@@ -173,14 +178,18 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
             return {
                 "status": "rendered",
                 "render": {
-                    "pdf": {"path": "reports/revision-1/report.pdf", "size": 1, "sha256": "pdf"},
+                    "pdf": {
+                        "path": "reports/.revision-1.test.tmp/report.pdf",
+                        "size": 1,
+                        "sha256": "pdf",
+                    },
                     "word": {
-                        "path": "reports/revision-1/report.docx",
+                        "path": "reports/.revision-1.test.tmp/report.docx",
                         "size": 2,
                         "sha256": "word",
                     },
                     "html": {
-                        "path": "reports/revision-1/report.html",
+                        "path": "reports/.revision-1.test.tmp/report.html",
                         "size": 3,
                         "sha256": "html",
                     },
@@ -204,9 +213,14 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
         run_context=context,
     )
 
-    assert calls[0][1]["html_output_path"] == "reports/revision-1/report.html"
+    assert calls[0][1]["html_output_path"] == "reports/.revision-1.test.tmp/report.html"
     assert calls[1][1]["html_path"] == "reports/.revision-1.test.tmp/report.html"
-    assert any(command.startswith("mv -T --") for command in service.process.commands)
+    assert service.fs.moves == [
+        (
+            "/home/daytona/workspace/reports/.revision-1.test.tmp",
+            "/home/daytona/workspace/reports/revision-1",
+        )
+    ]
     assert result["htmlPath"] == "reports/revision-1/report.html"
     assert result["htmlSize"] == 3
     assert result["htmlSha256"] == "html"
@@ -234,14 +248,18 @@ async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
             return_value={
                 "status": "rendered",
                 "render": {
-                    "pdf": {"path": "reports/revision-1/report.pdf", "size": 1, "sha256": "pdf"},
+                    "pdf": {
+                        "path": "reports/.revision-1.test.tmp/report.pdf",
+                        "size": 1,
+                        "sha256": "pdf",
+                    },
                     "word": {
-                        "path": "reports/revision-1/report.docx",
+                        "path": "reports/.revision-1.test.tmp/report.docx",
                         "size": 2,
                         "sha256": "word",
                     },
                     "html": {
-                        "path": "reports/revision-1/report.html",
+                        "path": "reports/.revision-1.test.tmp/report.html",
                         "size": 3,
                         "sha256": "html",
                     },
@@ -259,7 +277,7 @@ async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
             run_context=context,
         )
 
-    assert not any(command.startswith("mv -T --") for command in service.process.commands)
+    assert service.fs.moves == []
     store_job.assert_not_called()
 
 

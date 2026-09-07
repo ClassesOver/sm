@@ -156,9 +156,7 @@ class ReportDatasetStore:
                 or current.get("sha256") != file.sha256
             ):
                 raise ReportingError("report_attachment_changed", "URL CSV 附件在登记前发生变化。")
-            content, _media_type = await asyncio.to_thread(
-                self.service.file_bytes, thread_id, file.path
-            )
+            content, _media_type = await self.service.afile_bytes(thread_id, file.path)
             try:
                 row_count = pl.read_csv(io.BytesIO(content)).height
             except (UnicodeDecodeError, pl.exceptions.PolarsError) as error:

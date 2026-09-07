@@ -27,6 +27,10 @@ def test_settings_defaults():
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.daytona_network_allow_list is None
+    assert current.sandbox_provider == "daytona"
+    assert current.sandbox_local_profile is None
+    assert current.sandbox_local_endpoint is None
+    assert current.sandbox_rootfs_digest is None
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
@@ -254,6 +258,84 @@ def test_daytona_network_allow_list_is_validated_and_normalized():
 def test_daytona_network_allow_list_rejects_invalid_values(value):
     with pytest.raises(ValueError, match="DAYTONA_NETWORK_ALLOW_LIST"):
         settings(DAYTONA_NETWORK_ALLOW_LIST=value)
+
+
+def test_local_sandbox_configuration_is_validated_and_normalized() -> None:
+    current = settings(
+        SANDBOX_PROVIDER=" LOCAL ",
+        SANDBOX_LOCAL_PROFILE=" OPENEULER ",
+        SANDBOX_LOCAL_ENDPOINT=" unix:///run/local-sandboxd.sock ",
+        SANDBOX_ROOTFS_DIGEST="sha256:" + "a" * 64,
+    )
+
+    assert current.sandbox_provider == "local"
+    assert current.sandbox_local_profile == "openeuler"
+    assert current.sandbox_local_endpoint == "unix:///run/local-sandboxd.sock"
+    assert current.sandbox_rootfs_digest == "sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["SANDBOX_LOCAL_PROFILE", "SANDBOX_LOCAL_ENDPOINT", "SANDBOX_ROOTFS_DIGEST"],
+)
+def test_local_sandbox_requires_complete_configuration(missing: str) -> None:
+    values = {
+        "SANDBOX_PROVIDER": "local",
+        "SANDBOX_LOCAL_PROFILE": "ubuntu",
+        "SANDBOX_LOCAL_ENDPOINT": "unix:///run/local-sandboxd.sock",
+        "SANDBOX_ROOTFS_DIGEST": "sha256:" + "a" * 64,
+    }
+    values.pop(missing)
+
+    with pytest.raises(ValueError, match=missing):
+        settings(values)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("SANDBOX_PROVIDER", "docker"),
+        ("SANDBOX_LOCAL_PROFILE", "centos"),
+        ("SANDBOX_LOCAL_ENDPOINT", "http://sandbox.internal"),
+        ("SANDBOX_LOCAL_ENDPOINT", "unix://relative.sock"),
+        ("SANDBOX_ROOTFS_DIGEST", "latest"),
+    ],
+)
+def test_local_sandbox_rejects_unsafe_configuration(name: str, value: str) -> None:
+    values = {
+        "SANDBOX_PROVIDER": "local",
+        "SANDBOX_LOCAL_PROFILE": "ubuntu",
+        "SANDBOX_LOCAL_ENDPOINT": "unix:///run/local-sandboxd.sock",
+        "SANDBOX_ROOTFS_DIGEST": "sha256:" + "a" * 64,
+    }
+    values[name] = value
+
+    with pytest.raises(ValueError, match=name):
+        settings(values)
+
+
+def test_local_https_endpoint_requires_complete_mtls_configuration() -> None:
+    values = {
+        "SANDBOX_PROVIDER": "local",
+        "SANDBOX_LOCAL_PROFILE": "ubuntu",
+        "SANDBOX_LOCAL_ENDPOINT": "https://sandbox.internal:8443",
+        "SANDBOX_ROOTFS_DIGEST": "sha256:" + "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match="SANDBOX_LOCAL_CA_CERT"):
+        settings(values)
+
+
+def test_daytona_provider_does_not_validate_unused_local_fields() -> None:
+    current = settings(
+        SANDBOX_PROVIDER="daytona",
+        SANDBOX_LOCAL_PROFILE="invalid",
+        SANDBOX_LOCAL_ENDPOINT="http://unsafe.internal",
+        SANDBOX_ROOTFS_DIGEST="latest",
+    )
+
+    assert current.sandbox_provider == "daytona"
+    assert current.sandbox_local_profile is None
 
 
 def test_report_data_sources_dir_is_trimmed():

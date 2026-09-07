@@ -93,7 +93,7 @@ class VisualizationSectionWorkflow:
                         "report_phase_artifact_changed",
                         "脚本写入回执路径与签发路径不一致。",
                     )
-                execution = await self.execute_script(f"python3 {draft.script_path}", run_context)
+                execution = await self.execute_script(draft.script_path, run_context)
                 if execution.get("exitCode", 0) != 0:
                     raise ReportingError(
                         "report_visualization_script_failed",
