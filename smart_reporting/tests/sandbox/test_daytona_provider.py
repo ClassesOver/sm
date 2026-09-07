@@ -284,6 +284,47 @@ async def test_task_execution_accepts_provider_resource_id() -> None:
 
 
 @pytest.mark.anyio
+async def test_task_execution_stores_retained_output_with_provider_process_contract() -> None:
+    client = FakeDaytonaClient()
+    registry = MemoryRegistry()
+    provider = DaytonaProvider(
+        client=client,
+        registry=registry,
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    workspace = WorkspaceService(
+        "0123456789abcdef0123456789abcdef",
+        async_registry=registry,
+        provider=provider,
+    )
+    handle = await provider.ensure_workspace(workspace._provider_binding("thread-1"))
+    scope = TaskExecutionRuntime(
+        task=cast(Any, SimpleNamespace()),
+        external_run_id="report-coding-analysis-1",
+        internal_run_id="internal-run",
+        owner_user_id="user-1",
+        thread_id="thread-1",
+        sandbox_id=handle.ref.resource_id,
+        lease_owner="lease-owner",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+    kernel = TaskExecutionKernel(workspace, cast(Any, SimpleNamespace()))
+    run_context = cast(Any, SimpleNamespace(session_state={}))
+
+    result = await kernel.bound_tool_result(
+        scope,
+        {"output": "analysis-result"},
+        run_context,
+        retain=True,
+    )
+
+    assert result["outputStoredBytes"] == len(b"analysis-result")
+    assert b"analysis-result" in client.sandboxes[handle.ref.resource_id].fs.files.values()
+
+
+@pytest.mark.anyio
 async def test_daytona_handle_normalizes_session_commands_and_logs() -> None:
     provider = DaytonaProvider(
         client=FakeDaytonaClient(),

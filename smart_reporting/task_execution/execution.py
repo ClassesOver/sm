@@ -24,6 +24,7 @@ from daytona.common.errors import DaytonaNotFoundError
 
 from ..agent_control import AGENT_PLAN_STATE_KEY
 from ..runtime.observability import suppress_expected_probe_tracing
+from ..sandbox import ExecRequest
 from ..skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -769,14 +770,16 @@ class TaskExecutionKernel:
                             except Exception:
                                 pass
                         if cleanup_due:
-                            await sandbox.process.exec(
-                                "/bin/sh -c "
-                                + shlex.quote(
-                                    f"find {shlex.quote(TOOL_OUTPUT_ROOT)} -mindepth 1 -maxdepth 1 "
-                                    "-type d -mtime +7 -exec rm -rf -- {} +"
-                                ),
-                                timeout=60,
+                            cleanup_command = "/bin/sh -c " + shlex.quote(
+                                f"find {shlex.quote(TOOL_OUTPUT_ROOT)} -mindepth 1 -maxdepth 1 "
+                                "-type d -mtime +7 -exec rm -rf -- {} +"
                             )
+                            if getattr(sandbox, "ref", None) is not None:
+                                await sandbox.process.exec(
+                                    ExecRequest(command=cleanup_command, timeout=60)
+                                )
+                            else:
+                                await sandbox.process.exec(cleanup_command, timeout=60)
                         await sandbox.fs.upload_file(raw[:stored_bytes], path)
             except Exception:
                 async with scheduler.state():
