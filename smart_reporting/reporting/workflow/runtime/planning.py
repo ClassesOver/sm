@@ -1302,35 +1302,6 @@ class RuntimePlanningMixin:
         sources = {item.id: item for item in self._sources(run_context)}
         snapshots = self._snapshots(run_context)
         envelope = self._envelope(run_context)
-        compiled = _compile_single_table_queries(
-            requirements,
-            snapshots=snapshots,
-            envelope=envelope,
-            row_preserving_requirement_ids=tuple(
-                state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-            ),
-        )
-        if compiled is not None:
-            compiled_approved, issues = _approve_generated_queries(
-                compiled,
-                sources=sources,
-                snapshots=snapshots,
-                envelope=envelope,
-                requirements=requirements,
-                row_preserving_requirement_ids=tuple(
-                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-                ),
-                data_shapes=data_shapes,
-            )
-            if not issues:
-                state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
-                    item.model_dump(mode="json", by_alias=True) for item in compiled_approved
-                ]
-                return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
-            loguru_logger.warning(
-                "report_single_table_query_compilation_rejected issue_count={}",
-                len(issues),
-            )
         validation_feedback: dict[str, Any] | None = None
         approved: tuple[ApprovedQuery, ...] | None = None
         call_budget = StructuredOutputCallBudget()
@@ -1374,6 +1345,37 @@ class RuntimePlanningMixin:
                 continue
             break
         if approved is None:
+            # 模型是 SQL 的首选决策者；仅在模型连续五次无法产出通过校验的结果时，
+            # 单表查询才使用既有确定性编译兜底，避免可恢复的模型波动阻断报表。
+            compiled = _compile_single_table_queries(
+                requirements,
+                snapshots=snapshots,
+                envelope=envelope,
+                row_preserving_requirement_ids=tuple(
+                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                ),
+            )
+            if compiled is not None:
+                compiled_approved, compilation_issues = _approve_generated_queries(
+                    compiled,
+                    sources=sources,
+                    snapshots=snapshots,
+                    envelope=envelope,
+                    requirements=requirements,
+                    row_preserving_requirement_ids=tuple(
+                        state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                    ),
+                    data_shapes=data_shapes,
+                )
+                if not compilation_issues:
+                    state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
+                        item.model_dump(mode="json", by_alias=True) for item in compiled_approved
+                    ]
+                    loguru_logger.warning(
+                        "report_sql_model_fallback_to_compiler requirement_count={}",
+                        len(requirements),
+                    )
+                    return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
             raise ReportingError(
                 "report_query_batch_invalid",
                 "SQL 批次连续五次未通过校验。最后一次反馈："
