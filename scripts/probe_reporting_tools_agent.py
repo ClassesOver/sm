@@ -340,7 +340,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "section-render-truncated-evidence",
             "section",
             "section",
-            ("read_file", "read_tool_output", "render_report_section"),
+            ("read_file", "render_report_section"),
             "render_report_section",
             "render",
         ),
@@ -438,6 +438,20 @@ def _deterministic_facts_bytes() -> bytes:
     ).encode("ascii")
 
 
+def _section_evidence_bytes(*, complete: bool) -> bytes:
+    payload = {
+        "evidencePath": (
+            "analysis/evidence/complete_analysis_001.json"
+            if complete
+            else "analysis/evidence/analysis_001.json"
+        ),
+        "validated": True,
+    }
+    if complete:
+        payload["periodCoverage"] = "2025-01 至 2025-06"
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+
 def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
     """构造等价于 CLI 下发的阶段任务投影，不使用只为探针服务的工具清单字段。"""
 
@@ -467,15 +481,17 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
         "size": len(fact_bytes),
         "sha256": hashlib.sha256(fact_bytes).hexdigest(),
     }
+    evidence_bytes = _section_evidence_bytes(complete=False)
+    complete_evidence_bytes = _section_evidence_bytes(complete=True)
     evidence_file = {
         "path": "analysis/evidence/analysis_001.json",
-        "size": 100,
-        "sha256": "b" * 64,
+        "size": len(evidence_bytes),
+        "sha256": hashlib.sha256(evidence_bytes).hexdigest(),
     }
     complete_evidence_file = {
         "path": "analysis/evidence/complete_analysis_001.json",
-        "size": 100,
-        "sha256": "c" * 64,
+        "size": len(complete_evidence_bytes),
+        "sha256": hashlib.sha256(complete_evidence_bytes).hexdigest(),
     }
     if scenario.task_kind == "analysis_item":
         result: dict[str, Any] = {
@@ -884,6 +900,21 @@ class ProbeRecorder:
                     "hasMore": end < len(raw_content),
                     "outputTruncated": False,
                 }
+            if self.scenario is not None and self.scenario.task_kind == "section":
+                offset = int(arguments.get("offset", 0))
+                end = len(raw_content)
+                if self.scenario.branch == "render" and offset == 0:
+                    end = max(1, len(raw_content) // 2)
+                return {
+                    "ok": True,
+                    "path": path,
+                    "offset": offset,
+                    "content": raw_content[offset:end].decode("utf-8"),
+                    "sha256": hashlib.sha256(raw_content).hexdigest(),
+                    "totalBytes": len(raw_content),
+                    "nextOffset": end,
+                    "hasMore": end < len(raw_content),
+                }
             content = raw_content.decode("utf-8")
             if (
                 self._file_read_truncated()
@@ -1243,13 +1274,8 @@ def _runtime() -> MockReportingToolRuntime:
                 b"month,revenue,cost\n2025-01,120,78\n2025-04,139,\n2025-06,156,101\n"
             ),
             "analysis/facts/analysis_001.json": _deterministic_facts_bytes(),
-            "analysis/evidence/analysis_001.json": (
-                b'{"evidencePath":"analysis/evidence/analysis_001.json","validated":true}'
-            ),
-            "analysis/evidence/complete_analysis_001.json": (
-                '{"evidencePath":"analysis/evidence/complete_analysis_001.json",'
-                '"validated":true,"periodCoverage":"2025-01 至 2025-06"}'.encode()
-            ),
+            "analysis/evidence/analysis_001.json": _section_evidence_bytes(complete=False),
+            "analysis/evidence/complete_analysis_001.json": _section_evidence_bytes(complete=True),
         },
         output_policy=ReportingOutputPolicy(roots=("analysis/output", "analysis/charts")),
     )
@@ -1586,21 +1612,7 @@ async def _run_fixed_section_scenario(
     }
 
     async def read_evidence(path: str, offset: int, _task_context: RunContext) -> Mapping[str, Any]:
-        receipt = await recorder.invoke("read_file", {"path": path, "offset": offset})
-        if receipt.get("ok") is not True:
-            return receipt
-        chunks = [str(receipt.get("content") or "")]
-        handle = receipt.get("handle")
-        while receipt.get("truncated") is True and isinstance(handle, str) and handle:
-            receipt = await recorder.invoke(
-                "read_tool_output",
-                {"handle": handle, "offset": int(receipt.get("nextOffset") or 0)},
-            )
-            if receipt.get("ok") is not True:
-                return receipt
-            chunks.append(str(receipt.get("content") or ""))
-            handle = receipt.get("handle")
-        return {"ok": True, "content": "".join(chunks), "hasMore": False}
+        return await recorder.invoke("read_file", {"path": path, "offset": offset})
 
     async def generate(evidence: Any, task_context: RunContext) -> SectionDecision:
         return await _generate_section_in_blocks(

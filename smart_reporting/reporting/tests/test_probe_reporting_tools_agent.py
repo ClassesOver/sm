@@ -80,6 +80,29 @@ async def test_probe_complete_section_evidence_is_valid_json() -> None:
     assert json.loads(content)["validated"] is True
 
 
+@pytest.mark.anyio
+async def test_probe_section_read_receipts_match_frozen_evidence_identity() -> None:
+    scenario = next(
+        item for item in probe_scenarios() if item.name == "section-render-truncated-evidence"
+    )
+    identity = _cli_stage_input(scenario)["sectionWorkItem"]["evidence"][0]["evidenceFiles"][0]
+    recorder = ProbeRecorder(_runtime(), scenario)
+
+    first = await recorder.invoke("read_file", {"path": identity["path"], "offset": 0})
+    second = await recorder.invoke(
+        "read_file", {"path": identity["path"], "offset": first["nextOffset"]}
+    )
+
+    assert first["path"] == second["path"] == identity["path"]
+    assert first["offset"] == 0
+    assert second["offset"] == first["nextOffset"]
+    assert first["totalBytes"] == second["totalBytes"] == identity["size"]
+    assert first["sha256"] == second["sha256"] == identity["sha256"]
+    assert first["hasMore"] is True
+    assert second["hasMore"] is False
+    assert len((first["content"] + second["content"]).encode()) == identity["size"]
+
+
 def test_section_probe_directives_never_authorize_fact_file_reads() -> None:
     for scenario in probe_scenarios():
         if scenario.task_kind != "section":
