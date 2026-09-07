@@ -1,6 +1,9 @@
 ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
 FROM ${PYTHON_IMAGE} AS base
 
+ARG UV_IMAGE=ghcr.m.daocloud.io/astral-sh/uv:0.11.26
+FROM ${UV_IMAGE} AS uv-source
+
 ARG APT_MIRROR_HOST=mirrors.aliyun.com
 
 RUN sed -i \
@@ -20,7 +23,7 @@ FROM base AS runtime
 
 ARG UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /uvx /bin/
+COPY --from=uv-source /uv /uvx /bin/
 
 WORKDIR /app
 
