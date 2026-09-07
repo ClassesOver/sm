@@ -225,6 +225,21 @@ def test_qwen_structured_mode_follows_dashscope_supported_model_matrix() -> None
         configured_mode=StructuredOutputMode.JSON_SCHEMA,
         endpoint="https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     )
+    deepseek = resolver.resolve(
+        "deepseek-v4-flash-0731",
+        configured_mode=StructuredOutputMode.JSON_SCHEMA,
+        endpoint="https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    )
+    ark = resolver.resolve(
+        "deepseek-v4-flash-0731",
+        configured_mode=StructuredOutputMode.JSON_SCHEMA,
+        endpoint="https://ark.cn-beijing.volces.com/api/v3",
+    )
+    vllm = resolver.resolve(
+        "deepseek-v4",
+        configured_mode=StructuredOutputMode.JSON_SCHEMA,
+        endpoint="http://vllm.internal:8000/v1",
+    )
     custom_endpoint = resolver.resolve(
         "qwen3.6-flash",
         configured_mode=StructuredOutputMode.JSON_SCHEMA,
@@ -235,6 +250,9 @@ def test_qwen_structured_mode_follows_dashscope_supported_model_matrix() -> None
     assert unsupported.fallback is None
     assert unsupported.source == "provider_model_capability"
     assert supported.primary is StructuredOutputMode.JSON_SCHEMA
+    assert deepseek.primary is StructuredOutputMode.JSON_OBJECT
+    assert ark.primary is StructuredOutputMode.JSON_SCHEMA
+    assert vllm.primary is StructuredOutputMode.JSON_SCHEMA
     assert custom_endpoint.primary is StructuredOutputMode.JSON_SCHEMA
 
 

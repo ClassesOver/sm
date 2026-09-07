@@ -36,7 +36,13 @@ class ModelStructuredCapabilities:
 
 
 class VerifiedModelCapabilityResolver:
-    """把模型档位配置解析为与具体模型供应商解耦的协议计划。"""
+    """按供应商能力矩阵解析结构化协议计划。
+
+    DashScope 的 JSON Schema 是模型白名单能力，不能因为兼容端点接受请求
+    就推断所有模型兑现 strict schema；非白名单模型直接使用 JSON Object，
+    再由 Reporting 的领域 Pydantic 校验保证业务契约。Ark 与 vLLM 的公开
+    OpenAI-compatible 接口支持通用 JSON Schema，因此保持配置的 JSON Schema
+    优先，并沿用执行器的运行时降级。"""
 
     def resolve(
         self,
@@ -56,13 +62,12 @@ class VerifiedModelCapabilityResolver:
         if (
             mode is StructuredOutputMode.JSON_SCHEMA
             and is_dashscope_endpoint(endpoint)
-            and _QWEN_MODEL_PATTERN.search(model_id)
             and not _DASHSCOPE_JSON_SCHEMA_QWEN_PATTERN.search(model_id)
         ):
             # DashScope 官方仅为 Qwen3.7 Plus、Qwen3.7/3.8 Flash 和 Max
-            # 系列承诺 JSON Schema。其他 Qwen（包括 3.6、3.8 Plus 与开源
-            # 权重系列）只能按 json_object 生成后再执行领域 Pydantic 校验，
-            # 不能把偶发成功当成能力。
+            # 系列承诺 JSON Schema。DeepSeek、Kimi、GLM、StepFun 以及其他
+            # Qwen/开源模型的兼容端点即使接受 schema 参数，也只保证合法 JSON。
+            # 供应商能力边界优先于环境变量配置，避免浪费一次必然失败的请求。
             mode = StructuredOutputMode.JSON_OBJECT
             source = "provider_model_capability"
         fallback = (
