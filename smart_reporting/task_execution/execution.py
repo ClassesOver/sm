@@ -24,7 +24,7 @@ from daytona.common.errors import DaytonaNotFoundError
 
 from ..agent_control import AGENT_PLAN_STATE_KEY
 from ..runtime.observability import suppress_expected_probe_tracing
-from ..sandbox import ExecRequest
+from ..sandbox import ExecRequest, SandboxNotFound
 from ..skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -1708,7 +1708,7 @@ class TaskExecutionKernel:
                     try:
                         with suppress_expected_probe_tracing():
                             info = await sandbox.fs.get_file_info(current)
-                    except DaytonaNotFoundError:
+                    except (DaytonaNotFoundError, SandboxNotFound):
                         await sandbox.fs.create_folder(current, "700")
                         continue
                     if self.service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
@@ -1716,7 +1716,7 @@ class TaskExecutionKernel:
                 try:
                     with suppress_expected_probe_tracing():
                         info = await sandbox.fs.get_file_info(runtime_path)
-                except DaytonaNotFoundError:
+                except (DaytonaNotFoundError, SandboxNotFound):
                     await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
                 else:
                     if not self.service._is_regular_file(info):
@@ -2606,7 +2606,7 @@ class TaskExecutionKernel:
                         try:
                             with suppress_expected_probe_tracing():
                                 info = await sandbox.fs.get_file_info(current)
-                        except DaytonaNotFoundError:
+                        except (DaytonaNotFoundError, SandboxNotFound):
                             await sandbox.fs.create_folder(current, "755")
                             continue
                         if self.service._is_symlink(info) or not bool(
@@ -2699,7 +2699,13 @@ class TaskExecutionKernel:
                         if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
                             return False
                     return True
-        except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
+        except (
+            TaskExecutionRepositoryError,
+            DaytonaNotFoundError,
+            SandboxNotFound,
+            WorkspaceError,
+            TimeoutError,
+        ):
             return False
         return False
 
@@ -2711,17 +2717,26 @@ class TaskExecutionKernel:
         try:
             async with asyncio.timeout(MAX_VALIDATOR_STAGE_TIMEOUT):
                 async for sandbox in self._sandbox(scope):
-                    result = await sandbox.process.exec(
-                        shlex.join(["sudo", "rm", "-rf", "--", validator_dir]),
-                        timeout=30,
-                    )
+                    cleanup_command = shlex.join(["sudo", "rm", "-rf", "--", validator_dir])
+                    if getattr(sandbox, "ref", None) is not None:
+                        result = await sandbox.process.exec(
+                            ExecRequest(command=cleanup_command, timeout=30)
+                        )
+                    else:
+                        result = await sandbox.process.exec(cleanup_command, timeout=30)
                     if getattr(result, "exit_code", None) != 0:
                         raise WorkspaceError("validator 临时目录清理失败。")
                     try:
                         await sandbox.fs.delete_file(validator_dir, recursive=True)
-                    except DaytonaNotFoundError:
+                    except (DaytonaNotFoundError, SandboxNotFound):
                         pass
-        except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
+        except (
+            TaskExecutionRepositoryError,
+            DaytonaNotFoundError,
+            SandboxNotFound,
+            WorkspaceError,
+            TimeoutError,
+        ):
             pass
 
     @staticmethod

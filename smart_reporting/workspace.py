@@ -33,7 +33,7 @@ from .async_utils import complete_cleanup
 from .http.security import thread_label
 from .runtime.database import AgentDatabase, create_agent_database
 from .runtime.observability import suppress_expected_probe_tracing
-from .sandbox.contracts import RunPythonScriptRequest, WorkspaceBinding
+from .sandbox.contracts import ExecRequest, RunPythonScriptRequest, WorkspaceBinding
 from .sandbox.errors import SandboxNotFound, SandboxProviderError, SandboxTimeout
 from .sandbox.python_runner import PythonScriptRunner
 from .sandbox.registry import SandboxBindingRecord
@@ -1684,14 +1684,20 @@ class WorkspaceService:
             root = await self._ainfo(sandbox, remote)
             if self._is_symlink(root) or not (root.is_dir or self._is_regular_file(root)):
                 raise WorkspaceError("工作区路径不是普通文件或目录。")
-            value = await sandbox.process.exec(
-                self._rg_command(arguments),
-                cwd=WORKSPACE_ROOT,
-                timeout=MAX_EXECUTION_TIMEOUT,
-            )
+            command = self._rg_command(arguments)
+            if self._provider is not None:
+                value = await sandbox.process.exec(
+                    ExecRequest(command=command, timeout=MAX_EXECUTION_TIMEOUT)
+                )
+            else:
+                value = await sandbox.process.exec(
+                    command,
+                    cwd=WORKSPACE_ROOT,
+                    timeout=MAX_EXECUTION_TIMEOUT,
+                )
 
         exit_code = getattr(value, "exit_code", None)
-        raw_value = getattr(value, "result", "")
+        raw_value = getattr(value, "result", "") or getattr(value, "stdout", "")
         if isinstance(raw_value, bytes):
             output = raw_value.decode("utf-8", errors="replace")
         else:
@@ -2013,11 +2019,16 @@ class WorkspaceService:
                 bool(getattr(info, "is_dir", False)) or self._is_regular_file(info)
             ):
                 raise WorkspaceError("所选项目不是普通文件或目录，请更换路径后重试。")
-            value = await sandbox.process.exec(
-                command,
-                cwd=WORKSPACE_ROOT,
-                timeout=MAX_EXECUTION_TIMEOUT,
-            )
+            if self._provider is not None:
+                value = await sandbox.process.exec(
+                    ExecRequest(command=command, timeout=MAX_EXECUTION_TIMEOUT)
+                )
+            else:
+                value = await sandbox.process.exec(
+                    command,
+                    cwd=WORKSPACE_ROOT,
+                    timeout=MAX_EXECUTION_TIMEOUT,
+                )
 
         exit_code = getattr(value, "exit_code", None)
         raw_output = getattr(value, "result", "")

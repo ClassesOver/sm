@@ -1,10 +1,12 @@
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 
+from smart_reporting.sandbox import ExecRequest, SandboxNotFound
 from smart_reporting.skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -14,6 +16,8 @@ from smart_reporting.skills import (
     public_skill_metadata,
     skill_script_receipt_hook,
 )
+from smart_reporting.tests.workspace_fakes import SECRET, AsyncMemoryRegistry
+from smart_reporting.workspace import WorkspaceService
 
 
 def create_skill(root, name="review"):
@@ -86,6 +90,71 @@ async def test_skill_script_hook_records_read_content_but_not_execution_output()
         {"skill_name": "report", "script_path": "validate.py", "execute": True},
     )
     assert len(context.session_state[TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY]) == 1
+
+
+@pytest.mark.anyio
+async def test_skill_script_hook_uses_provider_file_and_exec_contracts():
+    entries = {}
+    requests = []
+
+    async def get_file_info(path):
+        try:
+            return entries[path][0]
+        except KeyError as error:
+            raise SandboxNotFound("missing") from error
+
+    async def create_folder(path, _mode):
+        entries[path] = (SimpleNamespace(is_dir=True, mode="drwxr-xr-x"), b"")
+
+    async def upload_file(content, path):
+        entries[path] = (SimpleNamespace(is_dir=False, mode="-rw-r--r--"), bytes(content))
+
+    async def download_file(path):
+        return entries[path][1]
+
+    async def exec_request(request):
+        requests.append(request)
+        return SimpleNamespace(exit_code=0)
+
+    sandbox = SimpleNamespace(
+        ref=SimpleNamespace(resource_id="provider-1"),
+        fs=SimpleNamespace(
+            get_file_info=get_file_info,
+            create_folder=create_folder,
+            upload_file=upload_file,
+            download_file=download_file,
+        ),
+        process=SimpleNamespace(exec=exec_request),
+    )
+
+    class Provider:
+        async def ensure_workspace(self, _binding):
+            return sandbox
+
+    workspace = WorkspaceService(
+        SECRET,
+        provider=Provider(),
+        async_registry=AsyncMemoryRegistry({}),
+    )
+    context = RunContext(run_id="run", session_id="thread", session_state={})
+    body = "print('validate')\n"
+
+    async def read_script(**_kwargs):
+        return json.dumps({"skill_name": "report", "script_path": "validate.py", "content": body})
+
+    raw = await skill_script_receipt_hook(
+        context,
+        "get_skill_script",
+        read_script,
+        {"skill_name": "report", "script_path": "validate.py", "execute": False},
+        workspace_service=workspace,
+    )
+
+    readonly_path = json.loads(raw)["readonly_path"]
+    assert entries[readonly_path][1] == body.encode()
+    assert len(requests) == 1
+    assert isinstance(requests[0], ExecRequest)
+    assert requests[0].timeout == 30
 
 
 def test_load_sandbox_execution_skills_only_loads_additional_directory(tmp_path):

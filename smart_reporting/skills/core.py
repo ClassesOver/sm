@@ -14,6 +14,7 @@ from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
 from daytona.common.errors import DaytonaNotFoundError
 
+from ..sandbox import ExecRequest, SandboxNotFound
 from ..task_execution.acceptance import (
     AcceptanceContractError,
     normalize_acceptance_contract,
@@ -46,7 +47,10 @@ async def lock_sandbox_paths(sandbox: Any, permissions: dict[str, str]) -> None:
         paths = [path for path, path_mode in permissions.items() if path_mode == mode]
         commands.append(shlex.join(["sudo", "chmod", mode, "--", *paths]))
     command = " && ".join(commands)
-    result = await sandbox.process.exec(command, timeout=30)
+    if getattr(sandbox, "ref", None) is not None:
+        result = await sandbox.process.exec(ExecRequest(command=command, timeout=30))
+    else:
+        result = await sandbox.process.exec(command, timeout=30)
     if getattr(result, "exit_code", None) != 0:
         raise SkillAcceptanceError("只读脚本所有权设置失败。")
 
@@ -248,7 +252,7 @@ async def skill_script_receipt_hook(
                     current = f"{current}/{part}"
                     try:
                         info = await sandbox.fs.get_file_info(current)
-                    except DaytonaNotFoundError:
+                    except (DaytonaNotFoundError, SandboxNotFound):
                         await sandbox.fs.create_folder(current, "755")
                         continue
                     if workspace_service._is_symlink(info) or not bool(
@@ -257,7 +261,7 @@ async def skill_script_receipt_hook(
                         raise SkillAcceptanceError("Skill 脚本安装目录不是安全普通目录。")
                 try:
                     info = await sandbox.fs.get_file_info(readonly_path)
-                except DaytonaNotFoundError:
+                except (DaytonaNotFoundError, SandboxNotFound):
                     await sandbox.fs.upload_file(encoded, readonly_path)
                 else:
                     if not workspace_service._is_regular_file(info):

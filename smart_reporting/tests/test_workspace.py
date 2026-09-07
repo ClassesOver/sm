@@ -12,7 +12,14 @@ from sqlalchemy import delete, select
 
 import smart_reporting.workspace as workspace_module
 from smart_reporting.runtime.database import create_agent_database
-from smart_reporting.sandbox import IsolationKind, ProviderKind, SandboxRef
+from smart_reporting.sandbox import (
+    ExecRequest,
+    ExecResult,
+    ExecutionStatus,
+    IsolationKind,
+    ProviderKind,
+    SandboxRef,
+)
 from smart_reporting.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
@@ -169,6 +176,77 @@ async def test_async_apply_changes_rejects_hash_conflict_without_writing(monkeyp
         )
 
     assert await current.aread_text("thread", "analysis/model.py") == "value = 1\n"
+
+
+@pytest.mark.anyio
+async def test_provider_file_search_uses_exec_request_and_stdout(monkeypatch) -> None:
+    current, sandbox = _provider_workspace_service(monkeypatch)
+    await sandbox.fs.upload_file(b"notes", f"{WORKSPACE_ROOT}/notes.txt")
+    requests = []
+
+    async def execute(request):
+        requests.append(request)
+        return ExecResult(
+            status=ExecutionStatus.SUCCEEDED,
+            exit_code=0,
+            stdout="notes.txt\0",
+        )
+
+    sandbox.process.exec = execute
+
+    result = await current.asearch_files("thread", "*.txt")
+
+    assert result == {
+        "matches": [{"path": "notes.txt", "name": "notes.txt", "size": 5}],
+        "truncated": False,
+    }
+    assert len(requests) == 1
+    assert isinstance(requests[0], ExecRequest)
+    assert requests[0].cwd == ""
+
+
+@pytest.mark.anyio
+async def test_provider_read_lines_uses_exec_request_and_stdout(monkeypatch) -> None:
+    current, sandbox = _provider_workspace_service(monkeypatch)
+    await sandbox.fs.upload_file(b"alpha\nbeta\n", f"{WORKSPACE_ROOT}/notes.txt")
+    requests = []
+
+    async def execute(request):
+        requests.append(request)
+        stdout = (
+            "us-ascii\x0011\x002\x00" if "mime-encoding" in request.command else "alpha\nbeta\n"
+        )
+        return ExecResult(status=ExecutionStatus.SUCCEEDED, exit_code=0, stdout=stdout)
+
+    sandbox.process.exec = execute
+
+    result = await current.aread_lines("thread", "notes.txt", 1, 2)
+
+    assert result["content"] == "alpha\nbeta\n"
+    assert result["totalLines"] == 2
+    assert len(requests) == 2
+    assert all(isinstance(request, ExecRequest) for request in requests)
+
+
+@pytest.mark.anyio
+async def test_provider_workspace_fingerprint_uses_exec_request_and_stdout(monkeypatch) -> None:
+    current, sandbox = _provider_workspace_service(monkeypatch)
+    requests = []
+    digest = "a" * 64
+
+    async def execute(request):
+        requests.append(request)
+        return ExecResult(
+            status=ExecutionStatus.SUCCEEDED,
+            exit_code=0,
+            stdout=f"{digest}  -\n",
+        )
+
+    sandbox.process.exec = execute
+
+    assert await current.aworkspace_fingerprint("thread") == digest
+    assert len(requests) == 1
+    assert isinstance(requests[0], ExecRequest)
 
 
 def test_workspace模块不再导出旧模型工具集():
