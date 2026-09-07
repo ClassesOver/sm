@@ -38,7 +38,13 @@ from ..context_management import (
     clear_terminal_reasoning,
     projected_task_execution_model,
 )
-from ..integrations.model_config import OPENAI_COMPATIBLE_ROLE_MAP, openai_compatible_extra_body
+from ..integrations.model_config import (
+    OPENAI_COMPATIBLE_ROLE_MAP,
+    normalize_openai_chat_output_limit,
+    normalize_openai_chat_reasoning,
+    openai_compatible_extra_body,
+    uses_dashscope_qwen_thinking_protocol,
+)
 from ..model_routing import build_model_profiles
 from ..runtime.settings import AgentSettings
 from ..skills import (
@@ -60,6 +66,7 @@ from .model_policy import (
     apply_reporting_thinking_profile,
     reporting_model_output_token_limit,
     reporting_thinking_profile_from_model,
+    resolve_reporting_input_token_hard_cap,
 )
 from .models import ReportingError
 from .phase import (
@@ -107,6 +114,14 @@ from .phase import (
 )
 from .structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+    REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
+)
+from .structured_output.wire_schema import (
+    REPORTING_WIRE_DECODER_MODEL_ATTR,
+    REPORTING_WIRE_DIALECT_MODEL_ATTR,
+    REPORTING_WIRE_DOMAIN_SCHEMA_MODEL_ATTR,
+    REPORTING_WIRE_FINGERPRINT_MODEL_ATTR,
+    REPORTING_WIRE_SCHEMA_MODEL_ATTR,
 )
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
@@ -172,7 +187,7 @@ _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # 上限与 AGENT_REPORT_OUTPUT_TOKEN_RESERVE 的较小值。
 _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
-_REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
+_REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Agent 仍保留既有一次同 run continuation，
 # 这里与 900 秒模型请求配置保持一致，避免长结构化规划请求在上游返回前被截断。
@@ -2251,6 +2266,54 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
 
     _report_raw_tool_argument_errors = False
 
+    def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        params = super().get_request_params(*args, **kwargs)
+        params = normalize_openai_chat_output_limit(
+            params,
+            endpoint=self.base_url,
+            structured_output=bool(getattr(self, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, False)),
+        )
+        params = normalize_openai_chat_reasoning(params, endpoint=self.base_url)
+        extra_body = params.get("extra_body")
+        if (
+            params.get("reasoning_effort") is not None
+            and isinstance(extra_body, dict)
+            and isinstance(extra_body.get("thinking_budget"), int)
+            and uses_dashscope_qwen_thinking_protocol(self.id, self.base_url)
+        ):
+            # 百炼 Qwen 的公开 OpenAI-compatible 契约使用 enable_thinking 与
+            # thinking_budget，真实端点拒绝同时提交顶层 reasoning_effort。
+            # 只修改单次 HTTP 参数副本，保留模型内的 high/max 供阶段路由和重试使用。
+            params.pop("reasoning_effort", None)
+        wire_schema = getattr(self, REPORTING_WIRE_SCHEMA_MODEL_ATTR, None)
+        response_format = params.get("response_format")
+        json_schema = (
+            response_format.get("json_schema") if isinstance(response_format, dict) else None
+        )
+        if (
+            not isinstance(wire_schema, dict)
+            or not isinstance(response_format, dict)
+            or not isinstance(json_schema, dict)
+        ):
+            return params
+        # Agent.output_schema 继续是领域 Pydantic 模型；这里只替换发往兼容端点的
+        # wire schema。响应回到进程后必须先由同一 contract 解码，再执行领域校验。
+        adapted_format: dict[str, Any] = deepcopy(response_format)
+        adapted_json_schema = deepcopy(json_schema)
+        adapted_json_schema["schema"] = wire_schema
+        adapted_format["json_schema"] = adapted_json_schema
+        params["response_format"] = adapted_format
+        logger.bind(
+            model_id=self.id,
+            dialect=getattr(self, REPORTING_WIRE_DIALECT_MODEL_ATTR, None),
+            schema_fingerprint=getattr(
+                self,
+                REPORTING_WIRE_FINGERPRINT_MODEL_ATTR,
+                None,
+            ),
+        ).info("report_structured_wire_schema_applied")
+        return params
+
     def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
         """为单次请求生成隔离配置，禁止并发 Section 修改共享 Agent 模型。"""
 
@@ -2334,25 +2397,36 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                     },
                 }
             return {**kwargs, "tool_choice": "required"}
-        if task_kind not in {"analysis_item", "section"}:
-            return kwargs
-        has_tool_history = any(
-            message.role == "tool" or bool(message.tool_calls) for message in messages
-        )
-        if has_tool_history:
-            return kwargs
-        # 分析和章节首轮没有合法的纯文本终态，必须先通过投影出的工具推进；一旦已有
-        # 工具回执则恢复 auto，允许 Agno 正常结束，避免成功读取后被 required 逼入循环。
-        return {**kwargs, "tool_choice": "required"}
+        # analysis_item 和 section 的模型只是固定 Workflow 内的结构化生成器，真实
+        # 工具调用由 Workflow 回调完成。这里不得把 tool_choice=required 注入无工具
+        # 请求，否则开启 thinking 的 Qwen 端点会在业务生成前直接拒绝参数组合。
+        return kwargs
 
     @staticmethod
     def _validated_reporting_response(
         model: "ReportingOpenAIChat",
         response: ModelResponse,
     ) -> ModelResponse:
-        validator = getattr(model, "_report_response_validator", None)
-        if callable(validator):
-            response.content = validator(response.content)
+        decoder = getattr(model, REPORTING_WIRE_DECODER_MODEL_ATTR, None)
+        if callable(decoder) and response.content is not None:
+            # Agno 的 native structured-output 流程通过 ModelResponse.parsed
+            # 更新 RunOutput；content 在此阶段必须继续保持 provider 返回的 JSON
+            # 字符串。若提前替换成 dict，Agno 会把一次有效的 strict 响应误判为
+            # “Run response content is not a string”，进而触发无意义的协议降级。
+            candidate = decoder(response.content)
+            validator = getattr(model, "_report_response_validator", None)
+            if callable(validator):
+                response.parsed = validator(candidate)
+            else:
+                domain_schema = getattr(model, REPORTING_WIRE_DOMAIN_SCHEMA_MODEL_ATTR, None)
+                domain_validator = getattr(domain_schema, "model_validate", None)
+                response.parsed = (
+                    domain_validator(candidate) if callable(domain_validator) else candidate
+                )
+        else:
+            validator = getattr(model, "_report_response_validator", None)
+            if callable(validator):
+                response.content = validator(response.content)
         return response
 
     def _clear_report_run_error(self) -> None:
@@ -2773,7 +2847,27 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
             }
             else None
         )
-        hard_cap = min(configured_cap, phase_cap) if phase_cap is not None else configured_cap
+        phase_input_cap = (
+            min(configured_cap, phase_cap) if phase_cap is not None else configured_cap
+        )
+        request_output_reserve = (
+            self.max_tokens
+            if isinstance(self.max_tokens, int)
+            and not isinstance(self.max_tokens, bool)
+            and self.max_tokens > 0
+            else 0
+        )
+        hard_cap = resolve_reporting_input_token_hard_cap(
+            configured_input_token_cap=phase_input_cap,
+            model_id=self.id,
+            output_token_reserve=max(
+                TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+                request_output_reserve,
+            ),
+            absolute_input_token_cap=(
+                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+            ),
+        )
 
         def filter_and_bind_tools(current_tools: Any) -> Any:
             filtered = _phase_filtered_report_tools(messages, current_tools)
@@ -2785,14 +2879,13 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
 
         tools = filter_and_bind_tools(tools)
         identity_messages = _with_reporting_durable_identities(messages)
-        projected = TaskExecutionContextProjector.project(
+        projected, metrics = TaskExecutionContextProjector.project_with_metrics(
             identity_messages,
             model=self,
             tools=tools,
             response_format=response_format,
             hard_cap=hard_cap,
         )
-        metrics = dict(TaskExecutionContextProjector.last_metrics)
         record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
         return projected, metrics
 
@@ -2930,6 +3023,7 @@ def _report_model(
         collect_metrics_on_completion=(
             urlparse(settings.openai_base_url).hostname in _CUMULATIVE_STREAM_USAGE_HOSTS
         ),
+        strict_output=settings.model_structured_strict,
         retries=retries,
         exponential_backoff=retries > 0,
     )

@@ -107,6 +107,10 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import ( 
 from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noqa: E402 - 同上
     SectionWorkflow,
 )
+from smart_reporting.reporting.workflow.runtime.sections import (  # noqa: E402 - 同上
+    _generate_section_in_blocks,
+    _section_claim_authoring_contract,
+)
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (  # noqa: E402 - 同上
     VisualizationSectionWorkflow,
 )
@@ -622,7 +626,22 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
                     "warnings": [],
                 }
             ],
-            "metricDefinitions": [],
+            "metricDefinitions": [
+                {
+                    "code": "outpatient_revenue",
+                    "name": "门诊收入",
+                    "definition": "报告期间门诊收入合计。",
+                    "unit": "CNY",
+                    "periodBasis": "2025-01 至 2025-06",
+                },
+                {
+                    "code": "outpatient_cost_rate",
+                    "name": "门诊成本率",
+                    "definition": "门诊成本除以门诊收入。",
+                    "unit": "%",
+                    "periodBasis": "2025-01 至 2025-06",
+                },
+            ],
             "managementQuestionCatalog": [
                 {
                     "ref": "analysis_001",
@@ -1181,6 +1200,7 @@ def _build_model(
             enable_thinking=thinking,
             use_vllm_reasoning=settings.model_vllm_reasoning,
         ),
+        strict_output=settings.model_structured_strict,
         temperature=1.0,
         top_p=1.0,
         retries=0,
@@ -1543,6 +1563,21 @@ async def _run_fixed_section_scenario(
         "probe-sandbox",
         "reporting-section-agent",
     )
+    instruction_payload = {
+        "phase": "section",
+        "reportGoal": "分析 2025 年门诊收入趋势、成本效率与改进重点。",
+        "sectionGoal": {
+            "sectionCode": work_item.section_code,
+            "title": work_item.title,
+            "focus": list(work_item.completion_conditions),
+            "analysisIds": list(work_item.analysis_ids),
+        },
+        "sectionWorkItem": work_item.model_dump(mode="json", by_alias=True),
+        "completionConditions": list(work_item.completion_conditions),
+        "claimAuthoringContract": _section_claim_authoring_contract(work_item),
+        "sectionOutputPath": "analysis/output/outpatient_operation.json",
+        "reworkRequestPath": "analysis/output/outpatient_operation.rework.json",
+    }
 
     async def read_evidence(path: str, offset: int, _task_context: RunContext) -> Mapping[str, Any]:
         receipt = await recorder.invoke("read_file", {"path": path, "offset": offset})
@@ -1562,22 +1597,14 @@ async def _run_fixed_section_scenario(
         return {"ok": True, "content": "".join(chunks), "hasMore": False}
 
     async def generate(evidence: Any, task_context: RunContext) -> SectionDecision:
-        payload = json.dumps(
-            {
-                **stage_input,
-                "evidence": evidence.model_dump(mode="json", by_alias=True),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        output = await ReportingStructuredOutputExecutor(generator).run(
-            payload,
+        return await _generate_section_in_blocks(
+            generator,
+            instruction_payload,
+            evidence,
+            work_item,
             scope=scope,
             run_context=task_context,
         )
-        if not isinstance(output, SectionDecisionOutput):
-            raise RuntimeError("section generator did not return SectionDecisionOutput")
-        return cast(SectionDecision, output.root)
 
     async def render(
         decision: RenderSectionDecision, _task_context: RunContext

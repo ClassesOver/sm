@@ -67,7 +67,7 @@ def _report_reasoning_effort(
 
 
 def _structured_output_mode(
-    values: MutableMapping[str, str], name: str, default: str = "json_object"
+    values: MutableMapping[str, str], name: str, default: str = "json_schema"
 ) -> str:
     value = values.get(name, default).strip().lower()
     if value not in {"json_object", "json_schema"}:
@@ -212,9 +212,10 @@ class AgentSettings:
     report_analysis_concurrency: int
     report_section_concurrency: int
     reporting_execution_mode: str
-    model_fast_structured_mode: str = "json_object"
-    model_standard_structured_mode: str = "json_object"
-    model_strong_structured_mode: str = "json_object"
+    model_fast_structured_mode: str = "json_schema"
+    model_standard_structured_mode: str = "json_schema"
+    model_strong_structured_mode: str = "json_schema"
+    model_structured_strict: bool = True
 
     @classmethod
     def from_environment(
@@ -376,5 +377,8 @@ class AgentSettings:
             ),
             model_strong_structured_mode=_structured_output_mode(
                 values, "AGENT_MODEL_STRONG_STRUCTURED_MODE"
+            ),
+            model_structured_strict=_flag(
+                values.get("AGENT_MODEL_STRUCTURED_STRICT"), default=True
             ),
         )

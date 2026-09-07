@@ -35,6 +35,7 @@ from pydantic import (
 )
 
 from ....async_utils import complete_cleanup
+from ....context_management import TaskExecutionContextHardLimitError
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
@@ -150,7 +151,7 @@ from ...profile import (
 from ...profile import (
     resolve_capabilities as resolve_profile_capabilities,
 )
-from ...structured_output import ReportingStructuredOutputExecutor
+from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...vision import ReportVisionReviewer
 from ...workspace import WorkspaceReportService
 from ..checkpoint import (
@@ -491,9 +492,21 @@ class _ReportWorkflowRuntimeBase:
             if planner_enable_thinking
             else planner_off
         )
+        # 分析计划首次请求只需要整理已冻结的 Schema、画像能力和管理问题；将
+        # 首次推理预算减半可以避免每次正常请求都支付 max 档成本。结构化校验
+        # 或服务端 correction 仍通过 planner_max 使用完整预算，不能削弱失败修复能力。
+        planner_analysis_initial = (
+            ReportingThinkingProfile.on(
+                reasoning_effort="high",
+                thinking_budget=max(4096, planner_thinking_budget // 2),
+            )
+            if planner_enable_thinking
+            else planner_off
+        )
         # DeepSeek V4 只有 off/high/max 三个真实档位。数据理解和指标语义 Planner
         # 首次请求关闭 thinking，只有 Schema 校验失败或服务端签发 correction 时才升级；
-        # 分析计划从首次请求就使用 max，因为它必须同时满足指标、粒度、期间和关系约束。
+        # 分析计划首次使用 high，只有 Schema 校验失败或服务端签发 correction 时才升级 max，
+        # 因为正常请求只需整理已批准能力，失败修复才需要完整推理预算。
         # SQL 在首次请求关闭 thinking，失败后升到 max；归一化和提纲始终 off。
         self._request_normalizer = self._planning_agent(
             reporting_agent_template,
@@ -575,7 +588,7 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-planner",
             AnalysisBundle,
-            thinking_profile=planner_max,
+            thinking_profile=planner_analysis_initial,
             escalation_thinking_profile=planner_max,
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
@@ -843,7 +856,12 @@ class _ReportWorkflowRuntimeBase:
         )
 
     async def _run_planner(
-        self, agent: Agent, payload: dict[str, Any], run_context: RunContext
+        self,
+        agent: Agent,
+        payload: dict[str, Any],
+        run_context: RunContext,
+        *,
+        call_budget: StructuredOutputCallBudget | None = None,
     ) -> BaseModel:
         scope = self._scope(run_context)
         block_identity = payload.get("analysisBlock")
@@ -881,18 +899,30 @@ class _ReportWorkflowRuntimeBase:
                 # Planner 维持既有的无外层 session_state 语义；模型路由只从
                 # routing_context 读取，不把任务工具上下文传入无工具规划器。
                 agent_run_context=None,
+                call_budget=call_budget,
             )
+        except TaskExecutionContextHardLimitError as error:
+            hard_limit_metrics = error.metrics
+            loguru_logger.bind(
+                agent_id=agent.id,
+                error_code=error.code,
+                canonical_estimated_tokens=hard_limit_metrics.get("canonical_estimated_tokens", 0),
+                irreducible_prefix_estimated_tokens=hard_limit_metrics.get(
+                    "irreducible_prefix_estimated_tokens", 0
+                ),
+                input_token_hard_cap=hard_limit_metrics.get("input_token_hard_cap", 0),
+                tool_schema_bytes=hard_limit_metrics.get("tool_schema_bytes", 0),
+                response_format_bytes=hard_limit_metrics.get("response_format_bytes", 0),
+            ).warning("report_planner_context_hard_limit_exceeded")
+            raise ReportingError(
+                "report_planner_context_budget_exceeded",
+                f"报表规划输入的不可约简上下文超过当前模型输入预算（{agent.id}）。",
+                details=dict(hard_limit_metrics),
+            ) from error
         except ReportingError:
             raise
         output = structured.run_output
         content = structured.content
-        if isinstance(content, str) and (
-            "不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap" in content
-        ):
-            raise ReportingError(
-                "report_planner_context_budget_exceeded",
-                f"报表规划输入超过当前模型上下文预算（{agent.id}）。",
-            )
         metrics = getattr(output, "metrics", None)
         record_step_model_metrics(metrics)
         content_bytes = _payload_bytes(content)

@@ -23,12 +23,24 @@ from ..models import ReportingError
 from ..phase import bind_reporting_run_context, reporting_model_route_from_run_context
 from .policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+    REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
+    REPORTING_VERIFIED_STRUCTURED_MODES_MODEL_ATTR,
     StructuredOutputMode,
     VerifiedModelCapabilityResolver,
+)
+from .wire_schema import (
+    REPORTING_WIRE_DECODER_MODEL_ATTR,
+    REPORTING_WIRE_DIALECT_MODEL_ATTR,
+    REPORTING_WIRE_DOMAIN_SCHEMA_MODEL_ATTR,
+    REPORTING_WIRE_FINGERPRINT_MODEL_ATTR,
+    REPORTING_WIRE_SCHEMA_MODEL_ATTR,
+    StructuredOutputWireContract,
+    StructuredOutputWireSchemaResolver,
 )
 
 _MAX_CORRECTIONS = 5
 _MAX_MODEL_CALLS = _MAX_CORRECTIONS + 1
+_MAX_CORRECTION_CANDIDATE_BYTES = 32 * 1024
 
 
 class _TaskInvocation(Protocol):
@@ -45,6 +57,25 @@ class StructuredOutputResult:
     model_id: str
 
 
+@dataclass(slots=True)
+class StructuredOutputCallBudget:
+    """跨结构解析和领域纠错共享的模型业务调用预算。"""
+
+    max_model_calls: int = _MAX_MODEL_CALLS
+    model_calls: int = 0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_model_calls, bool) or self.max_model_calls < 1:
+            raise ValueError("max_model_calls 必须是正整数")
+
+    @property
+    def exhausted(self) -> bool:
+        return self.model_calls >= self.max_model_calls
+
+    def record_model_call(self) -> None:
+        self.model_calls += 1
+
+
 class ReportingStructuredOutputExecutor:
     """使用 Agno 执行结构化 Agent，并协调 Reporting 的有界纠错策略。"""
 
@@ -54,10 +85,12 @@ class ReportingStructuredOutputExecutor:
         *,
         idle_timeout_seconds: float = 900,
         capability_resolver: VerifiedModelCapabilityResolver | None = None,
+        wire_schema_resolver: StructuredOutputWireSchemaResolver | None = None,
     ) -> None:
         self.agent = agent
         self.idle_timeout_seconds = idle_timeout_seconds
         self.capability_resolver = capability_resolver or VerifiedModelCapabilityResolver()
+        self.wire_schema_resolver = wire_schema_resolver or StructuredOutputWireSchemaResolver()
 
     async def __call__(self, invocation: _TaskInvocation) -> Any:
         return await self.run(
@@ -90,19 +123,31 @@ class ReportingStructuredOutputExecutor:
         session_id: str,
         user_id: str,
         agent_run_context: RunContext | None = None,
+        call_budget: StructuredOutputCallBudget | None = None,
     ) -> StructuredOutputResult:
         schema = getattr(self.agent, "output_schema", None)
+        schema_name = _schema_name(schema)
         model_tier, model_id = _selected_model_route(self.agent, routing_context)
         configured_modes = getattr(self.agent.model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         configured_mode = (
             configured_modes.get(model_tier) if isinstance(configured_modes, dict) else None
         )
+        model_endpoint = getattr(getattr(self.agent, "model", None), "base_url", None)
+        wire_contract = self.wire_schema_resolver.resolve(
+            schema,
+            model_id=model_id,
+            endpoint=model_endpoint if isinstance(model_endpoint, str) else None,
+        )
+        capability_key = _runtime_capability_key(model_tier, wire_contract)
         capabilities = self.capability_resolver.resolve(
             model_id,
             configured_mode=configured_mode,
+            verified_mode=_runtime_verified_mode(self.agent, capability_key),
+            endpoint=model_endpoint if isinstance(model_endpoint, str) else None,
         )
         mode = capabilities.primary
         fallback = capabilities.fallback
+        mode_source = capabilities.source
         route_binding = (
             bind_reporting_run_context(routing_context)
             if routing_context is not None
@@ -111,23 +156,39 @@ class ReportingStructuredOutputExecutor:
         # 模型协议解析和 ReportingPhaseOpenAIChat 的实际 request model 必须读取
         # 同一个受信路由上下文，否则日志中的 model_id 可能与真正请求的模型分离。
         current_instruction: str | list[Message] = instruction
-        seen_structural_errors: set[str] = set()
+        budget = call_budget or StructuredOutputCallBudget()
+        if budget.exhausted:
+            raise ReportingError(
+                "report_phase_output_invalid",
+                "结构化 Agent 业务调用已达到上限。",
+            )
+        total_call_number = 0
+        business_call_number = 0
+        protocol_attempt_number = 0
         with route_binding, anyio.fail_after(self.idle_timeout_seconds):
-            for call_number in range(1, _MAX_MODEL_CALLS + 1):
+            while True:
+                total_call_number += 1
+                if mode is StructuredOutputMode.JSON_SCHEMA:
+                    protocol_attempt_number += 1
                 try:
                     execution_agent, output = await self._execute_mode(
                         mode,
                         schema,
                         current_instruction,
-                        session_id=f"{session_id}:structured:{call_number}",
+                        session_id=f"{session_id}:structured:{total_call_number}",
                         user_id=user_id,
                         agent_run_context=agent_run_context,
                         model_id=model_id,
-                        source=capabilities.source,
-                        call_number=call_number,
+                        source=mode_source,
+                        call_number=total_call_number,
+                        protocol_attempt_number=protocol_attempt_number,
+                        wire_contract=wire_contract,
                     )
                     _raise_recorded_agent_error(execution_agent)
-                    content = _validate_content(getattr(output, "content", output), schema)
+                    content = _validate_content(
+                        wire_contract.decode(getattr(output, "content", output)),
+                        schema,
+                    )
                 except Exception as error:
                     validation_error = _find_validation_error(error)
                     transport_error = (
@@ -138,38 +199,80 @@ class ReportingStructuredOutputExecutor:
                     )
                     if validation_error is None and not transport_error:
                         raise
-                    if call_number >= _MAX_MODEL_CALLS:
-                        raise _structured_output_error(error, schema) from error
 
+                    previous_mode = mode
+                    if transport_error:
+                        # Schema 协商失败发生在模型生成业务结果之前，不属于业务纠错。
+                        # 降级后必须使用原始指令重新请求，不能把端点兼容问题伪装成
+                        # 模型字段错误，也不能占用五次业务纠错额度。
+                        mode = fallback or mode
+                        _remember_runtime_verified_mode(self.agent, capability_key, mode)
+                        mode_source = "runtime_schema_fallback"
+                        current_instruction = instruction
+                        logger.bind(
+                            model_id=model_id,
+                            agent_id=getattr(self.agent, "id", None),
+                            schema_name=schema_name,
+                            failure_kind="transport",
+                            call_number=total_call_number,
+                            protocol_attempt_number=protocol_attempt_number,
+                            business_call_number=business_call_number,
+                            previous_mode=previous_mode.value,
+                            next_mode=mode.value,
+                            fallback_reason="schema_transport_error",
+                        ).warning("report_structured_output_mode_downgraded")
+                        continue
+
+                    assert validation_error is not None
                     candidate = (
                         getattr(validation_error, "_report_candidate", None)
                         if validation_error is not None
                         else None
                     )
-                    issues = (
-                        _validation_issues(validation_error)
-                        if validation_error is not None
-                        else [_transport_issue(error)]
-                    )
+                    issues = _validation_issues(validation_error)
                     fingerprint = _issues_fingerprint(issues)
-                    repeated_structural_error = (
+                    structural_error = (
                         validation_error is not None
                         and _is_structural_validation_error(validation_error)
-                        and fingerprint in seen_structural_errors
                     )
-                    if validation_error is not None and _is_structural_validation_error(
-                        validation_error
-                    ):
-                        seen_structural_errors.add(fingerprint)
-
-                    previous_mode = mode
-                    if transport_error or (
+                    if (
                         mode is StructuredOutputMode.JSON_SCHEMA
                         and fallback is not None
-                        and repeated_structural_error
+                        and structural_error
                     ):
                         mode = fallback
-                    correction_number = call_number
+                        _remember_runtime_verified_mode(self.agent, capability_key, mode)
+                        mode_source = "runtime_schema_fallback"
+                        # strict Schema 请求返回结构错误，说明当前兼容端点没有兑现
+                        # 原生约束。这是协议能力事实，不占用五次领域纠错额度；
+                        # 但保留精确 issues，帮助 JSON object 首次请求直接修正。
+                        current_instruction = _correction_instruction(
+                            instruction,
+                            correction_number=1,
+                            previous_output=candidate,
+                            issues=issues,
+                        )
+                        logger.bind(
+                            model_id=model_id,
+                            agent_id=getattr(self.agent, "id", None),
+                            schema_name=schema_name,
+                            failure_kind="structure",
+                            call_number=total_call_number,
+                            protocol_attempt_number=protocol_attempt_number,
+                            business_call_number=business_call_number,
+                            correction_number=1,
+                            previous_mode=previous_mode.value,
+                            next_mode=mode.value,
+                            fallback_reason="schema_structure_error",
+                            issue_fingerprint=fingerprint,
+                        ).warning("report_structured_output_mode_downgraded")
+                        continue
+
+                    business_call_number += 1
+                    budget.record_model_call()
+                    if budget.exhausted:
+                        raise _structured_output_error(error, schema) from error
+                    correction_number = business_call_number
                     current_instruction = _correction_instruction(
                         instruction,
                         correction_number=correction_number,
@@ -184,13 +287,23 @@ class ReportingStructuredOutputExecutor:
                     logger.bind(
                         model_id=model_id,
                         agent_id=getattr(self.agent, "id", None),
-                        call_number=call_number,
+                        schema_name=schema_name,
+                        failure_kind="structure" if structural_error else "business",
+                        call_number=total_call_number,
+                        protocol_attempt_number=protocol_attempt_number,
+                        business_call_number=business_call_number,
+                        business_model_call_total=budget.model_calls,
                         correction_number=correction_number,
                         previous_mode=previous_mode.value,
                         next_mode=mode.value,
+                        fallback_reason=(
+                            "repeated_schema_structure_error" if mode is not previous_mode else None
+                        ),
                         issue_fingerprint=fingerprint,
                     ).warning(event)
                     continue
+                business_call_number += 1
+                budget.record_model_call()
                 return StructuredOutputResult(
                     content=content,
                     run_output=output,
@@ -211,14 +324,25 @@ class ReportingStructuredOutputExecutor:
         model_id: str,
         source: str,
         call_number: int,
+        protocol_attempt_number: int,
+        wire_contract: StructuredOutputWireContract,
     ) -> tuple[Agent, Any]:
-        execution_agent = _agent_for_mode(self.agent, schema, mode)
+        execution_agent = _agent_for_mode(self.agent, schema, mode, wire_contract)
         logger.bind(
             model_id=model_id,
             agent_id=execution_agent.id,
+            schema_name=_schema_name(schema),
             mode=mode.value,
+            strict=(
+                bool(getattr(execution_agent.model, "strict_output", False))
+                if mode is StructuredOutputMode.JSON_SCHEMA
+                else None
+            ),
             source=source,
+            wire_dialect=wire_contract.dialect.value,
+            wire_schema_fingerprint=wire_contract.wire_fingerprint,
             call_number=call_number,
+            protocol_attempt_number=protocol_attempt_number,
         ).info("report_structured_output_attempt")
         result = execution_agent.arun(
             instruction,
@@ -242,16 +366,78 @@ def _selected_model_route(agent: Agent, run_context: RunContext | None) -> tuple
     )
 
 
-def _agent_for_mode(agent: Agent, schema: Any, mode: StructuredOutputMode) -> Agent:
+def _runtime_capability_key(
+    model_tier: str,
+    wire_contract: StructuredOutputWireContract,
+) -> str:
+    return f"{model_tier}:{wire_contract.cache_key}"
+
+
+def _runtime_verified_mode(agent: Agent, capability_key: str) -> str | None:
+    modes = getattr(
+        getattr(agent, "model", None),
+        REPORTING_VERIFIED_STRUCTURED_MODES_MODEL_ATTR,
+        None,
+    )
+    if not isinstance(modes, dict):
+        return None
+    mode = modes.get(capability_key)
+    return mode if isinstance(mode, str) else None
+
+
+def _remember_runtime_verified_mode(
+    agent: Agent,
+    capability_key: str,
+    mode: StructuredOutputMode,
+) -> None:
+    model = getattr(agent, "model", None)
+    if model is None:
+        return
+    modes = getattr(model, REPORTING_VERIFIED_STRUCTURED_MODES_MODEL_ATTR, None)
+    if not isinstance(modes, dict):
+        modes = {}
+        setattr(model, REPORTING_VERIFIED_STRUCTURED_MODES_MODEL_ATTR, modes)
+    modes[capability_key] = mode.value
+
+
+def _agent_for_mode(
+    agent: Agent,
+    schema: Any,
+    mode: StructuredOutputMode,
+    wire_contract: StructuredOutputWireContract,
+) -> Agent:
     if not isinstance(agent, Agent) or schema is None:
         return agent
+    if agent.model is None:
+        return agent
     model = copy(agent.model)
+    # 结构化输出同样必须继承 Reporting 的统一输出预算。清空 max_tokens 会让
+    # 不同兼容端点落入各自的服务端默认值；Ark 当前默认约 4K 可见 token，复杂
+    # Schema 会在对象闭合前被稳定截断，后续纠错也无法收敛。
+    setattr(model, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, True)
     if mode is StructuredOutputMode.JSON_SCHEMA:
-        if hasattr(model, "strict_output"):
-            model.strict_output = True
+        if wire_contract.schema is not None:
+            setattr(model, REPORTING_WIRE_SCHEMA_MODEL_ATTR, wire_contract.schema)
+            setattr(model, REPORTING_WIRE_DECODER_MODEL_ATTR, wire_contract.decode)
+            setattr(model, REPORTING_WIRE_DOMAIN_SCHEMA_MODEL_ATTR, schema)
+            setattr(model, REPORTING_WIRE_DIALECT_MODEL_ATTR, wire_contract.dialect.value)
+            setattr(
+                model,
+                REPORTING_WIRE_FINGERPRINT_MODEL_ATTR,
+                wire_contract.wire_fingerprint,
+            )
+        instructions = agent.instructions
+        if wire_contract.instruction:
+            if isinstance(instructions, str):
+                instructions = [instructions, wire_contract.instruction]
+            elif isinstance(instructions, list):
+                instructions = list(instructions)
+                if wire_contract.instruction not in instructions:
+                    instructions.append(wire_contract.instruction)
         return agent.deep_copy(
             update={
                 "model": model,
+                "instructions": instructions,
                 "output_schema": schema,
                 "parse_response": True,
                 "structured_outputs": True,
@@ -308,15 +494,6 @@ def _validation_issues(error: ValidationError) -> list[dict[str, str]]:
     return issues
 
 
-def _transport_issue(error: BaseException) -> dict[str, str]:
-    message = " ".join(str(error).split())[:500]
-    return {
-        "path": "$",
-        "type": "schema_transport_error",
-        "message": message or "当前端点不接受 JSON Schema 响应格式。",
-    }
-
-
 def _is_structural_validation_error(error: ValidationError) -> bool:
     """自定义 validator 属于业务契约，不能触发协议降级。"""
 
@@ -346,19 +523,34 @@ def _correction_instruction(
 ) -> list[Message]:
     correction = {
         "attempt": correction_number,
-        "previousOutput": _json_safe(previous_output),
         "issues": issues,
         "requiredAction": (
             "逐项修复 issues，返回满足原 output_schema 的完整 JSON 对象；"
             "不得输出解释、Markdown 或省略未报错的必填字段。"
         ),
     }
+    candidate = _json_safe(previous_output)
+    if candidate is not None:
+        encoded_candidate = json.dumps(
+            candidate,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+        if len(encoded_candidate) <= _MAX_CORRECTION_CANDIDATE_BYTES:
+            correction["previousOutput"] = candidate
+        else:
+            # 截断 JSON 通常已经包含整章正文。把它同时作为 assistant 历史和
+            # previousOutput 回灌会成倍放大上下文，并诱发下一轮再次截断。超限时只
+            # 保留不可逆诊断事实，让模型依据原始输入和精确 issues 重新生成完整结果。
+            correction["previousOutputOmitted"] = {
+                "reason": "size_limit",
+                "byteLength": len(encoded_candidate),
+                "sha256": sha256(encoded_candidate).hexdigest(),
+            }
     serialized = json.dumps(correction, ensure_ascii=False, separators=(",", ":"), default=str)
-    previous_content = _assistant_content(previous_output)
-    messages = [Message(role="user", content=instruction)]
-    if previous_content is not None:
-        messages.append(Message(role="assistant", content=previous_content))
-    messages.append(
+    return [
+        Message(role="user", content=instruction),
         Message(
             role="user",
             content=(
@@ -366,17 +558,8 @@ def _correction_instruction(
                 f"{serialized}\n"
                 "重新返回完整的业务结果 JSON，不得返回纠错事实本身。"
             ),
-        )
-    )
-    return messages
-
-
-def _assistant_content(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return json.dumps(_json_safe(value), ensure_ascii=False, separators=(",", ":"), default=str)
+        ),
+    ]
 
 
 def _json_safe(value: Any) -> Any:
@@ -390,16 +573,37 @@ def _json_safe(value: Any) -> Any:
 
 
 def _is_schema_transport_error(error: BaseException) -> bool:
-    messages: list[str] = []
+    evidence: list[str] = []
+    status_codes: set[int] = set()
     current: BaseException | None = error
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
         visited.add(id(current))
-        messages.append(str(current).lower())
+        evidence.append(str(current).lower())
+        for attribute in ("code", "param", "body"):
+            value = getattr(current, attribute, None)
+            if value is not None:
+                evidence.append(str(value).lower())
+        status_code = getattr(current, "status_code", None)
+        if isinstance(status_code, int):
+            status_codes.add(status_code)
+        response_status = getattr(getattr(current, "response", None), "status_code", None)
+        if isinstance(response_status, int):
+            status_codes.add(response_status)
         current = current.__cause__ or current.__context__
-    combined = " ".join(messages)
+    # 有权威 HTTP 状态时只接受请求语义错误。401/403/429/5xx 即使文本中出现
+    # response_format，也属于鉴权、限流或服务故障，不能通过协议降级掩盖。
+    if status_codes and not status_codes.issubset({400, 422}):
+        return False
+    combined = " ".join(evidence)
     protocol_named = any(
-        marker in combined for marker in ("response_format", "json_schema", "json schema")
+        marker in combined
+        for marker in (
+            "response_format",
+            "json_schema",
+            "json schema",
+            "json_schema_converter",
+        )
     )
     rejected = any(
         marker in combined
@@ -410,9 +614,14 @@ def _is_schema_transport_error(error: BaseException) -> bool:
             "not available",
             "not allowed",
             "does not support",
+            "cannot find field $defs",
         )
     )
     return protocol_named and rejected
+
+
+def _schema_name(schema: Any) -> str:
+    return str(getattr(schema, "__name__", type(schema).__name__))
 
 
 def _structured_output_error(error: Exception, schema: Any) -> ReportingError:

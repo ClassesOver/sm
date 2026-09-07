@@ -401,7 +401,10 @@ class RuntimeSectionsMixin:
         # complete_section 之前拒绝服务端保留标记。模型仍可在当前 section run 内根据
         # 明确回执重试，只通过 chartIds 登记图表。
         parsed_blocks = tuple(ReportDraftBlock.model_validate(item) for item in blocks)
-        validate_report_draft_blocks(parsed_blocks)
+        validate_report_draft_blocks(
+            parsed_blocks,
+            expected_section_title=work_item.title,
+        )
         known_citations = {item.citation_id for item in work_item.citations}
         known_charts = {item.chart_id for item in work_item.charts}
         chart_citations = {item.chart_id: item.citation_ids for item in work_item.charts}
@@ -417,6 +420,7 @@ class RuntimeSectionsMixin:
         normalized_claim_ids = {claim.claim_id for claim in normalized_claims}
         normalized_blocks: list[ReportDraftBlock] = []
         warning_items = list(claim_warnings)
+        chart_owner: dict[str, str] = {}
         for block in parsed_blocks:
             unknown_claim_ids = set(block.claim_ids) - normalized_claim_ids
             if unknown_claim_ids:
@@ -457,6 +461,30 @@ class RuntimeSectionsMixin:
                         },
                     }
                 )
+            claim_ids = tuple(
+                claim_id for claim_id in block.claim_ids if claim_id in normalized_claim_ids
+            )
+            chart_ids: list[str] = []
+            for chart_id in block.chart_ids:
+                if chart_id not in known_charts:
+                    continue
+                owner = chart_owner.get(chart_id)
+                if owner is not None:
+                    warning_items.append(
+                        {
+                            "code": "report_section_chart_duplicate_binding",
+                            "message": "同一图表在当前章节只能绑定一个正文 block，已保留首次绑定。",
+                            "details": {
+                                "sectionCode": section_code,
+                                "chartId": chart_id,
+                                "firstBlockId": owner,
+                                "duplicateBlockId": block.block_id,
+                            },
+                        }
+                    )
+                    continue
+                chart_owner[chart_id] = block.block_id
+                chart_ids.append(chart_id)
             normalized_blocks.append(
                 block.model_copy(
                     update={
@@ -465,48 +493,94 @@ class RuntimeSectionsMixin:
                             for citation_id in block.citation_ids
                             if citation_id in known_citations
                         ),
-                        "chart_ids": tuple(
-                            chart_id for chart_id in block.chart_ids if chart_id in known_charts
-                        ),
-                        "claim_ids": tuple(
-                            claim_id
-                            for claim_id in block.claim_ids
-                            if claim_id in normalized_claim_ids
-                        ),
+                        "chart_ids": tuple(chart_ids),
+                        "claim_ids": claim_ids,
                     }
                 )
             )
-        # 图表提交属于当前章节的冻结事实。模型可能只生成正文而遗漏 chartIds；此时不能
-        # 让 assemble_report_markdown 静默排除已提交图片，确定性地将未引用图表绑定到首个
-        # 正文块，并补齐其 citation，保证最终 Markdown/PDF 消费章节图表。
+
+        # 模型可能遗漏 block.chartIds，但 claim 仍声明了明确的图表关系。只有当关系能
+        # 唯一定位到一个正文 block 时才补绑；无法定位时排除图表并记录告警，不能把图表
+        # 粗暴塞入首个 block，避免图文语义错位。
         referenced_chart_ids = {
             chart_id for block in normalized_blocks for chart_id in block.chart_ids
         }
-        unreferenced_charts = tuple(
-            chart for chart in work_item.charts if chart.chart_id not in referenced_chart_ids
-        )
-        if unreferenced_charts and normalized_blocks:
-            first_block = normalized_blocks[0]
-            chart_ids = list(first_block.chart_ids)
-            citation_ids = list(first_block.citation_ids)
-            for chart in unreferenced_charts:
-                chart_ids.append(chart.chart_id)
+        claims_by_id = {claim.claim_id: claim for claim in normalized_claims}
+        citation_dataset_by_id = {item.citation_id: item.dataset_id for item in work_item.citations}
+        for chart in work_item.charts:
+            if chart.chart_id in referenced_chart_ids:
+                continue
+            explicit_candidates = [
+                block
+                for block in normalized_blocks
+                if any(
+                    chart.chart_id in claims_by_id[claim_id].chart_ids
+                    for claim_id in block.claim_ids
+                    if claim_id in claims_by_id
+                )
+            ]
+            candidates = explicit_candidates
+            if not candidates:
+                # 允许模型只提交 claim 的指标/期间和 citation，而遗漏 chartId；仅在
+                # 这些冻结语义组合能唯一匹配时补绑，避免相同指标的多图误绑定。
+                candidates = [
+                    block
+                    for block in normalized_blocks
+                    if any(
+                        claim.metric_code in chart.metric_codes
+                        and claim.current_period == chart.current_period
+                        and set(chart.citation_ids).issubset(set(claim.citation_ids))
+                        and (
+                            not chart.source_dataset_id
+                            or chart.source_dataset_id
+                            in {
+                                citation_dataset_by_id[citation_id]
+                                for citation_id in claim.citation_ids
+                                if citation_id in citation_dataset_by_id
+                            }
+                        )
+                        for claim_id in block.claim_ids
+                        if (claim := claims_by_id.get(claim_id)) is not None
+                    )
+                ]
+            if len(candidates) == 1:
+                target = candidates[0]
+                bound_chart_ids = (*target.chart_ids, chart.chart_id)
+                citation_ids = list(target.citation_ids)
                 for citation_id in chart.citation_ids:
                     if citation_id in known_citations and citation_id not in citation_ids:
                         citation_ids.append(citation_id)
-            normalized_blocks[0] = first_block.model_copy(
-                update={"chart_ids": tuple(chart_ids), "citation_ids": tuple(citation_ids)}
-            )
-            warning_items.append(
-                {
-                    "code": "report_section_chart_auto_bound",
-                    "message": "模型未绑定已提交图表，服务端已将其确定性绑定到首个正文块。",
-                    "details": {
-                        "sectionCode": section_code,
-                        "chartIds": [chart.chart_id for chart in unreferenced_charts],
-                    },
-                }
-            )
+                normalized_blocks[normalized_blocks.index(target)] = target.model_copy(
+                    update={
+                        "chart_ids": bound_chart_ids,
+                        "citation_ids": tuple(citation_ids),
+                    }
+                )
+                referenced_chart_ids.add(chart.chart_id)
+                chart_owner[chart.chart_id] = target.block_id
+                warning_items.append(
+                    {
+                        "code": "report_section_chart_auto_bound",
+                        "message": "遗漏图表已按唯一 claim/block 语义关系补充绑定。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "chartId": chart.chart_id,
+                            "blockId": target.block_id,
+                        },
+                    }
+                )
+            else:
+                warning_items.append(
+                    {
+                        "code": "report_section_chart_unbound",
+                        "message": "图表无法唯一匹配正文 block，已排除以避免图文语义错位。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "chartId": chart.chart_id,
+                            "candidateBlockIds": [item.block_id for item in candidates],
+                        },
+                    }
+                )
         # 未知引用可以局部丢弃，但整章必须仍保留至少一个冻结 citation 作为事实锚点。
         # 这里在 SectionArtifact 结构校验前判断，避免 claims 全部因未知 citation 被省略
         # 时落成泛化的 Pydantic 错误，向模型返回稳定且可重试的领域错误码。

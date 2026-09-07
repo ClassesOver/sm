@@ -2,6 +2,10 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+
 from .base import (
     DOMAIN_CODES,
     MAX_REPORT_INPUTS,
@@ -50,6 +54,14 @@ from .validation import (
 )
 
 PROFILE_TRANSFER_TIMEOUT_SECONDS = 5 * 60
+_PROFILE_PROCESS_POOL: ProcessPoolExecutor | None = None
+
+
+def _profile_process_pool() -> ProcessPoolExecutor:
+    global _PROFILE_PROCESS_POOL
+    if _PROFILE_PROCESS_POOL is None:
+        _PROFILE_PROCESS_POOL = ProcessPoolExecutor(max_workers=2)
+    return _PROFILE_PROCESS_POOL
 
 
 class RuntimeDatasetsMixin:
@@ -236,46 +248,47 @@ class RuntimeDatasetsMixin:
                         if requirement is not None
                         else set()
                     )
-                    profiled = await anyio.to_thread.run_sync(
-                        lambda: profile_csv_dataset(
-                            content,
-                            dataset_id=handle.dataset_id,
-                            path=handle.path,
-                            expected_sha256=handle.sha256,
-                            profile_path=profile_path(handle),
-                            period_fields=(
-                                tuple(
-                                    dict.fromkeys(
-                                        table.period_column for table in requirement.tables
-                                    )
-                                )
-                                if requirement is not None
-                                else ()
-                            ),
-                            schema={
-                                "sourceId": handle.source_id,
-                                "requirementId": handle.requirement_id,
-                                "tables": [
-                                    table.model_dump(mode="json", by_alias=True)
-                                    for snapshot in snapshots
-                                    for table in snapshot.tables
-                                    if table.source_id == handle.source_id
-                                    and (
-                                        not requirement_tables
-                                        or f"{table.database}.{table.name}".lower()
-                                        in requirement_tables
-                                        or table.name.lower() in requirement_tables
-                                    )
-                                ],
-                            },
-                            organization_grain=(
-                                tuple(requirement.grain_columns) if requirement is not None else ()
-                            ),
-                            metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
-                            source_warnings=source_warning_messages,
+                    profile_job = partial(
+                        profile_csv_dataset,
+                        content,
+                        dataset_id=handle.dataset_id,
+                        path=handle.path,
+                        expected_sha256=handle.sha256,
+                        profile_path=profile_path(handle),
+                        period_fields=(
+                            tuple(
+                                dict.fromkeys(table.period_column for table in requirement.tables)
+                            )
+                            if requirement is not None
+                            else ()
                         ),
-                        limiter=profile_limiter,
+                        schema={
+                            "sourceId": handle.source_id,
+                            "requirementId": handle.requirement_id,
+                            "tables": [
+                                table.model_dump(mode="json", by_alias=True)
+                                for snapshot in snapshots
+                                for table in snapshot.tables
+                                if table.source_id == handle.source_id
+                                and (
+                                    not requirement_tables
+                                    or f"{table.database}.{table.name}".lower()
+                                    in requirement_tables
+                                    or table.name.lower() in requirement_tables
+                                )
+                            ],
+                        },
+                        organization_grain=(
+                            tuple(requirement.grain_columns) if requirement is not None else ()
+                        ),
+                        metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
+                        source_warnings=source_warning_messages,
                     )
+                    # Profile 仅依赖不可变字节和纯函数参数，放入受控进程池隔离
+                    # fg-data-profiling/NumPy 的 CPU 计算与 matplotlib 全局状态。
+                    async with profile_limiter:
+                        loop = asyncio.get_running_loop()
+                        profiled = await loop.run_in_executor(_profile_process_pool(), profile_job)
                     # 生产 WorkspaceService 始终提供内容边界校验；极小的单元测试夹具
                     # 可以只实现读写原语，不应改变 Profile 或其哈希契约。
                     validate_content = getattr(self.workspace_service, "_validate_content", None)

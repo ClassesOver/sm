@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import ConfigDict, Field
 from sqlglot import exp
 
+from ...structured_output import StructuredOutputCallBudget
 from .base import (
     _PLANNER_DISPLAY_NAMES,
     DOMAIN_CODES,
@@ -500,6 +501,7 @@ class RuntimePlanningMixin:
         }
         previous_output: Any = None
         validation_feedback: dict[str, Any] | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -515,6 +517,7 @@ class RuntimePlanningMixin:
                 self._data_understanding_agent,
                 payload,
                 run_context,
+                call_budget=call_budget,
             )
             plan, previous_output, validation_feedback = _data_understanding_result(
                 output, snapshots
@@ -691,6 +694,7 @@ class RuntimePlanningMixin:
 
         previous_output: Any = None
         validation_feedback: dict[str, Any] | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -707,6 +711,7 @@ class RuntimePlanningMixin:
                     self._measure_semantic_agent,
                     payload,
                     run_context,
+                    call_budget=call_budget,
                 )
             except ValidationError as error:
                 # 兼容端点可能接受 strict tool schema 却仍漏掉嵌套必填字段。
@@ -864,6 +869,7 @@ class RuntimePlanningMixin:
         previous_output: dict[str, Any] | None = None
         allowed_paths: tuple[str, ...] = ()
         outline: ReportOutline | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
             if validation_feedback is not None:
@@ -878,7 +884,12 @@ class RuntimePlanningMixin:
                     ),
                 }
             try:
-                output = await self._run_planner(self._outline_agent, payload, run_context)
+                output = await self._run_planner(
+                    self._outline_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                )
             except ValidationError as error:
                 # Agno 的 Agent 重试只对同一输入盲重试，无法携带结构校验失败的原因；
                 # 这里把 planner 抛出的 ValidationError 转成 correction 回灌，让模型
@@ -970,6 +981,7 @@ class RuntimePlanningMixin:
     ) -> StepOutput:
         state = self._state(run_context)
         snapshots = self._snapshots(run_context)
+        data_shapes = self._data_shapes(run_context)
         data_understanding = DataUnderstandingPlan.model_validate(
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY]
         )
@@ -982,7 +994,7 @@ class RuntimePlanningMixin:
             profile,
             self._capabilities(run_context),
             snapshots,
-            self._data_shapes(run_context),
+            data_shapes,
             tuple(
                 ReconciliationShape(
                     code=item.code,
@@ -1020,6 +1032,7 @@ class RuntimePlanningMixin:
         required_deletion_paths: tuple[str, ...] = ()
         last_semantic_correction_signature: str | None = None
         bundle: AnalysisBundle | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -1055,7 +1068,12 @@ class RuntimePlanningMixin:
                     _payload_sha256(_compact_validation_feedback(validation_feedback)),
                 )
             try:
-                output = await self._run_planner(self._analysis_agent, payload, run_context)
+                output = await self._run_planner(
+                    self._analysis_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                )
             except ValidationError as error:
                 # Analysis planner 已关闭 Agno 对同一输入的盲重试。结构错误必须携带
                 # 原始候选和精确字段路径进入 Reporting 纠错循环；否则复杂 Bundle
@@ -1135,7 +1153,7 @@ class RuntimePlanningMixin:
                         json.dumps(unexpected_paths, ensure_ascii=True, separators=(",", ":")),
                     )
             normalized_output, split_repairs = _normalize_unsafe_multi_table_requirements(
-                output, snapshots
+                output, snapshots, data_shapes
             )
             if split_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
@@ -1145,7 +1163,9 @@ class RuntimePlanningMixin:
                 )
                 output = normalized_output
                 output_payload = normalized_payload
-            normalized_output, grain_repairs = _normalize_analysis_bundle_grain(output, snapshots)
+            normalized_output, grain_repairs = _normalize_analysis_bundle_grain(
+                output, snapshots, data_shapes
+            )
             if grain_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
                 logger.info(
@@ -1183,6 +1203,7 @@ class RuntimePlanningMixin:
                 self._data_understanding(run_context),
                 snapshots,
                 self._envelope(run_context),
+                data_shapes,
             )
             if semantic_issues:
                 validation_feedback = {
@@ -1252,6 +1273,7 @@ class RuntimePlanningMixin:
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
         state = self._state(run_context)
+        data_shapes = self._data_shapes(run_context)
         requirements = tuple(
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
@@ -1298,6 +1320,7 @@ class RuntimePlanningMixin:
                 row_preserving_requirement_ids=tuple(
                     state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
                 ),
+                data_shapes=data_shapes,
             )
             if not issues:
                 state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
@@ -1310,6 +1333,7 @@ class RuntimePlanningMixin:
             )
         validation_feedback: dict[str, Any] | None = None
         approved: tuple[ApprovedQuery, ...] | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -1322,7 +1346,12 @@ class RuntimePlanningMixin:
                         "不返回补丁、解释或 Markdown"
                     ),
                 }
-            output = await self._run_planner(self._sql_agent, payload, run_context)
+            output = await self._run_planner(
+                self._sql_agent,
+                payload,
+                run_context,
+                call_budget=call_budget,
+            )
             assert isinstance(output, GeneratedQueryBatch)
             approved, issues = _approve_generated_queries(
                 output,
@@ -1333,6 +1362,7 @@ class RuntimePlanningMixin:
                 row_preserving_requirement_ids=tuple(
                     state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
                 ),
+                data_shapes=data_shapes,
             )
             if issues:
                 validation_feedback = {
@@ -2612,6 +2642,7 @@ def _approve_generated_queries(
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
     row_preserving_requirement_ids: tuple[str, ...] = (),
+    data_shapes: tuple[DataShape, ...] = (),
 ) -> tuple[tuple[ApprovedQuery, ...], list[dict[str, Any]]]:
     requirements_by_id = {item.requirement_id: item for item in requirements}
     explicit_period_mode = any("period_role" in item.model_fields_set for item in generated.queries)
@@ -2694,6 +2725,7 @@ def _approve_generated_queries(
                     if requirement.requirement_id in row_preserving_requirement_ids
                     else ()
                 ),
+                data_shapes=data_shapes,
                 require_complete_batch=False,
             )
             approved.extend(query_approved)

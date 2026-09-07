@@ -53,6 +53,45 @@ _SPACED_VALUE_STRONG_MARKER = re.compile(
 )
 _FENCED_CODE_START = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})")
 _INLINE_CODE_SPAN = re.compile(r"(?P<delimiter>`+).*?(?P=delimiter)")
+_IMAGE_WITH_CAPTION = re.compile(
+    r"(?P<image><p>\s*<img\b[^>]*?/?>\s*</p>)\s*"
+    r"(?P<caption><p>\s*<em>图表：.*?</em>\s*</p>)",
+    re.DOTALL,
+)
+_IMAGE_PARAGRAPH = re.compile(r"(?P<image><p>\s*<img\b[^>]*?/?>\s*</p>)")
+
+
+def _figure_image_html(image_paragraph: str) -> str:
+    """将 Markdown 图片段落放入稳定的 figure 容器，供三种产物共享分页语义。"""
+
+    image = image_paragraph.strip()
+    image = re.sub(r"^<p>\s*|\s*</p>$", "", image)
+    return f'<p class="report-figure-image">{image}</p>'
+
+
+def _prepare_figure_layout(body: str) -> str:
+    """把图片及其紧邻图注包装成不可拆分的语义块。
+
+    Markdown 渲染器会把图片和图注分别输出为两个段落。若只给图片设置
+    ``break-inside``，分页器仍可能把图注或相邻解释挪到下一页；这里在最终
+    HTML 边界补上 figure/figcaption，不改变权威 Markdown 或数据内容。
+    """
+
+    def with_caption(match: re.Match[str]) -> str:
+        caption = re.sub(r"^\s*<p>\s*<em>|</em>\s*</p>\s*$", "", match["caption"]).strip()
+        return (
+            '<figure class="report-figure">'
+            f"{_figure_image_html(match['image'])}"
+            f'<figcaption class="report-figure-caption">{caption}</figcaption>'
+            "</figure>"
+        )
+
+    prepared = _IMAGE_WITH_CAPTION.sub(with_caption, body)
+
+    def without_caption(match: re.Match[str]) -> str:
+        return f'<figure class="report-figure">{_figure_image_html(match["image"])}</figure>'
+
+    return _IMAGE_PARAGRAPH.sub(without_caption, prepared)
 
 
 def _trim_strong_marker_spacing(match: re.Match[str]) -> str:
@@ -286,6 +325,7 @@ def _semantic_documents(
     toc_page_numbers: Mapping[str, int] | None = None,
 ) -> tuple[str, str]:
     theme = REPORT_VISUAL_THEME
+    body = _prepare_figure_layout(body)
     title = html.escape(context["title"])
     period = html.escape(context["periodLabel"])
     organization = html.escape(context["organizationName"])
@@ -354,7 +394,9 @@ def _semantic_documents(
         ";font-size:16pt;padding-left:3mm}"
         "h3{font-size:12.5pt;color:"
         f"{theme['ink']}"
-        "}h2,h3{page-break-after:avoid;break-after:avoid}"
+        "}h4{font-size:11pt;color:"
+        f"{theme['ink']}"
+        "}h2,h3,h4{page-break-after:avoid;break-after:avoid;orphans:3;widows:3}"
         "p,li{orphans:3;widows:3}table{width:100%;border-collapse:collapse;margin:10px 0}"
         "thead{display:table-header-group}tr{break-inside:avoid}"
         "th,td{border:0.6pt solid "
@@ -365,12 +407,16 @@ def _semantic_documents(
         ";color:"
         f"{theme['primary']}"
         "}tbody tr:nth-child(even){background:#F9FAFB}"
-        "img{display:block;max-width:100%;max-height:180mm;width:auto;height:auto;"
-        "object-fit:contain;margin:12px auto;break-inside:avoid}"
-        "p:has(>img){break-after:avoid;margin-bottom:1mm}"
-        "p:has(>img)+p{break-before:avoid;break-after:avoid;margin-top:0;text-align:center;color:"
+        ".report-figure{display:block;margin:8mm auto 10mm;break-inside:avoid;"
+        "page-break-inside:avoid;break-before:avoid;break-after:avoid;text-align:center}"
+        ".report-figure-image{margin:0;break-inside:avoid;break-after:avoid;text-align:center}"
+        ".report-figure-image img{display:block;max-width:100%;max-height:180mm;width:auto;"
+        "height:auto;object-fit:contain;margin:0 auto}"
+        ".report-figure-caption{margin:2mm 0 0;text-align:center;font-size:9pt;"
+        "line-height:1.35;break-before:avoid;break-after:avoid;color:"
         f"{theme['muted']}"
-        "}"
+        "}.report-figure + p{break-before:avoid;page-break-before:avoid}"
+        "p:has(+.report-figure){break-after:avoid;page-break-after:avoid}"
         "pre,code{white-space:pre-wrap;overflow-wrap:anywhere}"
         "blockquote{border-left:3px solid "
         f"{theme['accent']}"

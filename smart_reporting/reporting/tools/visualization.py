@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -23,6 +24,21 @@ MIN_REPORT_CHART_HEIGHT = 675
 MIN_REPORT_CHART_EFFECTIVE_DPI = 150
 # 174mm 来源于 A4 纸张宽度 210mm 减去现有左右各 18mm 页边距，仅作质量估算，不能作为发布门禁。
 REPORT_BODY_WIDTH_INCHES = 174 / 25.4
+_CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _missing_chinese_display_fields(registration: ReportChartRegistration) -> list[str]:
+    """返回缺少中文用户可见文字的元数据字段。
+
+    图像像素中的坐标轴和图例需要视觉或主题级校验，无法在提交工具中稳定识别；
+    这里仅对服务端掌握的标题和图注做轻量门禁，避免英文元数据进入正式报告。
+    """
+
+    return [
+        field_name
+        for field_name, value in (("title", registration.title), ("altText", registration.alt_text))
+        if not _CJK_TEXT_RE.search(value)
+    ]
 
 
 class RuntimeVisualizationMixin:
@@ -241,6 +257,23 @@ class RuntimeVisualizationMixin:
             serialized_charts = [
                 registration.model_dump(mode="json", by_alias=True) for registration in parsed
             ]
+            for registration in parsed:
+                missing_fields = _missing_chinese_display_fields(registration)
+                if missing_fields:
+                    # 复用既有章节提交错误码，保持工具协议兼容；details 给出可直接修复的
+                    # 字段，不把图片 OCR 引入发布门禁，也不改变成功回执结构。
+                    raise ReportingError(
+                        "report_visualization_section_invalid",
+                        "图表用户可见标题和图注必须使用简体中文。",
+                        details={
+                            "chartId": registration.chart_id,
+                            "missingFields": missing_fields,
+                            "requiredActions": [
+                                "仅修改 title 和 altText 的展示文字为简体中文后重新提交；"
+                                "坐标轴、图例和注释应在绘图脚本中同步本地化。"
+                            ],
+                        },
+                    )
             warnings = []
             for registration in parsed:
                 if registration.comparability != "reference_only":

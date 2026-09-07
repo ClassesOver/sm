@@ -9,6 +9,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
     ChartDraft,
     RenderSectionDecision,
+    SectionBlockContent,
     SectionDecisionAdapter,
     SectionDecisionOutput,
     VisualizationScriptDraft,
@@ -138,6 +139,48 @@ def test_section_decision_normalizes_numeric_comparison_display_value() -> None:
     )
 
     assert output.root.claims[0].comparison == "-40000000"
+
+
+def test_section_block_content_rejects_disallowed_heading_level() -> None:
+    with pytest.raises(ValidationError, match="report_draft_heading_level_invalid"):
+        SectionBlockContent(markdown="## 非法章节标题\n\n正文")
+
+
+def test_section_block_content_allows_h4_parented_by_previous_block() -> None:
+    content = SectionBlockContent(markdown="#### 同比变化\n\n正文")
+
+    assert content.markdown == "#### 同比变化\n\n正文"
+
+
+def test_section_block_content_removes_model_protocol_syntax() -> None:
+    content = SectionBlockContent(
+        markdown=(
+            "### 月度同比趋势\n\n"
+            "收入保持增长[[citation:citation_001]]。"
+            '![趋势图](chart-001.png "趋势")\n'
+            "<!-- repair-warning: retry -->"
+        )
+    )
+
+    assert content.markdown == "### 月度同比趋势\n\n收入保持增长。趋势图"
+
+
+def test_section_block_content_preserves_text_after_model_image() -> None:
+    content = SectionBlockContent(
+        markdown="### 月度同比趋势\n\n![趋势图](chart-001.png) 后续分析 (必须保留)"
+    )
+
+    assert content.markdown == "### 月度同比趋势\n\n趋势图 后续分析 (必须保留)"
+
+
+def test_section_block_content_does_not_clean_protocol_syntax_inside_inline_code() -> None:
+    with pytest.raises(ValidationError, match="report_draft_protocol_injection"):
+        SectionBlockContent(markdown="### 语法示例\n\n`![趋势图](chart-001.png)`")
+
+
+def test_section_block_content_keeps_malformed_protocol_marker_strict() -> None:
+    with pytest.raises(ValidationError, match="report_draft_protocol_injection"):
+        SectionBlockContent(markdown="### 月度同比趋势\n\n[[citation:未闭合")
 
 
 def test_file_identity_keeps_existing_safe_path_contract() -> None:

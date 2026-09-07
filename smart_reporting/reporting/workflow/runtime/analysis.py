@@ -2858,11 +2858,20 @@ def _finalize_semantic_catalog(
             for metric in raw_metrics:
                 if not isinstance(metric, Mapping):
                     continue
+                metric_codes: set[str] = set()
                 raw_codes = metric.get("metricCodes", ())
                 if isinstance(raw_codes, Sequence) and not isinstance(raw_codes, (str, bytes)):
                     for code in raw_codes:
                         if isinstance(code, str) and code:
-                            facts_by_code.setdefault(code, []).append(metric)
+                            metric_codes.add(code)
+                # facts 的 field 是数据集物理指标名，metricCodes 是规范业务指标名。
+                # 图表与章节都可能引用前者，因此二者必须共享同一条受信事实定义；
+                # 这里只登记既有事实别名，不推断公式，也不放宽后续引用校验。
+                field = metric.get("field")
+                if isinstance(field, str) and field:
+                    metric_codes.add(field)
+                for code in metric_codes:
+                    facts_by_code.setdefault(code, []).append(metric)
         raw_derived = bundle.get("derivedMetrics", ())
         if isinstance(raw_derived, Sequence) and not isinstance(raw_derived, (str, bytes)):
             for metric in raw_derived:
@@ -2880,8 +2889,9 @@ def _finalize_semantic_catalog(
                 if isinstance((formula := fact.get("formula")), str) and formula
             }
         )
-        units = sorted(
-            {unit for fact in facts if isinstance((unit := fact.get("unit")), str) and unit}
+        unit_values = {fact.get("unit") for fact in facts}
+        units_valid = len(unit_values) == 1 and all(
+            unit is None or (isinstance(unit, str) and bool(unit)) for unit in unit_values
         )
         periods = sorted(
             {
@@ -2900,8 +2910,6 @@ def _finalize_semantic_catalog(
             any(
                 not isinstance(fact.get("formula"), str)
                 or not fact["formula"]
-                or not isinstance(fact.get("unit"), str)
-                or not fact["unit"]
                 or not isinstance(fact.get("periodStart"), str)
                 or not fact["periodStart"]
                 or not isinstance(fact.get("periodEnd"), str)
@@ -2909,12 +2917,12 @@ def _finalize_semantic_catalog(
                 for fact in facts
             )
             or len(formulas) != 1
-            or len(units) != 1
+            or not units_valid
         ):
             missing_fields = []
             if len(formulas) != 1:
                 missing_fields.append("formula")
-            if len(units) != 1:
+            if not units_valid:
                 missing_fields.append("unit")
             if not periods or any(
                 not fact.get("periodStart") or not fact.get("periodEnd") for fact in facts
@@ -2939,7 +2947,7 @@ def _finalize_semantic_catalog(
                 "code": code,
                 "name": name,
                 "definition": "；".join((name, *formulas))[:2000],
-                "unit": units[0],
+                "unit": next(iter(unit_values)),
                 "periodBasis": period_basis,
             }
         )

@@ -38,6 +38,10 @@ def test_settings_defaults():
     assert current.model_fast_id == "qwen3.6-35b-a3b"
     assert current.model_standard_id == "deepseek-v4-flash-0731"
     assert current.model_strong_id == "deepseek-v4-flash-0731"
+    assert current.model_fast_structured_mode == "json_schema"
+    assert current.model_standard_structured_mode == "json_schema"
+    assert current.model_strong_structured_mode == "json_schema"
+    assert current.model_structured_strict is True
     assert current.report_phase_enable_thinking is True
     assert current.report_phase_temperature == 0.1
     assert current.report_phase_reasoning_effort == "high"
@@ -139,6 +143,27 @@ def test_reporting_phase_model_uses_standard_tier_configuration():
     model = _report_model(settings(AGENT_MODEL_STANDARD="tier-standard"), enable_thinking=True)
 
     assert model.id == "tier-standard"
+    assert model.strict_output is True
+
+
+def test_reporting_structured_modes_can_be_overridden_per_tier():
+    current = settings(
+        AGENT_MODEL_FAST_STRUCTURED_MODE="json_object",
+        AGENT_MODEL_STANDARD_STRUCTURED_MODE="json_schema",
+        AGENT_MODEL_STRONG_STRUCTURED_MODE="json_object",
+    )
+
+    assert current.model_fast_structured_mode == "json_object"
+    assert current.model_standard_structured_mode == "json_schema"
+    assert current.model_strong_structured_mode == "json_object"
+
+
+def test_reporting_structured_strict_can_be_disabled_globally():
+    current = settings(AGENT_MODEL_STRUCTURED_STRICT="false")
+    model = _report_model(current, enable_thinking=True)
+
+    assert current.model_structured_strict is False
+    assert model.strict_output is False
 
 
 def test_report_vision_model_comes_from_environment():

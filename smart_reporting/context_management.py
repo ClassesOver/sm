@@ -4,14 +4,14 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, ClassVar
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -991,7 +991,16 @@ def _bounded_json_value(value: Any, max_bytes: int) -> Any:
 
 
 class TaskExecutionContextHardLimitError(RuntimeError):
-    code = "coding_context_hard_limit_exceeded"
+    code = "task_execution_context_hard_limit_exceeded"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        metrics: Mapping[str, int | bool],
+    ) -> None:
+        super().__init__(message)
+        self.metrics = dict(metrics)
 
 
 class TaskExecutionContextProjector:
@@ -1064,8 +1073,6 @@ class TaskExecutionContextProjector:
             if changed
             else raw
         )
-
-    last_metrics: ClassVar[dict[str, int | bool]] = {}
 
     @staticmethod
     def _token_count(
@@ -1230,7 +1237,7 @@ class TaskExecutionContextProjector:
         )
 
     @classmethod
-    def project(
+    def project_with_metrics(
         cls,
         messages: list[Message],
         *,
@@ -1238,7 +1245,7 @@ class TaskExecutionContextProjector:
         tools: Any = None,
         response_format: Any = None,
         hard_cap: int = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-    ) -> list[Message]:
+    ) -> tuple[list[Message], dict[str, int | bool]]:
         projected = deepcopy(messages)
         compact_call_ids = {
             message.tool_call_id
@@ -1269,17 +1276,18 @@ class TaskExecutionContextProjector:
         threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
         projected_tokens = cls._token_count(projected, counting_model, tools, response_format)
         if canonical_tokens <= threshold and projected_tokens <= hard_cap:
-            cls.last_metrics = {
+            metrics: dict[str, int | bool] = {
                 "canonical_message_count": len(messages),
                 "projected_message_count": len(projected),
                 "canonical_estimated_tokens": canonical_tokens,
                 "projected_estimated_tokens": projected_tokens,
+                "input_token_hard_cap": hard_cap,
                 "checkpoint_bytes": 0,
                 "dropped_complete_rounds": 0,
                 "window_rebased": False,
                 **cls._composition_metrics(messages, projected, tools, response_format),
             }
-            return projected
+            return projected, metrics
 
         system_messages = [message for message in projected if message.role == "system"]
         user_messages = [
@@ -1318,20 +1326,64 @@ class TaskExecutionContextProjector:
             del candidate[start : start + len(removed)]
         projected_tokens = cls._token_count(candidate, counting_model, tools, response_format)
         if projected_tokens > hard_cap:
+            metrics = {
+                "canonical_message_count": len(messages),
+                "projected_message_count": len(candidate),
+                "canonical_estimated_tokens": canonical_tokens,
+                "projected_estimated_tokens": projected_tokens,
+                "irreducible_prefix_estimated_tokens": projected_tokens,
+                "input_token_hard_cap": hard_cap,
+                "checkpoint_bytes": len(checkpoint.encode("utf-8")),
+                "dropped_complete_rounds": len(rounds) - len(selected_rounds),
+                "window_rebased": True,
+                **cls._composition_metrics(messages, candidate, tools, response_format),
+            }
+            model_id, host = _model_log_fields(counting_model)
+            logger.bind(
+                model_id=model_id,
+                host=host,
+                canonical_estimated_tokens=canonical_tokens,
+                irreducible_prefix_estimated_tokens=projected_tokens,
+                input_token_hard_cap=hard_cap,
+                tool_schema_bytes=metrics["tool_schema_bytes"],
+                response_format_bytes=metrics["response_format_bytes"],
+                projected_context_bytes=metrics["projected_context_bytes"],
+            ).error("task_execution_context_hard_limit_exceeded")
             raise TaskExecutionContextHardLimitError(
-                "不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap。"
+                "不可约简的任务执行上下文前缀与请求协议超过模型输入 hard cap。",
+                metrics=metrics,
             )
-        cls.last_metrics = {
+        metrics = {
             "canonical_message_count": len(messages),
             "projected_message_count": len(candidate),
             "canonical_estimated_tokens": canonical_tokens,
             "projected_estimated_tokens": projected_tokens,
+            "input_token_hard_cap": hard_cap,
             "checkpoint_bytes": len(checkpoint.encode("utf-8")),
             "dropped_complete_rounds": len(rounds) - len(selected_rounds),
             "window_rebased": True,
             **cls._composition_metrics(messages, candidate, tools, response_format),
         }
-        return candidate
+        return candidate, metrics
+
+    @classmethod
+    def project(
+        cls,
+        messages: list[Message],
+        *,
+        model: Any = None,
+        tools: Any = None,
+        response_format: Any = None,
+        hard_cap: int = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+    ) -> list[Message]:
+        projected, _metrics = cls.project_with_metrics(
+            messages,
+            model=model,
+            tools=tools,
+            response_format=response_format,
+            hard_cap=hard_cap,
+        )
+        return projected
 
 
 _PARALLEL_SAFE_READ_TOOLS = frozenset(
@@ -1503,14 +1555,13 @@ class ProjectedOpenAIChat(OpenAIChat):
         hard_cap = getattr(self, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, None)
         if not isinstance(hard_cap, int) or hard_cap < 1:
             hard_cap = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-        projected = TaskExecutionContextProjector.project(
+        return TaskExecutionContextProjector.project_with_metrics(
             messages,
             model=self,
             tools=tools,
             response_format=response_format,
             hard_cap=hard_cap,
         )
-        return projected, dict(TaskExecutionContextProjector.last_metrics)
 
     def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         params = super().get_request_params(*args, **kwargs)

@@ -21,6 +21,8 @@ __all__ = [
     "TaskSnapshot",
     "TaskState",
     "TaskSession",
+    "TASK_EXECUTION_CONTEXT_TOKEN_LIMIT",
+    "TASK_EXECUTION_OUTPUT_TOKEN_RESERVE",
     "TaskExecutionKernel",
     "TaskExecutionRuntime",
     "TASK_EXECUTION_DEPENDENCY",
@@ -52,6 +54,13 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name in {
+        "TASK_EXECUTION_CONTEXT_TOKEN_LIMIT",
+        "TASK_EXECUTION_OUTPUT_TOKEN_RESERVE",
+    }:
+        from .. import context_management
+
+        return getattr(context_management, name)
     execution_exports = {
         "TaskExecutionKernel",
         "TaskExecutionRuntime",

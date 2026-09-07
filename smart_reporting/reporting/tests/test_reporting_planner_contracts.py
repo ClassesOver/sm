@@ -20,10 +20,14 @@ from agno.workflow.step import StepOutput
 from pydantic import ValidationError
 from sqlglot import parse_one
 
-from smart_reporting.context_management import ProjectedOpenAIChat
+from smart_reporting.context_management import (
+    ProjectedOpenAIChat,
+    TaskExecutionContextHardLimitError,
+)
 from smart_reporting.reporting import contract as reporting_contract
 from smart_reporting.reporting.agent import ReportingPhaseOpenAIChat
 from smart_reporting.reporting.contract import ReportPeriod
+from smart_reporting.reporting.data_source import DataShape
 from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     AnalysisFileIdentity,
@@ -66,6 +70,7 @@ from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     ReportWorkflowRuntime,
 )
+from smart_reporting.reporting.workflow.runtime import base as reporting_runtime_base
 from smart_reporting.reporting.workflow.runtime import datasets as reporting_datasets
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
 from smart_reporting.reporting.workflow.runtime.analysis import (
@@ -110,7 +115,54 @@ from smart_reporting.reporting.workflow.runtime.planning import (
 from smart_reporting.reporting.workflow.runtime.publication import (
     _analysis_quality_warnings,
 )
-from smart_reporting.reporting.workflow.runtime.validation import _normalize_requirement_periods
+from smart_reporting.reporting.workflow.runtime.validation import (
+    _measure_semantic_issues,
+    _normalize_requirement_periods,
+)
+
+
+@pytest.mark.anyio
+async def test_run_planner_maps_typed_context_hard_limit_without_message_matching(
+    monkeypatch,
+) -> None:
+    metrics = {
+        "canonical_estimated_tokens": 200_000,
+        "irreducible_prefix_estimated_tokens": 180_000,
+        "input_token_hard_cap": 160_000,
+        "tool_schema_bytes": 2,
+        "response_format_bytes": 22,
+    }
+    rejection = TaskExecutionContextHardLimitError(
+        "此消息刻意不包含旧的中文匹配文本。",
+        metrics=metrics,
+    )
+
+    class RejectingExecutor:
+        def __init__(self, _agent) -> None:
+            pass
+
+        async def execute(self, *_args, **_kwargs):
+            raise rejection
+
+    monkeypatch.setattr(
+        reporting_runtime_base,
+        "ReportingStructuredOutputExecutor",
+        RejectingExecutor,
+    )
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _run_context: {"userId": "user-1"}
+    run_context = SimpleNamespace(run_id="run-1")
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._run_planner(
+            SimpleNamespace(id="report-test-planner"),
+            {"request": "complex"},
+            run_context,
+        )
+
+    assert raised.value.code == "report_planner_context_budget_exceeded"
+    assert raised.value.details == metrics
+    assert raised.value.__cause__ is rejection
 
 
 def test_row_preserving_requirements_follow_effective_profile_without_legacy_fields() -> None:
@@ -371,6 +423,178 @@ def test_single_table_query_compiler_keeps_unapproved_numeric_fields_in_grain() 
     assert len(approved) == 2
     assert all("SUM(budget_service_income)" not in query.sql for query in approved)
     assert all("SUM(actual_medical_income)" in query.sql for query in approved)
+
+
+def test_analysis_grain_excludes_exact_constant_numeric_columns() -> None:
+    snapshot = reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database="rj",
+                name="income_budget",
+                columns=(
+                    reporting_contract.ModelColumn(
+                        name="data_date", dataType="DATE", nullable=False
+                    ),
+                    reporting_contract.ModelColumn(
+                        name="department", dataType="VARCHAR(64)", nullable=False
+                    ),
+                    reporting_contract.ModelColumn(
+                        name="actual_medical_income", dataType="DECIMAL(18,2)", nullable=False
+                    ),
+                    reporting_contract.ModelColumn(
+                        name="actual_service_income", dataType="DECIMAL(18,2)", nullable=False
+                    ),
+                ),
+            ),
+        ),
+        measureSemantics=(
+            reporting_contract.MeasureSemantic(
+                fieldRef="rj.rj.income_budget.actual_medical_income",
+                aggregation="sum",
+            ),
+        ),
+    )
+    shape = DataShape.model_validate(
+        {
+            "sourceId": "rj",
+            "metadataRevision": "revision-1",
+            "schemaHash": "a" * 64,
+            "statisticsVersion": "1",
+            "queryCount": 3,
+            "periodStart": "2025-01-01",
+            "periodEnd": "2025-12-31",
+            "tables": [
+                {
+                    "sourceId": "rj",
+                    "database": "rj",
+                    "table": "income_budget",
+                    "totalRowCount": 12,
+                    "periodRowCount": 12,
+                    "outsidePeriodRowCount": 0,
+                    "periodNullCount": 0,
+                    "firstEffectiveDate": "2025-01-01",
+                    "lastEffectiveDate": "2025-12-01",
+                    "columnCount": 4,
+                    "periodGranularity": "date",
+                    "columns": [
+                        {
+                            "name": "data_date",
+                            "dataType": "DATE",
+                            "nullable": False,
+                            "nullCount": 0,
+                            "nullRate": 0,
+                            "distinctCount": 12,
+                            "distinctMode": "exact",
+                            "cardinalityRate": 1,
+                            "unique": True,
+                        },
+                        {
+                            "name": "department",
+                            "dataType": "VARCHAR(64)",
+                            "nullable": False,
+                            "nullCount": 0,
+                            "nullRate": 0,
+                            "distinctCount": 3,
+                            "distinctMode": "exact",
+                            "cardinalityRate": 0.25,
+                            "unique": False,
+                        },
+                        {
+                            "name": "actual_medical_income",
+                            "dataType": "DECIMAL(18,2)",
+                            "nullable": False,
+                            "nullCount": 0,
+                            "nullRate": 0,
+                            "distinctCount": 12,
+                            "distinctMode": "exact",
+                            "cardinalityRate": 1,
+                            "unique": True,
+                            "zeroCount": 0,
+                            "negativeCount": 0,
+                        },
+                        {
+                            "name": "actual_service_income",
+                            "dataType": "DECIMAL(18,2)",
+                            "nullable": False,
+                            "nullCount": 0,
+                            "nullRate": 0,
+                            "distinctCount": 1,
+                            "distinctMode": "exact",
+                            "cardinalityRate": 0.083333,
+                            "unique": False,
+                            "minimum": 0,
+                            "maximum": 0,
+                            "zeroCount": 12,
+                            "negativeCount": 0,
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    bundle = analysis_bundle(table="rj.income_budget", period_granularity="date")
+    payload = bundle.model_dump(mode="json", by_alias=True)
+    payload["requirements"][0]["tables"][0]["measureColumns"] = ["actual_medical_income"]
+    bundle = AnalysisBundle.model_validate(payload)
+
+    normalized, repairs = reporting_runtime._normalize_analysis_bundle_grain(
+        bundle,
+        (snapshot,),
+        (shape,),
+    )
+
+    assert normalized.requirements[0].grain_columns == ("data_date", "department")
+    assert normalized.requirements[0].dimension_columns == ("data_date", "department")
+    assert repairs[0]["addedColumns"] == ["data_date", "department"]
+
+
+def test_unapproved_measure_is_not_also_requested_as_grain_in_same_correction() -> None:
+    snapshot = reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database="rj",
+                name="income_budget",
+                columns=(
+                    reporting_contract.ModelColumn(
+                        name="data_date", dataType="DATE", nullable=False
+                    ),
+                    reporting_contract.ModelColumn(
+                        name="income", dataType="DECIMAL(18,2)", nullable=False
+                    ),
+                    reporting_contract.ModelColumn(
+                        name="unapproved_income", dataType="DECIMAL(18,2)", nullable=False
+                    ),
+                ),
+            ),
+        ),
+        measureSemantics=(
+            reporting_contract.MeasureSemantic(
+                fieldRef="rj.rj.income_budget.income",
+                aggregation="sum",
+            ),
+        ),
+    )
+    bundle = analysis_bundle(table="rj.income_budget", period_granularity="date")
+    payload = bundle.model_dump(mode="json", by_alias=True)
+    payload["requirements"][0]["tables"][0]["measureColumns"] = [
+        "income",
+        "unapproved_income",
+    ]
+    requirement = AnalysisBundle.model_validate(payload).requirements[0]
+
+    issues = _measure_semantic_issues(requirement, 0, (snapshot,))
+
+    assert any(str(issue["path"]).endswith(".measureColumns") for issue in issues)
+    grain_issue = next(issue for issue in issues if str(issue["path"]).endswith(".grainColumns"))
+    assert "unapproved_income" not in grain_issue["missingValues"]
 
 
 def test_unsafe_multi_table_requirement_is_split_before_semantic_retry() -> None:
@@ -985,6 +1209,8 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
             profile_content=profile_content,
         ),
     )
+    # 本用例验证上传超时，不验证进程池；局部 lambda 不能跨进程序列化。
+    monkeypatch.setattr(reporting_datasets, "_profile_process_pool", lambda: None)
     state: dict[str, Any] = {REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]}}
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
     runtime.workspace_service = FakeWorkspaceService()
@@ -1608,19 +1834,19 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         for instruction in runtime._analysis_script_agent.instructions
     )
     expected_profiles = (
-        (runtime._data_understanding_agent, False, None, "high"),
-        (runtime._measure_semantic_agent, False, None, "max"),
-        (runtime._analysis_agent, True, "max", "max"),
-        (runtime._analysis_evidence_agent, True, "high", "max"),
-        (runtime._analysis_script_agent, True, "high", "max"),
-        (runtime._sql_agent, False, None, "max"),
+        (runtime._data_understanding_agent, False, None, None, "high"),
+        (runtime._measure_semantic_agent, False, None, None, "max"),
+        (runtime._analysis_agent, True, "high", 4096, "max"),
+        (runtime._analysis_evidence_agent, True, "high", 8192, "max"),
+        (runtime._analysis_script_agent, True, "high", 8192, "max"),
+        (runtime._sql_agent, False, None, None, "max"),
     )
-    for stage, enabled, initial_effort, escalation_effort in expected_profiles:
+    for stage, enabled, initial_effort, initial_budget, escalation_effort in expected_profiles:
         profile = reporting_thinking_profile_from_model(stage.model)
         assert profile.enabled is enabled
         if enabled:
             assert profile.reasoning_effort == initial_effort
-            assert profile.thinking_budget == 8192
+            assert profile.thinking_budget == initial_budget
         escalation = getattr(stage.model, "_report_escalation_thinking_profile")
         assert escalation.enabled is True
         assert escalation.reasoning_effort == escalation_effort
@@ -1658,11 +1884,11 @@ def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
     assert "reasoning_effort" not in request_params
     assert request_params["extra_body"] == {
         "enable_thinking": True,
-        "thinking_budget": 8192,
+        "thinking_budget": 4096,
         "chat_template_kwargs": {
             "enable_thinking": True,
             "thinking": True,
-            "reasoning_effort": "max",
+            "reasoning_effort": "high",
         },
     }
 
@@ -1678,6 +1904,30 @@ def test_qwen_max_reasoning_uses_supported_xhigh_transport() -> None:
     assert model.reasoning_effort == "xhigh"
     assert reporting_thinking_profile_from_model(model) == ReportingThinkingProfile.on(
         reasoning_effort="max",
+        thinking_budget=8192,
+    )
+
+
+def test_dashscope_qwen_request_does_not_send_two_thinking_controls() -> None:
+    model = ReportingPhaseOpenAIChat(
+        id="qwen3.8-flash",
+        api_key="test",
+        base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    )
+    apply_reporting_thinking_profile(
+        model,
+        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=8192),
+    )
+
+    request_params = model.get_request_params()
+
+    assert "reasoning_effort" not in request_params
+    assert request_params["extra_body"] == {
+        "enable_thinking": True,
+        "thinking_budget": 8192,
+    }
+    assert reporting_thinking_profile_from_model(model) == ReportingThinkingProfile.on(
+        reasoning_effort="high",
         thinking_budget=8192,
     )
 
@@ -1847,7 +2097,7 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
     )
     planner_calls = 0
 
-    async def fake_run_planner(_agent, payload, _run_context):
+    async def fake_run_planner(_agent, payload, _run_context, **_kwargs):
         nonlocal planner_calls
         planner_calls += 1
         if planner_calls == 1:
@@ -2164,7 +2414,7 @@ async def test_generate_outline_retries_on_validation_error_instead_of_crashing(
     planner_calls = 0
     stage = _outline_planner_stage()
 
-    async def fake_run_planner(_agent, payload, _run_context):
+    async def fake_run_planner(_agent, payload, _run_context, **_kwargs):
         nonlocal planner_calls
         planner_calls += 1
         if planner_calls == 1:
@@ -2212,7 +2462,7 @@ async def test_generate_outline_routes_assumption_failure_to_assumptions_only() 
     planner_calls = 0
     stage = _outline_planner_stage()
 
-    async def fake_run_planner(_agent, payload, _run_context):
+    async def fake_run_planner(_agent, payload, _run_context, **_kwargs):
         nonlocal planner_calls
         planner_calls += 1
         if planner_calls == 1:
@@ -2255,7 +2505,7 @@ async def test_generate_outline_fails_after_exhausting_correction_attempts() -> 
     planner_calls = 0
     stage = _outline_planner_stage()
 
-    async def fake_run_planner(_agent, _payload, _run_context):
+    async def fake_run_planner(_agent, _payload, _run_context, **_kwargs):
         nonlocal planner_calls
         planner_calls += 1
         validator = getattr(_agent.model, "_report_response_validator")

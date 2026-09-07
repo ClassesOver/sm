@@ -68,11 +68,15 @@ def test_projected_task_execution_model_使用Reporting输入预算作为投影h
     projected = projected_task_execution_model(base, input_token_budget=1234)
     observed = {}
 
-    def project(messages, **kwargs):
+    def project_with_metrics(messages, **kwargs):
         observed["hard_cap"] = kwargs["hard_cap"]
-        return messages
+        return messages, {"input_token_hard_cap": kwargs["hard_cap"]}
 
-    monkeypatch.setattr(context_management_module.TaskExecutionContextProjector, "project", project)
+    monkeypatch.setattr(
+        context_management_module.TaskExecutionContextProjector,
+        "project_with_metrics",
+        project_with_metrics,
+    )
     projected._project([Message(role="user", content="继续")], (), {})
 
     assert observed["hard_cap"] == 1234
@@ -513,15 +517,15 @@ def test_coding_context_projector_rebases_1000_rounds_without_mutating_canonical
         messages.extend(_tool_round(index, "x" * 100))
     canonical = [message.model_dump() for message in messages]
 
-    projected = TaskExecutionContextProjector.project(
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
         messages, model=CountingModel(), hard_cap=64 * 1024
     )
 
     assert [message.model_dump() for message in messages] == canonical
     assert CountingModel().count_tokens(projected) <= 64 * 1024
-    assert TaskExecutionContextProjector.last_metrics["canonical_message_count"] == len(messages)
-    assert TaskExecutionContextProjector.last_metrics["window_rebased"] is True
-    assert TaskExecutionContextProjector.last_metrics["dropped_complete_rounds"] > 0
+    assert metrics["canonical_message_count"] == len(messages)
+    assert metrics["window_rebased"] is True
+    assert metrics["dropped_complete_rounds"] > 0
     checkpoint_message = next(
         message
         for message in projected
@@ -560,7 +564,13 @@ def test_coding_context_projector_counts_tool_schema_and_rejects_irreducible_pre
             hard_cap=100,
         )
 
-    assert rejected.value.code == "coding_context_hard_limit_exceeded"
+    assert rejected.value.code == "task_execution_context_hard_limit_exceeded"
+    assert rejected.value.metrics["canonical_estimated_tokens"] > 100
+    assert rejected.value.metrics["irreducible_prefix_estimated_tokens"] > 100
+    assert rejected.value.metrics["input_token_hard_cap"] == 100
+    assert rejected.value.metrics["tool_schema_bytes"] > 0
+    assert rejected.value.metrics["response_format_bytes"] == 0
+    assert "编码上下文" not in str(rejected.value)
 
 
 def test_coding_checkpoint_v2_reads_v1_state_and_stays_bounded():
@@ -986,14 +996,13 @@ def test_coding_context_projector_records_context_composition_without_content():
         }
     ]
 
-    TaskExecutionContextProjector.project(
+    _projected, metrics = TaskExecutionContextProjector.project_with_metrics(
         messages,
         model=CountingModel(),
         tools=tools,
         response_format={"type": "json_object"},
     )
 
-    metrics = TaskExecutionContextProjector.last_metrics
     assert metrics["canonical_system_bytes"] > 0
     assert metrics["canonical_user_bytes"] > 0
     assert metrics["canonical_assistant_bytes"] > 0

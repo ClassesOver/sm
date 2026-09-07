@@ -429,6 +429,7 @@ def approve_query_batch(
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
     row_preserving_requirement_ids: tuple[str, ...] = (),
+    data_shapes: tuple[DataShape, ...] = (),
     require_complete_batch: bool = True,
 ) -> tuple[ApprovedQuery, ...]:
     if not queries or len(queries) > 100:
@@ -446,6 +447,9 @@ def approve_query_batch(
             "report_query_batch_invalid", "原始行保留查询引用了未知或重复 requirement。"
         )
     snapshot_tables = _snapshot_tables(snapshots)
+    snapshots_by_source = {
+        table.source_id: snapshot for snapshot in snapshots for table in snapshot.tables[:1]
+    }
     measure_semantics = {
         item.field_ref.lower(): item
         for snapshot in snapshots
@@ -523,6 +527,8 @@ def approve_query_batch(
             database=source.database,
             snapshot_tables=scoped_tables,
             measure_semantics=measure_semantics,
+            data_shapes=data_shapes,
+            snapshot=snapshots_by_source.get(source.id),
         )
         sql = validate_starrocks_read_only_sql(
             item["sql"],
@@ -590,6 +596,8 @@ def _validate_requirement_scope(
     database: str,
     snapshot_tables: dict[str, ModelTable],
     measure_semantics: dict[str, MeasureSemantic],
+    data_shapes: tuple[DataShape, ...] = (),
+    snapshot: SourceSchemaSnapshot | None = None,
 ) -> None:
     available_dimensions: set[str] = set()
     table_columns: dict[str, set[str]] = {}
@@ -626,6 +634,12 @@ def _validate_requirement_scope(
                 - set(requirement.grain_columns)
                 - set(semantic.additive_across)
                 - set(semantic.exclusive_scope)
+                - _exact_constant_numeric_columns(
+                    requirement.source_id,
+                    qualified,
+                    snapshot,
+                    data_shapes,
+                )
             )
             if ungoverned_dimensions:
                 raise ReportingError(
@@ -643,6 +657,51 @@ def _validate_requirement_scope(
             or join_columns - table_columns[relation.right_table]
         ):
             raise ReportingError("report_query_scope_invalid", "表关系引用了结构快照外的连接字段。")
+
+
+def _exact_constant_numeric_columns(
+    source_id: str,
+    qualified_table: str,
+    snapshot: SourceSchemaSnapshot | None,
+    data_shapes: tuple[DataShape, ...],
+) -> set[str]:
+    """仅放行画像在同一 schema 版本中精确证明为常量的数值列。"""
+
+    if snapshot is None:
+        return set()
+    matching_tables = [
+        table
+        for shape in data_shapes
+        if shape.source_id.casefold() == source_id.casefold()
+        and shape.metadata_revision == snapshot.revision
+        and shape.schema_hash == snapshot.schema_hash
+        for table in shape.tables
+        if table.source_id.casefold() == source_id.casefold()
+        and f"{table.database}.{table.table}".casefold() == qualified_table.casefold()
+    ]
+    if len(matching_tables) != 1:
+        return set()
+    return {
+        column.name.casefold()
+        for column in matching_tables[0].columns
+        if (
+            column.distinct_mode == "exact"
+            and column.distinct_count <= 1
+            and column.data_type.upper().startswith(
+                (
+                    "TINYINT",
+                    "SMALLINT",
+                    "INT",
+                    "INTEGER",
+                    "BIGINT",
+                    "LARGEINT",
+                    "FLOAT",
+                    "DOUBLE",
+                    "DECIMAL",
+                )
+            )
+        )
+    }
 
 
 def _validate_query_contract(
