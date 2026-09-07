@@ -2026,6 +2026,68 @@ async def test_replace_text内容不变时不记录mutation(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_patch_uses_async_workspace_mutation_path(tmp_path, monkeypatch):
+    synchronous = service(tmp_path)
+    synchronous.create_file("thread", "result.txt", b"before")
+    workspace = WorkspaceService(
+        synchronous.secret,
+        client=synchronous.client,
+        registry=synchronous.registry,
+        async_client=AsyncFakeClient(synchronous.client),
+        async_registry=AsyncMemoryRegistry(synchronous.registry.values),
+    )
+    monkeypatch.setattr(
+        workspace,
+        "apply_changes",
+        lambda *_args: pytest.fail("异步 Workflow 不得调用同步变更接口"),
+    )
+    async_apply = AsyncMock(
+        return_value={
+            "files": [
+                {
+                    "operation": "update",
+                    "path": "result.txt",
+                    "size": 5,
+                    "sha256": hashlib.sha256(b"after").hexdigest(),
+                }
+            ],
+            "operations": 1,
+        }
+    )
+    monkeypatch.setattr(workspace, "aapply_changes", async_apply)
+    repository = AsyncMock()
+    repository.increment_mutation.return_value = 1
+    kernel = TaskExecutionKernel(workspace, repository)
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0),
+        external_run_id="external-run",
+        internal_run_id="internal-run",
+        owner_user_id="user",
+        thread_id="thread",
+        sandbox_id=str(synchronous.sandbox_for("thread").id),
+        lease_owner="lease",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    result = await kernel.patch(
+        "overwrite",
+        "result.txt",
+        None,
+        None,
+        False,
+        None,
+        None,
+        content="after",
+        expected_sha256=hashlib.sha256(b"before").hexdigest(),
+        _scope=scope,
+    )
+
+    assert result["ok"] is True
+    async_apply.assert_awaited_once()
+
+
+@pytest.mark.anyio
 def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
     relative = "python3 \u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
     absolute = (
@@ -2275,20 +2337,20 @@ async def test_verify_rejects_modified_loaded_skill_script(execution_runtime):
 
 
 @pytest.mark.anyio
-async def test_skill_script_verification_uses_server_receipt_without_database(monkeypatch):
+async def test_skill_script_verification_uses_server_receipt_without_database():
     original = b"print('trusted')\n"
     modified = b"print('modified')\n"
     kernel = TaskExecutionKernel.__new__(TaskExecutionKernel)
-    kernel.service = SimpleNamespace(file_bytes=lambda _thread, _path: (modified, "text/plain"))
+    async_file_bytes = AsyncMock(return_value=(modified, "text/plain"))
+    kernel.service = SimpleNamespace(
+        afile_bytes=async_file_bytes,
+        file_bytes=lambda *_args: pytest.fail("异步校验不得调用同步工作区接口"),
+    )
 
     async def scope(_run_context):
         return SimpleNamespace(thread_id="thread")
 
-    async def inline_to_thread(function, *args):
-        return function(*args)
-
     kernel.scope = scope
-    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
     context = RunContext(
         run_id="run",
         session_id="thread",
@@ -2310,6 +2372,7 @@ async def test_skill_script_verification_uses_server_receipt_without_database(mo
 
     assert result is not None
     assert result["code"] == "verification_skill_script_modified"
+    async_file_bytes.assert_awaited_once_with("thread", "validate_report.py")
 
 
 @pytest.mark.anyio

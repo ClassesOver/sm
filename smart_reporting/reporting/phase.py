@@ -86,7 +86,7 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
 REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
     {
         "apply_analysis_patch",
-        "terminal",
+        "run_python_script",
         "submit_visualization_charts",
     }
 )

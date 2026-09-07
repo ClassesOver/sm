@@ -37,15 +37,22 @@ def create_agentos_app(
 ) -> tuple[AgentOS, FastAPI]:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
-        cleanup_task = asyncio.create_task(context.workspace_service.run_quarantine_cleanup_loop())
+        tasks = [
+            asyncio.create_task(context.workspace_service.run_quarantine_cleanup_loop())
+        ]
+        reconcile = getattr(context.workspace_service, "run_provider_reconcile_loop", None)
+        if callable(reconcile):
+            tasks.append(asyncio.create_task(reconcile()))
         try:
             yield
         finally:
-            cleanup_task.cancel()
-            try:
-                await complete_cleanup(cleanup_task)
-            except asyncio.CancelledError:
-                pass
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                try:
+                    await complete_cleanup(task)
+                except asyncio.CancelledError:
+                    pass
             await context.workspace_service.aclose()
 
     agents: list[Agent | RemoteAgent | AgentProtocol | AgentFactory] = [context.report_agent]

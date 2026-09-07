@@ -19,7 +19,7 @@ from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ...task_execution import build_workspace_changes, parse_unified_diff
+from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -363,7 +363,7 @@ class RuntimeAnalysisMixin:
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
-            raw_operations = build_workspace_changes(
+            raw_operations = await abuild_workspace_changes(
                 self.runtime.workspace,
                 scope.thread_id,
                 canonical["patch"],
@@ -535,30 +535,13 @@ class RuntimeAnalysisMixin:
     ) -> set[str]:
         if not module_names:
             return set()
-        probe = (
-            "import importlib.util,json,sys;"
-            "names=json.loads(sys.argv[1]);"
-            "print(json.dumps([name for name in names if importlib.util.find_spec(name) is not None]))"
-        )
-        command = shlex.join(["python3", "-I", "-c", probe, json.dumps(sorted(module_names))])
-        result = await self.runtime.workspace.execute_isolated(thread_id, command, timeout=30)
-        if getattr(result, "exit_code", None) != 0:
+        try:
+            return await self.runtime.workspace.probe_python_modules(thread_id, module_names)
+        except WorkspaceError as error:
             raise ReportingError(
                 "report_analysis_dependency_probe_failed",
                 "无法确认分析脚本依赖是否完整，已拒绝执行脚本。",
-            )
-        try:
-            parsed = json.loads(str(getattr(result, "result", "") or ""))
-        except (TypeError, ValueError) as error:
-            raise ReportingError(
-                "report_analysis_dependency_probe_failed",
-                "分析脚本依赖探测结果无效，已拒绝执行脚本。",
             ) from error
-        return (
-            {item for item in parsed if isinstance(item, str)}
-            if isinstance(parsed, list)
-            else set()
-        )
 
     async def _analysis_python_source(self, *, thread_id: str, path: str) -> bytes:
         return await self.runtime.workspace.read_limited_regular_file(

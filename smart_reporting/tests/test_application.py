@@ -153,6 +153,45 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_application_lifespan_stops_optional_sandbox_reconciler(monkeypatch):
+    captured = {}
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            captured.update(values)
+
+        def get_app(self):
+            return captured["base_app"]
+
+    class ReconcilingWorkspace(FakeWorkspace):
+        def __init__(self):
+            super().__init__("reconcile")
+            self.reconcile_started = asyncio.Event()
+            self.reconcile_stopped = asyncio.Event()
+
+        async def run_provider_reconcile_loop(self):
+            self.reconcile_started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                self.reconcile_stopped.set()
+
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
+    workspace = ReconcilingWorkspace()
+    context = ApplicationContext(
+        AgentSettings.from_environment({}, load_env_file=False),
+        workspace,
+        FakeAssistant(),
+    )
+
+    create_agentos_app(context, FastAPI())
+    async with captured["lifespan"](FastAPI()):
+        await asyncio.wait_for(workspace.reconcile_started.wait(), timeout=0.1)
+
+    assert workspace.reconcile_stopped.is_set()
+
+
+@pytest.mark.anyio
 async def test_application_closes_reporting_tasks_before_agentos_database(monkeypatch):
     events: list[str] = []
 

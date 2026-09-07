@@ -123,7 +123,7 @@ async def test_visualization_workflow_orders_fixed_steps() -> None:
     ).run({}, _context())
 
     assert result.status == "accepted"
-    assert events == ["generate", "write", "python3 charts/charts.py", "inspect", "submit"]
+    assert events == ["generate", "write", "charts/charts.py", "inspect", "submit"]
 
 
 @pytest.mark.anyio

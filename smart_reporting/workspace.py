@@ -29,13 +29,17 @@ from daytona import (
 )
 from daytona.common.errors import DaytonaNotFoundError
 from loguru import logger
-from sqlalchemy import Column, DateTime, MetaData, String, Table, insert, select, update
+from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, insert, select, update
 from sqlalchemy.sql import func
 
 from .async_utils import complete_cleanup
 from .http.security import thread_label
 from .runtime.database import AgentDatabase, create_agent_database
 from .runtime.observability import suppress_expected_probe_tracing
+from .sandbox.contracts import RunPythonScriptRequest, WorkspaceBinding
+from .sandbox.errors import SandboxNotFound, SandboxProviderError, SandboxTimeout
+from .sandbox.python_runner import PythonScriptRunner
+from .sandbox.registry import SandboxBindingRecord
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
 WORKSPACE_SNAPSHOT = "sandbox-tools"
@@ -155,6 +159,17 @@ class SandboxRegistry:
             self.metadata,
             Column("thread_hash", String(64), primary_key=True),
             Column("sandbox_id", String(256), nullable=False),
+            Column("provider", String(32), nullable=False, server_default="daytona"),
+            Column(
+                "isolation",
+                String(32),
+                nullable=False,
+                server_default="provider_managed",
+            ),
+            Column("node", String(256), nullable=True),
+            Column("resource_id", String(256), nullable=False),
+            Column("generation", Integer, nullable=False, server_default="1"),
+            Column("dependency_bundle_digest", String(71), nullable=True),
             Column(
                 "updated_at",
                 DateTime(timezone=True),
@@ -180,7 +195,31 @@ class SandboxRegistry:
                 ("agent-workspace:initialize",),
             )
             self.metadata.create_all(connection)
-        self.db.upsert_schema_version(self.table.name, "1.0.0")
+            table_name = connection.dialect.identifier_preparer.format_table(self.table)
+            # create_all 不会扩展既有表。迁移必须与 advisory lock 位于同一事务，
+            # 否则多副本启动时可能观察到只增加了一部分字段的中间状态。
+            for definition in (
+                "provider VARCHAR(32)",
+                "isolation VARCHAR(32)",
+                "node VARCHAR(256)",
+                "resource_id VARCHAR(256)",
+                "generation INTEGER",
+                "dependency_bundle_digest VARCHAR(71)",
+            ):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {definition}"
+                )
+            connection.exec_driver_sql(
+                f"UPDATE {table_name} SET provider = COALESCE(provider, 'daytona'), "
+                "isolation = COALESCE(isolation, 'provider_managed'), "
+                "resource_id = COALESCE(resource_id, sandbox_id), "
+                "generation = COALESCE(generation, 1)"
+            )
+            for column in ("provider", "isolation", "resource_id", "generation"):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {table_name} ALTER COLUMN {column} SET NOT NULL"
+                )
+        self.db.upsert_schema_version(self.table.name, "2.0.0")
         self._initialized = True
 
     def workspace_label(self, base_label: str) -> str:
@@ -223,9 +262,56 @@ class SandboxRegistryTransaction:
         statement = (
             update(self.table)
             .where(self.table.c.thread_hash == value)
-            .values(sandbox_id=sandbox_id, updated_at=func.current_timestamp())
+            .values(
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+                updated_at=func.current_timestamp(),
+            )
             if exists
-            else insert(self.table).values(thread_hash=value, sandbox_id=sandbox_id)
+            else insert(self.table).values(
+                thread_hash=value,
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+            )
+        )
+        self.connection.execute(statement)
+
+    def get_binding(self, value: str) -> SandboxBindingRecord | None:
+        row = self.connection.execute(
+            select(
+                self.table.c.provider,
+                self.table.c.isolation,
+                self.table.c.node,
+                self.table.c.resource_id,
+                self.table.c.generation,
+                self.table.c.dependency_bundle_digest,
+            ).where(self.table.c.thread_hash == value)
+        ).first()
+        if row is None:
+            return None
+        return SandboxBindingRecord(binding_digest=value, **row._mapping)
+
+    def set_binding(self, record: SandboxBindingRecord) -> None:
+        values = record.model_dump(mode="json", exclude={"binding_digest"})
+        values["sandbox_id"] = record.resource_id
+        values["updated_at"] = func.current_timestamp()
+        exists = self.connection.execute(
+            select(self.table.c.thread_hash).where(
+                self.table.c.thread_hash == record.binding_digest
+            )
+        ).first()
+        statement = (
+            update(self.table)
+            .where(self.table.c.thread_hash == record.binding_digest)
+            .values(**values)
+            if exists
+            else insert(self.table).values(thread_hash=record.binding_digest, **values)
         )
         self.connection.execute(statement)
 
@@ -255,6 +341,17 @@ class AsyncSandboxRegistry:
             self.metadata,
             Column("thread_hash", String(64), primary_key=True),
             Column("sandbox_id", String(256), nullable=False),
+            Column("provider", String(32), nullable=False, server_default="daytona"),
+            Column(
+                "isolation",
+                String(32),
+                nullable=False,
+                server_default="provider_managed",
+            ),
+            Column("node", String(256), nullable=True),
+            Column("resource_id", String(256), nullable=False),
+            Column("generation", Integer, nullable=False, server_default="1"),
+            Column("dependency_bundle_digest", String(71), nullable=True),
             Column(
                 "updated_at",
                 DateTime(timezone=True),
@@ -287,7 +384,29 @@ class AsyncSandboxRegistry:
                         ("agent-workspace:initialize",),
                     )
                     await connection.run_sync(self.metadata.create_all)
-            await self.db.upsert_schema_version(self.table.name, "1.0.0")
+                    table_name = connection.dialect.identifier_preparer.format_table(self.table)
+                    for definition in (
+                        "provider VARCHAR(32)",
+                        "isolation VARCHAR(32)",
+                        "node VARCHAR(256)",
+                        "resource_id VARCHAR(256)",
+                        "generation INTEGER",
+                        "dependency_bundle_digest VARCHAR(71)",
+                    ):
+                        await connection.exec_driver_sql(
+                            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {definition}"
+                        )
+                    await connection.exec_driver_sql(
+                        f"UPDATE {table_name} SET provider = COALESCE(provider, 'daytona'), "
+                        "isolation = COALESCE(isolation, 'provider_managed'), "
+                        "resource_id = COALESCE(resource_id, sandbox_id), "
+                        "generation = COALESCE(generation, 1)"
+                    )
+                    for column in ("provider", "isolation", "resource_id", "generation"):
+                        await connection.exec_driver_sql(
+                            f"ALTER TABLE {table_name} ALTER COLUMN {column} SET NOT NULL"
+                        )
+            await self.db.upsert_schema_version(self.table.name, "2.0.0")
             self._initialized = True
 
     async def workspace_label(self, base_label: str) -> str:
@@ -414,9 +533,60 @@ class AsyncSandboxRegistryTransaction:
         statement = (
             update(self.table)
             .where(self.table.c.thread_hash == value)
-            .values(sandbox_id=sandbox_id, updated_at=func.current_timestamp())
+            .values(
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+                updated_at=func.current_timestamp(),
+            )
             if exists
-            else insert(self.table).values(thread_hash=value, sandbox_id=sandbox_id)
+            else insert(self.table).values(
+                thread_hash=value,
+                sandbox_id=sandbox_id,
+                provider="daytona",
+                isolation="provider_managed",
+                resource_id=sandbox_id,
+                generation=1,
+            )
+        )
+        await self.connection.execute(statement)
+
+    async def get_binding(self, value: str) -> SandboxBindingRecord | None:
+        row = (
+            await self.connection.execute(
+                select(
+                    self.table.c.provider,
+                    self.table.c.isolation,
+                    self.table.c.node,
+                    self.table.c.resource_id,
+                    self.table.c.generation,
+                    self.table.c.dependency_bundle_digest,
+                ).where(self.table.c.thread_hash == value)
+            )
+        ).first()
+        if row is None:
+            return None
+        return SandboxBindingRecord(binding_digest=value, **row._mapping)
+
+    async def set_binding(self, record: SandboxBindingRecord) -> None:
+        values = record.model_dump(mode="json", exclude={"binding_digest"})
+        values["sandbox_id"] = record.resource_id
+        values["updated_at"] = func.current_timestamp()
+        exists = (
+            await self.connection.execute(
+                select(self.table.c.thread_hash).where(
+                    self.table.c.thread_hash == record.binding_digest
+                )
+            )
+        ).first()
+        statement = (
+            update(self.table)
+            .where(self.table.c.thread_hash == record.binding_digest)
+            .values(**values)
+            if exists
+            else insert(self.table).values(thread_hash=record.binding_digest, **values)
         )
         await self.connection.execute(statement)
 
@@ -435,10 +605,12 @@ class WorkspaceService:
         database: AgentDatabase | None = None,
         snapshot: str = WORKSPACE_SNAPSHOT,
         network_allow_list: str | None = None,
+        provider: Any | None = None,
     ):
         self.secret = secret
         self.snapshot = snapshot
         self.network_allow_list = network_allow_list
+        self._provider = provider
         self._client = client
         self.registry = registry or SandboxRegistry(database.sync_db if database else None)
         self._async_client_override = async_client
@@ -460,6 +632,9 @@ class WorkspaceService:
 
     @asynccontextmanager
     async def _async_client(self):
+        if self._provider is not None:
+            yield None
+            return
         if self._async_client_override is not None:
             yield self._async_client_override
             return
@@ -473,6 +648,9 @@ class WorkspaceService:
 
     @asynccontextmanager
     async def _isolated_async_client(self):
+        if self._provider is not None:
+            yield None
+            return
         if self._async_client_override is not None:
             yield self._async_client_override
             return
@@ -494,6 +672,9 @@ class WorkspaceService:
                 pass
 
     async def aclose(self) -> None:
+        if self._provider is not None:
+            await self._provider.aclose()
+            return
         if self._async_client_override is not None:
             return
         with self._async_client_state_lock:
@@ -507,6 +688,12 @@ class WorkspaceService:
 
     async def check_sandbox_service(self) -> None:
         """通过只读列表请求验证 Daytona Sandbox API 可访问。"""
+
+        if self._provider is not None:
+            health = await self._provider.health_check()
+            if not health.healthy:
+                raise WorkspaceError("sandbox provider 健康检查失败。")
+            return
 
         async with self._async_client() as client:
             # Daytona.list 返回异步生成器；提前取得首项后必须显式关闭，避免分页响应
@@ -710,6 +897,21 @@ class WorkspaceService:
         return sandbox
 
     async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
+        if self._provider is not None:
+            if not create:
+                binding = self._provider_binding(thread)
+                matches = await self._provider.list_workspaces(binding)
+                if not matches:
+                    return None
+                if len(matches) != 1:
+                    raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
+                return await self._provider.get_workspace(matches[0].ref, binding)
+            try:
+                return await self._provider.ensure_workspace(self._provider_binding(thread))
+            except SandboxTimeout as error:
+                raise WorkspaceError("工作区服务超时，请稍后重试。") from error
+            except SandboxProviderError as error:
+                raise WorkspaceError(f"工作区服务失败：{error.message}") from error
         value = await self._ahash(thread)
         sandbox = None
         sandbox_id = self._cached_sandbox_id(value)
@@ -797,8 +999,34 @@ class WorkspaceService:
             return bool(sandboxes)
 
     async def adestroy(self, thread: str) -> bool:
+        if self._provider is not None:
+            binding = self._provider_binding(thread)
+            matches = await self._provider.list_workspaces(binding)
+            deleted = False
+            for summary in matches:
+                result = await self._provider.destroy_workspace(summary.ref, binding)
+                deleted = result.deleted or deleted
+            return deleted
         async with self._async_client() as client:
             return await self._adestroy(client, thread)
+
+    def _provider_binding(self, thread: str) -> WorkspaceBinding:
+        # WorkspaceService 的调用方已经在 HTTP/Workflow 边界完成用户、公司和 thread
+        # 所有权校验；此处只把不含明文身份的 thread scope 固化为 Provider 绑定。
+        # 三个 scope 字段使用不同域分隔摘要，避免它们被误当成可互换标识。
+        base = self._base_hash(thread)
+
+        def scoped(name: str) -> str:
+            return hashlib.sha256(f"{name}:{base}".encode()).hexdigest()
+
+        return WorkspaceBinding(
+            tenant_id=scoped("tenant"),
+            user_id=scoped("user"),
+            company_id=scoped("company"),
+            thread_id=thread,
+            idempotency_key=scoped("workspace"),
+            profile=getattr(getattr(self._provider, "_config", None), "profile", None),
+        )
 
     async def aquarantine(self, thread: str) -> str:
         """隔离当前 workspace generation，使后续请求无法复用旧 sandbox。"""
@@ -861,6 +1089,11 @@ class WorkspaceService:
                     type(error).__name__,
                 )
             await asyncio.sleep(WORKSPACE_CLEANUP_INTERVAL_SECONDS)
+
+    async def run_provider_reconcile_loop(self) -> None:
+        reconcile = getattr(self._provider, "run_reconcile_loop", None)
+        if callable(reconcile):
+            await reconcile()
 
     async def _abranch_inventory(self, client: Any, thread: str):
         sandbox = await self._asandbox_for(client, thread, create=False)
@@ -1004,7 +1237,7 @@ class WorkspaceService:
             remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
             try:
                 info = self._info(sandbox, remote)
-            except DaytonaNotFoundError as error:
+            except (DaytonaNotFoundError, SandboxNotFound) as error:
                 raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
             if self._is_symlink(info):
                 raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
@@ -1018,7 +1251,7 @@ class WorkspaceService:
             remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
             try:
                 info = await self._ainfo(sandbox, remote)
-            except DaytonaNotFoundError as error:
+            except (DaytonaNotFoundError, SandboxNotFound) as error:
                 raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
             if self._is_symlink(info):
                 raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
@@ -1044,7 +1277,7 @@ class WorkspaceService:
                 return
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 sandbox.fs.create_folder(remote, "700")
                 return
         relative = remote[len(WORKSPACE_ROOT) :].strip("/")
@@ -1059,7 +1292,7 @@ class WorkspaceService:
                     raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 sandbox.fs.create_folder(current, "700")
 
     async def _aensure_directory(self, sandbox, remote: str):
@@ -1072,7 +1305,7 @@ class WorkspaceService:
                 return
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 await sandbox.fs.create_folder(remote, "700")
                 return
         relative = remote[len(WORKSPACE_ROOT) :].strip("/")
@@ -1087,7 +1320,7 @@ class WorkspaceService:
                     raise WorkspaceError("工作区目录路径不是安全目录，请改用普通目录。")
             except WorkspaceError:
                 raise
-            except DaytonaNotFoundError:
+            except (DaytonaNotFoundError, SandboxNotFound):
                 await sandbox.fs.create_folder(current, "700")
 
     def list_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
@@ -1114,6 +1347,36 @@ class WorkspaceService:
                     if entry.is_dir
                     else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
                     "modifiedAt": entry.modified_at or entry.mod_time,
+                }
+            )
+        return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
+
+    async def alist_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
+        relative, remote = self.normalize_path(path)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            entries = await sandbox.fs.list_files(remote)
+        if len(entries) > MAX_LIST_ENTRIES:
+            raise WorkspaceError(
+                f"工作区目录包含超过 {MAX_LIST_ENTRIES} 个项目，请进入子目录后重试。"
+            )
+        result = []
+        for entry in entries:
+            if entry.name in (".", "..") or self._is_symlink(entry):
+                continue
+            child = f"{relative}/{entry.name}".strip("/")
+            result.append(
+                {
+                    "path": child,
+                    "name": entry.name,
+                    "isDirectory": bool(entry.is_dir),
+                    "size": int(entry.size or 0),
+                    "mimeType": False
+                    if entry.is_dir
+                    else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
+                    "modifiedAt": getattr(entry, "modified_at", None)
+                    or getattr(entry, "mod_time", None),
                 }
             )
         return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
@@ -1165,6 +1428,36 @@ class WorkspaceService:
         """供 HTTP 上传和系统报表使用，保留覆盖已有文件的语义。"""
         return self._store_file(thread, path, content, "upload")
 
+    async def _astore_file(
+        self, thread: str, path: str, content: bytes, mode: str
+    ) -> dict[str, Any]:
+        self._validate_content(content)
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
+            try:
+                info = await self._ainfo(sandbox, remote)
+            except (DaytonaNotFoundError, SandboxNotFound):
+                info = None
+            if mode == "create" and info is not None:
+                raise WorkspacePathConflict(
+                    f"文件“{relative}”已经存在。如需覆盖，请使用覆盖文件工具并确认。"
+                )
+            if info is not None and (info.is_dir or not self._is_regular_file(info)):
+                raise WorkspaceError("目标路径不是普通文件，请更换文件路径后重试。")
+            await sandbox.fs.upload_file(content, remote)
+        return {"path": relative, "size": len(content), "status": "synced"}
+
+    async def aupload(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
+        return await self._astore_file(thread, path, content, "upload")
+
+    async def acreate_file_locked(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
+        relative, _remote = self.normalize_path(path, allow_root=False)
+        lock_key = f"agent-workspace-file:{await self._ahash(thread)}:{relative}"
+        async with self.async_registry.locked(lock_key):
+            return await self._astore_file(thread, relative, content, "create")
+
     def create_file(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
         return self._store_file(thread, path, content, "create")
 
@@ -1181,6 +1474,19 @@ class WorkspaceService:
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
         return self._file_bytes_from_sandbox(sandbox, relative, remote)
+
+    async def afile_bytes(self, thread: str, path: str) -> tuple[bytes, str]:
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            info = await self._ainfo(sandbox, remote)
+            if info.is_dir:
+                raise WorkspaceError("所选项目是目录，不能作为文件下载，请选择普通文件。")
+            if int(info.size or 0) > MAX_DOWNLOAD_BYTES:
+                raise WorkspaceError("所选文件超过 200 MiB，请缩小文件后重试。")
+            content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+        return content, mimetypes.guess_type(relative)[0] or "application/octet-stream"
 
     def _file_bytes_from_sandbox(
         self, sandbox: Any, relative: str, remote: str
@@ -1252,6 +1558,27 @@ class WorkspaceService:
             return content.decode("utf-8")
         except UnicodeDecodeError as error:
             raise WorkspaceError("该文件不是 UTF-8 文本，请下载后使用对应软件打开。") from error
+
+    async def _aread_text_from_sandbox(self, sandbox: Any, relative: str, remote: str) -> str:
+        await self._avalidate_existing_path(sandbox, relative)
+        info = await self._ainfo(sandbox, remote)
+        if info.is_dir:
+            raise WorkspaceError("所选项目是目录，不能作为文本文件读取。")
+        if int(info.size or 0) > MAX_READ_BYTES:
+            raise WorkspaceError("所选文件超过 1 MB，请下载后使用对应软件打开。")
+        content = await self._adownload_file(sandbox, remote, MAX_READ_BYTES)
+        if b"\x00" in content:
+            raise WorkspaceError("该文件包含二进制内容，请下载后使用对应软件打开。")
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise WorkspaceError("该文件不是 UTF-8 文本，请下载后使用对应软件打开。") from error
+
+    async def aread_text(self, thread: str, path: str) -> str:
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            return await self._aread_text_from_sandbox(sandbox, relative, remote)
 
     @staticmethod
     def _validate_page_window(limit: int, offset: int) -> tuple[int, int]:
@@ -1807,6 +2134,22 @@ class WorkspaceService:
 
     async def ahash_file(self, thread: str, path: str) -> dict[str, Any]:
         relative, remote = self.normalize_path(path, allow_root=False)
+        if self._provider is not None:
+            async with self._async_client() as client:
+                sandbox = await self._asandbox_for(client, thread)
+                try:
+                    await self._avalidate_existing_path(sandbox, relative)
+                    info = await self._ainfo(sandbox, remote)
+                    if not self._is_regular_file(info):
+                        raise WorkspaceError("工作区路径不是普通文件。")
+                    content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+                except SandboxNotFound as error:
+                    raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
+            return {
+                "path": relative,
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
         quoted = shlex.quote(remote)
         script = (
             f"digest=$(sha256sum -- {quoted}) || exit $?; digest=${{digest%% *}}; "
@@ -1854,6 +2197,45 @@ class WorkspaceService:
         except ValueError as error:
             raise WorkspaceHashResultError("工作区文件哈希结果无效，请稍后重试。") from error
         return {"path": relative, "size": size, "sha256": digest}
+
+    async def arun_python_script(
+        self, thread: str, script_path: str, *, timeout: int = MAX_EXECUTION_TIMEOUT
+    ) -> dict[str, Any]:
+        relative, remote = self.normalize_path(script_path, allow_root=False)
+        if PurePosixPath(relative).suffix.lower() != ".py":
+            raise WorkspaceError("Python runner 只接受 .py 脚本。")
+        execution_timeout = self._validate_timeout(timeout, MAX_BACKGROUND_EXECUTION_TIMEOUT)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            info = await self._ainfo(sandbox, remote)
+            if not self._is_regular_file(info) or int(info.size or 0) > MAX_UPLOAD_BYTES:
+                raise WorkspaceError("Python 脚本不是允许大小的普通文件。")
+            content = await self._adownload_file(sandbox, remote, MAX_UPLOAD_BYTES)
+            try:
+                script = content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise WorkspaceError("Python 脚本必须使用 UTF-8 编码。") from error
+            result = await PythonScriptRunner(sandbox.execution).run(
+                RunPythonScriptRequest(
+                    script=script,
+                    cwd="",
+                    timeout_ms=execution_timeout * 1000,
+                    output_limit_bytes=MAX_TOOL_OUTPUT_BYTES,
+                )
+            )
+        output = result.stdout
+        if result.stderr:
+            output += ("\n" if output else "") + result.stderr
+        return {
+            "ok": result.exit_code == 0,
+            "status": "completed",
+            "exitCode": result.exit_code,
+            "output": output,
+            "scriptPath": relative,
+            "scriptSha256": result.script_hash,
+            "dependencyBundleDigest": result.dependency_bundle_digest,
+        }
 
     async def aworkspace_fingerprint(self, thread: str) -> str:
         script = "LC_ALL=C find . -xdev -printf '%P\\0%y\\0%s\\0%T@\\0' | sort -z | sha256sum"
@@ -2279,6 +2661,22 @@ class WorkspaceService:
                 raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
         return info
 
+    async def _ainspect_destination_without_writes(self, sandbox: Any, relative: str):
+        parts = relative.split("/")
+        info = None
+        for index in range(1, len(parts) + 1):
+            remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
+            try:
+                with suppress_expected_probe_tracing():
+                    info = await self._ainfo(sandbox, remote)
+            except (DaytonaNotFoundError, SandboxNotFound):
+                return None
+            if self._is_symlink(info):
+                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
+            if index < len(parts) and not bool(getattr(info, "is_dir", False)):
+                raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
+        return info
+
     def apply_changes(self, thread: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
             raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
@@ -2484,12 +2882,209 @@ class WorkspaceService:
             results.append(result)
         return {"files": results, "operations": len(results)}
 
+    async def aapply_changes(self, thread: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
+        if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
+            raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
+
+        keys_by_operation = {
+            "create": {"operation", "path", "content"},
+            "update": {"operation", "path", "content", "expected_sha256"},
+            "delete": {"operation", "path", "expected_sha256"},
+            "move": {"operation", "path", "destination", "expected_sha256"},
+        }
+        lock_key = f"agent-workspace-changes:{await self._ahash(thread)}"
+        async with self.async_registry.locked(lock_key):
+            async with self._async_client() as client:
+                sandbox = await self._asandbox_for(client, thread)
+                prepared: list[dict[str, Any]] = []
+                used_paths: set[str] = set()
+                for change in changes:
+                    if not isinstance(change, dict):
+                        raise WorkspaceError("变更集中的每一项都必须是文件操作对象。")
+                    raw_operation = change.get("operation")
+                    if not isinstance(raw_operation, str):
+                        raise WorkspaceError("变更集操作必须是 create、update、delete 或 move。")
+                    operation = raw_operation
+                    required_keys = keys_by_operation.get(operation)
+                    if required_keys is None or set(change) != required_keys:
+                        raise WorkspaceError(
+                            "变更集操作字段无效；请按 create、update、delete 或 move 的字段要求重试。"
+                        )
+                    if not isinstance(change.get("path"), str):
+                        raise WorkspaceError("变更集路径必须是工作区相对路径字符串。")
+                    relative, remote = self.normalize_path(change["path"], allow_root=False)
+                    occupied_paths = [relative]
+                    destination = None
+                    destination_remote = None
+                    if operation == "move":
+                        if not isinstance(change.get("destination"), str):
+                            raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
+                        destination, destination_remote = self.normalize_path(
+                            change["destination"], allow_root=False
+                        )
+                        if destination == relative:
+                            raise WorkspaceError("移动源路径和目标路径不能相同。")
+                        occupied_paths.append(destination)
+                    if any(path in used_paths for path in occupied_paths):
+                        raise WorkspaceError("变更集不能重复使用同一个源路径或目标路径。")
+                    used_paths.update(occupied_paths)
+
+                    if operation == "create":
+                        content = change["content"]
+                        if not isinstance(content, str):
+                            raise WorkspaceError("新建文件内容必须是 UTF-8 文本。")
+                        updated = content.encode("utf-8")
+                        self._validate_content(updated)
+                        if (
+                            await self._ainspect_destination_without_writes(sandbox, relative)
+                            is not None
+                        ):
+                            raise WorkspacePathConflict(
+                                f"文件“{relative}”已经存在，请重新读取变更目标后重试。"
+                            )
+                        prepared.append(
+                            {
+                                "operation": operation,
+                                "path": relative,
+                                "remote": remote,
+                                "updated": updated,
+                            }
+                        )
+                        continue
+
+                    await self._avalidate_existing_path(sandbox, relative)
+                    info = await self._ainfo(sandbox, remote)
+                    if not self._is_regular_file(info):
+                        raise WorkspaceError("变更集只能更新、删除或移动普通文件。")
+                    original = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+                    if operation == "delete" and len(original) > MAX_UPLOAD_BYTES:
+                        raise WorkspaceError(
+                            "变更集不能删除超过 200 MiB 的文件；请使用独立删除工具并确认。"
+                        )
+                    expected_sha256 = self._validate_patch_hash(change["expected_sha256"])
+                    if hashlib.sha256(original).hexdigest() != expected_sha256:
+                        raise WorkspacePathConflict(
+                            "文件内容已变化，请重新读取全部目标文件和哈希后再应用变更集。"
+                        )
+                    item: dict[str, Any] = {
+                        "operation": operation,
+                        "path": relative,
+                        "remote": remote,
+                        "original": original,
+                        "sha256": expected_sha256,
+                    }
+                    if operation == "update":
+                        content = change["content"]
+                        if not isinstance(content, str):
+                            raise WorkspaceError("更新文件内容必须是 UTF-8 文本。")
+                        item["updated"] = content.encode("utf-8")
+                        self._validate_content(item["updated"])
+                    elif operation == "move":
+                        if destination is None or destination_remote is None:
+                            raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
+                        if (
+                            await self._ainspect_destination_without_writes(sandbox, destination)
+                            is not None
+                        ):
+                            raise WorkspacePathConflict(
+                                f"移动目标“{destination}”已经存在，请更换路径后重试。"
+                            )
+                        item["destination"] = destination
+                        item["destination_remote"] = destination_remote
+                    prepared.append(item)
+
+                # 所有路径和内容身份必须在首次写入前完成校验；执行失败时按逆序恢复，
+                # 保持 Reporting 一次补丁要么整体可见、要么回到原状态的不变量。
+                completed: list[dict[str, Any]] = []
+                try:
+                    for item in prepared:
+                        operation = item["operation"]
+                        if operation in {"create", "update"}:
+                            await self._aensure_directory(sandbox, item["remote"].rsplit("/", 1)[0])
+                            await sandbox.fs.upload_file(item["updated"], item["remote"])
+                        elif operation == "delete":
+                            await sandbox.fs.delete_file(item["remote"], recursive=False)
+                        else:
+                            await self._aensure_directory(
+                                sandbox, item["destination_remote"].rsplit("/", 1)[0]
+                            )
+                            await sandbox.fs.move_files(item["remote"], item["destination_remote"])
+                        completed.append(item)
+
+                        if operation in {"create", "update"}:
+                            persisted = await self._adownload_file(
+                                sandbox, item["remote"], MAX_UPLOAD_BYTES
+                            )
+                            if persisted != item["updated"]:
+                                raise WorkspaceError("变更集落盘校验失败，请重新检查目标文件。")
+                        elif operation == "move":
+                            persisted = await self._adownload_file(
+                                sandbox, item["destination_remote"], MAX_UPLOAD_BYTES
+                            )
+                            if persisted != item["original"]:
+                                raise WorkspaceError("变更集移动校验失败，请重新检查目标文件。")
+                except Exception as error:
+                    rollback_failed = False
+                    for item in reversed(completed):
+                        try:
+                            operation = item["operation"]
+                            if operation == "create":
+                                await sandbox.fs.delete_file(item["remote"], recursive=False)
+                            elif operation == "update":
+                                await sandbox.fs.upload_file(item["original"], item["remote"])
+                            elif operation == "delete":
+                                await self._aensure_directory(
+                                    sandbox, item["remote"].rsplit("/", 1)[0]
+                                )
+                                await sandbox.fs.upload_file(item["original"], item["remote"])
+                            else:
+                                await self._aensure_directory(
+                                    sandbox, item["remote"].rsplit("/", 1)[0]
+                                )
+                                await sandbox.fs.move_files(
+                                    item["destination_remote"], item["remote"]
+                                )
+                        except Exception:
+                            rollback_failed = True
+                    if rollback_failed:
+                        raise WorkspaceError(
+                            "变更集执行失败且未能完整回滚，请重新检查所有目标文件。"
+                        ) from error
+                    raise
+
+        results = []
+        for item in prepared:
+            result = {"operation": item["operation"], "path": item["path"]}
+            if item["operation"] in {"create", "update"}:
+                result.update(
+                    {
+                        "size": len(item["updated"]),
+                        "sha256": hashlib.sha256(item["updated"]).hexdigest(),
+                    }
+                )
+            elif item["operation"] == "move":
+                result["destination"] = item["destination"]
+                result["sha256"] = item["sha256"]
+            else:
+                result["sha256"] = item["sha256"]
+            results.append(result)
+        return {"files": results, "operations": len(results)}
+
     def view_image(self, thread: str, path: str) -> ToolResult:
         relative = self.normalize_path(path, allow_root=False)[0]
+        content, mime_type = self.file_bytes(thread, relative)
+        return self._image_result(relative, content, mime_type)
+
+    async def aview_image(self, thread: str, path: str) -> ToolResult:
+        relative = self.normalize_path(path, allow_root=False)[0]
+        content, mime_type = await self.afile_bytes(thread, relative)
+        return self._image_result(relative, content, mime_type)
+
+    @staticmethod
+    def _image_result(relative: str, content: bytes, mime_type: str) -> ToolResult:
         suffix = PurePosixPath(relative).suffix.lower()
         if suffix not in IMAGE_SUFFIXES:
             raise WorkspaceError("仅支持 PNG、JPEG、GIF 或 WebP 图片。")
-        content, mime_type = self.file_bytes(thread, relative)
         if len(content) > MAX_IMAGE_BYTES:
             raise WorkspaceError("图片超过 10 MiB，请缩小后重试。")
         header = content[:12]
@@ -2555,6 +3150,16 @@ class WorkspaceService:
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
         self._delete_file_from_sandbox(sandbox, relative, remote, recursive)
+
+    async def adelete_file(self, thread: str, path: str, recursive: bool = False) -> None:
+        relative, remote = self.normalize_path(path, allow_root=False)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            info = await self._ainfo(sandbox, remote)
+            if info.is_dir and not recursive:
+                raise WorkspaceError("所选项目是目录；如需删除，请启用递归删除并重新确认。")
+            await sandbox.fs.delete_file(remote, recursive=recursive)
 
     def _delete_file_from_sandbox(
         self,

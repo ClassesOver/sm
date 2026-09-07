@@ -59,7 +59,7 @@ from .repository_impl import (
     TaskExecutionTask,
     utcnow,
 )
-from .tools import build_workspace_changes
+from .tools import abuild_workspace_changes
 
 TASK_EXECUTION_DEPENDENCY = "AgentOS 任务执行"
 TASK_EXECUTION_FINISH_FAILURE_STATE_KEY = "agentos_task_execution_finish_failure"
@@ -243,6 +243,7 @@ class _InstalledValidator:
 
 TOOL_SPECS = {
     "terminal": ToolSpec("workspace_write", False),
+    "run_python_script": ToolSpec("workspace_write", False),
     "process": ToolSpec("process_control", False),
     "finish_task": ToolSpec("finish", False),
     "view_image": ToolSpec("read", True, "media"),
@@ -1392,7 +1393,7 @@ class TaskExecutionKernel:
             raise WorkspaceError("apply_patch heredoc 不支持 workdir 或 PTY。")
         scope = _scope or await self.scope(run_context)
         patch_changes = (
-            await asyncio.to_thread(build_workspace_changes, self.service, scope.thread_id, patch)
+            await abuild_workspace_changes(self.service, scope.thread_id, patch)
             if patch is not None
             else None
         )
@@ -1453,9 +1454,7 @@ class TaskExecutionKernel:
         if patch is not None:
             try:
                 assert patch_changes is not None
-                applied = await asyncio.to_thread(
-                    self.service.apply_changes, scope.thread_id, patch_changes
-                )
+                applied = await self.service.aapply_changes(scope.thread_id, patch_changes)
                 result = {**applied, "ok": True, "message": "补丁已应用。"}
                 await self._check_fence(scope, execution_id)
                 execution = await self.repository.update_execution(
@@ -1589,6 +1588,71 @@ class TaskExecutionKernel:
                 "message": message,
             }
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
+
+    async def run_python_script(
+        self,
+        script_path: str,
+        *,
+        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
+        run_context: RunContext | None = None,
+        _scope: TaskExecutionRuntime | None = None,
+    ) -> dict[str, Any]:
+        scope = _scope or await self.scope(run_context)
+        mutation_sequence = await self.repository.increment_mutation(
+            scope.external_run_id,
+            lease=scope.lease,
+            internal_run_id=scope.internal_run_id,
+        )
+        execution_id = uuid.uuid4().hex
+        execution = await self.repository.reserve_execution(
+            execution_id=execution_id,
+            external_run_id=scope.external_run_id,
+            internal_run_id=scope.internal_run_id,
+            owner_user_id=scope.owner_user_id,
+            thread_id=scope.thread_id,
+            sandbox_id=scope.sandbox_id,
+            daytona_session_id=f"python-{execution_id}",
+            mutation_sequence=mutation_sequence,
+            is_verification=False,
+            kind="terminal",
+            attempt_no=scope.attempt_no,
+            lease_epoch=scope.lease_epoch,
+            operation_receipt={"runner": "python", "scriptPath": script_path},
+            lease=scope.lease,
+        )
+        await self._check_fence(scope, execution_id)
+        try:
+            result = await self.service.arun_python_script(
+                scope.thread_id, script_path, timeout=timeout
+            )
+            exit_code = result.get("exitCode")
+            execution = await self.repository.update_execution(
+                execution_id,
+                status="completed" if exit_code == 0 else "failed",
+                output=str(result.get("output", "")),
+                exit_code=exit_code if isinstance(exit_code, int) else 1,
+            )
+            await self.repository.record_execution_mutation(
+                scope.external_run_id,
+                execution.execution_id,
+                execution.mutation_sequence,
+                lease=scope.lease,
+                internal_run_id=scope.internal_run_id,
+            )
+            return {**self._public_execution(execution), **result}
+        except Exception as error:
+            execution = await self.repository.update_execution(
+                execution_id,
+                status="failed",
+                output=str(error)[:1000],
+                exit_code=1,
+            )
+            return {
+                **self._public_execution(execution),
+                "ok": False,
+                "code": getattr(error, "code", "execution_failed"),
+                "message": str(error)[:1000],
+            }
 
     async def _record_terminal_mutation(
         self,
@@ -1923,44 +1987,39 @@ class TaskExecutionKernel:
         if mode == "patch":
             if not isinstance(patch, str) or not patch.strip():
                 raise WorkspaceError("patch 模式必须提供完整补丁。")
-            changes = await asyncio.to_thread(
-                build_workspace_changes, self.service, scope.thread_id, patch
-            )
+            changes = await abuild_workspace_changes(self.service, scope.thread_id, patch)
         elif mode == "replace":
             if not isinstance(path, str) or not isinstance(old_string, str) or not old_string:
                 raise WorkspaceError("replace 模式必须提供 path 和非空 old_string。")
             if not isinstance(new_string, str) or not isinstance(replace_all, bool):
                 raise WorkspaceError("replace 模式参数无效。")
 
-            def replacement() -> tuple[list[dict[str, Any]], int]:
-                content, _mime = self.service.file_bytes(scope.thread_id, path)
-                try:
-                    original = content.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
-                count = original.count(old_string)
-                if count == 0:
-                    raise WorkspaceError("old_string 在目标文件中不存在。")
-                if count != 1 and not replace_all:
-                    raise WorkspaceError(
-                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
-                    )
-                updated = original.replace(old_string, new_string, -1 if replace_all else 1)
-                if updated == original:
-                    return [], 0
-                return (
-                    [
-                        {
-                            "operation": "update",
-                            "path": path,
-                            "content": updated,
-                            "expected_sha256": hashlib.sha256(content).hexdigest(),
-                        }
-                    ],
-                    count if replace_all else 1,
+            file_content, _mime = await self.service.afile_bytes(scope.thread_id, path)
+            try:
+                original = file_content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
+            count = original.count(old_string)
+            if count == 0:
+                raise WorkspaceError("old_string 在目标文件中不存在。")
+            if count != 1 and not replace_all:
+                raise WorkspaceError(
+                    "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
                 )
-
-            changes, replacements = await asyncio.to_thread(replacement)
+            updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+            changes = (
+                []
+                if updated == original
+                else [
+                    {
+                        "operation": "update",
+                        "path": path,
+                        "content": updated,
+                        "expected_sha256": hashlib.sha256(file_content).hexdigest(),
+                    }
+                ]
+            )
+            replacements = count if replace_all else 1
         elif mode == "create":
             if not isinstance(path, str) or not isinstance(content, str):
                 raise WorkspaceError("create 模式必须提供 path 和 content。")
@@ -2022,7 +2081,7 @@ class TaskExecutionKernel:
         await self._check_fence(scope, execution_id)
         applied = False
         try:
-            result = await asyncio.to_thread(self.service.apply_changes, scope.thread_id, changes)
+            result = await self.service.aapply_changes(scope.thread_id, changes)
             applied = True
             await self._check_fence(scope, execution_id)
             await self.repository.update_execution(
@@ -2826,9 +2885,7 @@ class TaskExecutionKernel:
             if relative.startswith(f"{WORKSPACE_ROOT}/"):
                 relative = relative.removeprefix(f"{WORKSPACE_ROOT}/")
             try:
-                content, _mime = await asyncio.to_thread(
-                    self.service.file_bytes, scope.thread_id, relative
-                )
+                content, _mime = await self.service.afile_bytes(scope.thread_id, relative)
             except (DaytonaNotFoundError, WorkspaceError):
                 continue
             actual_sha256 = hashlib.sha256(content).hexdigest()

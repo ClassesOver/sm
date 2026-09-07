@@ -6,6 +6,7 @@ dependencies = [
     "agno==3.0.1",
     "fastmcp>=3.4.3,<4",
     "daytona==0.189.0",
+    "cryptography>=45,<51",
     "fastapi>=0.115",
     "matplotlib>=3.9,<3.11",
     "markdown-it-py==4.2.0",

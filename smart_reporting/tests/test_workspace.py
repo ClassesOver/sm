@@ -16,11 +16,13 @@ from sqlalchemy import delete, select
 
 import smart_reporting.workspace as workspace_module
 from smart_reporting.runtime.database import create_agent_database
+from smart_reporting.sandbox import IsolationKind, ProviderKind, SandboxRef
 from smart_reporting.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
     AsyncFakeFs,
     AsyncFakeProcess,
+    AsyncFakeSandbox,
     AsyncMemoryRegistry,
     FakeClient,
     FakeSandbox,
@@ -48,6 +50,135 @@ from smart_reporting.workspace import (
     WorkspaceService,
     WorkspaceToolkit,
 )
+
+
+@pytest.mark.anyio
+async def test_workspace_service_uses_provider_handle_for_hashing() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.bindings = []
+            raw_sandbox = FakeSandbox("provider-1", {})
+            raw_sandbox.fs.upload_file(b'{"ok":true}', f"{WORKSPACE_ROOT}/result.json")
+            sandbox = AsyncFakeSandbox(raw_sandbox)
+            sandbox.ref = SandboxRef(
+                provider=ProviderKind.LOCAL,
+                isolation=IsolationKind.LINUX_PROCESS,
+                node="node-a",
+                resource_id="provider-1",
+                generation=1,
+                binding_digest="a" * 64,
+            )
+            self.sandbox = sandbox
+
+        async def ensure_workspace(self, binding):
+            self.bindings.append(binding)
+            return self.sandbox
+
+    provider = Provider()
+    current = WorkspaceService(
+        SECRET,
+        provider=provider,
+        async_registry=AsyncMemoryRegistry({}),
+    )
+
+    result = await current.ahash_file("thread", "result.json")
+
+    assert result == {
+        "path": "result.json",
+        "size": 11,
+        "sha256": hashlib.sha256(b'{"ok":true}').hexdigest(),
+    }
+    assert provider.bindings[0].thread_id == "thread"
+
+
+def _provider_workspace_service(monkeypatch) -> tuple[WorkspaceService, AsyncFakeSandbox]:
+    class Provider:
+        def __init__(self) -> None:
+            raw_sandbox = FakeSandbox("provider-1", {})
+            sandbox = AsyncFakeSandbox(raw_sandbox)
+            sandbox.ref = SandboxRef(
+                provider=ProviderKind.LOCAL,
+                isolation=IsolationKind.LINUX_PROCESS,
+                node="node-a",
+                resource_id="provider-1",
+                generation=1,
+                binding_digest="a" * 64,
+            )
+            self.sandbox = sandbox
+
+        async def ensure_workspace(self, _binding):
+            return self.sandbox
+
+    provider = Provider()
+    monkeypatch.setattr(
+        workspace_module,
+        "Daytona",
+        lambda: pytest.fail("LocalProvider 文件变更不得实例化同步 Daytona client"),
+    )
+    return (
+        WorkspaceService(
+            SECRET,
+            provider=provider,
+            async_registry=AsyncMemoryRegistry({}),
+        ),
+        provider.sandbox,
+    )
+
+
+@pytest.mark.anyio
+async def test_async_apply_changes_creates_file_through_provider(monkeypatch) -> None:
+    current, _sandbox = _provider_workspace_service(monkeypatch)
+
+    result = await current.aapply_changes(
+        "thread",
+        [{"operation": "create", "path": "analysis/model.py", "content": "value = 1\n"}],
+    )
+
+    assert result["files"][0]["sha256"] == hashlib.sha256(b"value = 1\n").hexdigest()
+    assert await current.aread_text("thread", "analysis/model.py") == "value = 1\n"
+
+
+@pytest.mark.anyio
+async def test_async_apply_changes_updates_file_through_provider(monkeypatch) -> None:
+    current, sandbox = _provider_workspace_service(monkeypatch)
+    await sandbox.fs.create_folder(f"{WORKSPACE_ROOT}/analysis", "700")
+    await sandbox.fs.upload_file(b"value = 1\n", f"{WORKSPACE_ROOT}/analysis/model.py")
+
+    await current.aapply_changes(
+        "thread",
+        [
+            {
+                "operation": "update",
+                "path": "analysis/model.py",
+                "content": "value = 2\n",
+                "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
+            }
+        ],
+    )
+
+    assert await current.aread_text("thread", "analysis/model.py") == "value = 2\n"
+
+
+@pytest.mark.anyio
+async def test_async_apply_changes_rejects_hash_conflict_without_writing(monkeypatch) -> None:
+    current, sandbox = _provider_workspace_service(monkeypatch)
+    await sandbox.fs.create_folder(f"{WORKSPACE_ROOT}/analysis", "700")
+    await sandbox.fs.upload_file(b"value = 1\n", f"{WORKSPACE_ROOT}/analysis/model.py")
+
+    with pytest.raises(WorkspacePathConflict, match="文件内容已变化"):
+        await current.aapply_changes(
+            "thread",
+            [
+                {
+                    "operation": "update",
+                    "path": "analysis/model.py",
+                    "content": "value = 2\n",
+                    "expected_sha256": "0" * 64,
+                }
+            ],
+        )
+
+    assert await current.aread_text("thread", "analysis/model.py") == "value = 1\n"
 
 
 def test_旧_coding_workspace_辅助工具不再注册():

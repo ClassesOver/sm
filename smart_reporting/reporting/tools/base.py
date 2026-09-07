@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
@@ -97,6 +96,19 @@ class ReportingToolkitBase(Toolkit):
             run_context,
         )
 
+    async def run_python_script(
+        self,
+        script_path: str,
+        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        return await self._invoke(
+            "run_python_script",
+            {"script_path": script_path, "timeout": timeout},
+            lambda scope: self.runtime.execute_script(script_path, timeout=timeout),
+            run_context,
+        )
+
     async def process(
         self,
         action: str,
@@ -133,9 +145,7 @@ class ReportingToolkitBase(Toolkit):
             )
 
         async def call(scope: Any) -> dict[str, Any]:
-            content, _mime = await asyncio.to_thread(
-                self.runtime.workspace.file_bytes, scope.thread_id, path
-            )
+            content, _mime = await self.runtime.workspace.afile_bytes(scope.thread_id, path)
             if offset > len(content):
                 raise WorkspaceError("read_file offset 超过文件大小。")
             end = min(len(content), offset + max_bytes)
@@ -405,11 +415,7 @@ class ReportingToolkitBase(Toolkit):
             or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
         ):
             raise ReportingError(identity_code, "受信 JSON 文件身份缺失或无效。")
-        content, _mime = await asyncio.to_thread(
-            self.runtime.workspace.file_bytes,
-            thread_id,
-            identity["path"],
-        )
+        content, _mime = await self.runtime.workspace.afile_bytes(thread_id, identity["path"])
         if (
             len(content) != identity["size"]
             or hashlib.sha256(content).hexdigest() != identity["sha256"]
@@ -857,7 +863,7 @@ class ReportingToolkitBase(Toolkit):
                 )
                 if rejection is not None:
                     return rejection
-            if phase == "analysis" and tool_name == "terminal":
+            if phase == "analysis" and tool_name in {"terminal", "run_python_script"}:
                 visualization_rejection = await self._visualization_terminal_rejection(
                     scope=scope, arguments=arguments
                 )
@@ -880,7 +886,7 @@ class ReportingToolkitBase(Toolkit):
             if (
                 phase == "analysis"
                 and task_kind == "visualization_section"
-                and tool_name == "terminal"
+                and tool_name in {"terminal", "run_python_script"}
                 and isinstance(result, Mapping)
                 and result.get("status") == "running"
                 and isinstance(result.get("session_id"), str)

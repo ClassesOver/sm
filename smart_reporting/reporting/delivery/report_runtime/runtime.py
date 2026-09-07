@@ -180,7 +180,6 @@ class ReportRuntime:
         temporary: Path | None = None
         html_output: Path | None = None
         temporary_html: Path | None = None
-        succeeded = False
         try:
             source = _input_path(self.workspace, markdown_path, ".md")
             if source.stat().st_size > MAX_MARKDOWN_BYTES:
@@ -331,6 +330,29 @@ class ReportRuntime:
                 "size": len(html_bytes),
                 "sha256": _sha256(temporary_html),
             }
+            created_output_directory = False
+            published: list[Path] = []
+            try:
+                if not output.parent.exists():
+                    output.parent.mkdir(mode=0o700)
+                    created_output_directory = True
+                # 三种格式先在进程私有临时目录完成全部解析、大小和结构校验，再写入
+                # workspace staging。/tmp 可能是独立 tmpfs，不能依赖跨文件系统 rename；
+                # 外层只发布完整 staging 目录，任一复制失败都必须
+                # 删除本轮已写文件，不能留下可被后续验收误认的半成品。
+                for temporary_source, destination in (
+                    (temporary, output),
+                    (temporary_docx, word_output),
+                    (temporary_html, html_output),
+                ):
+                    shutil.copyfile(temporary_source, destination)
+                    published.append(destination)
+            except BaseException:
+                for path in published:
+                    path.unlink(missing_ok=True)
+                if created_output_directory:
+                    output.parent.rmdir()
+                raise
             render = {
                 "markdown": source_artifact,
                 "pdf": pdf_artifact,
@@ -362,10 +384,9 @@ class ReportRuntime:
                 "wordSize": docx_size,
                 "render": render,
             }
-            succeeded = True
             return result
         finally:
-            if temporary is not None and not succeeded:
+            if temporary is not None:
                 shutil.rmtree(temporary.parent, ignore_errors=True)
 
     def validate_pdf(
