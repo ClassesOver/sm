@@ -202,7 +202,13 @@ async def test_analysis_item_workflow_reads_large_supplemental_evidence_in_chunk
         {
             "analysisId": "analysis_001",
             "datasetIds": ["dataset-1"],
-            "findings": [{"name": "完整明细", "rows": rows}],
+            "findings": [
+                {
+                    "name": "完整明细",
+                    "columns": ["period", "value", "note"],
+                    "rows": [[row["period"], row["value"], row["note"]] for row in rows],
+                }
+            ],
             "reconciliations": [{"name": "完整性对账", "passed": True}],
             "warnings": [],
         },

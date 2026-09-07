@@ -157,36 +157,30 @@ class SupplementalEvidence(_StrictModel):
 
     @field_validator("findings", mode="before")
     @classmethod
-    def compact_tabular_findings(cls, value: Any) -> Any:
-        """把同构对象行无损转换为列名只出现一次的紧凑表示。"""
+    def require_compact_tabular_findings(cls, value: Any) -> Any:
+        """表格明细只接受列式结构，避免同一协议存在两种编码。"""
 
         if not isinstance(value, (list, tuple)):
             return value
-        compacted: list[Any] = []
         for finding in value:
-            if not isinstance(finding, Mapping) or "columns" in finding:
-                compacted.append(finding)
+            if not isinstance(finding, Mapping):
                 continue
             rows = finding.get("rows")
             if not isinstance(rows, (list, tuple)) or not rows:
-                compacted.append(finding)
                 continue
-            first = rows[0]
-            if not isinstance(first, Mapping) or not first:
-                compacted.append(finding)
-                continue
-            columns = tuple(first)
-            if any(not isinstance(row, Mapping) or set(row) != set(columns) for row in rows):
-                compacted.append(finding)
-                continue
-            compacted.append(
-                {
-                    **{key: item for key, item in finding.items() if key != "rows"},
-                    "columns": columns,
-                    "rows": tuple(tuple(row[column] for column in columns) for row in rows),
-                }
-            )
-        return compacted
+            if "columns" not in finding or any(isinstance(row, Mapping) for row in rows):
+                raise ValueError("表格 finding 必须使用 columns + rows 列式结构")
+            columns = finding.get("columns")
+            if (
+                not isinstance(columns, (list, tuple))
+                or not columns
+                or any(not isinstance(column, str) or not column for column in columns)
+                or any(
+                    not isinstance(row, (list, tuple)) or len(row) != len(columns) for row in rows
+                )
+            ):
+                raise ValueError("列式 finding 的 columns 与 rows 形状无效")
+        return value
 
     @model_validator(mode="after")
     def validate_reconciliations(self) -> SupplementalEvidence:
