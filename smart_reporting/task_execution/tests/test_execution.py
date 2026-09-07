@@ -48,6 +48,7 @@ from smart_reporting.task_execution.execution_support import (
     CODEX_EXEC_SESSIONS_STATE_KEY,
 )
 from smart_reporting.task_execution.models import Lease, TaskExecutionScope
+from smart_reporting.task_execution.process_runtime import ManagedProcessRuntime
 from smart_reporting.task_execution.repository import (
     TaskExecutionRepository,
     TaskExecutionRepositoryError,
@@ -64,7 +65,6 @@ from smart_reporting.workspace import (
     WorkspaceError,
     WorkspacePathConflict,
     WorkspaceService,
-    WorkspaceToolkit,
 )
 
 pytestmark = pytest.mark.integration
@@ -2287,9 +2287,9 @@ async def test_verify_allows_nonfatal_stderr_warning(execution_runtime, monkeypa
 
 
 def test_session_output_prefers_structured_streams_and_strips_fallback_framing():
-    toolkit = WorkspaceToolkit.__new__(WorkspaceToolkit)
+    runtime = ManagedProcessRuntime.__new__(ManagedProcessRuntime)
 
-    structured = toolkit._session_output(
+    structured = runtime.format_output(
         SimpleNamespace(
             output="\x01\x01\x01polluted stdout\n\x02\x02\x02polluted stderr",
             stdout="clean stdout",
@@ -2300,7 +2300,7 @@ def test_session_output_prefers_structured_streams_and_strips_fallback_framing()
         status="completed",
         exit_code=0,
     )
-    fallback = toolkit._session_output(
+    fallback = runtime.format_output(
         SimpleNamespace(output="\x01\x01\x01first\n\x02\x02\x02second"),
         session_id="session",
         command_id="command",

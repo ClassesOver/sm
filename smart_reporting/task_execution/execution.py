@@ -40,7 +40,6 @@ from ..workspace import (
     WorkspaceError,
     WorkspaceProcessNotFound,
     WorkspaceService,
-    WorkspaceToolkit,
     _thread,
 )
 from .acceptance import AcceptancePolicy, requirement_digest
@@ -51,6 +50,7 @@ from .execution_support import (
     validate_command_policy,
 )
 from .models import Lease, TaskExecutionScope, TaskSnapshot
+from .process_runtime import ManagedProcessRuntime
 from .repository_impl import (
     TERMINAL_EXECUTION_STATUSES,
     TaskExecution,
@@ -623,7 +623,7 @@ class TaskExecutionKernel:
         self.acceptance_policy = AcceptancePolicy()
         self.require_finish_verification = True
         self.evaluate_finish_acceptance = True
-        self.workspace = WorkspaceToolkit(service)
+        self.process_runtime = ManagedProcessRuntime(service)
         self._migration_lock = asyncio.Lock()
         self._terminal_runtimes: OrderedDict[tuple[str, str], str] = OrderedDict()
 
@@ -1304,7 +1304,7 @@ class TaskExecutionKernel:
         assert execution.command_id is not None
         deadline = asyncio.get_running_loop().time() + wait_ms / 1000
         while True:
-            command = await self.workspace._managed_command(
+            command = await self.process_runtime.get_command(
                 process,
                 execution.daytona_session_id,
                 execution.command_id,
@@ -1317,7 +1317,7 @@ class TaskExecutionKernel:
             execution.daytona_session_id,
             execution.command_id,
         )
-        return self.workspace._session_output(
+        return self.process_runtime.format_output(
             logs,
             session_id=execution.daytona_session_id,
             command_id=execution.command_id,
@@ -1325,7 +1325,7 @@ class TaskExecutionKernel:
             exit_code=exit_code,
             offset=execution.output_cursor,
             max_bytes=MAX_TOOL_OUTPUT_BYTES,
-            timeout_marker=self.workspace._managed_timeout_marker(command),
+            timeout_marker=self.process_runtime.timeout_marker(command),
         )
 
     async def _persist_result(
@@ -1509,7 +1509,7 @@ class TaskExecutionKernel:
         managed_command = self._managed_command(protected_command, workdir, timeout, pty)
         try:
             async for sandbox in self._sandbox(scope):
-                session_id, command_id, _value = await self.workspace._start_managed_session(
+                session_id, command_id, _value = await self.process_runtime.start_session(
                     sandbox.process,
                     scope.thread_id,
                     SessionExecuteRequest(
@@ -1876,7 +1876,7 @@ class TaskExecutionKernel:
         await self._check_fence(scope, operation_id)
         try:
             async for sandbox in self._sandbox(scope):
-                await self.workspace._managed_command(
+                await self.process_runtime.get_command(
                     sandbox.process,
                     execution.daytona_session_id,
                     execution.command_id,

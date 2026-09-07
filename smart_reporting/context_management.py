@@ -69,8 +69,8 @@ TASK_EXECUTION_TOOL_NAMES = frozenset(
 SUMMARY_METADATA_KEY = "agentos_rolling_summary"
 COMPRESSIBLE_HISTORY_TOOLS = frozenset(
     {
-        "sandbox_exec",
-        "sandbox_process_poll",
+        "terminal",
+        "process",
         "exec_command",
         "poll_process",
         "write_stdin",

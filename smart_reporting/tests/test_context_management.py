@@ -136,7 +136,7 @@ def test_protected_compression_only_selects_historical_analysis_results():
     odoo_result.from_history = True
     process_result = Message(
         role="tool",
-        tool_name="sandbox_process_poll",
+        tool_name="process",
         content='{"status":"completed","exitCode":0,"output":"large"}',
     )
     process_result.from_history = True
@@ -149,7 +149,7 @@ def test_protected_compression_only_selects_historical_analysis_results():
 
 def test_compression_tokenizer_failure_does_not_fail_main_run():
     manager = ProtectedCompressionManager(model=CountingModel(), compress_token_limit=1)
-    analysis = Message(role="tool", tool_name="sandbox_exec", content="large output")
+    analysis = Message(role="tool", tool_name="terminal", content="large output")
     analysis.from_history = True
 
     assert manager.should_compress([analysis], model=BrokenCountingModel()) is False
