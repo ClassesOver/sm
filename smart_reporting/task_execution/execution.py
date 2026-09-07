@@ -1194,7 +1194,12 @@ class TaskExecutionKernel:
     async def _sandbox(self, scope: TaskExecutionRuntime):
         async with self.service._async_client() as client:
             sandbox = await self.service._asandbox_for(client, scope.thread_id)
-            if str(getattr(sandbox, "id", "") or "") != scope.sandbox_id:
+            sandbox_id = str(
+                getattr(sandbox, "id", "")
+                or getattr(getattr(sandbox, "ref", None), "resource_id", "")
+                or ""
+            )
+            if sandbox_id != scope.sandbox_id:
                 raise TaskExecutionRepositoryError(
                     "task_sandbox_mismatch", "当前 Daytona 工作区与执行任务绑定不一致。"
                 )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from daytona.common.errors import DaytonaError, DaytonaNotFoundError
@@ -19,6 +19,8 @@ from smart_reporting.sandbox import (
     SessionCommandRequest,
     WorkspaceBinding,
 )
+from smart_reporting.task_execution.execution import TaskExecutionKernel, TaskExecutionRuntime
+from smart_reporting.workspace import WorkspaceService
 
 
 class MemoryRegistryTransaction:
@@ -245,6 +247,40 @@ async def test_daytona_handle_normalizes_files_and_process_results() -> None:
     assert executed.stdout == "exec:fixed-runner"
     assert executed.status == ExecutionStatus.SUCCEEDED
     assert code.stdout == "code:print('ok')"
+
+
+@pytest.mark.anyio
+async def test_task_execution_accepts_provider_resource_id() -> None:
+    registry = MemoryRegistry()
+    provider = DaytonaProvider(
+        client=FakeDaytonaClient(),
+        registry=registry,
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    workspace = WorkspaceService(
+        "0123456789abcdef0123456789abcdef",
+        async_registry=registry,
+        provider=provider,
+    )
+    handle = await provider.ensure_workspace(workspace._provider_binding("thread-1"))
+    scope = TaskExecutionRuntime(
+        task=cast(Any, SimpleNamespace()),
+        external_run_id="external-run",
+        internal_run_id="internal-run",
+        owner_user_id="user-1",
+        thread_id="thread-1",
+        sandbox_id=handle.ref.resource_id,
+        lease_owner="lease-owner",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+    kernel = TaskExecutionKernel(workspace, cast(Any, SimpleNamespace()))
+
+    resolved = [sandbox async for sandbox in kernel._sandbox(scope)]
+
+    assert len(resolved) == 1
+    assert resolved[0].ref.resource_id == scope.sandbox_id
 
 
 @pytest.mark.anyio
