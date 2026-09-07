@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import json
 import math
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
@@ -163,7 +164,10 @@ class DaytonaFileSystemApi:
     async def download_file_stream(self, path: str, timeout: int) -> AsyncIterator[bytes]:
         async def stream() -> AsyncIterator[bytes]:
             try:
-                async for chunk in self._filesystem.download_file_stream(path, timeout=timeout):
+                source = self._filesystem.download_file_stream(path, timeout=timeout)
+                if inspect.isawaitable(source):
+                    source = await source
+                async for chunk in source:
                     yield chunk
             except DaytonaNotFoundError as error:
                 raise SandboxNotFound("sandbox 文件不存在。") from error
