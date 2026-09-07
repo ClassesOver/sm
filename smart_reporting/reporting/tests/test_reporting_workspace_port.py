@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.tools import Toolkit
@@ -21,6 +22,7 @@ from smart_reporting.reporting.tools.toolkit import ReportingToolkit
 from smart_reporting.reporting.tools.workspace_adapter import (
     ReportingWorkspaceAdapter,
     WorkspaceServiceReportingPort,
+    WorkspaceServiceReportingRuntime,
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 
@@ -212,6 +214,21 @@ async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
     assert await adapter.afile_bytes("thread-1", "inputs/source.txt") == (
         b"source",
         "text/plain",
+    )
+
+
+@pytest.mark.anyio
+async def test_reporting_runtime_executes_script_with_resolved_scope() -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    kernel = SimpleNamespace(run_python_script=AsyncMock(return_value={"exitCode": 0}))
+    runtime = object.__new__(WorkspaceServiceReportingRuntime)
+    runtime._kernel = kernel
+
+    result = await runtime.execute_script("analysis/script.py", timeout=30, _scope=scope)
+
+    assert result == {"exitCode": 0}
+    kernel.run_python_script.assert_awaited_once_with(
+        "analysis/script.py", timeout=30, _scope=scope
     )
 
 

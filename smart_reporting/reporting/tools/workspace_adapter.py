@@ -253,6 +253,21 @@ class WorkspaceServiceReportingRuntime:
 
         return getattr(self._kernel, name)
 
+    async def execute_script(
+        self,
+        script_path: str,
+        *,
+        timeout: int,
+        _scope: TaskExecutionRuntime,
+    ) -> dict[str, Any]:
+        """将 Reporting 脚本端口映射到执行内核的受限 Python runner。"""
+
+        return await self._kernel.run_python_script(
+            script_path,
+            timeout=timeout,
+            _scope=_scope,
+        )
+
     async def invoke(
         self,
         owner: Any,

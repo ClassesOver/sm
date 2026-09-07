@@ -105,7 +105,11 @@ class ReportingToolkitBase(Toolkit):
         return await self._invoke(
             "run_python_script",
             {"script_path": script_path, "timeout": timeout},
-            lambda scope: self.runtime.execute_script(script_path, timeout=timeout),
+            lambda scope: self.runtime.execute_script(
+                script_path,
+                timeout=timeout,
+                _scope=scope,
+            ),
             run_context,
         )
 
