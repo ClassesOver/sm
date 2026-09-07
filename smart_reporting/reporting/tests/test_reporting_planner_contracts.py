@@ -1722,6 +1722,10 @@ def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplica
                 },
             ],
             "warnings": ["期间不完整", "全局告警", "全局告警"],
+            "correlations": {
+                "dataset-1:income~count": 0.82,
+                "dataset-1:income~other": 0.41,
+            },
         }
     )
 
@@ -1733,6 +1737,11 @@ def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplica
     assert projected["metrics"][0]["warnings"] == ["期间不完整"]
     assert projected["metrics"][1]["warnings"] == ["字段缺失"]
     assert projected["warnings"] == ["全局告警"]
+    assert projected["correlations"] == {
+        "datasets": ["dataset-1"],
+        "columns": ["dataset", "left", "right", "value"],
+        "rows": [[0, "income", "count", 0.82], [0, "income", "other", 0.41]],
+    }
     assert bundle.metrics[0].dataset_sha256 == "a" * 64
     assert bundle.metrics[0].warnings == ("期间不完整", "期间不完整")
 

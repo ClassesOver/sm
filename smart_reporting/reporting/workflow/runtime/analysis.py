@@ -260,6 +260,33 @@ def _model_facing_deterministic_facts(
             seen_warnings.add(warning)
             unique.append(warning)
         projected["warnings"] = unique
+    correlations = projected.get("correlations")
+    if isinstance(correlations, dict) and correlations:
+        # 相关性键包含完整 datasetId 和两个字段名；在数十个指标时会重复数百次。
+        # 只压缩模型投影，原始 facts 文件仍保留旧的可直接寻址字典，避免破坏回放和引用。
+        datasets: list[str] = []
+        dataset_indexes: dict[str, int] = {}
+        rows: list[list[Any]] = []
+        for raw_key, value in correlations.items():
+            if not isinstance(raw_key, str) or not isinstance(value, (int, float)):
+                continue
+            dataset_id, separator, fields = raw_key.partition(":")
+            left, pair_separator, right = fields.partition("~")
+            if not separator or not pair_separator or not dataset_id or not left or not right:
+                rows.append([raw_key, value])
+                continue
+            dataset_index = dataset_indexes.get(dataset_id)
+            if dataset_index is None:
+                dataset_index = len(datasets)
+                datasets.append(dataset_id)
+                dataset_indexes[dataset_id] = dataset_index
+            rows.append([dataset_index, left, right, value])
+        if rows and all(len(row) == 4 for row in rows):
+            projected["correlations"] = {
+                "datasets": datasets,
+                "columns": ["dataset", "left", "right", "value"],
+                "rows": rows,
+            }
     return projected
 
 
