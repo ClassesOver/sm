@@ -2,12 +2,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from smart_reporting.execution_context import (
+from smart_reporting.runtime.execution import (
     ExecutionContext,
     close_execution_resources,
     configure_execution_tracing,
 )
-from smart_reporting.settings import AgentSettings
+from smart_reporting.runtime.settings import AgentSettings
 
 
 class _Client:

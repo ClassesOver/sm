@@ -16,6 +16,15 @@ _LEADING_SECTION_HEADING = re.compile(
 )
 _ATX_HEADING = re.compile(r"^(?P<prefix>#{1,6}[ \t]+)(?P<title>.*?)(?P<closing>[ \t]+#+)?[ \t]*$")
 _MANUAL_HEADING_NUMBER = re.compile(r"^\d+(?:\.\d+)*(?:[.、．])?[ \t]+")
+_MODEL_PROTOCOL_MARKER = re.compile(
+    r"(?<!\\)\[\[/?(?:citation|section|analysis|table):[^\]\r\n]*\]\]"
+)
+_MODEL_REPAIR_COMMENT = re.compile(r"<!--\s*repair-warning:[\s\S]*?-->")
+_MODEL_IMAGE = re.compile(
+    r"(?<!\\)!\[(?P<alt>(?:\\.|[^\]\\\r\n])*)\]"
+    r"\((?:<[^>\r\n]*>|(?:\\.|[^()\\\r\n]|\([^()\r\n]*\))*)\)"
+)
+_INLINE_CODE_SPAN = re.compile(r"(?P<delimiter>`+).*?(?P=delimiter)")
 
 
 def _inline_heading_text(markdown: str) -> str:
@@ -201,9 +210,66 @@ def validate_report_body_markdown(markdown: str) -> None:
         )
 
 
-def validate_report_draft_blocks(blocks: tuple[ReportDraftBlock, ...]) -> None:
-    for block in blocks:
-        validate_report_body_markdown(block.markdown)
+def _normalize_model_text(markdown: str) -> str:
+    normalized = _MODEL_PROTOCOL_MARKER.sub("", markdown)
+    # alt 文本通常包含模型对图表的业务解释，保留为普通文本；真实图片仍只由
+    # chartIds 绑定并由服务端装配，模型提供的路径和 title 永远不会进入产物。
+    return _MODEL_IMAGE.sub(lambda match: match.group("alt").strip(), normalized)
+
+
+def _normalize_model_markdown_segment(markdown: str) -> str:
+    """规范普通 Markdown 片段，完整保留行内代码中的协议示例。"""
+
+    normalized: list[str] = []
+    cursor = 0
+    while cursor < len(markdown):
+        code_span = _INLINE_CODE_SPAN.search(markdown, cursor)
+        repair_comment = _MODEL_REPAIR_COMMENT.search(markdown, cursor)
+        if code_span is None and repair_comment is None:
+            normalized.append(_normalize_model_text(markdown[cursor:]))
+            break
+        if code_span is not None and (
+            repair_comment is None or code_span.start() < repair_comment.start()
+        ):
+            normalized.append(_normalize_model_text(markdown[cursor : code_span.start()]))
+            normalized.append(code_span[0])
+            cursor = code_span.end()
+            continue
+        assert repair_comment is not None
+        normalized.append(_normalize_model_text(markdown[cursor : repair_comment.start()]))
+        cursor = repair_comment.end()
+    return "".join(normalized)
+
+
+def normalize_model_block_markdown(markdown: str) -> str:
+    """移除模型误写的服务端协议语法，再交给正文协议校验。
+
+    模型 block 只负责正文；citation、chart 和修复提示由服务端装配器生成。
+    这里只处理完整且明确属于协议的 token，不放宽最终报告的严格校验，也不改写
+    普通 Markdown 链接、代码示例或正文文字。
+    """
+
+    protected_lines: set[int] = set()
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if token.type not in {"fence", "code_block"} or token.map is None:
+            continue
+        protected_lines.update(range(token.map[0], token.map[1]))
+
+    # 代码内容属于报告正文语义，不能因为恰好包含协议示例而被静默改写。普通文本
+    # 则按连续片段处理，使跨行 repair-warning comment 仍可完整、无损地移除。
+    normalized: list[str] = []
+    pending: list[str] = []
+    for line_number, line in enumerate(markdown.splitlines(keepends=True)):
+        if line_number not in protected_lines:
+            pending.append(line)
+            continue
+        if pending:
+            normalized.append(_normalize_model_markdown_segment("".join(pending)))
+            pending.clear()
+        normalized.append(line)
+    if pending:
+        normalized.append(_normalize_model_markdown_segment("".join(pending)))
+    return "".join(normalized).strip()
 
 
 def _safe_chart_name(
@@ -265,18 +331,13 @@ def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> t
     return markdown[match.end() :].lstrip("\r\n"), True
 
 
-def _number_block_headings(
+def _validated_block_headings(
     markdown: str,
-    *,
-    definition: ReportSectionDefinition,
-    h3_count: int,
-    h4_count: int,
-) -> tuple[str, int, int, tuple[HeadingNumber, ...]]:
-    """只改写 CommonMark 解析出的真实标题；围栏内容不参与标题协议。"""
+) -> tuple[tuple[int, int, re.Match[str], str, str], ...]:
+    """解析并校验最终装配支持的 CommonMark 标题语法。"""
 
     lines = markdown.splitlines(keepends=True)
-    headings: list[HeadingNumber] = []
-    replacements: dict[int, str] = {}
+    headings: list[tuple[int, int, re.Match[str], str, str]] = []
     for token in MarkdownIt("commonmark").parse(markdown):
         if token.type != "heading_open" or token.map is None:
             continue
@@ -299,6 +360,58 @@ def _number_block_headings(
         title = _inline_heading_text(markdown_title)
         if not markdown_title or not title:
             raise ReportingError("report_draft_heading_format_invalid", "章节正文标题不能为空。")
+        headings.append((level, line_index, match, markdown_title, title))
+    return tuple(headings)
+
+
+def validate_report_block_markdown(markdown: str) -> None:
+    """校验单个正文块可独立判断的协议，跨块标题层级由章节校验负责。"""
+
+    validate_report_body_markdown(markdown)
+    _validated_block_headings(markdown)
+
+
+def validate_report_draft_blocks(
+    blocks: tuple[ReportDraftBlock, ...],
+    *,
+    expected_section_title: str | None = None,
+) -> None:
+    """在章节落盘前执行与最终装配一致的正文和标题协议校验。"""
+
+    h3_count = 0
+    for block_index, block in enumerate(blocks):
+        markdown = block.markdown
+        if block_index == 0 and expected_section_title is not None:
+            markdown, _heading_removed = _strip_duplicate_section_heading(
+                markdown,
+                expected_title=expected_section_title,
+            )
+        validate_report_block_markdown(markdown)
+        for level, _line_index, _match, _markdown_title, _title in _validated_block_headings(
+            markdown
+        ):
+            if level == 3:
+                h3_count += 1
+            elif h3_count == 0:
+                raise ReportingError(
+                    "report_draft_heading_parent_missing", "H4 标题必须位于当前章节的 H3 标题之后。"
+                )
+
+
+def _number_block_headings(
+    markdown: str,
+    *,
+    definition: ReportSectionDefinition,
+    h3_count: int,
+    h4_count: int,
+) -> tuple[str, int, int, tuple[HeadingNumber, ...]]:
+    """只改写 CommonMark 解析出的真实标题；围栏内容不参与标题协议。"""
+
+    lines = markdown.splitlines(keepends=True)
+    headings: list[HeadingNumber] = []
+    replacements: dict[int, str] = {}
+    for level, line_index, match, markdown_title, title in _validated_block_headings(markdown):
+        raw_line = lines[line_index].rstrip("\r\n")
         if level == 3:
             h3_count += 1
             h4_count = 0
@@ -382,6 +495,8 @@ def assemble_report_markdown(
         normalized_charts[chart.chart_id] = (chart, file_name)
 
     referenced_chart_ids: list[str] = []
+    rendered_chart_ids: set[str] = set()
+    duplicate_warnings: list[dict[str, Any]] = []
     referenced_analysis_ids: list[str] = []
     heading_numbers: list[HeadingNumber] = []
     markdown_parts = [f"# {expected_title}"]
@@ -454,6 +569,17 @@ def assemble_report_markdown(
             )
             for chart_id in block.chart_ids:
                 chart, file_name = normalized_charts[chart_id]
+                if chart_id in rendered_chart_ids:
+                    # 重复引用不能再次写入 Markdown，避免同一图片在多个正文 block 中出现。
+                    duplicate_chart_warning = {
+                        "code": "duplicate_chart_reference_excluded",
+                        "chartId": chart_id,
+                        "sectionCode": definition.code,
+                        "blockId": block.block_id,
+                        "message": "同一 chartId 已在前文渲染，重复引用已排除。",
+                    }
+                    duplicate_warnings.append(duplicate_chart_warning)
+                    continue
                 if not set(chart.citation_ids).issubset(block.citation_ids):
                     raise ReportingError(
                         "report_draft_chart_citation_invalid",
@@ -461,6 +587,7 @@ def assemble_report_markdown(
                         f"正文块 {block.block_id} 的 citation 绑定"
                         f"（{', '.join(block.citation_ids)}）。",
                     )
+                rendered_chart_ids.add(chart_id)
                 referenced_chart_ids.append(chart_id)
                 markdown_parts.append(
                     f'![{chart.alt_text}]({file_name} "{chart.title}")'
@@ -474,7 +601,7 @@ def assemble_report_markdown(
         raise ReportingError("report_draft_table_missing", "当前报告至少需要一个 Markdown 表格。")
 
     unused = sorted(set(chart_registry) - set(referenced_chart_ids))
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = list(duplicate_warnings)
     if unused:
         warnings.append(
             {

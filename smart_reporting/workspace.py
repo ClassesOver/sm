@@ -33,9 +33,9 @@ from sqlalchemy import Column, DateTime, MetaData, String, Table, insert, select
 from sqlalchemy.sql import func
 
 from .async_utils import complete_cleanup
-from .database import AgentDatabase, create_agent_database
-from .observability import suppress_expected_probe_tracing
-from .security import thread_label
+from .http.security import thread_label
+from .runtime.database import AgentDatabase, create_agent_database
+from .runtime.observability import suppress_expected_probe_tracing
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
 WORKSPACE_SNAPSHOT = "sandbox-tools"

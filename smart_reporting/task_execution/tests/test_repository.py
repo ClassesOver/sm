@@ -3,7 +3,7 @@ import os
 import pytest
 from sqlalchemy import text
 
-from smart_reporting.database import create_agent_database
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution.models import (
     AttemptOutcome,
     AttemptState,

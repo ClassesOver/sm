@@ -6,8 +6,8 @@
 
 ```bash
 docker compose up -d reporting-db
-UV_PROJECT_ENVIRONMENT=.venv-agent uv sync --python 3.12 --no-install-project
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
+UV_PROJECT_ENVIRONMENT=.venv uv sync --python 3.12 --no-install-project
+AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 ```
 
 主应用保留：
@@ -67,7 +67,7 @@ sandbox Content-Security-Policy 隔离页面。
 Reporting CLI：
 
 ```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
+AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 ```
 
 服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、三格式验收和发布。
@@ -84,6 +84,10 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
 | `AGENT_MODEL_FAST` | Reporting fast 档模型，默认 `qwen3.6-35b-a3b` |
 | `AGENT_MODEL_STANDARD` | Reporting standard 档模型，默认 `deepseek-v4-flash-0731` |
 | `AGENT_MODEL_STRONG` | Reporting strong 档模型，默认 `deepseek-v4-flash-0731` |
+| `AGENT_MODEL_FAST_STRUCTURED_MODE` | fast 档结构化协议：`json_schema`（默认）或 `json_object` |
+| `AGENT_MODEL_STANDARD_STRUCTURED_MODE` | standard 档结构化协议：`json_schema`（默认）或 `json_object` |
+| `AGENT_MODEL_STRONG_STRUCTURED_MODE` | strong 档结构化协议：`json_schema`（默认）或 `json_object` |
+| `AGENT_MODEL_STRUCTURED_STRICT` | 是否对 JSON Schema 启用 strict；默认 `true`，兼容端点不支持时可设为 `false` |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
@@ -110,7 +114,7 @@ curl -X POST \
 ## 验证
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-agent uv sync --python 3.12 --no-install-project
+UV_PROJECT_ENVIRONMENT=.venv uv sync --python 3.12 --no-install-project
 bash scripts/check_agentos.sh
 ```
 

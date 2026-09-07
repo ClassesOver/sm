@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from smart_reporting.observability import (
+from smart_reporting.runtime.observability import (
     TracingConfigurationError,
     configure_tracing,
     flush_tracing,

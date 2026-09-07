@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -7,7 +9,9 @@ import pytest
 from agno.run import RunContext
 
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.tools.sections import RuntimeSectionsMixin
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
+from smart_reporting.task_execution import MAX_TOOL_OUTPUT_READ_BYTES
 
 
 def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
@@ -33,6 +37,74 @@ def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
     )
     toolkit._apply_durable_command = AsyncMock(return_value=SimpleNamespace(idempotent=False))
     return toolkit
+
+
+def test_render_report_section_is_bound_to_toolkit_instance() -> None:
+    descriptor = inspect.getattr_static(RuntimeSectionsMixin, "render_report_section")
+
+    assert not isinstance(descriptor, staticmethod)
+
+
+def test_signed_fact_page_preserves_structured_read_receipt() -> None:
+    toolkit = _toolkit()
+    path = "报表/智能分析/run-1/facts/revision-1/analysis_001.json"
+    toolkit._active_reporting_phase = lambda *_args: "analysis"
+    toolkit._active_reporting_task_kind = lambda *_args: "analysis_item"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "currentAnalysisId": "analysis_001",
+            "deterministicFactFiles": {"analysis_001": {"path": path}},
+        },
+    )
+    result = {
+        "path": path,
+        "offset": 0,
+        "nextOffset": MAX_TOOL_OUTPUT_READ_BYTES,
+        "totalBytes": 125_429,
+        "content": "x" * MAX_TOOL_OUTPUT_READ_BYTES,
+        "hasMore": True,
+        "sha256": "a" * 64,
+    }
+
+    preview_bytes = toolkit._tool_preview_bytes(
+        SimpleNamespace(),
+        "read_file",
+        {"path": path},
+        result,
+    )
+    serialized_bytes = len(
+        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    )
+
+    assert preview_bytes is not None
+    assert preview_bytes >= serialized_bytes
+
+
+def test_section_evidence_page_preserves_structured_read_receipt() -> None:
+    toolkit = _toolkit()
+    toolkit._active_reporting_phase = lambda *_args: "section"
+    toolkit._active_reporting_task_kind = lambda *_args: "section"
+    result = {
+        "path": "evidence/section.json",
+        "offset": 0,
+        "nextOffset": MAX_TOOL_OUTPUT_READ_BYTES,
+        "totalBytes": 125_429,
+        "content": '{"value":"收入"}' * 3_000,
+        "hasMore": True,
+        "sha256": "a" * 64,
+    }
+
+    preview_bytes = toolkit._tool_preview_bytes(
+        SimpleNamespace(),
+        "read_file",
+        {"path": result["path"]},
+        result,
+    )
+
+    assert toolkit._retain_bounded_tool_result(SimpleNamespace(), "read_file") is True
+    assert preview_bytes is not None
+    assert preview_bytes >= len(result["content"].encode())
 
 
 @pytest.mark.anyio

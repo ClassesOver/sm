@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import delete, update
 
-from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.workflow import state as reporting_state_module
 from smart_reporting.reporting.workflow.checkpoint import (
     CheckpointError,
@@ -24,6 +23,7 @@ from smart_reporting.reporting.workflow.state import (
     ReportingStateReducer,
     ReportingStateVersionUnsupported,
 )
+from smart_reporting.runtime.database import create_agent_database
 
 
 def initial_state() -> ReportingRunState:

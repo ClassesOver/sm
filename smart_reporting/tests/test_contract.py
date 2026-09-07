@@ -18,7 +18,7 @@ from openai.types.chat.chat_completion_chunk import (
 
 from smart_reporting import app
 from smart_reporting.context_management import ProjectedOpenAIChat
-from smart_reporting.model_config import OPENAI_COMPATIBLE_ROLE_MAP
+from smart_reporting.integrations.model_config import OPENAI_COMPATIBLE_ROLE_MAP
 from smart_reporting.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
 from smart_reporting.reporting.workflow.controller import (
     ReportWorkflowController,

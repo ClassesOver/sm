@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from sqlglot import exp, parse_one
+from sqlglot.errors import SqlglotError
+from sqlglot.lineage import lineage as column_lineage
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from ..contract import (
@@ -36,11 +38,12 @@ __all__ = [
     "RequirementTable",
     "TableDataShape",
     "approve_query_batch",
-    "task_key",
     "normalized_sql_hash",
+    "project_measure_semantics_to_query_outputs",
     "require_approved_sql",
     "resolve_schema_snapshot",
     "state_contains_connection_data",
+    "task_key",
     "validate_lineage",
 ]
 
@@ -216,6 +219,78 @@ class QueryRequirement(StrictModel):
         return self
 
 
+def project_measure_semantics_to_query_outputs(
+    query: ApprovedQuery,
+    semantics: tuple[MeasureSemantic, ...],
+) -> tuple[dict[str, Any], ...]:
+    """把权威源字段语义绑定到物化查询唯一的顶层输出列。"""
+
+    if not semantics:
+        return ()
+    statement = parse_one(query.sql, read="mysql")
+    if not isinstance(statement, exp.Query):
+        raise ReportingError(
+            "report_query_measure_projection_invalid",
+            "SQL 指标输出血缘只能从查询语句生成。",
+        )
+    origins_by_output: dict[str, set[tuple[str, str, str]]] = {}
+    output_names: dict[str, str] = {}
+    try:
+        for projection in statement.selects:
+            output_name = str(projection.alias_or_name)
+            if not output_name or output_name == "*":
+                raise ReportingError(
+                    "report_query_measure_projection_invalid",
+                    "SQL 顶层投影必须显式命名指标输出列。",
+                )
+            output_key = output_name.casefold()
+            output_names[output_key] = output_name
+            origins = origins_by_output.setdefault(output_key, set())
+            for node in column_lineage(
+                output_name,
+                statement,
+                dialect="mysql",
+                copy=True,
+            ).walk():
+                if not isinstance(node.expression, exp.Table):
+                    continue
+                origins.add(
+                    (
+                        str(node.expression.db or "").casefold(),
+                        str(node.expression.name).casefold(),
+                        node.name.rsplit(".", 1)[-1].casefold(),
+                    )
+                )
+    except SqlglotError as error:
+        raise ReportingError(
+            "report_query_measure_projection_invalid",
+            "无法确定 SQL 指标输出列的源字段血缘。",
+        ) from error
+
+    projected: list[dict[str, Any]] = []
+    for semantic in semantics:
+        _source_id, database, table, column = semantic.field_ref.casefold().split(".", 3)
+        matching_outputs = {
+            output
+            for output, origins in origins_by_output.items()
+            if any(
+                origin_table == table
+                and origin_column == column
+                and (not origin_database or origin_database == database)
+                for origin_database, origin_table, origin_column in origins
+            )
+        }
+        if len(matching_outputs) != 1:
+            raise ReportingError(
+                "report_query_measure_projection_invalid",
+                f"指标 {semantic.field_ref} 必须唯一映射到 SQL 顶层输出列。",
+            )
+        payload = semantic.model_dump(mode="json", by_alias=True)
+        payload["datasetField"] = output_names[next(iter(matching_outputs))]
+        projected.append(payload)
+    return tuple(projected)
+
+
 def _normalized_identifiers(value: tuple[str, ...], label: str) -> tuple[str, ...]:
     normalized = tuple(item.strip().lower() for item in value)
     if len(normalized) != len(set(normalized)) or any(
@@ -354,6 +429,7 @@ def approve_query_batch(
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
     row_preserving_requirement_ids: tuple[str, ...] = (),
+    data_shapes: tuple[DataShape, ...] = (),
     require_complete_batch: bool = True,
 ) -> tuple[ApprovedQuery, ...]:
     if not queries or len(queries) > 100:
@@ -371,6 +447,9 @@ def approve_query_batch(
             "report_query_batch_invalid", "原始行保留查询引用了未知或重复 requirement。"
         )
     snapshot_tables = _snapshot_tables(snapshots)
+    snapshots_by_source = {
+        table.source_id: snapshot for snapshot in snapshots for table in snapshot.tables[:1]
+    }
     measure_semantics = {
         item.field_ref.lower(): item
         for snapshot in snapshots
@@ -448,6 +527,8 @@ def approve_query_batch(
             database=source.database,
             snapshot_tables=scoped_tables,
             measure_semantics=measure_semantics,
+            data_shapes=data_shapes,
+            snapshot=snapshots_by_source.get(source.id),
         )
         sql = validate_starrocks_read_only_sql(
             item["sql"],
@@ -515,6 +596,8 @@ def _validate_requirement_scope(
     database: str,
     snapshot_tables: dict[str, ModelTable],
     measure_semantics: dict[str, MeasureSemantic],
+    data_shapes: tuple[DataShape, ...] = (),
+    snapshot: SourceSchemaSnapshot | None = None,
 ) -> None:
     available_dimensions: set[str] = set()
     table_columns: dict[str, set[str]] = {}
@@ -551,6 +634,12 @@ def _validate_requirement_scope(
                 - set(requirement.grain_columns)
                 - set(semantic.additive_across)
                 - set(semantic.exclusive_scope)
+                - _exact_constant_numeric_columns(
+                    requirement.source_id,
+                    qualified,
+                    snapshot,
+                    data_shapes,
+                )
             )
             if ungoverned_dimensions:
                 raise ReportingError(
@@ -568,6 +657,51 @@ def _validate_requirement_scope(
             or join_columns - table_columns[relation.right_table]
         ):
             raise ReportingError("report_query_scope_invalid", "表关系引用了结构快照外的连接字段。")
+
+
+def _exact_constant_numeric_columns(
+    source_id: str,
+    qualified_table: str,
+    snapshot: SourceSchemaSnapshot | None,
+    data_shapes: tuple[DataShape, ...],
+) -> set[str]:
+    """仅放行画像在同一 schema 版本中精确证明为常量的数值列。"""
+
+    if snapshot is None:
+        return set()
+    matching_tables = [
+        table
+        for shape in data_shapes
+        if shape.source_id.casefold() == source_id.casefold()
+        and shape.metadata_revision == snapshot.revision
+        and shape.schema_hash == snapshot.schema_hash
+        for table in shape.tables
+        if table.source_id.casefold() == source_id.casefold()
+        and f"{table.database}.{table.table}".casefold() == qualified_table.casefold()
+    ]
+    if len(matching_tables) != 1:
+        return set()
+    return {
+        column.name.casefold()
+        for column in matching_tables[0].columns
+        if (
+            column.distinct_mode == "exact"
+            and column.distinct_count <= 1
+            and column.data_type.upper().startswith(
+                (
+                    "TINYINT",
+                    "SMALLINT",
+                    "INT",
+                    "INTEGER",
+                    "BIGINT",
+                    "LARGEINT",
+                    "FLOAT",
+                    "DOUBLE",
+                    "DECIMAL",
+                )
+            )
+        )
+    }
 
 
 def _validate_query_contract(

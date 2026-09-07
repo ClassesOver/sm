@@ -5,8 +5,8 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
-from smart_reporting import http_request_limits
-from smart_reporting.http_request_limits import (
+from smart_reporting.http import request_limits as http_request_limits
+from smart_reporting.http.request_limits import (
     RequestBodyLimitError,
     agentos_run_request_limit,
     install_streaming_body_limit,

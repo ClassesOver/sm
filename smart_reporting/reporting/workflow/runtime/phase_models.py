@@ -2,23 +2,41 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic import ConfigDict, Field, RootModel, TypeAdapter, field_validator, model_validator
 
 from ...contract import StrictModel
-from ...delivery.draft_v1 import ReportDraftBlock
+from ...delivery.draft_v1 import (
+    ReportDraftBlock,
+    normalize_model_block_markdown,
+    validate_report_block_markdown,
+)
+from ...models import ReportingError
 from ..checkpoint import FileIdentity, SectionClaimSubmission
 
 MAX_VISUALIZATION_SOURCE_BYTES = 262_144
+MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
+_CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
-    title: str = Field(min_length=1, max_length=200)
-    alt_text: str = Field(alias="altText", min_length=1, max_length=200)
+    title: str = Field(
+        min_length=1,
+        max_length=200,
+        description="图表用户可见标题，必须使用简体中文表达业务含义。",
+    )
+    alt_text: str = Field(
+        alias="altText",
+        min_length=1,
+        max_length=200,
+        description="图表用户可见图注，必须使用简体中文说明图表内容。",
+    )
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
     metric_codes: tuple[str, ...] = Field(alias="metricCodes", min_length=1, max_length=100)
     current_period: str = Field(alias="currentPeriod", min_length=1, max_length=200)
@@ -29,6 +47,33 @@ class ChartDraft(StrictModel):
     source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
+
+    @field_validator("title", "alt_text")
+    @classmethod
+    def validate_chinese_display_text(cls, value: str) -> str:
+        # 这里只检查用户可见元数据至少包含汉字；简繁体词汇、业务术语和图片内
+        # 的坐标轴/图例由 Agent 指令与绘图主题负责，不能用正则或 OCR 可靠判定。
+        if not _CJK_TEXT_RE.search(value):
+            raise ValueError("图表 title 和 altText 必须包含简体中文用户可见文字")
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_reference_comparison(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        comparison_type = value.get("comparisonType", value.get("comparison_type"))
+        if value.get("comparability") != "reference_only" or comparison_type not in {
+            "yoy",
+            "mom",
+        }:
+            return value
+        # reference_only 仍可展示两个期间，但不能把不可严格比较的数据标记为同比或
+        # 环比。转换为普通期间对比只收窄结论强度，不改写数值、期间或证据绑定。
+        normalized = dict(value)
+        key = "comparisonType" if "comparisonType" in value else "comparison_type"
+        normalized[key] = "period"
+        return normalized
 
     @field_validator("source_path")
     @classmethod
@@ -87,13 +132,6 @@ class SectionEvidenceBundle(StrictModel):
     fact_summaries: tuple[str, ...] = Field(default=(), alias="factSummaries", max_length=200)
 
 
-class RenderSectionDecision(StrictModel):
-    kind: Literal["render"] = "render"
-    section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
-    blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
-    claims: tuple[SectionClaimSubmission, ...] = Field(min_length=1, max_length=500)
-
-
 class AnalysisReworkDecision(StrictModel):
     kind: Literal["rework"] = "rework"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
@@ -102,19 +140,137 @@ class AnalysisReworkDecision(StrictModel):
     missing_evidence: tuple[str, ...] = Field(alias="missingEvidence", min_length=1, max_length=100)
 
 
+class SectionBlockPlan(StrictModel):
+    block_id: str = Field(alias="blockId", min_length=1, max_length=128)
+    objective: str = Field(min_length=1, max_length=2000)
+    claim_ids: tuple[str, ...] = Field(alias="claimIds", min_length=1, max_length=100)
+
+    @field_validator("claim_ids")
+    @classmethod
+    def validate_unique_claim_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("block 规划的 claimIds 不能重复")
+        return value
+
+
+class RenderSectionPlan(StrictModel):
+    kind: Literal["render"] = "render"
+    section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
+    blocks: tuple[SectionBlockPlan, ...] = Field(min_length=1, max_length=12)
+    claims: tuple[SectionClaimSubmission, ...] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_references(self) -> RenderSectionPlan:
+        block_ids = [item.block_id for item in self.blocks]
+        claim_ids = [item.claim_id for item in self.claims]
+        if len(block_ids) != len(set(block_ids)):
+            raise ValueError("章节规划 blockId 不能重复")
+        if len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("章节规划 claimId 不能重复")
+        referenced = {claim_id for block in self.blocks for claim_id in block.claim_ids}
+        known = set(claim_ids)
+        if referenced != known:
+            raise ValueError("章节规划的每个 claim 必须存在且由至少一个 block 引用")
+        return self
+
+
+SectionPlanDecision = Annotated[
+    RenderSectionPlan | AnalysisReworkDecision,
+    Field(discriminator="kind"),
+]
+
+
+class SectionPlanOutput(RootModel[SectionPlanDecision]):
+    model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_single_decision_wrapper(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping) or len(value) != 1:
+            return value
+        kind, payload = next(iter(value.items()))
+        if kind not in {"render", "rework"} or not isinstance(payload, Mapping):
+            return value
+        declared_kind = payload.get("kind")
+        if declared_kind not in {None, kind}:
+            return value
+        return {**payload, "kind": kind}
+
+
+class SectionBlockContent(StrictModel):
+    markdown: str = Field(min_length=1, max_length=MAX_SECTION_BLOCK_MARKDOWN_CHARS)
+
+    @field_validator("markdown", mode="before")
+    @classmethod
+    def normalize_protocol_residuals(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        markdown = normalize_model_block_markdown(value)
+        if not markdown:
+            raise ValueError("章节正文清洗后不能为空。")
+        # 确定性清洗必须先于 Pydantic 长度和业务校验。否则大段内部 repair comment
+        # 会让本可接受的正文先触发 max_length，并错误消耗模型业务纠错额度。
+        return markdown
+
+    @field_validator("markdown")
+    @classmethod
+    def validate_markdown(cls, markdown: str) -> str:
+        try:
+            # 单块生成阶段没有前序块上下文，因此这里只拒绝可独立判定的协议错误；
+            # H4 的父级关系仍由整章提交校验跨 block 判定。
+            validate_report_block_markdown(markdown)
+        except ReportingError as error:
+            raise ValueError(str(error)) from error
+        return markdown
+
+
+class RenderSectionDecision(StrictModel):
+    kind: Literal["render"] = "render"
+    section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
+    blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
+    claims: tuple[SectionClaimSubmission, ...] = Field(min_length=1, max_length=500)
+
+
 SectionDecision = Annotated[
     RenderSectionDecision | AnalysisReworkDecision,
     Field(discriminator="kind"),
 ]
-SectionDecisionAdapter = TypeAdapter(SectionDecision)
+SectionDecisionAdapter: TypeAdapter[SectionDecision] = TypeAdapter(SectionDecision)
+
+
+class SectionDecisionOutput(RootModel[SectionDecision]):
+    """Agno output_schema 只接受 BaseModel 类型，根 JSON 仍保持原判别联合形状。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_single_decision_wrapper(cls, value: Any) -> Any:
+        """展开模型偶发生成的单键决策包装，随后仍由原判别联合完整校验。"""
+
+        if not isinstance(value, Mapping) or len(value) != 1:
+            return value
+        kind, payload = next(iter(value.items()))
+        if kind not in {"render", "rework"} or not isinstance(payload, Mapping):
+            return value
+        declared_kind = payload.get("kind")
+        if declared_kind not in {None, kind}:
+            return value
+        return {**payload, "kind": kind}
+
 
 __all__ = [
     "AnalysisReworkDecision",
     "ChartDraft",
     "RenderSectionDecision",
+    "RenderSectionPlan",
+    "SectionBlockContent",
+    "SectionBlockPlan",
     "SectionDecision",
     "SectionDecisionAdapter",
+    "SectionDecisionOutput",
     "SectionEvidenceBundle",
     "SectionEvidenceFile",
+    "SectionPlanOutput",
     "VisualizationScriptDraft",
 ]

@@ -255,10 +255,10 @@ class ReportingToolkitBase(Toolkit):
             )
 
     def _retain_bounded_tool_result(self, scope: Any, tool_name: str) -> bool:
-        return self._active_reporting_phase(scope) == "analysis" and tool_name not in {
-            "read_tool_output",
-            "finish_task",
-        }
+        phase = self._active_reporting_phase(scope)
+        return (phase == "analysis" and tool_name not in {"read_tool_output", "finish_task"}) or (
+            phase == "section" and tool_name == "read_file"
+        )
 
     def _tool_preview_bytes(
         self,
@@ -268,7 +268,13 @@ class ReportingToolkitBase(Toolkit):
         result: Any,
     ) -> int | None:
         _ = result
-        if self._active_reporting_phase(scope) != "analysis" or tool_name != "read_file":
+        if tool_name != "read_file":
+            return None
+        if self._active_reporting_phase(scope) == "section":
+            # SectionWorkflow 直接消费结构化分页回执；这里必须覆盖单页正文及 JSON
+            # 元数据，不能让通用预览层把 content 改写为 output 或截断后仍推进游标。
+            return MAX_READ_FILE_BYTES
+        if self._active_reporting_phase(scope) != "analysis":
             return None
         task_kind = self._active_reporting_task_kind(scope)
         try:
@@ -287,9 +293,10 @@ class ReportingToolkitBase(Toolkit):
                     allow_root=False,
                 )[0]
                 # 五阶段子流程会直接校验完整固定 facts；仅该签发文件可避开
-                # 通用模型回显截断，其他路径仍保持默认上下文边界。
+                # 通用模型回显截断。预算必须覆盖 64 KiB 正文外的结构化游标、
+                # size 和 SHA 元数据，否则压缩器会把整份回执改写成 output 字符串。
                 if requested == signed:
-                    return MAX_TOOL_OUTPUT_READ_BYTES
+                    return MAX_READ_FILE_BYTES
                 evidence_root = contract.get("analysisOutputRoot")
                 evidence_path = WorkspaceService.normalize_path(
                     f"{str(evidence_root or '').rstrip('/')}/supplement.json",

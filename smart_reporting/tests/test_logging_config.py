@@ -2,7 +2,7 @@ import logging
 
 from loguru import logger as loguru_logger
 
-from smart_reporting.logging_config import configure_file_logging
+from smart_reporting.runtime.logging import configure_file_logging
 
 
 def test_configure_file_logging_writes_root_and_agno_logs(tmp_path):

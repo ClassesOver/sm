@@ -2,10 +2,13 @@
 # 运行时由 Facade 组合的多重继承提供跨阶段成员；静态检查无法解析该装配。
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Literal
 
 from pydantic import ConfigDict, Field
+from sqlglot import exp
 
+from ...structured_output import StructuredOutputCallBudget
 from .base import (
     _PLANNER_DISPLAY_NAMES,
     DOMAIN_CODES,
@@ -31,6 +34,7 @@ from .base import (
     CatalogTable,
     DataShape,
     DataUnderstandingPlan,
+    DataUnderstandingTable,
     DetailedAnalysisPlan,
     EffectiveReportingProfile,
     GeneratedQueryBatch,
@@ -100,6 +104,7 @@ from .validation import (
     _normalize_requirement_columns,
     _normalize_requirement_columns_in_payload,
     _normalize_requirement_periods,
+    _normalize_unsafe_multi_table_requirements,
     _resolve_requirement_comparison_roles,
 )
 
@@ -496,6 +501,7 @@ class RuntimePlanningMixin:
         }
         previous_output: Any = None
         validation_feedback: dict[str, Any] | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -511,12 +517,18 @@ class RuntimePlanningMixin:
                 self._data_understanding_agent,
                 payload,
                 run_context,
+                call_budget=call_budget,
             )
             plan, previous_output, validation_feedback = _data_understanding_result(
                 output, snapshots
             )
             if plan is None:
                 continue
+            plan = _normalize_preferred_typed_period_fields(
+                plan,
+                snapshots,
+                report_goal=envelope.report_goal,
+            )
             state = self._state(run_context)
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY] = plan.model_dump(mode="json", by_alias=True)
             self._assert_state_safe(state)
@@ -682,6 +694,7 @@ class RuntimePlanningMixin:
 
         previous_output: Any = None
         validation_feedback: dict[str, Any] | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -693,12 +706,26 @@ class RuntimePlanningMixin:
                         "不得删除候选、增加字段、返回补丁或解释性 Markdown"
                     ),
                 }
-            proposal = await self._run_planner(
-                self._measure_semantic_agent,
-                payload,
-                run_context,
-            )
+            try:
+                proposal = await self._run_planner(
+                    self._measure_semantic_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                )
+            except ValidationError as error:
+                # 兼容端点可能接受 strict tool schema 却仍漏掉嵌套必填字段。
+                # 不在服务端猜测字段值，而是把完整候选和精简校验路径回灌给同一
+                # planner，让模型在既有五次上限内返回完整分类。
+                previous_output = _outline_candidate(error)
+                validation_feedback = {
+                    "code": "report_measure_semantic_proposal_invalid",
+                    "summary": "指标语义候选未通过结构校验",
+                    "issues": _outline_validation_issues(error),
+                }
+                continue
             assert isinstance(proposal, MeasureSemanticProposal)
+            proposal = _project_measure_semantic_candidates(proposal, candidate_refs)
             try:
                 _validate_proposed_exclusive_scopes(proposal, self._data_shapes(run_context))
                 proposal = _proposal_with_profile_scope_filters(proposal, snapshots, profile)
@@ -842,6 +869,7 @@ class RuntimePlanningMixin:
         previous_output: dict[str, Any] | None = None
         allowed_paths: tuple[str, ...] = ()
         outline: ReportOutline | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
             if validation_feedback is not None:
@@ -856,7 +884,12 @@ class RuntimePlanningMixin:
                     ),
                 }
             try:
-                output = await self._run_planner(self._outline_agent, payload, run_context)
+                output = await self._run_planner(
+                    self._outline_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                )
             except ValidationError as error:
                 # Agno 的 Agent 重试只对同一输入盲重试，无法携带结构校验失败的原因；
                 # 这里把 planner 抛出的 ValidationError 转成 correction 回灌，让模型
@@ -948,6 +981,7 @@ class RuntimePlanningMixin:
     ) -> StepOutput:
         state = self._state(run_context)
         snapshots = self._snapshots(run_context)
+        data_shapes = self._data_shapes(run_context)
         data_understanding = DataUnderstandingPlan.model_validate(
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY]
         )
@@ -960,7 +994,7 @@ class RuntimePlanningMixin:
             profile,
             self._capabilities(run_context),
             snapshots,
-            self._data_shapes(run_context),
+            data_shapes,
             tuple(
                 ReconciliationShape(
                     code=item.code,
@@ -998,6 +1032,7 @@ class RuntimePlanningMixin:
         required_deletion_paths: tuple[str, ...] = ()
         last_semantic_correction_signature: str | None = None
         bundle: AnalysisBundle | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -1032,7 +1067,33 @@ class RuntimePlanningMixin:
                     json.dumps(required_deletion_paths, ensure_ascii=True, separators=(",", ":")),
                     _payload_sha256(_compact_validation_feedback(validation_feedback)),
                 )
-            output = await self._run_planner(self._analysis_agent, payload, run_context)
+            try:
+                output = await self._run_planner(
+                    self._analysis_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                )
+            except ValidationError as error:
+                # Analysis planner 已关闭 Agno 对同一输入的盲重试。结构错误必须携带
+                # 原始候选和精确字段路径进入 Reporting 纠错循环；否则复杂 Bundle
+                # 会在 Pydantic 边界直接终止，模型永远看不到拒绝原因。
+                previous_output = _outline_candidate(error)
+                validation_issues = _analysis_validation_issues(error)
+                required_deletion_paths = _analysis_required_deletion_paths(
+                    validation_issues, previous_output
+                )
+                allowed_mutation_paths = _analysis_allowed_mutation_paths(
+                    validation_issues,
+                    previous_output=previous_output,
+                    required_deletion_paths=required_deletion_paths,
+                )
+                validation_feedback = {
+                    "code": "report_analysis_plan_invalid",
+                    "summary": "分析计划未通过结构校验",
+                    "issues": validation_issues,
+                }
+                continue
             assert isinstance(output, AnalysisBundle)
             output_payload = output.model_dump(mode="json", by_alias=True)
             normalized_output, column_repairs = _normalize_requirement_columns(output, snapshots)
@@ -1078,31 +1139,33 @@ class RuntimePlanningMixin:
                     required_deletion_paths,
                 )
                 if unexpected_paths:
-                    validation_feedback = {
-                        "code": "report_correction_scope_violation",
-                        "summary": "模型纠错修改了允许路径之外的字段",
-                        "issues": [
-                            {
-                                "path": "$",
-                                "rejectedValue": {"unexpectedPaths": unexpected_paths},
-                                "reason": "纠错输出包含与当前 issues 无关的改动",
-                                "allowedValues": list(allowed_mutation_paths),
-                                "requiredAction": (
-                                    "以 previousOutput 为基线，只修改 allowedMutationPaths 后返回完整输出"
-                                ),
-                            }
-                        ],
-                    }
-                    logger.warning(
-                        "report_planner_correction_scope_violation agent_id=%s attempt=%s "
-                        "unexpected_paths=%s",
+                    output_payload = _restore_unapproved_correction_changes(
+                        previous_output,
+                        output_payload,
+                        tuple(unexpected_paths),
+                    )
+                    output = AnalysisBundle.model_validate(output_payload)
+                    loguru_logger.info(
+                        "report_planner_correction_scope_normalized agent_id={} attempt={} "
+                        "restored_paths={}",
                         getattr(self._analysis_agent, "id", "report-analysis-planner"),
                         attempt,
                         json.dumps(unexpected_paths, ensure_ascii=True, separators=(",", ":")),
                     )
-                    last_semantic_correction_signature = None
-                    continue
-            normalized_output, grain_repairs = _normalize_analysis_bundle_grain(output, snapshots)
+            normalized_output, split_repairs = _normalize_unsafe_multi_table_requirements(
+                output, snapshots, data_shapes
+            )
+            if split_repairs:
+                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
+                logger.info(
+                    "report_planner_unsafe_multi_table_normalized repairs=%s",
+                    json.dumps(split_repairs, ensure_ascii=False, separators=(",", ":")),
+                )
+                output = normalized_output
+                output_payload = normalized_payload
+            normalized_output, grain_repairs = _normalize_analysis_bundle_grain(
+                output, snapshots, data_shapes
+            )
             if grain_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
                 logger.info(
@@ -1140,6 +1203,7 @@ class RuntimePlanningMixin:
                 self._data_understanding(run_context),
                 snapshots,
                 self._envelope(run_context),
+                data_shapes,
             )
             if semantic_issues:
                 validation_feedback = {
@@ -1209,6 +1273,7 @@ class RuntimePlanningMixin:
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
         state = self._state(run_context)
+        data_shapes = self._data_shapes(run_context)
         requirements = tuple(
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
@@ -1237,8 +1302,38 @@ class RuntimePlanningMixin:
         sources = {item.id: item for item in self._sources(run_context)}
         snapshots = self._snapshots(run_context)
         envelope = self._envelope(run_context)
+        compiled = _compile_single_table_queries(
+            requirements,
+            snapshots=snapshots,
+            envelope=envelope,
+            row_preserving_requirement_ids=tuple(
+                state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+            ),
+        )
+        if compiled is not None:
+            compiled_approved, issues = _approve_generated_queries(
+                compiled,
+                sources=sources,
+                snapshots=snapshots,
+                envelope=envelope,
+                requirements=requirements,
+                row_preserving_requirement_ids=tuple(
+                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                ),
+                data_shapes=data_shapes,
+            )
+            if not issues:
+                state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
+                    item.model_dump(mode="json", by_alias=True) for item in compiled_approved
+                ]
+                return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
+            loguru_logger.warning(
+                "report_single_table_query_compilation_rejected issue_count={}",
+                len(issues),
+            )
         validation_feedback: dict[str, Any] | None = None
         approved: tuple[ApprovedQuery, ...] | None = None
+        call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
@@ -1251,7 +1346,12 @@ class RuntimePlanningMixin:
                         "不返回补丁、解释或 Markdown"
                     ),
                 }
-            output = await self._run_planner(self._sql_agent, payload, run_context)
+            output = await self._run_planner(
+                self._sql_agent,
+                payload,
+                run_context,
+                call_budget=call_budget,
+            )
             assert isinstance(output, GeneratedQueryBatch)
             approved, issues = _approve_generated_queries(
                 output,
@@ -1262,6 +1362,7 @@ class RuntimePlanningMixin:
                 row_preserving_requirement_ids=tuple(
                     state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
                 ),
+                data_shapes=data_shapes,
             )
             if issues:
                 validation_feedback = {
@@ -1298,6 +1399,147 @@ def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | N
         return None
     year = int(raw_year)
     return ReportPeriod(start=date(year, 1, 1), end=date(year, 12, 31))
+
+
+def _compile_single_table_queries(
+    requirements: tuple[QueryRequirement, ...],
+    *,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    envelope: ReportRequestEnvelope,
+    row_preserving_requirement_ids: tuple[str, ...] = (),
+) -> GeneratedQueryBatch | None:
+    """从已批准契约确定性编译单表 SQL；多表继续交由 SQL planner。"""
+
+    if not requirements or any(len(requirement.tables) != 1 for requirement in requirements):
+        return None
+    semantics = {
+        item.field_ref.lower(): item
+        for snapshot in snapshots
+        for item in snapshot.measure_semantics
+    }
+    snapshot_tables = {
+        (table.source_id.lower(), f"{table.database}.{table.name}".lower()): table
+        for snapshot in snapshots
+        for table in snapshot.tables
+    }
+    row_preserving_ids = set(row_preserving_requirement_ids)
+    queries: list[dict[str, Any]] = []
+    for requirement in requirements:
+        table = requirement.tables[0]
+        qualified_table = table.table.lower()
+        if "." not in qualified_table:
+            matches = [
+                qualified
+                for source_id, qualified in snapshot_tables
+                if source_id == requirement.source_id.lower()
+                and qualified.endswith(f".{qualified_table}")
+            ]
+            if len(matches) != 1:
+                return None
+            qualified_table = matches[0]
+        if (requirement.source_id.lower(), qualified_table) not in snapshot_tables:
+            return None
+
+        semantic_by_measure = {}
+        for measure in table.measure_columns:
+            semantic = semantics.get(f"{requirement.source_id}.{qualified_table}.{measure}".lower())
+            if semantic is None:
+                return None
+            semantic_by_measure[measure] = semantic
+
+        try:
+            comparison_roles = requirement.resolved_comparison_roles(envelope.comparison_roles)
+        except ValueError:
+            return None
+        windows = envelope.model_copy(update={"comparison_roles": comparison_roles}).period_windows(
+            granularity=table.period_granularity
+        )
+        seen_window_ids: set[str] = set()
+        for window in windows.windows:
+            if window.query_window_id in seen_window_ids:
+                continue
+            seen_window_ids.add(window.query_window_id)
+            row_preserving = requirement.requirement_id in row_preserving_ids
+            projections: list[exp.Expression] = [
+                exp.column(column) for column in requirement.grain_columns
+            ]
+            if row_preserving:
+                projections.extend(exp.column(column) for column in table.measure_columns)
+            else:
+                for measure, semantic in semantic_by_measure.items():
+                    aggregate = _measure_aggregate_expression(
+                        measure,
+                        semantic.aggregation,
+                    )
+                    projections.append(aggregate.as_(measure))
+
+            predicates: list[exp.Expression] = [
+                exp.column(table.period_column).between(
+                    *_period_bound_expressions(window.period, table.period_granularity)
+                )
+            ]
+            scope_values: dict[str, str] = {}
+            for semantic in semantic_by_measure.values():
+                for column, value in semantic.exclusive_scope.items():
+                    previous = scope_values.setdefault(column, value)
+                    if previous != value:
+                        return None
+            predicates.extend(
+                exp.EQ(this=exp.column(column), expression=exp.Literal.string(value))
+                for column, value in sorted(scope_values.items())
+            )
+            statement = (
+                exp.select(*projections)
+                .from_(exp.to_table(qualified_table))
+                .where(exp.and_(*predicates))
+            )
+            if not row_preserving and requirement.grain_columns:
+                statement = statement.group_by(
+                    *(exp.column(column) for column in requirement.grain_columns)
+                )
+            queries.append(
+                {
+                    "requirementId": requirement.requirement_id,
+                    "sourceId": requirement.source_id,
+                    "sql": statement.sql(dialect="mysql"),
+                    "periodRole": window.role,
+                }
+            )
+    return GeneratedQueryBatch.model_validate({"queries": queries})
+
+
+def _measure_aggregate_expression(column: str, aggregation: str) -> exp.Expression:
+    source = exp.column(column)
+    if aggregation == "sum":
+        return exp.Sum(this=source)
+    if aggregation == "average":
+        return exp.Avg(this=source)
+    if aggregation == "min":
+        return exp.Min(this=source)
+    if aggregation == "max":
+        return exp.Max(this=source)
+    if aggregation == "count":
+        return exp.Count(this=source)
+    if aggregation == "count_distinct":
+        return exp.Count(this=exp.Distinct(expressions=[source]))
+    raise ValueError(f"unsupported measure aggregation: {aggregation}")
+
+
+def _period_bound_expressions(
+    period: ReportPeriod,
+    granularity: Literal["date", "month", "year"],
+) -> tuple[exp.Expression, exp.Expression]:
+    if granularity == "year":
+        return exp.Literal.number(period.start.year), exp.Literal.number(period.end.year)
+    if granularity == "month":
+        return (
+            exp.Literal.string(f"{period.start.year:04d}-{period.start.month:02d}"),
+            exp.Literal.string(f"{period.end.year:04d}-{period.end.month:02d}"),
+        )
+    return (
+        exp.Literal.string(period.start.isoformat()),
+        exp.Literal.string(period.end.isoformat()),
+    )
 
 
 def _explicit_report_type(*values: str | None) -> Literal["comprehensive", "topic"] | None:
@@ -1648,6 +1890,22 @@ def _apply_confirmed_measure_semantics(
     return tuple(updated)
 
 
+def _project_measure_semantic_candidates(
+    proposal: MeasureSemanticProposal,
+    candidate_refs: tuple[str, ...],
+) -> MeasureSemanticProposal:
+    """只保留服务端签发的待确认字段，候选自身仍交由提交校验严格验证。"""
+
+    allowed = set(candidate_refs)
+    return proposal.model_copy(
+        update={
+            "decisions": tuple(
+                decision for decision in proposal.decisions if decision.field_ref in allowed
+            )
+        }
+    )
+
+
 def _validate_proposed_exclusive_scopes(
     proposal: MeasureSemanticProposal,
     data_shapes: tuple[DataShape, ...],
@@ -1984,6 +2242,37 @@ def _json_diff_paths(previous: Any, current: Any, path: str = "") -> list[str]:
     return [] if previous == current else [path or "$"]
 
 
+def _restore_unapproved_correction_changes(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    unexpected_paths: tuple[str, ...],
+) -> dict[str, Any]:
+    """以服务端基线恢复模型在纠错中越权改写的具体字段。"""
+
+    projected = deepcopy(current)
+    for path in unexpected_paths:
+        if path == "$":
+            return deepcopy(previous)
+        tokens: list[str | int] = []
+        for key, index in re.findall(r"([^.\[\]]+)|\[(\d+)]", path):
+            tokens.append(int(index) if index else key)
+        if not tokens:
+            return deepcopy(previous)
+        source: Any = previous
+        target: Any = projected
+        try:
+            for token in tokens[:-1]:
+                source = source[token]
+                target = target[token]
+            leaf = tokens[-1]
+            target[leaf] = deepcopy(source[leaf])
+        except (IndexError, KeyError, TypeError):
+            # 无法精确恢复说明候选改变了容器形状。此时回退整份可信基线，不能猜测
+            # 列表身份或扩大允许修改范围；后续无进展门禁仍会按原规则失败关闭。
+            return deepcopy(previous)
+    return projected
+
+
 def _unexpected_correction_paths(
     previous: dict[str, Any],
     current: dict[str, Any],
@@ -1996,6 +2285,33 @@ def _unexpected_correction_paths(
         if path not in required_deletion_paths
         and not any(_correction_path_allowed(path, allowed) for allowed in allowed_paths)
     ]
+
+
+def _analysis_validation_issues(error: ValidationError) -> list[dict[str, Any]]:
+    """把 Pydantic 结构错误转换为分析计划纠错使用的稳定路径。"""
+
+    candidates = [
+        {
+            "path": _validation_path(tuple(issue.get("loc") or ())),
+            "rejectedValue": _bounded_rejected_value(issue.get("input")),
+            "reason": str(issue.get("msg")),
+            "type": str(issue.get("type") or ""),
+        }
+        for issue in error.errors()
+    ]
+    issues: list[dict[str, Any]] = []
+    for candidate in candidates:
+        path = str(candidate["path"])
+        # Pydantic 会在叶节点失败后继续报告父 tuple 为空；父错误不是独立根因，若
+        # 一并授权会把单字段修正扩大成整个 requirements 可改，破坏纠错范围门禁。
+        if candidate["type"] == "too_short" and any(
+            str(other["path"]).startswith(f"{path}[") or str(other["path"]).startswith(f"{path}.")
+            for other in candidates
+            if other is not candidate
+        ):
+            continue
+        issues.append({key: value for key, value in candidate.items() if key != "type"})
+    return issues
 
 
 def _analysis_bundle_diff_paths(previous: Any, current: Any) -> list[str]:
@@ -2135,14 +2451,38 @@ def _analysis_allowed_mutation_paths(
             if isinstance(issue.get("path"), str)
             else []
         )
-        paths.extend(
+        allowed_candidates = [
             candidate
             for candidate in candidates
             if not any(
                 candidate == prefix or candidate.startswith(f"{prefix}.")
                 for prefix in deletion_prefixes
             )
-        )
+        ]
+        paths.extend(allowed_candidates)
+        if previous_output is None:
+            continue
+        requirements = previous_output.get("requirements")
+        if not isinstance(requirements, list):
+            continue
+        for candidate in allowed_candidates:
+            match = re.fullmatch(r"requirements\[(\d+)]\.grainColumns", candidate)
+            if match is None:
+                continue
+            requirement_index = int(match.group(1))
+            if requirement_index >= len(requirements):
+                continue
+            requirement = requirements[requirement_index]
+            relations = requirement.get("relations") if isinstance(requirement, Mapping) else None
+            if not isinstance(relations, list):
+                continue
+            # 多表 requirement 的 grainColumns 与关联键必须同步；这里只授权可信
+            # 基线中已存在 relation 的 joinColumns，不允许模型新增关联或改写表身份。
+            paths.extend(
+                f"requirements[{requirement_index}].relations[{relation_index}].joinColumns"
+                for relation_index, relation in enumerate(relations)
+                if isinstance(relation, Mapping)
+            )
     if previous_output is not None and deletion_prefixes:
         requirements = previous_output.get("requirements")
         analyses = previous_output.get("analyses")
@@ -2302,6 +2642,7 @@ def _approve_generated_queries(
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
     row_preserving_requirement_ids: tuple[str, ...] = (),
+    data_shapes: tuple[DataShape, ...] = (),
 ) -> tuple[tuple[ApprovedQuery, ...], list[dict[str, Any]]]:
     requirements_by_id = {item.requirement_id: item for item in requirements}
     explicit_period_mode = any("period_role" in item.model_fields_set for item in generated.queries)
@@ -2384,6 +2725,7 @@ def _approve_generated_queries(
                     if requirement.requirement_id in row_preserving_requirement_ids
                     else ()
                 ),
+                data_shapes=data_shapes,
                 require_complete_batch=False,
             )
             approved.extend(query_approved)
@@ -2586,6 +2928,64 @@ def _period_encoding_choices(table: ModelTable) -> list[dict[str, str]]:
                 }
             )
     return choices
+
+
+def _normalize_preferred_typed_period_fields(
+    plan: DataUnderstandingPlan,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    *,
+    report_goal: str,
+) -> DataUnderstandingPlan:
+    """用户未指定代码口径时，优先冻结可精确过滤的类型化日期字段。"""
+
+    goal = report_goal.casefold()
+    explicitly_requests_code = any(
+        marker in goal for marker in ("期间码", "月份代码", "月度代码", "代码口径")
+    )
+    tables = {
+        (table.source_id, f"{table.database}.{table.name}".casefold()): table
+        for snapshot in snapshots
+        for table in snapshot.tables
+    }
+    normalized: list[DataUnderstandingTable] = []
+    changed = False
+    for selected in plan.tables:
+        table = tables.get((selected.source_id, selected.table.casefold()))
+        current_is_explicit = selected.period_column.casefold() in goal
+        if table is None or explicitly_requests_code or current_is_explicit:
+            normalized.append(selected)
+            continue
+        current = next(
+            (
+                column
+                for column in table.columns
+                if column.name.casefold() == selected.period_column.casefold()
+            ),
+            None,
+        )
+        if current is None or re.match(
+            r"^(?:DATE|DATETIME|TIMESTAMP)\b", current.data_type.strip().upper()
+        ):
+            normalized.append(selected)
+            continue
+        preferred = next(
+            (
+                column
+                for column in table.columns
+                if re.match(r"^(?:DATE|DATETIME|TIMESTAMP)\b", column.data_type.strip().upper())
+            ),
+            None,
+        )
+        if preferred is None:
+            normalized.append(selected)
+            continue
+        normalized.append(
+            selected.model_copy(
+                update={"period_column": preferred.name, "period_granularity": "date"}
+            )
+        )
+        changed = True
+    return plan.model_copy(update={"tables": tuple(normalized)}) if changed else plan
 
 
 def _validation_path(location: tuple[Any, ...]) -> str:

@@ -19,15 +19,14 @@ ReportingTaskKind = Literal[
     "section",
 ]
 
-# Reporting 使用 1M 模型窗口。phase hard cap 是注意力预算，不是事实层上限：
-# 单项分析和独立章节只投影当前任务需要的事实摘要；完整 Profile、证据正文和
-# 工具结果继续通过受信文件与 outputHandle 按需读取。Visualization 需要在同一请求
-# 中保留全局冻结 facts 与 Skill 回执，直接使用 Reporting 已配置的输入预算。
+# Reporting 使用 1M 模型窗口。analysis phase hard cap 是注意力预算，不是事实层上限：
+# 单项分析只投影当前任务需要的事实摘要；完整 Profile、证据正文和工具结果继续通过
+# 受信文件与 outputHandle 按需读取。章节需要直接消费冻结证据正文，使用 Reporting
+# 已配置的统一输入预算，避免复杂报表在模型调用前被额外的固定 cap 拒绝。
 # 输出仍由模型级 reserve 单独预留，完整 Profile、工具原文和历史继续留在 checkpoint/handle。
 # 单项分析的任务 JSON 可能包含跨 Dataset 的冻结 facts；上限需要覆盖真实的
 # 不可压缩首轮前缀，同时仍低于默认 Reporting 输入预算，给工具回执和重试留余量。
 REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 160 * 1024
-REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"

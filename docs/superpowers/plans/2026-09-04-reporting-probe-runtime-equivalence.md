@@ -69,7 +69,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_agent_projection.py -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_agent_projection.py -q
   ```
 
   Expected: 新增测试直接通过，证明动态门禁已经是生产事实；后续 probe 改动不得通过修改静态
@@ -86,7 +86,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_agent_projection.py -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_agent_projection.py -q
   ```
 
   Expected: 既有用例和三种新增测试均通过，集合精确体现既有生产过滤规则。
@@ -148,7 +148,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
   ```
 
   Expected: 失败于缺少 `_build_probe_run_context` 或 `Agent.arun()` 只收到 prompt。
@@ -227,7 +227,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
   ```
 
   Expected: 全部通过；fake Agent 证明绑定上下文与显式参数是同一对象。
@@ -278,7 +278,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
   ```
 
   Expected: recovery 场景不存在，且 recorder 不会同步 `reportingVisualizationSessions`。
@@ -311,7 +311,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
   ```
 
   Expected: 十个场景覆盖所有当前工具 schema；recovery 只在恢复 context 可读脚本；100 次 mock
@@ -336,7 +336,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest \
+  .venv/bin/python -m pytest \
     smart_reporting/reporting/tests/test_reporting_agent_projection.py \
     smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py -q
   ```
@@ -348,7 +348,7 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m pytest smart_reporting/reporting/tests -m 'not integration' -q
+  .venv/bin/python -m pytest smart_reporting/reporting/tests -m 'not integration' -q
   ```
 
   Expected: 通过；若既有未提交改动导致失败，记录失败节点和可复现原因，不改无关代码。
@@ -358,9 +358,9 @@
   Run:
 
   ```bash
-  .venv-agent/bin/python -m ruff format --check scripts/probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_reporting_agent_projection.py
-  .venv-agent/bin/python -m ruff check scripts/probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_reporting_agent_projection.py
-  .venv-agent/bin/python -m mypy scripts/probe_reporting_tools_agent.py
+  .venv/bin/python -m ruff format --check scripts/probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_reporting_agent_projection.py
+  .venv/bin/python -m ruff check scripts/probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_probe_reporting_tools_agent.py smart_reporting/reporting/tests/test_reporting_agent_projection.py
+  .venv/bin/python -m mypy scripts/probe_reporting_tools_agent.py
   git diff --check
   ```
 
@@ -372,12 +372,12 @@
 
   ```bash
   AGENT_MODEL_FAST=qwen3.6-flash \
-    .venv-agent/bin/python scripts/probe_reporting_tools_agent.py \
+    .venv/bin/python scripts/probe_reporting_tools_agent.py \
     --env-file .env --model-tier fast --runs 10 --no-thinking \
     --progress-file /tmp/reporting-probe-fast.jsonl
 
   AGENT_MODEL_STANDARD=deepseek-v4-flash-0731 \
-    .venv-agent/bin/python scripts/probe_reporting_tools_agent.py \
+    .venv/bin/python scripts/probe_reporting_tools_agent.py \
     --env-file .env --model-tier standard --runs 10 --no-thinking \
     --progress-file /tmp/reporting-probe-standard.jsonl
   ```

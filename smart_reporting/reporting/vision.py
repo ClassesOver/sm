@@ -12,8 +12,8 @@ from agno.media import Image
 from agno.models.openai import OpenAIChat
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP
-from ..settings import AgentSettings
+from ..integrations.model_config import OPENAI_COMPATIBLE_ROLE_MAP
+from ..runtime.settings import AgentSettings
 from ..workspace import WorkspaceError, WorkspaceService
 from .workflow.checkpoint import (
     ChartVisualInspectionIssue,

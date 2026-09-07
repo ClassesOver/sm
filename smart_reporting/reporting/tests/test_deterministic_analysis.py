@@ -168,6 +168,31 @@ def test_deterministic_bundle_calculates_semantic_facts_and_separate_comparisons
     assert mom_comparison.baseline_total == 60
 
 
+def test_deterministic_bundle_reads_lineage_bound_dataset_alias() -> None:
+    projected_semantic = semantic("amount", unit="元")
+    projected_semantic["datasetField"] = "measure_val"
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("measure_val",)),
+        (
+            (
+                "current",
+                b"month,measure_val\n2025-01,100\n2025-02,50\n",
+                context(
+                    "current",
+                    fields=("month", "measure_val"),
+                    semantics=(projected_semantic,),
+                ),
+                ("current",),
+            ),
+        ),
+    )
+
+    assert bundle.metrics[0].field == "measure_val"
+    assert bundle.metrics[0].field_ref == "dynamic_source.dynamic_db.dynamic_table.amount"
+    assert bundle.metrics[0].total == 150
+
+
 def test_deterministic_bundle_orders_equal_group_contributions_stably() -> None:
     rows = "month,department,amount\n2025-01,C,10\n2025-01,A,10\n2025-01,B,10\n"
     reversed_rows = "month,department,amount\n2025-01,B,10\n2025-01,A,10\n2025-01,C,10\n"

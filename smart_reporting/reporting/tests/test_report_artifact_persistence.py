@@ -17,7 +17,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.delivery.publishing import (
     DOWNLOAD_GRANT_TTL,
     ReportArtifactPersistenceService,
@@ -39,6 +38,7 @@ from smart_reporting.reporting.tests.delivery_fakes import (
 )
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting.workflow.runtime import base as runtime_module
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
 

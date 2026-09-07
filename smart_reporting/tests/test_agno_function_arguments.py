@@ -4,7 +4,7 @@ from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.tools import Function
 
-from smart_reporting.agno_function_arguments import (
+from smart_reporting.integrations.agno_function_arguments import (
     install_agno_function_argument_decoder,
     repair_function_call_arguments,
 )

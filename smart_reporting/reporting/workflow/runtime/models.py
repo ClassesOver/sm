@@ -188,12 +188,33 @@ def _normalize_analysis_bundle_table_refs(candidate: Any) -> Any:
         if not isinstance(raw_requirement, dict):
             normalized_requirements.append(raw_requirement)
             continue
+        requirement = copy(raw_requirement)
+
+        # grainColumns 是 dimensionColumns 的物化子集，这个关系是协议结构事实，不是
+        # 业务推断。模型在复杂计划中常只把共同粒度写入 grainColumns；若等到
+        # QueryRequirement 构造后再修正，Pydantic 会先拒绝整份 Bundle，Reporting
+        # 的带反馈纠错也就没有机会运行。这里只追加已经由模型明确声明的合法字符串，
+        # 未知列、重复列、字段上限及后续语义约束仍由原有严格校验失败关闭。
+        dimension_key = (
+            "dimensionColumns" if "dimensionColumns" in requirement else "dimension_columns"
+        )
+        grain_key = "grainColumns" if "grainColumns" in requirement else "grain_columns"
+        dimensions = requirement.get(dimension_key)
+        grain = requirement.get(grain_key)
+        if isinstance(dimensions, list) and isinstance(grain, list):
+            known = {item.casefold() for item in dimensions if isinstance(item, str)}
+            merged = list(dimensions)
+            for item in grain:
+                if isinstance(item, str) and item.casefold() not in known:
+                    merged.append(item)
+                    known.add(item.casefold())
+            requirement[dimension_key] = merged
+
         source_id = raw_requirement.get("sourceId", raw_requirement.get("source_id"))
         if not isinstance(source_id, str):
-            normalized_requirements.append(raw_requirement)
+            normalized_requirements.append(requirement)
             continue
 
-        requirement = copy(raw_requirement)
         for key in ("tables", "relations"):
             raw_items = raw_requirement.get(key)
             if not isinstance(raw_items, list):

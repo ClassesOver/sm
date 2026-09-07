@@ -22,8 +22,8 @@ from sqlalchemy import text
 
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
-from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.tools import ReportingToolkit
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillValidatorRegistry,

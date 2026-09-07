@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from agno.run import RunContext
+from loguru import logger
 
 from ...models import ReportingError
 from ..checkpoint import SectionWorkItem
@@ -36,6 +38,17 @@ _NON_RECOVERABLE_CODES = frozenset(
 )
 
 
+def _section_recovery_diagnostic(error: Exception) -> dict[str, Any]:
+    """保留服务端拒绝码与修复动作，避免 recovery Agent 只看到外层摘要。"""
+
+    diagnostic: dict[str, Any] = {"message": str(error)[:2000]}
+    if isinstance(error, ReportingError):
+        diagnostic["code"] = error.code
+        if isinstance(error.details, Mapping):
+            diagnostic["details"] = dict(error.details)
+    return diagnostic
+
+
 @dataclass(frozen=True, slots=True)
 class SectionWorkflowResult:
     status: str
@@ -62,36 +75,64 @@ class SectionWorkflow:
     async def _read_bundle(
         self, work_item: SectionWorkItem, context: RunContext
     ) -> SectionEvidenceBundle:
-        files: list[SectionEvidenceFile] = []
+        identities_by_path: dict[str, object] = {}
+        unique_identities: list[Any] = []
         for evidence in work_item.evidence:
             for identity in evidence.evidence_files:
-                offset = 0
-                chunks: list[str] = []
-                while True:
-                    reply = await self.read_evidence(identity.path, offset, context)
-                    content = reply.get("content")
-                    if not isinstance(content, str) or not content:
+                frozen_identity = identity.model_dump(mode="json", by_alias=True)
+                previous = identities_by_path.get(identity.path)
+                if previous is not None:
+                    if previous != frozen_identity:
                         raise ReportingError(
-                            "report_section_evidence_invalid", "证据读取回执缺少有效 content。"
+                            "report_section_evidence_invalid",
+                            "同一路径绑定了不同的冻结证据身份。",
                         )
-                    returned_sha = reply.get("sha256")
-                    if returned_sha is not None and returned_sha != identity.sha256:
-                        raise ReportingError(
-                            "report_phase_artifact_changed",
-                            "证据文件 SHA-256 与冻结身份不一致。",
-                        )
-                    chunks.append(content)
-                    if reply.get("hasMore") is False:
-                        break
-                    next_offset = reply.get("nextOffset")
-                    if next_offset is None:
-                        break
-                    if not isinstance(next_offset, int) or next_offset <= offset:
-                        raise ReportingError(
-                            "report_section_evidence_invalid", "证据续读 offset 无效。"
-                        )
-                    offset = next_offset
-                files.append(SectionEvidenceFile(identity=identity, content="".join(chunks)))
+                    continue
+                identities_by_path[identity.path] = frozen_identity
+                unique_identities.append(identity)
+        files: list[SectionEvidenceFile] = []
+        for identity in unique_identities:
+            offset = 0
+            chunks: list[str] = []
+            while True:
+                reply = await self.read_evidence(identity.path, offset, context)
+                content = reply.get("content")
+                if not isinstance(content, str) or not content:
+                    raise ReportingError(
+                        "report_section_evidence_invalid", "证据读取回执缺少有效 content。"
+                    )
+                if (
+                    reply.get("path") != identity.path
+                    or reply.get("offset") != offset
+                    or reply.get("totalBytes") != identity.size
+                    or reply.get("sha256") != identity.sha256
+                ):
+                    raise ReportingError(
+                        "report_phase_artifact_changed",
+                        "证据读取回执与冻结文件身份不一致。",
+                    )
+                chunks.append(content)
+                if reply.get("hasMore") is False:
+                    break
+                next_offset = reply.get("nextOffset")
+                if next_offset is None:
+                    break
+                if not isinstance(next_offset, int) or next_offset <= offset:
+                    raise ReportingError(
+                        "report_section_evidence_invalid", "证据续读 offset 无效。"
+                    )
+                offset = next_offset
+            complete_content = "".join(chunks)
+            complete_bytes = complete_content.encode("utf-8")
+            if (
+                len(complete_bytes) != identity.size
+                or hashlib.sha256(complete_bytes).hexdigest() != identity.sha256
+            ):
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "证据正文与冻结文件身份不一致。",
+                )
+            files.append(SectionEvidenceFile(identity=identity, content=complete_content))
         if not files:
             raise ReportingError(
                 "report_section_evidence_missing", "章节没有可授权 evidence 文件。"
@@ -104,10 +145,12 @@ class SectionWorkflow:
 
     async def run(self, work_item: SectionWorkItem, context: RunContext) -> SectionWorkflowResult:
         bundle = await self._read_bundle(work_item, context)
-        decision = await self.generate(bundle, context)
+        decision: SectionDecision | None = None
         recovery_used = False
         for attempt in range(2):
             try:
+                if decision is None:
+                    decision = await self.generate(bundle, context)
                 if decision.section_code != work_item.section_code:
                     raise ReportingError(
                         "report_section_artifact_invalid", "章节决定没有绑定当前 sectionCode。"
@@ -118,6 +161,10 @@ class SectionWorkflow:
                     else await self.rework(decision, context)
                 )
                 if receipt.get("status") != "accepted":
+                    logger.bind(
+                        section_code=work_item.section_code,
+                        rejection_code=str(receipt.get("code", "report_section_submit_rejected")),
+                    ).warning("report_section_submission_rejected")
                     raise ReportingError(
                         "report_section_submit_rejected",
                         "章节终态提交未被接受。",
@@ -132,8 +179,7 @@ class SectionWorkflow:
                 recovery_used = True
                 decision = await self.recover(
                     {
-                        "evidence": bundle.model_dump(mode="json", by_alias=True),
-                        "diagnostic": str(error)[:2000],
+                        "diagnostic": _section_recovery_diagnostic(error),
                     },
                     context,
                 )

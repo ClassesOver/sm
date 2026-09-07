@@ -4,6 +4,7 @@ import pytest
 from agno.models.message import Message
 from agno.run import RunContext
 
+from smart_reporting.context_management import TaskExecutionContextProjector
 from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_messages,
@@ -11,6 +12,7 @@ from smart_reporting.reporting.agent import (
 )
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
 from smart_reporting.reporting.instructions import build_report_agent_instructions
+from smart_reporting.reporting.model_policy import resolve_reporting_input_token_hard_cap
 from smart_reporting.reporting.phase import (
     REPORTING_MODEL_ID_DEPENDENCY_KEY,
     REPORTING_MODEL_TIER_DEPENDENCY_KEY,
@@ -68,18 +70,20 @@ def test_current_task_kinds_are_projected_from_run_context(phase: str, task_kind
 
 
 @pytest.mark.parametrize(
-    ("phase", "task_kind"),
+    ("phase", "task_kind", "expected"),
     (
-        ("analysis", "analysis_item"),
-        ("analysis", "visualization_section"),
-        ("section", "section"),
+        ("analysis", "analysis_item", "auto"),
+        ("analysis", "visualization_section", "required"),
+        ("section", "section", "auto"),
     ),
 )
-def test_phase_agent_requires_a_tool_call_for_first_task_round(phase: str, task_kind: str) -> None:
+def test_phase_agent_only_requires_a_tool_call_for_visualization_first_round(
+    phase: str, task_kind: str, expected: str
+) -> None:
     with bind_reporting_run_context(_context(phase, task_kind)):
         assert ReportingPhaseOpenAIChat._phase_request_kwargs(
             [Message(role="user", content="probe")], {"tool_choice": "auto"}
-        ) == {"tool_choice": "required"}
+        ) == {"tool_choice": expected}
 
 
 @pytest.mark.parametrize(
@@ -133,6 +137,130 @@ def test_phase_agent_request_uses_model_id_selected_by_trusted_route() -> None:
 
     assert phase_model.id == "deepseek-v4-flash-0731"
     assert request_model.id == "qwen3.6-35b-a3b"
+
+
+def test_visualization_section_request_keeps_full_script_output_budget() -> None:
+    phase_model = ReportingPhaseOpenAIChat(
+        id="qwen3.6-flash",
+        api_key="test-key",
+        max_tokens=64 * 1024,
+    )
+
+    with bind_reporting_run_context(_context("analysis", "visualization_section")):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.max_tokens == 64 * 1024
+
+
+def test_analysis_item_request_respects_verified_model_output_budget() -> None:
+    phase_model = ReportingPhaseOpenAIChat(
+        id="qwen3.6-flash",
+        api_key="test-key",
+        max_tokens=96 * 1024,
+    )
+
+    with bind_reporting_run_context(_context("analysis", "analysis_item")):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.max_tokens == 64 * 1024
+
+
+def test_deepseek_analysis_request_respects_verified_model_output_budget() -> None:
+    context = _context("analysis", "analysis_item")
+    context.dependencies[REPORTING_TASK_DEPENDENCY].update(
+        {
+            REPORTING_MODEL_TIER_DEPENDENCY_KEY: "standard",
+            REPORTING_MODEL_ID_DEPENDENCY_KEY: "deepseek-v4-flash-0731",
+        }
+    )
+    phase_model = ReportingPhaseOpenAIChat(
+        id="qwen3.8-flash",
+        api_key="test-key",
+        max_tokens=393_216,
+    )
+
+    with bind_reporting_run_context(context):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.id == "deepseek-v4-flash-0731"
+    assert request_model.max_tokens == 128 * 1024
+
+
+def test_section_projection_uses_configured_report_input_budget(monkeypatch) -> None:
+    phase_model = ReportingPhaseOpenAIChat(id="qwen3.6-flash", api_key="test-key")
+    phase_model._task_execution_input_token_budget = 196_608
+    observed: dict[str, int] = {}
+
+    def project_with_metrics(messages, **kwargs):
+        observed["hard_cap"] = kwargs["hard_cap"]
+        return messages, {}
+
+    monkeypatch.setattr(TaskExecutionContextProjector, "project_with_metrics", project_with_metrics)
+    with bind_reporting_run_context(_context("section", "section")):
+        phase_model._project([Message(role="user", content="test")], (), {})
+
+    assert observed["hard_cap"] == 196_608
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    (
+        "qwen3.6-flash",
+        "qwen3.8-flash",
+        "deepseek-v4-flash-0731",
+    ),
+)
+def test_reporting_input_cap_respects_verified_model_window(model_id: str) -> None:
+    assert (
+        resolve_reporting_input_token_hard_cap(
+            configured_input_token_cap=655_360,
+            model_id=model_id,
+            output_token_reserve=65_536,
+            absolute_input_token_cap=1_015_808,
+        )
+        == 196_608
+    )
+
+
+def test_reporting_input_cap_does_not_guess_unknown_model_window() -> None:
+    assert (
+        resolve_reporting_input_token_hard_cap(
+            configured_input_token_cap=196_608,
+            model_id="custom-model-endpoint",
+            output_token_reserve=65_536,
+            absolute_input_token_cap=1_015_808,
+        )
+        == 196_608
+    )
+
+
+def test_routed_request_projection_uses_final_model_cap(monkeypatch) -> None:
+    context = _context("section", "section")
+    context.dependencies[REPORTING_TASK_DEPENDENCY].update(
+        {
+            REPORTING_MODEL_TIER_DEPENDENCY_KEY: "fast",
+            REPORTING_MODEL_ID_DEPENDENCY_KEY: "qwen3.8-flash",
+        }
+    )
+    phase_model = ReportingPhaseOpenAIChat(
+        id="custom-model-endpoint",
+        api_key="test-key",
+        max_tokens=65_536,
+    )
+    phase_model._task_execution_input_token_budget = 655_360
+    observed: dict[str, int] = {}
+
+    def project_with_metrics(messages, **kwargs):
+        observed["hard_cap"] = kwargs["hard_cap"]
+        return messages, {}
+
+    monkeypatch.setattr(TaskExecutionContextProjector, "project_with_metrics", project_with_metrics)
+    with bind_reporting_run_context(context):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+        request_model._project([Message(role="user", content="test")], (), {})
+
+    assert request_model.id == "qwen3.8-flash"
+    assert observed["hard_cap"] == 229_376
 
 
 def test_phase_agent_request_keeps_thinking_off_when_task_policy_requests_high() -> None:

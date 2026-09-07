@@ -36,7 +36,7 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 运行：
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_planner_contracts.py::test_section_instructions_match_evidence_file_authorization -q
+.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_planner_contracts.py::test_section_instructions_match_evidence_file_authorization -q
 ```
 
 预期：FAIL，现有指令仍要求按 `factFiles` 读取并补读原始 facts/evidence。
@@ -50,9 +50,9 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 运行：
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_planner_contracts.py -q
-.venv-agent/bin/python -m ruff format --check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py
-.venv-agent/bin/python -m ruff check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py
+.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_planner_contracts.py -q
+.venv/bin/python -m ruff format --check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py
+.venv/bin/python -m ruff check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py
 ```
 
 预期：全部通过。
@@ -101,7 +101,7 @@ adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `Rep
 运行：
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py::test_cli_input_reaches_production_draft_workflow -q
+.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py::test_cli_input_reaches_production_draft_workflow -q
 ```
 
 预期：FAIL，测试文件或 adapter 尚未实现。
@@ -121,7 +121,7 @@ adapter 的阶段回调必须进入生产 Reporting runtime 阶段方法及 `Rep
 运行：
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py -q
+.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py -q
 ```
 
 预期：通过，并且断言 `parse_report_input()`、`drive_workflow()`、Workflow adapter、`ReportingDraftWorkflow`、Coordinator、生产 Toolkit 均被调用。
@@ -189,7 +189,7 @@ async def test_cli_mock_repeated_ten_times_is_deterministic(harness_factory):
 运行：
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py -q
+.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py -q
 ```
 
 预期：新增断言至少有一项失败；失败必须来自缺失的生产边界或 Section 指令契约，而不是测试拼写错误。
@@ -203,9 +203,9 @@ async def test_cli_mock_repeated_ten_times_is_deterministic(harness_factory):
 运行：
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py -q
-.venv-agent/bin/python -m ruff format --check smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
-.venv-agent/bin/python -m ruff check smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
+.venv/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py -q
+.venv/bin/python -m ruff format --check smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
+.venv/bin/python -m ruff check smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
 ```
 
 预期：全部通过，重复测试报告 10 次且调用日志无泄漏。
@@ -225,7 +225,7 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 - [x] **Step 1: 运行 Reporting 非集成回归**
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/reporting/tests -m 'not integration' -q
+.venv/bin/python -m pytest smart_reporting/reporting/tests -m 'not integration' -q
 ```
 
 预期：通过；若有失败，只修复本轮引入的回归。
@@ -233,7 +233,7 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 - [x] **Step 2: 运行 task_execution 非集成回归**
 
 ```bash
-.venv-agent/bin/python -m pytest smart_reporting/task_execution/tests -m 'not integration' -q
+.venv/bin/python -m pytest smart_reporting/task_execution/tests -m 'not integration' -q
 ```
 
 预期：通过，确认 `task_execution` 仍是 Reporting 内部生命周期基础设施。
@@ -241,9 +241,9 @@ git commit -m "test(reporting): cover phase executors and lifecycle"
 - [x] **Step 3: 运行静态检查**
 
 ```bash
-.venv-agent/bin/python -m ruff format --check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
-.venv-agent/bin/python -m ruff check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
-.venv-agent/bin/python -m mypy smart_reporting/reporting/cli.py smart_reporting/reporting/workflow/execution.py smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/workflow/runtime/sections.py
+.venv/bin/python -m ruff format --check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
+.venv/bin/python -m ruff check smart_reporting/reporting/instructions.py smart_reporting/reporting/tests/test_reporting_planner_contracts.py smart_reporting/reporting/tests/test_reporting_cli_mock_alignment.py
+.venv/bin/python -m mypy smart_reporting/reporting/cli.py smart_reporting/reporting/workflow/execution.py smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/workflow/runtime/sections.py
 git diff --check
 ```
 

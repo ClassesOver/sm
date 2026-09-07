@@ -31,7 +31,7 @@ from smart_reporting.reporting.workflow.orchestration import (
     create_reporting_workflow,
     record_step_model_metrics,
 )
-from smart_reporting.settings import AgentSettings
+from smart_reporting.runtime.settings import AgentSettings
 
 
 class ErrorRequirement:

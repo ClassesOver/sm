@@ -10,8 +10,8 @@ from typing import Any
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.dependencies import get_access_token
 
+from ..http.security import CapabilityError, verify_capability
 from ..reporting.models import ReportingError
-from ..security import CapabilityError, verify_capability
 
 
 @dataclass(frozen=True)

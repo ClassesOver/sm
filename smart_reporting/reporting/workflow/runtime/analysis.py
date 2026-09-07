@@ -10,12 +10,15 @@ from ...phase import (
     REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
 )
+from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
 from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
-from ..execution import ReportingStructuredAgentExecutor, ReportingTaskInvocation
+from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
+    AnalysisEvidenceDecision,
     AnalysisEvidencePlan,
     AnalysisItemWorkflow,
+    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
 from .base import (
@@ -117,6 +120,48 @@ def _visualization_instruction_theme() -> dict[str, Any]:
         **REPORT_VISUAL_THEME,
         "chartPalette": list(REPORT_VISUAL_THEME["chartPalette"]),
     }
+
+
+def _analysis_item_dataset_inputs(
+    handles: Sequence[DatasetHandle],
+    contexts: Sequence[DatasetAnalysisContext],
+) -> list[dict[str, Any]]:
+    """把每个签发 CSV 与其权威 Profile 字段精确绑定后投影给模型。"""
+
+    context_by_id = {item.dataset_id: item for item in contexts}
+    if len(context_by_id) != len(contexts):
+        raise ReportingError(
+            "report_analysis_context_unavailable",
+            "分析数据上下文包含重复 Dataset 身份。",
+        )
+    inputs: list[dict[str, Any]] = []
+    for handle in handles:
+        context = context_by_id.get(handle.dataset_id)
+        # 路径、大小、哈希和行数共同构成 Profile 与不可变 CSV 的绑定；任何一项
+        # 不一致都必须失败关闭，不能把其他 Dataset 的字段暴露给补证脚本规划器。
+        if context is None or (
+            context.path,
+            context.size,
+            context.sha256,
+            context.row_count,
+        ) != (
+            handle.path,
+            handle.size,
+            handle.sha256,
+            handle.row_count,
+        ):
+            raise ReportingError(
+                "report_analysis_context_unavailable",
+                "分析数据上下文没有精确绑定当前不可变 Dataset。",
+            )
+        inputs.append({**handle.public_dict(), "columns": list(context.fields)})
+    return inputs
+
+
+def _analysis_item_output_root(report_run_id: str, analysis_id: str, attempt: int) -> str:
+    """为 fresh attempt 签发独立目录，避免失败脚本污染后续重试。"""
+
+    return f"报表/智能分析/{report_run_id}/evidence/{analysis_id}/attempt-{attempt + 1}"
 
 
 def _analysis_item_complexity(
@@ -228,6 +273,22 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
         len(value) for value in (metrics, datasets, periods) if isinstance(value, (list, tuple))
     )
     return min(8, max(4, 2 + (complexity + 2) // 3))
+
+
+def _has_chartable_visualization_facts(facts: Sequence[Mapping[str, Any]]) -> bool:
+    """仅当冻结事实含结构化指标时才进入图表生成。"""
+
+    return any(
+        isinstance(items, Sequence)
+        and not isinstance(items, (str, bytes))
+        and any(isinstance(item, Mapping) for item in items)
+        for fact in facts
+        for items in (
+            fact.get("metrics"),
+            fact.get("derivedMetrics"),
+            fact.get("comparisons"),
+        )
+    )
 
 
 class RuntimeAnalysisMixin:
@@ -432,7 +493,7 @@ class RuntimeAnalysisMixin:
 
                 async def execute_fixed_visualization(
                     invocation: ReportingTaskInvocation,
-                ) -> VisualizationScriptDraft:
+                ) -> VisualizationScriptDraft | None:
                     toolkits = build_reporting_tools(
                         self.workspace_service,
                         self.task_runner.repository,
@@ -445,18 +506,39 @@ class RuntimeAnalysisMixin:
                             "report_phase_contract_invalid", "章节图表 Toolkit 装配结果无效。"
                         )
                     toolkit = toolkits[0]
+                    if not _has_chartable_visualization_facts(facts):
+                        # 工具与 durable 协议明确允许零图。冻结事实没有任何结构化指标时，
+                        # 图表无法满足 metricCode 绑定，不得让模型虚构占位图或空指标。
+                        receipt = await toolkit.submit_visualization_charts(
+                            section_code,
+                            [],
+                            run_context=invocation.run_context,
+                        )
+                        if receipt.get("status") not in {
+                            "accepted",
+                            "committed",
+                            "already_committed",
+                        }:
+                            raise ReportingError(
+                                str(receipt.get("code", "report_visualization_submit_rejected")),
+                                str(receipt.get("message", "章节零图提交未被接受。")),
+                                details=dict(receipt),
+                            )
+                        loguru_logger.info(
+                            "report_visualization_section_empty_submitted section_code={}",
+                            section_code,
+                        )
+                        return None
                     committed_source: str | None = None
                     committed_sha256: str | None = None
 
                     async def generate(
                         request: Mapping[str, Any], task_context: RunContext
                     ) -> VisualizationScriptDraft:
-                        payload = json.dumps(
-                            request, ensure_ascii=False, separators=(",", ":")
-                        )
+                        payload = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
                         return cast(
                             VisualizationScriptDraft,
-                            await ReportingStructuredAgentExecutor(
+                            await ReportingStructuredOutputExecutor(
                                 self.visualization_generator
                             ).run(payload, scope=invocation.scope, run_context=task_context),
                         )
@@ -476,7 +558,7 @@ class RuntimeAnalysisMixin:
                         )
                         return cast(
                             VisualizationScriptDraft,
-                            await ReportingStructuredAgentExecutor(
+                            await ReportingStructuredOutputExecutor(
                                 self.visualization_recovery
                             ).run(payload, scope=invocation.scope, run_context=task_context),
                         )
@@ -485,10 +567,15 @@ class RuntimeAnalysisMixin:
                         path: str, source: str, task_context: RunContext
                     ) -> FileIdentity:
                         nonlocal committed_sha256, committed_source
+                        normalized_source = source if source.endswith("\n") else f"{source}\n"
                         patch = "".join(
                             difflib.unified_diff(
-                                ([] if committed_source is None else committed_source.splitlines(keepends=True)),
-                                source.splitlines(keepends=True),
+                                (
+                                    []
+                                    if committed_source is None
+                                    else committed_source.splitlines(keepends=True)
+                                ),
+                                normalized_source.splitlines(keepends=True),
                                 fromfile=("/dev/null" if committed_source is None else f"a/{path}"),
                                 tofile=f"b/{path}",
                             )
@@ -500,15 +587,21 @@ class RuntimeAnalysisMixin:
                             ),
                             run_context=task_context,
                         )
-                        artifacts = receipt.get("artifacts") if isinstance(receipt, Mapping) else None
-                        if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
+                        artifacts = (
+                            receipt.get("artifacts") if isinstance(receipt, Mapping) else None
+                        )
+                        if (
+                            receipt.get("ok") is not True
+                            or not isinstance(artifacts, list)
+                            or len(artifacts) != 1
+                        ):
                             raise ReportingError(
                                 str(receipt.get("code", "report_visualization_write_failed")),
                                 str(receipt.get("message", "章节图表脚本写入未被接受。")),
                                 details=dict(receipt) if isinstance(receipt, Mapping) else None,
                             )
                         identity = FileIdentity.model_validate(artifacts[0])
-                        committed_source = source
+                        committed_source = normalized_source
                         committed_sha256 = identity.sha256
                         return identity
 
@@ -524,9 +617,7 @@ class RuntimeAnalysisMixin:
                             )
                         return receipt
 
-                    async def inspect_chart(
-                        chart: ChartDraft, task_context: RunContext
-                    ) -> Any:
+                    async def inspect_chart(chart: ChartDraft, task_context: RunContext) -> Any:
                         receipt = await toolkit.inspect_chart(
                             chart.source_path, run_context=task_context
                         )
@@ -556,7 +647,9 @@ class RuntimeAnalysisMixin:
                             recover=recover if self.visualization_recovery is not None else None,
                             write_script=write_script,
                             execute_script=execute_script,
-                            inspect_chart=(inspect_chart if self.vision_reviewer is not None else None),
+                            inspect_chart=(
+                                inspect_chart if self.vision_reviewer is not None else None
+                            ),
                             submit=submit,
                         ).run(instruction_payload, invocation.run_context)
                     ).draft
@@ -1613,15 +1706,24 @@ class RuntimeAnalysisMixin:
         toolkit = toolkits[0]
         analysis_id = str(payload.get("currentAnalysisId") or "")
 
+        async def run_structured_agent(
+            agent: Any,
+            request: dict[str, Any],
+            expected_type: type[BaseModel],
+        ) -> BaseModel:
+            """调用统一结构化执行器；其内部负责最多五次带反馈纠错。"""
+
+            output = await self._run_planner(agent, request, parent_run_context)
+            if not isinstance(output, expected_type):
+                raise ReportingError(
+                    "report_structured_output_invalid",
+                    f"分析项 {analysis_id} 返回了错误的结构化结果类型。",
+                )
+            return output
+
         async def plan_evidence(
             planner_payload: Mapping[str, Any], *, repair: bool
         ) -> AnalysisEvidencePlan:
-            request = {
-                **planner_payload,
-                "analysisBlock": {
-                    "blockId": f"{analysis_id}:evidence:{'repair' if repair else 'initial'}"
-                },
-            }
             dependencies = (
                 task_run_context.dependencies
                 if isinstance(task_run_context.dependencies, dict)
@@ -1629,6 +1731,7 @@ class RuntimeAnalysisMixin:
             )
             binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
             previous_effort = previous_budget = _missing = object()
+            repair_correction: Mapping[str, Any] | None = None
             if repair:
                 if not isinstance(binding, dict):
                     raise ReportingError(
@@ -1644,22 +1747,100 @@ class RuntimeAnalysisMixin:
                     "complex"
                 ]
             try:
-                output = await self._run_planner(
-                    self._analysis_evidence_agent,
-                    request,
-                    parent_run_context,
+                if repair:
+                    raw_correction = planner_payload.get("correction")
+                    repair_correction = (
+                        raw_correction if isinstance(raw_correction, Mapping) else None
+                    )
+                    previous_raw = (
+                        repair_correction.get("previousPlan")
+                        if repair_correction is not None
+                        else None
+                    )
+                    try:
+                        previous = AnalysisEvidencePlan.model_validate(previous_raw)
+                    except ValidationError as error:
+                        raise ReportingError(
+                            "report_analysis_script_repair_invalid",
+                            "脚本修复缺少有效的既有事实缺口和脚本。",
+                        ) from error
+                    if not previous.requires_supplemental_evidence or previous.script is None:
+                        raise ReportingError(
+                            "report_analysis_script_repair_invalid",
+                            "脚本修复不得绕过既有事实缺口。",
+                        )
+                    decision = AnalysisEvidenceDecision(
+                        requiresSupplementalEvidence=True,
+                        reason=previous.reason,
+                        missingFacts=previous.missing_facts,
+                    )
+                else:
+                    decision_request = {
+                        "currentAnalysis": planner_payload.get("currentAnalysis"),
+                        "deterministicFacts": planner_payload.get("deterministicFacts"),
+                        "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
+                    }
+                    decision = cast(
+                        AnalysisEvidenceDecision,
+                        await run_structured_agent(
+                            self._analysis_evidence_agent,
+                            decision_request,
+                            AnalysisEvidenceDecision,
+                        ),
+                    )
+                    if not decision.requires_supplemental_evidence:
+                        return AnalysisEvidencePlan(
+                            requiresSupplementalEvidence=False,
+                            reason=decision.reason,
+                            missingFacts=(),
+                            script=None,
+                        )
+
+                script_request = {
+                    "currentAnalysis": planner_payload.get("currentAnalysis"),
+                    "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
+                    "datasets": planner_payload.get("datasets", []),
+                    "analysisOutputRoot": planner_payload.get("analysisOutputRoot"),
+                    "scriptPath": planner_payload.get("scriptPath"),
+                    "evidencePath": planner_payload.get("evidencePath"),
+                    "analysisBlock": {
+                        "blockId": (
+                            f"{analysis_id}:evidence:script:{'repair' if repair else 'initial'}"
+                        )
+                    },
+                }
+                if repair:
+                    assert repair_correction is not None
+                    assert previous.script is not None
+                    script_request["previousScript"] = previous.script
+                    script_request["correction"] = {
+                        "attempt": repair_correction.get("attempt"),
+                        "error": repair_correction.get("error"),
+                    }
+                script_draft = cast(
+                    AnalysisScriptDraft,
+                    await run_structured_agent(
+                        self._analysis_script_agent,
+                        script_request,
+                        AnalysisScriptDraft,
+                    ),
                 )
             finally:
                 if repair and isinstance(binding, dict):
-                    for key, previous in (
+                    for key, restored_value in (
                         (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
                         (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
                     ):
-                        if previous is _missing:
+                        if restored_value is _missing:
                             binding.pop(key, None)
                         else:
-                            binding[key] = previous
-            return cast(AnalysisEvidencePlan, output)
+                            binding[key] = restored_value
+            return AnalysisEvidencePlan(
+                requiresSupplementalEvidence=True,
+                reason=decision.reason,
+                missingFacts=decision.missing_facts,
+                script=script_draft.script,
+            )
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             output = await self._run_planner(
@@ -1718,12 +1899,30 @@ class RuntimeAnalysisMixin:
         selected_handles = tuple(
             item for item in dataset_handles if item.dataset_id in selected_dataset_ids
         )
+        if {item.dataset_id for item in selected_handles} != selected_dataset_ids:
+            raise ReportingError(
+                "report_analysis_context_unavailable",
+                "当前分析项没有精确绑定全部不可变 Dataset。",
+            )
         selected_lineage = tuple(
             item for item in lineage if item.dataset_id in selected_dataset_ids
         )
         selected_citations = tuple(
             item for item in citation_bindings if item.dataset_id in selected_dataset_ids
         )
+        raw_contexts = self._state(run_context).get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+        try:
+            dataset_contexts = tuple(
+                DatasetAnalysisContext.model_validate(item) for item in raw_contexts
+            )
+            dataset_inputs = _analysis_item_dataset_inputs(selected_handles, dataset_contexts)
+        except (TypeError, ValueError, ValidationError) as error:
+            if isinstance(error, ReportingError):
+                raise
+            raise ReportingError(
+                "report_analysis_context_unavailable",
+                "分析数据上下文缺失或无效。",
+            ) from error
         reporting_analysis_plan = _reporting_detailed_analysis_plan(
             detailed_plan,
             analysis_ids=(analysis_id,),
@@ -1806,6 +2005,7 @@ class RuntimeAnalysisMixin:
                         "warnings",
                     }
                 }
+            analysis_output_root = _analysis_item_output_root(report_run_id, analysis_id, attempt)
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "analysis_item",
@@ -1813,7 +2013,7 @@ class RuntimeAnalysisMixin:
                 "sectionGoal": dict(section_goal),
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
-                "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
+                "analysisOutputRoot": analysis_output_root,
                 "completionConditions": _analysis_item_completion_conditions(
                     recovery_payload,
                     last_error,
@@ -1828,7 +2028,7 @@ class RuntimeAnalysisMixin:
                     dataset_ids=selected_dataset_ids,
                 ),
                 "analysisContextFile": analysis_context_file.model_dump(mode="json", by_alias=True),
-                "datasets": [item.public_dict() for item in selected_handles],
+                "datasets": dataset_inputs,
                 "datasetLineage": [
                     item.model_dump(mode="json", by_alias=True) for item in selected_lineage
                 ],
@@ -1904,7 +2104,7 @@ class RuntimeAnalysisMixin:
                     "analysisFactQueryLimit": _analysis_fact_query_limit_for_plan(analysis_plan),
                     "analysisFactQueriesUsed": analysis_fact_queries_used,
                     "analysisRecovery": analysis_recovery,
-                    "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
+                    "analysisOutputRoot": analysis_output_root,
                     "analysisPlans": {analysis_id: analysis_plan},
                     "analysisDatasetIds": {analysis_id: list(analysis.dataset_ids)},
                     "deterministicFactFiles": {
@@ -2658,11 +2858,20 @@ def _finalize_semantic_catalog(
             for metric in raw_metrics:
                 if not isinstance(metric, Mapping):
                     continue
+                metric_codes: set[str] = set()
                 raw_codes = metric.get("metricCodes", ())
                 if isinstance(raw_codes, Sequence) and not isinstance(raw_codes, (str, bytes)):
                     for code in raw_codes:
                         if isinstance(code, str) and code:
-                            facts_by_code.setdefault(code, []).append(metric)
+                            metric_codes.add(code)
+                # facts 的 field 是数据集物理指标名，metricCodes 是规范业务指标名。
+                # 图表与章节都可能引用前者，因此二者必须共享同一条受信事实定义；
+                # 这里只登记既有事实别名，不推断公式，也不放宽后续引用校验。
+                field = metric.get("field")
+                if isinstance(field, str) and field:
+                    metric_codes.add(field)
+                for code in metric_codes:
+                    facts_by_code.setdefault(code, []).append(metric)
         raw_derived = bundle.get("derivedMetrics", ())
         if isinstance(raw_derived, Sequence) and not isinstance(raw_derived, (str, bytes)):
             for metric in raw_derived:
@@ -2680,8 +2889,9 @@ def _finalize_semantic_catalog(
                 if isinstance((formula := fact.get("formula")), str) and formula
             }
         )
-        units = sorted(
-            {unit for fact in facts if isinstance((unit := fact.get("unit")), str) and unit}
+        unit_values = {fact.get("unit") for fact in facts}
+        units_valid = len(unit_values) == 1 and all(
+            unit is None or (isinstance(unit, str) and bool(unit)) for unit in unit_values
         )
         periods = sorted(
             {
@@ -2700,8 +2910,6 @@ def _finalize_semantic_catalog(
             any(
                 not isinstance(fact.get("formula"), str)
                 or not fact["formula"]
-                or not isinstance(fact.get("unit"), str)
-                or not fact["unit"]
                 or not isinstance(fact.get("periodStart"), str)
                 or not fact["periodStart"]
                 or not isinstance(fact.get("periodEnd"), str)
@@ -2709,12 +2917,12 @@ def _finalize_semantic_catalog(
                 for fact in facts
             )
             or len(formulas) != 1
-            or len(units) != 1
+            or not units_valid
         ):
             missing_fields = []
             if len(formulas) != 1:
                 missing_fields.append("formula")
-            if len(units) != 1:
+            if not units_valid:
                 missing_fields.append("unit")
             if not periods or any(
                 not fact.get("periodStart") or not fact.get("periodEnd") for fact in facts
@@ -2739,7 +2947,7 @@ def _finalize_semantic_catalog(
                 "code": code,
                 "name": name,
                 "definition": "；".join((name, *formulas))[:2000],
-                "unit": units[0],
+                "unit": next(iter(unit_values)),
                 "periodBasis": period_basis,
             }
         )

@@ -2,6 +2,10 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+
 from .base import (
     DOMAIN_CODES,
     MAX_REPORT_INPUTS,
@@ -41,12 +45,23 @@ from .base import (
     json,
     logger,
     profile_csv_dataset,
+    project_measure_semantics_to_query_outputs,
     resolve_domain_mentions,
     time,
 )
 from .validation import (
     _available_tables,
 )
+
+PROFILE_TRANSFER_TIMEOUT_SECONDS = 5 * 60
+_PROFILE_PROCESS_POOL: ProcessPoolExecutor | None = None
+
+
+def _profile_process_pool() -> ProcessPoolExecutor:
+    global _PROFILE_PROCESS_POOL
+    if _PROFILE_PROCESS_POOL is None:
+        _PROFILE_PROCESS_POOL = ProcessPoolExecutor(max_workers=2)
+    return _PROFILE_PROCESS_POOL
 
 
 class RuntimeDatasetsMixin:
@@ -118,6 +133,39 @@ class RuntimeDatasetsMixin:
                 for value in state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, ())
             )
         }
+        approved_queries = {
+            (item.source_id, item.requirement_id, item.query_window_id): item
+            for item in (
+                ApprovedQuery.model_validate(value)
+                for value in state.get(REPORT_APPROVED_QUERIES_STATE_KEY, ())
+            )
+        }
+        metric_semantics_by_dataset: dict[str, tuple[dict[str, Any], ...]] = {}
+        for handle in handles:
+            requirement = requirements.get(handle.requirement_id)
+            if requirement is None or handle.source_type == "url_csv":
+                metric_semantics_by_dataset[handle.dataset_id] = ()
+                continue
+            measure_field_refs = _requirement_measure_field_refs(requirement, snapshots)
+            semantics = tuple(
+                item
+                for snapshot in snapshots
+                for item in snapshot.measure_semantics
+                if item.field_ref.lower() in measure_field_refs
+            )
+            query = approved_queries.get(
+                (handle.source_id, handle.requirement_id, handle.query_window_id)
+            )
+            if query is None or query.sql_hash != handle.sql_hash:
+                raise ReportingError(
+                    "report_analysis_context_invalid",
+                    "Dataset 无法绑定对应的已批准 SQL。",
+                )
+            # fieldRef 始终保留权威物理字段身份；datasetField 只能来自已批准
+            # SQL 的列级血缘，供后续事实引擎读取别名列，禁止按列名相似度猜测。
+            metric_semantics_by_dataset[handle.dataset_id] = (
+                project_measure_semantics_to_query_outputs(query, semantics)
+            )
         try:
             cached_contexts = {
                 item.dataset_id: item
@@ -151,6 +199,7 @@ class RuntimeDatasetsMixin:
                 or candidate.sha256 != handle.sha256
                 or candidate.row_count != handle.row_count
                 or candidate.profile_file.path != profile_path(handle)
+                or candidate.metric_semantics != metric_semantics_by_dataset[handle.dataset_id]
             ):
                 return None
             return candidate
@@ -194,64 +243,52 @@ class RuntimeDatasetsMixin:
                     ):
                         raise ReportingError("stale_dataset", "分析数据集已变化。")
                     requirement = requirements.get(handle.requirement_id)
-                    # measureColumns 属于每个 RequirementTable，不是 QueryRequirement
-                    # 顶层字段。这里按完整 fieldRef 绑定语义，避免多表存在同名指标时
-                    # 把未授权表的语义混入当前不可变数据集上下文。
-                    measure_field_refs = (
-                        _requirement_measure_field_refs(requirement, snapshots)
-                        if requirement is not None
-                        else set()
-                    )
                     requirement_tables = (
                         {table.table.lower() for table in requirement.tables}
                         if requirement is not None
                         else set()
                     )
-                    profiled = await anyio.to_thread.run_sync(
-                        lambda: profile_csv_dataset(
-                            content,
-                            dataset_id=handle.dataset_id,
-                            path=handle.path,
-                            expected_sha256=handle.sha256,
-                            profile_path=profile_path(handle),
-                            period_fields=(
-                                tuple(
-                                    dict.fromkeys(
-                                        table.period_column for table in requirement.tables
-                                    )
-                                )
-                                if requirement is not None
-                                else ()
-                            ),
-                            schema={
-                                "sourceId": handle.source_id,
-                                "requirementId": handle.requirement_id,
-                                "tables": [
-                                    table.model_dump(mode="json", by_alias=True)
-                                    for snapshot in snapshots
-                                    for table in snapshot.tables
-                                    if table.source_id == handle.source_id
-                                    and (
-                                        not requirement_tables
-                                        or f"{table.database}.{table.name}".lower()
-                                        in requirement_tables
-                                        or table.name.lower() in requirement_tables
-                                    )
-                                ],
-                            },
-                            organization_grain=(
-                                tuple(requirement.grain_columns) if requirement is not None else ()
-                            ),
-                            metric_semantics=tuple(
-                                item.model_dump(mode="json", by_alias=True)
-                                for snapshot in snapshots
-                                for item in snapshot.measure_semantics
-                                if item.field_ref.lower() in measure_field_refs
-                            ),
-                            source_warnings=source_warning_messages,
+                    profile_job = partial(
+                        profile_csv_dataset,
+                        content,
+                        dataset_id=handle.dataset_id,
+                        path=handle.path,
+                        expected_sha256=handle.sha256,
+                        profile_path=profile_path(handle),
+                        period_fields=(
+                            tuple(
+                                dict.fromkeys(table.period_column for table in requirement.tables)
+                            )
+                            if requirement is not None
+                            else ()
                         ),
-                        limiter=profile_limiter,
+                        schema={
+                            "sourceId": handle.source_id,
+                            "requirementId": handle.requirement_id,
+                            "tables": [
+                                table.model_dump(mode="json", by_alias=True)
+                                for snapshot in snapshots
+                                for table in snapshot.tables
+                                if table.source_id == handle.source_id
+                                and (
+                                    not requirement_tables
+                                    or f"{table.database}.{table.name}".lower()
+                                    in requirement_tables
+                                    or table.name.lower() in requirement_tables
+                                )
+                            ],
+                        },
+                        organization_grain=(
+                            tuple(requirement.grain_columns) if requirement is not None else ()
+                        ),
+                        metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
+                        source_warnings=source_warning_messages,
                     )
+                    # Profile 仅依赖不可变字节和纯函数参数，放入受控进程池隔离
+                    # fg-data-profiling/NumPy 的 CPU 计算与 matplotlib 全局状态。
+                    async with profile_limiter:
+                        loop = asyncio.get_running_loop()
+                        profiled = await loop.run_in_executor(_profile_process_pool(), profile_job)
                     # 生产 WorkspaceService 始终提供内容边界校验；极小的单元测试夹具
                     # 可以只实现读写原语，不应改变 Profile 或其哈希契约。
                     validate_content = getattr(self.workspace_service, "_validate_content", None)
@@ -267,7 +304,13 @@ class RuntimeDatasetsMixin:
                         )
                         if callable(ensure_directory):
                             await ensure_directory(sandbox, profile_remote.rsplit("/", 1)[0])
-                        await filesystem.upload_file(profiled.profile_content, profile_remote)
+                        # Daytona SDK 默认允许单次上传等待 30 分钟；画像写入属于可重试的
+                        # 步骤内操作，必须在有限时间失败，才能由 Workflow 重建连接重试。
+                        await filesystem.upload_file(
+                            profiled.profile_content,
+                            profile_remote,
+                            timeout=PROFILE_TRANSFER_TIMEOUT_SECONDS,
+                        )
                         stored_profile = await self.workspace_service._adownload_file(
                             sandbox, profile_remote, profiled.context.profile_file.size
                         )

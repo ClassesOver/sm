@@ -199,6 +199,12 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         " comparability=reference_only 时 title 和 altText 都必须包含“参考”。"
     ),
     (
+        "所有用户可见图表文字必须使用简体中文：title、altText、图内标题、坐标轴标题、刻度标签、"
+        "图例、数据标签、注释和单位都要结合当前章节管理问题表达，禁止只把英文标题机械翻译后脱离章节语义。"
+        "服务端只对 title 和 altText 做轻量汉字检查；坐标轴、图例和注释必须在绘图脚本的中文主题中主动设置，"
+        "不要依赖 OCR 或把英文元数据留给交付阶段修正。"
+    ),
+    (
         "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，citationDatasetIds 是"
         " citationId 所属 Dataset 的唯一受信映射；必须逐字复用，不得查询 datasets[].citationIds、猜测或"
         "重建 Dataset 归属，也不得用 read_file、terminal 或目录探测寻找 citationId。"

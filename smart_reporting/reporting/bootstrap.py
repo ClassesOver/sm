@@ -2,10 +2,10 @@
 
 from agno.agent import Agent
 
-from ..execution_context import ExecutionContext
 from ..model_routing import build_model_profiles
 from ..quality_warnings.service import QualityWarningService
-from ..settings import AgentSettings
+from ..runtime.execution import ExecutionContext
+from ..runtime.settings import AgentSettings
 from ..task_execution import TaskExecutionKernel, TaskExecutionRepository
 from .agent import create_reporting_generator_agent, create_reporting_phase_agent
 from .data_source import load_configured_report_source_registry
@@ -19,7 +19,7 @@ from .vision import ReportVisionReviewer
 from .workflow.execution import ReportingEventSink, ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
-from .workflow.runtime.phase_models import SectionDecision, VisualizationScriptDraft
+from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationScriptDraft
 
 
 def create_report_runtime(
@@ -52,12 +52,12 @@ def create_report_runtime(
     )
     section_generator = create_reporting_generator_agent(
         model=reporting_agent_template.model,
-        output_schema=SectionDecision,
+        output_schema=SectionDecisionOutput,
         name="reporting-section-generator",
     )
     section_recovery = create_reporting_generator_agent(
         model=reporting_agent_template.model,
-        output_schema=SectionDecision,
+        output_schema=SectionDecisionOutput,
         name="reporting-section-recovery",
     )
     vision_reviewer = (

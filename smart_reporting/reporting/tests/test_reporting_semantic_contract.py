@@ -23,6 +23,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     SectionClaim,
     read_analysis_artifact,
 )
+from smart_reporting.reporting.workflow.runtime.analysis import _finalize_semantic_catalog
 from smart_reporting.reporting.workflow.runtime.publication import (
     _publication_warning_notice,
     evaluate_publication_semantics,
@@ -313,6 +314,38 @@ def test_manifest_warns_chart_metric_without_definition() -> None:
         ),
     )
     assert any(item["code"] == "report_chart_metric_unfrozen" for item in gate["warnings"])
+
+
+def test_semantic_catalog_registers_metric_field_alias() -> None:
+    _dataset_semantics, metric_definitions, findings = _finalize_semantic_catalog(
+        analysis_plans={
+            "analysis_001": {
+                "datasetIds": ["dataset-1"],
+                "organizationGrain": ["month"],
+            }
+        },
+        fact_bundles={
+            "analysis_001": {
+                "metrics": [
+                    {
+                        "field": "budget_medical_income",
+                        "metricCodes": ["budget_income"],
+                        "formula": "sum(budget_medical_income)",
+                        "unit": "元",
+                        "periodStart": "2025-01-01",
+                        "periodEnd": "2025-10-01",
+                    }
+                ]
+            }
+        },
+        dataset_ids=("dataset-1",),
+    )
+
+    assert [item["code"] for item in metric_definitions] == [
+        "budget_income",
+        "budget_medical_income",
+    ]
+    assert findings == []
 
 
 def test_section_block_claim_reference_must_exist() -> None:

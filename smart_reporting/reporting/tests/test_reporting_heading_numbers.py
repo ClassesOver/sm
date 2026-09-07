@@ -10,11 +10,13 @@ from smart_reporting.reporting.delivery.artifacts_v1 import (
 )
 from smart_reporting.reporting.delivery.draft_v1 import (
     HeadingNumber,
+    ReportChartInput,
     ReportDraft,
     ReportDraftBlock,
     ReportDraftSection,
     ReportSectionDefinition,
     assemble_report_markdown,
+    validate_report_draft_blocks,
 )
 from smart_reporting.reporting.delivery.report_runtime.markdown import (
     _document_context,
@@ -130,6 +132,62 @@ def test_assemble_removes_numbered_duplicate_section_heading() -> None:
     assert rendered.auto_fixes[0]["code"] == "duplicate_section_heading_removed"
 
 
+def test_assemble_excludes_duplicate_chart_before_revalidating_later_block_binding() -> None:
+    rendered = assemble_report_markdown(
+        ReportDraft(
+            sections=(
+                ReportDraftSection(
+                    sectionCode="section_001",
+                    blocks=(
+                        ReportDraftBlock(
+                            blockId="block_1",
+                            markdown="收入趋势。",
+                            citationIds=("citation_001",),
+                            chartIds=("chart_001",),
+                        ),
+                        ReportDraftBlock(
+                            blockId="block_2",
+                            markdown="补充说明。",
+                            chartIds=("chart_001",),
+                        ),
+                    ),
+                ),
+            )
+        ),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(
+                code="section_001",
+                sectionNumber="1",
+                title="经营分析",
+                analysisIds=("analysis_001",),
+            ),
+        ),
+        citation_ids=("citation_001",),
+        charts=(
+            ReportChartInput(
+                chartId="chart_001",
+                fileName="revenue.png",
+                title="收入趋势",
+                altText="收入趋势图",
+                citationIds=("citation_001",),
+            ),
+        ),
+    )
+
+    assert rendered.markdown.count("revenue.png") == 1
+    assert rendered.warnings == (
+        {
+            "code": "duplicate_chart_reference_excluded",
+            "chartId": "chart_001",
+            "sectionCode": "section_001",
+            "blockId": "block_2",
+            "message": "同一 chartId 已在前文渲染，重复引用已排除。",
+        },
+    )
+
+
 def test_document_context_and_manifest_share_heading_number_contract() -> None:
     rendered = _render("### 结论\n\n#### 收入")
     headings = [item.model_dump(mode="json", by_alias=True) for item in rendered.heading_numbers]
@@ -167,9 +225,12 @@ def test_document_context_and_manifest_share_heading_number_contract() -> None:
         sectionNumbers=rendered.section_numbers,
         headingNumbers=rendered.heading_numbers,
     )
-    pdf_html, word_html = _semantic_documents(
-        "<h2>1 经营分析</h2>", context=context, layout=DEFAULT_PAGE_LAYOUT
+    body = (
+        "<h2>1 经营分析</h2>"
+        '<p><img src="charts/revenue.png" alt="收入趋势"></p>'
+        "<p><em>图表：2025 年收入趋势</em></p>"
     )
+    pdf_html, word_html = _semantic_documents(body, context=context, layout=DEFAULT_PAGE_LAYOUT)
 
     assert manifest.heading_numbers == rendered.heading_numbers
     assert 'class="toc-entry toc-level-4"' in pdf_html
@@ -177,7 +238,11 @@ def test_document_context_and_manifest_share_heading_number_contract() -> None:
     assert "1.1.1 收入" in word_html
     assert "max-height:180mm" in pdf_html
     assert "object-fit:contain" in pdf_html
-    assert "p:has(>img)+p{break-before:avoid;break-after:avoid" in pdf_html
+    assert pdf_html.count('<figure class="report-figure">') == 1
+    assert (
+        '<figcaption class="report-figure-caption">图表：2025 年收入趋势</figcaption>' in pdf_html
+    )
+    assert ".report-figure + p{break-before:avoid;page-break-before:avoid}" in pdf_html
 
 
 def test_manifest_rejects_non_contiguous_nested_heading_numbers() -> None:
@@ -237,3 +302,32 @@ def test_assemble_rejects_invalid_heading_hierarchy(markdown: str, code: str) ->
         _render(markdown)
 
     assert raised.value.code == code
+
+
+def test_validate_report_draft_blocks_rejects_h2_before_section_is_persisted() -> None:
+    blocks = (ReportDraftBlock(blockId="block_1", markdown="## 非法正文标题\n\n正文"),)
+
+    with pytest.raises(ReportingError) as raised:
+        validate_report_draft_blocks(blocks, expected_section_title="经营分析")
+
+    assert raised.value.code == "report_draft_heading_level_invalid"
+
+
+def test_validate_report_draft_blocks_allows_leading_duplicate_section_heading() -> None:
+    blocks = (
+        ReportDraftBlock(
+            blockId="block_1",
+            markdown="## 9.9 经营分析\n\n### 收入趋势\n\n正文",
+        ),
+    )
+
+    validate_report_draft_blocks(blocks, expected_section_title="经营分析")
+
+
+def test_validate_report_draft_blocks_tracks_h3_parent_across_blocks() -> None:
+    blocks = (
+        ReportDraftBlock(blockId="block_1", markdown="### 收入趋势\n\n正文"),
+        ReportDraftBlock(blockId="block_2", markdown="#### 同比变化\n\n正文"),
+    )
+
+    validate_report_draft_blocks(blocks, expected_section_title="经营分析")

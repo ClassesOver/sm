@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from smart_reporting.security import CapabilityError, verify_capability
+from smart_reporting.http.security import CapabilityError, verify_capability
 
 SECRET = "0123456789abcdef0123456789abcdef"
 

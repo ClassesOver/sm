@@ -11,7 +11,7 @@ from daytona import AsyncDaytona, CreateSandboxFromSnapshotParams
 from daytona.common.errors import DaytonaNotFoundError
 from sqlalchemy import delete
 
-from smart_reporting.database import create_agent_database
+from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.skills import skill_script_receipt_hook
 from smart_reporting.task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
 from smart_reporting.task_execution.models import Lease, TaskExecutionScope
