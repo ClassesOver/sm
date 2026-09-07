@@ -919,7 +919,13 @@ class RuntimeAnalysisMixin:
         revision = int(result.get("revision", 0)) + 1
         async with self.workspace_service._async_client() as client:
             sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-            sandbox_id = str(getattr(sandbox, "id", "") or "")
+            # Provider 句柄把资源标识固定放在 ref.resource_id；旧 Daytona 原生对象仍使用 id。
+            # 两种句柄都必须映射到同一个下游 sandbox_id，才能启动 Reporting Worker。
+            sandbox_id = str(
+                getattr(sandbox, "id", "")
+                or getattr(getattr(sandbox, "ref", None), "resource_id", "")
+                or ""
+            )
         if not sandbox_id:
             raise ReportingError("report_worker_unavailable", "报表 Reporting 工作区不可用。")
         lineage = tuple(
