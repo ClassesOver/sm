@@ -21,7 +21,7 @@ RUN apt-get update \
 
 FROM base AS runtime
 
-ARG UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/
 
 COPY --from=uv-source /uv /uvx /bin/
 
@@ -32,7 +32,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
-RUN UV_INDEX_URL="${UV_INDEX_URL}" UV_PROJECT_ENVIRONMENT=/app/.venv \
+RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
 COPY smart_reporting ./smart_reporting

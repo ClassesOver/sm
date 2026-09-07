@@ -48,6 +48,7 @@ from .base import (
     project_measure_semantics_to_query_outputs,
     resolve_domain_mentions,
     time,
+    time_series_diagnostics_requested,
 )
 from .validation import (
     _available_tables,
@@ -186,6 +187,9 @@ class RuntimeDatasetsMixin:
             for item in _source_warnings_from_state(state)
             if getattr(item, "message", None)
         )
+        enable_time_series_diagnostics = time_series_diagnostics_requested(
+            self._envelope(run_context).report_goal
+        )
 
         def profile_path(handle: DatasetHandle) -> str:
             return f"报表/分析计划/{run_id}/profiles/{handle.dataset_id}.profile.json"
@@ -283,6 +287,7 @@ class RuntimeDatasetsMixin:
                         ),
                         metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
                         source_warnings=source_warning_messages,
+                        enable_time_series_diagnostics=enable_time_series_diagnostics,
                     )
                     # Profile 仅依赖不可变字节和纯函数参数，放入受控进程池隔离
                     # fg-data-profiling/NumPy 的 CPU 计算与 matplotlib 全局状态。

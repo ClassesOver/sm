@@ -108,6 +108,7 @@ from ...hospital_operation.detailed_analysis import (
     DetailedAnalysisItem,
     DetailedAnalysisPlan,
     profile_csv_dataset,
+    time_series_diagnostics_requested,
 )
 from ...hospital_operation.deterministic_analysis import (
     DeterministicAnalysisBundle,

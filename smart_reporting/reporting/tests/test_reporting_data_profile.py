@@ -120,6 +120,7 @@ def test_profile_csv从生成源关闭冗余画像计算(monkeypatch: pytest.Mon
 
     assert captured["samples"] == {"head": 0, "tail": 0, "random": 0}
     assert captured["duplicates"] == {"head": 0}
+    assert captured["tsmode"] is False
     assert captured["vars"]["cat"] == {
         "length": False,
         "characters": False,
@@ -212,7 +213,7 @@ def test_profile_csv空数据集生成零行画像而不调用画像引擎(
             ("date",),
             24,
             0,
-            "enabled",
+            "diagnostics_not_requested",
             False,
         ),
     ),
@@ -251,3 +252,25 @@ def test_profile_csv历史画像去冗余不改变业务统计(
     else:
         assert profile["time_series_analysis"]["reason"] == time_state
         assert profile["time_series_analysis"]["aggregation_required"] is aggregation_required
+
+
+def test_profile_csv_explicit_time_series_diagnostics_runs_on_bounded_series() -> None:
+    content = (
+        "date,amount\n"
+        + "\n".join(f"2025-01-{day:02d},{day + (day % 7) * 3}" for day in range(1, 25))
+        + "\n"
+    ).encode()
+
+    profiled = profile_csv_dataset(
+        content,
+        dataset_id="dataset-diagnostics",
+        path="diagnostics.csv",
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        period_fields=("date",),
+        enable_time_series_diagnostics=True,
+    )
+
+    analysis = profiled.profile["time_series_analysis"]
+    assert analysis["enabled"] is True
+    assert analysis["fields"]["amount"]["acf"]
+    assert analysis["fields"]["amount"]["pacf"]
