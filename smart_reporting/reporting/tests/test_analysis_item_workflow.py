@@ -194,6 +194,68 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
 
 
 @pytest.mark.anyio
+async def test_analysis_item_workflow_reads_large_supplemental_evidence_in_chunks() -> None:
+    rows = [
+        {"period": f"2025-{index:04d}", "value": index, "note": "x" * 96} for index in range(1_200)
+    ]
+    evidence = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [{"name": "完整明细", "rows": rows}],
+            "reconciliations": [{"name": "完整性对账", "passed": True}],
+            "warnings": [],
+        },
+        separators=(",", ":"),
+    )
+    page_size = 64 * 1024
+    evidence_reads = [
+        _tool_result(
+            content=evidence[offset : offset + page_size],
+            sha256="b" * 64,
+            totalBytes=len(evidence),
+            nextOffset=min(len(evidence), offset + page_size),
+            hasMore=offset + page_size < len(evidence),
+        )
+        for offset in range(0, len(evidence), page_size)
+    ]
+    summarize = AsyncMock(return_value=AnalysisSummaryDraft(summary="补充证据完整。", warnings=()))
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
+    read_file = AsyncMock(side_effect=[_facts_read_result(), *evidence_reads])
+    workflow = AnalysisItemWorkflow(
+        plan_evidence=AsyncMock(
+            return_value=AnalysisEvidencePlan(
+                requiresSupplementalEvidence=True,
+                reason="需要完整明细",
+                missingFacts=("完整明细",),
+                script="print('evidence')",
+            )
+        ),
+        summarize=summarize,
+        read_file=read_file,
+        apply_patch=AsyncMock(
+            return_value=_tool_result(artifacts=[{"path": "x", "sha256": "c" * 64}])
+        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=complete,
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
+
+    compact_finding = summarize.await_args.args[0]["supplementalEvidence"]["findings"][0]
+    assert compact_finding["columns"] == ["period", "value", "note"]
+    assert len(compact_finding["rows"]) == len(rows)
+    assert compact_finding["rows"][0] == ["2025-0000", 0, "x" * 96]
+    assert compact_finding["rows"][-1] == ["2025-1199", 1199, "x" * 96]
+    assert [call.kwargs["offset"] for call in read_file.await_args_list[1:]] == [
+        *range(0, len(evidence), page_size),
+    ]
+    assert complete.await_args.kwargs["evidencePaths"] == [
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
+    ]
+
+
+@pytest.mark.anyio
 async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
     repairs: list[bool] = []
 

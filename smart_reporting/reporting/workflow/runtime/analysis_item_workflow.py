@@ -13,7 +13,7 @@ from agno.run import RunContext
 from agno.workflow import Condition, Loop, Step, Steps
 from agno.workflow.types import StepInput, StepOutput
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ....task_execution import MAX_READ_FILE_BYTES
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
@@ -22,7 +22,8 @@ from ...models import ReportingError
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
 MAX_DETERMINISTIC_FACT_BYTES = 10 * 1024 * 1024
 DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
-SUPPLEMENTAL_EVIDENCE_READ_BYTES = 128 * 1024
+SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
+MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 _STAGE_NAMES = (
     "read-facts",
     "plan-evidence",
@@ -153,6 +154,39 @@ class SupplementalEvidence(_StrictModel):
     findings: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=500)
     reconciliations: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=100)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def compact_tabular_findings(cls, value: Any) -> Any:
+        """把同构对象行无损转换为列名只出现一次的紧凑表示。"""
+
+        if not isinstance(value, (list, tuple)):
+            return value
+        compacted: list[Any] = []
+        for finding in value:
+            if not isinstance(finding, Mapping) or "columns" in finding:
+                compacted.append(finding)
+                continue
+            rows = finding.get("rows")
+            if not isinstance(rows, (list, tuple)) or not rows:
+                compacted.append(finding)
+                continue
+            first = rows[0]
+            if not isinstance(first, Mapping) or not first:
+                compacted.append(finding)
+                continue
+            columns = tuple(first)
+            if any(not isinstance(row, Mapping) or set(row) != set(columns) for row in rows):
+                compacted.append(finding)
+                continue
+            compacted.append(
+                {
+                    **{key: item for key, item in finding.items() if key != "rows"},
+                    "columns": columns,
+                    "rows": tuple(tuple(row[column] for column in columns) for row in rows),
+                }
+            )
+        return compacted
 
     @model_validator(mode="after")
     def validate_reconciliations(self) -> SupplementalEvidence:
@@ -613,29 +647,8 @@ class AnalysisItemWorkflow:
         if state.failure is not None:
             state.statuses["validate-evidence"] = "retrying"
             return StepOutput(content={"status": "skipped_after_script_error"})
-        result = await self.read_file(
-            path=self._evidence_path(state),
-            max_bytes=SUPPLEMENTAL_EVIDENCE_READ_BYTES,
-            run_context=run_context,
-        )
         try:
-            self._require_ok(result, default_code="report_analysis_evidence_read_failed")
-            total_bytes = result.get("totalBytes")
-            content = result.get("content")
-            if total_bytes is None and isinstance(content, str):
-                total_bytes = len(content.encode("utf-8"))
-            if (
-                result.get("outputTruncated") is True
-                or not isinstance(total_bytes, int)
-                or isinstance(total_bytes, bool)
-                or total_bytes > SUPPLEMENTAL_EVIDENCE_READ_BYTES
-                or not isinstance(content, str)
-                or len(content.encode("utf-8")) > SUPPLEMENTAL_EVIDENCE_READ_BYTES
-            ):
-                raise ReportingError(
-                    "report_analysis_evidence_too_large",
-                    "补充 evidence 超过 128 KiB 读取上限或被截断。",
-                )
+            content = await self._read_supplemental_evidence(state, run_context)
             evidence = SupplementalEvidence.model_validate_json(content)
             analysis_id = state.instruction.get("currentAnalysisId")
             if evidence.analysis_id != analysis_id:
@@ -675,6 +688,72 @@ class AnalysisItemWorkflow:
         return StepOutput(
             content={"status": "validated", "evidencePath": self._evidence_path(state)}
         )
+
+    async def _read_supplemental_evidence(
+        self, state: _AnalysisItemState, run_context: RunContext
+    ) -> str:
+        """分页读取完整补证，同时固定首次读取签发的文件身份。"""
+
+        chunks: list[str] = []
+        offset = 0
+        total_bytes: int | None = None
+        sha256: str | None = None
+        while total_bytes is None or offset < total_bytes:
+            result = await self.read_file(
+                path=self._evidence_path(state),
+                offset=offset,
+                max_bytes=SUPPLEMENTAL_EVIDENCE_PAGE_BYTES,
+                run_context=run_context,
+            )
+            self._require_ok(result, default_code="report_analysis_evidence_read_failed")
+            content = result.get("content")
+            current_total = result.get("totalBytes")
+            current_sha256 = result.get("sha256")
+            next_offset = result.get("nextOffset")
+            if current_total is None and isinstance(content, str):
+                current_total = len(content.encode("utf-8"))
+            if (
+                next_offset is None
+                and isinstance(content, str)
+                and current_total == len(content.encode("utf-8"))
+            ):
+                next_offset = current_total
+            if total_bytes is None:
+                if (
+                    not isinstance(current_total, int)
+                    or isinstance(current_total, bool)
+                    or current_total <= 0
+                    or current_total > MAX_SUPPLEMENTAL_EVIDENCE_BYTES
+                ):
+                    raise ReportingError(
+                        "report_analysis_evidence_too_large",
+                        "补充 evidence 超过 10 MiB 安全上限或大小无效。",
+                    )
+                total_bytes = current_total
+                sha256 = current_sha256 if isinstance(current_sha256, str) else None
+            if (
+                result.get("outputTruncated") is True
+                or not isinstance(content, str)
+                or not isinstance(next_offset, int)
+                or isinstance(next_offset, bool)
+                or not offset < next_offset <= total_bytes
+                or current_total != total_bytes
+                or not sha256
+                or current_sha256 != sha256
+            ):
+                raise ReportingError(
+                    "report_analysis_evidence_changed",
+                    "补充 evidence 文件身份、大小或读取游标无效。",
+                )
+            chunks.append(content)
+            offset = next_offset
+        joined = "".join(chunks)
+        if len(joined.encode("utf-8")) != total_bytes:
+            raise ReportingError(
+                "report_analysis_evidence_changed",
+                "补充 evidence 完整读取长度与冻结大小不一致。",
+            )
+        return joined
 
     @staticmethod
     def _abandon_supplement(state: _AnalysisItemState) -> StepOutput:
