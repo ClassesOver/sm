@@ -1019,11 +1019,14 @@ class RuntimePlanningMixin:
                 "经营影响",
             ],
             "analysisContext": _analysis_context_payload(analysis_context),
-            "dataUnderstanding": state[REPORT_DATA_UNDERSTANDING_STATE_KEY],
-            "schemas": _planning_schema_payload(
+            # DataUnderstanding 与 Schema 共享 source/table；将期间元数据附加到
+            # Schema 的表项后只保留一份模型输入投影。完整 DataUnderstanding 仍保存在
+            # Workflow state，并由服务端 validation 使用，不改变任何硬校验边界。
+            "schemas": _planning_schema_payload_with_periods(
                 snapshots,
                 tables={item.table for item in data_understanding.tables},
                 description_limit=160,
+                data_understanding=data_understanding,
             ),
         }
         validation_feedback: dict[str, Any] | None = None
@@ -1283,10 +1286,12 @@ class RuntimePlanningMixin:
         }
         base_payload = {
             "requirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
-            "dataUnderstanding": state[REPORT_DATA_UNDERSTANDING_STATE_KEY],
+            # requirements 已包含每张表的期间字段和粒度；SQL planner 只需列名、类型
+            # 和聚合语义，完整 DataUnderstanding 留在服务端状态用于严格审核。
             "schemas": _planning_schema_payload(
                 self._snapshots(run_context),
                 tables=referenced_tables,
+                description_limit=0,
             ),
             "period": self._envelope(run_context).period.model_dump(mode="json"),
             "periodWindows": self._envelope(run_context).period_windows().public_dict(),
@@ -1667,6 +1672,47 @@ def _planning_schema_payload(
     return payload
 
 
+def _planning_schema_payload_with_periods(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    *,
+    data_understanding: DataUnderstandingPlan,
+    tables: set[str] | None = None,
+    description_limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """把 DataUnderstanding 的期间元数据合并进 Schema 的模型投影。
+
+    DataUnderstanding 和 PlanningSchema 都按 source/table 标识同一张物理表。
+    这里仅合并发送给 planner 的 JSON，不修改受信状态或 Pydantic 契约；服务端仍
+    使用原始 DataUnderstanding 做字段、期间和身份校验。若某表未被选中，保持
+    ``_planning_schema_payload`` 的筛选结果，不把额外表暴露给模型。
+    """
+
+    period_by_table = {
+        (item.source_id.lower(), item.table.lower()): {
+            "periodColumn": item.period_column,
+            "periodGranularity": item.period_granularity,
+        }
+        for item in data_understanding.tables
+    }
+    payload = _planning_schema_payload(
+        snapshots,
+        tables=tables,
+        description_limit=description_limit,
+    )
+    for schema in payload:
+        for table in schema.get("tables", ()):
+            if not isinstance(table, dict):
+                continue
+            key = (
+                str(table.get("sourceId", "")).lower(),
+                str(table.get("table", "")).lower(),
+            )
+            period = period_by_table.get(key)
+            if period is not None:
+                table.update(period)
+    return payload
+
+
 def _profile_scope_filters_by_table(
     profile: EffectiveReportingProfile,
     snapshots: tuple[SourceSchemaSnapshot, ...],
@@ -1974,6 +2020,8 @@ def _validate_proposed_exclusive_scopes(
 
 
 def _bounded_description(value: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     if len(value) <= limit:
         return value
     return value[: limit - 3].rstrip() + "..."
