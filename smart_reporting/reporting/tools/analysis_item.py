@@ -899,7 +899,7 @@ class RuntimeAnalysisMixin:
         durable: ReportingRunState,
         identities: list[dict[str, Any]],
     ) -> list[str]:
-        """确认 evidence 可读取；身份漂移只记录 warning，不阻止发布。"""
+        """确认 evidence 可读取；冻结身份漂移必须硬拒绝。"""
 
         missing, unregistered, changed = cls._analysis_evidence_registration_status(
             durable=durable,
@@ -911,12 +911,17 @@ class RuntimeAnalysisMixin:
                 "analysis evidence 文件不存在。",
                 details={"paths": missing},
             )
-        warnings: list[str] = []
         if changed:
-            warnings.append("analysis evidence 文件身份或 SHA-256 已变化，已按当前文件继续发布。")
-        if unregistered:
-            warnings.append("analysis evidence 文件未登记，已按当前文件继续发布。")
-        return warnings
+            raise ReportingError(
+                "report_analysis_evidence_identity_mismatch",
+                "analysis evidence 文件身份或 SHA-256 已变化，拒绝继续发布。",
+                details={"paths": changed},
+            )
+        return (
+            ["analysis evidence 文件未登记，已由服务端登记到 durable 账本。"]
+            if unregistered
+            else []
+        )
 
     async def _ensure_registered_analysis_evidence(
         self,
@@ -937,9 +942,13 @@ class RuntimeAnalysisMixin:
                 "analysis evidence 文件不存在。",
                 details={"paths": missing},
             )
-        warnings: list[str] = []
         if changed:
-            warnings.append("analysis evidence 文件身份或 SHA-256 已变化，已按当前文件继续发布。")
+            raise ReportingError(
+                "report_analysis_evidence_identity_mismatch",
+                "analysis evidence 文件身份或 SHA-256 已变化，拒绝继续发布。",
+                details={"paths": changed},
+            )
+        warnings: list[str] = []
         identities_by_path = {
             item["path"]: item
             for item in identities
@@ -957,7 +966,11 @@ class RuntimeAnalysisMixin:
             except ReportingError as error:
                 if error.code != "report_artifact_identity_mismatch":
                     raise
-                warnings.append("analysis evidence 登记身份发生变化，已按当前文件继续发布。")
+                raise ReportingError(
+                    "report_analysis_evidence_identity_mismatch",
+                    "analysis evidence 登记身份发生变化，拒绝继续发布。",
+                    details={"path": path},
+                ) from error
         warnings.extend(
             self._validate_registered_analysis_evidence(
                 durable=durable,
