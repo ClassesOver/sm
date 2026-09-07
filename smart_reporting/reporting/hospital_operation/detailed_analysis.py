@@ -25,6 +25,7 @@ from statsmodels.tsa.stattools import acf, adfuller, pacf
 MAX_PROFILE_MODEL_VIEW_BYTES = 12 * 1024
 MAX_PROFILE_HIGHLIGHTS = 10
 MAX_PROFILE_VARIABLE_INDEX = 40
+MAX_TIME_SERIES_DIAGNOSTIC_ROWS = 8192
 
 _REDUNDANT_PROFILE_KEYS = frozenset({"analysis", "duplicates", "missing", "sample", "scatter"})
 _REDUNDANT_TABLE_KEYS = frozenset({"memory_size", "n_duplicates", "p_duplicates", "record_size"})
@@ -221,6 +222,7 @@ def profile_csv_dataset(
     organization_grain: tuple[str, ...] = (),
     metric_semantics: tuple[dict[str, Any], ...] = (),
     source_warnings: tuple[str, ...] = (),
+    enable_time_series_diagnostics: bool = False,
 ) -> ProfiledDataset:
     """校验快照身份，并使用 fg-data-profiling 生成完整 JSON 画像。"""
     digest = hashlib.sha256(content).hexdigest()
@@ -293,11 +295,10 @@ def profile_csv_dataset(
                 )
                 report = ProfileReport(
                     profile_dataframe_pandas,
-                    # 同一期间存在多行时属于面板数据。原始行顺序不代表业务时间序列，
-                    # 因此关闭上游 tsmode；Reporting 必须从不可变 CSV 按月和适当组织粒度
-                    # 聚合后再执行趋势、ACF、PACF 或季节性分析。
-                    tsmode=time_series_sort_field is not None and not duplicate_time_index,
-                    sortby=time_series_sort_field if not duplicate_time_index else None,
+                    # fg-data-profiling 的 tsmode 会在明细数据上隐式执行昂贵的时序摘要。
+                    # Reporting 自己在满足明确诊断条件时计算有界统计，避免上游重复计算。
+                    tsmode=False,
+                    sortby=None,
                     # 本工作流只消费完整 JSON description_set。保持 lazy=True 让
                     # to_json() 计算全部统计，但不提前构建 HTML/Widget report，避免
                     # 展示层直方图、分类频率图和时序概览无意义地调用 matplotlib。
@@ -343,6 +344,7 @@ def profile_csv_dataset(
         profile_dataframe,
         parsed_time_index,
         time_series_sort_field,
+        enable_diagnostics=enable_time_series_diagnostics,
     )
 
     table = profile.get("table")
@@ -631,6 +633,8 @@ def _append_time_series_statistics(
     dataframe: pl.DataFrame,
     parsed_time_index: pl.Series | None,
     sort_field: str | None,
+    *,
+    enable_diagnostics: bool = False,
 ) -> tuple[str, ...]:
     """把 ACF、PACF 和季节性数值写入完整 JSON Profile。
 
@@ -654,6 +658,26 @@ def _append_time_series_statistics(
             "sort_field": sort_field,
             "reason": "duplicate_time_index",
             "aggregation_required": True,
+            "fields": {},
+        }
+        return ()
+
+    if not enable_diagnostics:
+        profile["time_series_analysis"] = {
+            "enabled": False,
+            "sort_field": sort_field,
+            "reason": "diagnostics_not_requested",
+            "aggregation_required": False,
+            "fields": {},
+        }
+        return ()
+
+    if dataframe.height > MAX_TIME_SERIES_DIAGNOSTIC_ROWS:
+        profile["time_series_analysis"] = {
+            "enabled": False,
+            "sort_field": sort_field,
+            "reason": "dataset_too_large",
+            "aggregation_required": False,
             "fields": {},
         }
         return ()
@@ -741,6 +765,32 @@ def _append_time_series_statistics(
         "fields": series_payload,
     }
     return tuple(series_payload)
+
+
+def time_series_diagnostics_requested(report_goal: str) -> bool:
+    """仅在报表目标明确要求高级时序诊断时开启额外统计。
+
+    “趋势、同比、环比”属于常规确定性分析，不触发 ACF/PACF、季节性和 ADF；
+    只有预测、周期性或平稳性等诊断语义才允许进入受控的高级计算分支。
+    """
+
+    goal = report_goal.casefold()
+    return any(
+        token in goal
+        for token in (
+            "时间序列",
+            "时序诊断",
+            "季节性",
+            "周期性",
+            "平稳性",
+            "自相关",
+            "acf",
+            "pacf",
+            "adf",
+            "预测",
+            "forecast",
+        )
+    )
 
 
 def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -1233,4 +1283,5 @@ __all__ = [
     "ProfiledDataset",
     "build_profile_model_view",
     "profile_csv_dataset",
+    "time_series_diagnostics_requested",
 ]
