@@ -309,13 +309,15 @@ class RuntimeDatasetsMixin:
                         )
                         if callable(ensure_directory):
                             await ensure_directory(sandbox, profile_remote.rsplit("/", 1)[0])
-                        # Daytona SDK 默认允许单次上传等待 30 分钟；画像写入属于可重试的
-                        # 步骤内操作，必须在有限时间失败，才能由 Workflow 重建连接重试。
-                        await filesystem.upload_file(
-                            profiled.profile_content,
-                            profile_remote,
-                            timeout=PROFILE_TRANSFER_TIMEOUT_SECONDS,
-                        )
+                        # Daytona SDK 的 timeout 只约束连接和响应读取，不保证请求体写入
+                        # 阶段存在墙钟上限。画像上传属于可重试步骤，外层取消边界必须覆盖
+                        # 整个调用，否则网络背压会永久占住 Workflow 和画像并发槽位。
+                        with anyio.fail_after(PROFILE_TRANSFER_TIMEOUT_SECONDS):
+                            await filesystem.upload_file(
+                                profiled.profile_content,
+                                profile_remote,
+                                timeout=PROFILE_TRANSFER_TIMEOUT_SECONDS,
+                            )
                         stored_profile = await self.workspace_service._adownload_file(
                             sandbox, profile_remote, profiled.context.profile_file.size
                         )

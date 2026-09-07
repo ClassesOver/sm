@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
@@ -1123,7 +1124,7 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 
 
 @pytest.mark.anyio
-async def test_prepare_analysis_context_bounds_profile_upload_timeout(
+async def test_prepare_analysis_context_enforces_profile_upload_total_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dataset_content = b"month,amount\n2025-01,1\n"
@@ -1166,11 +1167,11 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
     class RecordingFileSystem:
         def __init__(self) -> None:
             self.files = {dataset_path: dataset_content}
-            self.upload_timeouts: list[int] = []
+            self.upload_timeouts: list[float] = []
 
         async def upload_file(self, content: bytes, path: str, timeout: int = 30 * 60) -> None:
             self.upload_timeouts.append(timeout)
-            self.files[path] = content
+            await anyio.sleep_forever()
 
     filesystem = RecordingFileSystem()
     sandbox = SimpleNamespace(fs=filesystem)
@@ -1209,6 +1210,7 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
             profile_content=profile_content,
         ),
     )
+    monkeypatch.setattr(reporting_datasets, "PROFILE_TRANSFER_TIMEOUT_SECONDS", 0.01)
     # 本用例验证上传超时，不验证进程池；局部 lambda 不能跨进程序列化。
     monkeypatch.setattr(reporting_datasets, "_profile_process_pool", lambda: None)
     state: dict[str, Any] = {REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]}}
@@ -1218,14 +1220,16 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
     runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
     runtime._scope = lambda _run_context: {"threadId": "thread-1"}
     runtime._snapshots = lambda _run_context: ()
+    runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="月度趋势")
     runtime._assert_state_safe = lambda _state: None
 
-    await runtime.prepare_analysis_context(
-        SimpleNamespace(),
-        SimpleNamespace(run_id="run-1"),
-    )
+    with pytest.raises(ReportingError, match="CSV 数据集画像生成失败"):
+        await runtime.prepare_analysis_context(
+            SimpleNamespace(),
+            SimpleNamespace(run_id="run-1"),
+        )
 
-    assert filesystem.upload_timeouts == [5 * 60]
+    assert filesystem.upload_timeouts == [0.01]
 
 
 def test_phase_instructions_prioritize_signed_execution_directive() -> None:
