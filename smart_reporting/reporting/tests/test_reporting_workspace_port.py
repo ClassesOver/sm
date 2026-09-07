@@ -18,7 +18,10 @@ from smart_reporting.reporting.tools.mock_workspace import (
     MockReportingWorkspace,
 )
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
-from smart_reporting.reporting.tools.workspace_adapter import WorkspaceServiceReportingPort
+from smart_reporting.reporting.tools.workspace_adapter import (
+    ReportingWorkspaceAdapter,
+    WorkspaceServiceReportingPort,
+)
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 
 
@@ -192,6 +195,24 @@ async def test_production_port_reads_through_async_workspace_api() -> None:
     )
 
     assert await port.read_bytes("inputs/source.txt") == b"source"
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
+    class AsyncReadService:
+        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+            raise AssertionError("异步 Reporting 适配器不得调用同步工作区接口")
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
+            return b"source", "text/plain"
+
+    adapter = ReportingWorkspaceAdapter(AsyncReadService())  # type: ignore[arg-type]
+
+    assert await adapter.afile_bytes("thread-1", "inputs/source.txt") == (
+        b"source",
+        "text/plain",
+    )
 
 
 @pytest.mark.anyio
