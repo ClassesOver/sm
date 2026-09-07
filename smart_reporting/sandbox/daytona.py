@@ -148,8 +148,13 @@ class DaytonaFileSystemApi:
     async def create_folder(self, path: str, mode: str) -> None:
         await _daytona_call(self._filesystem.create_folder(path, mode), action="目录创建")
 
-    async def upload_file(self, content: bytes, path: str) -> None:
-        await _daytona_call(self._filesystem.upload_file(content, path), action="文件上传")
+    async def upload_file(
+        self, content: bytes, path: str, *, timeout: int | None = None
+    ) -> None:
+        kwargs = {} if timeout is None else {"timeout": timeout}
+        await _daytona_call(
+            self._filesystem.upload_file(content, path, **kwargs), action="文件上传"
+        )
 
     async def download_file(self, path: str) -> bytes:
         content = await _daytona_call(
