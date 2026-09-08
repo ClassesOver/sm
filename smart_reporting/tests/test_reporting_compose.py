@@ -23,6 +23,24 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
     )
 
 
+def test_reporting_compose_only_exposes_daytona_sdk_url():
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    environment = compose["services"]["reporting-os"]["environment"]
+
+    assert "AGENT_DAYTONA_API_URL" not in environment
+    assert environment["DAYTONA_API_URL"] == "http://host.docker.internal:33043/api"
+    assert "AGENT_DAYTONA_API_URL" not in (
+        repository_root / ".env.example"
+    ).read_text(encoding="utf-8")
+    assert "AGENT_DAYTONA_API_URL" not in (
+        repository_root / "smart_reporting" / "README.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_reporting_compose_disables_fg_data_profiling_analytics():
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(
