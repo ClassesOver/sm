@@ -15,8 +15,8 @@ services:
       - path: .env
         required: false
     extra_hosts:
-      - "host.docker.internal:172.17.0.1"
-      - "proxy.localhost:172.17.0.1"
+      - "host.docker.internal:host-gateway"
+      - "proxy.localhost:host-gateway"
     ports:
       - "33046:7777"
     environment:
@@ -80,8 +80,5 @@ services:
 
 networks:
   default:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.17.0.0/16
-          gateway: 172.17.0.1
+    external: true
+    name: hrp_network
