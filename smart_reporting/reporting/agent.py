@@ -112,6 +112,7 @@ from .phase import (
     reporting_visualization_script_written_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
+from .structured_output.agno_compat import install_agno_structured_output_parser
 from .structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
     REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
@@ -3132,6 +3133,7 @@ def create_reporting_generator_agent(
     均由 Reporting Workflow 完成，因此这里明确关闭工具、历史和 Agent 重试。
     """
 
+    install_agno_structured_output_parser()
     instructions = [
         "只返回一个严格满足 output_schema 的 JSON 对象，不得返回推理、解释、Markdown 或代码围栏。",
         "所有必填顶层字段必须各出现一次；不得把 schema 顶层字段只写入其他字段。",
@@ -3160,6 +3162,10 @@ def create_reporting_generator_agent(
                     "不得使用 __file__、Path.parents、cwd 或目录探测重新推导路径。"
                 ),
                 "pythonSource 必须使用 Python 的 None、True、False，不得写入 JSON 常量 null、true、false。",
+                (
+                    'facts 文件中 metrics[].periodValues 的每个元素固定为 {"period": string,'
+                    '"value": number}；必须读取 period，不得使用 periodStart。'
+                ),
             ]
         )
     elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":

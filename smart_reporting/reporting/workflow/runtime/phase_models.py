@@ -147,7 +147,10 @@ class VisualizationScriptDraft(StrictModel):
             tree = ast.parse(value, filename="<visualization>")
             compile(tree, "<visualization>", "exec")
         except SyntaxError as error:
-            raise ValueError("pythonSource 必须是合法 Python 源码") from error
+            location = ""
+            if error.lineno is not None and error.offset is not None:
+                location = f"（第 {error.lineno} 行，第 {error.offset} 列）"
+            raise ValueError(f"pythonSource Python 语法错误：{error.msg}{location}") from error
 
         # 固定 Workflow 独占脚本写入、执行与图表提交。模型源码只负责生成图片；
         # 若把编排工具或 JSON 常量写进脚本，最早也只能在远端执行时失败，还会

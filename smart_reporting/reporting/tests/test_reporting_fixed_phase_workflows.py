@@ -24,6 +24,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
 )
 from smart_reporting.reporting.workflow.runtime import sections as reporting_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
+    RuntimeAnalysisMixin,
     _has_chartable_visualization_facts,
     _visualization_section_completion_conditions,
 )
@@ -75,6 +76,38 @@ def test_visualization_requires_structured_facts_before_generating_chart() -> No
     assert _has_chartable_visualization_facts(
         [{"metrics": [{"metricCodes": ["revenue"], "periodValueCount": 12}]}]
     )
+
+
+@pytest.mark.anyio
+async def test_visualization_fact_projection_declares_period_value_fields() -> None:
+    fact_model = SimpleNamespace(
+        model_dump=lambda **_kwargs: {
+            "metrics": [
+                {
+                    "datasetId": "dataset_001",
+                    "field": "outpatient_visits",
+                    "metricCodes": ["outpatient_visits"],
+                    "periodValues": [{"period": "2025-01", "value": 100}],
+                    "topGroups": [],
+                    "bottomGroups": [],
+                }
+            ]
+        }
+    )
+    runtime = SimpleNamespace(
+        _visualization_context={"thread_id": "thread-1"},
+        _read_identity_model=AsyncMock(return_value=fact_model),
+    )
+    fact_file = FileIdentity(path="analysis/facts/analysis_001.json", size=2, sha256="a" * 64)
+
+    projection = await RuntimeAnalysisMixin._visualization_section_fact_projection(
+        runtime,
+        "analysis_001",
+        fact_file,
+        {},
+    )
+
+    assert projection["metrics"][0]["periodValueFields"] == ["period", "value"]
 
 
 def test_visualization_generator_completion_does_not_delegate_tool_calls() -> None:

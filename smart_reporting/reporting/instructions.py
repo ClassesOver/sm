@@ -187,7 +187,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     (
         "visualizationFacts 是图表脚本的唯一事实入口索引；脚本可按其中签发的 factFile.path"
         "逐字读取 JSON，并只使用列出的 fields/dataPaths。periodValues、topGroups、bottomGroups"
-        "都位于 metrics[metricIndex] 内，不在 facts 根节点；comparisons 位于根节点。"
+        "都位于 metrics[metricIndex] 内，不在 facts 根节点；periodValues 元素固定只含 period 和 value，"
+        "必须读取 period，不得假设存在 periodStart；comparisons 位于根节点。"
         "correlations 可能是紧凑列式对象 {datasets, columns, rows}：rows 中 dataset 为 datasets 的索引，"
         "columns 顺序定义每行值的含义；也兼容旧版 datasetId:field~field 字典。"
         "不要把 facts 文件交给 read_file，"

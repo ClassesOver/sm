@@ -37,6 +37,10 @@ def test_reporting_generator_agent_is_structured_and_has_no_tools() -> None:
             "不得使用 __file__、Path.parents、cwd 或目录探测重新推导路径。"
         ),
         "pythonSource 必须使用 Python 的 None、True、False，不得写入 JSON 常量 null、true、false。",
+        (
+            'facts 文件中 metrics[].periodValues 的每个元素固定为 {"period": string,'
+            '"value": number}；必须读取 period，不得使用 periodStart。'
+        ),
     ]
 
 

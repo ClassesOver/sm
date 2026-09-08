@@ -39,6 +39,22 @@ def test_visualization_script_draft_accepts_bound_chart_paths() -> None:
     assert draft.charts[0].chart_id == "chart_001"
 
 
+def test_visualization_script_draft_reports_python_syntax_location() -> None:
+    with pytest.raises(ValidationError) as caught:
+        VisualizationScriptDraft(
+            scriptPath="report/charts/charts.py",
+            pythonSource="if True print('broken')",
+            charts=(_chart(),),
+        )
+
+    issue = caught.value.errors(include_url=False, include_input=False)[0]
+    assert issue["loc"] == ("pythonSource",)
+    assert (
+        issue["msg"]
+        == "Value error, pythonSource Python 语法错误：invalid syntax（第 1 行，第 9 列）"
+    )
+
+
 @pytest.mark.parametrize(
     "python_source",
     [

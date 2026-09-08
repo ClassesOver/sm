@@ -891,6 +891,7 @@ class RuntimeAnalysisMixin:
                         )
                     },
                     "periodValueCount": len(metric.get("periodValues", ())),
+                    "periodValueFields": ["period", "value"],
                     "topGroupCount": len(metric.get("topGroups", ())),
                     "bottomGroupCount": len(metric.get("bottomGroups", ())),
                     "dataPaths": {
