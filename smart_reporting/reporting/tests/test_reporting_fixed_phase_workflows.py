@@ -65,7 +65,12 @@ def _chart() -> ChartDraft:
 
 def _visualization_draft() -> VisualizationScriptDraft:
     return VisualizationScriptDraft(
-        scriptPath="charts/charts.py", pythonSource="print('ok')", charts=(_chart(),)
+        scriptPath="charts/charts.py",
+        pythonSource=(
+            'import matplotlib\nmatplotlib.use("Agg")\n'
+            'import matplotlib.pyplot as plt\nplt.savefig("charts/chart.png")\n'
+        ),
+        charts=(_chart(),),
     )
 
 
@@ -189,7 +194,10 @@ async def test_visualization_workflow_recovers_script_failure_once() -> None:
     recover = AsyncMock(
         return_value=VisualizationScriptDraft(
             scriptPath="charts/charts.py",
-            pythonSource="print('ok')\n",
+            pythonSource=(
+                'import matplotlib\nmatplotlib.use("Agg")\n'
+                'import matplotlib.pyplot as plt\nplt.savefig("charts/chart.png")\n'
+            ),
             charts=(_chart(),),
         )
     )
@@ -222,6 +230,117 @@ async def test_visualization_workflow_recovers_script_failure_once() -> None:
     assert result.recovery_used is True
     assert writes == ["charts/charts.py"]
     recover.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_recovers_missing_chart_file_with_compact_payload() -> None:
+    initial_draft = _visualization_draft().model_copy(
+        update={"python_source": _visualization_draft().python_source + "# initial\n"}
+    )
+    recovered_draft = initial_draft.model_copy(
+        update={"python_source": _visualization_draft().python_source + "# recovered\n"}
+    )
+    recovery_payloads: list[dict[str, object]] = []
+    events: list[str] = []
+
+    async def recover(payload, _context):
+        recovery_payloads.append(dict(payload))
+        events.append("recover")
+        return recovered_draft
+
+    async def write(_path, source, _context):
+        events.append(source)
+        return FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+
+    async def execute(_path, _context):
+        events.append("execute")
+        return {"exitCode": 0}
+
+    async def inspect(_chart, _context):
+        events.append("inspect")
+        return _inspection()
+
+    async def submit(_draft, _inspections, _context):
+        events.append("submit")
+        if events.count("submit") == 1:
+            return {
+                "ok": False,
+                "status": "rejected",
+                "code": "report_chart_file_missing",
+                "message": "图表源文件不存在;未生成的图表不得提交登记。",
+                "details": {"sourcePath": "charts/chart.png"},
+            }
+        return {"ok": True, "status": "accepted"}
+
+    result = await VisualizationSectionWorkflow(
+        generate=AsyncMock(return_value=initial_draft),
+        recover=recover,
+        write_script=write,
+        execute_script=execute,
+        inspect_chart=inspect,
+        submit=submit,
+    ).run({}, _context())
+
+    assert result.status == "accepted"
+    assert result.recovery_used is True
+    assert events == [
+        initial_draft.python_source,
+        "execute",
+        "inspect",
+        "submit",
+        "recover",
+        recovered_draft.python_source,
+        "execute",
+        "inspect",
+        "submit",
+    ]
+    assert recovery_payloads == [
+        {
+            "diagnostic": {
+                "code": "report_chart_file_missing",
+                "message": "report_chart_file_missing: 图表源文件不存在;未生成的图表不得提交登记。",
+                "details": {"sourcePath": "charts/chart.png"},
+            },
+            "missingCharts": [
+                {
+                    "chartId": "chart_001",
+                    "sourcePath": "charts/chart.png",
+                    "title": "收入趋势",
+                }
+            ],
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_propagates_second_missing_chart_file_without_retrying() -> None:
+    missing_chart = {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_chart_file_missing",
+        "message": "图表源文件不存在;未生成的图表不得提交登记。",
+        "details": {"sourcePath": "charts/chart.png"},
+    }
+    recover = AsyncMock(return_value=_visualization_draft())
+    execute = AsyncMock(return_value={"exitCode": 0})
+    submit = AsyncMock(side_effect=[missing_chart, missing_chart])
+
+    with pytest.raises(ReportingError) as caught:
+        await VisualizationSectionWorkflow(
+            generate=AsyncMock(return_value=_visualization_draft()),
+            recover=recover,
+            write_script=AsyncMock(
+                return_value=FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+            ),
+            execute_script=execute,
+            inspect_chart=None,
+            submit=submit,
+        ).run({}, _context())
+
+    assert caught.value.code == "report_chart_file_missing"
+    recover.assert_awaited_once()
+    assert execute.await_count == 2
+    assert submit.await_count == 2
 
 
 @pytest.mark.anyio

@@ -307,6 +307,13 @@ def test_visualization_instructions_require_section_submission() -> None:
     assert "颜色不得成为唯一信息通道" in instructions
 
 
+def test_section_instructions_require_h3_before_h4() -> None:
+    instructions = "\n".join(build_report_agent_instructions(_context("section", "section")))
+
+    assert "每个 block 的首个子标题必须是三级标题" in instructions
+    assert "四级标题只能出现在已有三级标题之后" in instructions
+
+
 def test_visualization_instruction_theme_projects_report_theme() -> None:
     from smart_reporting.reporting.workflow.runtime.analysis import _visualization_instruction_theme
 

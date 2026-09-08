@@ -45,6 +45,13 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
 from smart_reporting.task_execution import TaskExecutionScope
 
 
+def _matplotlib_source(path: str = "charts/revenue.png") -> str:
+    return (
+        'import matplotlib\nmatplotlib.use("Agg")\n'
+        f'import matplotlib.pyplot as plt\nplt.savefig("{path}")\n'
+    )
+
+
 @pytest.mark.anyio
 async def test_structured_executor_calls_arun_once_without_continuation() -> None:
     draft = Mock()
@@ -88,7 +95,7 @@ async def test_structured_executor_implements_task_coordinator_protocol() -> Non
 async def test_structured_executor_extracts_complete_json_object_from_model_preamble() -> None:
     payload = {
         "scriptPath": "charts/revenue.py",
-        "pythonSource": 'print(json.dumps({"charts": []}))\n',
+        "pythonSource": _matplotlib_source(),
         "charts": [
             {
                 "chartId": "chart_revenue",
@@ -225,7 +232,7 @@ def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
     raw = json.dumps(
         {
             "scriptPath": "charts/revenue.py",
-            "pythonSource": "print(1)",
+            "pythonSource": _matplotlib_source(),
             "charts": [
                 {
                     "chartId": "chart_revenue",
@@ -710,7 +717,9 @@ async def test_syntax_correction_log_contains_location_without_source() -> None:
             }
         ],
     }
-    valid = VisualizationScriptDraft.model_validate({**invalid, "pythonSource": "print('ok')"})
+    valid = VisualizationScriptDraft.model_validate(
+        {**invalid, "pythonSource": _matplotlib_source()}
+    )
     executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
             (executor.agent, Mock(content=invalid)),

@@ -41,7 +41,29 @@ def test_reporting_generator_agent_is_structured_and_has_no_tools() -> None:
             'facts 文件中 metrics[].periodValues 的每个元素固定为 {"period": string,'
             '"value": number}；必须读取 period，不得使用 periodStart。'
         ),
+        (
+            "pythonSource 绘图只能使用 Matplotlib；必须在导入 matplotlib.pyplot 之前调用 "
+            'matplotlib.use("Agg")，并统一使用 fig.savefig(...) 写入图表文件；'
+            "禁止使用 Plotly、Kaleido 或 Seaborn。"
+        ),
     ]
+
+
+def test_visualization_generator_requires_headless_matplotlib_output() -> None:
+    agent = create_reporting_generator_agent(
+        model=OpenAIChat(
+            id="test-model", api_key="test-key", base_url="http://localhost"
+        ),
+        output_schema=VisualizationScriptDraft,
+        name="reporting-visualization-generator",
+    )
+
+    instructions = "\n".join(agent.instructions)
+    assert "只能使用 Matplotlib" in instructions
+    assert 'matplotlib.use("Agg")' in instructions
+    assert "导入 matplotlib.pyplot 之前" in instructions
+    assert "fig.savefig" in instructions
+    assert "禁止使用 Plotly、Kaleido 或 Seaborn" in instructions
 
 
 def test_reporting_section_generator_uses_agno_supported_root_model() -> None:

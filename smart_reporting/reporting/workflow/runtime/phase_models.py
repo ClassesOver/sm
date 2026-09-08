@@ -25,6 +25,43 @@ MAX_VISUALIZATION_SOURCE_BYTES = 262_144
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
 _CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t]+)")
+_FORBIDDEN_VISUALIZATION_MODULES = frozenset({"plotly", "kaleido", "seaborn"})
+
+
+def _is_pyplot_import(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Import)
+        and any(alias.name == "matplotlib.pyplot" for alias in node.names)
+    ) or (
+        isinstance(node, ast.ImportFrom)
+        and (
+            node.module == "matplotlib.pyplot"
+            or (
+                node.module == "matplotlib"
+                and any(alias.name == "pyplot" for alias in node.names)
+            )
+        )
+    )
+
+
+def _literal_dynamic_imported_module(node: ast.AST) -> str | None:
+    if (
+        not isinstance(node, ast.Call)
+        or not node.args
+        or not isinstance(node.args[0], ast.Constant)
+        or not isinstance(node.args[0].value, str)
+    ):
+        return None
+    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        return node.args[0].value.split(".")[0].lower()
+    if (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "importlib"
+        and node.func.attr == "import_module"
+    ):
+        return node.args[0].value.split(".")[0].lower()
+    return None
 
 
 def _normalize_subordinate_heading_levels(markdown: str) -> str:
@@ -177,6 +214,91 @@ class VisualizationScriptDraft(StrictModel):
             raise ValueError(
                 "pythonSource 只能生成签发图表，不得使用编排工具、__file__ 或 JSON 常量"
             )
+
+        imported_forbidden_modules = sorted(
+            {
+                module
+                for node in ast.walk(tree)
+                for module in (
+                    [alias.name.split(".")[0].lower() for alias in node.names]
+                    if isinstance(node, ast.Import)
+                    else [node.module.split(".")[0].lower()]
+                    if isinstance(node, ast.ImportFrom) and node.module
+                    else []
+                )
+                if module in _FORBIDDEN_VISUALIZATION_MODULES
+            }
+        )
+        dynamically_imported_forbidden_modules = sorted(
+            {
+                module
+                for node in ast.walk(tree)
+                if (module := _literal_dynamic_imported_module(node))
+                in _FORBIDDEN_VISUALIZATION_MODULES
+            }
+        )
+        if imported_forbidden_modules or dynamically_imported_forbidden_modules:
+            raise ValueError("pythonSource 可视化只能使用 Matplotlib，不得导入 Plotly、Kaleido 或 Seaborn")
+
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_image"
+            for node in ast.walk(tree)
+        ):
+            raise ValueError("pythonSource 不得调用 write_image，必须使用 Matplotlib 的 savefig")
+
+        matplotlib_import_positions = [
+            position
+            for position, node in enumerate(tree.body)
+            if isinstance(node, ast.Import)
+            and any(alias.name == "matplotlib" and alias.asname is None for alias in node.names)
+        ]
+        pyplot_import_positions = [
+            position
+            for position, node in enumerate(tree.body)
+            if _is_pyplot_import(node)
+        ]
+        agg_setup_positions = [
+            position
+            for position, node in enumerate(tree.body)
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and isinstance(node.value.func.value, ast.Name)
+                and node.value.func.value.id == "matplotlib"
+                and node.value.func.attr == "use"
+                and node.value.args
+                and isinstance(node.value.args[0], ast.Constant)
+                and node.value.args[0].value == "Agg"
+            )
+        ]
+        if (
+            not matplotlib_import_positions
+            or not agg_setup_positions
+            or not pyplot_import_positions
+            or min(matplotlib_import_positions) >= min(agg_setup_positions)
+            or min(agg_setup_positions) >= min(pyplot_import_positions)
+        ):
+            raise ValueError(
+                'pythonSource 顶层必须依次 import matplotlib、调用 matplotlib.use("Agg")、导入 matplotlib.pyplot'
+            )
+        first_agg_setup = tree.body[min(agg_setup_positions)]
+        if any(
+            (node.lineno, node.col_offset)
+            < (first_agg_setup.lineno, first_agg_setup.col_offset)
+            for node in ast.walk(tree)
+            if _is_pyplot_import(node)
+        ):
+            raise ValueError('pythonSource 必须在导入 matplotlib.pyplot 前调用 matplotlib.use("Agg")')
+        if not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "savefig"
+            for node in ast.walk(tree)
+        ):
+            raise ValueError("pythonSource 必须使用 Matplotlib 的 savefig 写入图表")
         return value
 
     @model_validator(mode="after")
