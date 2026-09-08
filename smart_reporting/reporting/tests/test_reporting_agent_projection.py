@@ -9,6 +9,7 @@ from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_messages,
     _phase_filtered_report_tools,
+    _reporting_tools_cache_key,
     _visualization_history_state,
     normalize_reporting_tool_arguments,
 )
@@ -295,6 +296,12 @@ def test_unknown_task_kind_is_not_projected() -> None:
         ]
     }
     assert reporting_task_kind_from_acceptance_contract(contract) is None
+
+
+def test_phase_agent_tool_cache_uses_smart_reporting_identity() -> None:
+    assert _reporting_tools_cache_key(_context("analysis", "analysis_item")) == (
+        "smart-reporting:session-analysis_item:run-analysis_item:analysis:analysis_item"
+    )
 
 
 def test_visualization_instructions_require_section_submission() -> None:

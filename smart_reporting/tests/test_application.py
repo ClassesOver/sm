@@ -85,12 +85,8 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert created[0].values["db"] is None
-    assert [agent.id for agent in created[0].values["agents"]] == [
-        "smart-reporting",
-        "report-agent",
-    ]
+    assert [agent.id for agent in created[0].values["agents"]] == ["smart-reporting"]
     assert created[0].values["agents"][0] is first_context.report_agent
-    assert created[0].values["agents"][1] is not first_context.report_agent
     assert created[0].values["teams"] == []
     assert created[0].values["workflows"] == []
     assert created[0].values["interfaces"] == []
@@ -272,10 +268,8 @@ def test_default_application_exposes_explicit_context():
     assert context.workspace_service is app_module.workspace_service
     assert context.report_agent is app_module.report_agent
     assert app_module.agent_os.db is app_module.agent_database.async_db
-    assert [agent.id for agent in app_module.agent_os.agents or []] == [
-        "smart-reporting",
-        "report-agent",
-    ]
+    assert app_module.reporting_agent_template.id == "smart-reporting"
+    assert [agent.id for agent in app_module.agent_os.agents or []] == ["smart-reporting"]
     assert str(app_module.base_app.url_path_for("reporting_dependency_diagnostics")) == (
         "/diagnostics/reporting-dependencies"
     )

@@ -12,8 +12,7 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 
 主应用保留：
 
-- AgentOS 原生 Agent API，公开 `smart-reporting`，同时支持普通对话和智能报表；旧
-  `report-agent` ID 仅作为已有 session 和暂停 run 的兼容恢复入口保留。
+- AgentOS 原生 Agent API 仅公开 `smart-reporting`，同时支持普通对话和智能报表。
 - Reporting Workflow 不直接注册为 AgentOS 原生 Workflow；报表运行统一由
   `smart-reporting` facade 驱动，以共享 thread 独占与终态清理契约。
 - `smart-reporting` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
