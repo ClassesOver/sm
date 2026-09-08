@@ -2,8 +2,6 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
-import asyncio
-from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
 from .base import (
@@ -55,14 +53,21 @@ from .validation import (
 )
 
 PROFILE_TRANSFER_TIMEOUT_SECONDS = 5 * 60
-_PROFILE_PROCESS_POOL: ProcessPoolExecutor | None = None
+PROFILE_GENERATION_TIMEOUT_SECONDS = 5 * 60
 
 
-def _profile_process_pool() -> ProcessPoolExecutor:
-    global _PROFILE_PROCESS_POOL
-    if _PROFILE_PROCESS_POOL is None:
-        _PROFILE_PROCESS_POOL = ProcessPoolExecutor(max_workers=2)
-    return _PROFILE_PROCESS_POOL
+async def _run_profile_job(profile_job: Any, limiter: anyio.CapacityLimiter) -> Any:
+    try:
+        with anyio.fail_after(PROFILE_GENERATION_TIMEOUT_SECONDS):
+            return await anyio.to_thread.run_sync(
+                profile_job,
+                abandon_on_cancel=True,
+                limiter=limiter,
+            )
+    except TimeoutError as error:
+        raise ReportingError(
+            "report_analysis_profile_timeout", "CSV 数据集画像生成超时。"
+        ) from error
 
 
 class RuntimeDatasetsMixin:
@@ -181,7 +186,7 @@ class RuntimeDatasetsMixin:
             ) from error
         contexts: list[DatasetAnalysisContext | None] = [None] * len(handles)
         errors: list[Exception | None] = [None] * len(handles)
-        profile_limiter = anyio.CapacityLimiter(2)
+        profile_limiter = anyio.CapacityLimiter(1)
         source_warning_messages = tuple(
             str(item.message)
             for item in _source_warnings_from_state(state)
@@ -289,11 +294,9 @@ class RuntimeDatasetsMixin:
                         source_warnings=source_warning_messages,
                         enable_time_series_diagnostics=enable_time_series_diagnostics,
                     )
-                    # Profile 仅依赖不可变字节和纯函数参数，放入受控进程池隔离
-                    # fg-data-profiling/NumPy 的 CPU 计算与 matplotlib 全局状态。
-                    async with profile_limiter:
-                        loop = asyncio.get_running_loop()
-                        profiled = await loop.run_in_executor(_profile_process_pool(), profile_job)
+                    # fg-data-profiling 内部已有列级并行；外层串行避免嵌套进程池
+                    # 在画像完成后的 IPC/资源清理阶段永久等待。
+                    profiled = await _run_profile_job(profile_job, profile_limiter)
                     # 生产 WorkspaceService 始终提供内容边界校验；极小的单元测试夹具
                     # 可以只实现读写原语，不应改变 Profile 或其哈希契约。
                     validate_content = getattr(self.workspace_service, "_validate_content", None)

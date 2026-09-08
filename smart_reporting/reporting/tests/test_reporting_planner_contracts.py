@@ -4,7 +4,9 @@ import ast
 import hashlib
 import inspect
 import json
+import os
 import textwrap
+import threading
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -1135,6 +1137,39 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 
 
 @pytest.mark.anyio
+async def test_profile_job_runs_in_current_process_worker_thread() -> None:
+    caller_pid = os.getpid()
+    caller_thread_id = threading.get_ident()
+
+    worker_pid, worker_thread_id = await reporting_datasets._run_profile_job(
+        lambda: (os.getpid(), threading.get_ident()),
+        anyio.CapacityLimiter(1),
+    )
+
+    assert worker_pid == caller_pid
+    assert worker_thread_id != caller_thread_id
+
+
+@pytest.mark.anyio
+async def test_profile_job_enforces_wall_clock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    monkeypatch.setattr(reporting_datasets, "PROFILE_GENERATION_TIMEOUT_SECONDS", 0.01)
+
+    try:
+        with pytest.raises(ReportingError) as raised:
+            await reporting_datasets._run_profile_job(
+                release.wait,
+                anyio.CapacityLimiter(1),
+            )
+    finally:
+        release.set()
+
+    assert raised.value.code == "report_analysis_profile_timeout"
+
+
+@pytest.mark.anyio
 async def test_prepare_analysis_context_enforces_profile_upload_total_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1222,8 +1257,6 @@ async def test_prepare_analysis_context_enforces_profile_upload_total_timeout(
         ),
     )
     monkeypatch.setattr(reporting_datasets, "PROFILE_TRANSFER_TIMEOUT_SECONDS", 0.01)
-    # 本用例验证上传超时，不验证进程池；局部 lambda 不能跨进程序列化。
-    monkeypatch.setattr(reporting_datasets, "_profile_process_pool", lambda: None)
     state: dict[str, Any] = {REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]}}
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
     runtime.workspace_service = FakeWorkspaceService()
