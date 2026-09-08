@@ -98,7 +98,7 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 | `SANDBOX_LOCAL_CLIENT_CERT` | Local mTLS 客户端证书；HTTPS 模式必填 |
 | `SANDBOX_LOCAL_CLIENT_KEY` | Local mTLS 客户端私钥；HTTPS 模式必填 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
-| `AGENT_DAYTONA_API_URL` | Daytona API 地址 |
+| `DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting 阶段 Agent thinking 开关（兼容配置名） |
 | `AGENT_REPORT_ENABLE_THINKING` | Reporting planner thinking 开关 |

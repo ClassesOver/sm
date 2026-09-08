@@ -3,12 +3,17 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from agno.agent import Agent
+from agno.agent import _response as agno_response
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
+from agno.utils import string as agno_string
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from smart_reporting.reporting.agent import ReportingPhaseOpenAIChat
+from smart_reporting.reporting.agent import (
+    ReportingPhaseOpenAIChat,
+    create_reporting_generator_agent,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.structured_output import (
     ReportingStructuredOutputExecutor,
@@ -186,6 +191,69 @@ def test_structured_correction_omits_oversized_invalid_candidate() -> None:
     assert messages[0].content == "original instruction"
 
 
+def test_reporting_agno_parser_does_not_merge_partial_alias_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(agno_string, "log_warning", warnings.append)
+    model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
+    agent = create_reporting_generator_agent(
+        model=model,
+        output_schema=VisualizationScriptDraft,
+        name="reporting-visualization-generator",
+    )
+    raw = (
+        '{"scriptPath":"charts/revenue.py","pythonSource":"print(1)"}\n{"charts":[],"warnings":[]}'
+    )
+    output = Mock(content=raw)
+    run_context = RunContext(run_id="run-1", session_id="session-1")
+    run_context.output_schema = VisualizationScriptDraft
+
+    agno_response.convert_response_to_structured_format(agent, output, run_context)
+
+    assert output.content == raw
+    assert not any("Validation failed on merged data" in warning for warning in warnings)
+
+
+def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
+    model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
+    agent = create_reporting_generator_agent(
+        model=model,
+        output_schema=VisualizationScriptDraft,
+        name="reporting-visualization-generator",
+    )
+    raw = json.dumps(
+        {
+            "scriptPath": "charts/revenue.py",
+            "pythonSource": "print(1)",
+            "charts": [
+                {
+                    "chartId": "chart_revenue",
+                    "sourcePath": "charts/revenue.png",
+                    "title": "收入趋势",
+                    "altText": "2025 年收入趋势",
+                    "citationIds": ["citation_001"],
+                    "metricCodes": ["revenue"],
+                    "currentPeriod": "2025",
+                    "comparisonType": "none",
+                    "sourceDatasetId": "dataset_001",
+                    "aggregationGrain": "month",
+                    "comparability": "strict",
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    output = Mock(content=raw)
+    run_context = RunContext(run_id="run-1", session_id="session-1")
+    run_context.output_schema = VisualizationScriptDraft
+
+    agno_response.convert_response_to_structured_format(agent, output, run_context)
+
+    assert isinstance(output.content, VisualizationScriptDraft)
+    assert output.content.script_path == "charts/revenue.py"
+
+
 class _RequiredValue(BaseModel):
     value: int
 
@@ -199,6 +267,18 @@ class _BusinessValue(BaseModel):
         if value <= 0:
             raise ValueError("value must be positive")
         return value
+
+
+def test_reporting_agno_parser_delegates_non_reporting_schema() -> None:
+    create_reporting_generator_agent(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        output_schema=VisualizationScriptDraft,
+        name="reporting-visualization-generator",
+    )
+
+    result = agno_string.parse_response_model_str('{"value": 3}', _RequiredValue)
+
+    assert result == _RequiredValue(value=3)
 
 
 class _HttpStatusError(RuntimeError):
@@ -606,6 +686,69 @@ async def test_section_semantic_error_still_consumes_business_correction() -> No
     assert result.content.markdown == "### 合法小节标题\n\n正文"
     assert executor._execute_mode.await_count == 2
     assert budget.model_calls == 2
+
+
+@pytest.mark.anyio
+async def test_syntax_correction_log_contains_location_without_source() -> None:
+    executor = ReportingStructuredOutputExecutor(
+        _schema_agent(VisualizationScriptDraft), idle_timeout_seconds=5
+    )
+    invalid = {
+        "scriptPath": "charts/revenue.py",
+        "pythonSource": "if True print('sensitive source')",
+        "charts": [
+            {
+                "chartId": "chart_revenue",
+                "sourcePath": "charts/revenue.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation_001"],
+                "metricCodes": ["revenue"],
+                "currentPeriod": "2025",
+                "sourceDatasetId": "dataset_001",
+                "aggregationGrain": "month",
+            }
+        ],
+    }
+    valid = VisualizationScriptDraft.model_validate({**invalid, "pythonSource": "print('ok')"})
+    executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            (executor.agent, Mock(content=invalid)),
+            (executor.agent, Mock(content=valid)),
+        ]
+    )
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record))
+    try:
+        await executor.execute(
+            "original instruction",
+            routing_context=None,
+            session_id="session-syntax-correction",
+            user_id="user-1",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    correction = next(
+        record
+        for record in records
+        if record["message"] == "report_structured_output_correction_requested"
+    )
+    assert correction["extra"]["issues"] == [
+        {
+            "path": "$.pythonSource",
+            "type": "value_error",
+            "message": "Value error, pythonSource Python 语法错误：invalid syntax（第 1 行，第 9 列）",
+        }
+    ]
+    assert "sensitive source" not in str(correction["extra"])
+    diagnostic = next(
+        record
+        for record in records
+        if record["message"].startswith("report_structured_output_validation_failed ")
+    )
+    assert "第 1 行，第 9 列" in diagnostic["message"]
+    assert "sensitive source" not in diagnostic["message"]
 
 
 @pytest.mark.anyio

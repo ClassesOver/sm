@@ -284,6 +284,11 @@ class ReportingStructuredOutputExecutor:
                         if mode is not previous_mode
                         else "report_structured_output_correction_requested"
                     )
+                    logger.warning(
+                        "report_structured_output_validation_failed schema_name={} issues={}",
+                        schema_name,
+                        json.dumps(issues, ensure_ascii=False, separators=(",", ":")),
+                    )
                     logger.bind(
                         model_id=model_id,
                         agent_id=getattr(self.agent, "id", None),
@@ -300,6 +305,7 @@ class ReportingStructuredOutputExecutor:
                             "repeated_schema_structure_error" if mode is not previous_mode else None
                         ),
                         issue_fingerprint=fingerprint,
+                        issues=issues,
                     ).warning(event)
                     continue
                 business_call_number += 1
