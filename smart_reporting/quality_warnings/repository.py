@@ -261,6 +261,8 @@ class SqlAlchemyQualityWarningRepository:
                         now=now,
                     )
         except BaseException as error:
+            if not isinstance(error, Exception):
+                raise
             logger.error(
                 "quality_warning_batch_persist_failed check_count={} error_type={}",
                 len(checks),

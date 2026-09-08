@@ -99,6 +99,7 @@ from .phase import (
     reporting_model_route_from_run_context,
     reporting_phase_allows_tool,
     reporting_phase_from_run_context,
+    reporting_python_script_failed,
     reporting_task_kind_from_run_context,
     reporting_thinking_budget_from_run_context,
     reporting_thinking_effort_from_run_context,
@@ -108,7 +109,6 @@ from .phase import (
     reporting_visualization_recovery_from_run_context,
     reporting_visualization_recovery_read_from_run_context,
     reporting_visualization_script_executed_from_run_context,
-    reporting_visualization_script_session_available_from_run_context,
     reporting_visualization_script_written_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
@@ -634,7 +634,7 @@ def _reporting_visualization_tool_budget(
             total_limit=total_limit,
         )
     if (
-        function_name == "terminal"
+        function_name == "run_python_script"
         and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT
     ):
         _stop_exhausted_visualization_budget(
@@ -735,9 +735,9 @@ def _finish_visualization_tool_budget(
         else {}
     )
     in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
-    script_failed = _visualization_terminal_failed(function_name, result)
+    script_failed = function_name == "run_python_script" and reporting_python_script_failed(result)
     script_failure_count += int(script_failed)
-    if function_name == "terminal" and isinstance(result, Mapping):
+    if function_name == "run_python_script" and isinstance(result, Mapping):
         pending = state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
         pending = dict(pending) if isinstance(pending, Mapping) else {}
         dependencies = (
@@ -749,16 +749,17 @@ def _finish_visualization_tool_budget(
             diagnostics = [
                 line.strip()
                 for line in str(result.get("output", "")).splitlines()
-                if "[FAIL]" in line
+                if ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
             ][:20]
             pending[identity] = {
                 "lastScriptFailed": True,
                 "diagnostics": diagnostics,
             }
-        elif (
-            isinstance(result.get("exit_code"), int)
-            and not isinstance(result.get("exit_code"), bool)
-            and result.get("exit_code") == 0
+        elif not script_failed and any(
+            isinstance(result.get(key), int)
+            and not isinstance(result.get(key), bool)
+            and result.get(key) == 0
+            for key in ("exitCode", "exit_code")
         ):
             pending.pop(identity, None)
             if isinstance(external_run_id, str) and external_run_id:
@@ -825,26 +826,6 @@ def _finish_visualization_tool_budget(
             )
             or _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
         )
-
-
-def _visualization_terminal_failed(function_name: str, result: Any) -> bool:
-    if function_name != "terminal" or not isinstance(result, Mapping):
-        return False
-    if result.get("ok") is False and result.get("code") == "execution_output_error":
-        return True
-    exit_code = result.get("exit_code")
-    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
-        return True
-    output = result.get("output")
-    if not isinstance(output, str):
-        return False
-    # 图表自检通常自行捕获异常并保持 exit_code=0；只识别逐项检查的明确
-    # “对象: ERROR 原因”或 “[FAIL] 对象: 原因”行，避免普通日志中的 ERROR 单词
-    # 误耗预算。
-    return any(
-        ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
-        for line in output.splitlines()
-    )
 
 
 def _stop_exhausted_visualization_budget(
@@ -1623,9 +1604,11 @@ async def normalize_reporting_tool_arguments(
             "read_tool_output",
         }:
             state[REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY] = True
-        if function_name == "terminal" and result.get("status") == "completed":
-            state[REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY] = True
-        if function_name == "process" and result.get("status") == "completed":
+        if (
+            function_name == "run_python_script"
+            and result.get("status") == "completed"
+            and not reporting_python_script_failed(result)
+        ):
             state[REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY] = True
     if (
         succeeded
@@ -1921,7 +1904,11 @@ def _visualization_history_state(messages: list[Message]) -> tuple[bool, bool, b
             recovery_read = True
         elif name == "apply_analysis_patch":
             script_written = True
-        elif name in {"terminal", "process"} and payload.get("status") == "completed":
+        elif (
+            name == "run_python_script"
+            and payload.get("status") == "completed"
+            and not reporting_python_script_failed(payload)
+        ):
             script_executed = True
     return recovery_read, script_written, script_executed
 
@@ -1934,7 +1921,6 @@ def _visualization_next_tool(messages: list[Message], run_context: RunContext | 
     recovery_read, script_written, script_executed = _visualization_history_state(messages)
     if not (recovery_read or script_written or script_executed) and not (
         reporting_visualization_script_written_from_run_context(run_context)
-        or reporting_visualization_script_session_available_from_run_context(run_context)
     ):
         return None
     for message in reversed(messages):
@@ -1961,20 +1947,20 @@ def _visualization_next_tool(messages: list[Message], run_context: RunContext | 
         return "read_file"
     if not script_written:
         return "apply_analysis_patch"
-    if (
-        reporting_visualization_script_session_available_from_run_context(run_context)
-        and not script_executed
-    ):
-        return "process"
     if not script_executed:
-        return "terminal"
+        return "run_python_script"
     successful_names = set()
     preview_required = False
     for message in messages:
         if getattr(message, "role", None) != "tool":
             continue
         name = getattr(message, "tool_name", None) or getattr(message, "name", None)
-        if name not in {"inspect_chart", "view_image", "submit_visualization_charts"}:
+        if name not in {
+            "run_python_script",
+            "inspect_chart",
+            "view_image",
+            "submit_visualization_charts",
+        }:
             continue
         content = getattr(message, "content", None)
         if isinstance(content, str):
@@ -1987,7 +1973,7 @@ def _visualization_next_tool(messages: list[Message], run_context: RunContext | 
                     payload = None
             if isinstance(payload, Mapping) and payload.get("ok") is True:
                 successful_names.add(name)
-                if name == "terminal" and payload.get("truncated") is True:
+                if name == "run_python_script" and payload.get("truncated") is True:
                     preview_required = True
     if successful_names & {"inspect_chart", "view_image"}:
         return "submit_visualization_charts"
@@ -2022,20 +2008,15 @@ def _visualization_production_tool_allowed(
     )
     if reporting_visualization_recovery_from_run_context(run_context):
         if not recovery_read:
-            # 首轮同时保留 patch，兼容模型在读取旧脚本后直接提交修复；terminal
+            # 首轮同时保留 patch，允许模型在读取旧脚本后直接提交修复；受控 runner
             # 和终态工具仍严格隐藏，避免恢复任务跳过脚本修复。
             return tool_name in {"read_file", "read_tool_output", "apply_analysis_patch"}
         if not script_written:
             return tool_name == "apply_analysis_patch"
     if not script_written:
         return tool_name == "apply_analysis_patch"
-    if (
-        reporting_visualization_script_session_available_from_run_context(run_context)
-        and not script_executed
-    ):
-        return tool_name == "process"
     if not script_executed:
-        return tool_name == "terminal"
+        return tool_name == "run_python_script"
     if tool_name == "inspect_chart":
         return reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
     return tool_name == "submit_visualization_charts" or (
@@ -2048,12 +2029,10 @@ def _visualization_lifecycle_tool_allowed(
     run_context: RunContext | None,
     tool_name: str,
 ) -> bool:
-    """让模型 schema 与旧历史工具调用共享同一可视化生命周期门禁。"""
+    """让模型 schema 与当前 run 的可视化生命周期状态共享同一门禁。"""
 
     if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return True
-    if tool_name == "process":
-        return reporting_visualization_script_session_available_from_run_context(run_context)
     if reporting_visualization_recovery_from_run_context(run_context):
         return tool_name not in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES or tool_name in {
             "read_file",
@@ -2311,7 +2290,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 REPORTING_WIRE_FINGERPRINT_MODEL_ATTR,
                 None,
             ),
-        ).info("report_structured_wire_schema_applied")
+        ).debug("report_structured_wire_schema_applied")
         return params
 
     def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
@@ -2936,7 +2915,7 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         # 响应再统一过滤，保证任何报表工具轮次都不会向 AgentOS 泄漏解释文本。
         started_at = perf_counter()
         responses = list(super().invoke_stream(messages, *args, **kwargs))
-        logger.info(
+        logger.debug(
             "report_facade_stream_buffer_completed mode=sync duration_ms={} chunk_count={}",
             _duration_ms(started_at),
             len(responses),
@@ -2955,7 +2934,7 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         responses = [
             response async for response in super().ainvoke_stream(messages, *args, **kwargs)
         ]
-        logger.info(
+        logger.debug(
             "report_facade_stream_buffer_completed mode=async duration_ms={} chunk_count={}",
             _duration_ms(started_at),
             len(responses),
@@ -3169,6 +3148,20 @@ def create_reporting_generator_agent(
             "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
             ".png、.jpg 或 .jpeg 后缀的具体文件；pythonSource 必须写入完全相同的路径。"
         )
+        instructions.extend(
+            [
+                (
+                    "pythonSource 是由固定 Workflow 执行的独立 Python 程序；不得调用或导入 "
+                    "submit_visualization_charts、run_python_script、apply_analysis_patch 等编排工具，"
+                    "不得把工具参数或调用写进脚本。"
+                ),
+                (
+                    "Python 从工作区根目录执行；逐字使用任务 JSON 签发的 factFile.path 和输出路径，"
+                    "不得使用 __file__、Path.parents、cwd 或目录探测重新推导路径。"
+                ),
+                "pythonSource 必须使用 Python 的 None、True、False，不得写入 JSON 常量 null、true、false。",
+            ]
+        )
     elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
         instructions[1] = (
             "根 JSON 必须直接包含 kind（render 或 rework）及该分支字段；不得输出 render/rework 单键包装对象。"
@@ -3242,14 +3235,14 @@ def create_report_agent(
         *, run_context: RunContext | None = None, agent: Agent | None = None
     ) -> list[ReportWorkflowToolkit]:
         started_at = perf_counter()
-        logger.info(
+        logger.debug(
             "report_facade_tools_started run_id={} session_id_present={}",
             getattr(run_context, "run_id", None) or "-",
             str(bool(getattr(run_context, "session_id", None))).lower(),
         )
         _ = agent
         tools = [ReportWorkflowToolkit(controller)]
-        logger.info(
+        logger.debug(
             "report_facade_tools_completed run_id={} duration_ms={} toolkit_count={} "
             "function_count={}",
             getattr(run_context, "run_id", None) or "-",

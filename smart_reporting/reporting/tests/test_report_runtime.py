@@ -4,7 +4,9 @@ import hashlib
 import shutil
 import uuid
 import zipfile
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +26,7 @@ from smart_reporting.reporting.delivery.report_runtime.markdown import (
 )
 from smart_reporting.reporting.delivery.report_runtime.pdf import (
     DEFAULT_PAGE_LAYOUT,
+    _apply_pdf_page_decorations,
     _page_number_context,
 )
 from smart_reporting.reporting.tests.workspace_fakes import (
@@ -31,8 +34,9 @@ from smart_reporting.reporting.tests.workspace_fakes import (
     AsyncMemoryRegistry,
     service,
 )
-from smart_reporting.reporting.workspace import WorkspaceReportService
-from smart_reporting.workspace import WorkspaceService
+from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
+from smart_reporting.sandbox import ExecutionStatus, RunPythonScriptResult
+from smart_reporting.workspace import WORKSPACE_ROOT, WorkspaceError, WorkspaceService
 
 
 @pytest.mark.parametrize(
@@ -51,6 +55,45 @@ def test_fit_image_dimensions_preserves_aspect_ratio_within_bounds(
     expected: tuple[int, int],
 ) -> None:
     assert _fit_image_dimensions(width, height, maximum_width, maximum_height) == expected
+
+
+def test_pdf_page_decorations_are_merged_above_report_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pypdf
+
+    path = tmp_path / "report.pdf"
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=595.276, height=841.89)
+    writer.add_blank_page(width=595.276, height=841.89)
+    with path.open("wb") as stream:
+        writer.write(stream)
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.delivery.report_runtime.pdf._pdf_section_pages",
+        lambda _reader, _sections: {"section_001": 2},
+    )
+    merge_layers: list[bool] = []
+    original_merge_page = pypdf.PageObject.merge_page
+
+    def track_merge_page(self, page2, expand=False, over=True):
+        merge_layers.append(over)
+        return original_merge_page(self, page2, expand=expand, over=over)
+
+    monkeypatch.setattr(pypdf.PageObject, "merge_page", track_merge_page)
+
+    _apply_pdf_page_decorations(
+        path,
+        context={
+            "title": "测试报告",
+            "organizationName": "测试机构",
+            "watermarkText": "内部资料",
+            "sections": [{"code": "section_001"}],
+        },
+        layout=DEFAULT_PAGE_LAYOUT,
+    )
+
+    assert merge_layers == [True]
 
 
 def test_html_document_is_static_and_self_contained() -> None:
@@ -133,7 +176,7 @@ def test_render_markdown_returns_html_artifact_identity(
 ) -> None:
     source = tmp_path / "report.md"
     source.write_text(
-        "# 测试报告\n\n## 1 经营概览\n\n[[section:overview]]\n正文。\n",
+        "# 测试报告\n\n## 1. 经营概览\n\n[[section:overview]]\n正文。\n",
         encoding="utf-8",
     )
     output = tmp_path / "revision" / "report.pdf"
@@ -182,6 +225,11 @@ def test_render_markdown_returns_html_artifact_identity(
         return digest
 
     monkeypatch.setattr(runtime_module, "_sha256", capture_sha256)
+    monkeypatch.setattr(
+        Path,
+        "replace",
+        lambda *_args, **_kwargs: pytest.fail("私有 /tmp 与 workspace 之间不得使用 rename"),
+    )
 
     temporary_root = Path(f"/tmp/workspace-report-{uuid.uuid4().hex}")
     try:
@@ -199,10 +247,15 @@ def test_render_markdown_returns_html_artifact_identity(
     assert result["htmlSize"] == len(html_bytes)
     assert result["htmlSha256"] == hashlib.sha256(html_bytes).hexdigest()
     assert html_bytes.startswith(b"<!doctype html>")
+    assert output.is_file()
+    assert output.with_suffix(".docx").is_file()
+    assert output.with_suffix(".html").read_bytes() == html_bytes
 
 
 @pytest.mark.anyio
-async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_path: Path) -> None:
+async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoint(
+    tmp_path: Path,
+) -> None:
     current = service(tmp_path)
     workspace = WorkspaceService(
         current.secret,
@@ -212,11 +265,43 @@ async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_p
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
     report_workspace = WorkspaceReportService(workspace)
-    workspace._bounded_output = lambda _value: {
-        "exitCode": 0,
-        "output": '{"status":"ok"}',
-        "truncated": False,
-    }
+
+    class Execution:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def run_python_script(self, request):
+            self.requests.append(request)
+            return RunPythonScriptResult(
+                status=ExecutionStatus.SUCCEEDED,
+                exit_code=0,
+                stdout='{"status":"ok"}\n',
+                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+            )
+
+    class Process:
+        async def exec(self, *_args, **_kwargs):
+            raise AssertionError("报表运行时不得使用任意 Shell")
+
+    class FileSystem:
+        def __init__(self) -> None:
+            self.uploads: list[tuple[bytes, str]] = []
+            self.deleted: list[str] = []
+
+        async def upload_file(self, content: bytes, path: str) -> None:
+            assert path.startswith(f"{WORKSPACE_ROOT}/")
+            self.uploads.append((content, path))
+
+        async def delete_file(self, path: str) -> None:
+            self.deleted.append(path)
+
+    execution = Execution()
+    filesystem = FileSystem()
+
+    async def sandbox_for(_client, _thread):
+        return SimpleNamespace(execution=execution, process=Process(), fs=filesystem)
+
+    workspace._asandbox_for = sandbox_for  # type: ignore[method-assign]
 
     result = await report_workspace._run_report_runtime(
         "validate_pdf",
@@ -224,23 +309,79 @@ async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_p
         RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
     )
 
-    sandbox = next(iter(current.client.sandboxes.values()))
-    uploaded = {
-        Path(path).name
-        for path in sandbox.fs.entries
-        if "/report_runtime/" in path and path.endswith(".py")
-    }
-    assert uploaded == {
-        "__init__.py",
-        "cli.py",
-        "docx.py",
-        "markdown.py",
-        "pdf.py",
-        "runtime.py",
-        "validation.py",
-    }
-    assert "python -m report_runtime.cli validate_pdf" in sandbox.process.calls[-1]["command"]
+    assert len(execution.requests) == 1
+    request = execution.requests[0]
+    assert len(filesystem.uploads) == 1
+    archive, archive_path = filesystem.uploads[0]
+    assert archive_path.startswith(f"{WORKSPACE_ROOT}/.workspace-report-runtime-")
+    assert archive_path.endswith(f"-{_report_runtime_digest()}.zip")
+    assert filesystem.deleted == [archive_path]
+    with zipfile.ZipFile(BytesIO(archive)) as package:
+        assert set(package.namelist()) == {
+            "report_runtime/__init__.py",
+            "report_runtime/cli.py",
+            "report_runtime/docx.py",
+            "report_runtime/markdown.py",
+            "report_runtime/pdf.py",
+            "report_runtime/runtime.py",
+            "report_runtime/validation.py",
+        }
+    assert "from report_runtime.cli import main" in request.script
+    assert "sys.path.insert(0" in request.script
+    assert archive_path not in request.script
+    assert archive_path.removeprefix(f"{WORKSPACE_ROOT}/") in request.script
+    assert _report_runtime_digest() in request.script
+    assert "报表运行时版本不匹配" in request.script
+    assert "validate_pdf" in request.script
+    assert request.timeout_ms == 600_000
     assert result == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_report_runtime_preserves_structured_error_before_stderr_warning(
+    tmp_path: Path,
+) -> None:
+    current = service(tmp_path)
+    workspace = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    report_workspace = WorkspaceReportService(workspace)
+
+    class Execution:
+        async def run_python_script(self, request):
+            return RunPythonScriptResult(
+                status=ExecutionStatus.FAILED,
+                exit_code=1,
+                stdout='{"error":"Markdown 正式章节标识与已批准提纲不一致"}\n',
+                stderr="Fontconfig warning: ignored invalid cache\n",
+                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+            )
+
+    class FileSystem:
+        async def upload_file(self, _content: bytes, _path: str) -> None:
+            return None
+
+        async def delete_file(self, _path: str) -> None:
+            return None
+
+    async def sandbox_for(_client, _thread):
+        return SimpleNamespace(execution=Execution(), fs=FileSystem())
+
+    workspace._asandbox_for = sandbox_for  # type: ignore[method-assign]
+
+    with pytest.raises(
+        WorkspaceError,
+        match="Markdown 正式章节标识与已批准提纲不一致",
+    ):
+        await report_workspace._run_report_runtime(
+            "validate_pdf",
+            {"job": {}},
+            RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
+        )
 
 
 def test_normalize_cjk_strong_markers_supports_chinese_punctuation() -> None:

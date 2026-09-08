@@ -19,6 +19,42 @@ def test_registered_rule_exposes_disposition_and_subject_types() -> None:
     assert get_warning_rule("chart_path_normalized").disposition == "informational"
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "report_aggregation_duplicate_unresolved",
+        "report_entity_grain_unproven",
+        "report_cross_source_inference_unsupported",
+    ],
+)
+def test_review_required_semantic_rule_accepts_section_claim(code: str) -> None:
+    notice = WarningEmitter(source_phase="publication").emit(
+        code=code,
+        subject_type="section_claim",
+        subject_id="claim-1",
+        message="需要人工复核",
+    )
+
+    assert notice.subject_id == "claim-1"
+    assert get_warning_rule(code).subject_types == {"section_claim"}
+
+
+def test_duplicate_chart_binding_warning_is_auditable() -> None:
+    notice = WarningEmitter(source_phase="publication").emit(
+        code="report_section_chart_duplicate_binding",
+        subject_type="analysis_chart",
+        subject_id="chart-1",
+        message="同一图表重复绑定",
+    )
+    collector = QualityAuditCollector(report_run_id="run-1", revision=2)
+    collector.add(notice)
+
+    result = collector.build()
+
+    assert result.total == 1
+    assert result.requires_review is False
+
+
 def test_unknown_rule_is_rejected() -> None:
     with pytest.raises(QualityWarningContractError, match="规则未登记"):
         WarningEmitter(source_phase="publication").emit(

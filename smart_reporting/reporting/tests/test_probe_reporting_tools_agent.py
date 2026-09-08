@@ -80,6 +80,29 @@ async def test_probe_complete_section_evidence_is_valid_json() -> None:
     assert json.loads(content)["validated"] is True
 
 
+@pytest.mark.anyio
+async def test_probe_section_read_receipts_match_frozen_evidence_identity() -> None:
+    scenario = next(
+        item for item in probe_scenarios() if item.name == "section-render-truncated-evidence"
+    )
+    identity = _cli_stage_input(scenario)["sectionWorkItem"]["evidence"][0]["evidenceFiles"][0]
+    recorder = ProbeRecorder(_runtime(), scenario)
+
+    first = await recorder.invoke("read_file", {"path": identity["path"], "offset": 0})
+    second = await recorder.invoke(
+        "read_file", {"path": identity["path"], "offset": first["nextOffset"]}
+    )
+
+    assert first["path"] == second["path"] == identity["path"]
+    assert first["offset"] == 0
+    assert second["offset"] == first["nextOffset"]
+    assert first["totalBytes"] == second["totalBytes"] == identity["size"]
+    assert first["sha256"] == second["sha256"] == identity["sha256"]
+    assert first["hasMore"] is True
+    assert second["hasMore"] is False
+    assert len((first["content"] + second["content"]).encode()) == identity["size"]
+
+
 def test_section_probe_directives_never_authorize_fact_file_reads() -> None:
     for scenario in probe_scenarios():
         if scenario.task_kind != "section":
@@ -166,7 +189,7 @@ async def test_probe_passes_one_bound_production_context_to_fixed_analysis_workf
 
 
 def test_probe_records_model_call_that_is_not_visible_in_current_projection() -> None:
-    scenario = next(item for item in probe_scenarios() if item.name == "visualization-background")
+    scenario = next(item for item in probe_scenarios() if item.name == "visualization-inspection")
     context = _build_probe_run_context(
         scenario,
         model_tier="fast",
@@ -174,7 +197,7 @@ def test_probe_records_model_call_that_is_not_visible_in_current_projection() ->
         thinking=False,
     )
     projection = ProbeToolProjection(
-        batches=[["apply_analysis_patch", "terminal", "submit_visualization_charts"]]
+        batches=[["apply_analysis_patch", "run_python_script", "submit_visualization_charts"]]
     )
     model = ProbeReportingPhaseOpenAIChat(id="test", api_key="test")
     model._probe_projection = projection
@@ -224,8 +247,8 @@ async def test_probe_recovery_starts_with_production_visible_script_reads() -> N
 
 
 @pytest.mark.anyio
-async def test_probe_background_terminal_makes_only_its_context_process_visible() -> None:
-    scenario = next(item for item in probe_scenarios() if item.name == "visualization-background")
+async def test_probe_controlled_runner_completes_without_process_session() -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "visualization-inspection")
     context = _build_probe_run_context(
         scenario,
         model_tier="fast",
@@ -241,21 +264,21 @@ async def test_probe_background_terminal_makes_only_its_context_process_visible(
     )
     await recorder.invoke("apply_analysis_patch", _chart_patch())
     receipt = await recorder.invoke(
-        "terminal",
+        "run_python_script",
         {
-            "command": "python3 analysis/output/outpatient_chart.py",
+            "script_path": "analysis/output/outpatient_chart.py",
             "timeout": 30,
-            "background": True,
         },
     )
 
-    assert receipt["session_id"] in context.session_state["reportingVisualizationSessions"]
-    assert "process" in _probe_visible_tool_names(context, tools)
+    assert receipt["status"] == "completed"
+    assert "session_id" not in receipt
+    assert "process" not in _probe_visible_tool_names(context, tools)
 
 
 @pytest.mark.anyio
 async def test_probe_mock_runtime_is_isolated_across_ten_runs() -> None:
-    scenario = next(item for item in probe_scenarios() if item.name == "visualization-background")
+    scenario = next(item for item in probe_scenarios() if item.name == "visualization-inspection")
     previous_context = None
     previous_recorder = None
     previous_runtime = None
@@ -279,11 +302,10 @@ async def test_probe_mock_runtime_is_isolated_across_ten_runs() -> None:
         assert runtime.calls == []
         await recorder.invoke("apply_analysis_patch", _chart_patch())
         await recorder.invoke(
-            "terminal",
+            "run_python_script",
             {
-                "command": "python3 analysis/output/outpatient_chart.py",
+                "script_path": "analysis/output/outpatient_chart.py",
                 "timeout": 30,
-                "background": True,
             },
         )
         if previous_context is not None:
@@ -329,15 +351,15 @@ async def test_probe_tools_use_mock_workspace_for_file_and_command_calls() -> No
     by_name = {tool.name: tool for tool in tools}
 
     read_result = await by_name["read_file"].entrypoint(path="inputs/source.txt")
-    command_result = await by_name["terminal"].entrypoint(
-        command="python3 -c 'print(1)'", timeout=30
+    command_result = await by_name["run_python_script"].entrypoint(
+        script_path="analysis/output/probe.py", timeout=30
     )
 
     assert read_result["ok"] is True
     assert read_result["content"] == "source"
     assert command_result["ok"] is True
     assert [call["operation"] for call in runtime.calls] == ["read_bytes", "execute_script"]
-    assert [call["name"] for call in recorder.calls] == ["read_file", "terminal"]
+    assert [call["name"] for call in recorder.calls] == ["read_file", "run_python_script"]
 
 
 @pytest.mark.anyio
@@ -360,7 +382,7 @@ async def test_probe_rejects_section_read_of_unissued_dataset_input() -> None:
 
 
 @pytest.mark.anyio
-async def test_probe_rejects_terminal_before_visualization_script_is_committed() -> None:
+async def test_probe_rejects_runner_before_visualization_script_is_committed() -> None:
     scenario = next(
         item for item in probe_scenarios() if item.name == "visualization-preview-truncated"
     )
@@ -371,18 +393,19 @@ async def test_probe_rejects_terminal_before_visualization_script_is_committed()
     recorder = ProbeRecorder(runtime, scenario)
 
     result = await recorder.invoke(
-        "terminal", {"command": "python3 analysis/output/outpatient_chart.py", "timeout": 30}
+        "run_python_script",
+        {"script_path": "analysis/output/outpatient_chart.py", "timeout": 30},
     )
 
     assert result["ok"] is False
     assert result["status"] == "rejected"
-    assert result["code"] == "probe_terminal_script_not_committed"
+    assert result["code"] == "probe_script_not_committed"
     assert result["requiredActions"]
     assert runtime.calls == []
 
 
 @pytest.mark.anyio
-async def test_probe_rejects_terminal_command_other_than_committed_script() -> None:
+async def test_probe_rejects_runner_path_other_than_committed_script() -> None:
     scenario = next(
         item for item in probe_scenarios() if item.name == "visualization-preview-truncated"
     )
@@ -401,13 +424,42 @@ async def test_probe_rejects_terminal_command_other_than_committed_script() -> N
         },
     )
 
-    result = await recorder.invoke("terminal", {"command": "pwd", "timeout": 30})
+    result = await recorder.invoke(
+        "run_python_script", {"script_path": "analysis/output/other.py", "timeout": 30}
+    )
 
     assert result["ok"] is False
     assert result["status"] == "rejected"
-    assert result["code"] == "probe_terminal_command_forbidden"
-    assert result["details"] == {"allowedCommand": "python3 analysis/output/outpatient_chart.py"}
+    assert result["code"] == "probe_script_path_forbidden"
+    assert result["details"] == {"scriptPath": "analysis/output/outpatient_chart.py"}
     assert result["requiredActions"]
+    assert [call["operation"] for call in runtime.calls] == ["write_text"]
+
+
+@pytest.mark.anyio
+async def test_probe_rejects_analysis_runner_path_outside_signed_supplement() -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
+    runtime = MockReportingToolRuntime(
+        input_snapshot={},
+        output_policy=ReportingOutputPolicy(roots=("analysis/output", "analysis/charts")),
+    )
+    recorder = ProbeRecorder(runtime, scenario)
+    await recorder.invoke(
+        "apply_analysis_patch",
+        {
+            "patch": (
+                "--- /dev/null\n+++ b/analysis/output/other.py\n@@ -0,0 +1 @@\n+print('analysis')"
+            )
+        },
+    )
+
+    result = await recorder.invoke(
+        "run_python_script", {"script_path": "analysis/output/other.py", "timeout": 30}
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "probe_script_path_forbidden"
+    assert result["details"] == {"scriptPath": "analysis/output/supplement.py"}
     assert [call["operation"] for call in runtime.calls] == ["write_text"]
 
 
@@ -438,7 +490,7 @@ def test_probe_scenarios_only_require_tools_allowed_by_current_task_schema() -> 
         "visualization_section",
         "section",
     }
-    assert {scenario.terminal_tool for scenario in scenarios} == {
+    assert {scenario.completion_tool for scenario in scenarios} == {
         "complete_analysis_item",
         "submit_visualization_charts",
         "render_report_section",
@@ -450,15 +502,15 @@ def test_probe_scenarios_only_require_conditional_tools_after_their_precondition
     scenarios = {scenario.name: scenario for scenario in probe_scenarios()}
 
     assert "read_tool_output" not in scenarios["analysis-fixed-facts"].tool_names
-    assert "process" not in scenarios["analysis-script-foreground"].tool_names
+    assert all("process" not in scenario.tool_names for scenario in scenarios.values())
     assert "read_file" in scenarios["analysis-fixed-facts"].tool_names
     assert "query_profile" not in scenarios["analysis-profile-bound-facts"].tool_names
     assert "query_analysis_facts" not in scenarios["analysis-truncated-output"].tool_names
-    assert "query_analysis_context" not in scenarios["analysis-background-context"].tool_names
+    assert "query_analysis_context" not in scenarios["analysis-script-context"].tool_names
     assert scenarios["analysis-truncated-output"].branch == "truncated"
-    assert scenarios["analysis-background-context"].branch == "background"
+    assert scenarios["analysis-script-context"].branch == "script"
     assert scenarios["visualization-preview-truncated"].branch == "preview"
-    assert scenarios["visualization-background"].branch == "background"
+    assert scenarios["visualization-inspection"].branch == "inspection"
     assert "inspect_chart" not in scenarios["visualization-preview-truncated"].tool_names
     assert scenarios["visualization-recovery"].branch == "recovery"
     assert "view_image" not in scenarios["visualization-recovery"].tool_names
@@ -493,7 +545,7 @@ def test_probe_analysis_branches_expose_only_their_real_completion_precondition(
     assert truncated["deterministicFacts"]["analysisId"] == "analysis_001"
     assert "按 offset 完整读取" in truncated["executionDirective"]
     assert "固定 Workflow" in complex_cli_prompt(scenarios["analysis-script-foreground"])
-    assert "后台方式运行并等待" in complex_cli_prompt(scenarios["analysis-background-context"])
+    assert "run_python_script" in complex_cli_prompt(scenarios["analysis-script-context"])
 
 
 def test_probe_stage_inputs_match_production_phase_projections() -> None:
@@ -521,9 +573,10 @@ def test_probe_stage_inputs_match_production_phase_projections() -> None:
     assert visualization_fact["evidenceFiles"][0]["path"] == ("analysis/evidence/analysis_001.json")
     assert visualization_fact["citationIds"] == ["citation-001"]
     assert visualization["reportVisualTheme"]["primary"]
-    assert visualization["visualizationWorkspace"]["allowedTerminalCommand"] == (
-        "python3 analysis/output/outpatient_chart.py"
-    )
+    assert visualization["visualizationWorkspace"] == {
+        "scriptPath": "analysis/output/outpatient_chart.py",
+        "chartOutputRoot": "analysis/charts/outpatient_operation",
+    }
 
     section = _cli_stage_input(scenarios["section-render-truncated-evidence"])
     evidence = section["sectionWorkItem"]["evidence"][0]

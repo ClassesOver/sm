@@ -40,6 +40,25 @@ def test_visualization_script_draft_accepts_bound_chart_paths() -> None:
 
 
 @pytest.mark.parametrize(
+    "python_source",
+    [
+        "submit_visualization_charts([])",
+        "print(__file__)",
+        "comparison_period = null",
+    ],
+)
+def test_visualization_script_draft_rejects_workflow_or_runtime_placeholders(
+    python_source: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        VisualizationScriptDraft(
+            scriptPath="report/charts/charts.py",
+            pythonSource=python_source,
+            charts=(_chart(),),
+        )
+
+
+@pytest.mark.parametrize(
     "path", ["/tmp/chart.png", "../chart.png", "charts\\chart.png", "chart.svg"]
 )
 def test_chart_draft_rejects_unsafe_source_path(path: str) -> None:
@@ -150,6 +169,24 @@ def test_section_block_content_allows_h4_parented_by_previous_block() -> None:
     content = SectionBlockContent(markdown="#### 同比变化\n\n正文")
 
     assert content.markdown == "#### 同比变化\n\n正文"
+
+
+def test_section_block_content_normalizes_h5_h6_as_business_style() -> None:
+    content = SectionBlockContent(
+        markdown=(
+            "### 收入结构\n\n"
+            "##### 大额项目\n\n正文\n\n"
+            "###### 补充说明\n\n补充\n\n"
+            "```markdown\n##### 代码示例\n```"
+        )
+    )
+
+    assert content.markdown == (
+        "### 收入结构\n\n"
+        "#### 大额项目\n\n正文\n\n"
+        "#### 补充说明\n\n补充\n\n"
+        "```markdown\n##### 代码示例\n```"
+    )
 
 
 def test_section_block_content_removes_model_protocol_syntax() -> None:

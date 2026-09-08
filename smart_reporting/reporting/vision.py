@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Callable
 from typing import Annotated, Any
@@ -118,7 +117,7 @@ class ReportVisionReviewer:
 
         # WorkspaceService 是图片路径、格式、签名和大小的安全读取边界。模型只接收
         # 已通过该边界返回的内存字节，不获得工作区路径或通用文件权限。
-        loaded = await asyncio.to_thread(self._workspace_service.view_image, thread_id, path)
+        loaded = await self._workspace_service.aview_image(thread_id, path)
         if not loaded.images or loaded.images[0].content is None:
             raise WorkspaceError("图片读取结果无效，请重新生成后重试。")
         source = loaded.images[0]

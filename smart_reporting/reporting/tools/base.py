@@ -5,11 +5,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
-import shlex
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
@@ -64,52 +62,19 @@ class ReportingToolkitBase(Toolkit):
             "retryable": retryable,
         }
 
-    async def terminal(
+    async def run_python_script(
         self,
-        command: str,
-        background: bool = False,
+        script_path: str,
         timeout: int = DEFAULT_TERMINAL_TIMEOUT,
-        workdir: str | None = None,
-        pty: bool = False,
-        shell: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         return await self._invoke(
-            "terminal",
-            {
-                "command": command,
-                "background": background,
-                "timeout": timeout,
-                "workdir": workdir,
-                "pty": pty,
-                "shell": shell,
-            },
-            lambda scope: self.runtime.terminal(
-                command,
-                background=background,
+            "run_python_script",
+            {"script_path": script_path, "timeout": timeout},
+            lambda scope: self.runtime.execute_script(
+                script_path,
                 timeout=timeout,
-                workdir=workdir,
-                pty=pty,
-                shell=shell,
-                run_context=run_context,
                 _scope=scope,
-            ),
-            run_context,
-        )
-
-    async def process(
-        self,
-        action: str,
-        session_id: str | None = None,
-        data: str = "",
-        timeout: int = 30,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        return await self._invoke(
-            "process",
-            {"action": action, "session_id": session_id, "data": data, "timeout": timeout},
-            lambda scope: self.runtime.process(
-                action, session_id, data, timeout, run_context, _scope=scope
             ),
             run_context,
         )
@@ -133,9 +98,7 @@ class ReportingToolkitBase(Toolkit):
             )
 
         async def call(scope: Any) -> dict[str, Any]:
-            content, _mime = await asyncio.to_thread(
-                self.runtime.workspace.file_bytes, scope.thread_id, path
-            )
+            content, _mime = await self.runtime.workspace.afile_bytes(scope.thread_id, path)
             if offset > len(content):
                 raise WorkspaceError("read_file offset 超过文件大小。")
             end = min(len(content), offset + max_bytes)
@@ -405,11 +368,7 @@ class ReportingToolkitBase(Toolkit):
             or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
         ):
             raise ReportingError(identity_code, "受信 JSON 文件身份缺失或无效。")
-        content, _mime = await asyncio.to_thread(
-            self.runtime.workspace.file_bytes,
-            thread_id,
-            identity["path"],
-        )
+        content, _mime = await self.runtime.workspace.afile_bytes(thread_id, identity["path"])
         if (
             len(content) != identity["size"]
             or hashlib.sha256(content).hexdigest() != identity["sha256"]
@@ -511,14 +470,13 @@ class ReportingToolkitBase(Toolkit):
             raise ReportingError("report_state_not_found", "Reporting 运行状态不存在。")
         return state
 
-    async def _ensure_visualization_terminal_settled(self, scope: Any) -> None:
-        """拒绝在签发脚本的 terminal execution 仍运行时推进生产阶段。
+    async def _ensure_visualization_script_settled(self, scope: Any) -> None:
+        """拒绝在签发脚本的受控 execution 仍运行时推进生产阶段。
 
-        terminal 默认只等待有限时间，超时后会返回 ``status=running``；模型随后可能在同一
-        工具批次提交 register/finalize。文件尚未写完时，登记会得到 Daytona NotFound，
-        finalize 还可能绕过图表登记。执行记录是服务端唯一受信的完成状态，因此这里按当前
-        externalRunId、internalRunId 和 terminal kind 精确筛选未终态执行，要求模型先用
-        process poll/wait 收敛会话，再重试后续工具。
+        Agno 可能并发执行同一批工具，模型随后可能在脚本尚未结束时提交图表。文件尚未写完
+        时，登记会得到 Daytona NotFound。执行记录是服务端唯一受信的完成状态，因此这里按
+        当前 externalRunId、internalRunId 和底层 terminal kind 精确筛选未终态执行；该 kind
+        只是执行账本分类，不是对模型暴露旧 terminal(command) 工具。
         """
 
         repository = getattr(self.runtime, "repository", None)
@@ -539,12 +497,14 @@ class ReportingToolkitBase(Toolkit):
             for execution in executions
             if getattr(execution, "internal_run_id", None) == internal_run_id
             and getattr(execution, "kind", None) == "terminal"
+            and isinstance(getattr(execution, "operation_receipt", None), Mapping)
+            and execution.operation_receipt.get("runner") == "python"
             and getattr(execution, "status", None) not in TERMINAL_EXECUTION_STATUSES
         ]
         if pending:
             raise ReportingError(
                 "report_visualization_script_running",
-                "可视化脚本仍在执行，请先使用 process 等待同一脚本会话结束后再登记或完成。",
+                "可视化脚本仍在执行，请等待当前 run_python_script 完成后再登记或完成。",
                 details={
                     "executions": [
                         {
@@ -708,24 +668,26 @@ class ReportingToolkitBase(Toolkit):
         except (ReportingError, WorkspaceError) as error:
             return self._failure(error, retryable=False)
 
-    async def _visualization_terminal_rejection(
-        self, *, scope: Any, arguments: Mapping[str, Any]
+    async def _visualization_script_rejection(
+        self, *, scope: Any, script_path: Any
     ) -> dict[str, Any] | None:
         if self._active_reporting_task_kind(scope) != "visualization_section":
             return None
-        command = arguments.get("command")
-        workdir = arguments.get("workdir")
         try:
             _parameters, contract = self._phase_parameters(scope, "analysis")
             workspace = contract.get("visualizationWorkspace")
-            script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-            normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            parts = shlex.split(command) if isinstance(command, str) and "\n" not in command else []
-            if workdir not in {None, ""} or parts != ["python3", normalized_script]:
+            signed_script_path = (
+                workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+            )
+            normalized_script = WorkspaceService.normalize_path(
+                signed_script_path, allow_root=False
+            )[0]
+            requested_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            if requested_script != normalized_script:
                 raise ReportingError(
-                    "report_visualization_terminal_forbidden",
-                    "visualization terminal 只允许从工作区根目录执行签发脚本。",
-                    details={"allowedCommand": f"python3 {normalized_script}"},
+                    "report_visualization_script_path_forbidden",
+                    "visualization 只允许执行签发的 Python 脚本。",
+                    details={"scriptPath": normalized_script},
                 )
             durable = await self._durable_state(scope)
             latest_committed = self._latest_committed_write_identity(
@@ -748,36 +710,39 @@ class ReportingToolkitBase(Toolkit):
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error, retryable=False)
 
-    def _visualization_process_rejection(
-        self,
-        *,
-        scope: Any,
-        arguments: Mapping[str, Any],
-        run_context: RunContext | None,
+    async def _analysis_item_script_rejection(
+        self, *, scope: Any, script_path: Any
     ) -> dict[str, Any] | None:
-        if self._active_reporting_task_kind(scope) != "visualization_section":
+        if self._active_reporting_task_kind(scope) != "analysis_item":
             return None
-        state = self._session_state(run_context)
-        sessions = state.get("reportingVisualizationSessions", ()) if state is not None else ()
-        action = arguments.get("action")
-        session_id = arguments.get("session_id")
-        if action not in {"poll", "wait", "kill"}:
-            return self._failure(
-                ReportingError(
-                    "report_visualization_process_forbidden",
-                    "visualization process 只允许查询、等待或终止签发脚本 session。",
-                ),
-                retryable=False,
-            )
-        if not isinstance(session_id, str) or session_id not in sessions:
-            return self._failure(
-                ReportingError(
-                    "report_visualization_process_session_forbidden",
-                    "process session 不属于当前 visualization Task。",
-                ),
-                retryable=False,
-            )
-        return None
+        try:
+            _parameters, contract = self._phase_parameters(scope, "analysis")
+            signed_script = f"{self._analysis_output_root(contract)}/supplement.py"
+            requested_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            if requested_script != signed_script:
+                raise ReportingError(
+                    "report_analysis_script_path_forbidden",
+                    "analysis item 只允许执行签发的补充分析脚本。",
+                    details={"scriptPath": signed_script},
+                )
+            durable = await self._durable_state(scope)
+            latest_committed = self._latest_committed_write_identity(durable.payload, signed_script)
+            current = (
+                await self.runtime.workspace.batch_hash_files(scope.thread_id, [signed_script])
+            )[0]
+            if (
+                current.get("missing") is True
+                or latest_committed is None
+                or latest_committed.get("size") != current.get("size")
+                or latest_committed.get("sha256") != current.get("sha256")
+            ):
+                raise ReportingError(
+                    "report_analysis_script_identity_changed",
+                    "签发的补充分析脚本身份未提交或已发生变化。",
+                )
+            return None
+        except (ReportingError, WorkspaceError, ValueError) as error:
+            return self._failure(error, retryable=False)
 
     async def _apply_durable_command(
         self,
@@ -857,38 +822,27 @@ class ReportingToolkitBase(Toolkit):
                 )
                 if rejection is not None:
                     return rejection
-            if phase == "analysis" and tool_name == "terminal":
-                visualization_rejection = await self._visualization_terminal_rejection(
-                    scope=scope, arguments=arguments
+            if phase == "analysis" and tool_name == "run_python_script":
+                # 受控 runner 的公开边界只有签发路径；不得把路径重新拼成 shell 命令，
+                # 否则会重新引入解释器选择、workdir 和参数解析两套不一致的授权语义。
+                script_path = arguments.get("script_path")
+                analysis_rejection = await self._analysis_item_script_rejection(
+                    scope=scope, script_path=script_path
+                )
+                if analysis_rejection is not None:
+                    return analysis_rejection
+                visualization_rejection = await self._visualization_script_rejection(
+                    scope=scope, script_path=script_path
                 )
                 if visualization_rejection is not None:
                     return visualization_rejection
                 dependency_rejection = await self._analysis_python_dependency_rejection(
                     scope=scope,
-                    command=arguments.get("command"),
-                    workdir=arguments.get("workdir"),
+                    script_path=script_path,
                 )
                 if dependency_rejection is not None:
                     return dependency_rejection
-            if phase == "analysis" and tool_name == "process":
-                process_rejection = self._visualization_process_rejection(
-                    scope=scope, arguments=arguments, run_context=run_context
-                )
-                if process_rejection is not None:
-                    return process_rejection
             result = await call(scope)
-            if (
-                phase == "analysis"
-                and task_kind == "visualization_section"
-                and tool_name == "terminal"
-                and isinstance(result, Mapping)
-                and result.get("status") == "running"
-                and isinstance(result.get("session_id"), str)
-                and (state := self._session_state(run_context)) is not None
-            ):
-                sessions = set(state.get("reportingVisualizationSessions", ()))
-                sessions.add(result["session_id"])
-                state["reportingVisualizationSessions"] = sorted(sessions)
             return result
 
         return await self.runtime.invoke(self, tool_name, arguments, guarded_call, run_context)
@@ -905,7 +859,7 @@ class ReportingToolkitBase(Toolkit):
         # Report Agent 必须在同一 mutation 上连续完成脚本写入、执行、evidence
         # 落盘和 checkpoint；其 verify 工具已被移除，事实校验由当前 phase 白名单、
         # analysis recovery/cursor、文件 SHA-256、阶段提交工具和 Workflow 最终验收共同
-        # 承担。若继续继承通用门禁，首次写文件后下一次 terminal 会被要求调用一个并不
+        # 承担。若继续继承通用门禁，首次写文件后下一次脚本执行会被要求调用一个并不
         # 存在的 verify，形成不可恢复活锁。这里只关闭那套互斥状态机，所有 Reporting
         # 专属门禁仍由上面的 guarded_call 和各阶段提交工具执行，不能从此入口绕过。
         _ = scope, tool_name, arguments, state
@@ -1071,6 +1025,28 @@ class ReportingToolkitBase(Toolkit):
             # expected/actual 字段，避免模型只能看到第一个错误后重新生成整个章节。
             result["details"] = dict(error.details)
         elif (
+            code == "report_draft_heading_parent_missing"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            issues = error.details.get("issues")
+            if isinstance(issues, list):
+                stable_issues = [
+                    {
+                        "path": issue["path"],
+                        "type": issue["type"],
+                        "message": issue["message"],
+                    }
+                    for issue in issues[:20]
+                    if isinstance(issue, Mapping)
+                    and isinstance(issue.get("path"), str)
+                    and issue["path"].startswith("$.blocks[")
+                    and isinstance(issue.get("type"), str)
+                    and isinstance(issue.get("message"), str)
+                ]
+                if stable_issues:
+                    result["details"] = {"issues": stable_issues}
+        elif (
             code
             in {
                 "report_analysis_write_intent_invalid",
@@ -1122,15 +1098,20 @@ class ReportingToolkitBase(Toolkit):
         elif code == "report_chart_registration_closed":
             result["requiredActions"] = ["图表已完成不可变登记；不要改图或重复提交。"]
         elif (
-            code == "report_visualization_terminal_forbidden"
+            code
+            in {
+                "report_analysis_script_path_forbidden",
+                "report_visualization_script_path_forbidden",
+            }
             and isinstance(error, ReportingError)
             and isinstance(error.details, Mapping)
         ):
-            allowed_command = error.details.get("allowedCommand")
-            if isinstance(allowed_command, str) and allowed_command:
-                result["details"] = {"allowedCommand": allowed_command}
+            script_path = error.details.get("scriptPath")
+            if isinstance(script_path, str) and script_path:
+                result["details"] = {"scriptPath": script_path}
             result["requiredActions"] = [
-                "保持 workdir 为空，仅使用 details.allowedCommand 原样执行签发脚本；不要改写命令、添加 cd 或执行其他 terminal 命令。"
+                "仅将 details.scriptPath 原样作为 run_python_script.script_path；"
+                "不要传入解释器、workdir 或 shell 命令。"
             ]
         elif (
             code == "report_chart_file_missing"

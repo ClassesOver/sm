@@ -12,11 +12,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from agno.agent import Agent
+from agno.models.message import Message
 from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.workflow.step import StepOutput
+from loguru import logger
 from pydantic import ValidationError
 from sqlglot import parse_one
 
@@ -53,6 +56,11 @@ from smart_reporting.reporting.model_policy import (
     reporting_thinking_profile_from_model,
 )
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.phase import (
+    REPORTING_MODEL_ID_DEPENDENCY_KEY,
+    REPORTING_MODEL_TIER_DEPENDENCY_KEY,
+    REPORTING_TASK_DEPENDENCY,
+)
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
@@ -78,7 +86,9 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_dataset_inputs,
     _analysis_item_output_root,
     _analysis_item_thinking_policy,
+    _analysis_summary_input_token_budget,
     _model_facing_deterministic_facts,
+    _prepare_analysis_summary_request,
     _reporting_detailed_analysis_plan,
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
@@ -1097,8 +1107,10 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "truncated 或当前管理问题缺少必需事实" in instructions
     assert "不得猜测、补齐或替代缺失事实" in instructions
     assert "不执行摘要百分比启发式匹配" in instructions
-    assert "脚本必须从工作区根目录执行" in instructions
-    assert "python3 <analysisOutputRoot>/script.py" in instructions
+    assert "<analysisOutputRoot>/supplement.py" in instructions
+    assert "只将该路径原样传给 run_python_script" in instructions
+    assert "不得传入解释器或 workdir" in instructions
+    assert "python3 <analysisOutputRoot>/script.py" not in instructions
     assert "不得 cd 到 evidence/analysis_*" in instructions
     assert "不得猜测 /workspace" in instructions
     assert "不得用 pwd、ls、find 或 wc 探测" in instructions
@@ -1123,7 +1135,7 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
 
 
 @pytest.mark.anyio
-async def test_prepare_analysis_context_bounds_profile_upload_timeout(
+async def test_prepare_analysis_context_enforces_profile_upload_total_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dataset_content = b"month,amount\n2025-01,1\n"
@@ -1166,11 +1178,11 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
     class RecordingFileSystem:
         def __init__(self) -> None:
             self.files = {dataset_path: dataset_content}
-            self.upload_timeouts: list[int] = []
+            self.upload_timeouts: list[float] = []
 
         async def upload_file(self, content: bytes, path: str, timeout: int = 30 * 60) -> None:
             self.upload_timeouts.append(timeout)
-            self.files[path] = content
+            await anyio.sleep_forever()
 
     filesystem = RecordingFileSystem()
     sandbox = SimpleNamespace(fs=filesystem)
@@ -1209,6 +1221,7 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
             profile_content=profile_content,
         ),
     )
+    monkeypatch.setattr(reporting_datasets, "PROFILE_TRANSFER_TIMEOUT_SECONDS", 0.01)
     # 本用例验证上传超时，不验证进程池；局部 lambda 不能跨进程序列化。
     monkeypatch.setattr(reporting_datasets, "_profile_process_pool", lambda: None)
     state: dict[str, Any] = {REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": [handle.public_dict()]}}
@@ -1218,14 +1231,16 @@ async def test_prepare_analysis_context_bounds_profile_upload_timeout(
     runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
     runtime._scope = lambda _run_context: {"threadId": "thread-1"}
     runtime._snapshots = lambda _run_context: ()
+    runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="月度趋势")
     runtime._assert_state_safe = lambda _state: None
 
-    await runtime.prepare_analysis_context(
-        SimpleNamespace(),
-        SimpleNamespace(run_id="run-1"),
-    )
+    with pytest.raises(ReportingError, match="CSV 数据集画像生成失败"):
+        await runtime.prepare_analysis_context(
+            SimpleNamespace(),
+            SimpleNamespace(run_id="run-1"),
+        )
 
-    assert filesystem.upload_timeouts == [5 * 60]
+    assert filesystem.upload_timeouts == [0.01]
 
 
 def test_phase_instructions_prioritize_signed_execution_directive() -> None:
@@ -1236,7 +1251,7 @@ def test_phase_instructions_prioritize_signed_execution_directive() -> None:
     for instructions in (analysis, visualization, section):
         assert "executionDirective 是本任务的首要动作契约" in instructions
         assert "不得输出解释文字" in instructions
-    assert "process 不能启动命令" in analysis
+    assert "不得构造 shell 命令或选择解释器" in analysis
     assert "不得重复完全相同的 patch 参数" in visualization
     assert "不得使用 read_file 读取 factFiles" in section
 
@@ -1640,7 +1655,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
             SimpleNamespace(
                 read_file=AsyncMock(),
                 apply_analysis_patch=AsyncMock(),
-                terminal=AsyncMock(),
+                run_python_script=AsyncMock(),
                 complete_analysis_item=AsyncMock(),
             )
         ],
@@ -1677,6 +1692,87 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         "reportingThinkingEffort": "high",
         "reportingThinkingBudget": 4096,
     }
+
+
+def test_analysis_summary_request_projects_large_evidence_before_model_call() -> None:
+    rows = [[f"group-{index:05d}", index if index % 2 == 0 else -index] for index in range(19_637)]
+    payload = {
+        "currentAnalysis": {"managementQuestion": "主要正负贡献是什么？"},
+        "deterministicFacts": {"metrics": []},
+        "supplementalEvidence": {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [
+                {
+                    "name": "高基数交叉贡献",
+                    "columns": ["group", "change"],
+                    "rows": rows,
+                }
+            ],
+            "reconciliations": [{"name": "差额守恒", "passed": True}],
+            "warnings": [],
+        },
+        "supplementalEvidenceSource": {
+            "path": "evidence/analysis_001/supplement.json",
+            "size": 1_900_000,
+            "sha256": "b" * 64,
+        },
+    }
+    calls: list[tuple[str, list[Any], Any]] = []
+
+    class CountingModel:
+        id = "base-model"
+        max_tokens = None
+
+        def count_tokens(self, messages, tools=None, output_schema=None):
+            del tools
+            calls.append((self.id, messages, output_schema))
+            return sum(len(str(message.content).encode("utf-8")) for message in messages)
+
+    agent = SimpleNamespace(
+        model=CountingModel(),
+        get_system_message=lambda **_kwargs: Message(role="system", content="system-contract"),
+    )
+    run_context = RunContext(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_MODEL_TIER_DEPENDENCY_KEY: "standard",
+                REPORTING_MODEL_ID_DEPENDENCY_KEY: "deepseek-v4-0731",
+            }
+        },
+    )
+
+    request = _prepare_analysis_summary_request(
+        payload,
+        analysis_id="analysis_001",
+        agent=agent,
+        run_context=run_context,
+    )
+
+    finding = request["supplementalEvidence"]["findings"][0]
+    assert request["analysisBlock"] == {"blockId": "analysis_001:summary"}
+    assert len(finding["rows"]) < len(rows)
+    assert finding["view"]["rowCount"] == len(rows)
+    assert request["supplementalEvidence"]["sourceFile"] == payload["supplementalEvidenceSource"]
+    assert calls[-1][0] == "deepseek-v4-0731"
+    assert calls[-1][2] is AnalysisSummaryDraft
+    assert [message.role for message in calls[-1][1]] == ["system", "user"]
+    assert calls[-1][1][-1].content == json.dumps(
+        request, ensure_ascii=False, separators=(",", ":"), default=str
+    )
+    assert sum(len(str(message.content).encode("utf-8")) for message in calls[-1][1]) <= (
+        _analysis_summary_input_token_budget(agent, run_context)
+    )
+
+
+def test_analysis_summary_instructions_define_projected_evidence_semantics() -> None:
+    source = inspect.getsource(reporting_runtime_base._ReportWorkflowRuntimeBase.__init__)
+
+    assert "view.truncated 为 true 时 rows 只是投影视图" in source
+    assert "omittedNumericSums 只汇总未进入 rows 的有限数值" in source
+    assert "完整总量等于 rows 数值与 omittedNumericSums 之和" in source
 
 
 def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplicates_warnings() -> (
@@ -1722,6 +1818,10 @@ def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplica
                 },
             ],
             "warnings": ["期间不完整", "全局告警", "全局告警"],
+            "correlations": {
+                "dataset-1:income~count": 0.82,
+                "dataset-1:income~other": 0.41,
+            },
         }
     )
 
@@ -1733,6 +1833,11 @@ def test_model_facing_deterministic_facts_strips_identity_metadata_and_deduplica
     assert projected["metrics"][0]["warnings"] == ["期间不完整"]
     assert projected["metrics"][1]["warnings"] == ["字段缺失"]
     assert projected["warnings"] == ["全局告警"]
+    assert projected["correlations"] == {
+        "datasets": ["dataset-1"],
+        "columns": ["dataset", "left", "right", "value"],
+        "rows": [[0, "income", "count", 0.82], [0, "income", "other", 0.41]],
+    }
     assert bundle.metrics[0].dataset_sha256 == "a" * 64
     assert bundle.metrics[0].warnings == ("期间不完整", "期间不完整")
 
@@ -1763,6 +1868,15 @@ def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_d
     assert "不得让单张图表失败终止整批脚本" in instructions
     assert "先规范化为可迭代的空行集合" in instructions
     assert "查询结果为 None 时必须使用空行集合" in instructions
+
+
+def test_visualization_instructions_describe_overridable_noto_cjk_default() -> None:
+    instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
+
+    assert "Noto Sans CJK SC" in instructions
+    assert "可以覆盖字体配置" in instructions
+    assert "缺字警告只作普通 warning，不视为脚本执行失败" in instructions
+    assert "fallback_to_default=False" not in instructions
 
 
 def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
@@ -1851,6 +1965,13 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         assert escalation.enabled is True
         assert escalation.reasoning_effort == escalation_effort
         assert escalation.thinking_budget == 8192
+
+    summary_profile = reporting_thinking_profile_from_model(runtime._analysis_summary_agent.model)
+    assert summary_profile.enabled is False
+    assert (
+        getattr(runtime._analysis_summary_agent.model, "_report_escalation_thinking_profile")
+        is None
+    )
 
 
 def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
@@ -2405,6 +2526,43 @@ def _outline_planner_stage() -> Agent:
         ReportOutlineProposal,
         thinking_profile=ReportingThinkingProfile.off(),
     )
+
+
+@pytest.mark.anyio
+async def test_generate_outline_logs_compact_frozen_section_plan_once() -> None:
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate(
+        {
+            "reportGoal": "整体运营分析",
+            "reportType": "comprehensive",
+            "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            "sourceIds": ["source-1"],
+        }
+    )
+    state: dict[str, Any] = {
+        REPORT_WORKFLOW_INPUT_STATE_KEY: envelope.model_dump(mode="json", by_alias=True),
+        REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: _detailed_analysis_plan_payload(),
+    }
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = _outline_planner_stage()
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: envelope
+    runtime._assert_state_safe = lambda _state: None
+    runtime._run_planner = AsyncMock(return_value=_valid_outline_proposal())
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
+        await runtime.generate_outline(
+            SimpleNamespace(additional_data=None), SimpleNamespace(session_state=state)
+        )
+    finally:
+        logger.remove(sink_id)
+
+    planned = [line for line in "".join(records).splitlines() if line.startswith("report_outline_")]
+    assert planned == [
+        'report_outline_planned outline={"reportTitle":"整体运营分析报告","sectionCount":1,'
+        '"sections":[{"sectionNumber":"1","sectionCode":"section_001",'
+        '"title":"经营结果与资源效率","analysisCount":1}]}'
+    ]
 
 
 @pytest.mark.anyio

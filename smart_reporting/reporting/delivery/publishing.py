@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -50,8 +51,6 @@ REPORT_ARTIFACT_CLEANUP_GRACE = timedelta(days=1)
 REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
 _PUBLICATION_LOCK_KEY = "report-download-publication-v2"
-logger = logging.getLogger(__name__)
-
 _metadata = MetaData()
 report_download_grants_v2 = Table(
     "report_download_grants_v2",
@@ -646,7 +645,7 @@ class ReportDownloadGrantService:
         except Exception:
             # grant 已原子签发，清理属于可重试维护动作；不能因清理失败把成功发布
             # 变成调用方拿不到 token 的失败状态。下一次启动或签发会再次执行清理。
-            logger.warning("report_artifact_cleanup_failed", exc_info=True)
+            logger.opt(exception=True).warning("report_artifact_cleanup_failed")
         return raw, grant
 
     async def lookup(self, raw_grant: str, *, now: datetime | None = None) -> ReportDownloadGrant:

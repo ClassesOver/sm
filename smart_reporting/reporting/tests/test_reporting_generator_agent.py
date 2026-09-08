@@ -27,6 +27,16 @@ def test_reporting_generator_agent_is_structured_and_has_no_tools() -> None:
         "pythonSource 等长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
         "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
         ".png、.jpg 或 .jpeg 后缀的具体文件；pythonSource 必须写入完全相同的路径。",
+        (
+            "pythonSource 是由固定 Workflow 执行的独立 Python 程序；不得调用或导入 "
+            "submit_visualization_charts、run_python_script、apply_analysis_patch 等编排工具，"
+            "不得把工具参数或调用写进脚本。"
+        ),
+        (
+            "Python 从工作区根目录执行；逐字使用任务 JSON 签发的 factFile.path 和输出路径，"
+            "不得使用 __file__、Path.parents、cwd 或目录探测重新推导路径。"
+        ),
+        "pythonSource 必须使用 Python 的 None、True、False，不得写入 JSON 常量 null、true、false。",
     ]
 
 

@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from agno.run import RunContext
 
+from ...sandbox.contracts import RunPythonScriptRequest
 from ...task_execution import (
     MAX_TOOL_FAILURE_ENTRIES,
     MAX_TOOL_PROGRESS_ENTRIES,
@@ -19,15 +20,11 @@ from ...task_execution import (
     TOOL_SPECS,
     TaskExecutionKernel,
     TaskExecutionRuntime,
-    ToolSpec,
-    absolute_paths,
     failed_result_resources,
-    is_read_only_terminal_command,
-    paths_related,
     stable_progress_result,
     suggested_workspace_path,
 )
-from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
+from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 
@@ -64,9 +61,7 @@ class WorkspaceServiceReportingPort:
 
     async def read_bytes(self, path: str) -> bytes:
         normalized = self._normalize(path)
-        content, _mime = await asyncio.to_thread(
-            self._service.file_bytes, self.context.thread_id, normalized
-        )
+        content, _mime = await self._service.afile_bytes(self.context.thread_id, normalized)
         return content
 
     async def read_text(self, path: str) -> str:
@@ -116,35 +111,12 @@ class WorkspaceServiceReportingPort:
 
     async def execute_script(
         self,
-        command: str,
+        script_path: str,
         *,
         timeout: int,
-        workdir: str | None = None,
-        background: bool = False,
     ) -> Mapping[str, Any]:
-        return await self._kernel.terminal(
-            command,
-            background=background,
-            timeout=timeout,
-            workdir=workdir,
-            _scope=self._scope,
-        )
-
-    async def send_process_input(
-        self,
-        session_id: str,
-        data: str,
-        *,
-        submit: bool,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        return await self._kernel.process(
-            "submit" if submit else "write",
-            session_id,
-            data,
-            timeout,
-            None,
-            _scope=self._scope,
+        return await self._kernel.run_python_script(
+            script_path, timeout=timeout, _scope=self._scope
         )
 
 
@@ -159,6 +131,12 @@ class ReportingWorkspaceAdapter:
     def file_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
         return self._service.file_bytes(thread_id, path)
 
+    async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+        return await self._service.afile_bytes(thread_id, path)
+
+    async def aread_text(self, thread_id: str, path: str) -> str:
+        return await self._service.aread_text(thread_id, path)
+
     def read_text(self, thread_id: str, path: str) -> str:
         return self._service.read_text(thread_id, path)
 
@@ -171,16 +149,37 @@ class ReportingWorkspaceAdapter:
     async def batch_hash_files(self, thread_id: str, paths: Sequence[str]) -> list[dict[str, Any]]:
         return await self._service.abatch_hash_files(thread_id, list(paths))
 
-    async def execute_isolated(
-        self,
-        thread_id: str,
-        command: str,
-        *,
-        timeout: int,
-    ) -> Any:
+    async def probe_python_modules(self, thread_id: str, names: set[str]) -> set[str]:
+        if (
+            not names
+            or len(names) > 100
+            or any(re.fullmatch(r"[A-Za-z_]\w*", name) is None for name in names)
+        ):
+            raise WorkspaceError("Python 依赖探测参数无效。")
+        encoded_names = json.dumps(sorted(names), separators=(",", ":"))
+        script = (
+            "import importlib.util,json\n"
+            f"names=json.loads({encoded_names!r})\n"
+            "print(json.dumps([name for name in names "
+            "if importlib.util.find_spec(name) is not None],separators=(',',':')))\n"
+        )
         async with self._service._async_client() as client:
             sandbox = await self._service._asandbox_for(client, thread_id)
-            return await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=timeout)
+            execution = getattr(sandbox, "execution", None)
+            if execution is None:
+                raise WorkspaceError("sandbox provider 不支持 Python 依赖探测。")
+            result = await execution.run_python_script(
+                RunPythonScriptRequest(script=script, timeout_ms=30_000)
+            )
+        if result.exit_code != 0:
+            raise WorkspaceError("Python 依赖探测执行失败。")
+        try:
+            value = json.loads(result.stdout)
+        except (TypeError, ValueError) as error:
+            raise WorkspaceError("Python 依赖探测结果无效。") from error
+        if not isinstance(value, list) or any(item not in names for item in value):
+            raise WorkspaceError("Python 依赖探测结果无效。")
+        return {item for item in value if isinstance(item, str)}
 
     async def read_limited_regular_file(
         self,
@@ -232,6 +231,21 @@ class WorkspaceServiceReportingRuntime:
 
         return getattr(self._kernel, name)
 
+    async def execute_script(
+        self,
+        script_path: str,
+        *,
+        timeout: int,
+        _scope: TaskExecutionRuntime,
+    ) -> dict[str, Any]:
+        """将 Reporting 脚本端口映射到执行内核的受限 Python runner。"""
+
+        return await self._kernel.run_python_script(
+            script_path,
+            timeout=timeout,
+            _scope=_scope,
+        )
+
     async def invoke(
         self,
         owner: Any,
@@ -241,16 +255,8 @@ class WorkspaceServiceReportingRuntime:
         run_context: RunContext | None,
     ) -> Any:
         external_run_id = self.bound_external_run_id(run_context)
-        progress_name = (
-            f"process:{arguments.get('action')}" if tool_name == "process" else tool_name
-        )
+        progress_name = tool_name
         spec = TOOL_SPECS[tool_name]
-        if tool_name == "process" and arguments.get("action") in {"list", "poll", "wait"}:
-            spec = ToolSpec("read", True)
-        elif tool_name == "terminal" and is_read_only_terminal_command(
-            str(arguments.get("command") or "")
-        ):
-            spec = ToolSpec("read", True)
         async with (
             self.task_scheduler(external_run_id) as lock,
             lock.read() if spec.parallel_safe else lock.write(),
@@ -295,47 +301,6 @@ class WorkspaceServiceReportingRuntime:
                     and isinstance(progress.get("entries"), list)
                     else []
                 )
-                failure_state = (
-                    state.get(TASK_EXECUTION_TOOL_FAILURE_STATE_KEY) if state is not None else None
-                )
-                failure_entries = (
-                    list(failure_state["entries"])
-                    if isinstance(failure_state, dict)
-                    and failure_state.get("attempt") == scope.attempt_no
-                    and isinstance(failure_state.get("entries"), list)
-                    else []
-                )
-                argument_resources = absolute_paths(arguments)
-                blocked_failure = next(
-                    (
-                        entry
-                        for entry in reversed(failure_entries)
-                        if isinstance(entry, dict)
-                        and isinstance(entry.get("resource"), str)
-                        and any(
-                            paths_related(entry["resource"], resource)
-                            for resource in argument_resources
-                        )
-                        and tool_name == "terminal"
-                    ),
-                    None,
-                )
-                if isinstance(blocked_failure, dict):
-                    return {
-                        "ok": False,
-                        "code": "tool_no_progress",
-                        "message": "当前 Attempt 已确认该绝对路径不可用，本次未执行。",
-                        "details": {
-                            "failedResource": blocked_failure["resource"],
-                            "workspaceRoot": WORKSPACE_ROOT,
-                            "failureFingerprint": blocked_failure["fingerprint"],
-                        },
-                        "requiredActions": [
-                            "使用工作区相对路径重新执行。",
-                            f"需要绝对路径时使用 {WORKSPACE_ROOT}。",
-                        ],
-                        "retryable": True,
-                    }
                 previous = next(
                     (
                         entry

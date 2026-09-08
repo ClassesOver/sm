@@ -19,7 +19,7 @@ from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
-from smart_reporting.reporting.workspace import WorkspaceReportService
+from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.workspace import WorkspaceError
 
@@ -98,18 +98,23 @@ def test_publication_artifact_identity_checks_html_size_and_hash() -> None:
 
 
 class _ReportPairProcess:
-    def __init__(self) -> None:
-        self.commands: list[str] = []
+    async def exec(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise AssertionError("报表发布不得使用任意 Shell")
 
-    async def exec(self, command: str, **_kwargs: object) -> SimpleNamespace:
-        self.commands.append(command)
-        return SimpleNamespace(exit_code=0)
+
+class _ReportPairFs:
+    def __init__(self) -> None:
+        self.moves: list[tuple[str, str]] = []
+
+    async def move_files(self, source: str, destination: str) -> None:
+        self.moves.append((source, destination))
 
 
 class _ReportPairService:
     def __init__(self, identities: dict[str, dict[str, object]]) -> None:
         self.identities = identities
         self.process = _ReportPairProcess()
+        self.fs = _ReportPairFs()
 
     def normalize_path(self, path: str, *, allow_root: bool) -> tuple[str, str]:
         assert not allow_root
@@ -123,7 +128,7 @@ class _ReportPairService:
         yield object()
 
     async def _asandbox_for(self, _client: object, _thread_id: str) -> SimpleNamespace:
-        return SimpleNamespace(process=self.process)
+        return SimpleNamespace(process=self.process, fs=self.fs)
 
     async def _aensure_directory(self, _sandbox: object, _path: str) -> None:
         return None
@@ -162,7 +167,6 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
     monkeypatch.setattr(uuid, "uuid4", lambda: SimpleNamespace(hex="test"))
     monkeypatch.setattr(report_service, "_load_job", lambda *_args: job)
     monkeypatch.setattr(report_service, "_job_status", AsyncMock(return_value={}))
-    monkeypatch.setattr(report_service, "_store_job", Mock())
     monkeypatch.setattr(report_service, "_delete_report_path", AsyncMock())
 
     async def run_runtime(
@@ -173,25 +177,57 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
             return {
                 "status": "rendered",
                 "render": {
-                    "pdf": {"path": "reports/revision-1/report.pdf", "size": 1, "sha256": "pdf"},
+                    "markdown": {
+                        "path": "report.md",
+                        "size": 4,
+                        "sha256": "markdown",
+                    },
+                    "pdf": {
+                        "path": "reports/.revision-1.test.tmp/report.pdf",
+                        "size": 1,
+                        "sha256": "pdf",
+                    },
                     "word": {
-                        "path": "reports/revision-1/report.docx",
+                        "path": "reports/.revision-1.test.tmp/report.docx",
                         "size": 2,
                         "sha256": "word",
                     },
                     "html": {
-                        "path": "reports/revision-1/report.html",
+                        "path": "reports/.revision-1.test.tmp/report.html",
                         "size": 3,
                         "sha256": "html",
                     },
+                    "images": [],
+                    "pageLayout": {"size": "A4"},
+                    "documentContext": {"sections": ["section-1"] * 100},
+                    "citationPresentations": [{"citationId": "citation-1"}] * 100,
+                    "visualTheme": {"font": "Noto Sans CJK SC"},
+                    "wordStructure": {"headings": ["section-1"] * 100},
                 },
             }
+        assert payload["job"]["render"]["documentContext"] == {"sections": ["section-1"] * 100}
         return {
             "ok": True,
             "pdfSha256": "pdf",
             "wordSha256": "word",
             "htmlSha256": "html",
             "htmlSize": 3,
+            "pages": [
+                {
+                    "page": index,
+                    "width": 596,
+                    "height": 842,
+                    "nonWhiteRatio": 0.123456,
+                    "textCharCount": 1000,
+                    "imageCount": 2,
+                    "pageLayoutPresent": True,
+                    "pageLayoutExpected": True,
+                    "watermarkPresent": True,
+                    "role": "body",
+                    "blank": False,
+                }
+                for index in range(1, 201)
+            ],
         }
 
     monkeypatch.setattr(report_service, "_run_report_runtime", run_runtime)
@@ -204,12 +240,21 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
         run_context=context,
     )
 
-    assert calls[0][1]["html_output_path"] == "reports/revision-1/report.html"
+    assert calls[0][1]["html_output_path"] == "reports/.revision-1.test.tmp/report.html"
     assert calls[1][1]["html_path"] == "reports/.revision-1.test.tmp/report.html"
-    assert any(command.startswith("mv -T --") for command in service.process.commands)
+    assert service.fs.moves == [
+        (
+            "/home/daytona/workspace/reports/.revision-1.test.tmp",
+            "/home/daytona/workspace/reports/revision-1",
+        )
+    ]
     assert result["htmlPath"] == "reports/revision-1/report.html"
     assert result["htmlSize"] == 3
     assert result["htmlSha256"] == "html"
+    assert len(result["validation"]["pages"]) == 200
+    stored_job = context.session_state[REPORT_JOBS_STATE_KEY][job["jobId"]]
+    assert stored_job["validation"] == {"ok": True}
+    assert set(stored_job["render"]) == {"markdown", "pdf", "word", "html", "images"}
 
 
 @pytest.mark.anyio
@@ -234,14 +279,18 @@ async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
             return_value={
                 "status": "rendered",
                 "render": {
-                    "pdf": {"path": "reports/revision-1/report.pdf", "size": 1, "sha256": "pdf"},
+                    "pdf": {
+                        "path": "reports/.revision-1.test.tmp/report.pdf",
+                        "size": 1,
+                        "sha256": "pdf",
+                    },
                     "word": {
-                        "path": "reports/revision-1/report.docx",
+                        "path": "reports/.revision-1.test.tmp/report.docx",
                         "size": 2,
                         "sha256": "word",
                     },
                     "html": {
-                        "path": "reports/revision-1/report.html",
+                        "path": "reports/.revision-1.test.tmp/report.html",
                         "size": 3,
                         "sha256": "html",
                     },
@@ -259,7 +308,7 @@ async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
             run_context=context,
         )
 
-    assert not any(command.startswith("mv -T --") for command in service.process.commands)
+    assert service.fs.moves == []
     store_job.assert_not_called()
 
 

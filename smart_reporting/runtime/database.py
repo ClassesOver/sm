@@ -101,7 +101,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
                 deserialize=deserialize,
                 runs_limit=runs_limit,
             )
-        except BaseException as error:
+        except Exception as error:
             logger.warning(
                 "agent_session_read_failed backend=postgresql session_type={} duration_ms={} "
                 "error_type={}",
@@ -110,7 +110,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
                 type(error).__name__,
             )
             raise
-        logger.info(
+        logger.debug(
             "agent_session_read_completed backend=postgresql session_type={} duration_ms={} "
             "found={}",
             _session_type_name(session_type),
@@ -125,7 +125,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
         try:
             clear_terminal_session_reasoning(session)
             result = await super().upsert_session(session, deserialize=deserialize)
-        except BaseException as error:
+        except Exception as error:
             logger.warning(
                 "agent_session_write_failed backend=postgresql session_type={} duration_ms={} "
                 "error_type={}",
@@ -134,7 +134,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
                 type(error).__name__,
             )
             raise
-        logger.info(
+        logger.debug(
             "agent_session_write_completed backend=postgresql session_type={} duration_ms={} "
             "stored={}",
             session_type,

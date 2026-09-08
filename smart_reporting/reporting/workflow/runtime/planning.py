@@ -958,6 +958,26 @@ class RuntimePlanningMixin:
         state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
         state[REPORT_OUTLINE_HASH_STATE_KEY] = _payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
         self._assert_state_safe(state)
+        logger.info(
+            "report_outline_planned outline={}",
+            json.dumps(
+                {
+                    "reportTitle": outline.title,
+                    "sectionCount": len(outline.sections),
+                    "sections": [
+                        {
+                            "sectionNumber": section.section_number,
+                            "sectionCode": section.code,
+                            "title": section.title,
+                            "analysisCount": len(section.analysis_ids),
+                        }
+                        for section in outline.sections
+                    ],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         return StepOutput(content=outline)
 
     @staticmethod
@@ -1019,11 +1039,14 @@ class RuntimePlanningMixin:
                 "经营影响",
             ],
             "analysisContext": _analysis_context_payload(analysis_context),
-            "dataUnderstanding": state[REPORT_DATA_UNDERSTANDING_STATE_KEY],
-            "schemas": _planning_schema_payload(
+            # DataUnderstanding 与 Schema 共享 source/table；将期间元数据附加到
+            # Schema 的表项后只保留一份模型输入投影。完整 DataUnderstanding 仍保存在
+            # Workflow state，并由服务端 validation 使用，不改变任何硬校验边界。
+            "schemas": _planning_schema_payload_with_periods(
                 snapshots,
                 tables={item.table for item in data_understanding.tables},
                 description_limit=160,
+                data_understanding=data_understanding,
             ),
         }
         validation_feedback: dict[str, Any] | None = None
@@ -1056,10 +1079,10 @@ class RuntimePlanningMixin:
                             " requirementIds 删除失效引用"
                         )
                 payload["correction"] = correction
-                logger.info(
-                    "report_planner_correction agent_id=%s attempt=%s "
-                    "previous_output_sha256=%s allowed_mutation_paths=%s "
-                    "required_deletion_paths=%s issue_signature=%s",
+                logger.debug(
+                    "report_planner_correction agent_id={} attempt={} "
+                    "previous_output_sha256={} allowed_mutation_paths={} "
+                    "required_deletion_paths={} issue_signature={}",
                     getattr(self._analysis_agent, "id", "report-analysis-planner"),
                     attempt,
                     _payload_sha256(previous_output) if previous_output is not None else "none",
@@ -1099,8 +1122,8 @@ class RuntimePlanningMixin:
             normalized_output, column_repairs = _normalize_requirement_columns(output, snapshots)
             if column_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_columns_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_columns_normalized repairs={}",
                     json.dumps(column_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1111,8 +1134,8 @@ class RuntimePlanningMixin:
             )
             if period_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_periods_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_periods_normalized repairs={}",
                     json.dumps(period_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1145,7 +1168,7 @@ class RuntimePlanningMixin:
                         tuple(unexpected_paths),
                     )
                     output = AnalysisBundle.model_validate(output_payload)
-                    loguru_logger.info(
+                    loguru_logger.debug(
                         "report_planner_correction_scope_normalized agent_id={} attempt={} "
                         "restored_paths={}",
                         getattr(self._analysis_agent, "id", "report-analysis-planner"),
@@ -1157,8 +1180,8 @@ class RuntimePlanningMixin:
             )
             if split_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_unsafe_multi_table_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_unsafe_multi_table_normalized repairs={}",
                     json.dumps(split_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1168,9 +1191,9 @@ class RuntimePlanningMixin:
             )
             if grain_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_grain_normalized agent_id=%s before_sha256=%s "
-                    "after_sha256=%s repairs=%s",
+                logger.debug(
+                    "report_planner_grain_normalized agent_id={} before_sha256={} "
+                    "after_sha256={} repairs={}",
                     getattr(self._analysis_agent, "id", "report-analysis-planner"),
                     _payload_sha256(output_payload),
                     _payload_sha256(normalized_payload),
@@ -1181,8 +1204,8 @@ class RuntimePlanningMixin:
             normalized_output, requirement_repairs = _normalize_duplicate_requirements(output)
             if requirement_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_requirements_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_requirements_normalized repairs={}",
                     json.dumps(requirement_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1192,8 +1215,8 @@ class RuntimePlanningMixin:
             )
             if comparison_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_comparison_roles_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_comparison_roles_normalized repairs={}",
                     json.dumps(comparison_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1219,8 +1242,8 @@ class RuntimePlanningMixin:
                 )
                 if correction_signature == last_semantic_correction_signature:
                     logger.warning(
-                        "report_planner_no_progress agent_id=%s attempt=%s "
-                        "output_sha256=%s issue_signature=%s",
+                        "report_planner_no_progress agent_id={} attempt={} "
+                        "output_sha256={} issue_signature={}",
                         getattr(self._analysis_agent, "id", "report-analysis-planner"),
                         attempt,
                         _payload_sha256(output_payload),
@@ -1283,10 +1306,12 @@ class RuntimePlanningMixin:
         }
         base_payload = {
             "requirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
-            "dataUnderstanding": state[REPORT_DATA_UNDERSTANDING_STATE_KEY],
+            # requirements 已包含每张表的期间字段和粒度；SQL planner 只需列名、类型
+            # 和聚合语义，完整 DataUnderstanding 留在服务端状态用于严格审核。
             "schemas": _planning_schema_payload(
                 self._snapshots(run_context),
                 tables=referenced_tables,
+                description_limit=0,
             ),
             "period": self._envelope(run_context).period.model_dump(mode="json"),
             "periodWindows": self._envelope(run_context).period_windows().public_dict(),
@@ -1302,35 +1327,6 @@ class RuntimePlanningMixin:
         sources = {item.id: item for item in self._sources(run_context)}
         snapshots = self._snapshots(run_context)
         envelope = self._envelope(run_context)
-        compiled = _compile_single_table_queries(
-            requirements,
-            snapshots=snapshots,
-            envelope=envelope,
-            row_preserving_requirement_ids=tuple(
-                state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-            ),
-        )
-        if compiled is not None:
-            compiled_approved, issues = _approve_generated_queries(
-                compiled,
-                sources=sources,
-                snapshots=snapshots,
-                envelope=envelope,
-                requirements=requirements,
-                row_preserving_requirement_ids=tuple(
-                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-                ),
-                data_shapes=data_shapes,
-            )
-            if not issues:
-                state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
-                    item.model_dump(mode="json", by_alias=True) for item in compiled_approved
-                ]
-                return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
-            loguru_logger.warning(
-                "report_single_table_query_compilation_rejected issue_count={}",
-                len(issues),
-            )
         validation_feedback: dict[str, Any] | None = None
         approved: tuple[ApprovedQuery, ...] | None = None
         call_budget = StructuredOutputCallBudget()
@@ -1374,6 +1370,37 @@ class RuntimePlanningMixin:
                 continue
             break
         if approved is None:
+            # 模型是 SQL 的首选决策者；仅在模型连续五次无法产出通过校验的结果时，
+            # 单表查询才使用既有确定性编译兜底，避免可恢复的模型波动阻断报表。
+            compiled = _compile_single_table_queries(
+                requirements,
+                snapshots=snapshots,
+                envelope=envelope,
+                row_preserving_requirement_ids=tuple(
+                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                ),
+            )
+            if compiled is not None:
+                compiled_approved, compilation_issues = _approve_generated_queries(
+                    compiled,
+                    sources=sources,
+                    snapshots=snapshots,
+                    envelope=envelope,
+                    requirements=requirements,
+                    row_preserving_requirement_ids=tuple(
+                        state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                    ),
+                    data_shapes=data_shapes,
+                )
+                if not compilation_issues:
+                    state[REPORT_APPROVED_QUERIES_STATE_KEY] = [
+                        item.model_dump(mode="json", by_alias=True) for item in compiled_approved
+                    ]
+                    loguru_logger.warning(
+                        "report_sql_model_fallback_to_compiler requirement_count={}",
+                        len(requirements),
+                    )
+                    return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
             raise ReportingError(
                 "report_query_batch_invalid",
                 "SQL 批次连续五次未通过校验。最后一次反馈："
@@ -1662,6 +1689,47 @@ def _planning_schema_payload(
                             column_payload["description"], description_limit
                         )
             payload.append(schema_payload)
+    return payload
+
+
+def _planning_schema_payload_with_periods(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    *,
+    data_understanding: DataUnderstandingPlan,
+    tables: set[str] | None = None,
+    description_limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """把 DataUnderstanding 的期间元数据合并进 Schema 的模型投影。
+
+    DataUnderstanding 和 PlanningSchema 都按 source/table 标识同一张物理表。
+    这里仅合并发送给 planner 的 JSON，不修改受信状态或 Pydantic 契约；服务端仍
+    使用原始 DataUnderstanding 做字段、期间和身份校验。若某表未被选中，保持
+    ``_planning_schema_payload`` 的筛选结果，不把额外表暴露给模型。
+    """
+
+    period_by_table = {
+        (item.source_id.lower(), item.table.lower()): {
+            "periodColumn": item.period_column,
+            "periodGranularity": item.period_granularity,
+        }
+        for item in data_understanding.tables
+    }
+    payload = _planning_schema_payload(
+        snapshots,
+        tables=tables,
+        description_limit=description_limit,
+    )
+    for schema in payload:
+        for table in schema.get("tables", ()):
+            if not isinstance(table, dict):
+                continue
+            key = (
+                str(table.get("sourceId", "")).lower(),
+                str(table.get("table", "")).lower(),
+            )
+            period = period_by_table.get(key)
+            if period is not None:
+                table.update(period)
     return payload
 
 
@@ -1972,6 +2040,8 @@ def _validate_proposed_exclusive_scopes(
 
 
 def _bounded_description(value: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     if len(value) <= limit:
         return value
     return value[: limit - 3].rstrip() + "..."

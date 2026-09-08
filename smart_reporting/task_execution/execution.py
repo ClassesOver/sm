@@ -24,6 +24,7 @@ from daytona.common.errors import DaytonaNotFoundError
 
 from ..agent_control import AGENT_PLAN_STATE_KEY
 from ..runtime.observability import suppress_expected_probe_tracing
+from ..sandbox import ExecRequest, SandboxNotFound
 from ..skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -40,7 +41,6 @@ from ..workspace import (
     WorkspaceError,
     WorkspaceProcessNotFound,
     WorkspaceService,
-    WorkspaceToolkit,
     _thread,
 )
 from .acceptance import AcceptancePolicy, requirement_digest
@@ -51,6 +51,7 @@ from .execution_support import (
     validate_command_policy,
 )
 from .models import Lease, TaskExecutionScope, TaskSnapshot
+from .process_runtime import ManagedProcessRuntime
 from .repository_impl import (
     TERMINAL_EXECUTION_STATUSES,
     TaskExecution,
@@ -59,7 +60,7 @@ from .repository_impl import (
     TaskExecutionTask,
     utcnow,
 )
-from .tools import build_workspace_changes
+from .tools import abuild_workspace_changes
 
 TASK_EXECUTION_DEPENDENCY = "AgentOS 任务执行"
 TASK_EXECUTION_FINISH_FAILURE_STATE_KEY = "agentos_task_execution_finish_failure"
@@ -243,6 +244,7 @@ class _InstalledValidator:
 
 TOOL_SPECS = {
     "terminal": ToolSpec("workspace_write", False),
+    "run_python_script": ToolSpec("workspace_write", False),
     "process": ToolSpec("process_control", False),
     "finish_task": ToolSpec("finish", False),
     "view_image": ToolSpec("read", True, "media"),
@@ -622,7 +624,7 @@ class TaskExecutionKernel:
         self.acceptance_policy = AcceptancePolicy()
         self.require_finish_verification = True
         self.evaluate_finish_acceptance = True
-        self.workspace = WorkspaceToolkit(service)
+        self.process_runtime = ManagedProcessRuntime(service)
         self._migration_lock = asyncio.Lock()
         self._terminal_runtimes: OrderedDict[tuple[str, str], str] = OrderedDict()
 
@@ -768,14 +770,16 @@ class TaskExecutionKernel:
                             except Exception:
                                 pass
                         if cleanup_due:
-                            await sandbox.process.exec(
-                                "/bin/sh -c "
-                                + shlex.quote(
-                                    f"find {shlex.quote(TOOL_OUTPUT_ROOT)} -mindepth 1 -maxdepth 1 "
-                                    "-type d -mtime +7 -exec rm -rf -- {} +"
-                                ),
-                                timeout=60,
+                            cleanup_command = "/bin/sh -c " + shlex.quote(
+                                f"find {shlex.quote(TOOL_OUTPUT_ROOT)} -mindepth 1 -maxdepth 1 "
+                                "-type d -mtime +7 -exec rm -rf -- {} +"
                             )
+                            if getattr(sandbox, "ref", None) is not None:
+                                await sandbox.process.exec(
+                                    ExecRequest(command=cleanup_command, timeout=60)
+                                )
+                            else:
+                                await sandbox.process.exec(cleanup_command, timeout=60)
                         await sandbox.fs.upload_file(raw[:stored_bytes], path)
             except Exception:
                 async with scheduler.state():
@@ -1193,7 +1197,12 @@ class TaskExecutionKernel:
     async def _sandbox(self, scope: TaskExecutionRuntime):
         async with self.service._async_client() as client:
             sandbox = await self.service._asandbox_for(client, scope.thread_id)
-            if str(getattr(sandbox, "id", "") or "") != scope.sandbox_id:
+            sandbox_id = str(
+                getattr(sandbox, "id", "")
+                or getattr(getattr(sandbox, "ref", None), "resource_id", "")
+                or ""
+            )
+            if sandbox_id != scope.sandbox_id:
                 raise TaskExecutionRepositoryError(
                     "task_sandbox_mismatch", "当前 Daytona 工作区与执行任务绑定不一致。"
                 )
@@ -1303,7 +1312,7 @@ class TaskExecutionKernel:
         assert execution.command_id is not None
         deadline = asyncio.get_running_loop().time() + wait_ms / 1000
         while True:
-            command = await self.workspace._managed_command(
+            command = await self.process_runtime.get_command(
                 process,
                 execution.daytona_session_id,
                 execution.command_id,
@@ -1316,7 +1325,7 @@ class TaskExecutionKernel:
             execution.daytona_session_id,
             execution.command_id,
         )
-        return self.workspace._session_output(
+        return self.process_runtime.format_output(
             logs,
             session_id=execution.daytona_session_id,
             command_id=execution.command_id,
@@ -1324,7 +1333,7 @@ class TaskExecutionKernel:
             exit_code=exit_code,
             offset=execution.output_cursor,
             max_bytes=MAX_TOOL_OUTPUT_BYTES,
-            timeout_marker=self.workspace._managed_timeout_marker(command),
+            timeout_marker=self.process_runtime.timeout_marker(command),
         )
 
     async def _persist_result(
@@ -1392,7 +1401,7 @@ class TaskExecutionKernel:
             raise WorkspaceError("apply_patch heredoc 不支持 workdir 或 PTY。")
         scope = _scope or await self.scope(run_context)
         patch_changes = (
-            await asyncio.to_thread(build_workspace_changes, self.service, scope.thread_id, patch)
+            await abuild_workspace_changes(self.service, scope.thread_id, patch)
             if patch is not None
             else None
         )
@@ -1453,9 +1462,7 @@ class TaskExecutionKernel:
         if patch is not None:
             try:
                 assert patch_changes is not None
-                applied = await asyncio.to_thread(
-                    self.service.apply_changes, scope.thread_id, patch_changes
-                )
+                applied = await self.service.aapply_changes(scope.thread_id, patch_changes)
                 result = {**applied, "ok": True, "message": "补丁已应用。"}
                 await self._check_fence(scope, execution_id)
                 execution = await self.repository.update_execution(
@@ -1510,7 +1517,7 @@ class TaskExecutionKernel:
         managed_command = self._managed_command(protected_command, workdir, timeout, pty)
         try:
             async for sandbox in self._sandbox(scope):
-                session_id, command_id, _value = await self.workspace._start_managed_session(
+                session_id, command_id, _value = await self.process_runtime.start_session(
                     sandbox.process,
                     scope.thread_id,
                     SessionExecuteRequest(
@@ -1590,6 +1597,73 @@ class TaskExecutionKernel:
             }
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
 
+    async def run_python_script(
+        self,
+        script_path: str,
+        *,
+        timeout: int = DEFAULT_TERMINAL_TIMEOUT,
+        run_context: RunContext | None = None,
+        _scope: TaskExecutionRuntime | None = None,
+    ) -> dict[str, Any]:
+        scope = _scope or await self.scope(run_context)
+        mutation_sequence = await self.repository.increment_mutation(
+            scope.external_run_id,
+            lease=scope.lease,
+            internal_run_id=scope.internal_run_id,
+        )
+        execution_id = uuid.uuid4().hex
+        execution = await self.repository.reserve_execution(
+            execution_id=execution_id,
+            external_run_id=scope.external_run_id,
+            internal_run_id=scope.internal_run_id,
+            owner_user_id=scope.owner_user_id,
+            thread_id=scope.thread_id,
+            sandbox_id=scope.sandbox_id,
+            daytona_session_id=f"python-{execution_id}",
+            mutation_sequence=mutation_sequence,
+            is_verification=False,
+            kind="terminal",
+            attempt_no=scope.attempt_no,
+            lease_epoch=scope.lease_epoch,
+            operation_receipt={"runner": "python", "scriptPath": script_path},
+            lease=scope.lease,
+        )
+        await self._check_fence(scope, execution_id)
+        try:
+            result = await self.service.arun_python_script(
+                scope.thread_id, script_path, timeout=timeout
+            )
+            exit_code = result.get("exitCode")
+            execution = await self.repository.update_execution(
+                execution_id,
+                status="completed" if exit_code == 0 else "failed",
+                output=str(result.get("output", "")),
+                exit_code=exit_code if isinstance(exit_code, int) else 1,
+            )
+            await self.repository.record_execution_mutation(
+                scope.external_run_id,
+                execution.execution_id,
+                execution.mutation_sequence,
+                lease=scope.lease,
+                internal_run_id=scope.internal_run_id,
+            )
+            # provider 回执补充脚本身份等字段；执行账本负责状态与确定性错误判定，
+            # 其公共字段必须最后合并，防止下层 ok=true 覆盖 traceback 等失败事实。
+            return {**result, **self._public_execution(execution)}
+        except Exception as error:
+            execution = await self.repository.update_execution(
+                execution_id,
+                status="failed",
+                output=str(error)[:1000],
+                exit_code=1,
+            )
+            return {
+                **self._public_execution(execution),
+                "ok": False,
+                "code": getattr(error, "code", "execution_failed"),
+                "message": str(error)[:1000],
+            }
+
     async def _record_terminal_mutation(
         self,
         scope: TaskExecutionRuntime,
@@ -1636,7 +1710,7 @@ class TaskExecutionKernel:
                     try:
                         with suppress_expected_probe_tracing():
                             info = await sandbox.fs.get_file_info(current)
-                    except DaytonaNotFoundError:
+                    except (DaytonaNotFoundError, SandboxNotFound):
                         await sandbox.fs.create_folder(current, "700")
                         continue
                     if self.service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
@@ -1644,7 +1718,7 @@ class TaskExecutionKernel:
                 try:
                     with suppress_expected_probe_tracing():
                         info = await sandbox.fs.get_file_info(runtime_path)
-                except DaytonaNotFoundError:
+                except (DaytonaNotFoundError, SandboxNotFound):
                     await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
                 else:
                     if not self.service._is_regular_file(info):
@@ -1812,7 +1886,7 @@ class TaskExecutionKernel:
         await self._check_fence(scope, operation_id)
         try:
             async for sandbox in self._sandbox(scope):
-                await self.workspace._managed_command(
+                await self.process_runtime.get_command(
                     sandbox.process,
                     execution.daytona_session_id,
                     execution.command_id,
@@ -1923,44 +1997,39 @@ class TaskExecutionKernel:
         if mode == "patch":
             if not isinstance(patch, str) or not patch.strip():
                 raise WorkspaceError("patch 模式必须提供完整补丁。")
-            changes = await asyncio.to_thread(
-                build_workspace_changes, self.service, scope.thread_id, patch
-            )
+            changes = await abuild_workspace_changes(self.service, scope.thread_id, patch)
         elif mode == "replace":
             if not isinstance(path, str) or not isinstance(old_string, str) or not old_string:
                 raise WorkspaceError("replace 模式必须提供 path 和非空 old_string。")
             if not isinstance(new_string, str) or not isinstance(replace_all, bool):
                 raise WorkspaceError("replace 模式参数无效。")
 
-            def replacement() -> tuple[list[dict[str, Any]], int]:
-                content, _mime = self.service.file_bytes(scope.thread_id, path)
-                try:
-                    original = content.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
-                count = original.count(old_string)
-                if count == 0:
-                    raise WorkspaceError("old_string 在目标文件中不存在。")
-                if count != 1 and not replace_all:
-                    raise WorkspaceError(
-                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
-                    )
-                updated = original.replace(old_string, new_string, -1 if replace_all else 1)
-                if updated == original:
-                    return [], 0
-                return (
-                    [
-                        {
-                            "operation": "update",
-                            "path": path,
-                            "content": updated,
-                            "expected_sha256": hashlib.sha256(content).hexdigest(),
-                        }
-                    ],
-                    count if replace_all else 1,
+            file_content, _mime = await self.service.afile_bytes(scope.thread_id, path)
+            try:
+                original = file_content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
+            count = original.count(old_string)
+            if count == 0:
+                raise WorkspaceError("old_string 在目标文件中不存在。")
+            if count != 1 and not replace_all:
+                raise WorkspaceError(
+                    "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
                 )
-
-            changes, replacements = await asyncio.to_thread(replacement)
+            updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+            changes = (
+                []
+                if updated == original
+                else [
+                    {
+                        "operation": "update",
+                        "path": path,
+                        "content": updated,
+                        "expected_sha256": hashlib.sha256(file_content).hexdigest(),
+                    }
+                ]
+            )
+            replacements = count if replace_all else 1
         elif mode == "create":
             if not isinstance(path, str) or not isinstance(content, str):
                 raise WorkspaceError("create 模式必须提供 path 和 content。")
@@ -2022,7 +2091,7 @@ class TaskExecutionKernel:
         await self._check_fence(scope, execution_id)
         applied = False
         try:
-            result = await asyncio.to_thread(self.service.apply_changes, scope.thread_id, changes)
+            result = await self.service.aapply_changes(scope.thread_id, changes)
             applied = True
             await self._check_fence(scope, execution_id)
             await self.repository.update_execution(
@@ -2539,7 +2608,7 @@ class TaskExecutionKernel:
                         try:
                             with suppress_expected_probe_tracing():
                                 info = await sandbox.fs.get_file_info(current)
-                        except DaytonaNotFoundError:
+                        except (DaytonaNotFoundError, SandboxNotFound):
                             await sandbox.fs.create_folder(current, "755")
                             continue
                         if self.service._is_symlink(info) or not bool(
@@ -2632,7 +2701,13 @@ class TaskExecutionKernel:
                         if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
                             return False
                     return True
-        except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
+        except (
+            TaskExecutionRepositoryError,
+            DaytonaNotFoundError,
+            SandboxNotFound,
+            WorkspaceError,
+            TimeoutError,
+        ):
             return False
         return False
 
@@ -2644,17 +2719,26 @@ class TaskExecutionKernel:
         try:
             async with asyncio.timeout(MAX_VALIDATOR_STAGE_TIMEOUT):
                 async for sandbox in self._sandbox(scope):
-                    result = await sandbox.process.exec(
-                        shlex.join(["sudo", "rm", "-rf", "--", validator_dir]),
-                        timeout=30,
-                    )
+                    cleanup_command = shlex.join(["sudo", "rm", "-rf", "--", validator_dir])
+                    if getattr(sandbox, "ref", None) is not None:
+                        result = await sandbox.process.exec(
+                            ExecRequest(command=cleanup_command, timeout=30)
+                        )
+                    else:
+                        result = await sandbox.process.exec(cleanup_command, timeout=30)
                     if getattr(result, "exit_code", None) != 0:
                         raise WorkspaceError("validator 临时目录清理失败。")
                     try:
                         await sandbox.fs.delete_file(validator_dir, recursive=True)
-                    except DaytonaNotFoundError:
+                    except (DaytonaNotFoundError, SandboxNotFound):
                         pass
-        except (TaskExecutionRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
+        except (
+            TaskExecutionRepositoryError,
+            DaytonaNotFoundError,
+            SandboxNotFound,
+            WorkspaceError,
+            TimeoutError,
+        ):
             pass
 
     @staticmethod
@@ -2826,9 +2910,7 @@ class TaskExecutionKernel:
             if relative.startswith(f"{WORKSPACE_ROOT}/"):
                 relative = relative.removeprefix(f"{WORKSPACE_ROOT}/")
             try:
-                content, _mime = await asyncio.to_thread(
-                    self.service.file_bytes, scope.thread_id, relative
-                )
+                content, _mime = await self.service.afile_bytes(scope.thread_id, relative)
             except (DaytonaNotFoundError, WorkspaceError):
                 continue
             actual_sha256 = hashlib.sha256(content).hexdigest()

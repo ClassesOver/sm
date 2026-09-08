@@ -86,7 +86,7 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
 REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
     {
         "apply_analysis_patch",
-        "terminal",
+        "run_python_script",
         "submit_visualization_charts",
     }
 )
@@ -204,6 +204,28 @@ def record_reporting_tool_event(event: Any) -> None:
             value = getattr(event, field, None)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 current[alias] += value
+
+
+def reporting_python_script_failed(result: Any) -> bool:
+    """统一判定受控 Python runner 回执是否表示执行失败。"""
+
+    if not isinstance(result, Mapping):
+        return False
+    if result.get("ok") is False and result.get("code") == "execution_output_error":
+        return True
+    for key in ("exitCode", "exit_code"):
+        exit_code = result.get(key)
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+            return True
+    output = result.get("output")
+    if not isinstance(output, str):
+        return False
+    # 图表脚本会逐项自检并在保持进程 exit code 为 0 时输出明确失败标记；
+    # 这里只识别协议化行，避免普通业务日志中的 ERROR 单词造成误判。
+    return any(
+        ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
+        for line in output.splitlines()
+    )
 
 
 def reporting_phase_from_acceptance_contract(value: Any) -> ReportingPhase | None:
@@ -590,23 +612,6 @@ def reporting_visualization_recovery_from_run_context(run_context: RunContext | 
     )
 
 
-def reporting_visualization_script_session_available_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return False
-    sessions = (
-        run_context.session_state.get("reportingVisualizationSessions")
-        if run_context is not None and isinstance(run_context.session_state, Mapping)
-        else None
-    )
-    return (
-        isinstance(sessions, Sequence)
-        and not isinstance(sessions, (str, bytes))
-        and any(isinstance(session_id, str) and session_id for session_id in sessions)
-    )
-
-
 def _reporting_visualization_state_flag(
     run_context: RunContext | None,
     key: str,
@@ -621,7 +626,7 @@ def reporting_visualization_script_written_from_run_context(
 ) -> bool:
     return _reporting_visualization_state_flag(
         run_context, REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY
-    ) or reporting_visualization_script_session_available_from_run_context(run_context)
+    )
 
 
 def reporting_visualization_script_executed_from_run_context(

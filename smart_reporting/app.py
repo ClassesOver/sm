@@ -55,9 +55,11 @@ from .reporting_mcp.identity import CapabilityTokenVerifier
 from .runtime.application import ApplicationContext, create_agentos_app
 from .runtime.database import check_database, create_agent_database
 from .runtime.execution import ExecutionContext, configure_execution_tracing
-from .runtime.logging import configure_file_logging
+from .runtime.logging import configure_application_logging, configure_file_logging
 from .runtime.settings import AgentSettings
+from .sandbox.factory import create_sandbox_provider
 from .workspace import (
+    AsyncSandboxRegistry,
     WorkspaceError,
     WorkspacePathConflict,
     WorkspaceService,
@@ -77,6 +79,7 @@ class WorkspaceDeleteFilePayload(BaseModel):
 
 install_agno_function_argument_decoder()
 settings = AgentSettings.from_environment()
+configure_application_logging(debug=settings.debug)
 configure_file_logging(
     settings.log_file_path,
     debug=settings.debug,
@@ -87,11 +90,15 @@ validate_configured_tiktoken_cache()
 workspace_secret = settings.workspace_hmac_secret
 agent_database = create_agent_database(settings.database_url)
 configure_execution_tracing(agent_database, settings)
+async_sandbox_registry = AsyncSandboxRegistry(agent_database.async_db)
+sandbox_provider = create_sandbox_provider(settings, registry=async_sandbox_registry)
 workspace_service = WorkspaceService(
     secret=workspace_secret,
     database=agent_database,
     snapshot=settings.workspace_snapshot,
     network_allow_list=settings.daytona_network_allow_list,
+    async_registry=async_sandbox_registry,
+    provider=sandbox_provider,
 )
 report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
 quality_warning_repository = SqlAlchemyQualityWarningRepository(agent_database.async_engine)
@@ -120,6 +127,17 @@ async def _log_reporting_runtime_identity() -> None:
         agent_database.backend,
         REPORTING_DB_SCHEMA,
         settings.workers,
+    )
+
+
+def _refresh_file_logging() -> None:
+    """Uvicorn 初始化 named logger 后恢复文件日志绑定。"""
+
+    configure_file_logging(
+        settings.log_file_path,
+        debug=settings.debug,
+        max_bytes=settings.log_file_max_bytes,
+        backup_count=settings.log_file_backup_count,
     )
 
 
@@ -262,7 +280,7 @@ async def workspace_files(request: Request, threadId: str, path: str = ""):
     context = _application_context(request)
     _check_thread(request, threadId)
     try:
-        entries = await run_in_threadpool(context.workspace_service.list_files, threadId, path)
+        entries = await context.workspace_service.alist_files(threadId, path)
         return {"ok": True, "path": path, "entries": entries}
     except Exception as error:
         _workspace_error(error)
@@ -281,7 +299,7 @@ async def workspace_upload(
     if len(content) > WORKSPACE_FILE_BYTES:
         return JSONResponse({"error": "export_file_too_large"}, status_code=413)
     try:
-        entry = await run_in_threadpool(context.workspace_service.upload, threadId, path, content)
+        entry = await context.workspace_service.aupload(threadId, path, content)
         return {"ok": True, "entry": entry}
     except Exception as error:
         _workspace_error(error)
@@ -300,12 +318,7 @@ async def workspace_file_create(
     if len(content) > WORKSPACE_FILE_BYTES:
         return JSONResponse({"error": "export_file_too_large"}, status_code=413)
     try:
-        entry = await run_in_threadpool(
-            context.workspace_service.create_file_locked,
-            threadId,
-            path,
-            content,
-        )
+        entry = await context.workspace_service.acreate_file_locked(threadId, path, content)
         return JSONResponse({"ok": True, "entry": entry}, status_code=201)
     except WorkspacePathConflict:
         return JSONResponse({"error": "workspace_path_conflict"}, status_code=409)
@@ -323,11 +336,7 @@ async def workspace_file(
     context = _application_context(request)
     _check_thread(request, threadId)
     try:
-        content, mime_type = await run_in_threadpool(
-            context.workspace_service.file_bytes,
-            threadId,
-            path,
-        )
+        content, mime_type = await context.workspace_service.afile_bytes(threadId, path)
     except Exception as error:
         _workspace_error(error)
     safe_name = (
@@ -370,12 +379,7 @@ async def workspace_delete_file(
     thread_id = payload.thread_id
     _check_thread(request, thread_id)
     try:
-        await run_in_threadpool(
-            context.workspace_service.delete_file,
-            thread_id,
-            payload.path,
-            payload.recursive,
-        )
+        await context.workspace_service.adelete_file(thread_id, payload.path, payload.recursive)
         return {"ok": True}
     except Exception as error:
         _workspace_error(error)
@@ -387,7 +391,7 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     thread_id = str(payload.get("threadId") or "")
     _check_thread(request, thread_id)
     try:
-        deleted = await run_in_threadpool(context.workspace_service.destroy, thread_id)
+        deleted = await context.workspace_service.adestroy(thread_id)
     except Exception as error:
         _workspace_error(error)
     if not deleted:
@@ -434,6 +438,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
     application.include_router(create_quality_warning_router())
+    application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)

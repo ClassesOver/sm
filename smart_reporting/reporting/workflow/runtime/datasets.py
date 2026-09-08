@@ -309,13 +309,15 @@ class RuntimeDatasetsMixin:
                         )
                         if callable(ensure_directory):
                             await ensure_directory(sandbox, profile_remote.rsplit("/", 1)[0])
-                        # Daytona SDK 默认允许单次上传等待 30 分钟；画像写入属于可重试的
-                        # 步骤内操作，必须在有限时间失败，才能由 Workflow 重建连接重试。
-                        await filesystem.upload_file(
-                            profiled.profile_content,
-                            profile_remote,
-                            timeout=PROFILE_TRANSFER_TIMEOUT_SECONDS,
-                        )
+                        # Daytona SDK 的 timeout 只约束连接和响应读取，不保证请求体写入
+                        # 阶段存在墙钟上限。画像上传属于可重试步骤，外层取消边界必须覆盖
+                        # 整个调用，否则网络背压会永久占住 Workflow 和画像并发槽位。
+                        with anyio.fail_after(PROFILE_TRANSFER_TIMEOUT_SECONDS):
+                            await filesystem.upload_file(
+                                profiled.profile_content,
+                                profile_remote,
+                                timeout=PROFILE_TRANSFER_TIMEOUT_SECONDS,
+                            )
                         stored_profile = await self.workspace_service._adownload_file(
                             sandbox, profile_remote, profiled.context.profile_file.size
                         )
@@ -333,9 +335,9 @@ class RuntimeDatasetsMixin:
                     errors[index] = error
                 finally:
                     context = contexts[index]
-                    logger.info(
-                        "report_dataset_profile dataset_id=%s row_count=%s profile_bytes=%s "
-                        "model_view_bytes=%s duration_ms=%s cache_hit=%s",
+                    logger.debug(
+                        "report_dataset_profile dataset_id={} row_count={} profile_bytes={} "
+                        "model_view_bytes={} duration_ms={} cache_hit={}",
                         handle.dataset_id,
                         context.row_count if context is not None else handle.row_count,
                         context.profile_file.size if context is not None else 0,

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import subprocess
 import tempfile
@@ -142,29 +143,11 @@ def _initialize_git_tree(root: Path) -> None:
         raise WorkspaceError("补丁应用内核不可用，请稍后重试。") from error
 
 
-def build_workspace_changes(
-    service: WorkspaceService,
-    thread: str,
-    patch: str,
-    expected_sha256: dict[str, str] | None = None,
+def _build_changes_from_originals(
+    normalized: str,
+    paths: list[tuple[_PatchOperation, str]],
+    originals: dict[str, str],
 ) -> list[dict[str, Any]]:
-    normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
-    operations = parse_unified_diff(normalized)
-    originals: dict[str, str] = {}
-    paths: list[tuple[_PatchOperation, str]] = []
-    for operation in operations:
-        path = service.normalize_path(operation.path, allow_root=False)[0]
-        paths.append((operation, path))
-        if operation.operation == "create":
-            if expected_sha256 and path in expected_sha256:
-                raise WorkspaceError("新增文件不能提供已有文件的基线 SHA-256。")
-            continue
-        current = service.read_text(thread, path)
-        digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
-        if expected_sha256 and expected_sha256.get(path) != digest:
-            raise WorkspaceError("文件内容已变化，请重新读取文件和哈希后再应用补丁。")
-        originals[path] = current
-
     # Git 是唯一的 hunk 应用器；临时树不包含真实 workspace，也不会使用 index 或
     # 真实仓库状态。先完整校验再应用，保证任何非法 diff 都不会越过 Daytona 的原子提交。
     with tempfile.TemporaryDirectory(prefix="reporting-patch-") as temporary:
@@ -215,3 +198,63 @@ def build_workspace_changes(
     if len(changes) > MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁转换后的文件操作不能超过 {MAX_PATCH_FILES} 个。")
     return changes
+
+
+def _normalized_patch_inputs(
+    service: WorkspaceService,
+    patch: str,
+    expected_sha256: dict[str, str] | None,
+) -> tuple[str, list[tuple[_PatchOperation, str]]]:
+    normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
+    paths = [
+        (operation, service.normalize_path(operation.path, allow_root=False)[0])
+        for operation in parse_unified_diff(normalized)
+    ]
+    for operation, path in paths:
+        if operation.operation == "create" and expected_sha256 and path in expected_sha256:
+            raise WorkspaceError("新增文件不能提供已有文件的基线 SHA-256。")
+    return normalized, paths
+
+
+def _validate_original_hash(
+    path: str,
+    current: str,
+    expected_sha256: dict[str, str] | None,
+) -> None:
+    digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
+    if expected_sha256 and expected_sha256.get(path) != digest:
+        raise WorkspaceError("文件内容已变化，请重新读取文件和哈希后再应用补丁。")
+
+
+def build_workspace_changes(
+    service: WorkspaceService,
+    thread: str,
+    patch: str,
+    expected_sha256: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    normalized, paths = _normalized_patch_inputs(service, patch, expected_sha256)
+    originals: dict[str, str] = {}
+    for operation, path in paths:
+        if operation.operation == "create":
+            continue
+        current = service.read_text(thread, path)
+        _validate_original_hash(path, current, expected_sha256)
+        originals[path] = current
+    return _build_changes_from_originals(normalized, paths, originals)
+
+
+async def abuild_workspace_changes(
+    service: WorkspaceService,
+    thread: str,
+    patch: str,
+    expected_sha256: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    normalized, paths = _normalized_patch_inputs(service, patch, expected_sha256)
+    originals: dict[str, str] = {}
+    for operation, path in paths:
+        if operation.operation == "create":
+            continue
+        current = await service.aread_text(thread, path)
+        _validate_original_hash(path, current, expected_sha256)
+        originals[path] = current
+    return await asyncio.to_thread(_build_changes_from_originals, normalized, paths, originals)

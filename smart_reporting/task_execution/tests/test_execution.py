@@ -22,7 +22,6 @@ from sqlalchemy import text
 
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
-from smart_reporting.reporting.tools import ReportingToolkit
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
@@ -48,6 +47,7 @@ from smart_reporting.task_execution.execution_support import (
     CODEX_EXEC_SESSIONS_STATE_KEY,
 )
 from smart_reporting.task_execution.models import Lease, TaskExecutionScope
+from smart_reporting.task_execution.process_runtime import ManagedProcessRuntime
 from smart_reporting.task_execution.repository import (
     TaskExecutionRepository,
     TaskExecutionRepositoryError,
@@ -64,7 +64,6 @@ from smart_reporting.workspace import (
     WorkspaceError,
     WorkspacePathConflict,
     WorkspaceService,
-    WorkspaceToolkit,
 )
 
 pytestmark = pytest.mark.integration
@@ -1545,85 +1544,6 @@ async def test_small_tool_output_only_gets_handle_when_explicitly_retained(execu
 
 
 @pytest.mark.anyio
-async def test_reporting_analysis_terminal_retains_small_output(execution_runtime):
-    runtime = execution_runtime
-    external_run_id = "report-coding-retain-test"
-    sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
-    scope = TaskExecutionScope(external_run_id, "user", "thread", sandbox_id, "report-agent")
-    task = await runtime.repository.create_task_with_initial_attempt(
-        scope,
-        "执行全局分析",
-        acceptance_contract={
-            "version": 1,
-            "requirements": [
-                {
-                    "id": "report-artifact",
-                    "validatorId": "report:artifact",
-                    "parameters": {
-                        "phase": "analysis",
-                        "phaseContract": {"taskKind": "analysis_item"},
-                    },
-                    "artifactPatterns": [],
-                }
-            ],
-        },
-    )
-    lease = await runtime.repository.claim_lease(external_run_id, "report-request")
-    assert isinstance(lease, Lease)
-    _task, attempt = await runtime.repository.open_initial(
-        external_run_id,
-        lease,
-        task.state_version,
-    )
-    context = RunContext(
-        run_id=attempt.internal_run_id,
-        session_id="thread",
-        user_id="user",
-        session_state={},
-        dependencies={
-            TASK_EXECUTION_DEPENDENCY: {
-                "externalRunId": external_run_id,
-                "leaseOwner": "report-request",
-                "leaseEpoch": lease.epoch,
-                "sandboxId": sandbox_id,
-            }
-        },
-    )
-    toolkit = ReportingToolkit(
-        runtime.workspace,
-        runtime.repository,
-        state_repository=AsyncMock(),
-    )
-
-    started = await toolkit.terminal(
-        "printf '收入同比增长 8.2%%'",
-        background=True,
-        run_context=context,
-    )
-    finish_remote_execution(
-        runtime,
-        started["execution_id"],
-        output="收入同比增长 8.2%",
-    )
-    result = await toolkit.process(
-        "poll",
-        session_id=started["execution_id"],
-        run_context=context,
-    )
-    if result["status"] == "draining":
-        result = await toolkit.process(
-            "poll",
-            session_id=started["execution_id"],
-            run_context=context,
-        )
-    page = await toolkit.read_tool_output(result["outputHandle"], _agno_run_context=context)
-
-    assert "收入同比增长 8.2%" in result["output"]
-    assert result["outputTruncated"] is False
-    assert page["content"] == result["output"]
-
-
-@pytest.mark.anyio
 async def test_reporting_tool_output_uses_smaller_preview_and_exact_handle_reads(
     execution_runtime,
 ):
@@ -2026,6 +1946,68 @@ async def test_replace_text内容不变时不记录mutation(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_patch_uses_async_workspace_mutation_path(tmp_path, monkeypatch):
+    synchronous = service(tmp_path)
+    synchronous.create_file("thread", "result.txt", b"before")
+    workspace = WorkspaceService(
+        synchronous.secret,
+        client=synchronous.client,
+        registry=synchronous.registry,
+        async_client=AsyncFakeClient(synchronous.client),
+        async_registry=AsyncMemoryRegistry(synchronous.registry.values),
+    )
+    monkeypatch.setattr(
+        workspace,
+        "apply_changes",
+        lambda *_args: pytest.fail("异步 Workflow 不得调用同步变更接口"),
+    )
+    async_apply = AsyncMock(
+        return_value={
+            "files": [
+                {
+                    "operation": "update",
+                    "path": "result.txt",
+                    "size": 5,
+                    "sha256": hashlib.sha256(b"after").hexdigest(),
+                }
+            ],
+            "operations": 1,
+        }
+    )
+    monkeypatch.setattr(workspace, "aapply_changes", async_apply)
+    repository = AsyncMock()
+    repository.increment_mutation.return_value = 1
+    kernel = TaskExecutionKernel(workspace, repository)
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0),
+        external_run_id="external-run",
+        internal_run_id="internal-run",
+        owner_user_id="user",
+        thread_id="thread",
+        sandbox_id=str(synchronous.sandbox_for("thread").id),
+        lease_owner="lease",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    result = await kernel.patch(
+        "overwrite",
+        "result.txt",
+        None,
+        None,
+        False,
+        None,
+        None,
+        content="after",
+        expected_sha256=hashlib.sha256(b"before").hexdigest(),
+        _scope=scope,
+    )
+
+    assert result["ok"] is True
+    async_apply.assert_awaited_once()
+
+
+@pytest.mark.anyio
 def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
     relative = "python3 \u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
     absolute = (
@@ -2225,9 +2207,9 @@ async def test_verify_allows_nonfatal_stderr_warning(execution_runtime, monkeypa
 
 
 def test_session_output_prefers_structured_streams_and_strips_fallback_framing():
-    toolkit = WorkspaceToolkit.__new__(WorkspaceToolkit)
+    runtime = ManagedProcessRuntime.__new__(ManagedProcessRuntime)
 
-    structured = toolkit._session_output(
+    structured = runtime.format_output(
         SimpleNamespace(
             output="\x01\x01\x01polluted stdout\n\x02\x02\x02polluted stderr",
             stdout="clean stdout",
@@ -2238,7 +2220,7 @@ def test_session_output_prefers_structured_streams_and_strips_fallback_framing()
         status="completed",
         exit_code=0,
     )
-    fallback = toolkit._session_output(
+    fallback = runtime.format_output(
         SimpleNamespace(output="\x01\x01\x01first\n\x02\x02\x02second"),
         session_id="session",
         command_id="command",
@@ -2275,20 +2257,20 @@ async def test_verify_rejects_modified_loaded_skill_script(execution_runtime):
 
 
 @pytest.mark.anyio
-async def test_skill_script_verification_uses_server_receipt_without_database(monkeypatch):
+async def test_skill_script_verification_uses_server_receipt_without_database():
     original = b"print('trusted')\n"
     modified = b"print('modified')\n"
     kernel = TaskExecutionKernel.__new__(TaskExecutionKernel)
-    kernel.service = SimpleNamespace(file_bytes=lambda _thread, _path: (modified, "text/plain"))
+    async_file_bytes = AsyncMock(return_value=(modified, "text/plain"))
+    kernel.service = SimpleNamespace(
+        afile_bytes=async_file_bytes,
+        file_bytes=lambda *_args: pytest.fail("异步校验不得调用同步工作区接口"),
+    )
 
     async def scope(_run_context):
         return SimpleNamespace(thread_id="thread")
 
-    async def inline_to_thread(function, *args):
-        return function(*args)
-
     kernel.scope = scope
-    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
     context = RunContext(
         run_id="run",
         session_id="thread",
@@ -2310,6 +2292,7 @@ async def test_skill_script_verification_uses_server_receipt_without_database(mo
 
     assert result is not None
     assert result["code"] == "verification_skill_script_modified"
+    async_file_bytes.assert_awaited_once_with("thread", "validate_report.py")
 
 
 @pytest.mark.anyio

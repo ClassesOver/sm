@@ -161,18 +161,25 @@ class SectionWorkflow:
                     else await self.rework(decision, context)
                 )
                 if receipt.get("status") != "accepted":
+                    rejection_code = str(receipt.get("code", "report_section_submit_rejected"))
                     logger.bind(
                         section_code=work_item.section_code,
-                        rejection_code=str(receipt.get("code", "report_section_submit_rejected")),
+                        rejection_code=rejection_code,
                     ).warning("report_section_submission_rejected")
                     raise ReportingError(
-                        "report_section_submit_rejected",
-                        "章节终态提交未被接受。",
+                        rejection_code,
+                        str(receipt.get("message", "章节终态提交未被接受。")),
                         details=dict(receipt),
                     )
                 return SectionWorkflowResult("accepted", decision, recovery_used)
             except Exception as error:
                 if isinstance(error, ReportingError) and error.code in _NON_RECOVERABLE_CODES:
+                    raise
+                if (
+                    isinstance(error, ReportingError)
+                    and isinstance(error.details, Mapping)
+                    and error.details.get("retryable") is False
+                ):
                     raise
                 if attempt == 1 or self.recover is None:
                     raise

@@ -1,0 +1,31 @@
+[Unit]
+Description=Reporting local sandbox daemon
+After=local-fs.target
+
+[Service]
+Type=simple
+User=local-sandboxd
+Group=local-sandboxd
+ExecStart=/opt/reporting/.venv/bin/python -m smart_reporting.sandbox.local --config /etc/local-sandboxd/config.json
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=no
+Delegate=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/local-sandboxd /run/local-sandboxd /sys/fs/cgroup/system.slice/local-sandboxd.service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

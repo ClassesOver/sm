@@ -9,7 +9,6 @@ import ast
 import hashlib
 import json
 import re
-import shlex
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from pathlib import PurePosixPath
@@ -19,7 +18,7 @@ from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ...task_execution import build_workspace_changes, parse_unified_diff
+from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -363,7 +362,7 @@ class RuntimeAnalysisMixin:
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
-            raw_operations = build_workspace_changes(
+            raw_operations = await abuild_workspace_changes(
                 self.runtime.workspace,
                 scope.thread_id,
                 canonical["patch"],
@@ -500,33 +499,6 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error)
 
-    @staticmethod
-    def _direct_python_script_path(command: Any, workdir: Any) -> str | None:
-        if not isinstance(command, str) or "\n" in command:
-            return None
-        try:
-            parts = shlex.split(command)
-        except ValueError:
-            return None
-        if (
-            not parts
-            or re.fullmatch(r"python(?:3(?:\.\d+)?)?", PurePosixPath(parts[0]).name) is None
-        ):
-            return None
-        script: str | None = None
-        for argument in parts[1:]:
-            if argument == "-m":
-                return None
-            if script is None and argument.startswith("-"):
-                continue
-            script = argument
-            break
-        if script is None or not script.endswith(".py"):
-            return None
-        base = PurePosixPath(str(workdir or ""))
-        candidate = base / script
-        return WorkspaceService.normalize_path(candidate.as_posix(), allow_root=False)[0]
-
     async def _installed_python_modules(
         self,
         *,
@@ -535,30 +507,13 @@ class RuntimeAnalysisMixin:
     ) -> set[str]:
         if not module_names:
             return set()
-        probe = (
-            "import importlib.util,json,sys;"
-            "names=json.loads(sys.argv[1]);"
-            "print(json.dumps([name for name in names if importlib.util.find_spec(name) is not None]))"
-        )
-        command = shlex.join(["python3", "-I", "-c", probe, json.dumps(sorted(module_names))])
-        result = await self.runtime.workspace.execute_isolated(thread_id, command, timeout=30)
-        if getattr(result, "exit_code", None) != 0:
+        try:
+            return await self.runtime.workspace.probe_python_modules(thread_id, module_names)
+        except WorkspaceError as error:
             raise ReportingError(
                 "report_analysis_dependency_probe_failed",
                 "无法确认分析脚本依赖是否完整，已拒绝执行脚本。",
-            )
-        try:
-            parsed = json.loads(str(getattr(result, "result", "") or ""))
-        except (TypeError, ValueError) as error:
-            raise ReportingError(
-                "report_analysis_dependency_probe_failed",
-                "分析脚本依赖探测结果无效，已拒绝执行脚本。",
             ) from error
-        return (
-            {item for item in parsed if isinstance(item, str)}
-            if isinstance(parsed, list)
-            else set()
-        )
 
     async def _analysis_python_source(self, *, thread_id: str, path: str) -> bytes:
         return await self.runtime.workspace.read_limited_regular_file(
@@ -571,13 +526,10 @@ class RuntimeAnalysisMixin:
         self,
         *,
         scope: Any,
-        command: Any,
-        workdir: Any,
+        script_path: Any,
     ) -> dict[str, Any] | None:
         try:
-            script_path = self._direct_python_script_path(command, workdir)
-            if script_path is None:
-                return None
+            script_path = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
             pending = [script_path]
             visited: set[str] = set()
             unresolved: dict[str, tuple[str, ...]] = {}
@@ -916,7 +868,7 @@ class RuntimeAnalysisMixin:
         durable: ReportingRunState,
         identities: list[dict[str, Any]],
     ) -> list[str]:
-        """确认 evidence 可读取；身份漂移只记录 warning，不阻止发布。"""
+        """确认 evidence 可读取；冻结身份漂移必须硬拒绝。"""
 
         missing, unregistered, changed = cls._analysis_evidence_registration_status(
             durable=durable,
@@ -928,12 +880,17 @@ class RuntimeAnalysisMixin:
                 "analysis evidence 文件不存在。",
                 details={"paths": missing},
             )
-        warnings: list[str] = []
         if changed:
-            warnings.append("analysis evidence 文件身份或 SHA-256 已变化，已按当前文件继续发布。")
-        if unregistered:
-            warnings.append("analysis evidence 文件未登记，已按当前文件继续发布。")
-        return warnings
+            raise ReportingError(
+                "report_analysis_evidence_identity_mismatch",
+                "analysis evidence 文件身份或 SHA-256 已变化，拒绝继续发布。",
+                details={"paths": changed},
+            )
+        return (
+            ["analysis evidence 文件未登记，已由服务端登记到 durable 账本。"]
+            if unregistered
+            else []
+        )
 
     async def _ensure_registered_analysis_evidence(
         self,
@@ -941,7 +898,7 @@ class RuntimeAnalysisMixin:
         scope: Any,
         identities: list[dict[str, Any]],
     ) -> tuple[ReportingRunState, list[str]]:
-        """把 terminal 等工具已写出的 evidence 身份登记到唯一 durable 账本。"""
+        """把执行工具已写出的 evidence 身份登记到唯一 durable 账本。"""
 
         durable = await self._durable_state(scope)
         missing, unregistered, changed = self._analysis_evidence_registration_status(
@@ -954,9 +911,13 @@ class RuntimeAnalysisMixin:
                 "analysis evidence 文件不存在。",
                 details={"paths": missing},
             )
-        warnings: list[str] = []
         if changed:
-            warnings.append("analysis evidence 文件身份或 SHA-256 已变化，已按当前文件继续发布。")
+            raise ReportingError(
+                "report_analysis_evidence_identity_mismatch",
+                "analysis evidence 文件身份或 SHA-256 已变化，拒绝继续发布。",
+                details={"paths": changed},
+            )
+        warnings: list[str] = []
         identities_by_path = {
             item["path"]: item
             for item in identities
@@ -974,7 +935,11 @@ class RuntimeAnalysisMixin:
             except ReportingError as error:
                 if error.code != "report_artifact_identity_mismatch":
                     raise
-                warnings.append("analysis evidence 登记身份发生变化，已按当前文件继续发布。")
+                raise ReportingError(
+                    "report_analysis_evidence_identity_mismatch",
+                    "analysis evidence 登记身份发生变化，拒绝继续发布。",
+                    details={"path": path},
+                ) from error
         warnings.extend(
             self._validate_registered_analysis_evidence(
                 durable=durable,

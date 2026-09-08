@@ -27,6 +27,11 @@ from smart_reporting.reporting.structured_output.wire_schema import (
     StructuredOutputWireSchemaResolver,
 )
 from smart_reporting.reporting.workflow.execution import ReportingTaskInvocation
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import AnalysisScriptDraft
+from smart_reporting.reporting.workflow.runtime.models import (
+    AnalysisBundle,
+    DataUnderstandingPlan,
+)
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionBlockContent,
     SectionPlanOutput,
@@ -278,6 +283,52 @@ def test_structured_request_preserves_output_token_budget() -> None:
     request_model = execution_agent.model._phase_request_model([])
 
     assert request_model.max_tokens == 8192
+
+
+@pytest.mark.parametrize(
+    ("schema", "required_fragment"),
+    [
+        (
+            AnalysisBundle,
+            '"AnalysisItem":["code","description","managementQuestion",'
+            '"primaryMetricFamily","requirementIds"]',
+        ),
+        (
+            DataUnderstandingPlan,
+            '"DataUnderstandingTable":["sourceId","table","role","periodColumn",'
+            '"periodGranularity"]',
+        ),
+        (AnalysisScriptDraft, '"$":["script"]'),
+    ],
+)
+def test_json_object_mode_explicitly_lists_nested_required_fields(
+    schema: type[BaseModel], required_fragment: str
+) -> None:
+    model = ReportingPhaseOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test-key",
+        base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    )
+    agent = Agent(model=model, output_schema=schema, instructions=["返回 JSON。"], retries=0)
+    wire_contract = StructuredOutputWireSchemaResolver().resolve(
+        schema,
+        model_id=model.id,
+        endpoint=model.base_url,
+    )
+
+    execution_agent = _agent_for_mode(
+        agent,
+        schema,
+        StructuredOutputMode.JSON_OBJECT,
+        wire_contract,
+    )
+
+    instructions = "\n".join(execution_agent.instructions)
+    assert "嵌套对象必填字段契约" in instructions
+    assert "根响应必须是单个 JSON 对象" in instructions
+    assert "不得用数组或额外包装键包裹" in instructions
+    assert "非空数组约束" in instructions
+    assert required_fragment in instructions
 
 
 def test_qwen_wire_decoder_removes_non_selected_union_transport_fields() -> None:

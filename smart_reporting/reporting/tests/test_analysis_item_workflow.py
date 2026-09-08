@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from agno.run import RunContext
+from agno.workflow.types import StepOutput
+from loguru import logger
 
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.runtime import analysis_item_workflow as item_workflow
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
     AnalysisEvidencePlan,
@@ -56,6 +61,14 @@ def _tool_result(**values: Any) -> dict[str, Any]:
     return {"ok": True, **values}
 
 
+def _script_identity(sha256: str = "c" * 64) -> dict[str, Any]:
+    return {
+        "path": "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+        "size": 1,
+        "sha256": sha256,
+    }
+
+
 def _facts_read_result(content: str | None = None) -> dict[str, Any]:
     selected = content if content is not None else _facts()
     size = len(selected.encode("utf-8"))
@@ -66,6 +79,195 @@ def _facts_read_result(content: str | None = None) -> dict[str, Any]:
         nextOffset=size,
         hasMore=False,
     )
+
+
+@pytest.mark.anyio
+async def test_analysis_item_stage_reports_started_and_completed_progress_once() -> None:
+    state = item_workflow._AnalysisItemState(instruction=_instruction())
+
+    async def complete_stage() -> StepOutput:
+        state.statuses["read-facts"] = "completed"
+        return StepOutput(content={})
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
+        await AnalysisItemWorkflow._timed_stage("read-facts", state, complete_stage())
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert log_text.count("report_analysis_item_stage_started") == 1
+    assert log_text.count("report_analysis_item_stage_completed") == 1
+    assert "stage_name=read-facts" in log_text
+    assert "analysis_id=analysis_001" in log_text
+    assert "status=completed" in log_text
+
+
+@pytest.mark.anyio
+async def test_cancelled_analysis_item_stage_does_not_report_completed_progress() -> None:
+    state = item_workflow._AnalysisItemState(instruction=_instruction())
+
+    async def cancel_stage() -> StepOutput:
+        raise asyncio.CancelledError
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await AnalysisItemWorkflow._timed_stage("read-facts", state, cancel_stage())
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert log_text.count("report_analysis_item_stage_started") == 1
+    assert "report_analysis_item_stage_completed" not in log_text
+
+
+def test_analysis_summary_projection_bounds_high_cardinality_evidence_with_reconciliation() -> None:
+    rows = [
+        [f"group-{index:05d}", 100 + index, 100, index if index % 2 == 0 else -index]
+        for index in range(19_637)
+    ]
+    payload = {
+        "currentAnalysis": {"managementQuestion": "主要正负贡献是什么？"},
+        "deterministicFacts": {"metrics": []},
+        "supplementalEvidence": {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [
+                {"name": "按院区汇总", "columns": ["area", "change"], "rows": [["总部", 8]]},
+                {
+                    "name": "高基数交叉贡献",
+                    "columns": ["group", "current", "yoy", "change"],
+                    "rows": rows,
+                },
+            ],
+            "reconciliations": [{"name": "差额守恒", "passed": True}],
+            "warnings": [],
+        },
+        "supplementalEvidenceSource": {
+            "path": "analysis/evidence.json",
+            "size": 1_900_000,
+            "sha256": "b" * 64,
+        },
+        "analysisBlock": {"blockId": "analysis_001:summary"},
+    }
+    original = deepcopy(payload)
+
+    projected = item_workflow._project_analysis_summary_payload(
+        payload,
+        max_tokens=12_000,
+        count_tokens=lambda value: len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        ),
+    )
+
+    assert payload == original
+    assert len(json.dumps(projected, ensure_ascii=False, separators=(",", ":"))) <= 12_000
+    evidence = projected["supplementalEvidence"]
+    assert evidence["findings"][0] == original["supplementalEvidence"]["findings"][0]
+    high_cardinality = evidence["findings"][1]
+    selected_rows = high_cardinality["rows"]
+    view = high_cardinality["view"]
+    assert view["rowCount"] == 19_637
+    assert view["selectedRowCount"] == len(selected_rows) < 19_637
+    assert view["rankColumn"] == "change"
+    assert max(row[3] for row in rows) in {row[3] for row in selected_rows}
+    assert min(row[3] for row in rows) in {row[3] for row in selected_rows}
+    assert view["omittedNumericSums"]["change"] + sum(row[3] for row in selected_rows) == sum(
+        row[3] for row in rows
+    )
+    assert evidence["sourceFile"] == payload["supplementalEvidenceSource"]
+    assert (
+        item_workflow._project_analysis_summary_payload(
+            payload,
+            max_tokens=12_000,
+            count_tokens=lambda value: len(
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            ),
+        )
+        == projected
+    )
+
+
+def test_analysis_summary_projection_rejects_oversized_non_tabular_payload() -> None:
+    payload = {
+        "currentAnalysis": {"managementQuestion": "x" * 1_000},
+        "deterministicFacts": {"metrics": []},
+        "supplementalEvidence": None,
+    }
+
+    with pytest.raises(ReportingError) as captured:
+        item_workflow._project_analysis_summary_payload(
+            payload,
+            max_tokens=100,
+            count_tokens=lambda value: len(
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            ),
+        )
+
+    assert captured.value.code == "report_analysis_summary_context_too_large"
+    assert captured.value.details == {
+        "inputTokens": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
+        "inputTokenBudget": 100,
+    }
+
+
+def test_analysis_summary_projection_preserves_large_integer_reconciliation() -> None:
+    large = 2**53 + 1
+    finding = {
+        "name": "大整数差额",
+        "columns": ["group", "change"],
+        "rows": [["selected", large + 2], ["omitted-a", large], ["omitted-b", 1]],
+    }
+
+    projected = item_workflow._project_tabular_finding(finding, row_limit=1)
+
+    assert projected["view"]["omittedNumericSums"]["change"] == large + 1
+    assert projected["view"]["omittedNumericSums"]["change"] + sum(
+        row[1] for row in projected["rows"]
+    ) == sum(row[1] for row in finding["rows"])
+
+
+def test_analysis_summary_projection_uses_normalized_change_rate_rank_column() -> None:
+    finding = {
+        "name": "变化率极值",
+        "columns": ["group", "current", "changeRate"],
+        "rows": [
+            ["largest-current", 1_000_000, 0.01],
+            ["largest-decline", 10, -0.9],
+            ["largest-growth", 20, 0.8],
+        ],
+    }
+
+    projected = item_workflow._project_tabular_finding(finding, row_limit=2)
+
+    assert projected["view"]["rankColumn"] == "changeRate"
+    assert {row[0] for row in projected["rows"]} == {"largest-decline", "largest-growth"}
+
+
+@pytest.mark.parametrize(
+    "columns, rows",
+    (
+        (["change", "change"], [[1, 2]]),
+        (["group", "change"], [["invalid", float("nan")]]),
+        (["group", "change"], [["invalid", float("inf")]]),
+    ),
+)
+def test_supplemental_evidence_rejects_ambiguous_or_non_finite_tabular_values(
+    columns: list[str], rows: list[list[Any]]
+) -> None:
+    with pytest.raises(ValueError):
+        item_workflow.SupplementalEvidence.model_validate(
+            {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset-1"],
+                "findings": [{"name": "invalid", "columns": columns, "rows": rows}],
+                "reconciliations": [{"name": "check", "passed": True}],
+                "warnings": [],
+            }
+        )
 
 
 @pytest.mark.anyio
@@ -150,15 +352,7 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
     )
     apply_patch = AsyncMock(
         side_effect=lambda **kwargs: (
-            events.append("create")
-            or _tool_result(
-                artifacts=[
-                    {
-                        "path": "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
-                        "sha256": "c" * 64,
-                    }
-                ]
-            )
+            events.append("create") or _tool_result(artifacts=[_script_identity()])
         )
     )
     terminal = AsyncMock(
@@ -188,6 +382,77 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
     assert events == ["plan", "create", "execute", "summarize", "complete"]
     submitted_patch = apply_patch.await_args.kwargs["patch"]
     assert submitted_patch.endswith("+print('write evidence')\n")
+    assert complete.await_args.kwargs["evidencePaths"] == [
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
+    ]
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_reads_large_supplemental_evidence_in_chunks() -> None:
+    rows = [
+        {"period": f"2025-{index:04d}", "value": index, "note": "x" * 96} for index in range(1_200)
+    ]
+    evidence = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [
+                {
+                    "name": "完整明细",
+                    "columns": ["period", "value", "note"],
+                    "rows": [[row["period"], row["value"], row["note"]] for row in rows],
+                }
+            ],
+            "reconciliations": [{"name": "完整性对账", "passed": True}],
+            "warnings": [],
+        },
+        separators=(",", ":"),
+    )
+    page_size = 64 * 1024
+    evidence_reads = [
+        _tool_result(
+            content=evidence[offset : offset + page_size],
+            sha256="b" * 64,
+            totalBytes=len(evidence),
+            nextOffset=min(len(evidence), offset + page_size),
+            hasMore=offset + page_size < len(evidence),
+        )
+        for offset in range(0, len(evidence), page_size)
+    ]
+    summarize = AsyncMock(return_value=AnalysisSummaryDraft(summary="补充证据完整。", warnings=()))
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
+    read_file = AsyncMock(side_effect=[_facts_read_result(), *evidence_reads])
+    workflow = AnalysisItemWorkflow(
+        plan_evidence=AsyncMock(
+            return_value=AnalysisEvidencePlan(
+                requiresSupplementalEvidence=True,
+                reason="需要完整明细",
+                missingFacts=("完整明细",),
+                script="print('evidence')",
+            )
+        ),
+        summarize=summarize,
+        read_file=read_file,
+        apply_patch=AsyncMock(return_value=_tool_result(artifacts=[_script_identity()])),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=complete,
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
+
+    compact_finding = summarize.await_args.args[0]["supplementalEvidence"]["findings"][0]
+    assert compact_finding["columns"] == ["period", "value", "note"]
+    assert len(compact_finding["rows"]) == len(rows)
+    assert compact_finding["rows"][0] == ["2025-0000", 0, "x" * 96]
+    assert compact_finding["rows"][-1] == ["2025-1199", 1199, "x" * 96]
+    assert summarize.await_args.args[0]["supplementalEvidenceSource"] == {
+        "path": "报表/智能分析/run-1/evidence/analysis_001/supplement.json",
+        "size": len(evidence),
+        "sha256": "b" * 64,
+    }
+    assert [call.kwargs["offset"] for call in read_file.await_args_list[1:]] == [
+        *range(0, len(evidence), page_size),
+    ]
     assert complete.await_args.kwargs["evidencePaths"] == [
         "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
     ]
@@ -227,18 +492,25 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
         read_file=read_file,
         apply_patch=AsyncMock(
             side_effect=[
-                _tool_result(artifacts=[{"path": "supplement.py", "sha256": "b" * 64}]),
-                _tool_result(artifacts=[{"path": "supplement.py", "sha256": "c" * 64}]),
-                _tool_result(artifacts=[{"path": "supplement.py", "sha256": "d" * 64}]),
+                _tool_result(artifacts=[_script_identity("b" * 64)]),
+                _tool_result(artifacts=[_script_identity("c" * 64)]),
+                _tool_result(artifacts=[_script_identity("d" * 64)]),
             ]
         ),
-        run_script=AsyncMock(return_value=_tool_result(exitCode=1, output="bad csv")),
+        run_script=AsyncMock(
+            return_value=_tool_result(exitCode=1, output="private-script-output")
+        ),
         complete=complete,
     )
 
-    result = await workflow.run(
-        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
-    )
+    log_records: list[dict[str, Any]] = []
+    sink_id = logger.add(lambda message: log_records.append(message.record))
+    try:
+        result = await workflow.run(
+            _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+        )
+    finally:
+        logger.remove(sink_id)
 
     assert [status for _, status in result.stage_statuses] == ["completed"] * 5
     assert repairs == [False, True, True]
@@ -258,11 +530,74 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
         "report_analysis_supplement_abandoned" in warning
         for warning in complete.await_args.kwargs["warnings"]
     )
+    failures = [
+        record
+        for record in log_records
+        if "report_analysis_script_execution_failed" in record["message"]
+    ]
+    assert len(failures) == 3
+    assert {record["level"].name for record in failures} == {"WARNING"}
+    assert all("private-script-output" not in record["message"] for record in failures)
+    assert all("output_bytes=21" in record["message"] for record in failures)
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    (
+        [{"path": "other.py", "size": 1, "sha256": "c" * 64}],
+        [_script_identity(), _script_identity("d" * 64)],
+    ),
+)
+@pytest.mark.anyio
+async def test_analysis_item_workflow_rejects_non_signed_script_identity(
+    artifacts: list[dict[str, Any]],
+) -> None:
+    plans = 0
+
+    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
+        nonlocal plans
+        plans += 1
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason="缺少收入构成",
+            missingFacts=("收入构成",),
+            script=f"print({plans})",
+        )
+
+    run_script = AsyncMock()
+    summarize = AsyncMock(
+        return_value=AnalysisSummaryDraft(summary="仅使用确定性事实完成摘要。", warnings=())
+    )
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
+    workflow = AnalysisItemWorkflow(
+        plan_evidence=plan,
+        summarize=summarize,
+        read_file=AsyncMock(return_value=_facts_read_result()),
+        apply_patch=AsyncMock(return_value=_tool_result(artifacts=artifacts)),
+        run_script=run_script,
+        complete=complete,
+    )
+
+    result = await workflow.run(
+        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+    )
+
+    assert result.stage_statuses[-3:] == (
+        ("execute-script", "completed"),
+        ("validate-evidence", "completed"),
+        ("complete-analysis", "completed"),
+    )
+    run_script.assert_not_awaited()
+    assert complete.await_args.kwargs["evidencePaths"] == []
+    assert any(
+        "report_analysis_supplement_abandoned" in warning
+        for warning in complete.await_args.kwargs["warnings"]
+    )
 
 
 @pytest.mark.anyio
 async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence() -> None:
-    invalid = json.dumps(
+    unreconciled = json.dumps(
         {
             "analysisId": "analysis_001",
             "datasetIds": ["dataset-1"],
@@ -284,12 +619,10 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
         read_file=AsyncMock(
             side_effect=[
                 _facts_read_result(),
-                *[_tool_result(content=invalid, sha256="b" * 64) for _ in range(3)],
+                _tool_result(content=unreconciled, sha256="b" * 64),
             ]
         ),
-        apply_patch=AsyncMock(
-            return_value=_tool_result(artifacts=[{"path": "x", "sha256": "c" * 64}])
-        ),
+        apply_patch=AsyncMock(return_value=_tool_result(artifacts=[_script_identity()])),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
     )
@@ -304,11 +637,209 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
     )
     workflow.plan_evidence.assert_awaited_once()
     workflow.summarize.assert_awaited_once()
-    workflow.complete.assert_awaited_once()
-    assert workflow.complete.await_args.kwargs["evidencePaths"] == []
+    summary_payload = workflow.summarize.await_args.args[0]
+    assert summary_payload["supplementalEvidence"]["reconciliations"] == [
+        {"name": "收入构成对账", "passed": False}
+    ]
+    assert summary_payload["supplementalEvidenceSource"] == {
+        "path": "报表/智能分析/run-1/evidence/analysis_001/supplement.json",
+        "size": len(unreconciled.encode("utf-8")),
+        "sha256": "b" * 64,
+    }
     assert any(
-        "report_analysis_evidence_reconciliation_failed" in warning
+        "report_analysis_evidence_reconciliation_warning" in warning and "收入构成对账" in warning
+        for warning in summary_payload["evidenceWarnings"]
+    )
+    workflow.complete.assert_awaited_once()
+    assert workflow.complete.await_args.kwargs["evidencePaths"] == [
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
+    ]
+    assert any(
+        "report_analysis_evidence_reconciliation_warning" in warning and "收入构成对账" in warning
         for warning in workflow.complete.await_args.kwargs["warnings"]
+    )
+    assert all(
+        "report_analysis_evidence_reconciliation_failed" not in warning
+        for warning in workflow.complete.await_args.kwargs["warnings"]
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_payload, expected_code",
+    (
+        (
+            {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset-1"],
+                "findings": [{"name": "收入构成", "value": 80}],
+                "reconciliations": [{"name": "收入构成对账"}],
+                "warnings": [],
+            },
+            "report_analysis_evidence_schema_invalid",
+        ),
+        (
+            {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset-other"],
+                "findings": [{"name": "收入构成", "value": 80}],
+                "reconciliations": [{"name": "收入构成对账", "passed": True}],
+                "warnings": [],
+            },
+            "report_analysis_evidence_dataset_mismatch",
+        ),
+        (
+            {
+                "analysisId": "analysis_999",
+                "datasetIds": ["dataset-1"],
+                "findings": [{"name": "收入构成", "value": 80}],
+                "reconciliations": [{"name": "收入构成对账", "passed": True}],
+                "warnings": [],
+            },
+            "report_analysis_evidence_identity_mismatch",
+        ),
+    ),
+)
+@pytest.mark.anyio
+async def test_analysis_item_workflow_repairs_invalid_evidence_once(
+    invalid_payload: dict[str, Any], expected_code: str
+) -> None:
+    invalid = json.dumps(invalid_payload)
+    valid = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账", "passed": True}],
+            "warnings": [],
+        }
+    )
+    plans: list[tuple[bool, Mapping[str, Any]]] = []
+
+    async def plan(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
+        plans.append((repair, payload))
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason="缺少收入构成",
+            missingFacts=("收入构成",),
+            script="print('repair')" if repair else "print('initial')",
+        )
+
+    workflow = AnalysisItemWorkflow(
+        plan_evidence=plan,
+        summarize=AsyncMock(
+            return_value=AnalysisSummaryDraft(summary="补充证据验证完成。", warnings=())
+        ),
+        read_file=AsyncMock(
+            side_effect=[
+                _facts_read_result(),
+                _tool_result(content=invalid, sha256="d" * 64),
+                _tool_result(
+                    content="print('initial')\n",
+                    sha256="b" * 64,
+                    totalBytes=len("print('initial')\n"),
+                    nextOffset=len("print('initial')\n"),
+                ),
+                _tool_result(content=valid, sha256="e" * 64),
+            ]
+        ),
+        apply_patch=AsyncMock(
+            side_effect=[
+                _tool_result(artifacts=[_script_identity("b" * 64)]),
+                _tool_result(artifacts=[_script_identity("c" * 64)]),
+            ]
+        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
+
+    assert [repair for repair, _payload in plans] == [False, True]
+    assert plans[1][1]["correction"]["error"]["code"] == expected_code
+    assert workflow.run_script.await_count == 2
+    assert workflow.summarize.await_args.args[0]["supplementalEvidence"]["analysisId"] == (
+        "analysis_001"
+    )
+    assert workflow.complete.await_args.kwargs["evidencePaths"] == [
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
+    ]
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_abandons_structurally_invalid_evidence_after_repairs() -> (
+    None
+):
+    invalid = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账"}],
+            "warnings": [],
+        }
+    )
+    plans = 0
+
+    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
+        nonlocal plans
+        plans += 1
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason="缺少收入构成",
+            missingFacts=("收入构成",),
+            script=f"print({plans})",
+        )
+
+    summarize = AsyncMock(
+        return_value=AnalysisSummaryDraft(summary="仅使用确定性事实完成摘要。", warnings=())
+    )
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
+    workflow = AnalysisItemWorkflow(
+        plan_evidence=plan,
+        summarize=summarize,
+        read_file=AsyncMock(
+            side_effect=[
+                _facts_read_result(),
+                _tool_result(content=invalid, sha256="d" * 64),
+                _tool_result(
+                    content="print(1)\n",
+                    sha256="b" * 64,
+                    totalBytes=len("print(1)\n"),
+                    nextOffset=len("print(1)\n"),
+                ),
+                _tool_result(content=invalid, sha256="e" * 64),
+                _tool_result(
+                    content="print(2)\n",
+                    sha256="c" * 64,
+                    totalBytes=len("print(2)\n"),
+                    nextOffset=len("print(2)\n"),
+                ),
+                _tool_result(content=invalid, sha256="f" * 64),
+            ]
+        ),
+        apply_patch=AsyncMock(
+            side_effect=[
+                _tool_result(artifacts=[_script_identity("b" * 64)]),
+                _tool_result(artifacts=[_script_identity("c" * 64)]),
+                _tool_result(artifacts=[_script_identity("d" * 64)]),
+            ]
+        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=complete,
+    )
+
+    result = await workflow.run(
+        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+    )
+
+    assert [status for _, status in result.stage_statuses] == ["completed"] * 5
+    assert plans == 3
+    assert summarize.await_args.args[0]["supplementalEvidence"] is None
+    assert complete.await_args.kwargs["evidencePaths"] == []
+    assert any(
+        "report_analysis_supplement_abandoned" in warning
+        and "report_analysis_evidence_schema_invalid" in warning
+        for warning in complete.await_args.kwargs["warnings"]
     )
 
 

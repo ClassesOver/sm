@@ -10,6 +10,7 @@ import anyio
 import pytest
 from agno.run import RunContext
 
+from smart_reporting.reporting.contract import ReportFileInput
 from smart_reporting.reporting.data_source import MaterializedQueryResult, QueryResult
 from smart_reporting.reporting.data_sources import ReportDatasetStore
 from smart_reporting.reporting.models import ReportingError
@@ -57,6 +58,15 @@ class _FakeDatasetService:
         self.hash_paths: list[str] = []
         self.active_hashes = 0
         self.max_active_hashes = 0
+        self.reads: list[tuple[str, str]] = []
+
+    def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+        raise AssertionError("异步数据集登记不得调用同步工作区接口")
+
+    async def afile_bytes(self, thread: str, path: str) -> tuple[bytes, str]:
+        self.reads.append((thread, path))
+        _relative, remote = self.normalize_path(path)
+        return self.fs.files[remote], "text/csv"
 
     @asynccontextmanager
     async def _async_client(self):
@@ -134,6 +144,30 @@ def _approved_queries(count: int = 3) -> tuple[ApprovedQuery, ...]:
 
 def _context() -> RunContext:
     return RunContext(run_id="run-1", session_id="thread-1", session_state={})
+
+
+@pytest.mark.anyio
+async def test_外部_csv登记通过异步工作区接口读取() -> None:
+    service = _FakeDatasetService()
+    content = b"month,revenue\n2026-01,100\n"
+    path = "inputs/revenue.csv"
+    _relative, remote = service.normalize_path(path)
+    service.fs.files[remote] = content
+    file = ReportFileInput(
+        path=path,
+        filename="revenue.csv",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        mediaType="text/csv",
+    )
+
+    handles, lineage = await ReportDatasetStore(service).register_external_csv(  # type: ignore[arg-type]
+        (file,), run_context=_context()
+    )
+
+    assert len(handles) == len(lineage) == 1
+    assert handles[0].row_count == 1
+    assert service.reads == [("thread-1", path)]
 
 
 @pytest.mark.anyio

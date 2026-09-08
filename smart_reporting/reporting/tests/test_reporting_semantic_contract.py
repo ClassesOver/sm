@@ -487,6 +487,64 @@ def test_unused_chart_warning_uses_report_audit_subject() -> None:
     assert result.by_disposition == {"quality_warning": 1}
 
 
+@pytest.mark.parametrize(
+    ("warning", "expected_subject_type", "expected_subject_id"),
+    [
+        (
+            {
+                "code": "report_section_chart_auto_bound",
+                "message": "图表已自动绑定正文 block。",
+                "details": {"blockId": "block-1", "chartId": "chart-1"},
+            },
+            "section_block",
+            "block-1",
+        ),
+        (
+            {
+                "code": "report_section_chart_unbound",
+                "message": "图表未绑定正文 block。",
+                "details": {"chartId": "chart-1"},
+            },
+            "analysis_chart",
+            "chart-1",
+        ),
+        (
+            {
+                "code": "report_section_chart_citation_unknown",
+                "message": "图表引用了未知 citation。",
+                "details": {"blockId": "block-1", "chartId": "chart-1"},
+            },
+            "section_block",
+            "block-1",
+        ),
+        (
+            {
+                "code": "report_section_chart_duplicate_binding",
+                "message": "同一图表重复绑定。",
+                "details": {
+                    "chartId": "chart-1",
+                    "firstBlockId": "block-1",
+                    "duplicateBlockId": "block-2",
+                },
+            },
+            "analysis_chart",
+            "chart-1",
+        ),
+    ],
+)
+def test_section_chart_warning_uses_registered_production_subject(
+    warning: dict[str, object], expected_subject_type: str, expected_subject_id: str
+) -> None:
+    notice = _publication_warning_notice(
+        warning,
+        run_id="report-1",
+        source_phase="publication",
+    )
+
+    assert notice.subject_type == expected_subject_type
+    assert notice.subject_id == expected_subject_id
+
+
 def _semantic_inputs(*, claim: SectionClaim, duplicate_resolution: str = "not_applicable"):
     manifest = AnalysisEvidenceManifest(
         evidence=(

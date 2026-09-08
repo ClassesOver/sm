@@ -1,4 +1,5 @@
 import os
+import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_network
@@ -19,6 +20,7 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:18069",
     "http://localhost:18069",
 )
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def _flag(value: str | None, default: bool = False) -> bool:
@@ -125,6 +127,76 @@ def _daytona_network_allow_list(values: MutableMapping[str, str]) -> str | None:
     return ",".join(networks)
 
 
+@dataclass(frozen=True)
+class _SandboxConfiguration:
+    provider: str
+    local_profile: str | None = None
+    local_endpoint: str | None = None
+    rootfs_digest: str | None = None
+    local_ca_cert: str | None = None
+    local_client_cert: str | None = None
+    local_client_key: str | None = None
+
+
+def _sandbox_configuration(values: MutableMapping[str, str]) -> _SandboxConfiguration:
+    provider = values.get("SANDBOX_PROVIDER", "daytona").strip().lower()
+    if provider not in {"daytona", "local"}:
+        raise ValueError("SANDBOX_PROVIDER 必须是 daytona 或 local")
+    if provider == "daytona":
+        return _SandboxConfiguration(provider=provider)
+
+    profile = values.get("SANDBOX_LOCAL_PROFILE", "").strip().lower()
+    if not profile:
+        raise ValueError("SANDBOX_LOCAL_PROFILE 在 local 模式下不能为空")
+    if profile not in {"ubuntu", "openeuler"}:
+        raise ValueError("SANDBOX_LOCAL_PROFILE 必须是 ubuntu 或 openeuler")
+
+    endpoint = values.get("SANDBOX_LOCAL_ENDPOINT", "").strip()
+    if not endpoint:
+        raise ValueError("SANDBOX_LOCAL_ENDPOINT 在 local 模式下不能为空")
+    parsed = urlsplit(endpoint)
+    if parsed.scheme == "unix":
+        if parsed.netloc or not parsed.path.startswith("/") or parsed.query or parsed.fragment:
+            raise ValueError("SANDBOX_LOCAL_ENDPOINT 必须使用绝对 Unix socket 路径")
+        ca_cert = client_cert = client_key = None
+    elif parsed.scheme == "https":
+        if (
+            not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("SANDBOX_LOCAL_ENDPOINT 必须是无凭据、query 和 fragment 的 HTTPS 地址")
+        tls_names = (
+            "SANDBOX_LOCAL_CA_CERT",
+            "SANDBOX_LOCAL_CLIENT_CERT",
+            "SANDBOX_LOCAL_CLIENT_KEY",
+        )
+        tls_values = tuple(values.get(name, "").strip() for name in tls_names)
+        for name, path in zip(tls_names, tls_values, strict=True):
+            if not path or not os.path.isabs(path):
+                raise ValueError(f"{name} 在 HTTPS local 模式下必须是绝对路径")
+        ca_cert, client_cert, client_key = tls_values
+    else:
+        raise ValueError("SANDBOX_LOCAL_ENDPOINT 只支持 unix:// 或 https://")
+
+    rootfs_digest = values.get("SANDBOX_ROOTFS_DIGEST", "").strip()
+    if not rootfs_digest:
+        raise ValueError("SANDBOX_ROOTFS_DIGEST 在 local 模式下不能为空")
+    if _SHA256_DIGEST.fullmatch(rootfs_digest) is None:
+        raise ValueError("SANDBOX_ROOTFS_DIGEST 必须是规范的 sha256 digest")
+    return _SandboxConfiguration(
+        provider=provider,
+        local_profile=profile,
+        local_endpoint=endpoint,
+        rootfs_digest=rootfs_digest,
+        local_ca_cert=ca_cert,
+        local_client_cert=client_cert,
+        local_client_key=client_key,
+    )
+
+
 def _report_metadata_url(values: MutableMapping[str, str]) -> str | None:
     raw = values.get("AGENT_REPORT_METADATA_URL", "").strip()
     if not raw:
@@ -193,6 +265,13 @@ class AgentSettings:
     workspace_hmac_secret: str
     workspace_snapshot: str
     daytona_network_allow_list: str | None
+    sandbox_provider: str
+    sandbox_local_profile: str | None
+    sandbox_local_endpoint: str | None
+    sandbox_rootfs_digest: str | None
+    sandbox_local_ca_cert: str | None
+    sandbox_local_client_cert: str | None
+    sandbox_local_client_key: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
     report_phase_enable_thinking: bool
@@ -280,6 +359,7 @@ class AgentSettings:
         )
         if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
+        sandbox = _sandbox_configuration(values)
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         return cls(
             env_file=env_file,
@@ -333,6 +413,13 @@ class AgentSettings:
             ).strip()
             or DEFAULT_WORKSPACE_SNAPSHOT,
             daytona_network_allow_list=_daytona_network_allow_list(values),
+            sandbox_provider=sandbox.provider,
+            sandbox_local_profile=sandbox.local_profile,
+            sandbox_local_endpoint=sandbox.local_endpoint,
+            sandbox_rootfs_digest=sandbox.rootfs_digest,
+            sandbox_local_ca_cert=sandbox.local_ca_cert,
+            sandbox_local_client_cert=sandbox.local_client_cert,
+            sandbox_local_client_key=sandbox.local_client_key,
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
             ),

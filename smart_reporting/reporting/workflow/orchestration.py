@@ -100,6 +100,9 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             if isawaitable(result):
                 result = await result
         except BaseException as error:
+            if not isinstance(error, Exception):
+                _STEP_MODEL_METRICS.reset(metrics_token)
+                raise
             failed_metrics = accumulator.snapshot()
             failed_additional = failed_metrics.additional_metrics or {}
             logger.warning(

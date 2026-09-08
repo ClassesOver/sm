@@ -25,6 +25,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import sections as reporting_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _has_chartable_visualization_facts,
+    _visualization_section_completion_conditions,
 )
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
@@ -76,6 +77,30 @@ def test_visualization_requires_structured_facts_before_generating_chart() -> No
     )
 
 
+def test_visualization_generator_completion_does_not_delegate_tool_calls() -> None:
+    conditions = _visualization_section_completion_conditions(None)
+
+    assert not any("submit_visualization_charts" in item for item in conditions)
+    assert any("固定 Workflow" in item for item in conditions)
+
+
+def test_executive_summary_bounds_all_analysis_summaries_without_dropping_coverage() -> None:
+    summaries = [f"analysis_{index:03d}：" + "经营结论。" * 400 for index in range(1, 16)]
+
+    result = reporting_sections._bounded_executive_summary(summaries)
+
+    assert len(result) <= 8_000
+    assert [result.index(f"analysis_{index:03d}") for index in range(1, 16)] == sorted(
+        result.index(f"analysis_{index:03d}") for index in range(1, 16)
+    )
+
+
+def test_executive_summary_keeps_short_summaries_unchanged() -> None:
+    assert reporting_sections._bounded_executive_summary(["收入增长。", "成本下降。"]) == (
+        "收入增长。；成本下降。"
+    )
+
+
 def _inspection() -> ChartVisualInspectionReceipt:
     return ChartVisualInspectionReceipt(
         sourcePath="charts/chart.png",
@@ -123,23 +148,46 @@ async def test_visualization_workflow_orders_fixed_steps() -> None:
     ).run({}, _context())
 
     assert result.status == "accepted"
-    assert events == ["generate", "write", "python3 charts/charts.py", "inspect", "submit"]
+    assert events == ["generate", "write", "charts/charts.py", "inspect", "submit"]
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_recovers_script_failure_once() -> None:
-    recover = AsyncMock(return_value=_visualization_draft())
-    execute = AsyncMock(side_effect=[{"exitCode": 1}, {"exitCode": 0}])
+    recover = AsyncMock(
+        return_value=VisualizationScriptDraft(
+            scriptPath="charts/charts.py",
+            pythonSource="print('ok')\n",
+            charts=(_chart(),),
+        )
+    )
+    execute = AsyncMock(
+        side_effect=[
+            {
+                "ok": True,
+                "status": "completed",
+                "exitCode": 0,
+                "output": "[FAIL] chart.png: image is blank",
+            },
+            {"ok": True, "status": "completed", "exitCode": 0, "output": "ok"},
+        ]
+    )
     file_identity = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    writes: list[str] = []
+
+    async def write(path, _source, _context):
+        writes.append(path)
+        return file_identity
+
     result = await VisualizationSectionWorkflow(
         generate=AsyncMock(return_value=_visualization_draft()),
         recover=recover,
-        write_script=AsyncMock(return_value=file_identity),
+        write_script=write,
         execute_script=execute,
         inspect_chart=AsyncMock(return_value=_inspection()),
         submit=AsyncMock(return_value={"status": "accepted"}),
     ).run({}, _context())
     assert result.recovery_used is True
+    assert writes == ["charts/charts.py"]
     recover.assert_awaited_once()
 
 
@@ -337,6 +385,115 @@ async def test_section_generation_plans_then_renders_each_block_serially(
     assert isinstance(result, RenderSectionDecision)
     assert tuple(block.block_id for block in result.blocks) == ("block_001", "block_002")
     assert all(block.claim_ids == ("claim_001",) for block in result.blocks)
+
+
+@pytest.mark.anyio
+async def test_section_generation_locally_regenerates_block_with_missing_heading_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _section_work_item().model_copy(
+        update={
+            "metric_definitions": (
+                MetricDefinition(
+                    code="revenue",
+                    name="收入",
+                    definition="收入合计",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+            ),
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+            ),
+        }
+    )
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+    stages: list[str] = []
+    block_payloads: list[dict[str, object]] = []
+
+    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+        stages.append(stage)
+        if stage == "plan":
+            return SectionPlanOutput.model_validate(
+                {
+                    "kind": "render",
+                    "sectionCode": "section_001",
+                    "blocks": [
+                        {
+                            "blockId": "block_001",
+                            "objective": "说明收入规模",
+                            "claimIds": ["claim_001"],
+                        },
+                        {
+                            "blockId": "block_002",
+                            "objective": "解释管理影响",
+                            "claimIds": ["claim_001"],
+                        },
+                    ],
+                    "claims": [
+                        {
+                            "claimId": "claim_001",
+                            "metricCode": "revenue",
+                            "value": 100,
+                            "managementQuestionRef": "analysis_001",
+                            "currentPeriod": "2025年",
+                            "citationIds": ["citation_001"],
+                        }
+                    ],
+                }
+            )
+        block_payloads.append(dict(payload))
+        if len(block_payloads) == 1:
+            return SectionBlockContent(markdown="#### 收入规模\n\n收入为100元。")
+        if len(block_payloads) == 2:
+            correction = payload["correction"]
+            assert correction == {
+                "attempt": 1,
+                "code": "report_draft_heading_parent_missing",
+                "issues": [
+                    {
+                        "path": "$.blocks[0].markdown",
+                        "type": "heading_parent_missing",
+                        "message": "H4 标题必须位于当前章节的 H3 标题之后。",
+                    }
+                ],
+                "previousOutput": {"markdown": "#### 收入规模\n\n收入为100元。"},
+                "requiredAction": (
+                    "仅修正 issues 指向的当前 block；在 output_schema.markdown 字段中返回完整正文，"
+                    "保留其余有效内容，不得返回解释、代码围栏或 schema 外字段。"
+                ),
+            }
+            return SectionBlockContent(markdown="### 收入规模\n\n收入为100元。")
+        assert "correction" not in payload
+        return SectionBlockContent(markdown="#### 管理影响\n\n收入表现稳定。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {
+            "reportGoal": "分析2025年收入",
+            "sectionGoal": {"sectionCode": "section_001"},
+            "sectionWorkItem": work_item.model_dump(mode="json", by_alias=True),
+        },
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+    )
+
+    assert stages == ["plan", "block-1", "block-1", "block-2"]
+    assert result.blocks[0].markdown.startswith("### ")
+    assert result.blocks[1].markdown.startswith("#### ")
 
 
 @pytest.mark.anyio
@@ -584,6 +741,108 @@ async def test_section_generation_projects_relevant_json_and_text_evidence_per_b
     assert len(json.dumps(payload, ensure_ascii=False)) < len(json_content) + len(text_content)
 
 
+def test_section_evidence_projection_accounts_for_outer_json_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_content = json.dumps(
+        {"rows": [{"metric": "收入", "period": "2025年", "value": index} for index in range(120)]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    second_content = json.dumps(
+        {
+            "rows": [
+                {
+                    "metric": "收入",
+                    "period": "2024年",
+                    "value": index,
+                    "note": 'C:\\income\\"quoted"',
+                }
+                for index in range(80)
+            ]
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    first_identity = FileIdentity(
+        path="evidence/revenue.json",
+        size=len(first_content.encode()),
+        sha256=hashlib.sha256(first_content.encode()).hexdigest(),
+    )
+    second_identity = FileIdentity(
+        path="evidence/revenue-baseline.json",
+        size=len(second_content.encode()),
+        sha256=hashlib.sha256(second_content.encode()).hexdigest(),
+    )
+    evidence_files = (
+        SectionEvidenceFile(identity=first_identity, content=first_content),
+        SectionEvidenceFile(identity=second_identity, content=second_content),
+    )
+    evidence_token_budget = 512
+    monkeypatch.setattr(
+        reporting_sections,
+        "_section_block_evidence_token_budget",
+        lambda *_args, **_kwargs: evidence_token_budget,
+    )
+
+    projected = reporting_sections._project_section_evidence_files(
+        SimpleNamespace(),
+        evidence_files,
+        fact_summaries=("收入事实",),
+        relevance_values=("收入",),
+        base_payload={"phase": "section"},
+        run_context=_context(),
+    )
+
+    projected_files = projected["files"]
+    assert [item["identity"] for item in projected_files] == [
+        identity.model_dump(mode="json", by_alias=True)
+        for identity in (first_identity, second_identity)
+    ]
+    assert all("收入" in item["content"] for item in projected_files)
+    assert (
+        sum(
+            reporting_sections._estimated_section_tokens(reporting_sections._json_text(item))
+            for item in projected_files
+        )
+        <= evidence_token_budget
+    )
+
+
+def test_section_evidence_projection_bounds_plateau_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = FileIdentity(path="evidence/a.json", size=1, sha256="a" * 64)
+    evidence_file = SectionEvidenceFile(identity=identity, content='{"metric":"收入"}')
+    evidence_token_budget = 256
+    attempted_budgets: list[int] = []
+
+    def project_with_plateau(_content, _matcher, *, token_budget):
+        attempted_budgets.append(token_budget)
+        if token_budget > 196:
+            return "x" * 840, {"format": "json_paths", "truncated": True}
+        return "收入", {"format": "json_paths", "truncated": True}
+
+    monkeypatch.setattr(
+        reporting_sections,
+        "_section_block_evidence_token_budget",
+        lambda *_args, **_kwargs: evidence_token_budget,
+    )
+    monkeypatch.setattr(reporting_sections, "_project_json_evidence", project_with_plateau)
+
+    projected = reporting_sections._project_section_evidence_files(
+        SimpleNamespace(),
+        (evidence_file,),
+        fact_summaries=("收入事实",),
+        relevance_values=("收入",),
+        base_payload={"phase": "section"},
+        run_context=_context(),
+    )
+
+    assert projected["files"][0]["content"] == "收入"
+    assert len(attempted_budgets) <= 16
+
+
 @pytest.mark.anyio
 async def test_section_workflow_reads_evidence_before_generation() -> None:
     events: list[str] = []
@@ -690,7 +949,7 @@ async def test_section_workflow_preserves_rejection_details_for_recovery() -> No
 
     async def recover(repair, _context):
         assert set(repair) == {"diagnostic"}
-        assert repair["diagnostic"]["code"] == "report_section_submit_rejected"
+        assert repair["diagnostic"]["code"] == "report_analysis_rework_unresolvable"
         assert repair["diagnostic"]["details"] == rejected
         return RenderSectionDecision.model_construct(
             section_code="section_001", blocks=(), claims=()
@@ -713,6 +972,36 @@ async def test_section_workflow_preserves_rejection_details_for_recovery() -> No
 
     assert result.status == "accepted"
     assert result.recovery_used is True
+
+
+@pytest.mark.anyio
+async def test_section_workflow_does_not_recover_nonretryable_submission() -> None:
+    recover = AsyncMock()
+    rejected = {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_draft_protocol_injection",
+        "message": "正文不得自行包含协议标记。",
+        "details": {"path": "$.blocks[0].markdown"},
+        "retryable": False,
+    }
+
+    with pytest.raises(ReportingError) as caught:
+        await SectionWorkflow(
+            read_evidence=AsyncMock(return_value=_section_evidence_receipt()),
+            generate=AsyncMock(
+                return_value=RenderSectionDecision.model_construct(
+                    section_code="section_001", blocks=(), claims=()
+                )
+            ),
+            recover=recover,
+            render=AsyncMock(return_value=rejected),
+            rework=AsyncMock(),
+        ).run(_section_work_item(), _context())
+
+    assert caught.value.code == "report_draft_protocol_injection"
+    assert caught.value.details == rejected
+    recover.assert_not_awaited()
 
 
 @pytest.mark.anyio

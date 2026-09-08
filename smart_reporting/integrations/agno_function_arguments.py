@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import ast
 import json
-import logging
 from collections.abc import Mapping
 
 from agno.tools.function import Function, FunctionCall
 from agno.utils import functions as agno_functions
 from agno.utils import tools as agno_tools
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 _ORIGINAL_GET_FUNCTION_CALL = agno_functions.get_function_call
 _VALID_ESCAPES = frozenset('"\\/bfnrt')
@@ -115,7 +113,7 @@ def _get_function_call_with_repair(
                 if repaired is not None:
                     candidate = repaired
                     logger.warning(
-                        "agno_function_arguments_repaired tool=%s call_id=%s",
+                        "agno_function_arguments_repaired tool={} call_id={}",
                         name,
                         call_id or "",
                     )

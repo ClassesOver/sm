@@ -48,6 +48,9 @@ _QUALITY_WARNING_CODES: Final[frozenset[str]] = frozenset(
         "report_section_claim_chart_semantics_conflict",
         "report_section_claim_brief_conflict",
         "report_section_claim_chart_conflict",
+        "report_section_chart_duplicate_binding",
+        "report_section_chart_auto_bound",
+        "report_section_chart_unbound",
         "report_section_claim_period_missing",
         "report_section_block_claim_unknown",
         "report_section_block_citation_unknown",
@@ -90,6 +93,14 @@ def _subject_types(code: str) -> frozenset[str]:
         return frozenset({"report"})
     if code.startswith("report_section_block_"):
         return frozenset({"section_block"})
+    # 发布语义门禁的 review-required 规则全部以具体 claim 为审计主体；其中
+    # entity_grain/cross_source 等稳定错误码不含 "claim" 字样，必须先显式收窄。
+    if code in _REVIEW_REQUIRED_CODES:
+        return frozenset({"section_claim"})
+    if code in {"report_section_chart_auto_bound", "report_section_chart_citation_unknown"}:
+        return frozenset({"section_block"})
+    if code in {"report_section_chart_duplicate_binding", "report_section_chart_unbound"}:
+        return frozenset({"analysis_chart"})
     if "claim" in code or code.startswith("report_period_"):
         return frozenset({"section_claim", "section", "report"})
     if "chart" in code:

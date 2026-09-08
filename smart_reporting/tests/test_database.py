@@ -108,8 +108,10 @@ async def test_session_database_logs_safe_timing_without_identifiers(monkeypatch
     monkeypatch.setattr(AsyncPostgresDb, "upsert_session", fake_upsert)
     database = SerializedAsyncPostgresDb(db_url=DEFAULT_AGENT_DB_URL)
     session = SimpleNamespace(session_id=private_session_id, runs=[])
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         result = await database.get_session(
@@ -120,17 +122,39 @@ async def test_session_database_logs_safe_timing_without_identifiers(monkeypatch
         )
         stored = await database.upsert_session(session)
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert result is not None
     assert captured_get == [(private_session_id, "agent", private_user_id, True, 3)]
     assert stored is session
     assert "agent_session_read_completed" in log_text
     assert "agent_session_write_completed" in log_text
+    assert "agent_session_read_completed" not in info_text
+    assert "agent_session_write_completed" not in info_text
     assert "backend=postgresql" in log_text
     assert private_session_id not in log_text
     assert private_user_id not in log_text
+
+
+@pytest.mark.anyio
+async def test_session_database_cancellation_does_not_log_read_failure(monkeypatch):
+    async def cancelled(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(AsyncPostgresDb, "get_session", cancelled)
+    database = SerializedAsyncPostgresDb(db_url=DEFAULT_AGENT_DB_URL)
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="WARNING", format="{message}")
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await database.get_session("cancelled-session")
+    finally:
+        logger.remove(sink_id)
+
+    assert "agent_session_read_failed" not in "".join(records)
 
 
 @pytest.mark.anyio

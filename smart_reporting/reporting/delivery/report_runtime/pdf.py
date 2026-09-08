@@ -331,7 +331,7 @@ def _apply_pdf_page_decorations(
         # WeasyPrint 的命名页沿用绝对页计数。服务端按章节锚点一次生成全部装饰页，
         # 目录使用罗马数字，正文从 1 重启；封面明确不合并任何页面元素。
         for page, overlay_page in zip(writer.pages[1:], overlay_pages, strict=True):
-            page.merge_page(overlay_page, over=False)
+            page.merge_page(overlay_page, over=True)
         with decorated.open("wb") as stream:
             writer.write(stream)
         os.replace(decorated, path)

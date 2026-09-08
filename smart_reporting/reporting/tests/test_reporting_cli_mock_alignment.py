@@ -332,24 +332,22 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
             (
                 "apply_analysis_patch",
                 "complete_analysis_item",
-                "process",
                 "query_analysis_context",
                 "query_analysis_facts",
                 "query_profile",
                 "read_file",
                 "read_tool_output",
-                "terminal",
+                "run_python_script",
             ),
         ),
         (
             "visualization_section",
             (
                 "apply_analysis_patch",
-                "process",
                 "read_file",
                 "read_tool_output",
+                "run_python_script",
                 "submit_visualization_charts",
-                "terminal",
             ),
         ),
         (
@@ -399,16 +397,18 @@ def test_mock_runtime_isolated_for_each_cli_case() -> None:
 
 
 @pytest.mark.anyio
-async def test_mock_workspace_background_session_and_sha_recovery_boundaries() -> None:
+async def test_mock_workspace_script_and_sha_recovery_boundaries() -> None:
     runtime = _mock_tool_runtime()
-    started = await runtime.workspace.execute_script(
-        "python3 reports/script.py", timeout=30, background=True
-    )
-    session_id = str(started["session_id"])
-    assert started["status"] == "running"
-    await runtime.workspace.send_process_input(session_id, "", submit=True, timeout=30)
-    with pytest.raises(Exception, match="已提交"):
-        await runtime.workspace.send_process_input(session_id, "", submit=True, timeout=30)
+    completed = await runtime.workspace.execute_script("reports/script.py", timeout=30)
+    assert completed == {
+        "ok": True,
+        "status": "completed",
+        "exitCode": 0,
+        "exit_code": 0,
+    }
+    assert runtime.workspace.calls == [
+        {"operation": "execute_script", "script_path": "reports/script.py", "timeout": 30}
+    ]
 
     identity = await runtime.workspace.write_text("reports/script.py", "print('v1')")
     runtime.workspace._outputs["reports/script.py"] = b"print('v2')"

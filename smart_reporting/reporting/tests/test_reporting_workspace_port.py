@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.tools import Toolkit
 
+from smart_reporting.reporting.tools.analysis_item import RuntimeAnalysisMixin
+from smart_reporting.reporting.tools.base import ReportingToolkitBase
 from smart_reporting.reporting.tools.context import (
     ReportingFileRef,
     ReportingOutputPolicy,
@@ -16,8 +19,13 @@ from smart_reporting.reporting.tools.mock_workspace import (
     MockReportingWorkspace,
 )
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
-from smart_reporting.reporting.tools.workspace_adapter import WorkspaceServiceReportingPort
+from smart_reporting.reporting.tools.workspace_adapter import (
+    ReportingWorkspaceAdapter,
+    WorkspaceServiceReportingPort,
+    WorkspaceServiceReportingRuntime,
+)
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
+from smart_reporting.task_execution import abuild_workspace_changes
 
 
 def test_reporting_toolkit_owns_agno_toolkit_boundary() -> None:
@@ -122,20 +130,11 @@ async def test_mock_workspace_rejects_missing_stale_and_invalid_output_paths() -
 
 
 @pytest.mark.anyio
-async def test_mock_workspace_rejects_timeout_foreign_session_and_duplicate_submit() -> None:
-    first = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
-    second = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
+async def test_mock_workspace_rejects_invalid_script_timeout() -> None:
+    workspace = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
 
     with pytest.raises(ReportingWorkspaceError, match="超时"):
-        await first.execute_script("python3 analysis.py", timeout=0)
-    started = await first.execute_script("python3 analysis.py", timeout=30, background=True)
-    session_id = str(started["session_id"])
-    with pytest.raises(ReportingWorkspaceError, match="不属于"):
-        await second.send_process_input(session_id, "yes", submit=True, timeout=30)
-
-    await first.send_process_input(session_id, "yes", submit=True, timeout=30)
-    with pytest.raises(ReportingWorkspaceError, match="已提交"):
-        await first.send_process_input(session_id, "yes", submit=True, timeout=30)
+        await workspace.execute_script("analysis.py", timeout=0)
 
 
 @pytest.mark.anyio
@@ -163,6 +162,142 @@ async def test_production_port_treats_data_as_readonly() -> None:
 
     with pytest.raises(ReportingWorkspaceError, match="只读"):
         await port.write_text("data/source.csv", "changed")
+
+
+@pytest.mark.anyio
+async def test_production_port_reads_through_async_workspace_api() -> None:
+    class AsyncReadService:
+        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+            raise AssertionError("异步 Reporting 端口不得调用同步工作区接口")
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
+            return b"source", "text/plain"
+
+    context = ReportingToolContext(
+        external_run_id="report-run-1",
+        thread_id="thread-1",
+        attempt_no=1,
+        output_policy=ReportingOutputPolicy(roots=("output",)),
+        input_snapshot={},
+    )
+    port = WorkspaceServiceReportingPort(
+        AsyncReadService(),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        context,
+        SimpleNamespace(),
+    )
+
+    assert await port.read_bytes("inputs/source.txt") == b"source"
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
+    class AsyncReadService:
+        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+            raise AssertionError("异步 Reporting 适配器不得调用同步工作区接口")
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
+            return b"source", "text/plain"
+
+    adapter = ReportingWorkspaceAdapter(AsyncReadService())  # type: ignore[arg-type]
+
+    assert await adapter.afile_bytes("thread-1", "inputs/source.txt") == (
+        b"source",
+        "text/plain",
+    )
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -> None:
+    class AsyncReadService:
+        def read_text(self, *_args: object) -> str:
+            raise AssertionError("异步 Reporting 补丁不得调用同步工作区接口")
+
+        async def aread_text(self, thread_id: str, path: str) -> str:
+            assert (thread_id, path) == ("thread-1", "analysis/model.py")
+            return "value = 1\n"
+
+    adapter = ReportingWorkspaceAdapter(AsyncReadService())  # type: ignore[arg-type]
+    patch = """\
+--- a/analysis/model.py
++++ b/analysis/model.py
+@@ -1 +1 @@
+-value = 1
++value = 2
+"""
+
+    changes = await abuild_workspace_changes(adapter, "thread-1", patch)  # type: ignore[arg-type]
+
+    assert changes == [
+        {
+            "operation": "update",
+            "path": "analysis/model.py",
+            "content": "value = 2\n",
+            "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_reporting_runtime_executes_script_with_resolved_scope() -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    kernel = SimpleNamespace(run_python_script=AsyncMock(return_value={"exitCode": 0}))
+    runtime = object.__new__(WorkspaceServiceReportingRuntime)
+    runtime._kernel = kernel
+
+    result = await runtime.execute_script("analysis/script.py", timeout=30, _scope=scope)
+
+    assert result == {"exitCode": 0}
+    kernel.run_python_script.assert_awaited_once_with(
+        "analysis/script.py", timeout=30, _scope=scope
+    )
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_reads_through_async_workspace_api() -> None:
+    class AsyncReadService:
+        def file_bytes(self, *_args: object) -> tuple[bytes, str]:
+            raise AssertionError("异步 Reporting 工具不得调用同步工作区接口")
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            assert (thread_id, path) == ("thread-1", "inputs/source.txt")
+            return b"source", "text/plain"
+
+    class ToolHarness:
+        runtime = SimpleNamespace(workspace=AsyncReadService())
+
+        async def _invoke(self, _name, _arguments, call, _run_context):
+            return await call(SimpleNamespace(thread_id="thread-1"))
+
+    result = await ReportingToolkitBase.read_file(  # type: ignore[arg-type]
+        ToolHarness(), "inputs/source.txt"
+    )
+
+    assert result["content"] == "source"
+
+
+@pytest.mark.anyio
+async def test_analysis_dependency_probe_uses_structured_workspace_operation() -> None:
+    class Workspace:
+        async def probe_python_modules(self, thread_id: str, names: set[str]) -> set[str]:
+            assert thread_id == "thread-1"
+            assert names == {"numpy", "missing"}
+            return {"numpy"}
+
+        async def execute_isolated(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("依赖探测不得调用通用命令执行")
+
+    harness = SimpleNamespace(runtime=SimpleNamespace(workspace=Workspace()))
+
+    installed = await RuntimeAnalysisMixin._installed_python_modules(
+        harness,  # type: ignore[arg-type]
+        thread_id="thread-1",
+        module_names={"numpy", "missing"},
+    )
+
+    assert installed == {"numpy"}
 
 
 @pytest.mark.anyio

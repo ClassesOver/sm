@@ -7,6 +7,7 @@ import pytest
 from agno.run import RunContext
 from agno.workflow import Workflow
 from agno.workflow.types import StepOutput
+from loguru import logger
 
 from smart_reporting.reporting.workflow.runtime.reporting_draft_workflow import (
     ReportingAnalysisAndDraftWorkflow,
@@ -17,6 +18,43 @@ from smart_reporting.reporting.workflow.runtime.reporting_draft_workflow import 
 
 def _ok(value: str) -> StepOutput:
     return StepOutput(content=value)
+
+
+@pytest.mark.anyio
+async def test_section_execution_logs_started_base_info_and_completed_once() -> None:
+    callback = AsyncMock(return_value=_ok("ok"))
+    workflow = ReportingDraftWorkflow(
+        report_goal="目标",
+        section_goal={
+            "sectionNumber": "2",
+            "sectionCode": "section_002",
+            "title": "经营趋势",
+        },
+        analysis_ids=["analysis_001", "analysis_002"],
+        run_analysis=callback,
+        submit_visualization=callback,
+        draft_section=callback,
+    )
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
+        await workflow.execute_section(RunContext(run_id="run-1", session_id="session-1"))
+    finally:
+        logger.remove(sink_id)
+
+    events = [line for line in "".join(records).splitlines() if line.startswith("report_section_")]
+    assert events[:2] == [
+        "report_section_started section_code=section_002",
+        (
+            'report_section_base_info section={"sectionNumber":"2",'
+            '"sectionCode":"section_002","title":"经营趋势","analysisCount":2}'
+        ),
+    ]
+    assert len(events) == 3
+    duration = events[2].removeprefix(
+        "report_section_completed section_code=section_002 duration_ms="
+    )
+    assert duration.isdigit()
 
 
 @pytest.mark.anyio

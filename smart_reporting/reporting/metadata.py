@@ -85,7 +85,7 @@ class ReportingMetadataClient:
         payload = await self._post("/get_model_ddl_term_json", {"agent_id": int(agent_id)})
         response = self._validate(MetadataModelResponse, payload, "report_metadata_model_invalid")
         started_at = perf_counter()
-        logger.info(
+        logger.debug(
             "report_metadata_adaptation_started agent_id={} ddl_count={} term_count={} "
             "measure_semantics_count={}",
             agent_id,
@@ -115,7 +115,7 @@ class ReportingMetadataClient:
             raise ReportingError(
                 "report_metadata_model_invalid", "报表元数据响应不符合 DDL/term 契约。"
             ) from error
-        logger.info(
+        logger.debug(
             "report_metadata_adaptation_completed agent_id={} duration_ms={} table_count={}",
             agent_id,
             _duration_ms(started_at),
@@ -200,7 +200,7 @@ class ReportingMetadataClient:
                         "report_metadata_unavailable", "报表元数据服务不可用。"
                     ) from error
 
-                logger.info(
+                logger.debug(
                     "report_metadata_http_completed target={} path={} attempt={} duration_ms={} "
                     "http_status={} response_bytes={}",
                     self.log_target,
@@ -411,7 +411,7 @@ def _bind_ddl_source(
             len(matches),
         )
         raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源数据库。")
-    logger.info(
+    logger.debug(
         "report_metadata_ddl_parse_completed model_id={} duration_ms={} ddl_bytes={} "
         "statement_count={} statement_types={}",
         model_id,

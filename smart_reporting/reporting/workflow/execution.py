@@ -168,7 +168,7 @@ class _TaskModelMetricsSettlement:
             self._settled = True
             metrics = dict(self._metrics)
         record_step_model_metrics(metrics)
-        logger.info(
+        logger.debug(
             "report_worker_model_metrics_settled task_id={} phase_attempt={} agno_run_id={} "
             "outcome={} request_count={} total_tokens={} reasoning_tokens={} "
             "time_to_first_token_seconds={}",

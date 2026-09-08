@@ -251,7 +251,7 @@ class RuntimeVisualizationMixin:
                     "report_visualization_section_invalid",
                     "sectionCode 与当前章节 Task 契约不匹配。",
                 )
-            await self._ensure_visualization_terminal_settled(scope)
+            await self._ensure_visualization_script_settled(scope)
             output_root = self._chart_output_root(phase_contract)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
             serialized_charts = [

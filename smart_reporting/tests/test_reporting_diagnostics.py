@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from loguru import logger
 
 import smart_reporting.reporting.diagnostics as diagnostics_module
 from smart_reporting.reporting.data_source.starrocks import parse_starrocks_source
@@ -114,7 +114,7 @@ async def test_reporting_dependency_diagnostics_checks_configured_services() -> 
 
 
 @pytest.mark.anyio
-async def test_reporting_dependency_diagnostics_returns_safe_failure_codes(caplog) -> None:
+async def test_reporting_dependency_diagnostics_returns_safe_failure_codes() -> None:
     adapter = FakeAdapter(
         _source(),
         error=ReportingError("source_query_failed", "包含 diagnostic-password"),
@@ -132,9 +132,14 @@ async def test_reporting_dependency_diagnostics_returns_safe_failure_codes(caplo
         starrocks_adapter_factory=lambda _source: adapter,
     )
 
-    with caplog.at_level(logging.INFO, logger="smart_reporting.reporting.diagnostics"):
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
         result = await diagnostics.check()
+    finally:
+        logger.remove(sink_id)
     payload = result.model_dump(mode="json", by_alias=True)
+    log_text = "".join(records)
 
     assert result.status == "failed"
     assert result.checks.starrocks.sources[0].code == "source_query_failed"
@@ -146,13 +151,13 @@ async def test_reporting_dependency_diagnostics_returns_safe_failure_codes(caplo
     assert "diagnostic-password" not in serialized
     assert "metadata-secret" not in serialized
     assert "daytona-secret" not in serialized
-    assert "dependency=starrocks" in caplog.text
-    assert "dependency=metadata" in caplog.text
-    assert "http_status=404" in caplog.text
-    assert "dependency=sandbox" in caplog.text
-    assert "diagnostic-password" not in caplog.text
-    assert "metadata-secret" not in caplog.text
-    assert "daytona-secret" not in caplog.text
+    assert "dependency=starrocks" in log_text
+    assert "dependency=metadata" in log_text
+    assert "http_status=404" in log_text
+    assert "dependency=sandbox" in log_text
+    assert "diagnostic-password" not in log_text
+    assert "metadata-secret" not in log_text
+    assert "daytona-secret" not in log_text
 
 
 def test_reporting_dependency_diagnostics_extracts_safe_nested_error_facts() -> None:

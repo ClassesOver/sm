@@ -8,7 +8,8 @@ from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
 
 from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
-from ..workspace import WorkspaceService
+from ..sandbox.factory import create_sandbox_provider
+from ..workspace import AsyncSandboxRegistry, WorkspaceService
 from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
 from .settings import AgentSettings
@@ -50,11 +51,15 @@ def create_execution_context(
         current_settings,
         tracing_configurer=tracing_configurer,
     )
+    async_registry = AsyncSandboxRegistry(database.async_db)
+    provider = create_sandbox_provider(current_settings, registry=async_registry)
     workspace_service = workspace_factory(
         secret=current_settings.workspace_hmac_secret,
         database=database,
         snapshot=current_settings.workspace_snapshot,
         network_allow_list=current_settings.daytona_network_allow_list,
+        async_registry=async_registry,
+        provider=provider,
     )
     return ExecutionContext(
         settings=current_settings,

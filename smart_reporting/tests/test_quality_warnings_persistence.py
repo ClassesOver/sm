@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from loguru import logger
 
 from smart_reporting.quality_warnings import (
     CheckContext,
@@ -66,6 +67,36 @@ def _finding(subject_id: str = "income_summary_total") -> WarningFinding:
         message="指标定义不完整。",
         details={"missingFields": ["unit"], "value": 1},
     )
+
+
+@pytest.mark.anyio
+async def test_quality_warning_persistence_cancellation_is_not_logged_as_error() -> None:
+    class CancelledTransaction:
+        async def __aenter__(self):
+            raise asyncio.CancelledError
+
+        async def __aexit__(self, *_args):
+            return False
+
+    engine = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        begin=lambda: CancelledTransaction(),
+    )
+    repository = SqlAlchemyQualityWarningRepository(engine)  # type: ignore[arg-type]
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="ERROR", format="{message}")
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await repository.record_successful_check(
+                tenant=TenantScope(database_name="cancelled", company_id="42"),
+                check_scope=_scope("metric-1"),
+                findings=(_finding("metric-1"),),
+                context=CheckContext(check_id="cancelled-check"),
+            )
+    finally:
+        logger.remove(sink_id)
+
+    assert "quality_warning_batch_persist_failed" not in "".join(records)
 
 
 @pytest.mark.anyio

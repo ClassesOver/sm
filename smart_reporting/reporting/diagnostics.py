@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from time import perf_counter
 from typing import Literal
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from .data_source.starrocks import StarRocksDataSourceAdapter, StarRocksSourceConfig
@@ -21,9 +21,6 @@ STARROCKS_CHECK_CONCURRENCY = 4
 SANDBOX_CHECK_TIMEOUT_SECONDS = 10
 StarRocksAdapterFactory = Callable[[StarRocksSourceConfig], StarRocksDataSourceAdapter]
 SandboxCheck = Callable[[], Awaitable[None]]
-logger = logging.getLogger(__name__)
-
-
 class DependencyCheckResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -89,8 +86,8 @@ class ReportingDependencyDiagnostics:
             checks=checks,
         )
         logger.info(
-            "report_dependency_diagnostics_completed status=%s duration_ms=%d "
-            "starrocks_code=%s metadata_code=%s sandbox_code=%s",
+            "report_dependency_diagnostics_completed status={} duration_ms={} "
+            "starrocks_code={} metadata_code={} sandbox_code={}",
             response.status,
             _duration_ms(started_at),
             starrocks.code,
@@ -137,8 +134,8 @@ class ReportingDependencyDiagnostics:
                     return await self._check_starrocks_source(source)
         except TimeoutError:
             logger.warning(
-                "report_dependency_check_failed dependency=starrocks source_id=%s "
-                "code=starrocks_timeout duration_ms=%d",
+                "report_dependency_check_failed dependency=starrocks source_id={} "
+                "code=starrocks_timeout duration_ms={}",
                 source.id,
                 _duration_ms(started_at),
             )
@@ -200,9 +197,9 @@ class ReportingDependencyDiagnostics:
                             source_id=source.id,
                         )
         if ok:
-            logger.info(
-                "report_dependency_check_completed dependency=starrocks source_id=%s "
-                "code=ok duration_ms=%d",
+            logger.debug(
+                "report_dependency_check_completed dependency=starrocks source_id={} "
+                "code=ok duration_ms={}",
                 source.id,
                 _duration_ms(started_at),
             )
@@ -258,8 +255,8 @@ class ReportingDependencyDiagnostics:
                 code="report_metadata_check_failed",
                 durationMs=_duration_ms(started_at),
             )
-        logger.info(
-            "report_dependency_check_completed dependency=metadata code=ok duration_ms=%d",
+        logger.debug(
+            "report_dependency_check_completed dependency=metadata code=ok duration_ms={}",
             _duration_ms(started_at),
         )
         return DependencyCheckResult(ok=True, code="ok", durationMs=_duration_ms(started_at))
@@ -280,7 +277,7 @@ class ReportingDependencyDiagnostics:
         except TimeoutError:
             logger.warning(
                 "report_dependency_check_failed dependency=sandbox code=sandbox_timeout "
-                "duration_ms=%d",
+                "duration_ms={}",
                 _duration_ms(started_at),
             )
             return DependencyCheckResult(
@@ -301,8 +298,8 @@ class ReportingDependencyDiagnostics:
                 code="sandbox_unavailable",
                 durationMs=_duration_ms(started_at),
             )
-        logger.info(
-            "report_dependency_check_completed dependency=sandbox code=ok duration_ms=%d",
+        logger.debug(
+            "report_dependency_check_completed dependency=sandbox code=ok duration_ms={}",
             _duration_ms(started_at),
         )
         return DependencyCheckResult(ok=True, code="ok", durationMs=_duration_ms(started_at))
@@ -341,9 +338,9 @@ def _log_dependency_failure(
 ) -> None:
     error_types, error_numbers = _safe_error_facts(error)
     logger.warning(
-        "report_dependency_check_failed dependency=%s operation=%s source_id=%s "
-        "code=%s duration_ms=%d "
-        "http_status=%s error_types=%s error_numbers=%s",
+        "report_dependency_check_failed dependency={} operation={} source_id={} "
+        "code={} duration_ms={} "
+        "http_status={} error_types={} error_numbers={}",
         dependency,
         operation,
         source_id or "-",

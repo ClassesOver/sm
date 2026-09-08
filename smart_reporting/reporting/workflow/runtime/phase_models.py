@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
+from loguru import logger
+from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, RootModel, TypeAdapter, field_validator, model_validator
 
 from ...contract import StrictModel
@@ -21,6 +24,31 @@ from ..checkpoint import FileIdentity, SectionClaimSubmission
 MAX_VISUALIZATION_SOURCE_BYTES = 262_144
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
 _CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t]+)")
+
+
+def _normalize_subordinate_heading_levels(markdown: str) -> str:
+    """将模型过度细分的 H5/H6 提升到正文协议允许的 H4。"""
+
+    lines = markdown.splitlines(keepends=True)
+    normalized_count = 0
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if token.type != "heading_open" or token.tag not in {"h5", "h6"} or token.map is None:
+            continue
+        line_index = token.map[0]
+        normalized, replacements = _SUBORDINATE_HEADING_RE.subn(
+            r"\g<indent>####\g<spacing>",
+            lines[line_index],
+            count=1,
+        )
+        if replacements:
+            lines[line_index] = normalized
+            normalized_count += 1
+    if normalized_count:
+        logger.bind(normalized_heading_count=normalized_count).warning(
+            "report_section_heading_level_normalized"
+        )
+    return "".join(lines)
 
 
 class ChartDraft(StrictModel):
@@ -111,6 +139,42 @@ class VisualizationScriptDraft(StrictModel):
         if "\\" in value or path.is_absolute() or ".." in path.parts or path.suffix != ".py":
             raise ValueError("脚本路径必须是安全工作区相对 Python 文件")
         return path.as_posix()
+
+    @field_validator("python_source")
+    @classmethod
+    def validate_python_source(cls, value: str) -> str:
+        try:
+            tree = ast.parse(value, filename="<visualization>")
+            compile(tree, "<visualization>", "exec")
+        except SyntaxError as error:
+            raise ValueError("pythonSource 必须是合法 Python 源码") from error
+
+        # 固定 Workflow 独占脚本写入、执行与图表提交。模型源码只负责生成图片；
+        # 若把编排工具或 JSON 常量写进脚本，最早也只能在远端执行时失败，还会
+        # 消耗一次脚本 mutation。这里在任何副作用前拒绝并交给结构化纠错重生成。
+        forbidden_names = {
+            "__file__",
+            "apply_analysis_patch",
+            "null",
+            "run_python_script",
+            "submit_visualization_charts",
+            "true",
+            "false",
+        }
+        used_forbidden = sorted(
+            {
+                node.id
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in forbidden_names
+            }
+        )
+        if used_forbidden:
+            raise ValueError(
+                "pythonSource 只能生成签发图表，不得使用编排工具、__file__ 或 JSON 常量"
+            )
+        return value
 
     @model_validator(mode="after")
     def validate_unique_charts(self) -> VisualizationScriptDraft:
@@ -210,7 +274,7 @@ class SectionBlockContent(StrictModel):
             raise ValueError("章节正文清洗后不能为空。")
         # 确定性清洗必须先于 Pydantic 长度和业务校验。否则大段内部 repair comment
         # 会让本可接受的正文先触发 max_length，并错误消耗模型业务纠错额度。
-        return markdown
+        return _normalize_subordinate_heading_levels(markdown)
 
     @field_validator("markdown")
     @classmethod

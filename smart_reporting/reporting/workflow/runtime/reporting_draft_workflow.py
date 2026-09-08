@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Literal
 
 from agno.run import RunContext
 from agno.workflow import Parallel, Step, Steps, Workflow
 from agno.workflow.types import StepInput, StepOutput
+from loguru import logger
 
 ReportingExecutionMode = Literal["sequential", "parallel"]
 AnalysisRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
@@ -93,6 +96,22 @@ class ReportingDraftWorkflow(Workflow):
         return output
 
     async def execute_section(self, run_context: RunContext) -> ReportingDraftWorkflowResult:
+        started_at = perf_counter()
+        section_code = str(self.section_goal.get("sectionCode", ""))
+        logger.info("report_section_started section_code={}", section_code)
+        logger.info(
+            "report_section_base_info section={}",
+            json.dumps(
+                {
+                    "sectionNumber": self.section_goal.get("sectionNumber"),
+                    "sectionCode": section_code,
+                    "title": self.section_goal.get("title"),
+                    "analysisCount": len(self.analysis_ids),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         self._analysis_outputs = {}
         try:
             analysis_plan = build_reporting_draft_steps(self, run_context)
@@ -127,12 +146,18 @@ class ReportingDraftWorkflow(Workflow):
         draft_output = await self.draft_section(draft_input, run_context)
         if draft_output.success is False:
             raise RuntimeError("章节成稿失败")
-        return ReportingDraftWorkflowResult(
-            section_code=str(self.section_goal.get("sectionCode", "")),
+        result = ReportingDraftWorkflowResult(
+            section_code=section_code,
             analysis_outputs=tuple(output for output in analysis_outputs if output is not None),
             visualization_output=visualization_output,
             draft_output=draft_output,
         )
+        logger.info(
+            "report_section_completed section_code={} duration_ms={}",
+            section_code,
+            max(0, round((perf_counter() - started_at) * 1000)),
+        )
+        return result
 
 
 class ReportingAnalysisAndDraftWorkflow(Workflow):

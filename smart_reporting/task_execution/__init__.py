@@ -48,6 +48,7 @@ __all__ = [
     "suggested_workspace_path",
     "TERMINAL_EXECUTION_STATUSES",
     "create_files_patch",
+    "abuild_workspace_changes",
     "build_workspace_changes",
     "parse_unified_diff",
 ]
@@ -95,10 +96,11 @@ def __getattr__(name: str):
         from .repository import TERMINAL_EXECUTION_STATUSES
 
         return TERMINAL_EXECUTION_STATUSES
-    if name in {"build_workspace_changes", "parse_unified_diff"}:
-        from .changes import build_workspace_changes, parse_unified_diff
+    if name in {"abuild_workspace_changes", "build_workspace_changes", "parse_unified_diff"}:
+        from .changes import abuild_workspace_changes, build_workspace_changes, parse_unified_diff
 
         return {
+            "abuild_workspace_changes": abuild_workspace_changes,
             "build_workspace_changes": build_workspace_changes,
             "parse_unified_diff": parse_unified_diff,
         }[name]
