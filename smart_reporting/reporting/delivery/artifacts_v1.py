@@ -393,7 +393,7 @@ class DocxArtifactManifest(StrictModel):
     docx: ArtifactFile
     converted_page_count: int = Field(alias="convertedPageCount", ge=1, le=1_000)
     section_count: int = Field(alias="sectionCount", ge=1, le=100)
-    toc_entry_count: int = Field(alias="tocEntryCount", ge=0, le=100)
+    toc_entry_count: int = Field(alias="tocEntryCount", ge=0)
     rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
@@ -414,6 +414,8 @@ class DocxArtifactManifest(StrictModel):
         ):
             if len(values) != len(set(values)):
                 raise ValueError(message)
+        if self.toc_entry_count != len(self.heading_numbers):
+            raise ValueError("Word 目录项必须完整覆盖标题编号映射")
         _validate_heading_numbers(self.sections, self.section_numbers, self.heading_numbers)
         return self
 

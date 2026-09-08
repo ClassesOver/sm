@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from smart_reporting.reporting.delivery.artifacts_v1 import (
     ArtifactFile,
     Citation,
+    DocxArtifactManifest,
     ReportArtifactManifest,
 )
 from smart_reporting.reporting.delivery.draft_v1 import (
@@ -288,6 +289,62 @@ def test_manifest_rejects_non_contiguous_nested_heading_numbers() -> None:
                 ),
             ),
         )
+
+
+def _docx_manifest_with_heading_count(
+    heading_count: int, *, toc_entry_count: int
+) -> DocxArtifactManifest:
+    headings = (
+        HeadingNumber(
+            level=2,
+            number="1",
+            title="经营分析",
+            sectionCode="section_001",
+            anchor="report-section-section_001",
+        ),
+        *(
+            HeadingNumber(
+                level=3,
+                number=f"1.{index}",
+                title=f"分析主题 {index}",
+                sectionCode="section_001",
+                anchor=f"report-heading-section_001-1-{index}",
+            )
+            for index in range(1, heading_count)
+        ),
+    )
+    return DocxArtifactManifest(
+        reportId="report-1",
+        revision=1,
+        effectiveProfileHash="a" * 64,
+        sourceMarkdownSha256="b" * 64,
+        docx=ArtifactFile(
+            path="reports/report.docx",
+            mediaType=(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            size=1,
+            sha256="c" * 64,
+        ),
+        convertedPageCount=1,
+        sectionCount=1,
+        tocEntryCount=toc_entry_count,
+        sections=("section_001",),
+        sectionNumbers=("1",),
+        headingNumbers=headings,
+    )
+
+
+def test_docx_manifest_accepts_more_than_one_hundred_complete_toc_entries() -> None:
+    manifest = _docx_manifest_with_heading_count(110, toc_entry_count=110)
+
+    assert manifest.toc_entry_count == 110
+    assert len(manifest.heading_numbers) == 110
+
+
+def test_docx_manifest_rejects_toc_count_different_from_heading_count() -> None:
+    with pytest.raises(ValidationError, match="Word 目录项必须完整覆盖标题编号映射"):
+        _docx_manifest_with_heading_count(110, toc_entry_count=109)
 
 
 @pytest.mark.parametrize(
