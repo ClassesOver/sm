@@ -9,7 +9,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
 from ..models import ReportingError
-from .report_runtime.markdown import normalize_report_markdown_strong_spacing
+from .report_runtime.markdown import format_heading_label, normalize_report_markdown_strong_spacing
 
 _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
@@ -393,8 +393,15 @@ def validate_report_draft_blocks(
             if level == 3:
                 h3_count += 1
             elif h3_count == 0:
+                issue = {
+                    "path": f"$.blocks[{block_index}].markdown",
+                    "type": "heading_parent_missing",
+                    "message": "H4 标题必须位于当前章节的 H3 标题之后。",
+                }
                 raise ReportingError(
-                    "report_draft_heading_parent_missing", "H4 标题必须位于当前章节的 H3 标题之后。"
+                    "report_draft_heading_parent_missing",
+                    issue["message"],
+                    details={"issues": [issue]},
                 )
 
 
@@ -515,8 +522,15 @@ def assemble_report_markdown(
             )
         )
         heading = _marker_lines(
-            f"## {definition.section_number} {definition.title}", (), definition.analysis_ids
+            format_heading_label(
+                level=2,
+                number=definition.section_number,
+                title=definition.title,
+            ),
+            (),
+            definition.analysis_ids,
         )
+        heading = f"## {heading}"
         markdown_parts.append(
             f"[[section:{definition.code}]]\n{heading}" if definition.protocol_marker else heading
         )

@@ -69,7 +69,12 @@ async def test_daemon_round_trips_file_and_cleans_python_source(tmp_path) -> Non
             self.workspace = workspace
 
         async def run(self, request, *, script_path):
-            assert (self.workspace / script_path).read_text() == request.script
+            runtime_script = (self.workspace / script_path).read_text()
+            assert "fontManager.addfont" in runtime_script
+            assert repr(request.script) in runtime_script
+            assert runtime_script.index("fontManager.addfont") < runtime_script.index(
+                "exec(compile("
+            )
             return RunPythonScriptResult(
                 status=ExecutionStatus.SUCCEEDED,
                 exit_code=0,

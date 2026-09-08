@@ -203,8 +203,10 @@ def test_context_budget_check_logs_safe_timing_without_message_content():
         context_token_budget=200_000,
     )
     sensitive_prompt = "private-report-prompt"
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         should_compress = controller.should_compress(
@@ -212,15 +214,19 @@ def test_context_budget_check_logs_safe_timing_without_message_content():
             tools=[{"type": "function", "function": {"name": "safe_tool"}}],
         )
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert should_compress is False
     assert "context_budget_check_started" in log_text
     assert "context_budget_check_completed" in log_text
     assert "message_count=1" in log_text
     assert "tool_count=1" in log_text
     assert sensitive_prompt not in log_text
+    assert "context_budget_check_started" not in info_text
+    assert "context_budget_check_completed" not in info_text
 
 
 def test_configured_tiktoken_cache_downloads_missing_o200k_file(monkeypatch, tmp_path):
@@ -333,8 +339,10 @@ def test_context_projection_logs_safe_token_count_fallback() -> None:
             raise ConnectionError("private-tokenizer-url")
 
     sensitive_prompt = "private-projection-prompt"
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         projected = TaskExecutionContextProjector.project(
@@ -342,11 +350,14 @@ def test_context_projection_logs_safe_token_count_fallback() -> None:
             model=FailingTokenModel(),
         )
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert len(projected) == 1
     assert "context_projection_token_count_failed" in log_text
+    assert "context_projection_token_count_failed" in info_text
     assert "model_id=intranet-tokenizer" in log_text
     assert "error_type=ConnectionError" in log_text
     assert sensitive_prompt not in log_text
@@ -556,13 +567,18 @@ def test_coding_context_projector_counts_tool_schema_and_rejects_irreducible_pre
 
     messages = [Message(role="system", content="required"), Message(role="user", content="goal")]
 
-    with pytest.raises(TaskExecutionContextHardLimitError) as rejected:
-        TaskExecutionContextProjector.project(
-            messages,
-            model=SchemaCountingModel(),
-            tools=[{"name": "large", "description": "x" * 1_000}],
-            hard_cap=100,
-        )
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="ERROR", format="{message}")
+    try:
+        with pytest.raises(TaskExecutionContextHardLimitError) as rejected:
+            TaskExecutionContextProjector.project(
+                messages,
+                model=SchemaCountingModel(),
+                tools=[{"name": "large", "description": "x" * 1_000}],
+                hard_cap=100,
+            )
+    finally:
+        logger.remove(sink_id)
 
     assert rejected.value.code == "task_execution_context_hard_limit_exceeded"
     assert rejected.value.metrics["canonical_estimated_tokens"] > 100
@@ -571,6 +587,7 @@ def test_coding_context_projector_counts_tool_schema_and_rejects_irreducible_pre
     assert rejected.value.metrics["tool_schema_bytes"] > 0
     assert rejected.value.metrics["response_format_bytes"] == 0
     assert "编码上下文" not in str(rejected.value)
+    assert "task_execution_context_hard_limit_exceeded" in "".join(records)
 
 
 def test_coding_checkpoint_v2_reads_v1_state_and_stays_bounded():
@@ -774,8 +791,10 @@ async def test_projected_model_logs_safe_provider_timing_and_host(monkeypatch):
         base_url="http://internal-user:internal-password@vllm.internal:8000/v1",
         api_key="private-api-key",
     )
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         responses = [
@@ -785,9 +804,11 @@ async def test_projected_model_logs_safe_provider_timing_and_host(monkeypatch):
             )
         ]
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert len(responses) == 1
     assert "model_projection_completed" in log_text
     assert "model_provider_first_chunk" in log_text
@@ -798,6 +819,29 @@ async def test_projected_model_logs_safe_provider_timing_and_host(monkeypatch):
     assert "internal-user" not in log_text
     assert "internal-password" not in log_text
     assert "private-api-key" not in log_text
+    assert "model_projection_completed" not in info_text
+    assert "model_provider_first_chunk" not in info_text
+    assert "model_provider_stream_completed" not in info_text
+
+
+@pytest.mark.anyio
+async def test_projected_model_cancellation_does_not_log_provider_failure(monkeypatch):
+    async def cancelled(_self, _messages, *_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(OpenAIChat, "ainvoke", cancelled)
+    model = ProjectedOpenAIChat(id="cancelled-model")
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="DEBUG", format="{message}")
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await model.ainvoke([Message(role="user", content="cancel")])
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert "model_provider_request_failed" not in log_text
+    assert "model_provider_request_completed" not in log_text
 
 
 @pytest.mark.anyio
@@ -1023,8 +1067,10 @@ async def test_projected_model_logs_context_composition_without_content(monkeypa
 
     monkeypatch.setattr(OpenAIChat, "ainvoke", model_call)
     model = ProjectedOpenAIChat(id="test")
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         await model.ainvoke(
@@ -1035,15 +1081,18 @@ async def test_projected_model_logs_context_composition_without_content(monkeypa
             tools=[{"type": "function", "function": {"name": "safe_tool"}}],
         )
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert "model_context_composition" in log_text
     assert "canonical_system_bytes=" in log_text
     assert "projected_message_bytes=" in log_text
     assert "private-system" not in log_text
     assert "private-user" not in log_text
     assert "private-model-output" not in log_text
+    assert "model_context_composition" not in info_text
 
 
 def test_coding_context_projector_compacts_create_files_content_without_mutating_raw():

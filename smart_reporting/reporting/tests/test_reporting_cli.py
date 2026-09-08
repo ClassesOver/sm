@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -66,24 +68,47 @@ async def test_timed_workflow_step_logs_safe_success_and_failure() -> None:
     async def fail() -> StepOutput:
         raise RuntimeError("private-workflow-error")
 
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         output = await _timed_step_executor(succeed, step_id="confirm-source")()
         with pytest.raises(RuntimeError, match="private-workflow-error"):
             await _timed_step_executor(fail, step_id="prepare-data-profile")()
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert output.content == {"private": "workflow-output"}
     assert "report_workflow_step_started step_id=confirm-source" in log_text
     assert "report_workflow_step_completed step_id=confirm-source" in log_text
     assert "report_workflow_step_failed step_id=prepare-data-profile" in log_text
+    assert info_text.count("report_workflow_step_started step_id=confirm-source") == 1
+    assert info_text.count("report_workflow_step_completed step_id=confirm-source") == 1
+    assert "report_workflow_step_failed step_id=prepare-data-profile" in info_text
     assert "error_type=RuntimeError" in log_text
     assert "workflow-output" not in log_text
     assert "private-workflow-error" not in log_text
+
+
+@pytest.mark.anyio
+async def test_timed_workflow_step_cancellation_does_not_log_failure() -> None:
+    async def cancelled() -> StepOutput:
+        raise asyncio.CancelledError
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="WARNING", format="{message}")
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await _timed_step_executor(cancelled, step_id="cancelled-step")()
+    finally:
+        logger.remove(sink_id)
+
+    assert "report_workflow_step_failed" not in "".join(records)
 
 
 @pytest.mark.anyio
@@ -626,6 +651,38 @@ def test_reporting_cli_applies_requested_debug_setting() -> None:
 
     assert _cli_settings(enabled, debug=False).debug is False
     assert _cli_settings(disabled, debug=True).debug is True
+
+
+@pytest.mark.parametrize(
+    ("argument", "debug_count"),
+    [("--no-debug", 0), ("--debug", 1)],
+)
+def test_reporting_cli_configures_loguru_for_debug_argument(
+    argument: str, debug_count: int
+) -> None:
+    script = f"""
+from loguru import logger
+from smart_reporting.reporting import cli
+
+async def fake_run_cli(**_kwargs):
+    logger.debug("REPORTING_CLI_DEBUG_MARKER")
+    logger.info("REPORTING_CLI_INFO_MARKER")
+    return {{"status": "completed"}}
+
+cli.run_cli = fake_run_cli
+cli.main([{argument!r}])
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr.count("REPORTING_CLI_DEBUG_MARKER") == debug_count
+    assert completed.stderr.count("REPORTING_CLI_INFO_MARKER") == 1
 
 
 @pytest.mark.parametrize(

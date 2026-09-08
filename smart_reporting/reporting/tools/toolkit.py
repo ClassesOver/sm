@@ -15,7 +15,6 @@ from ...task_execution import (
 )
 from ...workspace import (
     MAX_BACKGROUND_EXECUTION_TIMEOUT,
-    MAX_PROCESS_INPUT_BYTES,
     WorkspaceService,
 )
 from ..delivery.draft_v1 import ReportChartRegistration, ReportDraftBlock
@@ -171,30 +170,6 @@ class ReportingToolkit(
                         "additionalProperties": False,
                     },
                     entrypoint=self.run_python_script,
-                ),
-                Function(
-                    name="process",
-                    description='管理后台进程。示例：{"action":"list"}',
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["list", "poll", "wait", "kill", "write", "submit"],
-                            },
-                            "session_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                            "data": {"type": "string", "maxLength": MAX_PROCESS_INPUT_BYTES},
-                            "timeout": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
-                                "default": 30,
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                    entrypoint=self.process,
                 ),
                 Function(
                     name="read_file",

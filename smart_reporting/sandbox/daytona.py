@@ -48,6 +48,7 @@ from .errors import (
     SandboxPolicyDenied,
     SandboxProviderError,
 )
+from .matplotlib_defaults import matplotlib_bootstrap
 from .registry import SandboxBindingRecord
 
 DAYTONA_WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -240,11 +241,18 @@ class DaytonaProcessApi:
     async def code_run(self, request: CodeRunRequest) -> ExecResult:
         if request.cwd:
             raise SandboxCapabilityUnsupported("code_run_cwd")
+        return await self._run_code(request.code, timeout=request.timeout)
+
+    async def _run_code(self, code: str, *, timeout: int) -> ExecResult:
+        # 这里只接收本模块两个已校验公开入口产生的源码：code_run 保持 1 MiB
+        # 上限，run_python_script 的包装则由同样受限的 script 和 cwd 确定性生成。
+        # 不用 CodeRunRequest 二次校验包装结果，否则固定 cwd 前缀会错误拒绝
+        # 恰好达到公开 script 上限的合法请求。
         value = await _daytona_call(
             self._process.code_run(
-                request.code,
+                code,
                 params=CodeRunParams(),
-                timeout=request.timeout,
+                timeout=timeout,
             ),
             action="Python 执行",
         )
@@ -350,12 +358,20 @@ class DaytonaExecutionApi:
         self._process = process
 
     async def run_python_script(self, request: RunPythonScriptRequest) -> RunPythonScriptResult:
-        result = await self._process.code_run(
-            CodeRunRequest(
-                code=request.script,
-                cwd=request.cwd,
-                timeout=max(1, math.ceil(request.timeout_ms / 1000)),
-            )
+        workspace_cwd = (
+            f"{DAYTONA_WORKSPACE_ROOT}/{request.cwd}" if request.cwd else DAYTONA_WORKSPACE_ROOT
+        )
+        # Daytona code_run 没有 cwd 参数，而 provider-neutral 契约把空 cwd 定义为
+        # workspace 根。工作目录必须由服务端固定后再执行原始源码，否则模型获得的
+        # 工作区相对路径会相对于 Daytona 默认目录解析，合法输入文件也无法读取。
+        script = (
+            matplotlib_bootstrap("/tmp/reporting-matplotlib")
+            + f"_reporting_os.chdir({workspace_cwd!r})\n"
+            f"exec(compile({request.script!r}, '<stdin>', 'exec'), globals(), globals())\n"
+        )
+        result = await self._process._run_code(
+            script,
+            timeout=max(1, math.ceil(request.timeout_ms / 1000)),
         )
         return RunPythonScriptResult(
             status=result.status,

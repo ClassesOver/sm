@@ -31,7 +31,7 @@ def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
             "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
         },
     )
-    toolkit._ensure_visualization_terminal_settled = AsyncMock()
+    toolkit._ensure_visualization_script_settled = AsyncMock()
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(revision=7, payload=durable_payload or {})
     )
@@ -181,24 +181,206 @@ async def test_section_visualization_requires_its_task_kind() -> None:
     assert result["code"] == "report_phase_tool_forbidden"
 
 
-def test_visualization_terminal_forbidden_returns_allowed_command() -> None:
+def test_visualization_script_forbidden_returns_signed_script_path() -> None:
     error = ReportingError(
-        "report_visualization_terminal_forbidden",
-        "visualization terminal 只允许从工作区根目录执行签发脚本。",
-        details={"allowedCommand": "python3 analysis/charts/section_001/charts.py"},
+        "report_visualization_script_path_forbidden",
+        "visualization 只允许执行签发的 Python 脚本。",
+        details={"scriptPath": "analysis/charts/section_001/charts.py"},
     )
 
     result = ReportingToolkit._failure(error, retryable=False)
 
-    assert result["details"] == {"allowedCommand": "python3 analysis/charts/section_001/charts.py"}
+    assert result["details"] == {"scriptPath": "analysis/charts/section_001/charts.py"}
     assert result["requiredActions"] == [
-        "保持 workdir 为空，仅使用 details.allowedCommand 原样执行签发脚本；"
-        "不要改写命令、添加 cd 或执行其他 terminal 命令。"
+        "仅将 details.scriptPath 原样作为 run_python_script.script_path；"
+        "不要传入解释器、workdir 或 shell 命令。"
     ]
 
 
+def test_section_heading_failure_preserves_stable_issue_path() -> None:
+    error = ReportingError(
+        "report_draft_heading_parent_missing",
+        "H4 标题必须位于当前章节的 H3 标题之后。",
+        details={
+            "issues": [
+                {
+                    "path": "$.blocks[1].markdown",
+                    "type": "heading_parent_missing",
+                    "message": "H4 标题必须位于当前章节的 H3 标题之后。",
+                }
+            ]
+        },
+    )
+
+    result = ReportingToolkit._failure(error)
+
+    assert result["details"] == error.details
+
+
 @pytest.mark.anyio
-async def test_visualization_terminal_settlement_uses_runtime_repository() -> None:
+async def test_visualization_run_python_script_accepts_signed_script_path() -> None:
+    script_path = "analysis/charts/section_001/charts.py"
+    identity = {"path": script_path, "size": 12, "sha256": "a" * 64}
+    scope = SimpleNamespace(thread_id="thread-1")
+
+    async def invoke(_owner, _tool_name, _arguments, call, _run_context):
+        return await call(scope)
+
+    toolkit = object.__new__(ReportingToolkit)
+    toolkit.runtime = SimpleNamespace(
+        invoke=invoke,
+        execute_script=AsyncMock(return_value={"ok": True, "status": "completed", "exitCode": 0}),
+        workspace=SimpleNamespace(batch_hash_files=AsyncMock(return_value=[identity])),
+    )
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {"visualizationWorkspace": {"scriptPath": script_path}},
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "writeIntents": {
+                    "intent-1": {
+                        "status": "committed",
+                        "commitSequence": 1,
+                        "artifacts": [identity],
+                    }
+                }
+            }
+        )
+    )
+    toolkit._analysis_python_dependency_rejection = AsyncMock(return_value=None)
+
+    result = await toolkit.run_python_script(
+        script_path,
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result == {"ok": True, "status": "completed", "exitCode": 0}
+    toolkit._analysis_python_dependency_rejection.assert_awaited_once_with(
+        scope=scope, script_path=script_path
+    )
+
+
+@pytest.mark.anyio
+async def test_visualization_run_python_script_rejects_unsigned_script_path() -> None:
+    signed_script_path = "analysis/charts/section_001/charts.py"
+    scope = SimpleNamespace(thread_id="thread-1")
+
+    async def invoke(_owner, _tool_name, _arguments, call, _run_context):
+        return await call(scope)
+
+    toolkit = object.__new__(ReportingToolkit)
+    toolkit.runtime = SimpleNamespace(
+        invoke=invoke,
+        execute_script=AsyncMock(),
+    )
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {"visualizationWorkspace": {"scriptPath": signed_script_path}},
+    )
+
+    result = await toolkit.run_python_script(
+        "analysis/charts/section_001/other.py",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_path_forbidden"
+    assert result["details"] == {"scriptPath": signed_script_path}
+    toolkit.runtime.execute_script.assert_not_awaited()
+
+
+def _analysis_item_runner_toolkit(
+    *, script_path: str, identity: dict[str, object], durable_payload: dict[str, object]
+) -> ReportingToolkit:
+    scope = SimpleNamespace(thread_id="thread-1")
+
+    async def invoke(_owner, _tool_name, _arguments, call, _run_context):
+        return await call(scope)
+
+    toolkit = object.__new__(ReportingToolkit)
+    toolkit.runtime = SimpleNamespace(
+        invoke=invoke,
+        execute_script=AsyncMock(return_value={"ok": True, "status": "completed", "exitCode": 0}),
+        workspace=SimpleNamespace(batch_hash_files=AsyncMock(return_value=[identity])),
+    )
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "analysis_item"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": script_path.rsplit("/", 1)[0]},
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload=durable_payload))
+    toolkit._analysis_python_dependency_rejection = AsyncMock(return_value=None)
+    return toolkit
+
+
+@pytest.mark.anyio
+async def test_analysis_item_run_python_script_accepts_signed_committed_script() -> None:
+    script_path = "analysis/evidence/analysis_001/attempt-1/supplement.py"
+    identity = {"path": script_path, "size": 12, "sha256": "a" * 64}
+    toolkit = _analysis_item_runner_toolkit(
+        script_path=script_path,
+        identity=identity,
+        durable_payload={
+            "writeIntents": {
+                "intent-1": {
+                    "status": "committed",
+                    "commitSequence": 1,
+                    "artifacts": [identity],
+                }
+            }
+        },
+    )
+
+    result = await toolkit.run_python_script(script_path)
+
+    assert result["ok"] is True
+    toolkit.runtime.execute_script.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_analysis_item_run_python_script_rejects_unsigned_path() -> None:
+    script_path = "analysis/evidence/analysis_001/attempt-1/supplement.py"
+    identity = {"path": script_path, "size": 12, "sha256": "a" * 64}
+    toolkit = _analysis_item_runner_toolkit(
+        script_path=script_path,
+        identity=identity,
+        durable_payload={},
+    )
+
+    result = await toolkit.run_python_script("analysis/other.py")
+
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_script_path_forbidden"
+    assert result["details"] == {"scriptPath": script_path}
+    toolkit.runtime.execute_script.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_analysis_item_run_python_script_rejects_uncommitted_script() -> None:
+    script_path = "analysis/evidence/analysis_001/attempt-1/supplement.py"
+    identity = {"path": script_path, "size": 12, "sha256": "a" * 64}
+    toolkit = _analysis_item_runner_toolkit(
+        script_path=script_path,
+        identity=identity,
+        durable_payload={},
+    )
+
+    result = await toolkit.run_python_script(script_path)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_script_identity_changed"
+    toolkit.runtime.execute_script.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_visualization_script_settlement_uses_runtime_repository() -> None:
     toolkit = object.__new__(ReportingToolkit)
     repository = SimpleNamespace(
         list_executions=AsyncMock(
@@ -208,6 +390,7 @@ async def test_visualization_terminal_settlement_uses_runtime_repository() -> No
                     internal_run_id="internal-1",
                     kind="terminal",
                     status="running",
+                    operation_receipt={"runner": "python", "scriptPath": "analysis/script.py"},
                 )
             ]
         )
@@ -216,7 +399,29 @@ async def test_visualization_terminal_settlement_uses_runtime_repository() -> No
     scope = SimpleNamespace(external_run_id="external-1", internal_run_id="internal-1")
 
     with pytest.raises(ReportingError) as rejected:
-        await toolkit._ensure_visualization_terminal_settled(scope)
+        await toolkit._ensure_visualization_script_settled(scope)
 
     assert rejected.value.code == "report_visualization_script_running"
     repository.list_executions.assert_awaited_once_with("external-1")
+
+
+@pytest.mark.anyio
+async def test_visualization_script_settlement_ignores_non_runner_terminal_execution() -> None:
+    toolkit = object.__new__(ReportingToolkit)
+    repository = SimpleNamespace(
+        list_executions=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    execution_id="execution-1",
+                    internal_run_id="internal-1",
+                    kind="terminal",
+                    status="running",
+                    operation_receipt={"command": "echo test"},
+                )
+            ]
+        )
+    )
+    toolkit.runtime = SimpleNamespace(repository=repository)
+    scope = SimpleNamespace(external_run_id="external-1", internal_run_id="internal-1")
+
+    await toolkit._ensure_visualization_script_settled(scope)

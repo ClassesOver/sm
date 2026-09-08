@@ -22,7 +22,6 @@ from sqlalchemy import text
 
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
-from smart_reporting.reporting.tools import ReportingToolkit
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.skills import (
     TASK_EXECUTION_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
@@ -1542,85 +1541,6 @@ async def test_small_tool_output_only_gets_handle_when_explicitly_retained(execu
     assert retained["outputDiscarded"] is False
     assert page["content"] == result["output"]
     assert page["hasMore"] is False
-
-
-@pytest.mark.anyio
-async def test_reporting_analysis_terminal_retains_small_output(execution_runtime):
-    runtime = execution_runtime
-    external_run_id = "report-coding-retain-test"
-    sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
-    scope = TaskExecutionScope(external_run_id, "user", "thread", sandbox_id, "report-agent")
-    task = await runtime.repository.create_task_with_initial_attempt(
-        scope,
-        "执行全局分析",
-        acceptance_contract={
-            "version": 1,
-            "requirements": [
-                {
-                    "id": "report-artifact",
-                    "validatorId": "report:artifact",
-                    "parameters": {
-                        "phase": "analysis",
-                        "phaseContract": {"taskKind": "analysis_item"},
-                    },
-                    "artifactPatterns": [],
-                }
-            ],
-        },
-    )
-    lease = await runtime.repository.claim_lease(external_run_id, "report-request")
-    assert isinstance(lease, Lease)
-    _task, attempt = await runtime.repository.open_initial(
-        external_run_id,
-        lease,
-        task.state_version,
-    )
-    context = RunContext(
-        run_id=attempt.internal_run_id,
-        session_id="thread",
-        user_id="user",
-        session_state={},
-        dependencies={
-            TASK_EXECUTION_DEPENDENCY: {
-                "externalRunId": external_run_id,
-                "leaseOwner": "report-request",
-                "leaseEpoch": lease.epoch,
-                "sandboxId": sandbox_id,
-            }
-        },
-    )
-    toolkit = ReportingToolkit(
-        runtime.workspace,
-        runtime.repository,
-        state_repository=AsyncMock(),
-    )
-
-    started = await toolkit.terminal(
-        "printf '收入同比增长 8.2%%'",
-        background=True,
-        run_context=context,
-    )
-    finish_remote_execution(
-        runtime,
-        started["execution_id"],
-        output="收入同比增长 8.2%",
-    )
-    result = await toolkit.process(
-        "poll",
-        session_id=started["execution_id"],
-        run_context=context,
-    )
-    if result["status"] == "draining":
-        result = await toolkit.process(
-            "poll",
-            session_id=started["execution_id"],
-            run_context=context,
-        )
-    page = await toolkit.read_tool_output(result["outputHandle"], _agno_run_context=context)
-
-    assert "收入同比增长 8.2%" in result["output"]
-    assert result["outputTruncated"] is False
-    assert page["content"] == result["output"]
 
 
 @pytest.mark.anyio

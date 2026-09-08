@@ -25,6 +25,7 @@ from smart_reporting.reporting.tools.workspace_adapter import (
     WorkspaceServiceReportingRuntime,
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
+from smart_reporting.task_execution import abuild_workspace_changes
 
 
 def test_reporting_toolkit_owns_agno_toolkit_boundary() -> None:
@@ -129,20 +130,11 @@ async def test_mock_workspace_rejects_missing_stale_and_invalid_output_paths() -
 
 
 @pytest.mark.anyio
-async def test_mock_workspace_rejects_timeout_foreign_session_and_duplicate_submit() -> None:
-    first = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
-    second = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
+async def test_mock_workspace_rejects_invalid_script_timeout() -> None:
+    workspace = MockReportingWorkspace(output_policy=ReportingOutputPolicy(roots=("output",)))
 
     with pytest.raises(ReportingWorkspaceError, match="超时"):
-        await first.execute_script("python3 analysis.py", timeout=0)
-    started = await first.execute_script("python3 analysis.py", timeout=30, background=True)
-    session_id = str(started["session_id"])
-    with pytest.raises(ReportingWorkspaceError, match="不属于"):
-        await second.send_process_input(session_id, "yes", submit=True, timeout=30)
-
-    await first.send_process_input(session_id, "yes", submit=True, timeout=30)
-    with pytest.raises(ReportingWorkspaceError, match="已提交"):
-        await first.send_process_input(session_id, "yes", submit=True, timeout=30)
+        await workspace.execute_script("analysis.py", timeout=0)
 
 
 @pytest.mark.anyio
@@ -215,6 +207,37 @@ async def test_reporting_workspace_adapter_exposes_async_file_read() -> None:
         b"source",
         "text/plain",
     )
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -> None:
+    class AsyncReadService:
+        def read_text(self, *_args: object) -> str:
+            raise AssertionError("异步 Reporting 补丁不得调用同步工作区接口")
+
+        async def aread_text(self, thread_id: str, path: str) -> str:
+            assert (thread_id, path) == ("thread-1", "analysis/model.py")
+            return "value = 1\n"
+
+    adapter = ReportingWorkspaceAdapter(AsyncReadService())  # type: ignore[arg-type]
+    patch = """\
+--- a/analysis/model.py
++++ b/analysis/model.py
+@@ -1 +1 @@
+-value = 1
++value = 2
+"""
+
+    changes = await abuild_workspace_changes(adapter, "thread-1", patch)  # type: ignore[arg-type]
+
+    assert changes == [
+        {
+            "operation": "update",
+            "path": "analysis/model.py",
+            "content": "value = 2\n",
+            "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
+        }
+    ]
 
 
 @pytest.mark.anyio

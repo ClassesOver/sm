@@ -780,7 +780,7 @@ class ReportWorkflowController:
     @staticmethod
     def _log_background_result(external_run_id: str, task: asyncio.Task[dict[str, Any]]) -> None:
         if task.cancelled():
-            logger.warning("report_mcp_background_cancelled external_run_id={}", external_run_id)
+            logger.debug("report_mcp_background_cancelled external_run_id={}", external_run_id)
             return
         error = task.exception()
         if error is not None:
@@ -1355,7 +1355,7 @@ class ReportWorkflowController:
                 external_run_id=scope["external_run_id"],
                 owner_user_id=scope["user_id"],
             ):
-                logger.info(
+                logger.debug(
                     "report_workflow_owner_claimed external_run_id={} thread_id={}",
                     scope["external_run_id"],
                     scope["thread_id"],
@@ -1368,7 +1368,7 @@ class ReportWorkflowController:
                     owner["owner_user_id"],
                 ) == (scope["external_run_id"], scope["user_id"])
                 if not same_run and await self._owner_run_active(owner["external_run_id"]):
-                    logger.info(
+                    logger.debug(
                         "report_workflow_owner_active old_external_run_id={} "
                         "new_external_run_id={} thread_id={}",
                         owner.get("external_run_id"),

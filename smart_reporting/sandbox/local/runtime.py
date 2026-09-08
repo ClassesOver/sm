@@ -29,6 +29,11 @@ from ..errors import (
     SandboxPolicyDenied,
     SandboxTimeout,
 )
+from ..matplotlib_defaults import (
+    LOCAL_MATPLOTLIB_ROOT,
+    LOCAL_MATPLOTLIBRC_PATH,
+    matplotlib_bootstrap,
+)
 from .preflight import inspect_host, run_preflight
 
 
@@ -69,6 +74,9 @@ def build_python_argv(
         "--unshare-ipc",
         "--die-with-parent",
         "--new-session",
+        "--setenv",
+        "MATPLOTLIBRC",
+        LOCAL_MATPLOTLIBRC_PATH,
         "--ro-bind",
         str(policy.rootfs),
         "/",
@@ -447,7 +455,13 @@ class LocalSandboxRuntime:
             )
             try:
                 with os.fdopen(descriptor, "wb", closefd=False) as output:
-                    output.write(request.script.encode())
+                    output.write(matplotlib_bootstrap(LOCAL_MATPLOTLIB_ROOT).encode())
+                    output.write(
+                        (
+                            f"exec(compile({request.script!r}, '<stdin>', 'exec'), "
+                            "globals(), globals())\n"
+                        ).encode()
+                    )
                     output.flush()
                 result = await self._executor_factory(directory).run(request, script_path=relative)
                 return result.model_copy(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,6 +14,8 @@ from smart_reporting.sandbox import (
     ExecRequest,
     ExecutionStatus,
     ProviderKind,
+    RunPythonScriptRequest,
+    SandboxCapabilityUnsupported,
     SandboxNotFound,
     SandboxPolicyDenied,
     SandboxProviderError,
@@ -96,11 +99,13 @@ class FakeProcess:
     def __init__(self) -> None:
         self.sessions: dict[str, SimpleNamespace] = {}
         self.inputs: list[tuple[str, str, str]] = []
+        self.code_runs: list[str] = []
 
     async def exec(self, command: str, cwd: str | None = None, timeout: int | None = None) -> Any:
         return SimpleNamespace(exit_code=0, result=f"exec:{command}")
 
     async def code_run(self, code: str, params: Any = None, timeout: int | None = None) -> Any:
+        self.code_runs.append(code)
         return SimpleNamespace(exit_code=0, result=f"code:{code}")
 
     async def create_session(self, session_id: str) -> None:
@@ -258,6 +263,66 @@ async def test_daytona_handle_normalizes_files_and_process_results() -> None:
     assert executed.stdout == "exec:fixed-runner"
     assert executed.status == ExecutionStatus.SUCCEEDED
     assert code.stdout == "code:print('ok')"
+
+
+@pytest.mark.anyio
+async def test_daytona_public_code_run_rejects_cwd() -> None:
+    provider = DaytonaProvider(
+        client=FakeDaytonaClient(),
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+
+    with pytest.raises(SandboxCapabilityUnsupported):
+        await handle.process.code_run(CodeRunRequest(code="print('ok')", cwd="analysis"))
+
+
+@pytest.mark.anyio
+async def test_daytona_python_runner_executes_from_workspace_root() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    script = "from pathlib import Path\nprint(Path('data.csv').read_text())\n"
+
+    result = await handle.execution.run_python_script(RunPythonScriptRequest(script=script))
+
+    executed = client.sandboxes[handle.ref.resource_id].process.code_runs[-1]
+    assert "chdir('/home/daytona/workspace')" in executed
+    assert "Noto Sans CJK SC" in executed
+    assert "setdefault('MATPLOTLIBRC'" in executed
+    assert "TTCollection" in executed
+    assert "fontManager.addfont" in executed
+    assert "replace(_reporting_matplotlibrc_temporary, _reporting_matplotlibrc)" in executed
+    assert executed.index("setdefault('MATPLOTLIBRC'") < executed.index("exec(compile(")
+    assert repr(script) in executed
+    assert result.script_hash == hashlib.sha256(script.encode()).hexdigest()
+
+
+@pytest.mark.anyio
+async def test_daytona_python_runner_accepts_public_script_size_boundary() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    script = "#" * (1024 * 1024)
+
+    result = await handle.execution.run_python_script(RunPythonScriptRequest(script=script))
+
+    executed = client.sandboxes[handle.ref.resource_id].process.code_runs[-1]
+    assert "chdir('/home/daytona/workspace')" in executed
+    assert repr(script) in executed
+    assert result.script_hash == hashlib.sha256(script.encode()).hexdigest()
 
 
 @pytest.mark.anyio

@@ -21,6 +21,7 @@ from .markdown import (
     _markdown_title,
     _normalize_cjk_strong_markers,
     _semantic_documents,
+    format_heading_label,
 )
 from .pdf import (
     MAX_PDF_PAGES,
@@ -603,7 +604,10 @@ class ReportRuntime:
                     and cover_compact.count(watermark_compact) == expected_cover_occurrences
                 )
                 toc_ok = "目录" in toc_text and all(
-                    f"{item['number']} {item['title']}" in toc_text
+                    format_heading_label(
+                        level=item["level"], number=item["number"], title=item["title"]
+                    )
+                    in toc_text
                     for item in context["headingNumbers"]
                 )
                 signature_ok = (

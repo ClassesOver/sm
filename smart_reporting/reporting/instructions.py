@@ -130,7 +130,8 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     ),
     (
         "任务 JSON 中的 Dataset 路径和 analysisOutputRoot 都是相对工作区根目录的受信路径。"
-        "脚本必须从工作区根目录执行：python3 <analysisOutputRoot>/script.py；不得 cd 到 "
+        "补充脚本固定为 <analysisOutputRoot>/supplement.py，只将该路径原样传给 run_python_script；"
+        "不得传入解释器或 workdir，不得 cd 到 "
         "evidence/analysis_*，不得猜测 /workspace，也不得用 pwd、ls、find 或 wc 探测任务 JSON "
         "已明确提供的路径；不要给成功的脚本执行附加探测命令。"
     ),
@@ -209,7 +210,7 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     (
         "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，citationDatasetIds 是"
         " citationId 所属 Dataset 的唯一受信映射；必须逐字复用，不得查询 datasets[].citationIds、猜测或"
-        "重建 Dataset 归属，也不得用 read_file、terminal 或目录探测寻找 citationId。"
+        "重建 Dataset 归属，也不得用 read_file、run_python_script 或目录探测寻找 citationId。"
         "冻结 facts 只按 visualizationFacts.factFile.path 由图表脚本一次读取；evidence 文件仅由签发"
         "图表脚本按 visualizationFacts[].evidenceFiles[].path 逐字读取。"
     ),
@@ -306,6 +307,10 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
             "run_python_script 只能在脚本提交成功后传入签发路径，不得先探测、猜测或重复尝试。"
             "完成脚本并执行成功后，随后只调用一次 submit_visualization_charts 提交该章全部图表草案。"
             "不得调用全局图表登记或分析冻结终态。"
+        ),
+        (
+            "运行环境已将 Matplotlib 默认字体配置为 Noto Sans CJK SC，脚本通常无需重复设置；"
+            "业务需要时可以覆盖字体配置，缺字警告只作普通 warning，不视为脚本执行失败。"
         ),
     ]
 )

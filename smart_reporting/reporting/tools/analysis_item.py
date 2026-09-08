@@ -9,7 +9,6 @@ import ast
 import hashlib
 import json
 import re
-import shlex
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from pathlib import PurePosixPath
@@ -500,33 +499,6 @@ class RuntimeAnalysisMixin:
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error)
 
-    @staticmethod
-    def _direct_python_script_path(command: Any, workdir: Any) -> str | None:
-        if not isinstance(command, str) or "\n" in command:
-            return None
-        try:
-            parts = shlex.split(command)
-        except ValueError:
-            return None
-        if (
-            not parts
-            or re.fullmatch(r"python(?:3(?:\.\d+)?)?", PurePosixPath(parts[0]).name) is None
-        ):
-            return None
-        script: str | None = None
-        for argument in parts[1:]:
-            if argument == "-m":
-                return None
-            if script is None and argument.startswith("-"):
-                continue
-            script = argument
-            break
-        if script is None or not script.endswith(".py"):
-            return None
-        base = PurePosixPath(str(workdir or ""))
-        candidate = base / script
-        return WorkspaceService.normalize_path(candidate.as_posix(), allow_root=False)[0]
-
     async def _installed_python_modules(
         self,
         *,
@@ -554,13 +526,10 @@ class RuntimeAnalysisMixin:
         self,
         *,
         scope: Any,
-        command: Any,
-        workdir: Any,
+        script_path: Any,
     ) -> dict[str, Any] | None:
         try:
-            script_path = self._direct_python_script_path(command, workdir)
-            if script_path is None:
-                return None
+            script_path = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
             pending = [script_path]
             visited: set[str] = set()
             unresolved: dict[str, tuple[str, ...]] = {}
@@ -929,7 +898,7 @@ class RuntimeAnalysisMixin:
         scope: Any,
         identities: list[dict[str, Any]],
     ) -> tuple[ReportingRunState, list[str]]:
-        """把 terminal 等工具已写出的 evidence 身份登记到唯一 durable 账本。"""
+        """把执行工具已写出的 evidence 身份登记到唯一 durable 账本。"""
 
         durable = await self._durable_state(scope)
         missing, unregistered, changed = self._analysis_evidence_registration_status(

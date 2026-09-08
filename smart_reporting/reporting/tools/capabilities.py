@@ -6,7 +6,6 @@ REPORTING_SECTION_TOOL_NAMES = frozenset(
 REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
     {
         "complete_analysis_item",
-        "process",
         "query_analysis_context",
         "query_analysis_facts",
         "query_profile",
@@ -21,7 +20,6 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
 REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
     {
         "inspect_chart",
-        "process",
         "read_file",
         "read_tool_output",
         "submit_visualization_charts",

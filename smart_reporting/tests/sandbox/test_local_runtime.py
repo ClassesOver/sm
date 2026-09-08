@@ -42,6 +42,11 @@ def test_runtime_builds_fixed_offline_python_argv(tmp_path: Path) -> None:
     ]
     assert ("--tmpfs", "/tmp") == argv[argv.index("--tmpfs") : argv.index("--tmpfs") + 2]
     assert ("--chdir", "/workspace") == argv[argv.index("--chdir") : argv.index("--chdir") + 2]
+    assert (
+        "--setenv",
+        "MATPLOTLIBRC",
+        "/workspace/.sandbox-matplotlib/matplotlibrc",
+    ) == argv[argv.index("--setenv") : argv.index("--setenv") + 3]
     assert argv[-4:] == ("/usr/bin/python3", "-I", "-B", "/workspace/jobs/script.py")
     assert "python" not in " ".join(argv[:-4])
 
@@ -154,3 +159,53 @@ async def test_runtime_serializes_scripts_within_same_workspace_cgroup(tmp_path:
 
     assert max_active == 1
     assert {result["dependency_bundle_digest"] for result in results} == {"sha256:" + "b" * 64}
+
+
+@pytest.mark.anyio
+async def test_runtime_bootstraps_default_chinese_matplotlib_font(tmp_path: Path) -> None:
+    observed_script = ""
+
+    class Executor:
+        def __init__(self, workspace: Path) -> None:
+            self.workspace = workspace
+
+        async def run(
+            self, request: RunPythonScriptRequest, *, script_path: str
+        ) -> RunPythonScriptResult:
+            nonlocal observed_script
+            observed_script = (self.workspace / script_path).read_text()
+            return RunPythonScriptResult(
+                status=ExecutionStatus.SUCCEEDED,
+                exit_code=0,
+                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+            )
+
+    workspace_root = tmp_path / "workspaces"
+    workspace_root.mkdir()
+    runtime = LocalSandboxRuntime(
+        node_id="node-a",
+        profile="ubuntu",
+        rootfs_digest="sha256:" + "a" * 64,
+        dependency_bundle_digest="sha256:" + "b" * 64,
+        workspace_root=workspace_root,
+        executor_factory=Executor,
+    )
+    binding = "c" * 64
+    created = await runtime.ensure_workspace(
+        binding,
+        profile="ubuntu",
+        rootfs_digest="sha256:" + "a" * 64,
+        idempotency_key="workspace-request-1",
+    )
+
+    await runtime.run_python_script(
+        created["ref"]["resource_id"],
+        binding,
+        RunPythonScriptRequest(script="print('ok')"),
+    )
+
+    assert "font.family: sans-serif" in observed_script
+    assert "font.sans-serif: Noto Sans CJK SC, DejaVu Sans" in observed_script
+    assert "TTCollection" in observed_script
+    assert "fontManager.addfont" in observed_script
+    assert observed_script.index("fontManager.addfont") < observed_script.index("print('ok')")

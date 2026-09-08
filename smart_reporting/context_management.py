@@ -891,7 +891,7 @@ class ContextBudgetController(ProtectedCompressionManager):
         model_id, _host = _model_log_fields(counting_model)
         started_at = perf_counter()
         tool_count = len(tools) if isinstance(tools, (list, tuple)) else 0
-        logger.info(
+        logger.debug(
             "context_budget_check_started model_id={} message_count={} tool_count={} "
             "input_token_budget={}",
             model_id,
@@ -916,7 +916,7 @@ class ContextBudgetController(ProtectedCompressionManager):
             )
             token_count = _fallback_context_token_count(messages, tools, response_format)
         should_compress = token_count > self.input_token_budget
-        logger.info(
+        logger.debug(
             "context_budget_check_completed model_id={} duration_ms={} message_count={} "
             "tool_count={} input_tokens={} input_token_budget={} fallback={} "
             "should_compress={}",
@@ -1510,7 +1510,7 @@ def _set_current_span_attributes(attributes: dict[str, Any]) -> None:
 
 
 def _log_context_composition(*, model_id: str, host: str, metrics: dict[str, Any]) -> None:
-    logger.info(
+    logger.debug(
         "model_context_composition model_id={} host={} "
         "canonical_context_bytes={} projected_context_bytes={} "
         "canonical_message_bytes={} projected_message_bytes={} "
@@ -1574,7 +1574,7 @@ class ProjectedOpenAIChat(OpenAIChat):
         model_id, host = _model_log_fields(self)
         projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.info(
+        logger.debug(
             "model_projection_completed mode=sync model_id={} host={} duration_ms={} "
             "message_count={} projected_message_count={} tool_count={} "
             "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
@@ -1592,9 +1592,13 @@ class ProjectedOpenAIChat(OpenAIChat):
         token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
+        interrupted = False
         try:
             return super().invoke(projected, *args, **kwargs)
         except BaseException as error:
+            if not isinstance(error, Exception):
+                interrupted = True
+                raise
             failed = True
             logger.warning(
                 "model_provider_request_failed mode=sync model_id={} host={} duration_ms={} "
@@ -1606,21 +1610,22 @@ class ProjectedOpenAIChat(OpenAIChat):
             )
             raise
         finally:
-            logger.info(
-                "model_provider_request_completed mode=sync model_id={} host={} duration_ms={} "
-                "failed={}",
-                model_id,
-                host,
-                _duration_ms(provider_started_at),
-                str(failed).lower(),
-            )
+            if not interrupted:
+                logger.debug(
+                    "model_provider_request_completed mode=sync model_id={} host={} duration_ms={} "
+                    "failed={}",
+                    model_id,
+                    host,
+                    _duration_ms(provider_started_at),
+                    str(failed).lower(),
+                )
             _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         model_id, host = _model_log_fields(self)
         projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.info(
+        logger.debug(
             "model_projection_completed mode=async model_id={} host={} duration_ms={} "
             "message_count={} projected_message_count={} tool_count={} "
             "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
@@ -1638,9 +1643,13 @@ class ProjectedOpenAIChat(OpenAIChat):
         token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
+        interrupted = False
         try:
             return await super().ainvoke(projected, *args, **kwargs)
         except BaseException as error:
+            if not isinstance(error, Exception):
+                interrupted = True
+                raise
             failed = True
             logger.warning(
                 "model_provider_request_failed mode=async model_id={} host={} duration_ms={} "
@@ -1652,21 +1661,22 @@ class ProjectedOpenAIChat(OpenAIChat):
             )
             raise
         finally:
-            logger.info(
-                "model_provider_request_completed mode=async model_id={} host={} duration_ms={} "
-                "failed={}",
-                model_id,
-                host,
-                _duration_ms(provider_started_at),
-                str(failed).lower(),
-            )
+            if not interrupted:
+                logger.debug(
+                    "model_provider_request_completed mode=async model_id={} host={} duration_ms={} "
+                    "failed={}",
+                    model_id,
+                    host,
+                    _duration_ms(provider_started_at),
+                    str(failed).lower(),
+                )
             _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         model_id, host = _model_log_fields(self)
         projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.info(
+        logger.debug(
             "model_projection_completed mode=sync_stream model_id={} host={} duration_ms={} "
             "message_count={} projected_message_count={} tool_count={} "
             "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
@@ -1687,12 +1697,13 @@ class ProjectedOpenAIChat(OpenAIChat):
         first_chunk_ms: int | None = None
         chunk_count = 0
         failed = False
+        interrupted = False
         try:
             for response in super().invoke_stream(projected, *args, **kwargs):
                 chunk_count += 1
                 if first_chunk_ms is None:
                     first_chunk_ms = _duration_ms(provider_started_at)
-                    logger.info(
+                    logger.debug(
                         "model_provider_first_chunk mode=sync model_id={} host={} duration_ms={}",
                         model_id,
                         host,
@@ -1703,6 +1714,9 @@ class ProjectedOpenAIChat(OpenAIChat):
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
                 yield response
         except BaseException as error:
+            if not isinstance(error, Exception):
+                interrupted = True
+                raise
             failed = True
             logger.warning(
                 "model_provider_stream_failed mode=sync model_id={} host={} duration_ms={} "
@@ -1715,16 +1729,17 @@ class ProjectedOpenAIChat(OpenAIChat):
             )
             raise
         finally:
-            logger.info(
-                "model_provider_stream_completed mode=sync model_id={} host={} duration_ms={} "
-                "first_chunk_ms={} chunk_count={} failed={}",
-                model_id,
-                host,
-                _duration_ms(provider_started_at),
-                first_chunk_ms if first_chunk_ms is not None else "-",
-                chunk_count,
-                str(failed).lower(),
-            )
+            if not interrupted:
+                logger.debug(
+                    "model_provider_stream_completed mode=sync model_id={} host={} duration_ms={} "
+                    "first_chunk_ms={} chunk_count={} failed={}",
+                    model_id,
+                    host,
+                    _duration_ms(provider_started_at),
+                    first_chunk_ms if first_chunk_ms is not None else "-",
+                    chunk_count,
+                    str(failed).lower(),
+                )
             _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     async def ainvoke_stream(
@@ -1733,7 +1748,7 @@ class ProjectedOpenAIChat(OpenAIChat):
         model_id, host = _model_log_fields(self)
         projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.info(
+        logger.debug(
             "model_projection_completed mode=async_stream model_id={} host={} duration_ms={} "
             "message_count={} projected_message_count={} tool_count={} "
             "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
@@ -1754,12 +1769,13 @@ class ProjectedOpenAIChat(OpenAIChat):
         first_chunk_ms: int | None = None
         chunk_count = 0
         failed = False
+        interrupted = False
         try:
             async for response in super().ainvoke_stream(projected, *args, **kwargs):
                 chunk_count += 1
                 if first_chunk_ms is None:
                     first_chunk_ms = _duration_ms(provider_started_at)
-                    logger.info(
+                    logger.debug(
                         "model_provider_first_chunk mode=async model_id={} host={} duration_ms={}",
                         model_id,
                         host,
@@ -1770,6 +1786,9 @@ class ProjectedOpenAIChat(OpenAIChat):
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
                 yield response
         except BaseException as error:
+            if not isinstance(error, Exception):
+                interrupted = True
+                raise
             failed = True
             logger.warning(
                 "model_provider_stream_failed mode=async model_id={} host={} duration_ms={} "
@@ -1782,16 +1801,17 @@ class ProjectedOpenAIChat(OpenAIChat):
             )
             raise
         finally:
-            logger.info(
-                "model_provider_stream_completed mode=async model_id={} host={} duration_ms={} "
-                "first_chunk_ms={} chunk_count={} failed={}",
-                model_id,
-                host,
-                _duration_ms(provider_started_at),
-                first_chunk_ms if first_chunk_ms is not None else "-",
-                chunk_count,
-                str(failed).lower(),
-            )
+            if not interrupted:
+                logger.debug(
+                    "model_provider_stream_completed mode=async model_id={} host={} duration_ms={} "
+                    "first_chunk_ms={} chunk_count={} failed={}",
+                    model_id,
+                    host,
+                    _duration_ms(provider_started_at),
+                    first_chunk_ms if first_chunk_ms is not None else "-",
+                    chunk_count,
+                    str(failed).lower(),
+                )
             _TASK_EXECUTION_REQUEST_METRICS.reset(token)
 
     def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):

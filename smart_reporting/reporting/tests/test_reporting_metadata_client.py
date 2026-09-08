@@ -134,8 +134,10 @@ async def test_metadata_client_logs_safe_http_and_multiple_ddl_diagnostics() -> 
         token="private-metadata-token",
         client_factory=lambda: client,
     )
-    records: list[str] = []
-    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    debug_records: list[str] = []
+    info_records: list[str] = []
+    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
+    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         with pytest.raises(ReportingError, match="report_ddl_invalid"):
@@ -144,16 +146,20 @@ async def test_metadata_client_logs_safe_http_and_multiple_ddl_diagnostics() -> 
                 sources=(SimpleNamespace(id="rj", database="dwd"),),
             )
     finally:
-        logger.remove(sink_id)
+        logger.remove(debug_sink_id)
+        logger.remove(info_sink_id)
 
     await client.aclose()
-    log_text = "".join(records)
+    log_text = "".join(debug_records)
+    info_text = "".join(info_records)
     assert "report_metadata_http_completed" in log_text
+    assert "report_metadata_http_completed" not in info_text
     assert "target=metadata.internal:18083" in log_text
     assert "report_metadata_ddl_rejected" in log_text
     assert "model_id=7" in log_text
     assert "statement_count=2" in log_text
     assert "statement_types=Create,Create" in log_text
+    assert "report_metadata_ddl_rejected" in info_text
     assert private_ddl not in log_text
     assert "private-model-name" not in log_text
     assert "metadata-user" not in log_text

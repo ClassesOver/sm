@@ -9,6 +9,8 @@ from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_messages,
     _phase_filtered_report_tools,
+    _visualization_history_state,
+    normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
 from smart_reporting.reporting.instructions import build_report_agent_instructions
@@ -22,7 +24,10 @@ from smart_reporting.reporting.phase import (
     REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     bind_reporting_run_context,
+    reporting_python_script_failed,
     reporting_task_kind_from_acceptance_contract,
     reporting_task_kind_from_run_context,
 )
@@ -314,7 +319,6 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
     assert visualization_tools == frozenset(
         {
             "inspect_chart",
-            "process",
             "read_file",
             "read_tool_output",
             "submit_visualization_charts",
@@ -325,20 +329,110 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
     )
 
 
-def test_visualization_initial_projection_hides_read_and_process_tools() -> None:
+def test_visualization_initial_projection_hides_read_tools() -> None:
     visible = _visible_tool_names(_context("analysis", "visualization_section"))
 
-    assert {"read_file", "read_tool_output", "process"}.isdisjoint(visible)
+    assert {"read_file", "read_tool_output"}.isdisjoint(visible)
 
 
-def test_visualization_session_projection_exposes_only_process_addition() -> None:
+def test_visualization_written_script_projection_exposes_controlled_runner() -> None:
     context = _context("analysis", "visualization_section")
-    context.session_state["reportingVisualizationSessions"] = ["session-1"]
+    context.session_state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
 
     visible = _visible_tool_names(context)
 
-    assert "process" in visible
-    assert {"read_file", "read_tool_output"}.isdisjoint(visible)
+    assert "run_python_script" in visible
+
+
+def test_visualization_history_recognizes_controlled_runner_completion() -> None:
+    messages = [
+        Message(
+            role="tool",
+            tool_name="run_python_script",
+            tool_call_id="call-1",
+            content='{"ok":true,"status":"completed","exitCode":0}',
+        )
+    ]
+
+    assert _visualization_history_state(messages) == (False, False, True)
+
+
+def test_visualization_history_rejects_controlled_runner_failure_marker() -> None:
+    messages = [
+        Message(
+            role="tool",
+            tool_name="run_python_script",
+            tool_call_id="call-1",
+            content=(
+                '{"ok":true,"status":"completed","exitCode":0,'
+                '"output":"[FAIL] chart.png: image is blank"}'
+            ),
+        )
+    ]
+
+    assert _visualization_history_state(messages) == (False, False, False)
+
+
+def test_visualization_failure_budget_counts_controlled_runner_failure() -> None:
+    assert reporting_python_script_failed(
+        {"ok": False, "status": "failed", "exit_code": 1, "output": "boom"}
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "[FAIL] chart.png: image is blank",
+        "chart.png: ERROR image is blank",
+    ),
+)
+def test_visualization_failure_recognizes_protocol_markers(output: str) -> None:
+    assert reporting_python_script_failed(
+        {"ok": True, "status": "completed", "exitCode": 0, "output": output}
+    )
+
+
+def test_visualization_failure_checks_both_exit_code_fields() -> None:
+    assert reporting_python_script_failed(
+        {"ok": True, "status": "completed", "exitCode": None, "exit_code": 1}
+    )
+
+
+def test_visualization_rejection_does_not_count_as_script_execution_failure() -> None:
+    assert not reporting_python_script_failed(
+        {"ok": False, "status": "rejected", "code": "report_capability_invalid"}
+    )
+
+
+def test_visualization_missing_glyph_warning_does_not_count_as_script_failure() -> None:
+    assert not reporting_python_script_failed(
+        {
+            "ok": True,
+            "status": "completed",
+            "exitCode": 0,
+            "output": "UserWarning: Glyph 25910 missing from font(s) DejaVu Sans.",
+        }
+    )
+
+
+@pytest.mark.anyio
+async def test_visualization_failure_marker_does_not_set_executed_state() -> None:
+    context = _context("analysis", "visualization_section")
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "run_python_script",
+        lambda **_arguments: {
+            "ok": True,
+            "status": "completed",
+            "exitCode": 0,
+            "output": "[FAIL] chart.png: image is blank",
+        },
+        {"script_path": "charts/charts.py"},
+    )
+
+    assert result["ok"] is True
+    assert REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY not in context.session_state
 
 
 def test_visualization_recovery_projection_exposes_signed_script_reads() -> None:
@@ -350,7 +444,7 @@ def test_visualization_recovery_projection_exposes_signed_script_reads() -> None
     visible = _visible_tool_names(context)
 
     assert {"read_file", "read_tool_output"}.issubset(visible)
-    assert {"process", "view_image"}.isdisjoint(visible)
+    assert "view_image" not in visible
 
 
 def test_visualization_projection_removes_skill_system_message() -> None:

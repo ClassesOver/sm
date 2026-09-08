@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import difflib
+from copy import copy
 from typing import Literal
 
+from agno.models.message import Message
+from agno.session.agent import AgentSession
+
+from ....task_execution import (
+    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
+    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+)
+from ...model_policy import resolve_reporting_input_token_hard_cap
 from ...phase import (
+    REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    reporting_model_route_from_run_context,
 )
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
@@ -20,6 +31,7 @@ from .analysis_item_workflow import (
     AnalysisItemWorkflow,
     AnalysisScriptDraft,
     AnalysisSummaryDraft,
+    _project_analysis_summary_payload,
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
@@ -113,6 +125,117 @@ _ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
     {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
 )
+
+
+def _analysis_summary_input_token_budget(agent: Any, run_context: RunContext) -> int:
+    """按最终路由模型的已验证窗口收敛摘要请求预算。"""
+
+    model = getattr(agent, "model", None)
+    configured_cap = REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
+    for owner in (model, agent):
+        value = getattr(owner, "_task_execution_input_token_budget", None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            configured_cap = min(configured_cap, value)
+            break
+    route = reporting_model_route_from_run_context(run_context)
+    model_id = route[1] if route is not None else getattr(model, "id", None)
+    model_output_reserve = getattr(model, "max_tokens", None)
+    hard_cap = resolve_reporting_input_token_hard_cap(
+        configured_input_token_cap=configured_cap,
+        model_id=model_id if isinstance(model_id, str) else None,
+        output_token_reserve=max(
+            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+            (
+                model_output_reserve
+                if isinstance(model_output_reserve, int)
+                and not isinstance(model_output_reserve, bool)
+                and model_output_reserve > 0
+                else 0
+            ),
+        ),
+        absolute_input_token_cap=(
+            TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+        ),
+    )
+    # 预留四分之一给 provider wire 方言、纠错指令与 tokenizer 版本差异。
+    return hard_cap * 3 // 4
+
+
+def _prepare_analysis_summary_request(
+    payload: Mapping[str, Any],
+    *,
+    analysis_id: str,
+    agent: Any,
+    run_context: RunContext,
+) -> dict[str, Any]:
+    """在模型调用前把完整证据投影为受预算约束、可守恒审计的摘要视图。"""
+
+    request = {
+        **payload,
+        "analysisBlock": {"blockId": f"{analysis_id}:summary"},
+    }
+    model = getattr(agent, "model", None)
+    counting_model = copy(model) if model is not None else None
+    route = reporting_model_route_from_run_context(run_context)
+    if counting_model is not None and route is not None:
+        counting_model.id = route[1]
+    model_count_tokens = getattr(counting_model, "count_tokens", None)
+    get_system_message = getattr(agent, "get_system_message", None)
+    tokenizer_failed = False
+
+    def count_tokens(candidate: Mapping[str, Any]) -> int:
+        nonlocal tokenizer_failed
+        serialized = json.dumps(
+            candidate,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        if not tokenizer_failed:
+            try:
+                if not callable(model_count_tokens):
+                    raise TypeError("model 缺少 count_tokens")
+                messages: list[Message] = []
+                if callable(get_system_message):
+                    system_message = get_system_message(
+                        session=AgentSession(
+                            session_id=f"analysis-summary-budget:{analysis_id}",
+                            agent_id=getattr(agent, "id", None),
+                        ),
+                        run_context=None,
+                        tools=[],
+                        add_session_state_to_context=False,
+                        input=serialized,
+                    )
+                    if system_message is not None:
+                        messages.append(system_message)
+                messages.append(Message(role="user", content=serialized))
+                token_count = model_count_tokens(
+                    messages,
+                    output_schema=AnalysisSummaryDraft,
+                )
+                if (
+                    isinstance(token_count, bool)
+                    or not isinstance(token_count, int)
+                    or token_count < 1
+                ):
+                    raise TypeError("count_tokens 未返回正整数")
+                return token_count
+            except Exception as error:
+                # tokenizer 是优化边界，不能成为绕过 hard cap 的降级开关；
+                # UTF-8 字节数对中英文 JSON 均高估 token，作为确定性失败关闭后备。
+                tokenizer_failed = True
+                loguru_logger.bind(
+                    analysis_id=analysis_id,
+                    error_type=type(error).__name__,
+                ).warning("report_analysis_summary_tokenizer_fallback")
+        return len(serialized.encode("utf-8"))
+
+    return _project_analysis_summary_payload(
+        request,
+        max_tokens=_analysis_summary_input_token_budget(agent, run_context),
+        count_tokens=count_tokens,
+    )
 
 
 def _visualization_instruction_theme() -> dict[str, Any]:
@@ -447,7 +570,6 @@ class RuntimeAnalysisMixin:
                 "visualizationWorkspace": {
                     "scriptPath": script_path,
                     "chartOutputRoot": root,
-                    "allowedTerminalCommand": f"python3 {script_path}",
                 },
                 "completionConditions": _visualization_section_completion_conditions(last_error),
             }
@@ -551,7 +673,7 @@ class RuntimeAnalysisMixin:
                                 str(receipt.get("message", "章节零图提交未被接受。")),
                                 details=dict(receipt),
                             )
-                        loguru_logger.info(
+                        loguru_logger.debug(
                             "report_visualization_section_empty_submitted section_code={}",
                             section_code,
                         )
@@ -1878,12 +2000,15 @@ class RuntimeAnalysisMixin:
             )
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
+            summary_request = _prepare_analysis_summary_request(
+                summary_payload,
+                analysis_id=analysis_id,
+                agent=self._analysis_summary_agent,
+                run_context=parent_run_context,
+            )
             output = await self._run_planner(
                 self._analysis_summary_agent,
-                {
-                    **summary_payload,
-                    "analysisBlock": {"blockId": f"{analysis_id}:summary"},
-                },
+                summary_request,
                 parent_run_context,
             )
             return cast(AnalysisSummaryDraft, output)
@@ -2105,7 +2230,7 @@ class RuntimeAnalysisMixin:
             complexity_score, _ = _analysis_item_complexity(analysis_plan)
             analysis_effort = self._analysis_thinking_effort()
             thinking_effort = "off" if analysis_effort == "off" else policy_effort
-            loguru_logger.info(
+            loguru_logger.debug(
                 "report_analysis_thinking_policy analysis_id={} effort={} budget={} "
                 "complexity_tier={} complexity_score={} "
                 "escalation_reason={}",
@@ -2247,10 +2372,10 @@ class RuntimeAnalysisMixin:
                     last_error=None,
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
-                logger.info(
+                logger.debug(
                     "report_phase_context phase=analysis work_kind=analysis_item "
-                    "analysis_id=%s task_id=%s instruction_bytes=%s duration_seconds=%.3f "
-                    "component_bytes=%s tool_events=%s attempt=%s retry_reason=%s",
+                    "analysis_id={} task_id={} instruction_bytes={} duration_seconds={:.3f} "
+                    "component_bytes={} tool_events={} attempt={} retry_reason={}",
                     analysis_id,
                     task_id,
                     instruction_bytes,
@@ -2696,17 +2821,17 @@ def _visualization_section_retry_error(
 
 
 def _visualization_section_completion_conditions(last_error: Exception | None) -> list[str]:
-    if _visualization_recovery_required(last_error):
-        return [
-            "上一轮本章因预算耗尽或无进展终止;禁止重新规划、探索事实或重复读取",
-            "脚本尚未执行或需要修复时,只把签发的 scriptPath 修复后执行一次",
-            "立即且只调用一次 submit_visualization_charts 提交该章现存图表草案;缺失的图表不要提交",
-        ]
-    return [
+    conditions = [
         "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
-        "脚本只写入签发的 scriptPath 和 chartOutputRoot",
-        "允许零图，最后且只调用一次 submit_visualization_charts",
+        "返回完整 VisualizationScriptDraft；pythonSource 只读取签发事实并写入签发图表路径",
+        "固定 Workflow 负责脚本写入、执行、审查和图表提交；pythonSource 不得调用或导入任何编排工具",
     ]
+    if _visualization_recovery_required(last_error):
+        conditions.insert(
+            0,
+            "上一轮工具或脚本失败；仅生成满足当前签发路径与冻结事实的最小完整草案，不重新探索工作区",
+        )
+    return conditions
 
 
 def _checkpoint_retry_error(

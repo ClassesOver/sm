@@ -1062,7 +1062,7 @@ class WorkspaceService:
                     continue
                 await complete(workspace_label)
                 completed += 1
-                logger.info(
+                logger.debug(
                     "workspace_quarantine_cleanup_completed workspace_label={} sandbox_count={}",
                     workspace_label,
                     len(sandboxes),

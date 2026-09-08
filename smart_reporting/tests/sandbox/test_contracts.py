@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from smart_reporting.sandbox.contracts import (
+    CodeRunRequest,
     ProviderCapabilities,
     ProviderKind,
     RunPythonScriptRequest,
@@ -73,6 +74,11 @@ def test_python_request_forbids_provider_policy_fields() -> None:
                 "dependency_bundle_id": "latest",
             }
         )
+
+
+def test_code_run_request_rejects_code_above_public_size_limit() -> None:
+    with pytest.raises(ValidationError):
+        CodeRunRequest(code="#" * (1024 * 1024 + 1))
 
 
 def test_provider_capabilities_are_explicit_and_immutable() -> None:

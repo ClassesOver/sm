@@ -39,6 +39,12 @@ _WORD_MARKERS = {
     "body_start": "__REPORT_BODY_START__",
 }
 
+
+def format_heading_label(*, level: int, number: str, title: str) -> str:
+    """返回报告正文和目录共用的标题显示文本。"""
+
+    return f"{number}. {title}" if level == 2 else f"{number} {title}"
+
 _CJK_STRONG_MARKER = re.compile(
     r"(?P<left>[^\s*`])(?<!\*)(?P<open>\*\*)(?P<content>[^*\r\n`]*[\u3400-\u9fff][^*\r\n`]*?)(?P<close>\*\*)(?P<right>[^\s*`])"
 )
@@ -303,7 +309,15 @@ def _bind_heading_anchors(tokens: list[Any], headings_contract: list[dict[str, A
                     ).strip(),
                 )
             )
-    expected = [(item["level"], f"{item['number']} {item['title']}") for item in headings_contract]
+    expected = [
+        (
+            item["level"],
+            format_heading_label(
+                level=item["level"], number=item["number"], title=item["title"]
+            ),
+        )
+        for item in headings_contract
+    ]
     if [(level, title) for _token, level, title in headings] != expected:
         raise ReportFailure("Markdown 标题顺序与服务端编号映射不一致")
     for (token, _level, _title), item in zip(headings, headings_contract, strict=True):
@@ -333,7 +347,7 @@ def _semantic_documents(
     generated_date = html.escape(context["generatedDate"])
     toc = "".join(
         f'<p class="toc-entry toc-level-{item["level"]}"><a href="#{item["anchor"]}">'
-        f'<span class="toc-title">{html.escape(item["number"] + " " + item["title"])}</span>'
+        f'<span class="toc-title">{html.escape(format_heading_label(level=item["level"], number=item["number"], title=item["title"]))}</span>'
         '<span class="toc-leader"></span>'
         f'<span class="toc-page">{toc_page_numbers.get(item["anchor"], "") if toc_page_numbers is not None else ""}</span>'
         "</a></p>"
@@ -463,6 +477,7 @@ __all__ = [
     "_bind_heading_anchors",
     "_body_tokens",
     "_document_context",
+    "format_heading_label",
     "_html_document",
     "_markdown_title",
     "_normalize_cjk_strong_markers",

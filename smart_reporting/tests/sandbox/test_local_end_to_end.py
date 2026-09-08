@@ -53,7 +53,12 @@ async def test_local_provider_round_trips_real_daemon_contract(tmp_path) -> None
             self.workspace = workspace
 
         async def run(self, request, *, script_path):
-            assert (self.workspace / script_path).read_text(encoding="utf-8") == request.script
+            runtime_script = (self.workspace / script_path).read_text(encoding="utf-8")
+            assert "fontManager.addfont" in runtime_script
+            assert repr(request.script) in runtime_script
+            assert runtime_script.index("fontManager.addfont") < runtime_script.index(
+                "exec(compile("
+            )
             return RunPythonScriptResult(
                 status=ExecutionStatus.SUCCEEDED,
                 exit_code=0,

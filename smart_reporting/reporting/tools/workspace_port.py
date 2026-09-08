@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .context import ReportingFileRef
@@ -11,11 +10,6 @@ from .context import ReportingFileRef
 
 class ReportingWorkspaceError(ValueError):
     """Reporting 工作区边界拒绝。"""
-
-
-@dataclass(frozen=True, slots=True)
-class ReportingProcessResult:
-    payload: Mapping[str, Any]
 
 
 class ReportingWorkspacePort(Protocol):
@@ -38,16 +32,5 @@ class ReportingWorkspacePort(Protocol):
         self,
         script_path: str,
         *,
-        timeout: int,
-        workdir: str | None = None,
-        background: bool = False,
-    ) -> Mapping[str, Any]: ...
-
-    async def send_process_input(
-        self,
-        session_id: str,
-        data: str,
-        *,
-        submit: bool,
         timeout: int,
     ) -> Mapping[str, Any]: ...

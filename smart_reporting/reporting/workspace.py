@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import uuid
+import zipfile
 from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -20,6 +21,7 @@ from ..sandbox.contracts import RunPythonScriptRequest
 from ..sandbox.errors import SandboxNotFound
 from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
+    WORKSPACE_ROOT,
     WorkspaceError,
     WorkspaceService,
     _thread,
@@ -33,16 +35,24 @@ REPORT_RUNTIME_TIMEOUT_SECONDS = 600
 MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
 
 
-def _report_runtime_digest() -> str:
+def _report_runtime_package() -> tuple[bytes, str]:
     from .delivery.report_runtime import runtime as report_runtime
 
     package_root = Path(report_runtime.__file__).parent
-    digest = hashlib.sha256()
-    for path in sorted(package_root.glob("*.py")):
-        digest.update(path.name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for path in sorted(package_root.glob("*.py")):
+            info = zipfile.ZipInfo(f"report_runtime/{path.name}")
+            info.date_time = (1980, 1, 1, 0, 0, 0)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, path.read_bytes())
+    content = buffer.getvalue()
+    return content, hashlib.sha256(content).hexdigest()
+
+
+def _report_runtime_digest() -> str:
+    return _report_runtime_package()[1]
 
 
 async def inspect_report_chart_file(
@@ -256,26 +266,25 @@ class WorkspaceReportService:
             )
         except (TypeError, ValueError) as error:
             raise WorkspaceError("报表运行时 payload 无效。") from error
-        expected_runtime_digest = await asyncio.to_thread(_report_runtime_digest)
-        # 入口代码和模块路径由服务端固定，payload 只作为结构化数据传给已预装 runtime。
-        # Daytona snapshot 与 Local 离线 dependency bundle 必须包含同版本包；这里不上传
-        # 可替换模块，也不接收 shell、argv、环境变量或解释器路径。
+        runtime_package, expected_runtime_digest = await asyncio.to_thread(_report_runtime_package)
+        runtime_package_relative_path = (
+            f".workspace-report-runtime-{uuid.uuid4().hex}-{expected_runtime_digest}.zip"
+        )
+        runtime_package_remote_path = f"{WORKSPACE_ROOT}/{runtime_package_relative_path}"
+        # 入口代码、包内容和模块路径均由服务端固定；payload 只作为结构化数据传给
+        # runtime。Provider 文件 API 使用 canonical workspace 路径，而 Python runner
+        # 以各 Provider 自己挂载的 workspace 为 cwd，因此脚本只能读取对应相对路径；
+        # 不得借用 Provider 私有 /tmp。执行前必须校验包摘要，且仍不开放 Shell。
         script = (
-            "import hashlib,importlib.util,json\n"
+            "import hashlib,json,sys\n"
             "from pathlib import Path\n"
-            "spec=importlib.util.find_spec("
-            "'smart_reporting.reporting.delivery.report_runtime.runtime')\n"
-            "if spec is None or spec.origin is None:\n"
-            " print(json.dumps({'error':'报表运行时不可用'},ensure_ascii=False));raise SystemExit(1)\n"
-            "root=Path(spec.origin).parent\n"
-            "digest=hashlib.sha256()\n"
-            "for path in sorted(root.glob('*.py')):\n"
-            " digest.update(path.name.encode('utf-8'));digest.update(b'\\0');"
-            "digest.update(path.read_bytes())\n"
-            f"if digest.hexdigest()!={expected_runtime_digest!r}:\n"
+            f"package=Path({runtime_package_relative_path!r})\n"
+            "if not package.is_file() or "
+            f"hashlib.sha256(package.read_bytes()).hexdigest()!={expected_runtime_digest!r}:\n"
             " print(json.dumps({'error':'报表运行时版本不匹配'},ensure_ascii=False));"
             "raise SystemExit(1)\n"
-            "from smart_reporting.reporting.delivery.report_runtime.cli import main\n"
+            "sys.path.insert(0,str(package))\n"
+            "from report_runtime.cli import main\n"
             f"raise SystemExit(main([{action!r}, {payload_text!r}]))\n"
         )
         async with self.service._async_client() as client:
@@ -283,27 +292,38 @@ class WorkspaceReportService:
             execution = getattr(sandbox, "execution", None)
             if execution is None:
                 raise WorkspaceError("sandbox provider 不支持受控 Python runtime。")
-            value = await execution.run_python_script(
-                RunPythonScriptRequest(
-                    script=script,
-                    timeout_ms=REPORT_RUNTIME_TIMEOUT_SECONDS * 1000,
-                    output_limit_bytes=MAX_TOOL_OUTPUT_BYTES,
+            await sandbox.fs.upload_file(runtime_package, runtime_package_remote_path)
+            try:
+                value = await execution.run_python_script(
+                    RunPythonScriptRequest(
+                        script=script,
+                        timeout_ms=REPORT_RUNTIME_TIMEOUT_SECONDS * 1000,
+                        output_limit_bytes=MAX_TOOL_OUTPUT_BYTES,
+                    )
                 )
-            )
+            finally:
+                try:
+                    await sandbox.fs.delete_file(runtime_package_remote_path)
+                except Exception:
+                    pass
         stdout = str(value.stdout or "")
         stderr = str(value.stderr or "")
         if value.exit_code != 0:
-            try:
-                failure = json.loads(
-                    next(
-                        line
-                        for line in reversed((stdout + "\n" + stderr).splitlines())
-                        if line.strip()
-                    )
-                )
-            except (StopIteration, json.JSONDecodeError):
-                failure = None
-            message = failure.get("error") if isinstance(failure, dict) else None
+            message = None
+            # 受控 runtime 把规范化业务错误写入 stdout；渲染依赖可能随后在 stderr
+            # 输出 warning。必须查找结构化错误对象，不能让无关尾行遮蔽失败事实。
+            for output in (stdout, stderr):
+                for line in reversed(output.splitlines()):
+                    try:
+                        failure = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    candidate = failure.get("error") if isinstance(failure, dict) else None
+                    if isinstance(candidate, str) and candidate:
+                        message = candidate
+                        break
+                if message is not None:
+                    break
             raise WorkspaceError(str(message or "报表运行失败。"))
         try:
             result_line = next(line for line in reversed(stdout.splitlines()) if line.strip())
@@ -586,8 +606,15 @@ class WorkspaceReportService:
             render["pdf"]["path"] = relative_output
             render["word"]["path"] = relative_word
             render["html"]["path"] = relative_html
-            job["render"] = render
-            job["validation"] = validation
+            # 完整 render 只在同一次受控验收中使用；durable job 已分别持有文档上下文、
+            # 引用和页面布局。这里只保存后续状态查询与 revision 清理所需的产物身份，
+            # 避免重复结构挤占 48 KiB 的会话状态边界。
+            job["render"] = {
+                key: render[key] for key in ("markdown", "pdf", "word", "html", "images")
+            }
+            # 逐页验收结果由本方法返回并写入 Workflow 权威状态；job 只需记录是否通过，
+            # 否则最多 200 页的 pages 数组会让 durable job 再次线性越过 48 KiB。
+            job["validation"] = {"ok": True}
             self._store_job(job, run_context)
             result.update(
                 {

@@ -1647,7 +1647,9 @@ class TaskExecutionKernel:
                 lease=scope.lease,
                 internal_run_id=scope.internal_run_id,
             )
-            return {**self._public_execution(execution), **result}
+            # provider 回执补充脚本身份等字段；执行账本负责状态与确定性错误判定，
+            # 其公共字段必须最后合并，防止下层 ok=true 覆盖 traceback 等失败事实。
+            return {**result, **self._public_execution(execution)}
         except Exception as error:
             execution = await self.repository.update_execution(
                 execution_id,

@@ -82,7 +82,7 @@ def test_assemble_numbers_headings_across_blocks_and_rewrites_manual_number() ->
         "### 成本结构\n\n正文\n\n#### 重点项目",
     )
 
-    assert "## 1 经营分析" in rendered.markdown
+    assert "## 1. 经营分析" in rendered.markdown
     assert "### 1.1 收入趋势" in rendered.markdown
     assert "#### 1.1.1 同比变化" in rendered.markdown
     assert "### 1.2 成本结构" in rendered.markdown
@@ -127,7 +127,7 @@ def test_assemble_normalizes_open_spaced_chinese_strong_marker() -> None:
 def test_assemble_removes_numbered_duplicate_section_heading() -> None:
     rendered = _render("## 9.9 经营分析\n\n### 结论")
 
-    assert rendered.markdown.count("## 1 经营分析") == 1
+    assert rendered.markdown.count("## 1. 经营分析") == 1
     assert "9.9" not in rendered.markdown
     assert rendered.auto_fixes[0]["code"] == "duplicate_section_heading_removed"
 
@@ -226,13 +226,15 @@ def test_document_context_and_manifest_share_heading_number_contract() -> None:
         headingNumbers=rendered.heading_numbers,
     )
     body = (
-        "<h2>1 经营分析</h2>"
+        "<h2>1. 经营分析</h2>"
         '<p><img src="charts/revenue.png" alt="收入趋势"></p>'
         "<p><em>图表：2025 年收入趋势</em></p>"
     )
     pdf_html, word_html = _semantic_documents(body, context=context, layout=DEFAULT_PAGE_LAYOUT)
 
     assert manifest.heading_numbers == rendered.heading_numbers
+    assert '<span class="toc-title">1. 经营分析</span>' in pdf_html
+    assert '<span class="toc-title">1. 经营分析</span>' in word_html
     assert 'class="toc-entry toc-level-4"' in pdf_html
     assert 'href="#report-heading-section_001-1-1-1"' in pdf_html
     assert "1.1.1 收入" in word_html
@@ -311,6 +313,27 @@ def test_validate_report_draft_blocks_rejects_h2_before_section_is_persisted() -
         validate_report_draft_blocks(blocks, expected_section_title="经营分析")
 
     assert raised.value.code == "report_draft_heading_level_invalid"
+
+
+def test_validate_report_draft_blocks_reports_heading_parent_path() -> None:
+    blocks = (
+        ReportDraftBlock(blockId="block_1", markdown="普通正文"),
+        ReportDraftBlock(blockId="block_2", markdown="#### 缺少父标题\n\n正文"),
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        validate_report_draft_blocks(blocks, expected_section_title="经营分析")
+
+    assert raised.value.code == "report_draft_heading_parent_missing"
+    assert raised.value.details == {
+        "issues": [
+            {
+                "path": "$.blocks[1].markdown",
+                "type": "heading_parent_missing",
+                "message": "H4 标题必须位于当前章节的 H3 标题之后。",
+            }
+        ]
+    }
 
 
 def test_validate_report_draft_blocks_allows_leading_duplicate_section_heading() -> None:

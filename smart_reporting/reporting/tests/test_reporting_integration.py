@@ -19,7 +19,7 @@ from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
-from smart_reporting.reporting.workspace import WorkspaceReportService
+from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.workspace import WorkspaceError
 
@@ -167,7 +167,6 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
     monkeypatch.setattr(uuid, "uuid4", lambda: SimpleNamespace(hex="test"))
     monkeypatch.setattr(report_service, "_load_job", lambda *_args: job)
     monkeypatch.setattr(report_service, "_job_status", AsyncMock(return_value={}))
-    monkeypatch.setattr(report_service, "_store_job", Mock())
     monkeypatch.setattr(report_service, "_delete_report_path", AsyncMock())
 
     async def run_runtime(
@@ -178,6 +177,11 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
             return {
                 "status": "rendered",
                 "render": {
+                    "markdown": {
+                        "path": "report.md",
+                        "size": 4,
+                        "sha256": "markdown",
+                    },
                     "pdf": {
                         "path": "reports/.revision-1.test.tmp/report.pdf",
                         "size": 1,
@@ -193,14 +197,37 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
                         "size": 3,
                         "sha256": "html",
                     },
+                    "images": [],
+                    "pageLayout": {"size": "A4"},
+                    "documentContext": {"sections": ["section-1"] * 100},
+                    "citationPresentations": [{"citationId": "citation-1"}] * 100,
+                    "visualTheme": {"font": "Noto Sans CJK SC"},
+                    "wordStructure": {"headings": ["section-1"] * 100},
                 },
             }
+        assert payload["job"]["render"]["documentContext"] == {"sections": ["section-1"] * 100}
         return {
             "ok": True,
             "pdfSha256": "pdf",
             "wordSha256": "word",
             "htmlSha256": "html",
             "htmlSize": 3,
+            "pages": [
+                {
+                    "page": index,
+                    "width": 596,
+                    "height": 842,
+                    "nonWhiteRatio": 0.123456,
+                    "textCharCount": 1000,
+                    "imageCount": 2,
+                    "pageLayoutPresent": True,
+                    "pageLayoutExpected": True,
+                    "watermarkPresent": True,
+                    "role": "body",
+                    "blank": False,
+                }
+                for index in range(1, 201)
+            ],
         }
 
     monkeypatch.setattr(report_service, "_run_report_runtime", run_runtime)
@@ -224,6 +251,10 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
     assert result["htmlPath"] == "reports/revision-1/report.html"
     assert result["htmlSize"] == 3
     assert result["htmlSha256"] == "html"
+    assert len(result["validation"]["pages"]) == 200
+    stored_job = context.session_state[REPORT_JOBS_STATE_KEY][job["jobId"]]
+    assert stored_job["validation"] == {"ok": True}
+    assert set(stored_job["render"]) == {"markdown", "pdf", "word", "html", "images"}
 
 
 @pytest.mark.anyio

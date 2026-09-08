@@ -55,7 +55,7 @@ from .reporting_mcp.identity import CapabilityTokenVerifier
 from .runtime.application import ApplicationContext, create_agentos_app
 from .runtime.database import check_database, create_agent_database
 from .runtime.execution import ExecutionContext, configure_execution_tracing
-from .runtime.logging import configure_file_logging
+from .runtime.logging import configure_application_logging, configure_file_logging
 from .runtime.settings import AgentSettings
 from .sandbox.factory import create_sandbox_provider
 from .workspace import (
@@ -79,6 +79,7 @@ class WorkspaceDeleteFilePayload(BaseModel):
 
 install_agno_function_argument_decoder()
 settings = AgentSettings.from_environment()
+configure_application_logging(debug=settings.debug)
 configure_file_logging(
     settings.log_file_path,
     debug=settings.debug,
@@ -126,6 +127,17 @@ async def _log_reporting_runtime_identity() -> None:
         agent_database.backend,
         REPORTING_DB_SCHEMA,
         settings.workers,
+    )
+
+
+def _refresh_file_logging() -> None:
+    """Uvicorn 初始化 named logger 后恢复文件日志绑定。"""
+
+    configure_file_logging(
+        settings.log_file_path,
+        debug=settings.debug,
+        max_bytes=settings.log_file_max_bytes,
+        backup_count=settings.log_file_backup_count,
     )
 
 
@@ -426,6 +438,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
     application.include_router(create_quality_warning_router())
+    application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)

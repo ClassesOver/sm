@@ -127,13 +127,13 @@ class ProbeScenario:
     phase: ReportingPhase
     task_kind: ReportingTaskKind
     required_tools: tuple[str, ...]
-    terminal_tool: str
+    completion_tool: str
     branch: Literal[
         "fixed_facts",
         "profile",
         "script",
         "truncated",
-        "background",
+        "inspection",
         "recovery",
         "preview",
         "render",
@@ -193,7 +193,6 @@ class ProbeReportingPhaseOpenAIChat(ReportingPhaseOpenAIChat):
 
 _TOOL_ARGUMENTS: dict[str, dict[str, Any]] = {
     "run_python_script": {"script_path": "analysis/output/probe.py", "timeout": 30},
-    "process": {"action": "list"},
     "read_file": {"path": "inputs/source.txt", "offset": 0, "max_bytes": 1024},
     "read_tool_output": {"handle": "mock-output-1", "offset": 0, "max_bytes": 1024},
     "apply_analysis_patch": {
@@ -282,18 +281,17 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "truncated",
         ),
         ProbeScenario(
-            "analysis-background-context",
+            "analysis-script-context",
             "analysis",
             "analysis_item",
             (
                 "read_file",
                 "apply_analysis_patch",
                 "run_python_script",
-                "process",
                 "complete_analysis_item",
             ),
             "complete_analysis_item",
-            "background",
+            "script",
         ),
         ProbeScenario(
             "visualization-recovery",
@@ -323,18 +321,17 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "preview",
         ),
         ProbeScenario(
-            "visualization-background",
+            "visualization-inspection",
             "analysis",
             "visualization_section",
             (
                 "apply_analysis_patch",
                 "run_python_script",
-                "process",
                 "inspect_chart",
                 "submit_visualization_charts",
             ),
             "submit_visualization_charts",
-            "background",
+            "inspection",
         ),
         ProbeScenario(
             "section-render-truncated-evidence",
@@ -523,25 +520,16 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
             )
         elif scenario.branch == "script":
             result["executionDirective"] = (
-                "规划阶段必须返回最小补证脚本；由固定 Workflow 写入并执行 supplement.py、"
+                "规划阶段必须返回最小补证脚本；由固定 Workflow 写入后通过 run_python_script "
+                "执行 supplement.py、"
                 "校验 supplement.json，随后生成摘要并提交。"
             )
-            result["executionPlan"] = {"background": False, "waitForCompletion": True}
+            result["executionPlan"] = {"waitForCompletion": True}
         elif scenario.branch == "truncated":
             result["executionDirective"] = (
                 "deterministicFactFile 必须按 offset 完整读取并校验；固定事实已足够，"
                 "不得补证，随后生成摘要并提交。"
             )
-        else:
-            result["executionDirective"] = (
-                "规划阶段必须返回最小补证脚本；固定 Workflow 的执行端口以后台方式运行并等待，"
-                "校验 supplement.json 后生成摘要并提交。"
-            )
-            result["executionPlan"] = {
-                "command": "python3 analysis/output/supplement.py",
-                "background": True,
-                "waitForCompletion": True,
-            }
         return result
     if scenario.task_kind == "visualization_section":
         result = {
@@ -592,7 +580,6 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
             "visualizationWorkspace": {
                 "scriptPath": "analysis/output/outpatient_chart.py",
                 "chartOutputRoot": "analysis/charts/outpatient_operation",
-                "allowedTerminalCommand": "python3 analysis/output/outpatient_chart.py",
             },
             "completionConditions": ["生成收入与成本率趋势图。", "提交本章图表。"],
         }
@@ -600,23 +587,20 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
             result["visualizationRecovery"] = True
             result["executionDirective"] = (
                 "当前签发脚本来自上次失败尝试。先读取一次 visualizationWorkspace.scriptPath，"
-                "再用回执中的文件 SHA 覆盖修复该脚本；执行签发命令、正式审查最终图表后提交。"
+                "再用回执中的文件 SHA 覆盖修复该脚本；执行签发脚本、正式审查最终图表后提交。"
             )
         elif scenario.branch == "preview":
             result["executionDirective"] = (
-                "严格按以下顺序各调用一次：apply_analysis_patch 写入签发脚本，terminal 执行脚本，"
+                "严格按以下顺序各调用一次：apply_analysis_patch 写入签发脚本，"
+                "run_python_script 执行脚本，"
                 "view_image 做临时预览，最后 submit_visualization_charts；不得调用 inspect_chart、"
                 "read_file、read_tool_output 或重复执行。"
             )
         else:
             result["executionDirective"] = (
-                "写入签发脚本并以后台方式执行，收到 session_id 后等待完成；正式审查图表后提交。"
+                "写入签发脚本并调用 run_python_script 执行；正式审查最终图表后提交。"
             )
-            result["executionPlan"] = {
-                "command": "python3 analysis/output/outpatient_chart.py",
-                "background": True,
-                "waitForCompletion": True,
-            }
+            result["executionPlan"] = {"waitForCompletion": True}
         return result
     result = {
         **common,
@@ -710,7 +694,7 @@ def complex_cli_prompt(scenario: ProbeScenario) -> str:
     return f"""以下是 CLI 已签发的当前阶段任务 JSON。只处理该任务，不得访问未签发数据或调用未注册能力：
 {task_json}
 
-每次调用后以服务端回执决定下一步；只有回执给出 handle 或 session_id 时才使用对应续读或进程能力。
+每次调用后以服务端回执决定下一步；只有回执给出 handle 时才使用对应续读能力。
 终态提交后立即停止。不得输出解释文字。"""
 
 
@@ -747,7 +731,6 @@ class ProbeRecorder:
     failures: list[dict[str, Any]] = field(default_factory=list)
     output_handle: str | None = None
     output_consumed: bool = False
-    session_id: str | None = None
     script_completed: bool = False
     committed_script_path: str | None = None
     committed_script_sha256: str | None = None
@@ -773,9 +756,6 @@ class ProbeRecorder:
     def _file_read_truncated(self) -> bool:
         return self.scenario is not None and self.scenario.branch in {"preview", "render"}
 
-    def _background(self) -> bool:
-        return self.scenario is not None and self.scenario.branch == "background"
-
     def _stage_read_paths(self) -> set[str] | None:
         """返回当前阶段可消费的冻结文件；None 仅用于无场景的 schema 单测。"""
 
@@ -797,17 +777,16 @@ class ProbeRecorder:
             for file in evidence["evidenceFiles"]
         }
 
-    def _issued_terminal_command(self) -> str | None:
+    def _issued_script_path(self) -> str | None:
         if self.scenario is None:
             return None
         if self.scenario.task_kind == "visualization_section":
-            return "python3 analysis/output/outpatient_chart.py"
-        if (
-            self.scenario.task_kind == "analysis_item"
-            and self.committed_script_path is not None
-            and self.scenario.branch in {"profile", "script", "background"}
-        ):
-            return f"python3 {self.committed_script_path}"
+            return "analysis/output/outpatient_chart.py"
+        if self.scenario.task_kind == "analysis_item" and self.scenario.branch in {
+            "profile",
+            "script",
+        }:
+            return "analysis/output/supplement.py"
         return None
 
     def _reject(
@@ -937,23 +916,21 @@ class ProbeRecorder:
                 response["requiredFields"] = ["patch", "expected_sha256"]
             return response
         if name == "run_python_script":
-            background = bool(arguments.get("background", False))
-            command = str(arguments["script_path"])
-            issued_command = self._issued_terminal_command()
-            issued_script = issued_command.removeprefix("python3 ") if issued_command else None
-            if issued_script is not None and command != issued_script:
+            script_path = str(arguments["script_path"])
+            issued_script_path = self._issued_script_path()
+            if issued_script_path is not None and script_path != issued_script_path:
                 return self._reject(
-                    "probe_terminal_command_forbidden",
-                    "当前阶段 terminal 只允许原样执行签发命令。",
-                    details={"allowedCommand": issued_command},
+                    "probe_script_path_forbidden",
+                    "当前阶段 run_python_script 只允许执行签发脚本。",
+                    details={"scriptPath": issued_script_path},
                     required_actions=[
-                        "保持 workdir 为空，仅使用 details.allowedCommand 原样执行。"
+                        "仅将 details.scriptPath 原样作为 run_python_script.script_path。"
                     ],
                 )
             if self.scenario is not None and self.scenario.task_kind == "visualization_section":
                 if self.committed_script_path is None:
                     return self._reject(
-                        "probe_terminal_script_not_committed",
+                        "probe_script_not_committed",
                         "必须先提交 CLI 签发的可视化脚本。",
                         required_actions=[
                             "先用 apply_analysis_patch 提交 visualizationWorkspace.scriptPath。"
@@ -965,31 +942,20 @@ class ProbeRecorder:
                 and self.committed_script_path is None
             ):
                 return self._reject(
-                    "probe_terminal_script_not_committed",
+                    "probe_script_not_committed",
                     "必须先提交核验脚本。",
                     required_actions=["先用 apply_analysis_patch 提交核验脚本。"],
                 )
-            if self._background() and not background:
-                return self._reject("probe_background_required", "当前签发任务要求后台执行。")
             result = await workspace.execute_script(
-                str(arguments["script_path"]),
+                script_path,
                 timeout=int(arguments.get("timeout", 30)),
-                workdir=arguments.get("workdir"),
-                background=background,
             )
             response = {"ok": True, **dict(result)}
-            if ".py" in str(arguments["script_path"]):
+            if ".py" in script_path:
                 self.script_completed = True
                 response["stdout"] = (
                     "script completed; generated evidence and chart artifacts are ready"
                 )
-            if background:
-                self.session_id = str(response["session_id"])
-                state = self.run_context.session_state if self.run_context is not None else None
-                if isinstance(state, dict):
-                    sessions = set(state.get("reportingVisualizationSessions", ()))
-                    sessions.add(self.session_id)
-                    state["reportingVisualizationSessions"] = sorted(sessions)
             if (
                 self.scenario is not None
                 and self.scenario.branch == "truncated"
@@ -999,16 +965,6 @@ class ProbeRecorder:
                 self.output_handle = "mock-output-1"
                 response.update({"truncated": True, "handle": self.output_handle})
             return response
-        if name == "process":
-            if arguments.get("session_id") != self.session_id:
-                return self._reject(
-                    "probe_process_session_invalid", "必须等待当前 terminal 返回的 session_id。"
-                )
-            if arguments.get("action") not in {"poll", "wait", "list"}:
-                return self._reject(
-                    "probe_process_action_invalid", "当前 session 只允许 poll、wait 或 list。"
-                )
-            return {"ok": True, "status": "completed", "session_id": self.session_id}
         if name == "apply_analysis_patch":
             match = re.search(r"^\+\+\+ b/(.+)$", str(arguments["patch"]), re.MULTILINE)
             path = match.group(1) if match is not None else "analysis/output/probe.py"
@@ -1290,7 +1246,7 @@ async def _run_fixed_analysis_scenario(
     """用生产同形的五阶段 AnalysisItemWorkflow 执行 analysis probe。"""
 
     stage_input = _cli_stage_input(scenario)
-    supplemental = scenario.branch in {"script", "background"}
+    supplemental = scenario.branch == "script"
     scope = TaskExecutionScope(
         str(run_context.run_id),
         str(run_context.user_id),
@@ -1418,18 +1374,11 @@ async def _run_fixed_analysis_scenario(
 
     async def run_script(**arguments: Any) -> dict[str, Any]:
         arguments.pop("run_context", None)
-        background = scenario.branch == "background"
-        terminal = await recorder.invoke(
+        execution = await recorder.invoke(
             "run_python_script",
-            {**arguments, "timeout": 30, **({"background": True} if background else {})},
+            {**arguments, "timeout": 30},
         )
-        if terminal.get("ok") is not True or not background:
-            return {"exitCode": terminal.get("exit_code", 0), **terminal}
-        completed = await recorder.invoke(
-            "process",
-            {"action": "wait", "session_id": terminal.get("session_id"), "timeout": 30},
-        )
-        return {"exitCode": 0, **completed}
+        return {"exitCode": execution.get("exit_code", 0), **execution}
 
     async def complete(**arguments: Any) -> dict[str, Any]:
         arguments.pop("run_context", None)
@@ -1516,22 +1465,13 @@ async def _run_fixed_visualization_scenario(
         return FileIdentity.model_validate(artifact)
 
     async def execute_script(script_path: str, _task_context: RunContext) -> Mapping[str, Any]:
-        terminal = await recorder.invoke(
+        execution = await recorder.invoke(
             "run_python_script",
-            {
-                "script_path": script_path,
-                **({"background": True} if scenario.branch == "background" else {}),
-            },
+            {"script_path": script_path},
         )
-        if terminal.get("ok") is not True:
-            return {"exitCode": 1, **terminal}
-        if scenario.branch != "background":
-            return {"exitCode": 0, **terminal}
-        completed = await recorder.invoke(
-            "process",
-            {"action": "wait", "session_id": terminal.get("session_id"), "timeout": 30},
-        )
-        return {"exitCode": 0, **completed}
+        if execution.get("ok") is not True:
+            return {"exitCode": 1, **execution}
+        return {"exitCode": 0, **execution}
 
     async def inspect_chart(
         chart: ChartDraft, _task_context: RunContext
@@ -1710,20 +1650,20 @@ async def _run_scenario(
     called_names = [call["name"] for call in recorder.calls]
     expected_names = list(scenario.tool_names)
     missing_tools = sorted(set(expected_names) - set(called_names))
-    terminal_tools = {
+    completion_tools = {
         "complete_analysis_item",
         "submit_visualization_charts",
         "render_report_section",
         "request_analysis_rework",
     }
-    expected_terminal = {scenario.terminal_tool}
-    actual_terminal = set(called_names) & terminal_tools
+    expected_completion = {scenario.completion_tool}
+    actual_completion = set(called_names) & completion_tools
     unexpected_tools = sorted(set(called_names) - set(expected_names))
-    task_completed = error is None and called_names[-1:] == [scenario.terminal_tool]
+    task_completed = error is None and called_names[-1:] == [scenario.completion_tool]
     protocol_compliant = (
         task_completed
         and not missing_tools
-        and actual_terminal == expected_terminal
+        and actual_completion == expected_completion
         and not recorder.failures
         and not unexpected_tools
         and not projection.not_visible_calls
@@ -1732,8 +1672,9 @@ async def _run_scenario(
     if not valid and error is None:
         error = (
             "cli_task_contract_failed: "
-            f"missing_tools={missing_tools!r}, expected_terminal={sorted(expected_terminal)!r}, "
-            f"actual_terminal={sorted(actual_terminal)!r}, failures={recorder.failures!r}, "
+            f"missing_tools={missing_tools!r}, "
+            f"expected_completion={sorted(expected_completion)!r}, "
+            f"actual_completion={sorted(actual_completion)!r}, failures={recorder.failures!r}, "
             f"final_call={called_names[-1:]!r}"
         )
     return {
@@ -1742,8 +1683,8 @@ async def _run_scenario(
         "task_kind": scenario.task_kind,
         "expected_tools": expected_names,
         "missing_tools": missing_tools,
-        "expected_terminal": sorted(expected_terminal),
-        "actual_terminal": sorted(actual_terminal),
+        "expected_completion": sorted(expected_completion),
+        "actual_completion": sorted(actual_completion),
         "unexpected_tools": unexpected_tools,
         "visible_tool_batches": projection.batches,
         "not_visible_calls": projection.not_visible_calls,

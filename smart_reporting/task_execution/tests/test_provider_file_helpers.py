@@ -1,13 +1,16 @@
 import hashlib
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from smart_reporting.sandbox import ExecRequest, SandboxNotFound
 from smart_reporting.skills import SkillValidator
-from smart_reporting.task_execution.execution import TaskExecutionKernel
+from smart_reporting.task_execution.execution import TaskExecutionKernel, TaskExecutionRuntime
+from smart_reporting.task_execution.repository_impl import TaskExecution
 
 
 class _ProviderFileSystem:
@@ -79,6 +82,79 @@ def _provider_kernel():
 
     kernel._sandbox = use_sandbox
     return kernel, sandbox, process
+
+
+@pytest.mark.anyio
+async def test_python_runner_preserves_deterministic_error_over_provider_success():
+    output = (
+        "Traceback (most recent call last):\n"
+        '  File "analysis.py", line 1, in <module>\n'
+        "NameError: name 'pd' is not defined\n"
+    )
+    service = SimpleNamespace(
+        arun_python_script=AsyncMock(
+            return_value={
+                "ok": True,
+                "status": "completed",
+                "exitCode": 0,
+                "output": output,
+                "scriptPath": "analysis.py",
+                "scriptSha256": "a" * 64,
+                "dependencyBundleDigest": "sha256:" + "b" * 64,
+            }
+        )
+    )
+    execution = TaskExecution(
+        execution_id="execution-1",
+        external_run_id="external-1",
+        internal_run_id="internal-1",
+        owner_user_id="user-1",
+        thread_id="thread-1",
+        sandbox_id="sandbox-1",
+        daytona_session_id="python-execution-1",
+        command_id=None,
+        status="running",
+        output_cursor=0,
+        terminal_output="",
+        exit_code=None,
+        mutation_sequence=1,
+        is_verification=False,
+        retained_service=False,
+        operation_receipt={"runner": "python", "scriptPath": "analysis.py"},
+    )
+    repository = SimpleNamespace(
+        increment_mutation=AsyncMock(return_value=1),
+        reserve_execution=AsyncMock(return_value=execution),
+        update_execution=AsyncMock(
+            side_effect=lambda execution_id, **values: replace(
+                execution,
+                execution_id=execution_id,
+                status=values["status"],
+                terminal_output=values["output"],
+                output_cursor=len(values["output"]),
+                exit_code=values["exit_code"],
+            )
+        ),
+        record_execution_mutation=AsyncMock(),
+    )
+    kernel = TaskExecutionKernel(service, repository)
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0),
+        external_run_id="external-1",
+        internal_run_id="internal-1",
+        owner_user_id="user-1",
+        thread_id="thread-1",
+        sandbox_id="sandbox-1",
+        lease_owner="lease-1",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    result = await kernel.run_python_script("analysis.py", _scope=scope)
+
+    assert result["ok"] is False
+    assert result["code"] == "execution_output_error"
+    assert result["details"]["failureCode"] == "python_traceback"
 
 
 @pytest.mark.anyio

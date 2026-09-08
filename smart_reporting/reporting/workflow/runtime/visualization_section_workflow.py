@@ -9,6 +9,7 @@ from typing import Any
 from agno.run import RunContext
 
 from ...models import ReportingError
+from ...phase import reporting_python_script_failed
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .phase_models import ChartDraft, VisualizationScriptDraft
 
@@ -80,21 +81,38 @@ class VisualizationSectionWorkflow:
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         draft: VisualizationScriptDraft | None = None
+        script_file: FileIdentity | None = None
+        written_script: tuple[str, str] | None = None
         recovery_used = False
         for attempt in range(2):
             try:
                 if draft is None:
                     draft = await self.generate(payload, run_context)
-                script_file = await self.write_script(
-                    draft.script_path, draft.python_source, run_context
+                normalized_source = (
+                    draft.python_source
+                    if draft.python_source.endswith("\n")
+                    else f"{draft.python_source}\n"
                 )
-                if script_file.path != draft.script_path:
+                current_script = (draft.script_path, normalized_source)
+                if current_script != written_script:
+                    script_file = await self.write_script(
+                        draft.script_path, normalized_source, run_context
+                    )
+                    if script_file.path != draft.script_path:
+                        raise ReportingError(
+                            "report_phase_artifact_changed",
+                            "脚本写入回执路径与签发路径不一致。",
+                        )
+                    written_script = current_script
+                # 恢复模型可能确认原脚本无需修改。相同源码再次生成 unified diff 会得到
+                # 空字符串并被写入 schema 拒绝；已提交身份仍受后续执行和图表审查约束，
+                # 因此复用该身份继续执行，而不是伪造一次无变化 mutation。
+                if script_file is None:
                     raise ReportingError(
-                        "report_phase_artifact_changed",
-                        "脚本写入回执路径与签发路径不一致。",
+                        "report_visualization_write_failed", "章节图表脚本尚未成功写入。"
                     )
                 execution = await self.execute_script(draft.script_path, run_context)
-                if execution.get("exitCode", 0) != 0:
+                if reporting_python_script_failed(execution):
                     raise ReportingError(
                         "report_visualization_script_failed",
                         "可视化脚本执行失败。",

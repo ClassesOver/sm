@@ -343,7 +343,7 @@ class ReportingStructuredOutputExecutor:
             wire_schema_fingerprint=wire_contract.wire_fingerprint,
             call_number=call_number,
             protocol_attempt_number=protocol_attempt_number,
-        ).info("report_structured_output_attempt")
+        ).debug("report_structured_output_attempt")
         result = execution_agent.arun(
             instruction,
             stream=False,
@@ -448,9 +448,17 @@ def _agent_for_mode(
                 "exponential_backoff": False,
             }
         )
+    required_fields_instruction = _required_fields_instruction(schema)
+    instructions = agent.instructions
+    if required_fields_instruction:
+        if isinstance(instructions, str):
+            instructions = [instructions, required_fields_instruction]
+        elif isinstance(instructions, list):
+            instructions = [*instructions, required_fields_instruction]
     return agent.deep_copy(
         update={
             "model": model,
+            "instructions": instructions,
             "output_schema": schema,
             "parse_response": True,
             "structured_outputs": False,
@@ -460,6 +468,67 @@ def _agent_for_mode(
             "retries": 0,
             "exponential_backoff": False,
         }
+    )
+
+
+def _required_fields_instruction(schema: Any) -> str | None:
+    """补足 Agno JSON mode 提示词丢失的对象 required 契约。"""
+
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        json_schema = schema.model_json_schema(by_alias=True)
+    elif isinstance(schema, dict):
+        json_schema = schema
+    else:
+        return None
+
+    required_fields: dict[str, list[str]] = {}
+    non_empty_arrays: dict[str, list[str]] = {}
+    root_required = json_schema.get("required")
+    if isinstance(root_required, list) and all(isinstance(item, str) for item in root_required):
+        required_fields["$"] = root_required
+    root_properties = json_schema.get("properties")
+    if isinstance(root_properties, dict):
+        root_arrays = [
+            name
+            for name, property_schema in root_properties.items()
+            if isinstance(name, str)
+            and isinstance(property_schema, dict)
+            and isinstance(property_schema.get("minItems"), int)
+            and property_schema["minItems"] > 0
+        ]
+        if root_arrays:
+            non_empty_arrays["$"] = root_arrays
+    definitions = json_schema.get("$defs")
+    if isinstance(definitions, dict):
+        for name, definition in definitions.items():
+            if not isinstance(name, str) or not isinstance(definition, dict):
+                continue
+            required = definition.get("required")
+            if isinstance(required, list) and all(isinstance(item, str) for item in required):
+                required_fields[name] = required
+            properties = definition.get("properties")
+            if isinstance(properties, dict):
+                arrays = [
+                    field_name
+                    for field_name, property_schema in properties.items()
+                    if isinstance(field_name, str)
+                    and isinstance(property_schema, dict)
+                    and isinstance(property_schema.get("minItems"), int)
+                    and property_schema["minItems"] > 0
+                ]
+                if arrays:
+                    non_empty_arrays[name] = arrays
+    if not required_fields and not non_empty_arrays:
+        return None
+
+    required_contract = json.dumps(required_fields, ensure_ascii=False, separators=(",", ":"))
+    array_contract = json.dumps(non_empty_arrays, ensure_ascii=False, separators=(",", ":"))
+    return (
+        "根响应必须是单个 JSON 对象，以 { 开始并以 } 结束；不得用数组或额外包装键包裹。"
+        "嵌套对象必填字段契约（$ 表示根对象，其余键为 JSON Schema 对象类型）："
+        f"{required_contract}。每个对象实例都必须逐项包含对应数组中的全部字段，不得因字段语义相近、"
+        "值为空或位于数组项中而省略。非空数组约束（同样按对象类型分组）："
+        f"{array_contract}。这些字段至少包含一个元素，不得返回空数组。"
     )
 
 
@@ -714,7 +783,7 @@ def _validate_structured_text(
                 result = json_validator(candidate)
             except Exception:
                 continue
-            logger.info(
+            logger.debug(
                 "report_structured_output_candidate_recovered schema={} candidate_index={}",
                 getattr(schema, "__name__", type(schema).__name__),
                 index,

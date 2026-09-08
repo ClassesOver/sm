@@ -14,7 +14,7 @@ from string import Formatter
 from typing import Any
 from xml.etree import ElementTree
 
-from .markdown import _WORD_MARKERS, REPORT_VISUAL_THEME
+from .markdown import _WORD_MARKERS, REPORT_VISUAL_THEME, format_heading_label
 from .pdf import MAX_PDF_PAGES, _formatted_page_text, _page_number_context
 from .validation import MAX_DOCX_BYTES, ReportFailure
 
@@ -246,7 +246,9 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
     body_headings: list[Any] = []
     search_index = body_start_index + 1
     for heading_index, item in enumerate(context["headingNumbers"], start=1):
-        expected_text = f"{item['number']} {item['title']}"
+        expected_text = format_heading_label(
+            level=item["level"], number=item["number"], title=item["title"]
+        )
         found = next(
             (
                 (index, paragraph)
@@ -296,7 +298,9 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
         run_properties.append(run_style)
         run.append(run_properties)
         text = OxmlElement("w:t")
-        text.text = f"{item['number']} {item['title']}"
+        text.text = format_heading_label(
+            level=item["level"], number=item["number"], title=item["title"]
+        )
         run.append(text)
         hyperlink.append(run)
         paragraph._p.append(hyperlink)

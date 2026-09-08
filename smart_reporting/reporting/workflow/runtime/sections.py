@@ -96,7 +96,58 @@ _SECTION_BLOCK_EVIDENCE_TOKEN_DIVISOR = 2
 _SECTION_BLOCK_TEXT_CONTEXT_LINES = 2
 _SECTION_BLOCK_MAX_RELEVANCE_TERMS = 128
 _SECTION_BLOCK_MIN_FILE_TOKENS = 128
+_SECTION_BLOCK_MAX_PROJECTION_ATTEMPTS = 16
 _SECTION_BLOCK_OMISSION_MARKER = "[...已省略与当前正文块无关的证据内容...]"
+_MAX_EXECUTIVE_SUMMARY_CHARS = 8_000
+_EXECUTIVE_SUMMARY_SEPARATOR = "；"
+_EXECUTIVE_SUMMARY_ELLIPSIS = "…"
+
+
+def _bounded_executive_summary(summaries: Sequence[str]) -> str:
+    """在 ReportBrief 上限内公平保留每个分析项的管理摘要。"""
+
+    values = [summary.strip() for summary in summaries if summary.strip()]
+    if not values:
+        return "已完成冻结分析。"
+    joined = _EXECUTIVE_SUMMARY_SEPARATOR.join(values)
+    if len(joined) <= _MAX_EXECUTIVE_SUMMARY_CHARS:
+        return joined
+
+    # evidenceManifest 仍保存完整 summary；这里只为派生的管理摘要分配字符预算。
+    # 使用统一水位可避免前序长项独占空间，并让短项释放的额度自动让给其他项。
+    content_budget = _MAX_EXECUTIVE_SUMMARY_CHARS - len(_EXECUTIVE_SUMMARY_SEPARATOR) * (
+        len(values) - 1
+    )
+    low, high = 1, max(len(value) for value in values)
+    while low < high:
+        candidate = (low + high + 1) // 2
+        if sum(min(len(value), candidate) for value in values) <= content_budget:
+            low = candidate
+        else:
+            high = candidate - 1
+    budgets = [min(len(value), low) for value in values]
+    remaining = content_budget - sum(budgets)
+    for index, value in enumerate(values):
+        if remaining <= 0:
+            break
+        if budgets[index] < len(value):
+            budgets[index] += 1
+            remaining -= 1
+
+    projected: list[str] = []
+    for value, budget in zip(values, budgets, strict=True):
+        if len(value) <= budget:
+            projected.append(value)
+            continue
+        if budget <= len(_EXECUTIVE_SUMMARY_ELLIPSIS):
+            projected.append(_EXECUTIVE_SUMMARY_ELLIPSIS[:budget])
+            continue
+        prefix = value[: budget - len(_EXECUTIVE_SUMMARY_ELLIPSIS)].rstrip()
+        sentence_end = max(prefix.rfind(mark) for mark in "。！？")
+        if sentence_end >= len(prefix) // 2:
+            prefix = prefix[: sentence_end + 1]
+        projected.append(prefix + _EXECUTIVE_SUMMARY_ELLIPSIS)
+    return _EXECUTIVE_SUMMARY_SEPARATOR.join(projected)
 
 
 def _estimated_section_tokens(value: str) -> int:
@@ -505,30 +556,51 @@ def _project_section_evidence_files(
         identity = item.identity.model_dump(mode="json", by_alias=True)
         identity_tokens = _estimated_section_tokens(_json_text(identity))
         content_budget = max(1, file_budget - identity_tokens)
-        projected_json = _project_json_evidence(
-            item.content,
-            matcher,
-            token_budget=content_budget,
-        )
-        if projected_json is None:
-            content, view = _project_text_evidence(
+        max_projected_tokens = remaining_budget - minimum_for_rest
+        for projection_attempt in range(_SECTION_BLOCK_MAX_PROJECTION_ATTEMPTS):
+            projected_json = _project_json_evidence(
                 item.content,
                 matcher,
                 token_budget=content_budget,
             )
-        else:
-            content, view = projected_json
-        projected_file = {"identity": identity, "content": content, "view": view}
-        projected_tokens = _estimated_section_tokens(_json_text(projected_file))
-        if projected_tokens > remaining_budget - minimum_for_rest:
-            raise ReportingError(
-                "report_section_context_too_large",
-                "章节证据视图无法在保留冻结文件身份后满足当前输入预算。",
-                details={
-                    "availableEvidenceTokens": remaining_budget - minimum_for_rest,
-                    "projectedEvidenceTokens": projected_tokens,
-                },
+            if projected_json is None:
+                content, view = _project_text_evidence(
+                    item.content,
+                    matcher,
+                    token_budget=content_budget,
+                )
+            else:
+                content, view = projected_json
+            projected_file = {"identity": identity, "content": content, "view": view}
+            projected_tokens = _estimated_section_tokens(_json_text(projected_file))
+            if projected_tokens <= max_projected_tokens:
+                break
+            # content 会作为字符串再次编码进外层 JSON；引号、反斜杠等转义会使最终
+            # payload 大于内层投影预算。按实际超额量收紧正文后重新投影，冻结身份、
+            # view 元数据和事实摘要始终保留，且最终仍由同一个硬预算门禁验收。
+            overflow = projected_tokens - max_projected_tokens
+            if (
+                content_budget <= 1
+                or projection_attempt == _SECTION_BLOCK_MAX_PROJECTION_ATTEMPTS - 1
+            ):
+                raise ReportingError(
+                    "report_section_context_too_large",
+                    "章节证据视图无法在保留冻结文件身份后满足当前输入预算。",
+                    details={
+                        "availableEvidenceTokens": max_projected_tokens,
+                        "projectedEvidenceTokens": projected_tokens,
+                    },
+                )
+            # 比例收缩通常一次即可吸收 JSON 转义开销；最后一次固定尝试最小正文，
+            # 避免投影结果在相邻预算上不变时对大文件逐 token 重算。
+            proportional_budget = content_budget * max_projected_tokens // projected_tokens
+            next_content_budget = min(
+                content_budget - max(1, overflow),
+                max(1, proportional_budget),
             )
+            if projection_attempt == _SECTION_BLOCK_MAX_PROJECTION_ATTEMPTS - 2:
+                next_content_budget = 1
+            content_budget = next_content_budget
         projected_files.append(projected_file)
         remaining_budget -= projected_tokens
     return {"files": projected_files, "factSummaries": list(fact_summaries)}
@@ -585,10 +657,11 @@ def _section_stage_agent(agent: Any, output_schema: type[Any], stage: str) -> An
         ]
     else:
         instructions = [
-            "只返回满足 output_schema 的 JSON 对象，不得返回解释或代码围栏。",
-            "只撰写当前 block 的简体中文 Markdown 正文，不得生成其他 block。",
+            "只返回满足 output_schema 的 JSON 对象，不得把整个响应写成 Markdown 或代码围栏。",
+            "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。",
             "不得输出 H1/H2、图片语法、内部 ID、协议标记或无证据数字。",
             "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表。",
+            "存在 correction 时只修正 issues 指向的当前 block，并返回完整 JSON 对象。",
         ]
     identifier = str(getattr(agent, "id", None) or "reporting-section-generator")
     return agent.deep_copy(
@@ -848,25 +921,50 @@ async def _generate_section_in_blocks(
             base_payload=block_payload,
             run_context=run_context,
         )
-        content = await _run_section_stage(
-            agent,
-            SectionBlockContent,
-            f"block-{index}",
-            block_payload,
-            scope=scope,
-            run_context=run_context,
-        )
-        if not isinstance(content, SectionBlockContent):
-            raise ReportingError("report_phase_output_invalid", "章节正文 Agent 未返回声明的结果。")
-        blocks.append(
-            ReportDraftBlock(
+        for block_attempt in range(2):
+            content = await _run_section_stage(
+                agent,
+                SectionBlockContent,
+                f"block-{index}",
+                block_payload,
+                scope=scope,
+                run_context=run_context,
+            )
+            if not isinstance(content, SectionBlockContent):
+                raise ReportingError(
+                    "report_phase_output_invalid", "章节正文 Agent 未返回声明的结果。"
+                )
+            candidate = ReportDraftBlock(
                 blockId=block_plan.block_id,
                 markdown=content.markdown,
                 citationIds=citation_ids,
                 chartIds=chart_ids,
                 claimIds=block_plan.claim_ids,
             )
-        )
+            try:
+                validate_report_draft_blocks(
+                    (*blocks, candidate),
+                    expected_section_title=work_item.title,
+                )
+            except ReportingError as error:
+                if error.code != "report_draft_heading_parent_missing" or block_attempt == 1:
+                    raise
+                issues = error.details.get("issues") if isinstance(error.details, Mapping) else None
+                if not isinstance(issues, list):
+                    raise
+                block_payload["correction"] = {
+                    "attempt": block_attempt + 1,
+                    "code": error.code,
+                    "issues": issues,
+                    "previousOutput": {"markdown": content.markdown},
+                    "requiredAction": (
+                        "仅修正 issues 指向的当前 block；在 output_schema.markdown 字段中返回完整正文，"
+                        "保留其余有效内容，不得返回解释、代码围栏或 schema 外字段。"
+                    ),
+                }
+                continue
+            blocks.append(candidate)
+            break
     return RenderSectionDecision(
         sectionCode=decision.section_code,
         blocks=tuple(blocks),
@@ -1653,10 +1751,10 @@ class RuntimeSectionsMixin:
                     ),
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
-                logger.info(
-                    "report_phase_context phase=section task_id=%s section_code=%s "
-                    "instruction_bytes=%s model_input_tokens=%s model_requests=%s "
-                    "max_projected_tokens=%s rebases=%s hard_cap=%s attempt=%s",
+                logger.debug(
+                    "report_phase_context phase=section task_id={} section_code={} "
+                    "instruction_bytes={} model_input_tokens={} model_requests={} "
+                    "max_projected_tokens={} rebases={} hard_cap={} attempt={}",
                     task_id,
                     work_item.section_code,
                     instruction_bytes,
@@ -2067,15 +2165,17 @@ class RuntimeSectionsMixin:
             analysis_id for analysis_id in selected_ids if analysis_id not in ordered_analysis_ids
         )
         evidence_by_id = {item.analysis_id: item for item in evidence}
-        summary = "；".join(
-            evidence_by_id[analysis_id].summary
-            for analysis_id in ordered_analysis_ids
-            if analysis_id in evidence_by_id
+        summary = _bounded_executive_summary(
+            [
+                evidence_by_id[analysis_id].summary
+                for analysis_id in ordered_analysis_ids
+                if analysis_id in evidence_by_id
+            ]
         )
         return AnalysisArtifact(
             reportBrief=ReportBrief(
                 objective=report_goal,
-                executiveSummary=summary or "已完成冻结分析。",
+                executiveSummary=summary,
                 managementQuestions=questions or (report_goal,),
                 warnings=tuple(dict.fromkeys(warnings))[-500:],
             ),

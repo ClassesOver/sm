@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from ..async_utils import complete_cleanup
 from ..runtime.execution import close_execution_resources, create_execution_context
+from ..runtime.logging import configure_application_logging
 from ..runtime.settings import AgentSettings
 from .bootstrap import create_report_runtime
 from .contract import REPORT_WORKFLOW_SCOPE_STATE_KEY, parse_reporting_workflow_input
@@ -544,6 +545,7 @@ def main(argv: list[str] | None = None) -> None:
             help="启用详细调试日志（默认启用，使用 --no-debug 关闭）。",
         )
         parsed = parser.parse_args(arguments)
+        configure_application_logging(debug=parsed.debug)
         result = asyncio.run(
             run_cli(
                 resume_run_id=parsed.resume_run_id,

@@ -335,9 +335,9 @@ class RuntimeDatasetsMixin:
                     errors[index] = error
                 finally:
                     context = contexts[index]
-                    logger.info(
-                        "report_dataset_profile dataset_id=%s row_count=%s profile_bytes=%s "
-                        "model_view_bytes=%s duration_ms=%s cache_hit=%s",
+                    logger.debug(
+                        "report_dataset_profile dataset_id={} row_count={} profile_bytes={} "
+                        "model_view_bytes={} duration_ms={} cache_hit={}",
                         handle.dataset_id,
                         context.row_count if context is not None else handle.row_count,
                         context.profile_file.size if context is not None else 0,

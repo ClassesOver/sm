@@ -20,15 +20,11 @@ from ...task_execution import (
     TOOL_SPECS,
     TaskExecutionKernel,
     TaskExecutionRuntime,
-    ToolSpec,
-    absolute_paths,
     failed_result_resources,
-    is_read_only_terminal_command,
-    paths_related,
     stable_progress_result,
     suggested_workspace_path,
 )
-from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
+from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 
@@ -118,30 +114,9 @@ class WorkspaceServiceReportingPort:
         script_path: str,
         *,
         timeout: int,
-        workdir: str | None = None,
-        background: bool = False,
     ) -> Mapping[str, Any]:
-        if background or workdir is not None:
-            raise ReportingWorkspaceError("Python 脚本只支持前台固定工作目录执行。")
         return await self._kernel.run_python_script(
             script_path, timeout=timeout, _scope=self._scope
-        )
-
-    async def send_process_input(
-        self,
-        session_id: str,
-        data: str,
-        *,
-        submit: bool,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        return await self._kernel.process(
-            "submit" if submit else "write",
-            session_id,
-            data,
-            timeout,
-            None,
-            _scope=self._scope,
         )
 
 
@@ -158,6 +133,9 @@ class ReportingWorkspaceAdapter:
 
     async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
         return await self._service.afile_bytes(thread_id, path)
+
+    async def aread_text(self, thread_id: str, path: str) -> str:
+        return await self._service.aread_text(thread_id, path)
 
     def read_text(self, thread_id: str, path: str) -> str:
         return self._service.read_text(thread_id, path)
@@ -277,16 +255,8 @@ class WorkspaceServiceReportingRuntime:
         run_context: RunContext | None,
     ) -> Any:
         external_run_id = self.bound_external_run_id(run_context)
-        progress_name = (
-            f"process:{arguments.get('action')}" if tool_name == "process" else tool_name
-        )
+        progress_name = tool_name
         spec = TOOL_SPECS[tool_name]
-        if tool_name == "process" and arguments.get("action") in {"list", "poll", "wait"}:
-            spec = ToolSpec("read", True)
-        elif tool_name == "terminal" and is_read_only_terminal_command(
-            str(arguments.get("command") or "")
-        ):
-            spec = ToolSpec("read", True)
         async with (
             self.task_scheduler(external_run_id) as lock,
             lock.read() if spec.parallel_safe else lock.write(),
@@ -331,47 +301,6 @@ class WorkspaceServiceReportingRuntime:
                     and isinstance(progress.get("entries"), list)
                     else []
                 )
-                failure_state = (
-                    state.get(TASK_EXECUTION_TOOL_FAILURE_STATE_KEY) if state is not None else None
-                )
-                failure_entries = (
-                    list(failure_state["entries"])
-                    if isinstance(failure_state, dict)
-                    and failure_state.get("attempt") == scope.attempt_no
-                    and isinstance(failure_state.get("entries"), list)
-                    else []
-                )
-                argument_resources = absolute_paths(arguments)
-                blocked_failure = next(
-                    (
-                        entry
-                        for entry in reversed(failure_entries)
-                        if isinstance(entry, dict)
-                        and isinstance(entry.get("resource"), str)
-                        and any(
-                            paths_related(entry["resource"], resource)
-                            for resource in argument_resources
-                        )
-                        and tool_name == "terminal"
-                    ),
-                    None,
-                )
-                if isinstance(blocked_failure, dict):
-                    return {
-                        "ok": False,
-                        "code": "tool_no_progress",
-                        "message": "当前 Attempt 已确认该绝对路径不可用，本次未执行。",
-                        "details": {
-                            "failedResource": blocked_failure["resource"],
-                            "workspaceRoot": WORKSPACE_ROOT,
-                            "failureFingerprint": blocked_failure["fingerprint"],
-                        },
-                        "requiredActions": [
-                            "使用工作区相对路径重新执行。",
-                            f"需要绝对路径时使用 {WORKSPACE_ROOT}。",
-                        ],
-                        "retryable": True,
-                    }
                 previous = next(
                     (
                         entry

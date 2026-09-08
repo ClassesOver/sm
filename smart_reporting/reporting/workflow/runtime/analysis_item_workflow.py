@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import difflib
+import json
+import math
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
@@ -12,17 +15,19 @@ from agno.run import RunContext
 from agno.workflow import Condition, Loop, Step, Steps
 from agno.workflow.types import StepInput, StepOutput
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ....task_execution import MAX_READ_FILE_BYTES
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...models import ReportingError
+from ..checkpoint import FileIdentity
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
 MAX_DETERMINISTIC_FACT_BYTES = 10 * 1024 * 1024
 DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
+MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
 _STAGE_NAMES = (
     "read-facts",
     "plan-evidence",
@@ -154,6 +159,24 @@ class SupplementalEvidence(_StrictModel):
     reconciliations: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=100)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
+    @field_validator("reconciliations", mode="before")
+    @classmethod
+    def require_reconciliation_shape(cls, value: Any) -> Any:
+        """只校验机器结构；业务对账不一致由工作流保留为软告警。"""
+
+        if not isinstance(value, (list, tuple)):
+            return value
+        for reconciliation in value:
+            if not isinstance(reconciliation, Mapping):
+                raise ValueError("evidence 对账项必须为 JSON 对象")
+            name = reconciliation.get("name")
+            passed = reconciliation.get("passed")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("evidence 对账项必须包含非空 name")
+            if not isinstance(passed, bool):
+                raise ValueError("evidence 对账项必须包含布尔 passed")
+        return value
+
     @field_validator("findings", mode="before")
     @classmethod
     def require_compact_tabular_findings(cls, value: Any) -> Any:
@@ -174,18 +197,196 @@ class SupplementalEvidence(_StrictModel):
                 not isinstance(columns, (list, tuple))
                 or not columns
                 or any(not isinstance(column, str) or not column for column in columns)
+                or len(columns) != len(set(columns))
                 or any(
                     not isinstance(row, (list, tuple)) or len(row) != len(columns) for row in rows
                 )
             ):
                 raise ValueError("列式 finding 的 columns 与 rows 形状无效")
+            if any(
+                isinstance(value, float) and not math.isfinite(value)
+                for row in rows
+                for value in row
+            ):
+                raise ValueError("列式 finding 不得包含 NaN 或无穷大")
         return value
 
-    @model_validator(mode="after")
-    def validate_reconciliations(self) -> SupplementalEvidence:
-        if any(item.get("passed") is not True for item in self.reconciliations):
-            raise ValueError("补充 evidence 对账未通过")
-        return self
+
+def _summary_rank_column(columns: list[str], rows: list[list[Any]]) -> int | None:
+    del rows
+    preferred = (
+        "change",
+        "difference",
+        "diff",
+        "variance",
+        "contribution",
+        "delta",
+        "gap",
+        "changeamount",
+        "contributionamount",
+        "yoydiff",
+        "changerate",
+        "differencerate",
+        "variancerate",
+        "contributionrate",
+        "growthrate",
+        "yoyrate",
+    )
+    normalized = [
+        "".join(character for character in column if character.isalnum()).casefold()
+        for column in columns
+    ]
+    for name in preferred:
+        if name in normalized:
+            return normalized.index(name)
+    return None
+
+
+def _project_tabular_finding(finding: Mapping[str, Any], *, row_limit: int) -> dict[str, Any]:
+    columns = list(finding["columns"])
+    rows = [list(row) for row in finding["rows"]]
+    rank_index = _summary_rank_column(columns, rows)
+    if rank_index is None:
+        leading = (row_limit + 1) // 2
+        selected_indices = set(range(min(leading, len(rows))))
+        selected_indices.update(range(max(leading, len(rows) - row_limit // 2), len(rows)))
+    else:
+        ranked = [
+            (index, row[rank_index])
+            for index, row in enumerate(rows)
+            if rank_index < len(row)
+            and isinstance(row[rank_index], (int, float))
+            and not isinstance(row[rank_index], bool)
+            and math.isfinite(float(row[rank_index]))
+        ]
+        positive = sorted(
+            (item for item in ranked if item[1] >= 0), key=lambda item: (-item[1], item[0])
+        )
+        negative = sorted(
+            (item for item in ranked if item[1] < 0), key=lambda item: (item[1], item[0])
+        )
+        selected_indices = {index for index, _value in positive[: (row_limit + 1) // 2]}
+        selected_indices.update(index for index, _value in negative[: row_limit // 2])
+        for index, _value in sorted(ranked, key=lambda item: (-abs(item[1]), item[0])):
+            if len(selected_indices) >= row_limit:
+                break
+            selected_indices.add(index)
+
+    ordered_indices = sorted(selected_indices)
+    omitted_indices = [index for index in range(len(rows)) if index not in selected_indices]
+    omitted_numeric_sums: dict[str, int | float] = {}
+    for column_index, column in enumerate(columns):
+        numeric_values = [
+            row[column_index]
+            for index in omitted_indices
+            if column_index < len(rows[index])
+            for row in (rows[index],)
+            if isinstance(row[column_index], (int, float))
+            and not isinstance(row[column_index], bool)
+            and math.isfinite(float(row[column_index]))
+        ]
+        if numeric_values:
+            if all(isinstance(value, int) for value in numeric_values):
+                omitted_numeric_sums[column] = sum(numeric_values)
+            else:
+                total = math.fsum(float(value) for value in numeric_values)
+                omitted_numeric_sums[column] = int(total) if total.is_integer() else total
+
+    return {
+        **{key: deepcopy(value) for key, value in finding.items() if key != "rows"},
+        "rows": [rows[index] for index in ordered_indices],
+        "view": {
+            "format": "ranked_extremes" if rank_index is not None else "head_tail",
+            "truncated": bool(omitted_indices),
+            "rowCount": len(rows),
+            "selectedRowCount": len(ordered_indices),
+            "omittedRowCount": len(omitted_indices),
+            "rankColumn": columns[rank_index] if rank_index is not None else None,
+            "omittedNumericSums": omitted_numeric_sums,
+        },
+    }
+
+
+def _project_analysis_summary_payload(
+    payload: Mapping[str, Any],
+    *,
+    max_tokens: int,
+    count_tokens: Callable[[Mapping[str, Any]], int],
+) -> dict[str, Any]:
+    """只投影摘要模型输入；完整 evidence 文件和 durable 状态保持不变。"""
+
+    original = deepcopy(dict(payload))
+    original_tokens = count_tokens(original)
+    if original_tokens <= max_tokens:
+        return original
+    raw_evidence = original.get("supplementalEvidence")
+    if not isinstance(raw_evidence, Mapping):
+        raise ReportingError(
+            "report_analysis_summary_context_too_large",
+            "单项分析摘要基础事实超过模型输入预算。",
+            details={"inputTokens": original_tokens, "inputTokenBudget": max_tokens},
+        )
+    raw_findings = raw_evidence.get("findings")
+    if not isinstance(raw_findings, list):
+        raw_findings = list(raw_findings) if isinstance(raw_findings, tuple) else []
+    candidates = [
+        index
+        for index, finding in enumerate(raw_findings)
+        if isinstance(finding, Mapping)
+        and isinstance(finding.get("columns"), (list, tuple))
+        and isinstance(finding.get("rows"), (list, tuple))
+        and len(finding["rows"]) > 2
+    ]
+    candidates.sort(
+        key=lambda index: len(
+            json.dumps(raw_findings[index], ensure_ascii=False, separators=(",", ":"))
+        ),
+        reverse=True,
+    )
+
+    projected_indices: set[int] = set()
+    row_limit = MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS
+
+    def build() -> dict[str, Any]:
+        evidence = deepcopy(dict(raw_evidence))
+        evidence["findings"] = [
+            _project_tabular_finding(finding, row_limit=row_limit)
+            if index in projected_indices and isinstance(finding, Mapping)
+            else deepcopy(finding)
+            for index, finding in enumerate(raw_findings)
+        ]
+        evidence["sourceFile"] = deepcopy(original.get("supplementalEvidenceSource"))
+        evidence["projection"] = {
+            "projected": True,
+            "originalFindingCount": len(raw_findings),
+            "projectedFindingCount": len(projected_indices),
+        }
+        return {**original, "supplementalEvidence": evidence}
+
+    for index in candidates:
+        projected_indices.add(index)
+        candidate = build()
+        if count_tokens(candidate) <= max_tokens:
+            return candidate
+    while projected_indices and row_limit > 2:
+        row_limit = max(2, row_limit // 2)
+        candidate = build()
+        if count_tokens(candidate) <= max_tokens:
+            return candidate
+    candidate = build()
+    projected_tokens = count_tokens(candidate)
+    if projected_tokens <= max_tokens:
+        return candidate
+    raise ReportingError(
+        "report_analysis_summary_context_too_large",
+        "单项分析摘要在保留证据身份和守恒汇总后仍超过模型输入预算。",
+        details={
+            "inputTokens": original_tokens,
+            "projectedTokens": projected_tokens,
+            "inputTokenBudget": max_tokens,
+            "projectedFindingCount": len(projected_indices),
+        },
+    )
 
 
 PlanEvidence = Callable[..., Awaitable[AnalysisEvidencePlan]]
@@ -208,6 +409,7 @@ class _AnalysisItemState:
     facts: DeterministicAnalysisBundle | None = None
     plan: AnalysisEvidencePlan | None = None
     evidence: SupplementalEvidence | None = None
+    evidence_file: FileIdentity | None = None
     recovery: _DurableAnalysisCompletion | None = None
     script_sha256: str | None = None
     failure: Exception | None = None
@@ -376,21 +578,26 @@ class AnalysisItemWorkflow:
             stage_name,
             state.instruction.get("currentAnalysisId"),
         )
+        interrupted = False
         try:
             output = await operation
-        except Exception as error:
+        except BaseException as error:
+            if not isinstance(error, Exception):
+                interrupted = True
+                raise
             state.failure = error
             state.statuses[stage_name] = "failed"
             raise
         finally:
-            logger.info(
-                "report_analysis_item_stage_completed stage_name={} analysis_id={} "
-                "status={} duration_ms={}",
-                stage_name,
-                state.instruction.get("currentAnalysisId"),
-                state.statuses[stage_name],
-                max(0, round((perf_counter() - started_at) * 1000)),
-            )
+            if not interrupted:
+                logger.info(
+                    "report_analysis_item_stage_completed stage_name={} analysis_id={} "
+                    "status={} duration_ms={}",
+                    stage_name,
+                    state.instruction.get("currentAnalysisId"),
+                    state.statuses[stage_name],
+                    max(0, round((perf_counter() - started_at) * 1000)),
+                )
         return output
 
     async def _read_facts(self, state: _AnalysisItemState, run_context: RunContext) -> StepOutput:
@@ -547,13 +754,26 @@ class AnalysisItemWorkflow:
         try:
             self._require_ok(write, default_code="report_analysis_script_write_failed")
             artifacts = write.get("artifacts")
-            identity = artifacts[0] if isinstance(artifacts, list) and artifacts else None
-            sha256 = identity.get("sha256") if isinstance(identity, Mapping) else None
-            if not isinstance(sha256, str):
+            if not isinstance(artifacts, list) or len(artifacts) != 1:
                 raise ReportingError(
-                    "report_analysis_script_write_failed", "补充分析脚本缺少写入身份回执。"
+                    "report_analysis_script_write_failed",
+                    "补充分析脚本必须返回唯一写入身份回执。",
                 )
-            state.script_sha256 = sha256
+            try:
+                identity = FileIdentity.model_validate(artifacts[0])
+            except Exception as error:
+                raise ReportingError(
+                    "report_analysis_script_write_failed",
+                    "补充分析脚本写入身份回执无效。",
+                ) from error
+            # 脚本路径由服务端基于 analysisOutputRoot 签发；写入工具即使返回成功，
+            # 也不能用另一路径的文件身份替换该签发对象后继续执行。
+            if identity.path != script_path:
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "补充分析脚本写入回执路径与签发路径不一致。",
+                )
+            state.script_sha256 = identity.sha256
             execution = await self.run_script(script_path=script_path, run_context=run_context)
             exit_code = execution.get("exitCode", execution.get("exit_code"))
             if execution.get("ok") is False or exit_code != 0:
@@ -571,13 +791,14 @@ class AnalysisItemWorkflow:
                 )
         except ReportingError as error:
             if error.code == "report_analysis_script_failed" and isinstance(error.details, Mapping):
-                logger.error(
+                output = str(error.details.get("output") or "")
+                logger.warning(
                     "report_analysis_script_execution_failed analysis_id={} exit_code={} "
-                    "output_truncated={} output={}",
+                    "output_truncated={} output_bytes={}",
                     state.instruction.get("currentAnalysisId"),
                     error.details.get("exitCode"),
                     error.details.get("outputTruncated"),
-                    error.details.get("output"),
+                    len(output.encode("utf-8")),
                 )
             state.failure = error
             state.evidence = None
@@ -653,28 +874,59 @@ class AnalysisItemWorkflow:
                     "report_analysis_evidence_dataset_mismatch",
                     "补充 evidence 未精确绑定当前分析项 Dataset。",
                 )
+        except ValidationError as error:
+            rejection = ReportingError(
+                "report_analysis_evidence_schema_invalid",
+                "补充 evidence 不符合机器结构契约。",
+                details={
+                    "issues": error.errors(
+                        include_url=False,
+                        include_context=False,
+                        include_input=False,
+                    ),
+                },
+            )
+            state.evidence = None
+            state.evidence_file = None
+            state.failure = rejection
+            logger.warning(
+                "report_analysis_evidence_validation_rejected analysis_id={} code={}",
+                state.instruction.get("currentAnalysisId"),
+                rejection.code,
+            )
+            if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
+                state.statuses["validate-evidence"] = "completed"
+                return self._abandon_supplement(state)
+            state.statuses["validate-evidence"] = "retrying"
+            return StepOutput(content={"status": "retry", "code": rejection.code})
         except ReportingError as error:
             state.evidence = None
-            state.warnings.append(f"{error.code}: {error.message}")
+            state.evidence_file = None
+            state.failure = error
             logger.warning(
-                "report_analysis_evidence_validation_warning analysis_id={} code={}",
+                "report_analysis_evidence_validation_rejected analysis_id={} code={}",
                 state.instruction.get("currentAnalysisId"),
                 error.code,
             )
-            state.statuses["validate-evidence"] = "completed"
-            return StepOutput(content={"status": "warning", "code": error.code})
-        except Exception:
-            warning_code = "report_analysis_evidence_reconciliation_failed"
-            state.evidence = None
-            state.warnings.append(f"{warning_code}: 补充 evidence 结构无效或对账未通过。")
-            logger.warning(
-                "report_analysis_evidence_validation_warning analysis_id={} code={}",
-                state.instruction.get("currentAnalysisId"),
-                warning_code,
-            )
-            state.statuses["validate-evidence"] = "completed"
-            return StepOutput(content={"status": "warning", "code": warning_code})
+            if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
+                state.statuses["validate-evidence"] = "completed"
+                return self._abandon_supplement(state)
+            state.statuses["validate-evidence"] = "retrying"
+            return StepOutput(content={"status": "retry", "code": error.code})
         state.evidence = evidence
+        failed_reconciliations = [
+            str(item["name"]) for item in evidence.reconciliations if item["passed"] is False
+        ]
+        if failed_reconciliations:
+            state.warnings.append(
+                "report_analysis_evidence_reconciliation_warning: "
+                f"补充 evidence 业务对账未通过：{'、'.join(failed_reconciliations)}。"
+            )
+            logger.warning(
+                "report_analysis_evidence_reconciliation_warning analysis_id={} failed_count={}",
+                state.instruction.get("currentAnalysisId"),
+                len(failed_reconciliations),
+            )
         state.statuses["validate-evidence"] = "completed"
         return StepOutput(
             content={"status": "validated", "evidencePath": self._evidence_path(state)}
@@ -744,6 +996,16 @@ class AnalysisItemWorkflow:
                 "report_analysis_evidence_changed",
                 "补充 evidence 完整读取长度与冻结大小不一致。",
             )
+        if sha256 is None:
+            raise ReportingError(
+                "report_analysis_evidence_changed",
+                "补充 evidence 文件缺少冻结摘要。",
+            )
+        state.evidence_file = FileIdentity(
+            path=self._evidence_path(state),
+            size=total_bytes,
+            sha256=sha256,
+        )
         return joined
 
     @staticmethod
@@ -783,6 +1045,11 @@ class AnalysisItemWorkflow:
                 if state.evidence is not None
                 else None
             ),
+            "supplementalEvidenceSource": (
+                state.evidence_file.model_dump(mode="json", by_alias=True)
+                if state.evidence is not None and state.evidence_file is not None
+                else None
+            ),
             "reviewFeedback": state.instruction.get("reviewFeedback"),
             "analysisReworkRequest": state.instruction.get("analysisReworkRequest"),
             "evidenceWarnings": list(state.warnings),
@@ -816,7 +1083,7 @@ class AnalysisItemWorkflow:
 
     @staticmethod
     def _require_ok(result: Mapping[str, Any], *, default_code: str) -> None:
-        # 底层 terminal 成功回执历史上没有统一 ok 字段；明确的 false 才是拒绝。
+        # 执行端口的成功回执可能不含统一 ok 字段；明确的 false 才是拒绝。
         if result.get("ok") is not False:
             return
         raise ReportingError(

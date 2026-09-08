@@ -958,6 +958,26 @@ class RuntimePlanningMixin:
         state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
         state[REPORT_OUTLINE_HASH_STATE_KEY] = _payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
         self._assert_state_safe(state)
+        logger.info(
+            "report_outline_planned outline={}",
+            json.dumps(
+                {
+                    "reportTitle": outline.title,
+                    "sectionCount": len(outline.sections),
+                    "sections": [
+                        {
+                            "sectionNumber": section.section_number,
+                            "sectionCode": section.code,
+                            "title": section.title,
+                            "analysisCount": len(section.analysis_ids),
+                        }
+                        for section in outline.sections
+                    ],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         return StepOutput(content=outline)
 
     @staticmethod
@@ -1059,10 +1079,10 @@ class RuntimePlanningMixin:
                             " requirementIds 删除失效引用"
                         )
                 payload["correction"] = correction
-                logger.info(
-                    "report_planner_correction agent_id=%s attempt=%s "
-                    "previous_output_sha256=%s allowed_mutation_paths=%s "
-                    "required_deletion_paths=%s issue_signature=%s",
+                logger.debug(
+                    "report_planner_correction agent_id={} attempt={} "
+                    "previous_output_sha256={} allowed_mutation_paths={} "
+                    "required_deletion_paths={} issue_signature={}",
                     getattr(self._analysis_agent, "id", "report-analysis-planner"),
                     attempt,
                     _payload_sha256(previous_output) if previous_output is not None else "none",
@@ -1102,8 +1122,8 @@ class RuntimePlanningMixin:
             normalized_output, column_repairs = _normalize_requirement_columns(output, snapshots)
             if column_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_columns_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_columns_normalized repairs={}",
                     json.dumps(column_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1114,8 +1134,8 @@ class RuntimePlanningMixin:
             )
             if period_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_periods_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_periods_normalized repairs={}",
                     json.dumps(period_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1148,7 +1168,7 @@ class RuntimePlanningMixin:
                         tuple(unexpected_paths),
                     )
                     output = AnalysisBundle.model_validate(output_payload)
-                    loguru_logger.info(
+                    loguru_logger.debug(
                         "report_planner_correction_scope_normalized agent_id={} attempt={} "
                         "restored_paths={}",
                         getattr(self._analysis_agent, "id", "report-analysis-planner"),
@@ -1160,8 +1180,8 @@ class RuntimePlanningMixin:
             )
             if split_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_unsafe_multi_table_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_unsafe_multi_table_normalized repairs={}",
                     json.dumps(split_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1171,9 +1191,9 @@ class RuntimePlanningMixin:
             )
             if grain_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_grain_normalized agent_id=%s before_sha256=%s "
-                    "after_sha256=%s repairs=%s",
+                logger.debug(
+                    "report_planner_grain_normalized agent_id={} before_sha256={} "
+                    "after_sha256={} repairs={}",
                     getattr(self._analysis_agent, "id", "report-analysis-planner"),
                     _payload_sha256(output_payload),
                     _payload_sha256(normalized_payload),
@@ -1184,8 +1204,8 @@ class RuntimePlanningMixin:
             normalized_output, requirement_repairs = _normalize_duplicate_requirements(output)
             if requirement_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_requirements_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_requirements_normalized repairs={}",
                     json.dumps(requirement_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1195,8 +1215,8 @@ class RuntimePlanningMixin:
             )
             if comparison_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.info(
-                    "report_planner_comparison_roles_normalized repairs=%s",
+                logger.debug(
+                    "report_planner_comparison_roles_normalized repairs={}",
                     json.dumps(comparison_repairs, ensure_ascii=False, separators=(",", ":")),
                 )
                 output = normalized_output
@@ -1222,8 +1242,8 @@ class RuntimePlanningMixin:
                 )
                 if correction_signature == last_semantic_correction_signature:
                     logger.warning(
-                        "report_planner_no_progress agent_id=%s attempt=%s "
-                        "output_sha256=%s issue_signature=%s",
+                        "report_planner_no_progress agent_id={} attempt={} "
+                        "output_sha256={} issue_signature={}",
                         getattr(self._analysis_agent, "id", "report-analysis-planner"),
                         attempt,
                         _payload_sha256(output_payload),

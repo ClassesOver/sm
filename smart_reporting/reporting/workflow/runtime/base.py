@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -218,7 +217,7 @@ from .models import (
     _StrictModel,
 )
 
-logger = logging.getLogger(__name__)
+logger = loguru_logger
 
 # 显式期间模式最多为每个需求生成 current、yoy、mom 三条唯一窗口查询；
 # 与物化批次的 100 条硬上限保持一致，防止模型输出服务端必然无法完整审批的需求数。
@@ -653,11 +652,13 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-summary-writer",
             AnalysisSummaryDraft,
-            thinking_profile=planner_high,
-            escalation_thinking_profile=planner_max,
+            thinking_profile=planner_off,
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
                 "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
+                "supplementalEvidence.findings[].view.truncated 为 true 时 rows 只是投影视图，不得当作完整明细；format=ranked_extremes 表示变化指标正负两端极值，format=head_tail 表示原始顺序首尾。",
+                "omittedNumericSums 只汇总未进入 rows 的有限数值，不是全量总值。",
+                "完整总量等于 rows 数值与 omittedNumericSums 之和；原始行数以 view.rowCount 为准，完整文件身份以 sourceFile 为准。",
                 "supplementalEvidence 为 null 且 evidenceWarnings 声明补证已放弃时，只能使用 deterministicFacts；不得声称缺失事实已经验证。",
                 "summary 使用可直接进入报告的中文业务表述，不使用 Markdown 标题；warnings 只保留会影响结论解释的事实限制。",
             ),
@@ -797,7 +798,7 @@ class _ReportWorkflowRuntimeBase:
                     )[:10]
                     diagnostic = ", ".join(issue_codes) or "unknown"
                     logger.warning(
-                        "report_publication_blocked issue_codes=%s issue_count=%d",
+                        "report_publication_blocked issue_codes={} issue_count={}",
                         diagnostic,
                         len(raw_issues) if isinstance(raw_issues, list) else 0,
                     )
@@ -880,9 +881,9 @@ class _ReportWorkflowRuntimeBase:
         )
         input_bytes = serialized_payload.encode()
         input_sha256 = hashlib.sha256(input_bytes).hexdigest()
-        logger.info(
-            "report_planner_request agent_id=%s block_id=%s attempt=%s "
-            "input_bytes=%s input_sha256=%s",
+        logger.debug(
+            "report_planner_request agent_id={} block_id={} attempt={} "
+            "input_bytes={} input_sha256={}",
             agent.id,
             session_suffix or "-",
             (
@@ -916,7 +917,7 @@ class _ReportWorkflowRuntimeBase:
                 input_token_hard_cap=hard_limit_metrics.get("input_token_hard_cap", 0),
                 tool_schema_bytes=hard_limit_metrics.get("tool_schema_bytes", 0),
                 response_format_bytes=hard_limit_metrics.get("response_format_bytes", 0),
-            ).warning("report_planner_context_hard_limit_exceeded")
+            ).debug("report_planner_context_hard_limit_exceeded")
             raise ReportingError(
                 "report_planner_context_budget_exceeded",
                 f"报表规划输入的不可约简上下文超过当前模型输入预算（{agent.id}）。",
@@ -929,11 +930,11 @@ class _ReportWorkflowRuntimeBase:
         metrics = getattr(output, "metrics", None)
         record_step_model_metrics(metrics)
         content_bytes = _payload_bytes(content)
-        logger.info(
-            "report_planner_response agent_id=%s input_sha256=%s output_bytes=%s "
-            "output_sha256=%s input_tokens=%s output_tokens=%s total_tokens=%s "
-            "reasoning_tokens=%s cache_read_tokens=%s cache_write_tokens=%s "
-            "duration=%s time_to_first_token=%s",
+        logger.debug(
+            "report_planner_response agent_id={} input_sha256={} output_bytes={} "
+            "output_sha256={} input_tokens={} output_tokens={} total_tokens={} "
+            "reasoning_tokens={} cache_read_tokens={} cache_write_tokens={} "
+            "duration={} time_to_first_token={}",
             agent.id,
             input_sha256,
             len(content_bytes),

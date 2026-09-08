@@ -27,7 +27,6 @@ class MockReportingWorkspace:
         self._outputs: dict[str, bytes] = {}
         self.output_policy = output_policy
         self.calls: list[dict[str, Any]] = []
-        self._sessions: dict[str, bool] = {}
 
     @staticmethod
     def _normalize(path: str) -> str:
@@ -92,52 +91,16 @@ class MockReportingWorkspace:
 
     async def execute_script(
         self,
-        command: str,
+        script_path: str,
         *,
         timeout: int,
-        workdir: str | None = None,
-        background: bool = False,
     ) -> Mapping[str, Any]:
         if timeout < 1:
             raise ReportingWorkspaceError("Reporting 脚本执行超时。")
-        call = {
-            "operation": "execute_script",
-            "command": command,
-            "timeout": timeout,
-            "workdir": workdir,
-            "background": background,
-        }
-        self.calls.append(call)
-        if background:
-            session_id = f"mock-session-{len(self._sessions) + 1}"
-            self._sessions[session_id] = False
-            return {"ok": True, "status": "running", "session_id": session_id}
-        return {"ok": True, "status": "completed", "exit_code": 0}
-
-    async def send_process_input(
-        self,
-        session_id: str,
-        data: str,
-        *,
-        submit: bool,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        if session_id not in self._sessions:
-            raise ReportingWorkspaceError("Reporting process session 不属于当前 runtime。")
-        if self._sessions[session_id]:
-            raise ReportingWorkspaceError("Reporting process session 已提交。")
         self.calls.append(
-            {
-                "operation": "send_process_input",
-                "session_id": session_id,
-                "data": data,
-                "submit": submit,
-                "timeout": timeout,
-            }
+            {"operation": "execute_script", "script_path": script_path, "timeout": timeout}
         )
-        if submit:
-            self._sessions[session_id] = True
-        return {"ok": True, "status": "submitted" if submit else "written"}
+        return {"ok": True, "status": "completed", "exitCode": 0, "exit_code": 0}
 
 
 class MockReportingToolRuntime:
