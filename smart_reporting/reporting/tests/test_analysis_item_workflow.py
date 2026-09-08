@@ -677,26 +677,6 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
             },
             "report_analysis_evidence_schema_invalid",
         ),
-        (
-            {
-                "analysisId": "analysis_001",
-                "datasetIds": ["dataset-other"],
-                "findings": [{"name": "收入构成", "value": 80}],
-                "reconciliations": [{"name": "收入构成对账", "passed": True}],
-                "warnings": [],
-            },
-            "report_analysis_evidence_dataset_mismatch",
-        ),
-        (
-            {
-                "analysisId": "analysis_999",
-                "datasetIds": ["dataset-1"],
-                "findings": [{"name": "收入构成", "value": 80}],
-                "reconciliations": [{"name": "收入构成对账", "passed": True}],
-                "warnings": [],
-            },
-            "report_analysis_evidence_identity_mismatch",
-        ),
     ),
 )
 @pytest.mark.anyio
@@ -763,6 +743,52 @@ async def test_analysis_item_workflow_repairs_invalid_evidence_once(
     assert workflow.complete.await_args.kwargs["evidencePaths"] == [
         "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
     ]
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_binds_evidence_identity_to_current_analysis() -> None:
+    model_evidence = json.dumps(
+        {
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账", "passed": True}],
+            "warnings": [],
+        }
+    )
+    plans: list[bool] = []
+
+    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
+        plans.append(repair)
+        return AnalysisEvidencePlan(
+            requiresSupplementalEvidence=True,
+            reason="缺少收入构成",
+            missingFacts=("收入构成",),
+            script="print('initial')",
+        )
+
+    summarize = AsyncMock(
+        return_value=AnalysisSummaryDraft(summary="补充证据验证完成。", warnings=())
+    )
+    workflow = AnalysisItemWorkflow(
+        plan_evidence=plan,
+        summarize=summarize,
+        read_file=AsyncMock(
+            side_effect=[_facts_read_result(), _tool_result(content=model_evidence, sha256="d" * 64)]
+        ),
+        apply_patch=AsyncMock(return_value=_tool_result(artifacts=[_script_identity("b" * 64)])),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
+
+    assert plans == [False]
+    assert workflow.run_script.await_count == 1
+    workflow.apply_patch.assert_awaited_once()
+    evidence = summarize.await_args.args[0]["supplementalEvidence"]
+    assert evidence["analysisId"] == "analysis_001"
+    assert evidence["datasetIds"] == ["dataset-1"]
+    assert evidence["findings"] == [{"name": "收入构成", "value": 80}]
+    assert evidence["reconciliations"] == [{"name": "收入构成对账", "passed": True}]
 
 
 @pytest.mark.anyio

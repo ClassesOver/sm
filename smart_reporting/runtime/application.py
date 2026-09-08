@@ -4,8 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from agno.agent import Agent, AgentFactory, RemoteAgent
-from agno.agent.protocol import AgentProtocol
+from agno.agent import Agent
 from agno.os import AgentOS
 from agno.os.config import MCPServerConfig
 from fastapi import FastAPI
@@ -55,16 +54,10 @@ def create_agentos_app(
                     pass
             await context.workspace_service.aclose()
 
-    agents: list[Agent | RemoteAgent | AgentProtocol | AgentFactory] = [context.report_agent]
-    if context.report_agent.id == "smart-reporting":
-        # 旧 ID 已用于 AgentOS 路由和持久化 session。保留同能力别名，确保升级前
-        # 暂停的 run 仍能通过原入口恢复；新请求继续以 smart-reporting 为主入口。
-        agents.append(context.report_agent.deep_copy(update={"id": "report-agent"}))
-
     agent_os = AgentOS(
         name="开发智能体服务",
         # Coding 暂不通过综合服务对外提供。
-        agents=agents,
+        agents=[context.report_agent],
         teams=[],
         # Reporting Workflow 只能由 smart-reporting facade 驱动。原生 Workflow
         # 路由无法覆盖 facade 的 thread 所有权和终态清理契约，因此不直接注册。

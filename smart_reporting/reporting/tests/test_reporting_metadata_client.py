@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -22,6 +23,39 @@ from smart_reporting.reporting.models import ReportingError
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_query_agent_filters_response_by_default_agent_id() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "agent_list": [
+                    {"id": 2, "name": "其他 Agent", "desc": ""},
+                    {"id": 1, "name": "报表 Agent", "desc": ""},
+                ]
+            },
+            request=request,
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://metadata.internal",
+        transport=httpx.MockTransport(respond),
+    )
+    metadata = ReportingMetadataClient(
+        "https://metadata.internal",
+        client_factory=lambda: client,
+    )
+
+    result = await metadata.query_agent(agent_id=1)
+
+    await client.aclose()
+    assert result.code == "1"
+    assert requests == [{}]
 
 
 @pytest.mark.anyio

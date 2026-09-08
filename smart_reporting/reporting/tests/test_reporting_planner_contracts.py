@@ -1976,6 +1976,11 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         "所有后续读取的局部变量" in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
+    assert any(
+        "只含 findings、reconciliations、warnings" in instruction
+        and "不得输出 analysisId 或 datasetIds" in instruction
+        for instruction in runtime._analysis_script_agent.instructions
+    )
     assert all(
         "32000" not in instruction and "240 行" not in instruction
         for instruction in runtime._analysis_script_agent.instructions

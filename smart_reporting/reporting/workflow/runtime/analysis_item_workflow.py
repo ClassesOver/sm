@@ -15,7 +15,15 @@ from agno.run import RunContext
 from agno.workflow import Condition, Loop, Step, Steps
 from agno.workflow.types import StepInput, StepOutput
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from ....task_execution import MAX_READ_FILE_BYTES
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
@@ -861,19 +869,23 @@ class AnalysisItemWorkflow:
             return StepOutput(content={"status": "skipped_after_script_error"})
         try:
             content = await self._read_supplemental_evidence(state, run_context)
-            evidence = SupplementalEvidence.model_validate_json(content)
-            analysis_id = state.instruction.get("currentAnalysisId")
-            if evidence.analysis_id != analysis_id:
-                raise ReportingError(
-                    "report_analysis_evidence_identity_mismatch",
-                    "补充 evidence 与当前分析项身份不一致。",
-                )
-            expected = self._dataset_ids(state)
-            if set(evidence.dataset_ids) != set(expected):
-                raise ReportingError(
-                    "report_analysis_evidence_dataset_mismatch",
-                    "补充 evidence 未精确绑定当前分析项 Dataset。",
-                )
+            evidence_payload = TypeAdapter(dict[str, Any]).validate_json(content)
+            evidence_payload.pop("analysisId", None)
+            evidence_payload.pop("analysis_id", None)
+            evidence_payload.pop("datasetIds", None)
+            evidence_payload.pop("dataset_ids", None)
+            current_analysis = state.instruction.get("currentAnalysis")
+            evidence = SupplementalEvidence.model_validate(
+                {
+                    **evidence_payload,
+                    "analysisId": (
+                        current_analysis.get("analysisId")
+                        if isinstance(current_analysis, Mapping)
+                        else None
+                    ),
+                    "datasetIds": self._dataset_ids(state),
+                }
+            )
         except ValidationError as error:
             rejection = ReportingError(
                 "report_analysis_evidence_schema_invalid",

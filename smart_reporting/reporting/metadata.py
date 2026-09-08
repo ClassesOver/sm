@@ -60,14 +60,15 @@ class ReportingMetadataClient:
         if port is not None:
             self.log_target = f"{self.log_target}:{port}"
 
-    async def query_agent(self) -> ReportingAgent:
+    async def query_agent(self, *, agent_id: int = 1) -> ReportingAgent:
         payload = await self._post("/get_agent_json", {})
         response = self._validate(MetadataAgentResponse, payload, "report_metadata_agents_invalid")
-        if len(response.agent_list) != 1:
+        matching_agents = tuple(item for item in response.agent_list if item.id == agent_id)
+        if len(matching_agents) != 1:
             raise ReportingError(
                 "report_metadata_agents_invalid", "Reporting metadata 必须唯一配置一个 Agent。"
             )
-        item = response.agent_list[0]
+        item = matching_agents[0]
         return ReportingAgent(
             code=str(item.id),
             name=item.name,

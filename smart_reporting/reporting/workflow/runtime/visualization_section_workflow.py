@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agno.run import RunContext
+from loguru import logger
 
 from ...models import ReportingError
 from ...phase import reporting_python_script_failed
@@ -46,6 +47,31 @@ def _recovery_diagnostic(error: Exception) -> dict[str, Any]:
         if isinstance(error.details, Mapping):
             diagnostic["details"] = dict(error.details)
     return diagnostic
+
+
+def _missing_chart_file_recovery(
+    draft: VisualizationScriptDraft, error: ReportingError
+) -> dict[str, Any]:
+    """仅向恢复模型交付缺失图表定位信息，不重复携带脚本源码。"""
+
+    diagnostic = _recovery_diagnostic(error)
+    diagnostic.pop("details", None)
+    receipt = error.details if isinstance(error.details, Mapping) else {}
+    details = receipt.get("details") if isinstance(receipt, Mapping) else None
+    source_path = details.get("sourcePath") if isinstance(details, Mapping) else None
+    missing_charts: list[dict[str, str]] = []
+    if isinstance(source_path, str):
+        diagnostic["details"] = {"sourcePath": source_path}
+        missing_charts = [
+            {
+                "chartId": chart.chart_id,
+                "sourcePath": chart.source_path,
+                "title": chart.title,
+            }
+            for chart in draft.charts
+            if chart.source_path == source_path
+        ]
+    return {"diagnostic": diagnostic, "missingCharts": missing_charts}
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,9 +173,21 @@ class VisualizationSectionWorkflow:
                         )
                 receipt = await self.submit(draft, inspections, run_context)
                 if receipt.get("status") not in {"accepted", "committed", "already_committed"}:
+                    rejection_code = receipt.get("code")
+                    code = (
+                        rejection_code
+                        if isinstance(rejection_code, str)
+                        else "report_visualization_submit_rejected"
+                    )
+                    message = receipt.get("message")
+                    logger.bind(rejection_code=code).warning(
+                        "report_visualization_submission_rejected"
+                    )
                     raise ReportingError(
-                        "report_visualization_submit_rejected",
-                        "图表提交未被服务端接受。",
+                        code,
+                        message
+                        if isinstance(message, str)
+                        else "图表提交未被服务端接受。",
                         details=dict(receipt),
                     )
                 return VisualizationWorkflowResult(
@@ -161,8 +199,18 @@ class VisualizationSectionWorkflow:
                 if attempt == 1 or self.recover is None:
                     raise
                 recovery_used = True
-                repair: dict[str, Any] = {"diagnostic": _recovery_diagnostic(error)}
-                if draft is not None:
+                if (
+                    draft is not None
+                    and isinstance(error, ReportingError)
+                    and error.code == "report_chart_file_missing"
+                ):
+                    repair = _missing_chart_file_recovery(draft, error)
+                else:
+                    repair = {"diagnostic": _recovery_diagnostic(error)}
+                if draft is not None and not (
+                    isinstance(error, ReportingError)
+                    and error.code == "report_chart_file_missing"
+                ):
                     repair["draft"] = draft.model_dump(mode="json", by_alias=True)
                 draft = await self.recover(
                     repair,

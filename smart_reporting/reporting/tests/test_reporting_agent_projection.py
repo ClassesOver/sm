@@ -9,6 +9,7 @@ from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_messages,
     _phase_filtered_report_tools,
+    _reporting_tools_cache_key,
     _visualization_history_state,
     normalize_reporting_tool_arguments,
 )
@@ -297,6 +298,12 @@ def test_unknown_task_kind_is_not_projected() -> None:
     assert reporting_task_kind_from_acceptance_contract(contract) is None
 
 
+def test_phase_agent_tool_cache_uses_smart_reporting_identity() -> None:
+    assert _reporting_tools_cache_key(_context("analysis", "analysis_item")) == (
+        "smart-reporting:session-analysis_item:run-analysis_item:analysis:analysis_item"
+    )
+
+
 def test_visualization_instructions_require_section_submission() -> None:
     instructions = "\n".join(
         build_report_agent_instructions(_context("analysis", "visualization_section"))
@@ -305,6 +312,13 @@ def test_visualization_instructions_require_section_submission() -> None:
     assert "章节" in instructions
     assert "reportVisualTheme" in instructions
     assert "颜色不得成为唯一信息通道" in instructions
+
+
+def test_section_instructions_require_h3_before_h4() -> None:
+    instructions = "\n".join(build_report_agent_instructions(_context("section", "section")))
+
+    assert "每个 block 的首个子标题必须是三级标题" in instructions
+    assert "四级标题只能出现在已有三级标题之后" in instructions
 
 
 def test_visualization_instruction_theme_projects_report_theme() -> None:

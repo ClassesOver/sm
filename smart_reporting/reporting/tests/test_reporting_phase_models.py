@@ -33,7 +33,13 @@ def _chart(path: str = "report/charts/chart-001.png") -> ChartDraft:
 def test_visualization_script_draft_accepts_bound_chart_paths() -> None:
     draft = VisualizationScriptDraft(
         scriptPath="report/charts/charts.py",
-        pythonSource="print('ok')",
+        pythonSource=(
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.plot([1, 2], [3, 4])\n"
+            "plt.savefig('report/charts/chart-001.png')\n"
+        ),
         charts=(_chart(),),
     )
     assert draft.charts[0].chart_id == "chart_001"
@@ -64,6 +70,77 @@ def test_visualization_script_draft_reports_python_syntax_location() -> None:
     ],
 )
 def test_visualization_script_draft_rejects_workflow_or_runtime_placeholders(
+    python_source: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        VisualizationScriptDraft(
+            scriptPath="report/charts/charts.py",
+            pythonSource=python_source,
+            charts=(_chart(),),
+        )
+
+
+@pytest.mark.parametrize(
+    "python_source",
+    [
+        "import plotly.express as px\npx.bar(x=[1], y=[2])",
+        (
+            "import matplotlib\n"
+            "import matplotlib.pyplot as plt\n"
+            "matplotlib.use('Agg')\n"
+            "plt.savefig('report/charts/chart-001.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "figure = plt.figure()\n"
+            "figure.write_image('report/charts/chart-001.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.plot([1, 2], [3, 4])\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "obj.savefig('report/charts/chart-001.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "def configure_backend():\n"
+            "    matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.savefig('report/charts/chart-001.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "import importlib\n"
+            "importlib.import_module('seaborn')\n"
+            "plt.savefig('report/charts/chart-001.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "__import__('plotly')\n"
+            "plt.savefig('report/charts/chart-001.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "if True:\n"
+            "    import matplotlib.pyplot as early_plt\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.savefig('report/charts/chart-001.png')\n"
+        ),
+    ],
+)
+def test_visualization_script_draft_enforces_matplotlib_rendering_contract(
     python_source: str,
 ) -> None:
     with pytest.raises(ValidationError):

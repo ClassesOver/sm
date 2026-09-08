@@ -2106,7 +2106,7 @@ def _reporting_tools_cache_key(run_context: RunContext) -> str:
     task_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
     phase = reporting_phase_from_run_context(run_context) or "unbound"
     task_kind = reporting_task_kind_from_run_context(run_context) or "unbound"
-    return f"report-agent:{identity}:{task_id or run_context.run_id}:{phase}:{task_kind}"
+    return f"smart-reporting:{identity}:{task_id or run_context.run_id}:{phase}:{task_kind}"
 
 
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
@@ -3078,7 +3078,7 @@ def create_reporting_phase_agent(
         else None
     )
     agent = Agent(
-        id="report-agent",
+        id="smart-reporting",
         name="智能报表 Agent",
         role="根据已批准的分析计划和不可变数据集执行受控 Reporting 分析。",
         model=phase_model,
@@ -3166,6 +3166,11 @@ def create_reporting_generator_agent(
                     'facts 文件中 metrics[].periodValues 的每个元素固定为 {"period": string,'
                     '"value": number}；必须读取 period，不得使用 periodStart。'
                 ),
+                (
+                    "pythonSource 绘图只能使用 Matplotlib；必须在导入 matplotlib.pyplot 之前调用 "
+                    'matplotlib.use("Agg")，并统一使用 fig.savefig(...) 写入图表文件；'
+                    "禁止使用 Plotly、Kaleido 或 Seaborn。"
+                ),
             ]
         )
     elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
@@ -3209,7 +3214,7 @@ def create_report_agent(
     reporting_agent_template: Agent,
     controller: ReportWorkflowController,
 ) -> Agent:
-    """创建公开 facade；实际分析只由 Workflow 内的 report-agent 执行。"""
+    """创建公开 facade；实际分析只由 Workflow 内的 smart-reporting Agent 执行。"""
     if not isinstance(reporting_agent_template.model, ProjectedOpenAIChat):
         raise TypeError("Report facade requires ProjectedOpenAIChat")
     facade_model = _report_facade_model(reporting_agent_template.model)

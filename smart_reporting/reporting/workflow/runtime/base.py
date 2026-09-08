@@ -639,7 +639,9 @@ class _ReportWorkflowRuntimeBase:
                 "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
                 "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
                 "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得把 currentAnalysis.fields 或其他 Dataset 的字段用于该 CSV。",
-                "evidencePath 必须写为 JSON 对象，且只含 analysisId、datasetIds、findings、reconciliations、warnings；findings 至少一项，reconciliations 至少一项且每项含 name 和 passed。",
+                "evidencePath 必须写为 JSON 对象，且只含 findings、reconciliations、warnings；"
+                "analysisId 和 datasetIds 由固定 Workflow 注入，脚本不得输出 analysisId 或 datasetIds；"
+                "findings 至少一项，reconciliations 至少一项且每项含 name 和 passed。",
                 "表格型 finding 必须使用 name、columns、rows 列式结构：columns 只声明一次字段名，rows 使用等长值数组；不得输出重复字段名的对象行数组。",
                 "写入 evidencePath 时必须使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑编码；不得使用 indent，且不得删减任何已计算事实。",
                 "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
