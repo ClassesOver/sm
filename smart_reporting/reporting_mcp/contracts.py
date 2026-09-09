@@ -61,11 +61,17 @@ class ReportingArtifactLink(StrictModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class ReportingHtmlPreview(StrictModel):
+    preview_url: HttpUrl = Field(alias="previewUrl")
+    expires_at: datetime = Field(alias="expiresAt")
+
+
 class ReportingPublishedReport(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
     revision: int = Field(ge=0)
     pdf: ReportingArtifactLink
     word: ReportingArtifactLink
+    html: ReportingHtmlPreview
 
 
 class ReportingOperationResult(StrictModel):

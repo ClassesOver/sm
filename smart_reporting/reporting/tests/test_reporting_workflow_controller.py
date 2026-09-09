@@ -10,7 +10,7 @@ from agno.run.base import RunStatus
 
 import smart_reporting.reporting.workflow.controller as controller_module
 from smart_reporting.reporting.contract import ReportingWorkflowInput
-from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.models import ReportingError, ReportWorkflowControl
 from smart_reporting.reporting.workflow.controller import (
     REPORT_WORKFLOW_CONTROL_STATE_KEY,
     ReportWorkflowController,
@@ -210,6 +210,34 @@ async def test_external_background_start_returns_before_workflow_completes() -> 
         company_id="11",
     )
     assert completed == {"ok": True, "status": "completed"}
+
+
+def test_completed_external_result_preserves_html_preview() -> None:
+    output = SimpleNamespace(
+        content={
+            "reportId": "report-1",
+            "revision": 1,
+            "pdf": {"downloadUrl": "https://reports.example.com/report.pdf"},
+            "word": {"downloadUrl": "https://reports.example.com/report.docx"},
+            "html": {"previewUrl": "https://reports.example.com/report.html"},
+            "sourceWarnings": [],
+        }
+    )
+    control = ReportWorkflowControl(
+        workflowId="enterprise-reporting-workflow-v1",
+        workflowRunId="workflow-run-1",
+        workflowSessionId="workflow-session-1",
+        externalRunId="operation-1",
+        threadId="thread-1",
+        userId="7",
+        status="completed",
+    )
+
+    result = ReportWorkflowController._result(control, output)
+
+    assert result["report"]["html"] == {
+        "previewUrl": "https://reports.example.com/report.html"
+    }
 
 
 @pytest.mark.anyio
