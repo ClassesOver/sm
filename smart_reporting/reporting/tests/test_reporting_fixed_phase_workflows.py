@@ -1,7 +1,7 @@
 import hashlib
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from agno.run import RunContext
@@ -25,9 +25,9 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import sections as reporting_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
     RuntimeAnalysisMixin,
-    _has_chartable_visualization_facts,
     _visualization_section_completion_conditions,
 )
+from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
     ChartDraft,
@@ -36,7 +36,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionEvidenceBundle,
     SectionEvidenceFile,
     SectionPlanOutput,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import SectionWorkflow
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
@@ -63,24 +63,12 @@ def _chart() -> ChartDraft:
     )
 
 
-def _visualization_draft() -> VisualizationScriptDraft:
-    return VisualizationScriptDraft(
-        scriptPath="charts/charts.py",
-        pythonSource=(
-            'import matplotlib\nmatplotlib.use("Agg")\n'
-            'import matplotlib.pyplot as plt\nplt.savefig("charts/chart.png")\n'
-        ),
-        charts=(_chart(),),
-    )
+def _visualization_plan(*, charts: tuple[ChartDraft, ...] | None = None) -> VisualizationPlanDraft:
+    return VisualizationPlanDraft(charts=(_chart(),) if charts is None else charts)
 
 
-def test_visualization_requires_structured_facts_before_generating_chart() -> None:
-    assert not _has_chartable_visualization_facts(
-        [{"metrics": [], "derivedMetrics": [], "comparisons": [], "evidenceFiles": [{}]}]
-    )
-    assert _has_chartable_visualization_facts(
-        [{"metrics": [{"metricCodes": ["revenue"], "periodValueCount": 12}]}]
-    )
+def _visualization_payload() -> dict[str, object]:
+    return {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}
 
 
 @pytest.mark.anyio
@@ -154,53 +142,81 @@ def _inspection() -> ChartVisualInspectionReceipt:
 @pytest.mark.anyio
 async def test_visualization_workflow_orders_fixed_steps() -> None:
     events: list[str] = []
+    plan = _visualization_plan()
     file_identity = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
 
-    async def generate(_payload, _context):
-        events.append("generate")
-        return _visualization_draft()
+    async def generate_plan(_payload, _context):
+        events.append("generate_plan")
+        return plan
 
-    async def write(_path, _source, _context):
-        events.append("write")
-        return file_identity
+    async def generate_script(received_plan, _context):
+        assert received_plan is plan
+        events.append("generate_script")
+        return CodeGenerationResult(file_identity)
 
-    async def execute(command, _context):
-        events.append(command)
+    async def execute(script_path, _context):
+        events.append(f"execute:{script_path}")
         return {"exitCode": 0}
 
-    async def inspect(_chart, _context):
-        events.append("inspect")
+    async def inspect(chart, _context):
+        assert chart is plan.charts[0]
+        events.append(f"inspect:{chart.source_path}")
         return _inspection()
 
-    async def submit(_draft, _inspections, _context):
+    async def submit(received_plan, _inspections, _context):
+        assert received_plan is plan
         events.append("submit")
         return {"status": "accepted"}
 
     result = await VisualizationSectionWorkflow(
-        generate=generate,
-        recover=None,
-        write_script=write,
+        generate_plan=generate_plan,
+        generate_script=generate_script,
+        repair_script=None,
         execute_script=execute,
         inspect_chart=inspect,
         submit=submit,
-    ).run({}, _context())
+    ).run(_visualization_payload(), _context())
 
     assert result.status == "accepted"
-    assert events == ["generate", "write", "charts/charts.py", "inspect", "submit"]
+    assert result.plan is plan
+    assert events == [
+        "generate_plan",
+        "generate_script",
+        "execute:charts/charts.py",
+        "inspect:charts/chart.png",
+        "submit",
+    ]
 
 
 @pytest.mark.anyio
-async def test_visualization_workflow_recovers_script_failure_once() -> None:
-    recover = AsyncMock(
-        return_value=VisualizationScriptDraft(
-            scriptPath="charts/charts.py",
-            pythonSource=(
-                'import matplotlib\nmatplotlib.use("Agg")\n'
-                'import matplotlib.pyplot as plt\nplt.savefig("charts/chart.png")\n'
-            ),
-            charts=(_chart(),),
-        )
-    )
+async def test_visualization_workflow_submits_zero_charts_without_code_or_checks() -> None:
+    plan = _visualization_plan(charts=())
+    generate_script = AsyncMock()
+    execute = AsyncMock()
+    inspect = AsyncMock()
+    submit = AsyncMock(return_value={"status": "committed"})
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        execute_script=execute,
+        inspect_chart=inspect,
+        submit=submit,
+    ).run(_visualization_payload(), _context())
+
+    assert result.plan is plan
+    assert result.script_file is None
+    assert result.inspections == ()
+    generate_script.assert_not_awaited()
+    execute.assert_not_awaited()
+    inspect.assert_not_awaited()
+    submit.assert_awaited_once_with(plan, (), ANY)
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_repairs_script_failure_once_with_frozen_plan() -> None:
+    plan = _visualization_plan()
     execute = AsyncMock(
         side_effect=[
             {
@@ -212,45 +228,75 @@ async def test_visualization_workflow_recovers_script_failure_once() -> None:
             {"ok": True, "status": "completed", "exitCode": 0, "output": "ok"},
         ]
     )
-    file_identity = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
-    writes: list[str] = []
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    repair = AsyncMock(return_value=CodeGenerationResult(repaired_file))
+    submitted_plans: list[VisualizationPlanDraft] = []
 
-    async def write(path, _source, _context):
-        writes.append(path)
-        return file_identity
+    async def submit(received_plan, _inspections, _context):
+        submitted_plans.append(received_plan)
+        return {"status": "accepted"}
 
     result = await VisualizationSectionWorkflow(
-        generate=AsyncMock(return_value=_visualization_draft()),
-        recover=recover,
-        write_script=write,
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+        repair_script=repair,
         execute_script=execute,
         inspect_chart=AsyncMock(return_value=_inspection()),
-        submit=AsyncMock(return_value={"status": "accepted"}),
-    ).run({}, _context())
+        submit=submit,
+    ).run(_visualization_payload(), _context())
+
     assert result.recovery_used is True
-    assert writes == ["charts/charts.py"]
-    recover.assert_awaited_once()
+    assert result.plan is plan
+    assert result.script_file is repaired_file
+    assert submitted_plans == [plan]
+    repair.assert_awaited_once()
+    repaired_from, diagnostic, _ = repair.await_args.args
+    assert repaired_from is initial_file
+    assert diagnostic == {
+        "code": "report_visualization_script_failed",
+        "details": {"path": "charts/charts.py"},
+    }
+    assert execute.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_repairs_visual_review_failure_once() -> None:
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    failed_inspection = _inspection().model_copy(
+        update={"visual_review_status": "failed", "requires_revision": True}
+    )
+    repair = AsyncMock(return_value=CodeGenerationResult(repaired_file))
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+        repair_script=repair,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=AsyncMock(side_effect=[failed_inspection, _inspection()]),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert result.recovery_used is True
+    repair.assert_awaited_once()
+    _, diagnostic, _ = repair.await_args.args
+    assert diagnostic["code"] == "report_visualization_review_failed"
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_recovers_missing_chart_file_with_compact_payload() -> None:
-    initial_draft = _visualization_draft().model_copy(
-        update={"python_source": _visualization_draft().python_source + "# initial\n"}
-    )
-    recovered_draft = initial_draft.model_copy(
-        update={"python_source": _visualization_draft().python_source + "# recovered\n"}
-    )
-    recovery_payloads: list[dict[str, object]] = []
+    plan = _visualization_plan()
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    repair_payloads: list[dict[str, object]] = []
     events: list[str] = []
 
-    async def recover(payload, _context):
-        recovery_payloads.append(dict(payload))
-        events.append("recover")
-        return recovered_draft
-
-    async def write(_path, source, _context):
-        events.append(source)
-        return FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    async def repair(script_file, diagnostic, _context):
+        assert script_file is initial_file
+        repair_payloads.append(dict(diagnostic))
+        events.append("repair")
+        return CodeGenerationResult(repaired_file)
 
     async def execute(_path, _context):
         events.append("execute")
@@ -260,7 +306,8 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
         events.append("inspect")
         return _inspection()
 
-    async def submit(_draft, _inspections, _context):
+    async def submit(received_plan, _inspections, _context):
+        assert received_plan is plan
         events.append("submit")
         if events.count("submit") == 1:
             return {
@@ -273,34 +320,29 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
         return {"ok": True, "status": "accepted"}
 
     result = await VisualizationSectionWorkflow(
-        generate=AsyncMock(return_value=initial_draft),
-        recover=recover,
-        write_script=write,
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+        repair_script=repair,
         execute_script=execute,
         inspect_chart=inspect,
         submit=submit,
-    ).run({}, _context())
+    ).run(_visualization_payload(), _context())
 
     assert result.status == "accepted"
     assert result.recovery_used is True
     assert events == [
-        initial_draft.python_source,
         "execute",
         "inspect",
         "submit",
-        "recover",
-        recovered_draft.python_source,
+        "repair",
         "execute",
         "inspect",
         "submit",
     ]
-    assert recovery_payloads == [
+    assert repair_payloads == [
         {
-            "diagnostic": {
-                "code": "report_chart_file_missing",
-                "message": "report_chart_file_missing: 图表源文件不存在;未生成的图表不得提交登记。",
-                "details": {"sourcePath": "charts/chart.png"},
-            },
+            "code": "report_chart_file_missing",
+            "details": {"path": "charts/chart.png"},
             "missingCharts": [
                 {
                     "chartId": "chart_001",
@@ -313,7 +355,9 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
 
 
 @pytest.mark.anyio
-async def test_visualization_workflow_propagates_second_missing_chart_file_without_retrying() -> None:
+async def test_visualization_workflow_propagates_second_missing_chart_file_without_retrying() -> (
+    None
+):
     missing_chart = {
         "ok": False,
         "status": "rejected",
@@ -321,59 +365,60 @@ async def test_visualization_workflow_propagates_second_missing_chart_file_witho
         "message": "图表源文件不存在;未生成的图表不得提交登记。",
         "details": {"sourcePath": "charts/chart.png"},
     }
-    recover = AsyncMock(return_value=_visualization_draft())
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repair = AsyncMock(return_value=CodeGenerationResult(initial_file))
     execute = AsyncMock(return_value={"exitCode": 0})
     submit = AsyncMock(side_effect=[missing_chart, missing_chart])
 
     with pytest.raises(ReportingError) as caught:
         await VisualizationSectionWorkflow(
-            generate=AsyncMock(return_value=_visualization_draft()),
-            recover=recover,
-            write_script=AsyncMock(
-                return_value=FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
-            ),
+            generate_plan=AsyncMock(return_value=_visualization_plan()),
+            generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+            repair_script=repair,
             execute_script=execute,
             inspect_chart=None,
             submit=submit,
-        ).run({}, _context())
+        ).run(_visualization_payload(), _context())
 
     assert caught.value.code == "report_chart_file_missing"
-    recover.assert_awaited_once()
+    repair.assert_awaited_once()
     assert execute.await_count == 2
     assert submit.await_count == 2
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_does_not_recover_artifact_change() -> None:
-    recover = AsyncMock()
+    repair = AsyncMock()
     with pytest.raises(ReportingError) as caught:
         await VisualizationSectionWorkflow(
-            generate=AsyncMock(return_value=_visualization_draft()),
-            recover=recover,
-            write_script=AsyncMock(
+            generate_plan=AsyncMock(return_value=_visualization_plan()),
+            generate_script=AsyncMock(
                 side_effect=ReportingError("report_phase_artifact_changed", "SHA changed")
             ),
+            repair_script=repair,
             execute_script=AsyncMock(),
             inspect_chart=AsyncMock(),
             submit=AsyncMock(),
-        ).run({}, _context())
+        ).run(_visualization_payload(), _context())
     assert caught.value.code == "report_phase_artifact_changed"
-    recover.assert_not_awaited()
+    repair.assert_not_awaited()
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_allows_deterministic_submission_without_vision() -> None:
     submit = AsyncMock(return_value={"status": "committed"})
     result = await VisualizationSectionWorkflow(
-        generate=AsyncMock(return_value=_visualization_draft()),
-        recover=None,
-        write_script=AsyncMock(
-            return_value=FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(
+            return_value=CodeGenerationResult(
+                FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+            )
         ),
+        repair_script=None,
         execute_script=AsyncMock(return_value={"exitCode": 0}),
         inspect_chart=None,
         submit=submit,
-    ).run({}, _context())
+    ).run(_visualization_payload(), _context())
 
     assert result.status == "accepted"
     assert result.inspections == ()

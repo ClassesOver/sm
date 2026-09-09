@@ -3139,44 +3139,10 @@ def create_reporting_generator_agent(
         "所有必填顶层字段必须各出现一次；不得把 schema 顶层字段只写入其他字段。",
         "长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
     ]
-    if getattr(output_schema, "__name__", "") == "VisualizationScriptDraft":
-        instructions[1] = (
-            "所有必填顶层字段必须各出现一次；不得把 charts 等顶层字段只写入 pythonSource。"
-        )
-        instructions[2] = (
-            "pythonSource 等长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。"
-        )
+    if getattr(output_schema, "__name__", "") == "VisualizationPlanDraft":
         instructions.append(
             "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
-            ".png、.jpg 或 .jpeg 后缀的具体文件；pythonSource 必须写入完全相同的路径。"
-        )
-        instructions.extend(
-            [
-                (
-                    "pythonSource 是由固定 Workflow 执行的独立 Python 程序；不得调用或导入 "
-                    "submit_visualization_charts、run_python_script、apply_analysis_patch 等编排工具，"
-                    "不得把工具参数或调用写进脚本。"
-                ),
-                (
-                    "Python 从工作区根目录执行；逐字使用任务 JSON 签发的 factFile.path 和输出路径，"
-                    "不得使用 __file__、Path.parents、cwd 或目录探测重新推导路径。"
-                ),
-                "pythonSource 必须使用 Python 的 None、True、False，不得写入 JSON 常量 null、true、false。",
-                (
-                    'facts 文件中 metrics[].periodValues 的每个元素固定为 {"period": string,'
-                    '"value": number}；必须读取 period，不得使用 periodStart。'
-                ),
-                (
-                    "编写每张图的 Matplotlib 调用前，先以冻结 facts 校验待绘制数据：空数据、未知/空/重复占位分类、"
-                    "缺失声明系列或无法按同月对齐的跨年同比不得绘制；跳过该图并输出结构化诊断。图中数值、单位、"
-                    "期间和预算执行率必须直接来自冻结 facts；所有中文文字必须可显示，数值标签不得重叠。"
-                ),
-                (
-                    "pythonSource 绘图只能使用 Matplotlib；必须在导入 matplotlib.pyplot 之前调用 "
-                    'matplotlib.use("Agg")，并统一使用 fig.savefig(...) 写入图表文件；'
-                    "禁止使用 Plotly、Kaleido 或 Seaborn。"
-                ),
-            ]
+            ".png、.jpg 或 .jpeg 后缀的具体文件。"
         )
     elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
         instructions[1] = (

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
@@ -21,47 +20,9 @@ from ...delivery.draft_v1 import (
 from ...models import ReportingError
 from ..checkpoint import FileIdentity, SectionClaimSubmission
 
-MAX_VISUALIZATION_SOURCE_BYTES = 262_144
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
 _CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t]+)")
-_FORBIDDEN_VISUALIZATION_MODULES = frozenset({"plotly", "kaleido", "seaborn"})
-
-
-def _is_pyplot_import(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Import)
-        and any(alias.name == "matplotlib.pyplot" for alias in node.names)
-    ) or (
-        isinstance(node, ast.ImportFrom)
-        and (
-            node.module == "matplotlib.pyplot"
-            or (
-                node.module == "matplotlib"
-                and any(alias.name == "pyplot" for alias in node.names)
-            )
-        )
-    )
-
-
-def _literal_dynamic_imported_module(node: ast.AST) -> str | None:
-    if (
-        not isinstance(node, ast.Call)
-        or not node.args
-        or not isinstance(node.args[0], ast.Constant)
-        or not isinstance(node.args[0].value, str)
-    ):
-        return None
-    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
-        return node.args[0].value.split(".")[0].lower()
-    if (
-        isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "importlib"
-        and node.func.attr == "import_module"
-    ):
-        return node.args[0].value.split(".")[0].lower()
-    return None
 
 
 def _normalize_subordinate_heading_levels(markdown: str) -> str:
@@ -161,148 +122,12 @@ class ChartDraft(StrictModel):
         return self
 
 
-class VisualizationScriptDraft(StrictModel):
-    script_path: str = Field(alias="scriptPath", min_length=1, max_length=1024)
-    python_source: str = Field(
-        alias="pythonSource", min_length=1, max_length=MAX_VISUALIZATION_SOURCE_BYTES
-    )
-    charts: tuple[ChartDraft, ...] = Field(min_length=1, max_length=100)
+class VisualizationPlanDraft(StrictModel):
+    charts: tuple[ChartDraft, ...] = Field(max_length=100)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
-    @field_validator("script_path")
-    @classmethod
-    def validate_script_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if "\\" in value or path.is_absolute() or ".." in path.parts or path.suffix != ".py":
-            raise ValueError("脚本路径必须是安全工作区相对 Python 文件")
-        return path.as_posix()
-
-    @field_validator("python_source")
-    @classmethod
-    def validate_python_source(cls, value: str) -> str:
-        try:
-            tree = ast.parse(value, filename="<visualization>")
-            compile(tree, "<visualization>", "exec")
-        except SyntaxError as error:
-            location = ""
-            if error.lineno is not None and error.offset is not None:
-                location = f"（第 {error.lineno} 行，第 {error.offset} 列）"
-            raise ValueError(f"pythonSource Python 语法错误：{error.msg}{location}") from error
-
-        # 固定 Workflow 独占脚本写入、执行与图表提交。模型源码只负责生成图片；
-        # 若把编排工具或 JSON 常量写进脚本，最早也只能在远端执行时失败，还会
-        # 消耗一次脚本 mutation。这里在任何副作用前拒绝并交给结构化纠错重生成。
-        forbidden_names = {
-            "__file__",
-            "apply_analysis_patch",
-            "null",
-            "run_python_script",
-            "submit_visualization_charts",
-            "true",
-            "false",
-        }
-        used_forbidden = sorted(
-            {
-                node.id
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Name)
-                and isinstance(node.ctx, ast.Load)
-                and node.id in forbidden_names
-            }
-        )
-        if used_forbidden:
-            raise ValueError(
-                "pythonSource 只能生成签发图表，不得使用编排工具、__file__ 或 JSON 常量"
-            )
-
-        imported_forbidden_modules = sorted(
-            {
-                module
-                for node in ast.walk(tree)
-                for module in (
-                    [alias.name.split(".")[0].lower() for alias in node.names]
-                    if isinstance(node, ast.Import)
-                    else [node.module.split(".")[0].lower()]
-                    if isinstance(node, ast.ImportFrom) and node.module
-                    else []
-                )
-                if module in _FORBIDDEN_VISUALIZATION_MODULES
-            }
-        )
-        dynamically_imported_forbidden_modules = sorted(
-            {
-                module
-                for node in ast.walk(tree)
-                if (module := _literal_dynamic_imported_module(node))
-                in _FORBIDDEN_VISUALIZATION_MODULES
-            }
-        )
-        if imported_forbidden_modules or dynamically_imported_forbidden_modules:
-            raise ValueError("pythonSource 可视化只能使用 Matplotlib，不得导入 Plotly、Kaleido 或 Seaborn")
-
-        if any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "write_image"
-            for node in ast.walk(tree)
-        ):
-            raise ValueError("pythonSource 不得调用 write_image，必须使用 Matplotlib 的 savefig")
-
-        matplotlib_import_positions = [
-            position
-            for position, node in enumerate(tree.body)
-            if isinstance(node, ast.Import)
-            and any(alias.name == "matplotlib" and alias.asname is None for alias in node.names)
-        ]
-        pyplot_import_positions = [
-            position
-            for position, node in enumerate(tree.body)
-            if _is_pyplot_import(node)
-        ]
-        agg_setup_positions = [
-            position
-            for position, node in enumerate(tree.body)
-            if (
-                isinstance(node, ast.Expr)
-                and isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Attribute)
-                and isinstance(node.value.func.value, ast.Name)
-                and node.value.func.value.id == "matplotlib"
-                and node.value.func.attr == "use"
-                and node.value.args
-                and isinstance(node.value.args[0], ast.Constant)
-                and node.value.args[0].value == "Agg"
-            )
-        ]
-        if (
-            not matplotlib_import_positions
-            or not agg_setup_positions
-            or not pyplot_import_positions
-            or min(matplotlib_import_positions) >= min(agg_setup_positions)
-            or min(agg_setup_positions) >= min(pyplot_import_positions)
-        ):
-            raise ValueError(
-                'pythonSource 顶层必须依次 import matplotlib、调用 matplotlib.use("Agg")、导入 matplotlib.pyplot'
-            )
-        first_agg_setup = tree.body[min(agg_setup_positions)]
-        if any(
-            (node.lineno, node.col_offset)
-            < (first_agg_setup.lineno, first_agg_setup.col_offset)
-            for node in ast.walk(tree)
-            if _is_pyplot_import(node)
-        ):
-            raise ValueError('pythonSource 必须在导入 matplotlib.pyplot 前调用 matplotlib.use("Agg")')
-        if not any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "savefig"
-            for node in ast.walk(tree)
-        ):
-            raise ValueError("pythonSource 必须使用 Matplotlib 的 savefig 写入图表")
-        return value
-
     @model_validator(mode="after")
-    def validate_unique_charts(self) -> VisualizationScriptDraft:
+    def validate_unique_charts(self) -> VisualizationPlanDraft:
         chart_ids = [item.chart_id for item in self.charts]
         paths = [item.source_path for item in self.charts]
         if len(chart_ids) != len(set(chart_ids)) or len(paths) != len(set(paths)):
@@ -461,5 +286,5 @@ __all__ = [
     "SectionEvidenceBundle",
     "SectionEvidenceFile",
     "SectionPlanOutput",
-    "VisualizationScriptDraft",
+    "VisualizationPlanDraft",
 ]

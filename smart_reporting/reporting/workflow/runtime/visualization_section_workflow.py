@@ -12,19 +12,22 @@ from loguru import logger
 from ...models import ReportingError
 from ...phase import reporting_python_script_failed
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
-from .phase_models import ChartDraft, VisualizationScriptDraft
+from .code_generation import CodeGenerationResult
+from .phase_models import ChartDraft, VisualizationPlanDraft
 
-GenerateVisualization = Callable[
-    [Mapping[str, Any], RunContext], Awaitable[VisualizationScriptDraft]
+GenerateVisualizationPlan = Callable[
+    [Mapping[str, Any], RunContext], Awaitable[VisualizationPlanDraft]
 ]
-RecoverVisualization = Callable[
-    [Mapping[str, Any], RunContext], Awaitable[VisualizationScriptDraft]
+GenerateVisualizationScript = Callable[
+    [VisualizationPlanDraft, RunContext], Awaitable[CodeGenerationResult]
 ]
-WriteScript = Callable[[str, str, RunContext], Awaitable[FileIdentity]]
+RepairVisualizationScript = Callable[
+    [FileIdentity, Mapping[str, Any], RunContext], Awaitable[CodeGenerationResult]
+]
 ExecuteScript = Callable[[str, RunContext], Awaitable[Mapping[str, Any]]]
 InspectChart = Callable[[ChartDraft, RunContext], Awaitable[ChartVisualInspectionReceipt]]
 SubmitVisualization = Callable[
-    [VisualizationScriptDraft, tuple[ChartVisualInspectionReceipt, ...], RunContext],
+    [VisualizationPlanDraft, tuple[ChartVisualInspectionReceipt, ...], RunContext],
     Awaitable[Mapping[str, Any]],
 ]
 
@@ -40,65 +43,92 @@ _NON_RECOVERABLE_CODES = frozenset(
 )
 
 
-def _recovery_diagnostic(error: Exception) -> dict[str, Any]:
-    diagnostic: dict[str, Any] = {"message": str(error)[:2000]}
-    if isinstance(error, ReportingError):
-        diagnostic["code"] = error.code
-        if isinstance(error.details, Mapping):
-            diagnostic["details"] = dict(error.details)
-    return diagnostic
+def _signed_script_path(payload: Mapping[str, Any]) -> str:
+    workspace = payload.get("visualizationWorkspace")
+    script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+    if not isinstance(script_path, str) or not script_path:
+        raise ReportingError("report_phase_contract_invalid", "缺少可视化脚本签发路径。")
+    return script_path
 
 
-def _missing_chart_file_recovery(
-    draft: VisualizationScriptDraft, error: ReportingError
+def _repair_diagnostic(
+    plan: VisualizationPlanDraft, error: Exception, script_path: str
 ) -> dict[str, Any]:
-    """仅向恢复模型交付缺失图表定位信息，不重复携带脚本源码。"""
+    code = error.code if isinstance(error, ReportingError) else "report_visualization_failed"
+    path = script_path
+    if isinstance(error, ReportingError) and isinstance(error.details, Mapping):
+        nested = error.details.get("details")
+        details = nested if isinstance(nested, Mapping) else error.details
+        candidate = details.get("sourcePath", details.get("path"))
+        if isinstance(candidate, str) and candidate:
+            path = candidate
 
-    diagnostic = _recovery_diagnostic(error)
-    diagnostic.pop("details", None)
-    receipt = error.details if isinstance(error.details, Mapping) else {}
-    details = receipt.get("details") if isinstance(receipt, Mapping) else None
-    source_path = details.get("sourcePath") if isinstance(details, Mapping) else None
-    missing_charts: list[dict[str, str]] = []
-    if isinstance(source_path, str):
-        diagnostic["details"] = {"sourcePath": source_path}
-        missing_charts = [
+    diagnostic: dict[str, Any] = {"code": code, "details": {"path": path}}
+    if code == "report_chart_file_missing":
+        diagnostic["missingCharts"] = [
             {
                 "chartId": chart.chart_id,
                 "sourcePath": chart.source_path,
                 "title": chart.title,
             }
-            for chart in draft.charts
-            if chart.source_path == source_path
+            for chart in plan.charts
+            if chart.source_path == path
         ]
-    return {"diagnostic": diagnostic, "missingCharts": missing_charts}
+    return diagnostic
+
+
+def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> FileIdentity:
+    script_file = result.script_file
+    if script_file.path != script_path:
+        raise ReportingError(
+            "report_phase_artifact_changed", "脚本回执路径与 Workflow 签发路径不一致。"
+        )
+    return script_file
+
+
+def _raise_rejected_submission(receipt: Mapping[str, Any]) -> None:
+    if receipt.get("status") in {"accepted", "committed", "already_committed"}:
+        return
+    rejection_code = receipt.get("code")
+    code = (
+        rejection_code
+        if isinstance(rejection_code, str)
+        else "report_visualization_submit_rejected"
+    )
+    message = receipt.get("message")
+    logger.bind(rejection_code=code).warning("report_visualization_submission_rejected")
+    raise ReportingError(
+        code,
+        message if isinstance(message, str) else "图表提交未被服务端接受。",
+        details=dict(receipt),
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class VisualizationWorkflowResult:
     status: str
-    draft: VisualizationScriptDraft
-    script_file: FileIdentity
+    plan: VisualizationPlanDraft
+    script_file: FileIdentity | None
     inspections: tuple[ChartVisualInspectionReceipt, ...]
     recovery_used: bool = False
 
 
 class VisualizationSectionWorkflow:
-    """生成、执行、审查、提交的单向流程；内容错误最多恢复一次。"""
+    """计划只生成一次；固定 Workflow 执行、审查并在必要时修复脚本一次。"""
 
     def __init__(
         self,
         *,
-        generate: GenerateVisualization,
-        recover: RecoverVisualization | None,
-        write_script: WriteScript,
+        generate_plan: GenerateVisualizationPlan,
+        generate_script: GenerateVisualizationScript,
+        repair_script: RepairVisualizationScript | None,
         execute_script: ExecuteScript,
         inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
     ) -> None:
-        self.generate = generate
-        self.recover = recover
-        self.write_script = write_script
+        self.generate_plan = generate_plan
+        self.generate_script = generate_script
+        self.repair_script = repair_script
         self.execute_script = execute_script
         self.inspect_chart = inspect_chart
         self.submit = submit
@@ -106,52 +136,35 @@ class VisualizationSectionWorkflow:
     async def run(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
-        draft: VisualizationScriptDraft | None = None
-        script_file: FileIdentity | None = None
-        written_script: tuple[str, str] | None = None
+        plan = await self.generate_plan(payload, run_context)
+        if not plan.charts:
+            receipt = await self.submit(plan, (), run_context)
+            _raise_rejected_submission(receipt)
+            return VisualizationWorkflowResult("accepted", plan, None, ())
+
+        script_path = _signed_script_path(payload)
+        generated = await self.generate_script(plan, run_context)
+        script_file = _ensure_script_identity(generated, script_path)
         recovery_used = False
+
         for attempt in range(2):
             try:
-                if draft is None:
-                    draft = await self.generate(payload, run_context)
-                normalized_source = (
-                    draft.python_source
-                    if draft.python_source.endswith("\n")
-                    else f"{draft.python_source}\n"
-                )
-                current_script = (draft.script_path, normalized_source)
-                if current_script != written_script:
-                    script_file = await self.write_script(
-                        draft.script_path, normalized_source, run_context
-                    )
-                    if script_file.path != draft.script_path:
-                        raise ReportingError(
-                            "report_phase_artifact_changed",
-                            "脚本写入回执路径与签发路径不一致。",
-                        )
-                    written_script = current_script
-                # 恢复模型可能确认原脚本无需修改。相同源码再次生成 unified diff 会得到
-                # 空字符串并被写入 schema 拒绝；已提交身份仍受后续执行和图表审查约束，
-                # 因此复用该身份继续执行，而不是伪造一次无变化 mutation。
-                if script_file is None:
-                    raise ReportingError(
-                        "report_visualization_write_failed", "章节图表脚本尚未成功写入。"
-                    )
-                execution = await self.execute_script(draft.script_path, run_context)
+                execution = await self.execute_script(script_path, run_context)
                 if reporting_python_script_failed(execution):
                     raise ReportingError(
                         "report_visualization_script_failed",
                         "可视化脚本执行失败。",
                         details=dict(execution),
                     )
+
                 inspections: tuple[ChartVisualInspectionReceipt, ...] = ()
                 if self.inspect_chart is not None:
                     inspections = tuple(
-                        [await self.inspect_chart(chart, run_context) for chart in draft.charts]
+                        [await self.inspect_chart(chart, run_context) for chart in plan.charts]
                     )
                     if any(
                         receipt.source_path != chart.source_path
-                        for chart, receipt in zip(draft.charts, inspections, strict=True)
+                        for chart, receipt in zip(plan.charts, inspections, strict=True)
                     ):
                         raise ReportingError(
                             "report_phase_artifact_changed",
@@ -171,51 +184,25 @@ class VisualizationSectionWorkflow:
                                 ]
                             },
                         )
-                receipt = await self.submit(draft, inspections, run_context)
-                if receipt.get("status") not in {"accepted", "committed", "already_committed"}:
-                    rejection_code = receipt.get("code")
-                    code = (
-                        rejection_code
-                        if isinstance(rejection_code, str)
-                        else "report_visualization_submit_rejected"
-                    )
-                    message = receipt.get("message")
-                    logger.bind(rejection_code=code).warning(
-                        "report_visualization_submission_rejected"
-                    )
-                    raise ReportingError(
-                        code,
-                        message
-                        if isinstance(message, str)
-                        else "图表提交未被服务端接受。",
-                        details=dict(receipt),
-                    )
+
+                receipt = await self.submit(plan, inspections, run_context)
+                _raise_rejected_submission(receipt)
                 return VisualizationWorkflowResult(
-                    "accepted", draft, script_file, inspections, recovery_used
+                    "accepted", plan, script_file, inspections, recovery_used
                 )
             except Exception as error:
                 if isinstance(error, ReportingError) and error.code in _NON_RECOVERABLE_CODES:
                     raise
-                if attempt == 1 or self.recover is None:
+                if attempt == 1 or self.repair_script is None:
                     raise
                 recovery_used = True
-                if (
-                    draft is not None
-                    and isinstance(error, ReportingError)
-                    and error.code == "report_chart_file_missing"
-                ):
-                    repair = _missing_chart_file_recovery(draft, error)
-                else:
-                    repair = {"diagnostic": _recovery_diagnostic(error)}
-                if draft is not None and not (
-                    isinstance(error, ReportingError)
-                    and error.code == "report_chart_file_missing"
-                ):
-                    repair["draft"] = draft.model_dump(mode="json", by_alias=True)
-                draft = await self.recover(
-                    repair,
+                repaired = await self.repair_script(
+                    script_file,
+                    _repair_diagnostic(plan, error, script_path),
                     run_context,
                 )
+                script_file = _ensure_script_identity(repaired, script_path)
+
         raise RuntimeError("可视化固定 Workflow 状态不可达")
 
 

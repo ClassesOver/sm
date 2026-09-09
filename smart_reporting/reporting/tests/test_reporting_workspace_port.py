@@ -527,8 +527,8 @@ async def test_analysis_patch_passes_intent_operations_to_kernel_unchanged() -> 
     assert runtime.patch.await_args.kwargs["_changes"] == intent_operations
 
 
-def _python_source_of_size(size: int) -> str:
-    source = "value = 1\n"
+def _python_source_of_size(size: int, *, prefix: str = "value = 1\n") -> str:
+    source = prefix
     remaining = size - len(source.encode())
     while remaining:
         line_size = min(8 * 1024, remaining)
@@ -555,7 +555,13 @@ async def test_analysis_python_source_gate_enforces_signed_source_size_boundary(
     harness = object.__new__(RuntimeAnalysisMixin)
     harness._phase_parameters = lambda *_args: ({}, contract)
     harness._analysis_output_root = lambda value: value["analysisOutputRoot"]
-    accepted = _python_source_of_size(limit)
+    prefix = "value = 1\n"
+    if task_kind == "visualization_section":
+        prefix = (
+            'import matplotlib\nmatplotlib.use("Agg")\n'
+            'import matplotlib.pyplot as plt\nplt.savefig("analysis/charts/s1/chart.png")\n'
+        )
+    accepted = _python_source_of_size(limit, prefix=prefix)
 
     await harness._preflight_analysis_python_write(
         scope=scope,
@@ -572,6 +578,56 @@ async def test_analysis_python_source_gate_enforces_signed_source_size_boundary(
         )
     assert caught.value.code == "report_python_source_shape_invalid"
     assert caught.value.details["size"] == limit + 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import plotly.express as px\npx.bar(x=[1], y=[2])\n",
+        (
+            "import matplotlib\n"
+            "import matplotlib.pyplot as plt\n"
+            "matplotlib.use('Agg')\n"
+            "plt.savefig('analysis/charts/s1/chart.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "figure.write_image('analysis/charts/s1/chart.png')\n"
+        ),
+        (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "print(__file__)\n"
+            "plt.savefig('analysis/charts/s1/chart.png')\n"
+        ),
+    ],
+)
+async def test_visualization_python_source_gate_enforces_rendering_policy(source: str) -> None:
+    path = "analysis/charts/s1/charts.py"
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {
+            "taskKind": "visualization_section",
+            "visualizationWorkspace": {"scriptPath": path},
+        },
+    )
+
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={
+                "operations": [{"operation": "create", "path": path, "content": source}]
+            },
+        )
+
+    assert caught.value.code == "report_python_source_shape_invalid"
 
 
 @pytest.mark.anyio

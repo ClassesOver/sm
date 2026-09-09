@@ -15,7 +15,7 @@ from .phase_models import (
     SectionDecisionAdapter,
     SectionEvidenceBundle,
     SectionEvidenceFile,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 from .reporting_draft_workflow import (
     ReportingAnalysisAndDraftWorkflow,
@@ -44,7 +44,7 @@ __all__ = [
     "SectionDecisionAdapter",
     "SectionEvidenceBundle",
     "SectionEvidenceFile",
-    "VisualizationScriptDraft",
+    "VisualizationPlanDraft",
     "SectionWorkflow",
     "SectionWorkflowResult",
     "VisualizationSectionWorkflow",

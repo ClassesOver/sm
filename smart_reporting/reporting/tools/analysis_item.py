@@ -43,6 +43,121 @@ _ANALYSIS_SUMMARY_PERIOD_PATTERN = re.compile(
 )
 _ANALYSIS_SUMMARY_SENTENCE_PATTERN = re.compile(r"[^。！？\n]+[。！？]?|\n")
 _INCOMPARABLE_YOY_WARNING = "摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"
+_FORBIDDEN_VISUALIZATION_MODULES = frozenset({"plotly", "kaleido", "seaborn"})
+
+
+def _is_pyplot_import(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Import)
+        and any(alias.name == "matplotlib.pyplot" for alias in node.names)
+    ) or (
+        isinstance(node, ast.ImportFrom)
+        and (
+            node.module == "matplotlib.pyplot"
+            or (node.module == "matplotlib" and any(alias.name == "pyplot" for alias in node.names))
+        )
+    )
+
+
+def _literal_dynamic_imported_module(node: ast.AST) -> str | None:
+    if (
+        not isinstance(node, ast.Call)
+        or not node.args
+        or not isinstance(node.args[0], ast.Constant)
+        or not isinstance(node.args[0].value, str)
+    ):
+        return None
+    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        return node.args[0].value.split(".")[0].lower()
+    if (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "importlib"
+        and node.func.attr == "import_module"
+    ):
+        return node.args[0].value.split(".")[0].lower()
+    return None
+
+
+def _valid_visualization_source(tree: ast.Module) -> bool:
+    forbidden_names = {
+        "__file__",
+        "apply_analysis_patch",
+        "null",
+        "run_python_script",
+        "submit_visualization_charts",
+        "true",
+        "false",
+    }
+    if any(
+        isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in forbidden_names
+        for node in ast.walk(tree)
+    ):
+        return False
+    if any(
+        module in _FORBIDDEN_VISUALIZATION_MODULES
+        for node in ast.walk(tree)
+        for module in (
+            [alias.name.split(".")[0].lower() for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module.split(".")[0].lower()]
+            if isinstance(node, ast.ImportFrom) and node.module
+            else []
+        )
+    ) or any(
+        _literal_dynamic_imported_module(node) in _FORBIDDEN_VISUALIZATION_MODULES
+        for node in ast.walk(tree)
+    ):
+        return False
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "write_image"
+        for node in ast.walk(tree)
+    ):
+        return False
+
+    matplotlib_imports = [
+        index
+        for index, node in enumerate(tree.body)
+        if isinstance(node, ast.Import)
+        and any(alias.name == "matplotlib" and alias.asname is None for alias in node.names)
+    ]
+    pyplot_imports = [index for index, node in enumerate(tree.body) if _is_pyplot_import(node)]
+    agg_setups = [
+        index
+        for index, node in enumerate(tree.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "matplotlib"
+        and node.value.func.attr == "use"
+        and node.value.args
+        and isinstance(node.value.args[0], ast.Constant)
+        and node.value.args[0].value == "Agg"
+    ]
+    if (
+        not matplotlib_imports
+        or not pyplot_imports
+        or not agg_setups
+        or min(matplotlib_imports) >= min(agg_setups)
+        or min(agg_setups) >= min(pyplot_imports)
+    ):
+        return False
+    first_agg = tree.body[min(agg_setups)]
+    if any(
+        (node.lineno, node.col_offset) < (first_agg.lineno, first_agg.col_offset)
+        for node in ast.walk(tree)
+        if _is_pyplot_import(node)
+    ):
+        return False
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "savefig"
+        for node in ast.walk(tree)
+    )
 
 
 def _fact_metric_codes(bundle: Mapping[str, Any]) -> tuple[str, ...]:
@@ -316,7 +431,11 @@ class RuntimeAnalysisMixin:
         for change in changes:
             path = change.get("path")
             content = change.get("content")
-            if change.get("operation") not in {"create", "update"} or not isinstance(path, str) or not path.endswith(".py"):
+            if (
+                change.get("operation") not in {"create", "update"}
+                or not isinstance(path, str)
+                or not path.endswith(".py")
+            ):
                 continue
             if not isinstance(content, str):
                 reject(path, content)
@@ -335,12 +454,23 @@ class RuntimeAnalysisMixin:
                 compile(tree, path, "exec")
             except SyntaxError:
                 reject(path, content)
+            if task_kind == "visualization_section" and not _valid_visualization_source(tree):
+                reject(path, content)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
-                    if len(node.value if isinstance(node.value, bytes) else node.value.encode("utf-8")) > MAX_ANALYSIS_PYTHON_LITERAL_BYTES:
+                    if (
+                        len(
+                            node.value
+                            if isinstance(node.value, bytes)
+                            else node.value.encode("utf-8")
+                        )
+                        > MAX_ANALYSIS_PYTHON_LITERAL_BYTES
+                    ):
                         reject(path, content)
                 elif isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
-                    item_count = len(node.elts) if not isinstance(node, ast.Dict) else len(node.keys)
+                    item_count = (
+                        len(node.elts) if not isinstance(node, ast.Dict) else len(node.keys)
+                    )
                     if item_count > MAX_ANALYSIS_PYTHON_LITERAL_ITEMS:
                         reject(path, content)
 

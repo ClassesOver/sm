@@ -2,7 +2,6 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
-import difflib
 from copy import copy
 from typing import Literal
 
@@ -108,7 +107,7 @@ from .base import (
 )
 from .code_generation import CodeGenerationResult, ReportingCodeGenerationRunner
 from .datasets import _profile_coverage_instruction_projection
-from .phase_models import ChartDraft, VisualizationScriptDraft
+from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
 from .visualization_section_workflow import VisualizationSectionWorkflow
 
@@ -424,22 +423,6 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
     return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
-def _has_chartable_visualization_facts(facts: Sequence[Mapping[str, Any]]) -> bool:
-    """仅当冻结事实含结构化指标时才进入图表生成。"""
-
-    return any(
-        isinstance(items, Sequence)
-        and not isinstance(items, (str, bytes))
-        and any(isinstance(item, Mapping) for item in items)
-        for fact in facts
-        for items in (
-            fact.get("metrics"),
-            fact.get("derivedMetrics"),
-            fact.get("comparisons"),
-        )
-    )
-
-
 class RuntimeAnalysisMixin:
     async def _run_visualization_section_task(
         self, section_code: str, *, context: Mapping[str, Any] | None = None
@@ -641,7 +624,7 @@ class RuntimeAnalysisMixin:
 
                 async def execute_fixed_visualization(
                     invocation: ReportingTaskInvocation,
-                ) -> VisualizationScriptDraft | None:
+                ) -> VisualizationPlanDraft:
                     toolkits = build_reporting_tools(
                         self.workspace_service,
                         self.task_runner.repository,
@@ -654,104 +637,70 @@ class RuntimeAnalysisMixin:
                             "report_phase_contract_invalid", "章节图表 Toolkit 装配结果无效。"
                         )
                     toolkit = toolkits[0]
-                    if not _has_chartable_visualization_facts(facts):
-                        # 工具与 durable 协议明确允许零图。冻结事实没有任何结构化指标时，
-                        # 图表无法满足 metricCode 绑定，不得让模型虚构占位图或空指标。
-                        receipt = await toolkit.submit_visualization_charts(
-                            section_code,
-                            [],
-                            run_context=invocation.run_context,
-                        )
-                        if receipt.get("status") not in {
-                            "accepted",
-                            "committed",
-                            "already_committed",
-                        }:
-                            raise ReportingError(
-                                str(receipt.get("code", "report_visualization_submit_rejected")),
-                                str(receipt.get("message", "章节零图提交未被接受。")),
-                                details=dict(receipt),
-                            )
-                        loguru_logger.debug(
-                            "report_visualization_section_empty_submitted section_code={}",
-                            section_code,
-                        )
-                        return None
-                    committed_source: str | None = None
-                    committed_sha256: str | None = None
 
-                    async def generate(
+                    async def generate_plan(
                         request: Mapping[str, Any], task_context: RunContext
-                    ) -> VisualizationScriptDraft:
+                    ) -> VisualizationPlanDraft:
                         payload = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
                         return cast(
-                            VisualizationScriptDraft,
+                            VisualizationPlanDraft,
                             await ReportingStructuredOutputExecutor(
                                 self.visualization_generator
                             ).run(payload, scope=invocation.scope, run_context=task_context),
                         )
 
-                    async def recover(
-                        repair: Mapping[str, Any], task_context: RunContext
-                    ) -> VisualizationScriptDraft:
-                        if self.visualization_recovery is None:
-                            raise ReportingError(
-                                "report_visualization_recovery_missing",
-                                "章节图表恢复生成器未配置。",
-                            )
-                        payload = json.dumps(
-                            {**instruction_payload, "recovery": dict(repair)},
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                        return cast(
-                            VisualizationScriptDraft,
-                            await ReportingStructuredOutputExecutor(
-                                self.visualization_recovery
-                            ).run(payload, scope=invocation.scope, run_context=task_context),
+                    code_runner = (
+                        ReportingCodeGenerationRunner(agent=self.visualization_recovery)
+                        if self.visualization_recovery is not None
+                        else None
+                    )
+
+                    async def apply_patch(
+                        *, patch: str, run_context: RunContext | None = None
+                    ) -> Mapping[str, Any]:
+                        return await toolkit.apply_analysis_patch(
+                            patch,
+                            run_context=run_context,
                         )
 
-                    async def write_script(
-                        path: str, source: str, task_context: RunContext
-                    ) -> FileIdentity:
-                        nonlocal committed_sha256, committed_source
-                        normalized_source = source if source.endswith("\n") else f"{source}\n"
-                        patch = "".join(
-                            difflib.unified_diff(
-                                (
-                                    []
-                                    if committed_source is None
-                                    else committed_source.splitlines(keepends=True)
-                                ),
-                                normalized_source.splitlines(keepends=True),
-                                fromfile=("/dev/null" if committed_source is None else f"a/{path}"),
-                                tofile=f"b/{path}",
-                            )
-                        )
-                        receipt = await toolkit.apply_analysis_patch(
-                            patch,
-                            expected_sha256=(
-                                {path: committed_sha256} if committed_sha256 is not None else None
-                            ),
-                            run_context=task_context,
-                        )
-                        artifacts = (
-                            receipt.get("artifacts") if isinstance(receipt, Mapping) else None
-                        )
-                        if (
-                            receipt.get("ok") is not True
-                            or not isinstance(artifacts, list)
-                            or len(artifacts) != 1
-                        ):
+                    async def generate_script(
+                        plan: VisualizationPlanDraft, task_context: RunContext
+                    ) -> CodeGenerationResult:
+                        if code_runner is None:
                             raise ReportingError(
-                                str(receipt.get("code", "report_visualization_write_failed")),
-                                str(receipt.get("message", "章节图表脚本写入未被接受。")),
-                                details=dict(receipt) if isinstance(receipt, Mapping) else None,
+                                "report_visualization_code_agent_missing",
+                                "章节图表代码 Agent 未配置。",
                             )
-                        identity = FileIdentity.model_validate(artifacts[0])
-                        committed_source = normalized_source
-                        committed_sha256 = identity.sha256
-                        return identity
+                        return await code_runner.generate(
+                            script_path,
+                            {
+                                "visualizationFacts": facts,
+                                "visualizationWorkspace": instruction_payload[
+                                    "visualizationWorkspace"
+                                ],
+                                "visualizationPlan": plan.model_dump(mode="json", by_alias=True),
+                            },
+                            apply_patch,
+                            task_context,
+                        )
+
+                    async def repair_script(
+                        script_file: FileIdentity,
+                        diagnostic: Mapping[str, Any],
+                        task_context: RunContext,
+                    ) -> CodeGenerationResult:
+                        if code_runner is None:
+                            raise ReportingError(
+                                "report_visualization_code_agent_missing",
+                                "章节图表代码 Agent 未配置。",
+                            )
+                        return await code_runner.repair(
+                            script_file,
+                            diagnostic,
+                            toolkit.read_file,
+                            apply_patch,
+                            task_context,
+                        )
 
                     async def execute_script(
                         script_path: str, task_context: RunContext
@@ -781,28 +730,30 @@ class RuntimeAnalysisMixin:
                         return ChartVisualInspectionReceipt.model_validate(raw)
 
                     async def submit(
-                        draft: VisualizationScriptDraft,
+                        plan: VisualizationPlanDraft,
                         _inspections: tuple[ChartVisualInspectionReceipt, ...],
                         task_context: RunContext,
                     ) -> Mapping[str, Any]:
                         return await toolkit.submit_visualization_charts(
                             section_code,
-                            [item.model_dump(mode="json", by_alias=True) for item in draft.charts],
+                            [item.model_dump(mode="json", by_alias=True) for item in plan.charts],
                             run_context=task_context,
                         )
 
                     return (
                         await VisualizationSectionWorkflow(
-                            generate=generate,
-                            recover=recover if self.visualization_recovery is not None else None,
-                            write_script=write_script,
+                            generate_plan=generate_plan,
+                            generate_script=generate_script,
+                            repair_script=(
+                                repair_script if self.visualization_recovery is not None else None
+                            ),
                             execute_script=execute_script,
                             inspect_chart=(
                                 inspect_chart if self.vision_reviewer is not None else None
                             ),
                             submit=submit,
                         ).run(instruction_payload, invocation.run_context)
-                    ).draft
+                    ).plan
 
                 await self.task_runner.run(
                     task_scope,
@@ -2778,13 +2729,13 @@ def _visualization_section_retry_error(
 def _visualization_section_completion_conditions(last_error: Exception | None) -> list[str]:
     conditions = [
         "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
-        "返回完整 VisualizationScriptDraft；pythonSource 只读取签发事实并写入签发图表路径",
-        "固定 Workflow 负责脚本写入、执行、审查和图表提交；pythonSource 不得调用或导入任何编排工具",
+        "返回完整 VisualizationPlanDraft；只包含 charts 和 warnings，不得返回脚本路径或源码",
+        "固定 Workflow 负责脚本生成、执行、审查和图表提交",
     ]
     if _visualization_recovery_required(last_error):
         conditions.insert(
             0,
-            "上一轮工具或脚本失败；仅生成满足当前签发路径与冻结事实的最小完整草案，不重新探索工作区",
+            "上一轮工具或脚本失败；仅生成满足冻结事实的图表计划，不重新探索工作区",
         )
     return conditions
 
