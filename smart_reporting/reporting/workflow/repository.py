@@ -43,6 +43,7 @@ from .state import (
 )
 
 REPORTING_DB_SCHEMA = "agentos_reporting"
+_REPORTING_SCHEMA_LOCK_NAMESPACE = 1_381_125_712
 
 
 def _utc(value: datetime) -> datetime:
@@ -191,6 +192,15 @@ class ReportingStateRepository:
                 return
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
                 await connection.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock(:namespace, :version)"
+                    ),
+                    {
+                        "namespace": _REPORTING_SCHEMA_LOCK_NAMESPACE,
+                        "version": REPORTING_STATE_SCHEMA_VERSION,
+                    },
+                )
+                await connection.execute(
                     text(f'CREATE SCHEMA IF NOT EXISTS "{REPORTING_DB_SCHEMA}"')
                 )
                 await connection.run_sync(self.metadata.create_all)
@@ -201,9 +211,37 @@ class ReportingStateRepository:
                             'ADD COLUMN IF NOT EXISTS report_run_id VARCHAR(256)'
                         )
                     )
-                for statement in self._legacy_upgrade_statements():
+                upgrade_statements = self._legacy_upgrade_statements()
+                await connection.execute(text(upgrade_statements[0]))
+                conflict = await connection.scalar(
+                    text(self._legacy_parent_conflict_query())
+                )
+                if conflict:
+                    raise ReportingStateError(
+                        "report_run_legacy_identity_conflict",
+                        "Legacy Reporting 状态与父运行身份冲突。",
+                    )
+                for statement in upgrade_statements[1:]:
                     await connection.execute(text(statement))
             self._initialized = True
+
+    @staticmethod
+    def _legacy_parent_conflict_query() -> str:
+        schema = REPORTING_DB_SCHEMA
+        return f"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM {schema}.reporting_run_states AS state
+                LEFT JOIN {schema}.reporting_runs AS run
+                  ON run.report_run_id = state.report_run_id
+                WHERE run.report_run_id IS NULL
+                   OR run.external_run_id IS DISTINCT FROM state.external_run_id
+                   OR run.agno_run_id IS DISTINCT FROM state.report_run_id
+                   OR run.thread_id IS DISTINCT FROM state.thread_id
+                   OR run.owner_user_id IS DISTINCT FROM state.owner_user_id
+                   OR run.revision IS DISTINCT FROM state.revision
+            )
+        """
 
     @staticmethod
     def _legacy_upgrade_statements() -> tuple[str, ...]:

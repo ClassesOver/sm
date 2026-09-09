@@ -277,6 +277,16 @@ async def _drive_workflow_unlocked(
             dependencies=dependencies,
             stream=False,
         )
+        output = await _continue_workflow_reviews(
+            workflow,
+            output,
+            dependencies=dependencies,
+            read=read,
+            write=write,
+            retry_delivery_error=True,
+        )
+    except (ReportingError, ValueError):
+        raise
     except BaseException:
         await _finalize_cli_run(
             runtime,
@@ -286,15 +296,6 @@ async def _drive_workflow_unlocked(
             status="failed",
         )
         raise
-
-    output = await _continue_workflow_reviews(
-        workflow,
-        output,
-        dependencies=dependencies,
-        read=read,
-        write=write,
-        retry_delivery_error=True,
-    )
 
     status = _status(output)
     content = getattr(output, "content", None)
@@ -430,10 +431,25 @@ async def _resume_workflow_unlocked(
         raise ReportingError("report_workflow_run_not_found", "找不到指定的 Reporting run。")
     status = _status(output)
     if status not in {"paused", "running"}:
-        raise ReportingError(
-            "report_workflow_resume_invalid",
-            "指定 Reporting run 当前不是可恢复暂停或中断状态。",
-        )
+        if not await _finish_pending_cli_terminal(
+            runtime,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            database=database,
+            company_id=company_id,
+            status=status,
+        ):
+            raise ReportingError(
+                "report_workflow_resume_invalid",
+                "指定 Reporting run 当前不是可恢复暂停或中断状态。",
+            )
+        return {
+            "status": status,
+            "runId": run_id,
+            "sessionId": session_id,
+            "content": getattr(output, "content", None),
+        }
     scope = {
         "externalRunId": run_id,
         "threadId": session_id,
@@ -442,25 +458,36 @@ async def _resume_workflow_unlocked(
         "companyId": company_id,
     }
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
-    if status == "running":
-        # Agno Workflow 2.8.2 只允许 acontinue_run 接收 PAUSED，但进程被终止时
-        # 数据库保留的最后 checkpoint 是 RUNNING。这里只转换同一持久化 run 的
-        # 执行态，由 Agno 已保存的 step results 决定续点；CANCELLED/COMPLETED
-        # 仍在上方失败关闭，Reporting 业务恢复事实继续来自数据库 durable state。
-        output.status = RunStatus.paused
-        output = await workflow.acontinue_run(
-            run_response=output,
+    try:
+        if status == "running":
+            # Agno Workflow 2.8.2 只允许 acontinue_run 接收 PAUSED，但进程被终止时
+            # 数据库保留的最后 checkpoint 是 RUNNING。这里只转换同一持久化 run 的
+            # 执行态，由 Agno 已保存的 step results 决定续点。
+            output.status = RunStatus.paused
+            output = await workflow.acontinue_run(
+                run_response=output,
+                dependencies=dependencies,
+                stream=False,
+            )
+        output = await _continue_workflow_reviews(
+            workflow,
+            output,
             dependencies=dependencies,
-            stream=False,
+            read=read,
+            write=write,
+            retry_delivery_error=True,
         )
-    output = await _continue_workflow_reviews(
-        workflow,
-        output,
-        dependencies=dependencies,
-        read=read,
-        write=write,
-        retry_delivery_error=True,
-    )
+    except (ReportingError, ValueError):
+        raise
+    except BaseException:
+        await _finalize_cli_run(
+            runtime,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            status="failed",
+        )
+        raise
     status = _status(output)
     await _finalize_cli_run(
         runtime,
@@ -521,6 +548,56 @@ async def _update_cli_run_status(
             status=status,
             finalization_pending=finalization_pending,
         )
+
+
+async def _finish_pending_cli_terminal(
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    database: str,
+    company_id: str,
+    status: str,
+) -> bool:
+    repository = getattr(runtime, "state_repository", None)
+    get_run = getattr(repository, "get_run", None)
+    if not callable(get_run):
+        return False
+    stored = await get_run(run_id)
+    if stored is None or not bool(stored.get("finalization_pending")):
+        return False
+    expected_identity = {
+        "report_run_id": run_id,
+        "external_run_id": run_id,
+        "entrypoint": "cli",
+        "workflow_id": "enterprise-reporting-workflow-v1",
+        "agno_session_id": session_id,
+        "agno_run_id": run_id,
+        "caller_session_id": session_id,
+        "caller_run_id": run_id,
+        "thread_id": session_id,
+        "owner_user_id": user_id,
+        "database": database,
+        "company_id": company_id,
+    }
+    if any(str(stored.get(key) or "") != value for key, value in expected_identity.items()):
+        raise ReportingError(
+            "report_workflow_scope_mismatch",
+            "Reporting 父运行不属于当前 CLI、租户或 session。",
+        )
+    if status not in {"cancelled", "failed"} or str(stored.get("status") or "") != status:
+        raise ReportingError(
+            "report_workflow_resume_invalid",
+            "Agno 终态与 Reporting 父运行不一致。",
+        )
+    await runtime.cleanup_terminal(
+        _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+        session_id,
+        run_id,
+    )
+    await _update_cli_run_status(runtime, run_id, status, finalization_pending=False)
+    return True
 
 
 async def _finalize_cli_run(

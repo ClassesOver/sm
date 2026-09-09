@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections import deque
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import delete, update
+from sqlalchemy import delete, insert, text, update
 
 from smart_reporting.reporting.workflow import state as reporting_state_module
 from smart_reporting.reporting.workflow.checkpoint import (
@@ -167,7 +168,7 @@ class _RecordingConnection:
         self.update_rowcounts = deque(update_rowcounts)
         self.run_sync_calls = 0
 
-    async def execute(self, statement: Any) -> _FakeResult:
+    async def execute(self, statement: Any, _parameters: Any = None) -> _FakeResult:
         self.statements.append(statement)
         if getattr(statement, "is_update", False):
             rowcount = self.update_rowcounts.popleft() if self.update_rowcounts else 1
@@ -177,6 +178,10 @@ class _RecordingConnection:
         if getattr(statement, "is_select", False):
             return _FakeResult(row=self.row)
         return _FakeResult()
+
+    async def scalar(self, statement: Any) -> bool:
+        self.statements.append(statement)
+        return False
 
     async def run_sync(self, callback) -> None:
         self.run_sync_calls += 1
@@ -272,6 +277,8 @@ async def test_repository_initialize_legacy_upgrade_sql_is_repeatable() -> None:
         or "UPDATE agentos_reporting" in str(statement)
         or "VALIDATE CONSTRAINT" in str(statement)
         or "CREATE SCHEMA IF NOT EXISTS" in str(statement)
+        or "pg_advisory_xact_lock" in str(statement)
+        or "SELECT EXISTS" in str(statement)
         for statement in connection.statements
     )
 
@@ -382,6 +389,102 @@ async def test_repository_reads_parent_run_by_report_and_external_identity() -> 
 
     selects = [item for item in connection.statements if getattr(item, "is_select", False)]
     assert len(selects) == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_repository_serializes_first_schema_initialization_across_engines() -> None:
+    database_url = _integration_database_url()
+    first_database = create_agent_database(database_url)
+    second_database = create_agent_database(database_url)
+    try:
+        async with first_database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+
+        first = ReportingStateRepository(first_database.async_db)
+        second = ReportingStateRepository(second_database.async_db)
+        await asyncio.gather(first.initialize(), second.initialize())
+
+        async with first_database.async_engine.connect() as connection:
+            table_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema = 'agentos_reporting'"
+                )
+            )
+        assert table_count == 5
+    finally:
+        async with first_database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+        await first_database.async_engine.dispose()
+        first_database.sync_engine.dispose()
+        await second_database.async_engine.dispose()
+        second_database.sync_engine.dispose()
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_repository_rejects_legacy_state_parent_identity_conflict() -> None:
+    database = create_agent_database(_integration_database_url())
+    repository = ReportingStateRepository(database.async_db)
+    now = datetime(2026, 9, 9, tzinfo=UTC)
+    try:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+            await connection.execute(text("CREATE SCHEMA agentos_reporting"))
+            await connection.run_sync(repository.runs.create)
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE agentos_reporting.reporting_run_states (
+                        report_run_id VARCHAR(256) PRIMARY KEY,
+                        external_run_id VARCHAR(256) NOT NULL UNIQUE,
+                        thread_id VARCHAR(256) NOT NULL,
+                        owner_user_id VARCHAR(256) NOT NULL,
+                        revision BIGINT NOT NULL,
+                        schema_version BIGINT NOT NULL,
+                        state_version BIGINT NOT NULL,
+                        phase VARCHAR(64) NOT NULL,
+                        payload JSON NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                insert(repository.runs).values(
+                    **_run_row(
+                        external_run_id="external-run",
+                        owner_user_id="wrong-owner",
+                    )
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO agentos_reporting.reporting_run_states (
+                        report_run_id, external_run_id, thread_id, owner_user_id,
+                        revision, schema_version, state_version, phase, payload,
+                        created_at, updated_at
+                    ) VALUES (
+                        'report-run', 'external-run', 'thread', 'user',
+                        1, 1, 0, 'analysis_running', '{}'::json, :now, :now
+                    )
+                    """
+                ),
+                {"now": now},
+            )
+
+        with pytest.raises(ReportingStateError) as conflict:
+            await repository.initialize()
+
+        assert conflict.value.code == "report_run_legacy_identity_conflict"
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 def test_submit_visualization_charts_persists_section_submission() -> None:
