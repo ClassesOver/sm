@@ -33,6 +33,13 @@ from smart_reporting.reporting.phase import (
 from smart_reporting.reporting.tools.capabilities import tools_for_task
 from smart_reporting.reporting.tools.context import ReportingOutputPolicy
 from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidenceDecision,
+    AnalysisSummaryDraft,
+)
+from smart_reporting.reporting.workflow.runtime.phase_models import (
+    VisualizationPlanDraft,
+)
 
 
 def _settings() -> object:
@@ -46,6 +53,58 @@ def _chart_patch() -> dict[str, str]:
             "@@ -0,0 +1 @@\n+print('chart')"
         )
     }
+
+
+class _OfflineCodeAgent:
+    def __init__(self) -> None:
+        self.tools: list[object] = []
+
+    async def arun(self, prompt: str, **_kwargs: object) -> object:
+        payload = json.loads(prompt)
+        tool = self.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=payload["scriptPath"])
+        path = payload["scriptPath"]
+        repair = "readReceipt" in payload["facts"]
+        patch = (
+            f"--- {'a/' + path if repair else '/dev/null'}\n"
+            f"+++ b/{path}\n"
+            f"@@ {'-1 +1' if repair else '-0,0 +1'} @@\n"
+            + ("-print('probe')\n+print('repaired')" if repair else "+print('probe')")
+        )
+        return await tool.entrypoint(patch=patch)
+
+
+class _OfflineStructuredExecutor:
+    def __init__(self, agent: object) -> None:
+        self.output_schema = agent.output_schema
+
+    async def run(self, _prompt: str, **_kwargs: object) -> object:
+        if self.output_schema is AnalysisEvidenceDecision:
+            return AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少 2025-04 成本事实。",
+                missingFacts=("2025-04 outpatient cost",),
+            )
+        if self.output_schema is AnalysisSummaryDraft:
+            return AnalysisSummaryDraft(summary="已完成补证。", warnings=())
+        if self.output_schema is VisualizationPlanDraft:
+            return VisualizationPlanDraft(
+                charts=(
+                    probe_module.ChartDraft(
+                        chartId="chart_001",
+                        sourcePath="analysis/charts/outpatient_operation/chart.png",
+                        title="门诊趋势",
+                        altText="门诊收入与成本率趋势",
+                        citationIds=("citation-001",),
+                        metricCodes=("outpatient_revenue",),
+                        currentPeriod="2025-01 至 2025-06",
+                        sourceDatasetId="dataset-001",
+                        aggregationGrain="month",
+                    ),
+                )
+            )
+        raise AssertionError(f"unexpected schema: {self.output_schema}")
 
 
 def test_probe_passes_cli_task_json_only_as_run_input() -> None:
@@ -223,8 +282,36 @@ def test_probe_records_model_call_that_is_not_visible_in_current_projection() ->
 
 
 @pytest.mark.anyio
-async def test_probe_recovery_starts_with_production_visible_script_reads() -> None:
-    scenario = next(item for item in probe_scenarios() if item.name == "visualization-recovery")
+@pytest.mark.parametrize("scenario_name", ["analysis-script-context", "visualization-recovery"])
+async def test_probe_recovery_requires_script_repair(scenario_name: str) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
+    recorder = ProbeRecorder(_runtime(), scenario)
+    patch = (
+        "--- /dev/null\n"
+        f"+++ b/{'analysis/output/supplement.py' if scenario.task_kind == 'analysis_item' else 'analysis/output/outpatient_chart.py'}\n"
+        "@@ -0,0 +1 @@\n+print('probe')"
+    )
+    await recorder.invoke("apply_analysis_patch", {"patch": patch})
+
+    first = await recorder.invoke(
+        "run_python_script",
+        {"script_path": recorder.committed_script_path, "timeout": 30},
+    )
+    second = await recorder.invoke(
+        "run_python_script",
+        {"script_path": recorder.committed_script_path, "timeout": 30},
+    )
+
+    assert first["ok"] is False
+    assert second["ok"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario_name", ["analysis-script-context", "visualization-recovery"])
+async def test_probe_fixed_workflow_owns_recovery_after_coding_agent_stops(
+    monkeypatch: pytest.MonkeyPatch, scenario_name: str
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
     context = _build_probe_run_context(
         scenario,
         model_tier="fast",
@@ -238,12 +325,43 @@ async def test_probe_recovery_starts_with_production_visible_script_reads() -> N
         scenario,
         context,
     )
-    await recorder.prepare()
+    monkeypatch.setattr(probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor)
+    monkeypatch.setattr(
+        probe_module,
+        "create_reporting_generator_agent",
+        lambda **kwargs: SimpleNamespace(output_schema=kwargs["output_schema"]),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "create_reporting_code_agent",
+        lambda **_kwargs: _OfflineCodeAgent(),
+    )
 
-    visible = _probe_visible_tool_names(context, tools)
+    with bind_reporting_run_context(context):
+        if scenario.task_kind == "analysis_item":
+            await probe_module._run_fixed_analysis_scenario(
+                scenario, SimpleNamespace(id="test"), recorder, context
+            )
+        else:
+            await probe_module._run_fixed_visualization_scenario(
+                scenario, SimpleNamespace(id="test"), recorder, context
+            )
 
-    assert {"read_file", "read_tool_output"}.issubset(visible)
-    assert "view_image" not in visible
+    names = [call["name"] for call in recorder.calls]
+    first_patch = names.index("apply_analysis_patch")
+    first_run = names.index("run_python_script", first_patch)
+    repair_read = names.index("read_file", first_run)
+    repair_patch = names.index("apply_analysis_patch", repair_read)
+    second_run = names.index("run_python_script", repair_patch)
+    assert first_patch < first_run < repair_read < repair_patch < second_run
+    assert all(
+        set(call["arguments"]) == {"patch"}
+        for call in recorder.calls
+        if call["name"] == "apply_analysis_patch"
+    )
+    assert names[-1] == scenario.completion_tool
+    if scenario.task_kind == "visualization_section":
+        assert names[-2:] == ["inspect_chart", "submit_visualization_charts"]
 
 
 @pytest.mark.anyio
@@ -508,7 +626,7 @@ def test_probe_scenarios_only_require_conditional_tools_after_their_precondition
     assert "query_analysis_facts" not in scenarios["analysis-truncated-output"].tool_names
     assert "query_analysis_context" not in scenarios["analysis-script-context"].tool_names
     assert scenarios["analysis-truncated-output"].branch == "truncated"
-    assert scenarios["analysis-script-context"].branch == "script"
+    assert scenarios["analysis-script-context"].branch == "recovery"
     assert scenarios["visualization-preview-truncated"].branch == "preview"
     assert scenarios["visualization-inspection"].branch == "inspection"
     assert "inspect_chart" not in scenarios["visualization-preview-truncated"].tool_names

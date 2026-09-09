@@ -8,7 +8,6 @@ import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-import difflib
 import hashlib
 import json
 import os
@@ -44,6 +43,7 @@ from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_tools,
     _report_model_tool_name,
+    create_reporting_code_agent,
     create_reporting_generator_agent,
 )
 from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
@@ -95,14 +95,16 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (  # noqa: E
     RenderSectionDecision,
     SectionDecision,
     SectionDecisionOutput,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (  # noqa: E402 - 同上
     AnalysisEvidenceDecision,
-    AnalysisEvidencePlan,
     AnalysisItemWorkflow,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
+)
+from smart_reporting.reporting.workflow.runtime.code_generation import (  # noqa: E402 - 同上
+    CodeGenerationResult,
+    ReportingCodeGenerationRunner,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noqa: E402 - 同上
     SectionWorkflow,
@@ -291,7 +293,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
                 "complete_analysis_item",
             ),
             "complete_analysis_item",
-            "script",
+            "recovery",
         ),
         ProbeScenario(
             "visualization-recovery",
@@ -518,7 +520,7 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
                 "冻结 facts 已绑定已确认 Profile，当前管理问题不需要额外事实；规划阶段不得补证，"
                 "随后生成摘要并提交。"
             )
-        elif scenario.branch == "script":
+        elif scenario.branch in {"script", "recovery"}:
             result["executionDirective"] = (
                 "规划阶段必须返回最小补证脚本；由固定 Workflow 写入后通过 run_python_script "
                 "执行 supplement.py、"
@@ -586,8 +588,8 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
         if scenario.branch == "recovery":
             result["visualizationRecovery"] = True
             result["executionDirective"] = (
-                "当前签发脚本来自上次失败尝试。先读取一次 visualizationWorkspace.scriptPath，"
-                "再用回执中的文件 SHA 覆盖修复该脚本；执行签发脚本、正式审查最终图表后提交。"
+                "首次脚本执行会模拟失败；固定 Workflow 随后读取签发脚本，"
+                "交给 fresh Coding Agent 修复，再执行、正式审查最终图表并提交。"
             )
         elif scenario.branch == "preview":
             result["executionDirective"] = (
@@ -732,19 +734,13 @@ class ProbeRecorder:
     output_handle: str | None = None
     output_consumed: bool = False
     script_completed: bool = False
+    script_executions: int = 0
     committed_script_path: str | None = None
     committed_script_sha256: str | None = None
     tools: list[Function] = field(default_factory=list)
 
     async def prepare(self) -> None:
-        if self.scenario is None or self.scenario.branch != "recovery":
-            return
-        identity = await self.runtime.workspace.write_text(
-            "analysis/output/outpatient_chart.py",
-            "raise RuntimeError('previous attempt failed')\n",
-        )
-        self.committed_script_path = identity.path
-        self.committed_script_sha256 = identity.sha256
+        return
 
     def _truncated(self) -> bool:
         return self.scenario is not None and self.scenario.branch in {
@@ -785,6 +781,7 @@ class ProbeRecorder:
         if self.scenario.task_kind == "analysis_item" and self.scenario.branch in {
             "profile",
             "script",
+            "recovery",
         }:
             return "analysis/output/supplement.py"
         return None
@@ -864,7 +861,10 @@ class ProbeRecorder:
                     ),
                 )
                 raw_content = await workspace.read_bytes(identity.path)
-            if self.scenario is not None and self.scenario.task_kind == "analysis_item":
+            if self.scenario is not None and self.scenario.task_kind in {
+                "analysis_item",
+                "visualization_section",
+            }:
                 offset = int(arguments.get("offset", 0))
                 max_bytes = int(arguments.get("max_bytes", len(raw_content)))
                 end = min(len(raw_content), offset + max_bytes)
@@ -872,6 +872,8 @@ class ProbeRecorder:
                     end = min(end, offset + max(1, len(raw_content) // 2))
                 return {
                     "ok": True,
+                    "path": path,
+                    "offset": offset,
                     "content": raw_content[offset:end].decode("ascii"),
                     "sha256": hashlib.sha256(raw_content).hexdigest(),
                     "totalBytes": len(raw_content),
@@ -908,13 +910,7 @@ class ProbeRecorder:
                     "handle": self.output_handle,
                     "nextOffset": 24,
                 }
-            response = {"ok": True, "content": content}
-            if self.scenario is not None and self.scenario.branch == "recovery":
-                # 生产 Reporting 包装会在 recovery 读取成功后追加同一机器可读契约；
-                # probe 绕过 Toolkit 执行包装，因此必须在 mock 边界保持回执同形。
-                response["nextTool"] = "apply_analysis_patch"
-                response["requiredFields"] = ["patch", "expected_sha256"]
-            return response
+            return {"ok": True, "content": content}
         if name == "run_python_script":
             script_path = str(arguments["script_path"])
             issued_script_path = self._issued_script_path()
@@ -938,7 +934,8 @@ class ProbeRecorder:
                     )
             if (
                 self.scenario is not None
-                and self.scenario.branch == "script"
+                and self.scenario.task_kind == "analysis_item"
+                and self.scenario.branch in {"script", "recovery"}
                 and self.committed_script_path is None
             ):
                 return self._reject(
@@ -946,6 +943,20 @@ class ProbeRecorder:
                     "必须先提交核验脚本。",
                     required_actions=["先用 apply_analysis_patch 提交核验脚本。"],
                 )
+            self.script_executions += 1
+            if (
+                self.scenario is not None
+                and self.scenario.branch == "recovery"
+                and self.script_executions == 1
+            ):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "code": "probe_script_failed",
+                    "message": "首次执行故意失败，以验证受控修复流程。",
+                    "exit_code": 1,
+                    "output": "probe recovery required",
+                }
             result = await workspace.execute_script(
                 script_path,
                 timeout=int(arguments.get("timeout", 30)),
@@ -994,7 +1005,13 @@ class ProbeRecorder:
             return {
                 "ok": True,
                 "status": "committed",
-                "artifacts": [{"path": identity.path, "sha256": identity.sha256}],
+                "artifacts": [
+                    {
+                        "path": identity.path,
+                        "size": len(b"print('probe')\n"),
+                        "sha256": identity.sha256,
+                    }
+                ],
             }
         if name == "query_profile":
             return {
@@ -1246,7 +1263,7 @@ async def _run_fixed_analysis_scenario(
     """用生产同形的五阶段 AnalysisItemWorkflow 执行 analysis probe。"""
 
     stage_input = _cli_stage_input(scenario)
-    supplemental = scenario.branch == "script"
+    supplemental = scenario.branch in {"script", "recovery"}
     scope = TaskExecutionScope(
         str(run_context.run_id),
         str(run_context.user_id),
@@ -1259,87 +1276,41 @@ async def _run_fixed_analysis_scenario(
         output_schema=AnalysisEvidenceDecision,
         name=f"probe-{scenario.name}-decision",
     )
-    script_agent = create_reporting_generator_agent(
-        model=model,
-        output_schema=AnalysisScriptDraft,
-        name=f"probe-{scenario.name}-script",
-    )
     summarizer = create_reporting_generator_agent(
         model=model,
         output_schema=AnalysisSummaryDraft,
         name=f"probe-{scenario.name}-summarizer",
     )
+    code_runner = ReportingCodeGenerationRunner(
+        agent_factory=lambda: create_reporting_code_agent(
+            model=model,
+            name=f"probe-{scenario.name}-code",
+            instructions=[
+                "脚本必须写入 facts.scriptPath，并将有效 JSON evidence 写入 facts.evidencePath。"
+            ],
+        )
+    )
 
-    async def plan_evidence(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        previous_plan = None
-        if repair:
-            correction = payload.get("correction")
-            if isinstance(correction, Mapping):
-                previous_plan = AnalysisEvidencePlan.model_validate(correction.get("previousPlan"))
-        decision = (
-            AnalysisEvidenceDecision(
-                requiresSupplementalEvidence=True,
-                reason=previous_plan.reason,
-                missingFacts=previous_plan.missing_facts,
-            )
-            if previous_plan is not None
-            else cast(
-                AnalysisEvidenceDecision,
-                await ReportingStructuredOutputExecutor(decision_agent).run(
-                    json.dumps(
-                        {
-                            "stage": "decide_supplemental_evidence",
-                            "requiredDecision": {
-                                "requiresSupplementalEvidence": supplemental,
-                                "missingFacts": (
-                                    ["2025-04 outpatient cost"] if supplemental else []
-                                ),
-                            },
-                            "task": stage_input,
-                            "input": payload,
+    async def decide_evidence(payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        return cast(
+            AnalysisEvidenceDecision,
+            await ReportingStructuredOutputExecutor(decision_agent).run(
+                json.dumps(
+                    {
+                        "stage": "decide_supplemental_evidence",
+                        "requiredDecision": {
+                            "requiresSupplementalEvidence": supplemental,
+                            "missingFacts": ["2025-04 outpatient cost"] if supplemental else [],
                         },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    scope=scope,
-                    run_context=run_context,
+                        "task": stage_input,
+                        "input": payload,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 ),
-            )
-        )
-        if not decision.requires_supplemental_evidence:
-            return AnalysisEvidencePlan(
-                requiresSupplementalEvidence=False,
-                reason=decision.reason,
-                missingFacts=(),
-                script=None,
-            )
-        instruction = json.dumps(
-            {
-                "stage": "repair_evidence_script" if repair else "write_evidence_script",
-                "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
-                "previousScript": previous_plan.script if previous_plan is not None else None,
-                "scriptRequirement": (
-                    "Return a Python script that writes the signed evidencePath as valid JSON."
-                ),
-                "task": stage_input,
-                "input": payload,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        draft = cast(
-            AnalysisScriptDraft,
-            await ReportingStructuredOutputExecutor(script_agent).run(
-                instruction,
                 scope=scope,
                 run_context=run_context,
             ),
-        )
-        return AnalysisEvidencePlan(
-            requiresSupplementalEvidence=True,
-            reason=decision.reason,
-            missingFacts=decision.missing_facts,
-            script=draft.script,
         )
 
     async def summarize(payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
@@ -1372,6 +1343,27 @@ async def _run_fixed_analysis_scenario(
         arguments.pop("run_context", None)
         return await recorder.invoke("apply_analysis_patch", arguments)
 
+    async def generate_script(
+        *, script_path: str, task_facts: Mapping[str, Any], run_context: RunContext
+    ) -> CodeGenerationResult:
+        return await code_runner.generate(script_path, task_facts, apply_patch, run_context)
+
+    async def repair_script(
+        *,
+        script_file: FileIdentity,
+        diagnostic: Mapping[str, Any],
+        decision: AnalysisEvidenceDecision,
+        run_context: RunContext,
+    ) -> CodeGenerationResult:
+        return await code_runner.repair(
+            script_file,
+            diagnostic,
+            read_file,
+            apply_patch,
+            run_context,
+            task_facts={"missingFacts": list(decision.missing_facts)},
+        )
+
     async def run_script(**arguments: Any) -> dict[str, Any]:
         arguments.pop("run_context", None)
         execution = await recorder.invoke(
@@ -1385,10 +1377,11 @@ async def _run_fixed_analysis_scenario(
         return await recorder.invoke("complete_analysis_item", arguments)
 
     await AnalysisItemWorkflow(
-        plan_evidence=plan_evidence,
+        decide_evidence=decide_evidence,
+        generate_script=generate_script,
+        repair_script=repair_script,
         summarize=summarize,
         read_file=read_file,
-        apply_patch=apply_patch,
         run_script=run_script,
         complete=complete,
     ).run(stage_input, run_context)
@@ -1396,34 +1389,41 @@ async def _run_fixed_analysis_scenario(
 
 async def _run_fixed_visualization_scenario(
     scenario: ProbeScenario,
-    prompt: str,
     model: ReportingPhaseOpenAIChat,
     recorder: ProbeRecorder,
     run_context: RunContext,
 ) -> None:
     """用生产同形的固定 Workflow 执行可视化 probe。"""
 
+    stage_input = _cli_stage_input(scenario)
     signed_script = "analysis/output/outpatient_chart.py"
-    baseline_source: str | None = None
-    if scenario.branch == "recovery":
-        receipt = await recorder.invoke("read_file", {"path": signed_script})
-        if receipt.get("ok") is not True:
-            raise RuntimeError("visualization recovery script read failed")
-        baseline_source = str(receipt.get("content") or "")
-
-    generator = create_reporting_generator_agent(
+    planner = create_reporting_generator_agent(
         model=model,
-        output_schema=VisualizationScriptDraft,
-        name=f"probe-{scenario.name}-generator",
+        output_schema=VisualizationPlanDraft,
+        name=f"probe-{scenario.name}-planner",
+    )
+    code_runner = ReportingCodeGenerationRunner(
+        agent_factory=lambda: create_reporting_code_agent(
+            model=model,
+            name=f"probe-{scenario.name}-code",
+            instructions=[
+                "脚本必须写入 facts.visualizationWorkspace.scriptPath，"
+                "并生成 visualizationPlan 中全部 sourcePath。"
+            ],
+        )
     )
 
-    async def generate(
-        _payload: Mapping[str, Any], task_context: RunContext
-    ) -> VisualizationScriptDraft:
+    async def generate_plan(
+        payload: Mapping[str, Any], task_context: RunContext
+    ) -> VisualizationPlanDraft:
         return cast(
-            VisualizationScriptDraft,
-            await ReportingStructuredOutputExecutor(generator).run(
-                prompt,
+            VisualizationPlanDraft,
+            await ReportingStructuredOutputExecutor(planner).run(
+                json.dumps(
+                    {"stage": "plan_visualization", "task": payload},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
                 scope=TaskExecutionScope(
                     str(task_context.run_id),
                     str(task_context.user_id),
@@ -1435,34 +1435,42 @@ async def _run_fixed_visualization_scenario(
             ),
         )
 
-    async def write_script(path: str, source: str, _task_context: RunContext) -> FileIdentity:
-        if path != signed_script:
-            raise RuntimeError("visualization generator changed signed script path")
-        patch = "".join(
-            difflib.unified_diff(
-                [] if baseline_source is None else baseline_source.splitlines(keepends=True),
-                source.splitlines(keepends=True),
-                fromfile="/dev/null" if baseline_source is None else f"a/{path}",
-                tofile=f"b/{path}",
-            )
-        )
-        receipt = await recorder.invoke(
-            "apply_analysis_patch",
+    async def read_file(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("read_file", arguments)
+
+    async def apply_patch(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("apply_analysis_patch", arguments)
+
+    async def generate_script(
+        plan: VisualizationPlanDraft, task_context: RunContext
+    ) -> CodeGenerationResult:
+        return await code_runner.generate(
+            signed_script,
             {
-                "patch": patch,
-                **(
-                    {"expected_sha256": {path: recorder.committed_script_sha256}}
-                    if recorder.committed_script_sha256 is not None
-                    else {}
-                ),
+                "visualizationFacts": stage_input["visualizationFacts"],
+                "visualizationWorkspace": stage_input["visualizationWorkspace"],
+                "visualizationPlan": plan.model_dump(mode="json", by_alias=True),
             },
+            apply_patch,
+            task_context,
         )
-        artifacts = receipt.get("artifacts")
-        if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
-            raise RuntimeError("visualization script write failed")
-        artifact = dict(artifacts[0])
-        artifact.setdefault("size", len(source.encode("utf-8")))
-        return FileIdentity.model_validate(artifact)
+
+    async def repair_script(
+        script_file: FileIdentity,
+        diagnostic: Mapping[str, Any],
+        task_facts: Mapping[str, Any],
+        task_context: RunContext,
+    ) -> CodeGenerationResult:
+        return await code_runner.repair(
+            script_file,
+            diagnostic,
+            read_file,
+            apply_patch,
+            task_context,
+            task_facts=task_facts,
+        )
 
     async def execute_script(script_path: str, _task_context: RunContext) -> Mapping[str, Any]:
         execution = await recorder.invoke(
@@ -1491,7 +1499,7 @@ async def _run_fixed_visualization_scenario(
         )
 
     async def submit(
-        draft: VisualizationScriptDraft,
+        plan: VisualizationPlanDraft,
         _inspections: tuple[ChartVisualInspectionReceipt, ...],
         _task_context: RunContext,
     ) -> Mapping[str, Any]:
@@ -1499,18 +1507,18 @@ async def _run_fixed_visualization_scenario(
             "submit_visualization_charts",
             {
                 "sectionCode": "outpatient_operation",
-                "charts": [chart.model_dump(mode="json", by_alias=True) for chart in draft.charts],
+                "charts": [chart.model_dump(mode="json", by_alias=True) for chart in plan.charts],
             },
         )
 
     await VisualizationSectionWorkflow(
-        generate=generate,
-        recover=None,
-        write_script=write_script,
+        generate_plan=generate_plan,
+        generate_script=generate_script,
+        repair_script=repair_script,
         execute_script=execute_script,
         inspect_chart=inspect_chart,
         submit=submit,
-    ).run(_cli_stage_input(scenario), run_context)
+    ).run(stage_input, run_context)
 
 
 async def _run_fixed_section_scenario(
@@ -1606,7 +1614,6 @@ async def _run_scenario(
     timeout_seconds: int,
 ) -> dict[str, Any]:
     runtime = _runtime()
-    prompt = complex_cli_prompt(scenario)
     projection = ProbeToolProjection()
     model = _build_model(
         settings,
@@ -1633,9 +1640,7 @@ async def _run_scenario(
         if scenario.task_kind == "analysis_item":
             return await _run_fixed_analysis_scenario(scenario, model, recorder, run_context)
         if scenario.task_kind == "visualization_section":
-            return await _run_fixed_visualization_scenario(
-                scenario, prompt, model, recorder, run_context
-            )
+            return await _run_fixed_visualization_scenario(scenario, model, recorder, run_context)
         return await _run_fixed_section_scenario(scenario, model, recorder, run_context)
 
     started = time.perf_counter()
