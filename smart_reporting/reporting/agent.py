@@ -921,7 +921,7 @@ def _stop_rejected_analysis_patch(
     run_context: RunContext,
     result: Mapping[str, Any],
 ) -> None:
-    """关闭当前 Reporting attempt，让阶段层用新上下文重新读取并生成补丁。
+    """关闭当前 Reporting attempt，让阶段层用新上下文重新读取并生成源码。
 
     patch 拒绝说明模型持有的文件上下文、SHA 或 diff 结构已经不能继续使用；在同一
     上下文里让模型修补会把错误 hunk 和过期事实继续累积，容易形成长尾死循环。这里只
@@ -948,7 +948,7 @@ def _stop_rejected_analysis_patch(
         "runDisposition": "stop_current_run",
         "recovery": {"kind": "fresh_task_retry"},
         "requiredActions": [
-            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须按当前签发路径与文件状态生成完整标准 unified diff。"
+            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须重新读取当前签发文件并生成完整 Python 源码，由 Workflow 重建 patch。"
         ],
     }
     serialized = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
@@ -2990,9 +2990,13 @@ def _reporting_code_model(model: Any) -> ReportingCodeOpenAIChat:
     code_model = ReportingCodeOpenAIChat(
         **{field.name: getattr(model, field.name) for field in fields(model)}
     )
-    budget = getattr(model, "_task_execution_input_token_budget", None)
-    if isinstance(budget, int) and budget > 0:
-        code_model._task_execution_input_token_budget = budget
+    for attribute in (
+        "_task_execution_input_token_budget",
+        "_report_escalation_thinking_profile",
+        "_report_thinking_escalation_fields",
+    ):
+        if hasattr(model, attribute):
+            setattr(code_model, attribute, getattr(model, attribute))
     return code_model
 
 

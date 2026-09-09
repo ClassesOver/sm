@@ -83,13 +83,13 @@ REPORTING_PHASE_COMMON_INSTRUCTIONS = [
 REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     "分析事实决策、补充脚本生成、执行和提交均由固定 Workflow 编排。",
     "结构化生成器只返回 AnalysisEvidenceDecision，不返回 Python 源码或工作区操作。",
-    "Coding Agent 首次只提交 patch；修复时由 Workflow 先读取签发脚本，再启动 fresh Agent 提交 patch。",
+    "Coding Agent 首次只提交完整 Python 源码；修复时由 Workflow 先读取签发脚本，再启动 fresh Agent 提交完整修复源码，patch 由 Workflow 构造。",
 ]
 
 REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
     "图表计划、脚本生成、执行、检查和提交均由固定 Workflow 编排。",
     "结构化生成器只返回 VisualizationPlanDraft，不返回 Python 源码或工作区操作。",
-    "Coding Agent 首次只提交 patch；修复时由 Workflow 先读取签发脚本，再启动 fresh Agent 提交 patch。",
+    "Coding Agent 首次只提交完整 Python 源码；修复时由 Workflow 先读取签发脚本，再启动 fresh Agent 提交完整修复源码，patch 由 Workflow 构造。",
 ]
 
 # 章节 run 已由 Workflow 投影为独立 SectionWorkItem，不再承担数据分析或工作区开发。

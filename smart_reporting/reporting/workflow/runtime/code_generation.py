@@ -649,6 +649,14 @@ class ReportingCodeGenerationRunner:
             prompt = {
                 "scriptPath": script_path,
                 "facts": dict(task_facts),
+                "sourceProtocol": {
+                    "path": script_path,
+                    "maxSourceBytes": max_source_bytes,
+                    "maxPhysicalLineBytes": MAX_PHYSICAL_LINE_BYTES,
+                    "minPhysicalLines": 2,
+                    "lineEnding": "LF",
+                    "trailingNewline": True,
+                },
             }
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)
