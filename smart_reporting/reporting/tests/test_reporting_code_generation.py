@@ -511,6 +511,29 @@ async def test_repair_rejects_illegal_task_facts_before_read(task_facts):
     assert raised.value.details == {"path": script.path}
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("task_facts", ["missing facts", ["missing facts"], object()])
+async def test_repair_rejects_non_mapping_task_facts_before_read(task_facts):
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(_agent):
+        pytest.fail("invalid task facts must fail before model invocation")
+
+    async def read_file(**_kwargs):
+        pytest.fail("invalid task facts must not read")
+
+    async def patch(**_kwargs):
+        pytest.fail("invalid task facts must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch, task_facts=task_facts
+        )
+
+    assert raised.value.code == "report_code_generation_task_facts_invalid"
+    assert raised.value.details == {"path": script.path}
+
+
 def agent_prompt_text(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False)
 

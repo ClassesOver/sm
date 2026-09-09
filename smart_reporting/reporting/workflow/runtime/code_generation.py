@@ -152,10 +152,16 @@ class ReportingCodeGenerationRunner:
 
     @classmethod
     def _repair_task_facts(
-        cls, task_facts: Mapping[str, Any] | None, script_path: str
+        cls, task_facts: Any, script_path: str
     ) -> dict[str, list[str]]:
         if task_facts is None:
             return {}
+        if not isinstance(task_facts, Mapping):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复任务事实必须是对象。",
+                script_path,
+            )
         missing_facts = task_facts.get("missingFacts")
         if missing_facts is None:
             return {}
