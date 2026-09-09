@@ -15,8 +15,11 @@ from agno.db.base import AsyncBaseDb
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     Column,
     DateTime,
+    ForeignKey,
+    Index,
     MetaData,
     String,
     Table,
@@ -66,10 +69,46 @@ class ReportingStateRepository:
         if dialect != "postgresql":
             raise ValueError("Reporting 状态仓储只支持 PostgreSQL。")
         self.metadata = MetaData(schema=REPORTING_DB_SCHEMA)
+        self.runs = Table(
+            "reporting_runs",
+            self.metadata,
+            Column("report_run_id", String(256), primary_key=True),
+            Column("external_run_id", String(256), nullable=False, unique=True),
+            Column("entrypoint", String(32), nullable=False),
+            Column("workflow_id", String(256), nullable=False),
+            Column("agno_session_id", String(256), nullable=False),
+            Column("agno_run_id", String(256), nullable=False),
+            Column("caller_session_id", String(256)),
+            Column("caller_run_id", String(256)),
+            Column("thread_id", String(256), nullable=False),
+            Column("owner_user_id", String(256), nullable=False),
+            Column("database", String(256), nullable=False),
+            Column("company_id", String(256), nullable=False),
+            Column("revision", BigInteger, nullable=False),
+            Column("status", String(32), nullable=False),
+            Column("finalization_pending", Boolean, nullable=False, default=False),
+            Column("created_at", DateTime(timezone=True), nullable=False),
+            Column("started_at", DateTime(timezone=True)),
+            Column("finished_at", DateTime(timezone=True)),
+            Column("updated_at", DateTime(timezone=True), nullable=False),
+            Index("ix_reporting_runs_agno_session_updated", "agno_session_id", "updated_at"),
+            Index("ix_reporting_runs_thread_status", "thread_id", "status"),
+            Index(
+                "uq_reporting_runs_agno_identity",
+                "agno_session_id",
+                "agno_run_id",
+                unique=True,
+            ),
+        )
         self.states = Table(
             "reporting_run_states",
             self.metadata,
-            Column("report_run_id", String(256), primary_key=True),
+            Column(
+                "report_run_id",
+                String(256),
+                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+                primary_key=True,
+            ),
             Column("external_run_id", String(256), nullable=False, unique=True),
             Column("thread_id", String(256), nullable=False),
             Column("owner_user_id", String(256), nullable=False),
@@ -84,7 +123,12 @@ class ReportingStateRepository:
         self.command_receipts = Table(
             "reporting_command_receipts",
             self.metadata,
-            Column("report_run_id", String(256), primary_key=True),
+            Column(
+                "report_run_id",
+                String(256),
+                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+                primary_key=True,
+            ),
             Column("command_id", String(256), primary_key=True),
             Column("fingerprint", String(64), nullable=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
@@ -93,6 +137,11 @@ class ReportingStateRepository:
             "reporting_workflow_thread_owners",
             self.metadata,
             Column("thread_id", String(256), primary_key=True),
+            Column(
+                "report_run_id",
+                String(256),
+                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+            ),
             Column("external_run_id", String(256), nullable=False),
             Column("owner_user_id", String(256), nullable=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
@@ -101,6 +150,11 @@ class ReportingStateRepository:
             "reporting_mcp_requests",
             self.metadata,
             Column("external_run_id", String(256), primary_key=True),
+            Column(
+                "report_run_id",
+                String(256),
+                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+            ),
             Column("request_fingerprint", String(64), nullable=False),
             Column("thread_id", String(256), nullable=False),
             Column("owner_user_id", String(256), nullable=False),
@@ -126,7 +180,108 @@ class ReportingStateRepository:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{REPORTING_DB_SCHEMA}"')
                 )
                 await connection.run_sync(self.metadata.create_all)
+                for table_name in ("reporting_mcp_requests", "reporting_workflow_thread_owners"):
+                    await connection.execute(
+                        text(
+                            f'ALTER TABLE "{REPORTING_DB_SCHEMA}"."{table_name}" '
+                            'ADD COLUMN IF NOT EXISTS report_run_id VARCHAR(256)'
+                        )
+                    )
             self._initialized = True
+
+    async def register_run(self, **values: Any) -> dict[str, Any]:
+        """登记 Reporting 顶层运行及其 Agno 身份；重复登记只读取首条绑定。"""
+
+        await self.initialize()
+        now = datetime.now(UTC)
+        row_values = {
+            "report_run_id": str(values["report_run_id"]),
+            "external_run_id": str(values["external_run_id"]),
+            "entrypoint": str(values.get("entrypoint") or "unknown"),
+            "workflow_id": str(values.get("workflow_id") or "enterprise-reporting-workflow-v1"),
+            "agno_session_id": str(values["agno_session_id"]),
+            "agno_run_id": str(values["agno_run_id"]),
+            "caller_session_id": values.get("caller_session_id"),
+            "caller_run_id": values.get("caller_run_id"),
+            "thread_id": str(values["thread_id"]),
+            "owner_user_id": str(values["owner_user_id"]),
+            "database": str(values.get("database") or "default"),
+            "company_id": str(values.get("company_id") or "default"),
+            "revision": int(values.get("revision") or 1),
+            "status": str(values.get("status") or "running"),
+            "finalization_pending": bool(values.get("finalization_pending")),
+            "created_at": values.get("created_at") or now,
+            "started_at": values.get("started_at") or now,
+            "updated_at": values.get("updated_at") or now,
+        }
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            statement: Any = postgresql_insert(self.runs).values(**row_values)
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[self.runs.c.report_run_id]
+            )
+            try:
+                await connection.execute(statement)
+            except IntegrityError as error:
+                raise ReportingStateError(
+                    "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+                ) from error
+            row = (
+                await connection.execute(
+                    select(self.runs).where(self.runs.c.report_run_id == row_values["report_run_id"])
+                )
+            ).first()
+        if row is None:
+            raise ReportingStateError("report_run_registration_failed", "Reporting run 登记失败。")
+        stored = dict(row._mapping)
+        for key in (
+            "external_run_id",
+            "entrypoint",
+            "workflow_id",
+            "agno_session_id",
+            "agno_run_id",
+            "thread_id",
+            "owner_user_id",
+            "database",
+            "company_id",
+            "revision",
+        ):
+            if stored[key] != row_values[key]:
+                raise ReportingStateError(
+                    "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+                )
+        return stored
+
+    async def attach_request_run(self, external_run_id: str, report_run_id: str) -> None:
+        await self.initialize()
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            await connection.execute(
+                update(self.mcp_requests)
+                .where(self.mcp_requests.c.external_run_id == external_run_id)
+                .values(report_run_id=report_run_id)
+            )
+
+    async def update_run_status(
+        self,
+        report_run_id: str,
+        *,
+        status: str,
+        finalization_pending: bool = False,
+    ) -> None:
+        await self.initialize()
+        now = datetime.now(UTC)
+        values: dict[str, Any] = {
+            "status": status,
+            "finalization_pending": finalization_pending,
+            "updated_at": now,
+        }
+        if status in {"completed", "cancelled", "failed"}:
+            values["finished_at"] = now
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            await connection.execute(
+                update(self.runs)
+                .where(self.runs.c.report_run_id == report_run_id)
+                .values(**values)
+            )
 
     @staticmethod
     def _state_from_row(row: Any) -> ReportingRunState:
@@ -185,8 +340,15 @@ class ReportingStateRepository:
         """原子占用 thread；暂停期间所有权继续保存在数据库中。"""
 
         await self.initialize()
+        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+            report_run_id = await connection.scalar(
+                select(self.runs.c.report_run_id).where(
+                    self.runs.c.external_run_id == external_run_id
+                )
+            )
         values = {
             "thread_id": thread_id,
+            "report_run_id": report_run_id,
             "external_run_id": external_run_id,
             "owner_user_id": owner_user_id,
             "created_at": datetime.now(UTC),
@@ -259,6 +421,7 @@ class ReportingStateRepository:
         value = row._mapping
         return {
             "thread_id": str(value["thread_id"]),
+            "report_run_id": str(value["report_run_id"]) if value.get("report_run_id") else None,
             "external_run_id": str(value["external_run_id"]),
             "owner_user_id": str(value["owner_user_id"]),
             "created_at": _utc(value["created_at"]),
@@ -270,8 +433,15 @@ class ReportingStateRepository:
         """在同一事务内恢复 owner，避免检查后被其他 run 替换。"""
 
         await self.initialize()
+        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+            report_run_id = await connection.scalar(
+                select(self.runs.c.report_run_id).where(
+                    self.runs.c.external_run_id == external_run_id
+                )
+            )
         values = {
             "thread_id": thread_id,
+            "report_run_id": report_run_id,
             "external_run_id": external_run_id,
             "owner_user_id": owner_user_id,
             "created_at": datetime.now(UTC),
@@ -316,6 +486,25 @@ class ReportingStateRepository:
         await self.initialize()
         if state.schema_version != REPORTING_STATE_SCHEMA_VERSION:
             raise ReportingStateVersionUnsupported()
+        await self.register_run(
+            report_run_id=state.report_run_id,
+            external_run_id=state.external_run_id,
+            entrypoint="unknown",
+            agno_session_id=state.thread_id,
+            agno_run_id=state.report_run_id,
+            thread_id=state.thread_id,
+            owner_user_id=state.owner_user_id,
+            revision=state.revision,
+            status=(
+                "completed"
+                if state.phase.value == "completed"
+                else "failed"
+                if state.phase.value == "failed"
+                else "running"
+            ),
+            created_at=state.created_at,
+            updated_at=state.updated_at,
+        )
         values = self._row_values(state)
         try:
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -452,6 +641,26 @@ class ReportingStateRepository:
                 }
             )
             await self._insert_command_receipts(connection, receipts)
+            status = (
+                "completed"
+                if result.state.phase.value == "completed"
+                else "failed"
+                if result.state.phase.value == "failed"
+                else "running"
+            )
+            await connection.execute(
+                update(self.runs)
+                .where(self.runs.c.report_run_id == report_run_id)
+                .values(
+                    status=status,
+                    updated_at=result.state.updated_at,
+                    finished_at=(
+                        result.state.updated_at
+                        if status in {"completed", "failed"}
+                        else None
+                    ),
+                )
+            )
             return result
 
     @asynccontextmanager

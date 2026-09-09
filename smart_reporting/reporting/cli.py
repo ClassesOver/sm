@@ -259,6 +259,14 @@ async def _drive_workflow_unlocked(
         "companyId": company_id,
     }
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
+    await _register_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
     try:
         output = await workflow.arun(
             report_input,
@@ -399,6 +407,15 @@ async def _resume_workflow_unlocked(
     write: Callable[[str], None],
 ) -> dict[str, Any]:
 
+    await _register_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
+
     output = await workflow.aget_run_output(
         run_id=run_id,
         session_id=session_id,
@@ -452,6 +469,35 @@ async def _resume_workflow_unlocked(
         "sessionId": session_id,
         "content": getattr(output, "content", None),
     }
+
+
+async def _register_cli_run(
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    database: str,
+    company_id: str,
+) -> None:
+    repository = getattr(runtime, "state_repository", None)
+    register = getattr(repository, "register_run", None)
+    if not callable(register):
+        return
+    await register(
+        report_run_id=run_id,
+        external_run_id=run_id,
+        entrypoint="cli",
+        workflow_id="enterprise-reporting-workflow-v1",
+        agno_session_id=session_id,
+        agno_run_id=run_id,
+        caller_session_id=session_id,
+        caller_run_id=run_id,
+        thread_id=session_id,
+        owner_user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
 
 
 async def run_cli(

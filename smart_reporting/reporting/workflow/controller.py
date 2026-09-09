@@ -99,6 +99,10 @@ class ReviewableWorkflow(Protocol):
 
 
 class WorkflowThreadOwnership(Protocol):
+    async def register_run(self, **values: Any) -> dict[str, Any]: ...
+
+    async def attach_request_run(self, external_run_id: str, report_run_id: str) -> None: ...
+
     async def register_external_request(self, **values: str) -> dict[str, Any]: ...
 
     async def claim_workflow_thread(
@@ -977,6 +981,12 @@ class ReportWorkflowController:
 
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
+        await self._register_reporting_run(
+            scope,
+            workflow_session_id=workflow_session_id,
+            workflow_run_id=workflow_run_id,
+            run_context=run_context,
+        )
         payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
         persisted_output = await self._load_run_output(
             workflow, workflow_run_id, workflow_session_id
@@ -1071,6 +1081,40 @@ class ReportWorkflowController:
         await self._finalize_control(control, scope, state=state)
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
         return self._result(control, output)
+
+    async def _register_reporting_run(
+        self,
+        scope: dict[str, str],
+        *,
+        workflow_session_id: str,
+        workflow_run_id: str,
+        run_context: RunContext | None,
+    ) -> None:
+        register = getattr(self._thread_ownership, "register_run", None)
+        if not callable(register):
+            return
+        dependencies = run_context.dependencies if run_context is not None else {}
+        is_mcp = isinstance(dependencies, dict) and bool(
+            dependencies.get(REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY)
+        )
+        await register(
+            report_run_id=workflow_run_id,
+            external_run_id=scope["external_run_id"],
+            entrypoint="mcp" if is_mcp else "agentos",
+            workflow_id=_WORKFLOW_ID,
+            agno_session_id=workflow_session_id,
+            agno_run_id=workflow_run_id,
+            caller_session_id=scope["thread_id"],
+            caller_run_id=scope["external_run_id"],
+            thread_id=scope["thread_id"],
+            owner_user_id=scope["user_id"],
+            database=scope["database"],
+            company_id=scope["company_id"],
+        )
+        if is_mcp:
+            attach = getattr(self._thread_ownership, "attach_request_run", None)
+            if callable(attach):
+                await attach(scope["external_run_id"], workflow_run_id)
 
     async def approve(self, run_context: RunContext | None) -> dict[str, Any]:
         return await self._continue(run_context, approve=True)
@@ -1194,6 +1238,13 @@ class ReportWorkflowController:
     ) -> None:
         if control.status in _ACTIVE_STATUSES:
             return
+        update_status = getattr(self._thread_ownership, "update_run_status", None)
+        if callable(update_status):
+            await update_status(
+                control.workflow_run_id,
+                status=control.status,
+                finalization_pending=control.status in {"cancelled", "failed"},
+            )
         # completed 的发布步骤已经在产物持久化后删除 sandbox；这里只覆盖没有发布
         # 收尾机会的取消和失败终态，避免成功路径二次清理反而遮蔽下载回执。
         if control.status in {"cancelled", "failed"}:

@@ -107,6 +107,34 @@ def test_repository_requires_postgresql() -> None:
         ReportingStateRepository(database)  # type: ignore[arg-type]
 
 
+def test_repository_models_run_identity_as_parent_aggregate() -> None:
+    database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+
+    repository = ReportingStateRepository(database)  # type: ignore[arg-type]
+
+    assert {
+        "report_run_id",
+        "external_run_id",
+        "entrypoint",
+        "workflow_id",
+        "agno_session_id",
+        "agno_run_id",
+        "caller_session_id",
+        "caller_run_id",
+        "thread_id",
+        "owner_user_id",
+        "database",
+        "company_id",
+        "revision",
+        "status",
+        "finalization_pending",
+    } <= set(repository.runs.c.keys())
+    assert repository.states.c.report_run_id.foreign_keys
+    assert repository.command_receipts.c.report_run_id.foreign_keys
+    assert repository.workflow_thread_owners.c.report_run_id.foreign_keys
+    assert repository.mcp_requests.c.report_run_id.nullable is True
+
+
 def test_submit_visualization_charts_persists_section_submission() -> None:
     result = ReportingStateReducer.apply(
         make_visualization_state(),
