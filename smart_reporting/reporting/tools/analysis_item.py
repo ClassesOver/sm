@@ -661,6 +661,15 @@ class RuntimeAnalysisMixin:
                 raise ReportingError(
                     "report_analysis_write_intent_invalid", "脚本写入意图状态无效。"
                 )
+            expected_sha256 = change.get("expected_sha256")
+            if change.get("operation") == "update" and (
+                not isinstance(expected_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+            ):
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid",
+                    "脚本更新意图缺少有效的原文件身份。",
+                )
             content = change["content"]
             desired = {
                 "path": path,
@@ -679,7 +688,8 @@ class RuntimeAnalysisMixin:
                 return None
             if (
                 change.get("operation") == "update"
-                and current.get("sha256") == change.get("expected_sha256")
+                and current.get("missing") is not True
+                and current.get("sha256") == expected_sha256
             ):
                 return None
             raise ReportingError(

@@ -660,6 +660,60 @@ async def test_signed_script_loader_leaves_pending_pre_mutation_for_normal_flow(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("expected_sha256", "expected_code"),
+    [
+        (None, "report_analysis_write_intent_invalid"),
+        ("a" * 64, "report_phase_artifact_changed"),
+    ],
+)
+async def test_signed_script_loader_rejects_missing_pending_update_baseline(
+    expected_sha256: str | None,
+    expected_code: str,
+) -> None:
+    path = "analysis/evidence/a1/supplement.py"
+    change = {
+        "operation": "update",
+        "path": path,
+        "content": "value = 2\nprint(value)\n",
+    }
+    if expected_sha256 is not None:
+        change["expected_sha256"] = expected_sha256
+    intent_id = "c" * 64
+    intent = {
+        "intentId": intent_id,
+        "status": "pending",
+        "toolName": "apply_analysis_patch",
+        "arguments": {"patch": "diff", "operations": [change]},
+        "affectedPaths": [path],
+        "expectedStates": {path: "present"},
+    }
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        workspace=SimpleNamespace(
+            batch_hash_files=AsyncMock(return_value=[{"path": path, "missing": True}])
+        ),
+    )
+    harness._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"writeIntents": {intent_id: intent}})
+    )
+    harness._apply_durable = AsyncMock()
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+
+    with pytest.raises(Exception) as caught:
+        await harness.recover_signed_analysis_script(path, None)
+
+    assert caught.value.code == expected_code
+    harness._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_signed_script_loader_rejects_current_identity_matching_older_commit() -> None:
     path = "analysis/evidence/a1/supplement.py"
     older_identity = {"path": path, "size": 1, "sha256": "a" * 64}
