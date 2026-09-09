@@ -1,109 +1,241 @@
-"""使用真实 Reporting 模型探测 apply_analysis_patch 的输出稳定性。"""
+"""使用真实 Reporting Coding Agent 探测 free-form Python 源码签发。"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
+from dataclasses import dataclass
+import hashlib
 import json
 import os
+from pathlib import Path
 import sys
 import time
-from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
-from agno.agent import Agent  # noqa: E402 - 直接执行脚本时必须先定位 worktree 根目录
-from agno.tools import Function  # noqa: E402 - 同上
+from agno.run import RunContext  # noqa: E402 - 直接执行脚本时必须先定位 worktree 根目录
 
-from smart_reporting.reporting.agent import _report_model  # noqa: E402 - 同上
+from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
+    _report_model,
+    create_reporting_code_agent,
+)
 from smart_reporting.reporting.model_policy import (  # noqa: E402 - 同上
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
 )
+from smart_reporting.reporting.models import ReportingError  # noqa: E402 - 同上
+from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
+    REPORTING_MODEL_ID_DEPENDENCY_KEY,
+    REPORTING_MODEL_TIER_DEPENDENCY_KEY,
+    REPORTING_PHASE_DEPENDENCY_KEY,
+    REPORTING_TASK_DEPENDENCY,
+    REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
+    REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    bind_reporting_run_context,
+)
+from smart_reporting.reporting.tools.analysis_item import (  # noqa: E402 - 同上
+    validate_reporting_python_source,
+)
+from smart_reporting.reporting.workflow.checkpoint import FileIdentity  # noqa: E402 - 同上
+from smart_reporting.reporting.workflow.runtime.code_generation import (  # noqa: E402 - 同上
+    ReportingCodeGenerationRunner,
+)
 from smart_reporting.runtime.settings import AgentSettings  # noqa: E402 - 同上
-from smart_reporting.task_execution.tools import parse_unified_diff  # noqa: E402 - 同上
+from smart_reporting.task_execution import abuild_workspace_changes  # noqa: E402 - 同上
+from smart_reporting.workspace import WorkspaceError, WorkspaceService  # noqa: E402 - 同上
+
+ANALYSIS_MAX_BYTES = 128 * 1024
+VISUALIZATION_MAX_BYTES = 64 * 1024
 
 
-def _task(index: int) -> tuple[str, str, str, str, str]:
-    domain = ("income", "cost", "床位", "门诊", "药品", "手术", "满意度", "库存")[index % 8]
-    target = f"analysis/{domain}/script_{index:03d}.py"
-    old = f"value_{index} = {index}"
-    new = f"value_{index} = {index + 1}"
-    # 与 parse_unified_diff 的内部操作名保持一致；修改统一表示为 update。
-    operation = ("update", "create", "delete")[index % 3]
-    if operation == "update":
-        action = f"把已有文件 {target} 中的 `{old}` 修改为 `{new}`。"
-        patch_template = f"--- a/{target}\n+++ b/{target}\n@@ -1 +1 @@\n-{old}\n+{new}"
-    elif operation == "create":
-        action = f"新建文件 {target}，内容只有一行 `{new}`。"
-        patch_template = f"--- /dev/null\n+++ b/{target}\n@@ -0,0 +1 @@\n+{new}"
-    else:
-        action = f"删除已有文件 {target}，该文件当前内容只有一行 `{old}`。"
-        patch_template = f"--- a/{target}\n+++ /dev/null\n@@ -1 +0,0 @@\n-{old}"
-    prompt = f"""你是 Reporting Worker 的测试代理，正在处理第 {index} 个独立编码需求。
-{action}
-只调用 apply_analysis_patch，不要输出普通文本。
-工具调用是唯一有效输出；如果上一轮未产生工具调用，下一轮会使用全新 Agent 重试。
-patch 参数必须是可直接交给 git apply 的标准 unified diff，必须包含：
-当前任务必须使用下列完整模板，其中每一行都不能省略：
-{patch_template}
-单行文件更新必须使用 @@ -1 +1 @@，不得声明不存在的行。
-禁止 *** Begin Patch、*** Update File、Markdown 代码围栏和解释文字。
-"""
-    return target, old, new, operation, prompt
+@dataclass(frozen=True, slots=True)
+class ProbeScenario:
+    name: str
+    task_kind: Literal["analysis_item", "visualization_section"]
+    operation: Literal["create", "update"]
+    path: str
+    initial_source: str | None
+    facts: Mapping[str, Any]
+    diagnostic: Mapping[str, Any] | None = None
+
+    @property
+    def visualization(self) -> bool:
+        return self.task_kind == "visualization_section"
+
+    @property
+    def max_bytes(self) -> int:
+        return VISUALIZATION_MAX_BYTES if self.visualization else ANALYSIS_MAX_BYTES
 
 
-def _patch_function(received: list[dict[str, Any]], target: str, operation: str) -> Function:
-    def apply_analysis_patch(patch: str) -> dict[str, Any]:
-        record: dict[str, Any] = {"patch": patch}
-        received.append(record)
-        try:
-            operations = parse_unified_diff(patch)
-        except Exception as error:  # noqa: BLE001 - 探针必须记录模型原始失败类型
-            record.update({"valid": False, "error": str(error)})
-            return {"ok": False, "code": "invalid_unified_diff", "message": str(error)}
-        paths = [operation.path for operation in operations]
-        valid = (
-            paths == [target]
-            and operations[0].operation == operation
-            and "*** Begin Patch" not in patch
-        )
-        record.update({"valid": valid, "paths": paths})
-        return {"ok": valid, "code": "accepted" if valid else "unexpected_target"}
+@dataclass(frozen=True, slots=True)
+class ProbeWorkspace:
+    """仅向 patch builder 暴露当前签发脚本的可信原文。"""
 
-    return Function(
-        name="apply_analysis_patch",
-        description=(
-            "提交标准 Git unified diff。必须包含完整文件头、hunk 头和每一行内容；"
-            "单行更新使用 @@ -1 +1 @@。"
-            "禁止 *** Begin Patch、*** Update File、Markdown 代码围栏和解释文字。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "patch": {"type": "string", "minLength": 1},
+    path: str
+    content: str | None
+
+    @staticmethod
+    def normalize_path(path: str, *, allow_root: bool) -> tuple[str, str]:
+        return WorkspaceService.normalize_path(path, allow_root=allow_root)
+
+    async def aread_text(self, _thread: str, path: str) -> str:
+        if path != self.path or self.content is None:
+            raise WorkspaceError("探针工作区不包含请求的签发脚本。")
+        return self.content
+
+
+def _scenarios() -> tuple[ProbeScenario, ...]:
+    analysis_repair_source = (
+        "from pathlib import Path\n"
+        "\n"
+        "value = 1\n"
+        'output_path = Path("analysis/output/probe_analysis.json")\n'
+        'output_path.write_text(str(value), encoding="utf-8")\n'
+    )
+    visualization_repair_source = (
+        "import matplotlib\n"
+        'matplotlib.use("Agg")\n'
+        "import matplotlib.pyplot as plt\n"
+        "\n"
+        "values = [1, 2, 3]\n"
+        "fig, ax = plt.subplots()\n"
+        "ax.plot(values)\n"
+        'fig.savefig("analysis/charts/probe_visualization.png")\n'
+        "plt.close(fig)\n"
+    )
+    return (
+        ProbeScenario(
+            name="analysis_create",
+            task_kind="analysis_item",
+            operation="create",
+            path="analysis/evidence/probe_analysis_create.py",
+            initial_source=None,
+            facts={
+                "task": "创建确定性的多行 Python 分析脚本。",
+                "scriptPath": "analysis/evidence/probe_analysis_create.py",
+                "evidencePath": "analysis/output/probe_analysis_create.json",
+                "requirements": [
+                    "脚本必须是可编译的 Python，并将一个简单 JSON 对象写入 evidencePath。",
+                    "不得执行网络请求或动态代码。",
+                ],
             },
-            "required": ["patch"],
-            "additionalProperties": False,
-        },
-        strict=True,
-        entrypoint=apply_analysis_patch,
-        stop_after_tool_call=True,
+        ),
+        ProbeScenario(
+            name="analysis_repair",
+            task_kind="analysis_item",
+            operation="update",
+            path="analysis/evidence/probe_analysis_repair.py",
+            initial_source=analysis_repair_source,
+            facts={
+                "task": "修复签发脚本，把 value 从 1 调整为 2，并保留输出行为。",
+                "scriptPath": "analysis/evidence/probe_analysis_repair.py",
+            },
+            diagnostic={
+                "code": "probe_analysis_value_stale",
+                "message": "分析值应更新为 2。",
+                "details": {"path": "analysis/evidence/probe_analysis_repair.py"},
+            },
+        ),
+        ProbeScenario(
+            name="visualization_create",
+            task_kind="visualization_section",
+            operation="create",
+            path="analysis/charts/probe_visualization_create.py",
+            initial_source=None,
+            facts={
+                "task": "创建确定性的 Matplotlib 折线图脚本。",
+                "visualizationWorkspace": {
+                    "scriptPath": "analysis/charts/probe_visualization_create.py",
+                    "chartPath": "analysis/charts/probe_visualization_create.png",
+                },
+                "values": [1, 3, 2, 4],
+                "requirements": [
+                    "先导入 matplotlib 并调用 matplotlib.use('Agg')，再导入 pyplot。",
+                    "使用 fig.savefig 写入 chartPath。",
+                ],
+            },
+        ),
+        ProbeScenario(
+            name="visualization_repair",
+            task_kind="visualization_section",
+            operation="update",
+            path="analysis/charts/probe_visualization_repair.py",
+            initial_source=visualization_repair_source,
+            facts={
+                "task": "修复签发图表脚本，为折线添加 marker='o' 并保留签发输出路径。",
+                "visualizationWorkspace": {
+                    "scriptPath": "analysis/charts/probe_visualization_repair.py",
+                    "chartPath": "analysis/charts/probe_visualization.png",
+                },
+            },
+            diagnostic={
+                "code": "probe_visual_marker_missing",
+                "message": "折线缺少 marker='o'。",
+                "details": {"path": "analysis/charts/probe_visualization_repair.py"},
+            },
+        ),
     )
 
 
-def _build_agent(
-    settings: AgentSettings,
-    received: list[dict[str, Any]],
-    target: str,
-    prompt: str,
-    operation: str,
+def _source_metrics(scenario: ProbeScenario, source: str) -> dict[str, Any]:
+    metrics = validate_reporting_python_source(
+        path=scenario.path,
+        content=source,
+        max_bytes=scenario.max_bytes,
+        visualization=scenario.visualization,
+    )
+    lines = source.splitlines()
+    return {
+        "operation": scenario.operation,
+        "path": scenario.path,
+        "size": metrics["sizeBytes"],
+        "lineCount": metrics["sourceLineCount"],
+        "maxLineLength": max(
+            (len(line.encode("utf-8")) for line in lines),
+            default=0,
+        ),
+        "sha256": metrics["sha256"],
+    }
+
+
+def _run_context(
+    scenario: ProbeScenario,
     *,
+    model_id: str,
     thinking: bool,
-) -> Agent:
+    thinking_budget: int,
+) -> RunContext:
+    binding: dict[str, Any] = {
+        "externalRunId": f"probe-{scenario.name}",
+        "threadId": f"probe-thread-{scenario.name}",
+        "sandboxId": f"probe-sandbox-{scenario.name}",
+        "leaseOwner": "reporting-source-probe",
+        "leaseEpoch": 1,
+        "attemptNo": 1,
+        REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+        REPORTING_TASK_KIND_DEPENDENCY_KEY: scenario.task_kind,
+        REPORTING_MODEL_TIER_DEPENDENCY_KEY: "standard",
+        REPORTING_MODEL_ID_DEPENDENCY_KEY: model_id,
+        REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "high" if thinking else "off",
+    }
+    if thinking:
+        binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = thinking_budget
+    return RunContext(
+        run_id=f"probe-run-{scenario.name}",
+        session_id=f"probe-session-{scenario.name}",
+        user_id="reporting-source-probe",
+        session_state={},
+        dependencies={REPORTING_TASK_DEPENDENCY: binding},
+    )
+
+
+def _model(settings: AgentSettings, *, thinking: bool) -> Any:
     model = _report_model(
         settings,
         enable_thinking=thinking,
@@ -119,84 +251,207 @@ def _build_agent(
         if thinking
         else ReportingThinkingProfile.off(temperature=0.0)
     )
-    apply_reporting_thinking_profile(model, profile)
     model.max_tokens = min(settings.report_output_token_reserve, 8192)
-    return Agent(
-        model=model,
-        tools=[_patch_function(received, target, operation)],
-        instructions=[prompt],
-        markdown=False,
+    return apply_reporting_thinking_profile(model, profile)
+
+
+def _short_error(error: BaseException) -> str:
+    if isinstance(error, ReportingError):
+        message = " ".join(error.message.split())[:160]
+        return f"{error.code}: {message}"
+    return type(error).__name__
+
+
+async def _probe_once(
+    settings: AgentSettings,
+    scenario: ProbeScenario,
+    *,
+    thinking: bool,
+    task_timeout: int,
+) -> dict[str, Any]:
+    model = _model(settings, thinking=thinking)
+    model_id = str(model.id)
+    context = _run_context(
+        scenario,
+        model_id=model_id,
+        thinking=thinking,
+        thinking_budget=settings.report_coding_thinking_budget,
     )
+    workspace = ProbeWorkspace(scenario.path, scenario.initial_source)
+    accepted: dict[str, Any] | None = None
+
+    async def apply_patch(*, patch: str, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal accepted
+        try:
+            changes = await abuild_workspace_changes(workspace, "probe", patch)
+            if len(changes) != 1:
+                raise ReportingError(
+                    "probe_source_change_invalid",
+                    "源码提交必须只包含一个文件操作。",
+                )
+            change = changes[0]
+            source = change.get("content")
+            if (
+                change.get("operation") != scenario.operation
+                or change.get("path") != scenario.path
+                or not isinstance(source, str)
+            ):
+                raise ReportingError(
+                    "probe_source_change_invalid",
+                    "源码提交必须是签发路径上的单一 create 或 update。",
+                )
+            accepted = _source_metrics(scenario, source)
+            return {
+                "ok": True,
+                "artifacts": [
+                    {
+                        "path": accepted["path"],
+                        "size": accepted["size"],
+                        "sha256": accepted["sha256"],
+                    }
+                ],
+            }
+        except ReportingError as error:
+            return {"ok": False, "code": error.code, "message": error.message}
+        except WorkspaceError:
+            return {
+                "ok": False,
+                "code": "probe_source_patch_invalid",
+                "message": "源码提交无法构造为受控工作区变更。",
+            }
+
+    async def read_file(*, path: str, max_bytes: int, **_kwargs: Any) -> dict[str, Any]:
+        source = scenario.initial_source
+        if path != scenario.path or source is None:
+            return {
+                "ok": False,
+                "code": "probe_source_read_invalid",
+                "message": "只能读取当前签发脚本。",
+            }
+        raw = source.encode("utf-8")
+        if len(raw) > max_bytes:
+            return {
+                "ok": False,
+                "code": "probe_source_read_too_large",
+                "message": "签发脚本超过读取上限。",
+            }
+        digest = hashlib.sha256(raw).hexdigest()
+        return {
+            "ok": True,
+            "path": scenario.path,
+            "content": source,
+            "sha256": digest,
+            "offset": 0,
+            "nextOffset": len(raw),
+            "totalBytes": len(raw),
+            "hasMore": False,
+            "outputTruncated": False,
+        }
+
+    runner = ReportingCodeGenerationRunner(
+        agent_factory=lambda: create_reporting_code_agent(
+            model=model,
+            name=f"probe-{scenario.name}-code",
+            instructions=[
+                "严格使用任务事实中的签发路径；不要推导或修改其他路径。",
+                "只生成脚本源码，探针不会执行生成代码。",
+            ],
+        )
+    )
+
+    async def invoke() -> None:
+        if scenario.operation == "create":
+            await runner.generate(
+                scenario.path,
+                scenario.facts,
+                apply_patch,
+                context,
+                max_source_bytes=scenario.max_bytes,
+            )
+            return
+        initial_source = scenario.initial_source
+        if initial_source is None or scenario.diagnostic is None:
+            raise RuntimeError("repair scenario is incomplete")
+        raw = initial_source.encode("utf-8")
+        await runner.repair(
+            FileIdentity(
+                path=scenario.path,
+                size=len(raw),
+                sha256=hashlib.sha256(raw).hexdigest(),
+            ),
+            scenario.diagnostic,
+            read_file,
+            apply_patch,
+            context,
+            task_facts=scenario.facts,
+            max_source_bytes=scenario.max_bytes,
+        )
+
+    started = time.perf_counter()
+    error: str | None = None
+    try:
+        with bind_reporting_run_context(context):
+            await asyncio.wait_for(invoke(), timeout=task_timeout)
+    except TimeoutError:
+        error = f"task_timeout: exceeded {task_timeout} seconds"
+    except Exception as exc:  # noqa: BLE001 - 探针只输出去敏后的短错误。
+        error = _short_error(exc)
+    elapsed = round(time.perf_counter() - started, 2)
+    return {
+        "model": model_id,
+        "scenario": scenario.name,
+        "valid": error is None and accepted is not None,
+        "operation": accepted.get("operation") if accepted else scenario.operation,
+        "path": accepted.get("path") if accepted else scenario.path,
+        "size": accepted.get("size") if accepted else None,
+        "lineCount": accepted.get("lineCount") if accepted else None,
+        "maxLineLength": accepted.get("maxLineLength") if accepted else None,
+        "sha256": accepted.get("sha256") if accepted else None,
+        "seconds": elapsed,
+        "error": error,
+    }
+
+
+def _emit(record: Mapping[str, Any], progress_file: str | None) -> None:
+    line = json.dumps(dict(record), ensure_ascii=False, separators=(",", ":"))
+    print(line, flush=True)
+    if progress_file:
+        with open(progress_file, "a", encoding="utf-8") as progress:
+            progress.write(line + "\n")
 
 
 async def _run(args: argparse.Namespace) -> None:
     os.environ["AGENT_ENV_FILE"] = args.env_file
     settings = AgentSettings.from_environment()
-    summary: list[dict[str, Any]] = []
-    for index in range(1, args.runs + 1):
-        target, _old, _new, operation, prompt = _task(index)
-        started = time.perf_counter()
-        error: str | None = None
-        attempts: list[list[dict[str, Any]]] = []
-        # 未调用工具或工具参数被拒绝都不能推进任务；每轮使用全新 Agent，最多三轮，
-        # 避免同一上下文在 stop_after_tool_call 后继续生成无效文本。
-        for attempt in range(1, 4):
-            received: list[dict[str, Any]] = []
-            attempts.append(received)
-            try:
-                await _build_agent(
-                    settings, received, target, prompt, operation, thinking=args.thinking
-                ).arun(prompt)
-            except Exception as exc:  # noqa: BLE001 - 探针将异常写入结果，不吞掉诊断信息
-                error = f"{type(exc).__name__}: {exc}"
-                break
-            if received and all(item.get("valid") is True for item in received):
-                break
-            # 工具校验失败后，当前 attempt 已被 stop_after_tool_call 终止；
-            # 下一轮必须创建全新的 Agent，避免模型在同一上下文中无限修复。
-        received = [item for attempt_records in attempts for item in attempt_records]
-        valid = bool(attempts[-1]) and all(item.get("valid") is True for item in attempts[-1])
-        if not valid and error is None and not received:
-            error = "no_tool_call: Agent 未调用 apply_analysis_patch。"
-        elapsed = round(time.perf_counter() - started, 2)
-        summary.append(
-            {
-                "run": index,
-                "seconds": elapsed,
-                "attempts": len(attempts),
-                "tool_calls": len(received),
-                "valid": valid,
-                "error": error,
-                "calls": received,
-            }
-        )
-        if args.progress_file:
-            with open(args.progress_file, "a", encoding="utf-8") as progress:
-                progress.write(json.dumps(summary[-1], ensure_ascii=False) + "\n")
-    valid_count = sum(item["valid"] for item in summary)
-    print(
-        json.dumps(
-            {
-                "model": settings.model_id,
-                "thinking": args.thinking,
-                "runs": summary,
-                "valid_count": valid_count,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    for _repetition in range(args.repetitions):
+        for scenario in _scenarios():
+            record = await _probe_once(
+                settings,
+                scenario,
+                thinking=args.thinking,
+                task_timeout=args.task_timeout,
+            )
+            _emit(record, args.progress_file)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="探测真实模型是否稳定生成标准 unified diff")
+    parser = argparse.ArgumentParser(
+        description="用真实 Reporting 模型探测 free-form Python 源码签发协议"
+    )
     parser.add_argument("--env-file", default=".env")
-    parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--thinking",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--task-timeout", type=int, default=180)
     parser.add_argument("--progress-file")
     args = parser.parse_args()
-    if args.runs < 1 or args.runs > 100:
-        parser.error("--runs 必须在 1 到 100 之间")
+    if not 1 <= args.repetitions <= 100:
+        parser.error("--repetitions 必须在 1 到 100 之间")
+    if not 1 <= args.task_timeout <= 3600:
+        parser.error("--task-timeout 必须在 1 到 3600 之间")
     asyncio.run(_run(args))
 
 
