@@ -3,6 +3,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.run import RunContext
@@ -1287,6 +1288,123 @@ async def test_controller_terminal_duplicate_approval_does_not_reclaim_thread() 
     )
     await controller.start(ReportingWorkflowInput(prompt="生成第二份报表"), second_context)
     assert run_calls == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("step_id", ["assemble-report", "validate-report"])
+async def test_controller_recovery_pause_retries_error_without_cleanup(step_id: str) -> None:
+    class Requirement:
+        step_name = "报告末端恢复"
+        step_output = None
+        is_resolved = False
+
+        def __init__(self) -> None:
+            self.step_id = step_id
+            self.retry_calls = 0
+
+        def retry(self) -> None:
+            self.retry_calls += 1
+            self.is_resolved = True
+
+        def confirm(self) -> None:
+            raise AssertionError("ErrorRequirement 不得走普通 confirm")
+
+    requirement = Requirement()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.paused,
+                active_step_requirements=[],
+                step_requirements=[],
+                error_requirements=[requirement],
+            )
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.paused,
+                active_step_requirements=[],
+                step_requirements=[],
+                error_requirements=[requirement],
+            )
+
+        async def acontinue_run(self, *_args, **_kwargs):
+            return SimpleNamespace(status=RunStatus.completed)
+
+    cleanup = AsyncMock()
+    ownership = _ThreadOwnership()
+    workflow = Workflow()
+    controller = ReportWorkflowController(
+        lambda: workflow,
+        thread_ownership=ownership,
+        terminal_cleanup=cleanup,
+    )
+    context = _context()
+
+    paused = await controller.start(ReportingWorkflowInput(prompt="生成报表"), context)
+
+    assert paused["status"] == "paused"
+    assert paused["review"]["stage"] == "recovery"
+    assert paused["review"]["preview"]["stepId"] == step_id
+    assert ownership.owners == {"thread": ("external-run", "user")}
+    cleanup.assert_not_awaited()
+
+    completed = await controller.approve(context)
+
+    assert completed["status"] == "completed"
+    assert requirement.retry_calls == 1
+    cleanup.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_controller_can_cancel_recovery_pause_and_then_cleanup() -> None:
+    class Requirement:
+        step_id = "assemble-report"
+        step_name = "汇编最终报告"
+        is_resolved = False
+
+    requirement = Requirement()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+        status = RunStatus.paused
+
+        async def arun(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=self.status,
+                step_requirements=[],
+                error_requirements=[requirement],
+            )
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=self.status,
+                step_requirements=[],
+                error_requirements=[requirement] if self.status is RunStatus.paused else [],
+            )
+
+        async def acancel_run(self, *_args, **_kwargs):
+            self.status = RunStatus.cancelled
+            return True
+
+    cleanup = AsyncMock()
+    ownership = _ThreadOwnership()
+    workflow = Workflow()
+    controller = ReportWorkflowController(
+        lambda: workflow,
+        thread_ownership=ownership,
+        terminal_cleanup=cleanup,
+    )
+    context = _context()
+    await controller.start(ReportingWorkflowInput(prompt="生成报表"), context)
+
+    cancelled = await controller.cancel(context)
+
+    assert cancelled["status"] == "cancelled"
+    cleanup.assert_awaited_once()
+    assert ownership.owners == {}
 
 
 @pytest.mark.anyio

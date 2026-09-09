@@ -42,7 +42,8 @@ _MAX_RETAINED_BACKGROUND_TASKS = 1024
 # 必须显著低于默认 async pool 容量，为 Agno 持久化和状态查询保留连接余量。
 _MAX_ACTIVE_BACKGROUND_TASKS = 4
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
-ReviewStage = Literal["request", "outline"]
+ReviewStage = Literal["request", "outline", "recovery"]
+_RECOVERY_STEP_IDS = frozenset({"assemble-report", "validate-report"})
 
 
 def reporting_workflow_ids(
@@ -1139,15 +1140,21 @@ class ReportWorkflowController:
             status = self._status(getattr(output, "status", None))
             workflow = self._workflow()
             if status == "paused":
-                requirement = self._active_requirement(output)
-                requirement.on_reject = OnReject.cancel
-                requirement.reject(feedback="用户取消报表工作流。")
-                output = await workflow.acontinue_run(
-                    run_response=output,
-                    step_requirements=list(getattr(output, "step_requirements", None) or []),
-                    dependencies=self._workflow_dependencies(scope),
-                    stream=False,
-                )
+                if self._active_error_requirement(output) is not None:
+                    await workflow.acancel_run(control.workflow_run_id)
+                    output = await workflow.aget_run(
+                        control.workflow_run_id, session_id=control.workflow_session_id
+                    )
+                else:
+                    requirement = self._active_requirement(output)
+                    requirement.on_reject = OnReject.cancel
+                    requirement.reject(feedback="用户取消报表工作流。")
+                    output = await workflow.acontinue_run(
+                        run_response=output,
+                        step_requirements=list(getattr(output, "step_requirements", None) or []),
+                        dependencies=self._workflow_dependencies(scope),
+                        stream=False,
+                    )
             elif status == "running":
                 await workflow.acancel_run(control.workflow_run_id)
                 output = await workflow.aget_run(
@@ -1189,8 +1196,20 @@ class ReportWorkflowController:
             # ensure 会在服务重启后补写持久化所有权，必须先以 Agno 存储的真实状态确认
             # Workflow 仍在暂停；否则终态 run 的重复审批会重新占用 thread 且没有释放路径。
             await self._ensure_thread_owner(scope)
-            requirement = self._active_requirement(output)
-            if approve:
+            error_requirement = self._active_error_requirement(output)
+            requirement = (
+                error_requirement
+                if error_requirement is not None
+                else self._active_requirement(output)
+            )
+            if error_requirement is not None and not approve:
+                raise ReportingError(
+                    "report_workflow_recovery_retry_required",
+                    "末端恢复项只能重试或取消。",
+                )
+            if error_requirement is not None:
+                requirement.retry()
+            elif approve:
                 requirement.confirm()
             else:
                 requirement.reject(feedback=feedback)
@@ -1645,7 +1664,30 @@ class ReportWorkflowController:
             raise ReportingError("report_workflow_review_invalid", "报表工作流审核状态无效。")
         return active[0]
 
+    @staticmethod
+    def _active_error_requirement(output: Any) -> Any | None:
+        errors = [
+            item
+            for item in list(getattr(output, "error_requirements", None) or [])
+            if not bool(getattr(item, "is_resolved", False))
+        ]
+        if not errors:
+            return None
+        if len(errors) != 1 or str(getattr(errors[0], "step_id", "")) not in _RECOVERY_STEP_IDS:
+            raise ReportingError("report_workflow_review_invalid", "报表工作流恢复状态无效。")
+        return errors[0]
+
     def _review(self, output: Any) -> ReportReviewSnapshot:
+        error_requirement = self._active_error_requirement(output)
+        if error_requirement is not None:
+            step_id = str(getattr(error_requirement, "step_id", ""))
+            title = "重试最终报告汇编" if step_id == "assemble-report" else "重试报告格式验收"
+            return ReportReviewSnapshot(
+                stage="recovery",
+                title=title,
+                message=f"{title}；将沿用当前运行与工作区，仅重试失败的末端步骤。",
+                preview={"stepId": step_id},
+            )
         requirement = self._active_requirement(output)
         name = str(getattr(requirement, "step_name", "") or "")
         stage: ReviewStage

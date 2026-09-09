@@ -69,6 +69,7 @@ from .base import (
     Mapping,
     ProfileCoverageManifest,
     QueryRequirement,
+    ReportArtifactManifest,
     ReportingCheckpoint,
     ReportingCommand,
     ReportingError,
@@ -973,6 +974,20 @@ class RuntimeAnalysisMixin:
             if isinstance(state.get(REPORT_OUTLINE_STATE_KEY), Mapping)
             else 1,
         )
+        if durable.phase is DurableReportingPhase.FINALIZE:
+            stored_checkpoint = durable.payload.get("workflowCheckpoint")
+            try:
+                checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
+            except (TypeError, ValueError, ValidationError) as error:
+                raise ReportingError(
+                    "report_checkpoint_invalid", "Reporting checkpoint 状态无效。"
+                ) from error
+            if checkpoint.phase != "finalize":
+                raise ReportingError(
+                    "report_checkpoint_conflict", "Finalize 状态与 Workflow checkpoint 不一致。"
+                )
+            result = self._workflow_result(state)
+            return StepOutput(content={"status": "ready", "jobId": result["jobId"]})
         if durable.phase not in {
             DurableReportingPhase.ANALYSIS_COVERAGE,
             DurableReportingPhase.ANALYSIS_RUNNING,
@@ -1304,20 +1319,70 @@ class RuntimeAnalysisMixin:
             profile_read_receipts=final_artifact.profile_read_receipts,
         )
         await self._persist_reporting_checkpoint(run_context, final_checkpoint)
+        return StepOutput(content={**content, "jobId": result["jobId"]})
+
+    async def assemble_report(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+        state = self._state(run_context)
+        scope = self._scope(run_context)
+        durable = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+        if durable is None or durable.phase not in {
+            DurableReportingPhase.FINALIZE,
+            DurableReportingPhase.COMPLETED,
+        }:
+            raise ReportingError(
+                "report_state_version_unsupported", "当前 Reporting 运行状态不可执行汇编。"
+            )
+        stored_checkpoint = durable.payload.get("workflowCheckpoint")
+        try:
+            checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
+            lineage = tuple(
+                DatasetLineage.model_validate(item)
+                for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+            )
+        except (KeyError, TypeError, ValueError, ValidationError) as error:
+            raise ReportingError(
+                "report_checkpoint_invalid", "Finalize checkpoint 或冻结输入状态无效。"
+            ) from error
+        if checkpoint.phase not in {"finalize", "completed"}:
+            raise ReportingError(
+                "report_checkpoint_conflict", "当前 Workflow checkpoint 尚未进入 Finalize。"
+            )
+        if durable.phase is DurableReportingPhase.FINALIZE and checkpoint.phase != "finalize":
+            raise ReportingError(
+                "report_checkpoint_conflict", "Finalize durable 状态与 checkpoint 不一致。"
+            )
+
+        revision = checkpoint.revision
         markdown_path = f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.md"
         manifest_path = (
             f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.manifest.json"
         )
-        _final_checkpoint, manifest = await self._finalize_reporting_sections(
-            run_context,
-            checkpoint=final_checkpoint,
-            revision=revision,
-            markdown_path=markdown_path,
-            manifest_path=manifest_path,
-            lineage=lineage,
-            citation_bindings=citation_bindings,
-            source_warnings=_source_warnings_from_state(state),
-        )
+        if checkpoint.phase == "completed":
+            manifest_file = next(
+                (item for item in checkpoint.files if item.path == manifest_path), None
+            )
+            if manifest_file is None:
+                raise ReportingError(
+                    "report_checkpoint_invalid", "Completed checkpoint 缺少报告 manifest。"
+                )
+            manifest = cast(
+                ReportArtifactManifest,
+                await self._read_identity_model(
+                    scope["threadId"], manifest_file, ReportArtifactManifest
+                ),
+            )
+        else:
+            _final_checkpoint, manifest = await self._finalize_reporting_sections(
+                run_context,
+                checkpoint=checkpoint,
+                revision=revision,
+                markdown_path=markdown_path,
+                manifest_path=manifest_path,
+                lineage=lineage,
+                citation_bindings=authoritative_citations(lineage),
+                source_warnings=_source_warnings_from_state(state),
+            )
+        result = self._workflow_result(state)
         result.update(
             {
                 "markdownPath": markdown_path,
@@ -1329,9 +1394,7 @@ class RuntimeAnalysisMixin:
         state[REPORT_ARTIFACTS_STATE_KEY] = {
             "draft": manifest.model_dump(mode="json", by_alias=True)
         }
-        return StepOutput(
-            content={**content, "jobId": result["jobId"], "markdownPath": markdown_path}
-        )
+        return StepOutput(content={"jobId": result["jobId"], "markdownPath": markdown_path})
 
     async def _write_artifact_validation_context(
         self,
@@ -1424,7 +1487,7 @@ class RuntimeAnalysisMixin:
             run_context,
             ReportingCommand(
                 name="set_workflow_checkpoint",
-                commandId=(f"workflow-checkpoint:{checkpoint.revision}:{digest}"),
+                commandId=(f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}"),
                 payload={
                     "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
                     "mirrorFile": identity.model_dump(mode="json", by_alias=True),

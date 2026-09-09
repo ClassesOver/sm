@@ -1151,7 +1151,7 @@ class RuntimeSectionsMixin:
             run_context,
             ReportingCommand(
                 name="set_workflow_checkpoint",
-                commandId=f"workflow-checkpoint:{checkpoint.revision}:{digest}",
+                commandId=f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}",
                 payload={
                     "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
                     "mirrorFile": identity.model_dump(mode="json", by_alias=True),

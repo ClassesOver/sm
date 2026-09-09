@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,6 +29,11 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _has_chartable_visualization_facts,
     _visualization_section_completion_conditions,
 )
+from smart_reporting.reporting.workflow.runtime.base import (
+    REPORT_ARTIFACTS_STATE_KEY,
+    REPORT_DATASET_LINEAGE_STATE_KEY,
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
+)
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
     ChartDraft,
@@ -42,6 +48,7 @@ from smart_reporting.reporting.workflow.runtime.section_workflow import SectionW
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     VisualizationSectionWorkflow,
 )
+from smart_reporting.reporting.workflow.state import ReportingPhase
 from smart_reporting.task_execution import TaskExecutionScope
 
 
@@ -81,6 +88,197 @@ def test_visualization_requires_structured_facts_before_generating_chart() -> No
     assert _has_chartable_visualization_facts(
         [{"metrics": [{"metricCodes": ["revenue"], "periodValueCount": 12}]}]
     )
+
+
+def test_analysis_executor_does_not_assemble_report() -> None:
+    source = inspect.getsource(RuntimeAnalysisMixin.run_reporting_analysis)
+
+    assert "_finalize_reporting_sections" not in source
+
+
+@pytest.mark.anyio
+async def test_analysis_executor_does_not_rerun_after_finalize_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = SimpleNamespace(revision=2, phase="finalize")
+    durable = SimpleNamespace(
+        phase=ReportingPhase.FINALIZE,
+        payload={"workflowCheckpoint": {"phase": "finalize", "revision": 2}},
+    )
+
+    class Runtime:
+        state_repository = SimpleNamespace(get_or_create=AsyncMock(return_value=durable))
+        report_tools = SimpleNamespace(
+            bind_document_context=AsyncMock(
+                side_effect=AssertionError("FINALIZE 重入不得重新执行分析准备")
+            )
+        )
+
+        @staticmethod
+        def _feedback(_step_input: object) -> None:
+            return None
+
+        @staticmethod
+        def _state(run_context: RunContext) -> dict[str, object]:
+            return run_context.session_state
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {
+                "externalRunId": "external-run",
+                "threadId": "thread",
+                "userId": "user",
+            }
+
+        @staticmethod
+        def _workflow_result(state: dict[str, object]) -> dict[str, object]:
+            return dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCheckpoint.model_validate",
+        lambda _value: checkpoint,
+    )
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread",
+        user_id="user",
+        session_state={REPORT_WORKFLOW_RESULT_STATE_KEY: {"jobId": "job-1"}},
+    )
+
+    output = await RuntimeAnalysisMixin.run_reporting_analysis(
+        Runtime(), SimpleNamespace(), context
+    )
+
+    assert output.content == {"status": "ready", "jobId": "job-1"}
+    Runtime.report_tools.bind_document_context.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_assemble_report_retries_only_finalization_and_preserves_frozen_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = SimpleNamespace(revision=2, phase="finalize")
+    manifest = SimpleNamespace(model_dump=lambda **_kwargs: {"version": "1", "artifacts": []})
+    durable = SimpleNamespace(
+        phase=ReportingPhase.FINALIZE,
+        payload={"workflowCheckpoint": {"phase": "finalize", "revision": 2}},
+    )
+    finalization_calls = 0
+
+    class Runtime:
+        state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+
+        @staticmethod
+        def _state(run_context: RunContext) -> dict[str, object]:
+            return run_context.session_state
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {"externalRunId": "external-run", "threadId": "thread"}
+
+        @staticmethod
+        def _workflow_result(state: dict[str, object]) -> dict[str, object]:
+            return dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])  # type: ignore[arg-type]
+
+        async def _finalize_reporting_sections(self, *_args, **_kwargs):
+            nonlocal finalization_calls
+            finalization_calls += 1
+            if finalization_calls == 1:
+                raise ReportingError("report_assembly_failed", "汇编失败")
+            return checkpoint, manifest
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCheckpoint.model_validate",
+        lambda _value: checkpoint,
+    )
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread",
+        session_state={
+            REPORT_WORKFLOW_RESULT_STATE_KEY: {"jobId": "job-1"},
+            REPORT_DATASET_LINEAGE_STATE_KEY: [],
+        },
+    )
+    runtime = Runtime()
+    frozen_state = dict(context.session_state)
+
+    with pytest.raises(ReportingError, match="汇编失败"):
+        await RuntimeAnalysisMixin.assemble_report(runtime, SimpleNamespace(), context)
+
+    assert context.session_state == frozen_state
+    assert durable.phase is ReportingPhase.FINALIZE
+
+    output = await RuntimeAnalysisMixin.assemble_report(runtime, SimpleNamespace(), context)
+
+    assert finalization_calls == 2
+    assert output.content["markdownPath"].endswith("report-revision-2.md")
+    assert context.session_state[REPORT_ARTIFACTS_STATE_KEY]["draft"] == {
+        "version": "1",
+        "artifacts": [],
+    }
+
+
+@pytest.mark.anyio
+async def test_assemble_report_restores_completed_manifest_without_regeneration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_file = FileIdentity(
+        path="报表/智能分析/run-1/report-revision-2.manifest.json",
+        size=1,
+        sha256="a" * 64,
+    )
+    checkpoint = SimpleNamespace(
+        revision=2,
+        phase="completed",
+        files=(manifest_file,),
+    )
+    manifest = SimpleNamespace(
+        model_dump=lambda **_kwargs: {"version": "1", "artifacts": ["existing"]}
+    )
+    durable = SimpleNamespace(
+        phase=ReportingPhase.COMPLETED,
+        payload={"workflowCheckpoint": {"phase": "completed", "revision": 2}},
+    )
+
+    class Runtime:
+        state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+
+        @staticmethod
+        def _state(run_context: RunContext) -> dict[str, object]:
+            return run_context.session_state
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {"externalRunId": "external-run", "threadId": "thread"}
+
+        @staticmethod
+        def _workflow_result(state: dict[str, object]) -> dict[str, object]:
+            return dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])  # type: ignore[arg-type]
+
+        _read_identity_model = AsyncMock(return_value=manifest)
+        _finalize_reporting_sections = AsyncMock(
+            side_effect=AssertionError("completed checkpoint 不得重复汇编")
+        )
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCheckpoint.model_validate",
+        lambda _value: checkpoint,
+    )
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread",
+        session_state={
+            REPORT_WORKFLOW_RESULT_STATE_KEY: {"jobId": "job-1"},
+            REPORT_DATASET_LINEAGE_STATE_KEY: [],
+        },
+    )
+
+    output = await RuntimeAnalysisMixin.assemble_report(Runtime(), SimpleNamespace(), context)
+
+    assert output.content["markdownPath"].endswith("report-revision-2.md")
+    Runtime._read_identity_model.assert_awaited_once()
+    Runtime._finalize_reporting_sections.assert_not_awaited()
+    assert context.session_state[REPORT_ARTIFACTS_STATE_KEY]["draft"]["artifacts"] == ["existing"]
 
 
 @pytest.mark.anyio

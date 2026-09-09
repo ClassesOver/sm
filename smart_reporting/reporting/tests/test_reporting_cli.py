@@ -263,6 +263,43 @@ async def test_resume_workflow_retries_only_failed_delivery_step() -> None:
 
 
 @pytest.mark.anyio
+async def test_resume_workflow_retries_failed_assembly_with_same_run_identity() -> None:
+    requirement = ErrorRequirement("assemble-report")
+    paused = SimpleNamespace(
+        status="paused",
+        run_id="run-1",
+        session_id="session-1",
+        content=None,
+        step_requirements=[],
+        error_requirements=[requirement],
+    )
+    completed = SimpleNamespace(status="completed", content={"path": "report.pdf"})
+    cleanup = AsyncMock()
+    workflow = SimpleNamespace(
+        arun=AsyncMock(),
+        aget_run_output=AsyncMock(return_value=paused),
+        acontinue_run=AsyncMock(return_value=completed),
+    )
+
+    result = await resume_workflow(
+        workflow,
+        runtime=runtime(cleanup_terminal=cleanup),
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert requirement.decision == "retry"
+    assert result["runId"] == "run-1"
+    assert result["sessionId"] == "session-1"
+    workflow.arun.assert_not_awaited()
+    assert workflow.acontinue_run.await_args.kwargs["run_response"] is paused
+    cleanup.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_resume_workflow_rejects_non_delivery_error() -> None:
     paused = SimpleNamespace(
         status="paused",
@@ -536,7 +573,7 @@ async def test_resume_workflow_rejects_cancelled_run() -> None:
     assert raised.value.code == "report_workflow_resume_invalid"
 
 
-def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
+def test_only_tail_steps_pause_for_error_recovery() -> None:
     async def executor(*_args: object, **_kwargs: object) -> None:
         return None
 
@@ -554,6 +591,7 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
         prepare_analysis_context=executor,
         generate_detailed_analysis_plan=executor,
         run_reporting_analysis=executor,
+        assemble_report=executor,
         validate_report=executor,
         finalize_publication=executor,
     )
@@ -565,6 +603,7 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
     assert steps["generate-outline"].human_review is not None
     assert steps["generate-outline"].human_review.requires_output_review is False
     assert steps["validate-report"].human_review.on_error is OnError.pause
+    assert steps["assemble-report"].human_review.on_error is OnError.pause
     assert steps["run-coding-analysis"].human_review.on_error is OnError.fail
     assert workflow.input_schema is None
     assert workflow.stream_executor_events is False
@@ -589,6 +628,7 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
         prepare_analysis_context=executor,
         generate_detailed_analysis_plan=executor,
         run_reporting_analysis=executor,
+        assemble_report=executor,
         validate_report=executor,
         finalize_publication=executor,
     )
@@ -611,6 +651,7 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
         "commit-measure-semantics",
         "materialize-datasets",
         "run-coding-analysis",
+        "assemble-report",
         "validate-report",
         "finalize-publication",
     }:
@@ -642,6 +683,7 @@ async def test_outline直接流向coding节点而不暂停() -> None:
         prepare_analysis_context=executor("prepare-analysis-context"),
         generate_detailed_analysis_plan=executor("generate-detailed-analysis-plan"),
         run_reporting_analysis=executor("run-coding-analysis"),
+        assemble_report=executor("assemble-report"),
         validate_report=executor("validate-report"),
         finalize_publication=executor("finalize-publication"),
     )
@@ -656,6 +698,70 @@ async def test_outline直接流向coding节点而不暂停() -> None:
     assert output.status is RunStatus.completed
     outline_index = calls.index("generate-outline")
     assert calls[outline_index + 1] == "run-coding-analysis"
+    analysis_index = calls.index("run-coding-analysis")
+    assert calls[analysis_index : analysis_index + 3] == [
+        "run-coding-analysis",
+        "assemble-report",
+        "validate-report",
+    ]
+
+
+@pytest.mark.anyio
+async def test_assemble_error_pause_retries_only_assembly_step() -> None:
+    calls: list[str] = []
+    assembly_attempts = 0
+
+    def executor(name: str):
+        async def execute(*_args: object, **_kwargs: object) -> StepOutput:
+            nonlocal assembly_attempts
+            calls.append(name)
+            if name == "assemble-report":
+                assembly_attempts += 1
+                if assembly_attempts == 1:
+                    raise RuntimeError("assembly failed")
+            return StepOutput(content={"step": name})
+
+        return execute
+
+    workflow = create_reporting_workflow(
+        db=InMemoryDb(),
+        normalize_report_request=executor("normalize-report-request"),
+        confirm_source=executor("confirm-source"),
+        prepare_data_profile=executor("prepare-data-profile"),
+        propose_measure_semantics=executor("propose-measure-semantics"),
+        commit_measure_semantics=executor("commit-measure-semantics"),
+        generate_outline=executor("generate-outline"),
+        generate_analysis_plan=executor("generate-analysis-plan"),
+        generate_query_candidates=executor("generate-query-candidates"),
+        materialize_datasets=executor("materialize-datasets"),
+        prepare_analysis_context=executor("prepare-analysis-context"),
+        generate_detailed_analysis_plan=executor("generate-detailed-analysis-plan"),
+        run_reporting_analysis=executor("run-coding-analysis"),
+        assemble_report=executor("assemble-report"),
+        validate_report=executor("validate-report"),
+        finalize_publication=executor("finalize-publication"),
+    )
+
+    paused = await workflow.arun(
+        "生成 2025 年运营报告",
+        run_id="run-assembly-recovery",
+        session_id="session-assembly-recovery",
+        user_id="user-assembly-recovery",
+    )
+
+    assert paused.status is RunStatus.paused
+    assert paused.error_requirements is not None
+    assert paused.error_requirements[0].step_id == "assemble-report"
+    assert calls.count("run-coding-analysis") == 1
+    assert calls.count("validate-report") == 0
+
+    paused.error_requirements[0].retry()
+    completed = await workflow.acontinue_run(run_response=paused, stream=False)
+
+    assert completed.status is RunStatus.completed
+    assert calls.count("run-coding-analysis") == 1
+    assert calls.count("assemble-report") == 2
+    assert calls.count("validate-report") == 1
 
 
 def test_reporting_cli_applies_requested_debug_setting() -> None:

@@ -329,14 +329,16 @@ async def _continue_workflow_reviews(
         ]
         if unresolved_errors:
             requirement = unresolved_errors[-1]
-            if str(getattr(requirement, "step_id", "")) != "validate-report":
+            step_id = str(getattr(requirement, "step_id", ""))
+            if step_id not in {"assemble-report", "validate-report"}:
                 raise ReportingError(
                     "report_workflow_resume_unsupported",
-                    "仅支持恢复 PDF/Word 双格式验收步骤。",
+                    "仅支持恢复最终汇编或 PDF/Word 双格式验收步骤。",
                 )
             if not retry_delivery_error or delivery_retries >= 1:
                 break
-            write("PDF/Word 双格式验收失败，正在基于同一持久化 run 重试末端步骤。")
+            step_label = "最终报告汇编" if step_id == "assemble-report" else "PDF/Word 双格式验收"
+            write(f"{step_label}失败，正在基于同一持久化 run 重试末端步骤。")
             requirement.retry()
             delivery_retries += 1
             output = await workflow.acontinue_run(

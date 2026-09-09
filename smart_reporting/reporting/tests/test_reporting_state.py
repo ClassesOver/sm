@@ -465,6 +465,60 @@ def test_complete_analysis_items_can_finish_out_of_order_and_remain_running():
     assert completed.payload["currentAnalysisId"] is None
 
 
+def test_finalize_checkpoint_advances_durable_phase_in_same_reducer_call() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+
+    finalized = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:finalize",
+            "payload": {"checkpoint": {"phase": "finalize", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    assert finalized.phase is ReportingPhase.FINALIZE
+    assert finalized.payload["workflowCheckpoint"]["phase"] == "finalize"
+    completed = apply_phase(finalized, "complete")
+    assert completed.phase is ReportingPhase.COMPLETED
+
+
+def test_non_finalize_checkpoint_does_not_advance_durable_phase() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+
+    persisted = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:analysis",
+            "payload": {"checkpoint": {"phase": "analysis", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    assert persisted.phase is ReportingPhase.ANALYSIS_RUNNING
+
+
+def test_v2_finalize_checkpoint_is_not_blocked_by_legacy_command_receipt() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+    running.payload["appliedCommands"]["workflow-checkpoint:1:same-digest"] = {
+        "name": "set_workflow_checkpoint"
+    }
+
+    finalized = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:same-digest",
+            "payload": {"checkpoint": {"phase": "finalize", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    assert finalized.phase is ReportingPhase.FINALIZE
+
+
 def test_complete_transitions_directly_from_section_phase() -> None:
     state = apply_phase(initial_state(), "start_analysis")
 
