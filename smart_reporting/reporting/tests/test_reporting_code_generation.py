@@ -482,12 +482,148 @@ async def test_repair_preserves_bounded_missing_facts_in_patch_prompt():
 
 
 @pytest.mark.anyio
+async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
+    script = identity("charts/charts.py", "print(1)\n")
+    prompts = []
+
+    async def action(agent):
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=script.path)
+        prompts.append(json.loads(agent.prompt))
+        return await tool.entrypoint(patch="diff")
+
+    async def read_file(**_kwargs):
+        return read_receipt(script)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
+
+    missing_charts = [
+        {
+            "chartId": f"chart-{index}" + "x" * 200,
+            "sourcePath": f"charts/{index}.png" + "x" * 1_100,
+            "title": f"图表 {index}" + "x" * 300,
+            "sha256": "SECRET_CHART_SHA",
+        }
+        for index in range(101)
+    ]
+    inspections = [
+        {
+            "sourcePath": f"charts/{index}.png" + "x" * 1_100,
+            "visualReviewStatus": "needs_revision",
+            "requiresRevision": True,
+            "issues": [
+                {
+                    "category": "text_overlap",
+                    "severity": "critical",
+                    "description": "标签重叠" + "x" * 600,
+                    "evidence": "SECRET_ISSUE_EVIDENCE",
+                }
+                for _ in range(21)
+            ],
+            "warnings": ["警告" + "x" * 600 for _ in range(21)],
+            "suggestions": ["建议" + "x" * 600 for _ in range(21)],
+            "summary": "视觉检查摘要" + "x" * 2_100,
+            "sha256": "SECRET_RECEIPT_SHA",
+            "modelId": "SECRET_MODEL_ID",
+            "rawResponse": "SECRET_RAW_RESPONSE",
+        }
+        for index in range(101)
+    ]
+    await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
+        script,
+        {"code": "repair_failed", "message": "brief diagnostic"},
+        read_file,
+        patch,
+        task_facts={
+            "missingFacts": ["缺少的数值"],
+            "missingCharts": missing_charts,
+            "inspections": inspections,
+            "draft": {"pythonSource": "SECRET_SOURCE"},
+        },
+    )
+
+    task_facts = prompts[0]["facts"]["taskFacts"]
+    assert task_facts.keys() == {"missingFacts", "missingCharts", "inspections"}
+    assert task_facts["missingFacts"] == ["缺少的数值"]
+    assert len(task_facts["missingCharts"]) == 100
+    assert task_facts["missingCharts"][0].keys() == {"chartId", "sourcePath", "title"}
+    assert all(len(chart["chartId"]) == 128 for chart in task_facts["missingCharts"])
+    assert all(len(chart["sourcePath"]) == 1024 for chart in task_facts["missingCharts"])
+    assert all(len(chart["title"]) == 200 for chart in task_facts["missingCharts"])
+    assert len(task_facts["inspections"]) == 100
+    inspection = task_facts["inspections"][0]
+    assert inspection.keys() == {
+        "sourcePath",
+        "visualReviewStatus",
+        "requiresRevision",
+        "issues",
+        "warnings",
+        "suggestions",
+        "summary",
+    }
+    assert len(inspection["sourcePath"]) == 1024
+    assert inspection["visualReviewStatus"] == "needs_revision"
+    assert inspection["requiresRevision"] is True
+    assert len(inspection["issues"]) == 20
+    assert inspection["issues"][0] == {
+        "category": "text_overlap",
+        "severity": "critical",
+        "description": "标签重叠" + "x" * 496,
+    }
+    assert len(inspection["warnings"]) == len(inspection["suggestions"]) == 20
+    assert all(len(item) == 500 for item in inspection["warnings"])
+    assert all(len(item) == 500 for item in inspection["suggestions"])
+    assert len(inspection["summary"]) == 2000
+    prompt_text = agent_prompt_text(task_facts)
+    assert "SECRET_CHART_SHA" not in prompt_text
+    assert "SECRET_ISSUE_EVIDENCE" not in prompt_text
+    assert "SECRET_RECEIPT_SHA" not in prompt_text
+    assert "SECRET_MODEL_ID" not in prompt_text
+    assert "SECRET_RAW_RESPONSE" not in prompt_text
+    assert "SECRET_SOURCE" not in prompt_text
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "task_facts",
     [
         {"missingFacts": "not-an-array"},
         {"missingFacts": ["valid", {"source": "SECRET_SOURCE"}]},
         {"missingFacts": ["valid", 3]},
+        {"missingCharts": "not-an-array"},
+        {"missingCharts": [{"chartId": "chart", "sourcePath": "charts/x.png"}]},
+        {"missingCharts": [{"chartId": "chart", "sourcePath": 1, "title": "标题"}]},
+        {"inspections": "not-an-array"},
+        {
+            "inspections": [
+                {
+                    "sourcePath": "charts/x.png",
+                    "visualReviewStatus": "passed",
+                    "requiresRevision": "false",
+                }
+            ]
+        },
+        {
+            "inspections": [
+                {
+                    "sourcePath": "charts/x.png",
+                    "visualReviewStatus": "passed",
+                    "requiresRevision": False,
+                    "issues": [{"category": "cropping", "severity": "warning"}],
+                }
+            ]
+        },
+        {
+            "inspections": [
+                {
+                    "sourcePath": "charts/x.png",
+                    "visualReviewStatus": "not a stable status",
+                    "requiresRevision": False,
+                }
+            ]
+        },
     ],
 )
 async def test_repair_rejects_illegal_task_facts_before_read(task_facts):

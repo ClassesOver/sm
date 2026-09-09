@@ -26,6 +26,15 @@ MAX_DIAGNOSTIC_PATH_LENGTH = 1024
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
 MAX_TASK_MISSING_FACTS = 20
 MAX_TASK_MISSING_FACT_LENGTH = 512
+MAX_TASK_MISSING_CHARTS = 100
+MAX_TASK_CHART_ID_LENGTH = 128
+MAX_TASK_CHART_SOURCE_PATH_LENGTH = 1024
+MAX_TASK_CHART_TITLE_LENGTH = 200
+MAX_TASK_INSPECTIONS = 100
+MAX_TASK_INSPECTION_ISSUES = 20
+MAX_TASK_INSPECTION_TEXTS = 20
+MAX_TASK_INSPECTION_TEXT_LENGTH = 500
+MAX_TASK_INSPECTION_SUMMARY_LENGTH = 2000
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 
@@ -153,7 +162,7 @@ class ReportingCodeGenerationRunner:
     @classmethod
     def _repair_task_facts(
         cls, task_facts: Any, script_path: str
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, Any]:
         if task_facts is None:
             return {}
         if not isinstance(task_facts, Mapping):
@@ -163,21 +172,174 @@ class ReportingCodeGenerationRunner:
                 script_path,
             )
         missing_facts = task_facts.get("missingFacts")
-        if missing_facts is None:
-            return {}
-        if not isinstance(missing_facts, list) or any(
-            not isinstance(item, str) for item in missing_facts
+        if missing_facts is not None and (
+            not isinstance(missing_facts, list)
+            or any(not isinstance(item, str) for item in missing_facts)
         ):
             raise cls._error(
                 "report_code_generation_task_facts_invalid",
                 "修复任务事实必须是受限的 missingFacts 字符串数组。",
                 script_path,
             )
-        return {
-            "missingFacts": [
+        result: dict[str, Any] = {}
+        if missing_facts is not None:
+            result["missingFacts"] = [
                 item[:MAX_TASK_MISSING_FACT_LENGTH]
                 for item in missing_facts[:MAX_TASK_MISSING_FACTS]
             ]
+        missing_charts = task_facts.get("missingCharts")
+        if missing_charts is not None:
+            result["missingCharts"] = cls._repair_missing_charts(
+                missing_charts, script_path
+            )
+        inspections = task_facts.get("inspections")
+        if inspections is not None:
+            result["inspections"] = cls._repair_inspections(inspections, script_path)
+        return result
+
+    @classmethod
+    def _repair_missing_charts(
+        cls, missing_charts: Any, script_path: str
+    ) -> list[dict[str, str]]:
+        if not isinstance(missing_charts, list):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复任务事实必须是受限的 missingCharts 数组。",
+                script_path,
+            )
+        result: list[dict[str, str]] = []
+        for chart in missing_charts[:MAX_TASK_MISSING_CHARTS]:
+            if not isinstance(chart, Mapping):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "缺失图表必须是对象。",
+                    script_path,
+                )
+            chart_id = chart.get("chartId")
+            source_path = chart.get("sourcePath")
+            title = chart.get("title")
+            if not all(isinstance(value, str) for value in (chart_id, source_path, title)):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "缺失图表身份字段必须是字符串。",
+                    script_path,
+                )
+            result.append(
+                {
+                    "chartId": chart_id[:MAX_TASK_CHART_ID_LENGTH],
+                    "sourcePath": source_path[:MAX_TASK_CHART_SOURCE_PATH_LENGTH],
+                    "title": title[:MAX_TASK_CHART_TITLE_LENGTH],
+                }
+            )
+        return result
+
+    @classmethod
+    def _repair_inspections(
+        cls, inspections: Any, script_path: str
+    ) -> list[dict[str, Any]]:
+        if not isinstance(inspections, list):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复任务事实必须是受限的 inspections 数组。",
+                script_path,
+            )
+        return [
+            cls._repair_inspection(inspection, script_path)
+            for inspection in inspections[:MAX_TASK_INSPECTIONS]
+        ]
+
+    @classmethod
+    def _repair_inspection(
+        cls, inspection: Any, script_path: str
+    ) -> dict[str, Any]:
+        if not isinstance(inspection, Mapping):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "视觉检查记录必须是对象。",
+                script_path,
+            )
+        source_path = inspection.get("sourcePath")
+        status = inspection.get("visualReviewStatus")
+        requires_revision = inspection.get("requiresRevision")
+        if (
+            not isinstance(source_path, str)
+            or not isinstance(status, str)
+            or _STABLE_CODE_RE.fullmatch(status) is None
+            or not isinstance(requires_revision, bool)
+        ):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "视觉检查核心字段无效。",
+                script_path,
+            )
+        result: dict[str, Any] = {
+            "sourcePath": source_path[:MAX_TASK_CHART_SOURCE_PATH_LENGTH],
+            "visualReviewStatus": status,
+            "requiresRevision": requires_revision,
+        }
+        issues = inspection.get("issues", [])
+        if not isinstance(issues, list):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "视觉检查 issues 必须是数组。",
+                script_path,
+            )
+        result["issues"] = [
+            cls._repair_inspection_issue(issue, script_path)
+            for issue in issues[:MAX_TASK_INSPECTION_ISSUES]
+        ]
+        for field in ("warnings", "suggestions"):
+            values = inspection.get(field, [])
+            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    f"视觉检查 {field} 必须是字符串数组。",
+                    script_path,
+                )
+            result[field] = [
+                value[:MAX_TASK_INSPECTION_TEXT_LENGTH]
+                for value in values[:MAX_TASK_INSPECTION_TEXTS]
+            ]
+        summary = inspection.get("summary")
+        if summary is not None:
+            if not isinstance(summary, str):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "视觉检查 summary 必须是字符串。",
+                    script_path,
+                )
+            result["summary"] = summary[:MAX_TASK_INSPECTION_SUMMARY_LENGTH]
+        return result
+
+    @classmethod
+    def _repair_inspection_issue(
+        cls, issue: Any, script_path: str
+    ) -> dict[str, str]:
+        if not isinstance(issue, Mapping):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "视觉检查 issue 必须是对象。",
+                script_path,
+            )
+        category = issue.get("category")
+        severity = issue.get("severity")
+        description = issue.get("description")
+        if (
+            not isinstance(category, str)
+            or _STABLE_CODE_RE.fullmatch(category) is None
+            or not isinstance(severity, str)
+            or _STABLE_CODE_RE.fullmatch(severity) is None
+            or not isinstance(description, str)
+        ):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "视觉检查 issue 字段无效。",
+                script_path,
+            )
+        return {
+            "category": category,
+            "severity": severity,
+            "description": description[:MAX_TASK_INSPECTION_TEXT_LENGTH],
         }
 
     @classmethod
