@@ -501,7 +501,7 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
     assert workflow.generate_script.await_count == 1
     assert repair_script.await_count == 2
     assert [
-        call.kwargs["diagnostic"]["missingFacts"] for call in repair_script.await_args_list
+        list(call.kwargs["decision"].missing_facts) for call in repair_script.await_args_list
     ] == [
         ["收入构成"],
         ["收入构成"],
@@ -533,6 +533,49 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
     assert {record["level"].name for record in failures} == {"WARNING"}
     assert all("private-script-output" not in record["message"] for record in failures)
     assert all("output_bytes=21" in record["message"] for record in failures)
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_preserves_repairs_after_fresh_generation_retries() -> None:
+    generation_error = ReportingError(
+        "report_code_generation_no_patch", "Coding Agent 未提交脚本 patch。"
+    )
+    generate_script = AsyncMock(
+        side_effect=[generation_error, generation_error, _code_result("b" * 64)]
+    )
+    repair_script = AsyncMock(side_effect=[_code_result("c" * 64), _code_result("d" * 64)])
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少收入构成",
+                missingFacts=("收入构成",),
+            )
+        ),
+        generate_script=generate_script,
+        repair_script=repair_script,
+        summarize=AsyncMock(
+            return_value=AnalysisSummaryDraft(summary="仅使用确定性事实完成摘要。", warnings=())
+        ),
+        read_file=AsyncMock(return_value=_facts_read_result()),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=1, output="failed")),
+        complete=complete,
+    )
+
+    result = await workflow.run(
+        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+    )
+
+    assert [status for _, status in result.stage_statuses] == ["completed"] * 5
+    assert generate_script.await_count == 3
+    assert repair_script.await_count == 2
+    assert workflow.run_script.await_count == 3
+    assert complete.await_args.kwargs["evidencePaths"] == []
+    assert any(
+        "report_analysis_supplement_abandoned" in warning
+        for warning in complete.await_args.kwargs["warnings"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -724,8 +767,10 @@ async def test_analysis_item_workflow_repairs_invalid_evidence_once(
     assert len(decisions) == 1
     diagnostic = repair_script.await_args.kwargs["diagnostic"]
     assert diagnostic["code"] == expected_code
-    assert diagnostic["missingFacts"] == ["收入构成"]
-    assert diagnostic["scriptPath"] == "报表/智能分析/run-1/evidence/analysis_001/supplement.py"
+    assert repair_script.await_args.kwargs["decision"].missing_facts == ("收入构成",)
+    assert repair_script.await_args.kwargs["script_file"].path == (
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.py"
+    )
     assert workflow.run_script.await_count == 2
     assert workflow.summarize.await_args.args[0]["supplementalEvidence"]["analysisId"] == (
         "analysis_001"

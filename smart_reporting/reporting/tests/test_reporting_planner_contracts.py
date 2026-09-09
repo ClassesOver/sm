@@ -107,7 +107,6 @@ from smart_reporting.reporting.workflow.runtime.base import (
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
 )
-from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
 from smart_reporting.reporting.workflow.runtime.datasets import (
     RuntimeDatasetsMixin,
     _requirement_measure_field_refs,
@@ -1621,13 +1620,12 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     )
     observed: list[tuple[str, str, int]] = []
     planner_requests: list[dict[str, Any]] = []
-    code_requests: list[tuple[str, dict[str, Any]]] = []
+    code_prompts: list[dict[str, Any]] = []
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = SimpleNamespace()
     runtime.task_runner = SimpleNamespace(repository=SimpleNamespace())
     runtime.state_repository = SimpleNamespace()
     runtime._analysis_evidence_agent = SimpleNamespace()
-    runtime._analysis_script_agent = SimpleNamespace()
     runtime._analysis_summary_agent = SimpleNamespace()
 
     async def run_planner(_agent, payload, _parent_context):
@@ -1648,40 +1646,33 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
             missingFacts=("构成",),
         )
 
-    class FakeCodeRunner:
-        def __init__(self, *, agent):
-            assert agent is runtime._analysis_script_agent
+    class CapturingCodeAgent:
+        def __init__(self):
+            self.tools = []
+            self.tool_choice = None
 
-        async def generate(self, script_path, task_facts, apply_analysis_patch, run_context):
+        async def arun(self, prompt, **_kwargs):
+            request = json.loads(prompt)
+            tool = self.tools[0]
+            if tool.name == "read_file":
+                return await tool.entrypoint(path=request["scriptPath"])
             binding = task_context.dependencies["AgentOS 任务执行"]
+            facts = request["facts"]
             observed.append(
                 (
-                    "analysis_001:evidence:script:initial",
+                    (
+                        "analysis_001:evidence:script:repair"
+                        if "taskFacts" in facts
+                        else "analysis_001:evidence:script:initial"
+                    ),
                     binding["reportingThinkingEffort"],
                     binding["reportingThinkingBudget"],
                 )
             )
-            assert apply_analysis_patch is toolkit.apply_analysis_patch
-            code_requests.append(("generate", dict(task_facts)))
-            return CodeGenerationResult(FileIdentity(path=script_path, size=1, sha256="b" * 64))
+            code_prompts.append(request)
+            return await tool.entrypoint(patch="diff")
 
-        async def repair(
-            self, script_file, diagnostic, read_file, apply_analysis_patch, run_context
-        ):
-            binding = task_context.dependencies["AgentOS 任务执行"]
-            observed.append(
-                (
-                    "analysis_001:evidence:script:repair",
-                    binding["reportingThinkingEffort"],
-                    binding["reportingThinkingBudget"],
-                )
-            )
-            assert read_file is toolkit.read_file
-            assert apply_analysis_patch is toolkit.apply_analysis_patch
-            code_requests.append(("repair", dict(diagnostic)))
-            return CodeGenerationResult(
-                FileIdentity(path=script_file.path, size=1, sha256="c" * 64)
-            )
+    runtime._analysis_script_agent = CapturingCodeAgent()
 
     class FakeAnalysisItemWorkflow:
         def __init__(
@@ -1716,28 +1707,48 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
                 diagnostic={
                     "code": "report_analysis_script_failed",
                     "message": "脚本执行失败。",
-                    "missingFacts": list(decision.missing_facts),
-                    "scriptPath": script_path,
                 },
+                decision=decision,
                 run_context=task_context,
             )
             await self.summarize({})
             return SimpleNamespace(output=StepOutput(content={"ok": True}))
 
     runtime._run_planner = run_planner
+    script_path = "evidence/analysis_001/supplement.py"
+    initial_content = "print(1)\n"
+    repaired_content = "print(2)\n"
+
+    def script_identity(content: str) -> dict[str, Any]:
+        return {
+            "path": script_path,
+            "size": len(content.encode()),
+            "sha256": hashlib.sha256(content.encode()).hexdigest(),
+        }
+
     toolkit = SimpleNamespace(
-        read_file=AsyncMock(),
-        apply_analysis_patch=AsyncMock(),
+        read_file=AsyncMock(
+            return_value={
+                "ok": True,
+                **script_identity(initial_content),
+                "content": initial_content,
+                "offset": 0,
+                "nextOffset": len(initial_content.encode()),
+                "totalBytes": len(initial_content.encode()),
+            }
+        ),
+        apply_analysis_patch=AsyncMock(
+            side_effect=[
+                {"ok": True, "artifacts": [script_identity(initial_content)]},
+                {"ok": True, "artifacts": [script_identity(repaired_content)]},
+            ]
+        ),
         run_python_script=AsyncMock(),
         complete_analysis_item=AsyncMock(),
     )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.build_reporting_tools",
         lambda *_args, **_kwargs: [toolkit],
-    )
-    monkeypatch.setattr(
-        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCodeGenerationRunner",
-        FakeCodeRunner,
     )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.AnalysisItemWorkflow",
@@ -1764,17 +1775,13 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         "analysisBlock",
     }
     assert len(planner_requests) == 2
-    assert code_requests[0][0] == "generate"
-    assert code_requests[0][1]["evidenceDecision"]["missingFacts"] == ["构成"]
-    assert code_requests[1] == (
-        "repair",
-        {
-            "code": "report_analysis_script_failed",
-            "message": "脚本执行失败。",
-            "missingFacts": ["构成"],
-            "scriptPath": "evidence/analysis_001/supplement.py",
-        },
-    )
+    assert code_prompts[0]["facts"]["evidenceDecision"]["missingFacts"] == ["构成"]
+    assert code_prompts[1]["scriptPath"] == script_path
+    assert code_prompts[1]["facts"]["taskFacts"] == {"missingFacts": ["构成"]}
+    assert code_prompts[1]["facts"]["diagnostic"] == {
+        "code": "report_analysis_script_failed",
+        "message": "脚本执行失败。",
+    }
     assert task_context.dependencies["AgentOS 任务执行"] == {
         "reportingThinkingEffort": "high",
         "reportingThinkingBudget": 4096,

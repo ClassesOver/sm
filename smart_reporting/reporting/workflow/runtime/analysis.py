@@ -1913,6 +1913,7 @@ class RuntimeAnalysisMixin:
             *,
             script_file: FileIdentity,
             diagnostic: Mapping[str, Any],
+            decision: AnalysisEvidenceDecision,
             run_context: RunContext,
         ) -> CodeGenerationResult:
             dependencies = (
@@ -1940,6 +1941,7 @@ class RuntimeAnalysisMixin:
                     toolkit.read_file,
                     toolkit.apply_analysis_patch,
                     run_context,
+                    task_facts={"missingFacts": list(decision.missing_facts)},
                 )
             finally:
                 for key, restored_value in (

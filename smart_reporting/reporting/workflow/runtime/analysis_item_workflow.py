@@ -30,6 +30,7 @@ from ..checkpoint import FileIdentity
 from .code_generation import CodeGenerationResult
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
+MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS = 3
 MAX_DETERMINISTIC_FACT_BYTES = 10 * 1024 * 1024
 DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
@@ -466,7 +467,9 @@ class AnalysisItemWorkflow:
                             max_retries=0,
                         ),
                     ],
-                    max_iterations=MAX_ANALYSIS_SCRIPT_REPAIRS + 1,
+                    max_iterations=(
+                        MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS + MAX_ANALYSIS_SCRIPT_REPAIRS
+                    ),
                     end_condition=lambda _outputs: (
                         state.evidence is not None
                         or (
@@ -667,6 +670,7 @@ class AnalysisItemWorkflow:
                 generated = await self.repair_script(
                     script_file=state.script_file,
                     diagnostic=self._repair_diagnostic(state),
+                    decision=decision,
                     run_context=run_context,
                 )
             else:
@@ -709,7 +713,7 @@ class AnalysisItemWorkflow:
             state.evidence = None
             exhausted = (
                 state.script_file is None
-                and state.generation_attempts >= MAX_ANALYSIS_SCRIPT_REPAIRS + 1
+                and state.generation_attempts >= MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS
             ) or (
                 state.script_file is not None and state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS
             )
@@ -745,18 +749,12 @@ class AnalysisItemWorkflow:
         return result.script_file
 
     def _repair_diagnostic(self, state: _AnalysisItemState) -> dict[str, Any]:
-        decision = state.decision
-        script_file = state.script_file
-        if decision is None or script_file is None:
+        if state.decision is None or state.script_file is None:
             raise ReportingError(
                 "report_analysis_script_repair_invalid",
                 "脚本修复缺少既有事实缺口或签发文件身份。",
             )
-        return {
-            **self._repair_error(state.failure),
-            "missingFacts": list(decision.missing_facts),
-            "scriptPath": script_file.path,
-        }
+        return self._repair_error(state.failure)
 
     async def _validate_evidence(
         self, state: _AnalysisItemState, run_context: RunContext
