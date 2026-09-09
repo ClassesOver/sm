@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -46,13 +47,45 @@ def _settings() -> object:
     return object()
 
 
-def _chart_patch() -> dict[str, str]:
+_ANALYSIS_SOURCE = (
+    "from pathlib import Path\n"
+    'output_path = Path("analysis/output/supplement.json")\n'
+    'output_path.write_text("{}", encoding="utf-8")\n'
+)
+_REPAIRED_ANALYSIS_SOURCE = _ANALYSIS_SOURCE + "repair_complete = True\n"
+_VISUALIZATION_SOURCE = (
+    "import matplotlib\n"
+    'matplotlib.use("Agg")\n'
+    "import matplotlib.pyplot as plt\n"
+    'output_path = "analysis/charts/outpatient_operation/chart.png"\n'
+    "plt.savefig(output_path)\n"
+)
+_REPAIRED_VISUALIZATION_SOURCE = _VISUALIZATION_SOURCE + "repair_complete = True\n"
+
+
+def _create_patch(path: str, source: str) -> dict[str, str]:
+    lines = source.splitlines(keepends=True)
     return {
         "patch": (
-            "--- /dev/null\n+++ b/analysis/output/outpatient_chart.py\n"
-            "@@ -0,0 +1 @@\n+print('chart')\n"
+            f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n"
+            + "".join(f"+{line}" for line in lines)
         )
     }
+
+
+def _update_patch(path: str, before: str, after: str) -> str:
+    before_lines = before.splitlines(keepends=True)
+    after_lines = after.splitlines(keepends=True)
+    return (
+        f"--- a/{path}\n+++ b/{path}\n"
+        f"@@ -1,{len(before_lines)} +1,{len(after_lines)} @@\n"
+        + "".join(f"-{line}" for line in before_lines)
+        + "".join(f"+{line}" for line in after_lines)
+    )
+
+
+def _chart_patch() -> dict[str, str]:
+    return _create_patch("analysis/output/outpatient_chart.py", _VISUALIZATION_SOURCE)
 
 
 class _OfflineCodeAgent:
@@ -66,16 +99,17 @@ class _OfflineCodeAgent:
             return await tool.entrypoint(path=payload["scriptPath"])
         path = payload["scriptPath"]
         repair = "readReceipt" in payload["facts"]
-        patch = (
-            f"--- {'a/' + path if repair else '/dev/null'}\n"
-            f"+++ b/{path}\n"
-            f"@@ {'-1 +1' if repair else '-0,0 +1'} @@\n"
-            + (
-                "-print('probe')\n+print('repaired')\n"
-                if repair
-                else "+print('probe')\n"
-            )
+        source = (
+            _VISUALIZATION_SOURCE
+            if "chart" in path
+            else _ANALYSIS_SOURCE
         )
+        repaired = (
+            _REPAIRED_VISUALIZATION_SOURCE
+            if "chart" in path
+            else _REPAIRED_ANALYSIS_SOURCE
+        )
+        patch = _update_patch(path, source, repaired) if repair else _create_patch(path, source)["patch"]
         return await tool.entrypoint(patch=patch)
 
 
@@ -294,17 +328,39 @@ def test_probe_records_model_call_that_is_not_visible_in_current_projection() ->
     ]
 
 
+@pytest.mark.parametrize(
+    "actual",
+    [
+        ("read_file", "run_python_script", "run_python_script", "complete_analysis_item"),
+        ("run_python_script", "read_file", "complete_analysis_item"),
+    ],
+)
+def test_probe_protocol_rejects_duplicate_or_reordered_tool_calls(
+    actual: tuple[str, ...],
+) -> None:
+    expected = ("read_file", "run_python_script", "complete_analysis_item")
+
+    failure = probe_module._tool_sequence_failure(expected, actual)
+
+    assert failure == {
+        "code": "probe_tool_sequence_mismatch",
+        "message": "场景工具调用顺序或次数不匹配。",
+        "details": {"expected": list(expected), "actual": list(actual)},
+    }
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("scenario_name", ["analysis-script-context", "visualization-recovery"])
 async def test_probe_recovery_requires_script_repair(scenario_name: str) -> None:
     scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
     recorder = ProbeRecorder(_runtime(), scenario)
-    patch = (
-        "--- /dev/null\n"
-        f"+++ b/{'analysis/output/supplement.py' if scenario.task_kind == 'analysis_item' else 'analysis/output/outpatient_chart.py'}\n"
-        "@@ -0,0 +1 @@\n+print('probe')\n"
+    path = (
+        "analysis/output/supplement.py"
+        if scenario.task_kind == "analysis_item"
+        else "analysis/output/outpatient_chart.py"
     )
-    await recorder.invoke("apply_analysis_patch", {"patch": patch})
+    source = _ANALYSIS_SOURCE if scenario.task_kind == "analysis_item" else _VISUALIZATION_SOURCE
+    await recorder.invoke("apply_analysis_patch", _create_patch(path, source))
 
     first = await recorder.invoke(
         "run_python_script",
@@ -377,7 +433,20 @@ async def test_probe_fixed_workflow_owns_recovery_after_coding_agent_stops(
         assert names[-2:] == ["inspect_chart", "submit_visualization_charts"]
 
     content = await recorder.runtime.workspace.read_text(recorder.committed_script_path)
-    assert content == "print('repaired')\n"
+    expected_source = (
+        _REPAIRED_ANALYSIS_SOURCE
+        if scenario.task_kind == "analysis_item"
+        else _REPAIRED_VISUALIZATION_SOURCE
+    )
+    assert content == expected_source
+    assert len(recorder.script_patch_metrics) == 2
+    assert [item["attempt"] for item in recorder.script_patch_metrics] == [1, 2]
+    assert recorder.final_script_metrics == {
+        "path": recorder.committed_script_path,
+        "sourceLineCount": len(expected_source.splitlines()),
+        "sizeBytes": len(expected_source.encode()),
+        "sha256": hashlib.sha256(expected_source.encode()).hexdigest(),
+    }
 
 
 @pytest.mark.anyio
@@ -419,6 +488,54 @@ async def test_probe_rejects_non_patch_coding_output_after_workflow_soft_fallbac
         failure["code"] == "probe_required_tools_missing"
         for failure in result["protocol_failures"]
     )
+
+
+@pytest.mark.anyio
+async def test_probe_run_reports_final_script_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
+    monkeypatch.setattr(
+        probe_module,
+        "_build_model",
+        lambda *_args, **_kwargs: SimpleNamespace(id="test"),
+    )
+    monkeypatch.setattr(probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor)
+    monkeypatch.setattr(
+        probe_module,
+        "create_reporting_generator_agent",
+        lambda **kwargs: SimpleNamespace(output_schema=kwargs["output_schema"]),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "create_reporting_code_agent",
+        lambda **_kwargs: _OfflineCodeAgent(),
+    )
+
+    result = await _run_scenario(
+        _settings(), scenario, model_tier="fast", thinking=False, timeout_seconds=5
+    )
+
+    assert result["finalScriptMetrics"] == {
+        "path": "analysis/output/supplement.py",
+        "sourceLineCount": len(_ANALYSIS_SOURCE.splitlines()),
+        "sizeBytes": len(_ANALYSIS_SOURCE.encode()),
+        "sha256": hashlib.sha256(_ANALYSIS_SOURCE.encode()).hexdigest(),
+    }
+    assert result["scriptPatchMetrics"] == [
+        {
+            "attempt": 1,
+            "path": "analysis/output/supplement.py",
+            "patchPhysicalLineCount": len(
+                _create_patch("analysis/output/supplement.py", _ANALYSIS_SOURCE)[
+                    "patch"
+                ].splitlines()
+            ),
+            "sourceLineCount": len(_ANALYSIS_SOURCE.splitlines()),
+            "sizeBytes": len(_ANALYSIS_SOURCE.encode()),
+            "sha256": hashlib.sha256(_ANALYSIS_SOURCE.encode()).hexdigest(),
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -558,25 +675,26 @@ def test_probe_uses_current_reporting_toolkit_schema(phase: str, task_kind: str)
 
 
 @pytest.mark.anyio
-async def test_probe_tools_use_mock_workspace_for_file_and_command_calls() -> None:
-    runtime = MockReportingToolRuntime(
-        input_snapshot={},
-        inputs={"inputs/source.txt": b"source"},
-        output_policy=ReportingOutputPolicy(roots=("analysis/output",)),
+async def test_probe_runner_uses_contract_simulation_without_executor() -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "visualization-inspection")
+    runtime = _runtime()
+    tools, recorder = build_mock_probe_tools(
+        scenario.phase, scenario.task_kind, runtime, scenario
     )
-    tools, recorder = build_mock_probe_tools("analysis", "analysis_item", runtime)
     by_name = {tool.name: tool for tool in tools}
 
-    read_result = await by_name["read_file"].entrypoint(path="inputs/source.txt")
+    await by_name["apply_analysis_patch"].entrypoint(**_chart_patch())
     command_result = await by_name["run_python_script"].entrypoint(
-        script_path="analysis/output/probe.py", timeout=30
+        script_path="analysis/output/outpatient_chart.py", timeout=30
     )
 
-    assert read_result["ok"] is True
-    assert read_result["content"] == "source"
     assert command_result["ok"] is True
-    assert [call["operation"] for call in runtime.calls] == ["read_bytes", "execute_script"]
-    assert [call["name"] for call in recorder.calls] == ["read_file", "run_python_script"]
+    assert command_result["simulationMode"] == "mock_contract_simulation"
+    assert "execute_script" not in [call["operation"] for call in runtime.calls]
+    assert [call["name"] for call in recorder.calls] == [
+        "apply_analysis_patch",
+        "run_python_script",
+    ]
 
 
 @pytest.mark.anyio
@@ -588,9 +706,139 @@ async def test_probe_applies_valid_unified_diff_content() -> None:
 
     assert result["ok"] is True
     assert await runtime.workspace.read_text("analysis/output/outpatient_chart.py") == (
-        "print('chart')\n"
+        _VISUALIZATION_SOURCE
     )
-    assert result["artifacts"][0]["size"] == len(b"print('chart')\n")
+    expected = {
+        "attempt": 1,
+        "path": "analysis/output/outpatient_chart.py",
+        "patchPhysicalLineCount": len(_chart_patch()["patch"].splitlines()),
+        "sourceLineCount": len(_VISUALIZATION_SOURCE.splitlines()),
+        "sizeBytes": len(_VISUALIZATION_SOURCE.encode()),
+        "sha256": hashlib.sha256(_VISUALIZATION_SOURCE.encode()).hexdigest(),
+    }
+    assert result["scriptMetrics"] == expected
+    assert recorder.script_patch_metrics == [expected]
+    assert result["artifacts"][0] == {
+        "path": expected["path"],
+        "size": expected["sizeBytes"],
+        "sha256": expected["sha256"],
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scenario_name", "path", "source"),
+    [
+        ("analysis-script-foreground", "analysis/output/supplement.py", "pass\n"),
+        ("analysis-script-foreground", "analysis/output/supplement.py", "value = (\n"),
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            "value = 1\r\nprint(value)\r\n",
+        ),
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            "#" + "a" * (8 * 1024) + "\npass\n",
+        ),
+        (
+            "visualization-inspection",
+            "analysis/output/outpatient_chart.py",
+            "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\n",
+        ),
+    ],
+)
+async def test_probe_rejects_invalid_python_source_before_workspace_mutation(
+    scenario_name: str, path: str, source: str
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
+    runtime = _runtime()
+    recorder = ProbeRecorder(runtime, scenario)
+
+    result = await recorder.invoke("apply_analysis_patch", _create_patch(path, source))
+
+    assert result["ok"] is False
+    assert result["code"] == "report_python_source_shape_invalid"
+    assert runtime.calls == []
+    assert recorder.committed_script_path is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scenario_name", "path", "source", "artifact_path"),
+    [
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            _ANALYSIS_SOURCE.replace("supplement.json", "wrong.json"),
+            "analysis/output/wrong.json",
+        ),
+        (
+            "visualization-inspection",
+            "analysis/output/outpatient_chart.py",
+            _VISUALIZATION_SOURCE.replace("chart.png", "wrong.png"),
+            "analysis/charts/outpatient_operation/wrong.png",
+        ),
+    ],
+)
+async def test_probe_simulation_rejects_wrong_artifact_output_path(
+    scenario_name: str, path: str, source: str, artifact_path: str
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
+    runtime = _runtime()
+    recorder = ProbeRecorder(runtime, scenario)
+    patch_result = await recorder.invoke("apply_analysis_patch", _create_patch(path, source))
+
+    result = await recorder.invoke("run_python_script", {"script_path": path, "timeout": 30})
+
+    assert patch_result["ok"] is True
+    assert result["ok"] is False
+    assert result["code"] == "probe_artifact_contract_invalid"
+    assert "execute_script" not in [call["operation"] for call in runtime.calls]
+    with pytest.raises(Exception):
+        await runtime.workspace.read_bytes(artifact_path)
+
+
+@pytest.mark.anyio
+async def test_probe_artifacts_are_unavailable_until_simulated_script_acceptance() -> None:
+    analysis = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
+    analysis_recorder = ProbeRecorder(_runtime(), analysis)
+    before_evidence = await analysis_recorder.invoke(
+        "read_file", {"path": "analysis/output/supplement.json"}
+    )
+    await analysis_recorder.invoke(
+        "apply_analysis_patch", _create_patch("analysis/output/supplement.py", _ANALYSIS_SOURCE)
+    )
+    run_evidence = await analysis_recorder.invoke(
+        "run_python_script", {"script_path": "analysis/output/supplement.py", "timeout": 30}
+    )
+    after_evidence = await analysis_recorder.invoke(
+        "read_file", {"path": "analysis/output/supplement.json"}
+    )
+
+    visualization = next(
+        item for item in probe_scenarios() if item.name == "visualization-inspection"
+    )
+    visualization_recorder = ProbeRecorder(_runtime(), visualization)
+    before_chart = await visualization_recorder.invoke(
+        "inspect_chart", {"path": "analysis/charts/outpatient_operation/chart.png"}
+    )
+    await visualization_recorder.invoke("apply_analysis_patch", _chart_patch())
+    run_chart = await visualization_recorder.invoke(
+        "run_python_script",
+        {"script_path": "analysis/output/outpatient_chart.py", "timeout": 30},
+    )
+    after_chart = await visualization_recorder.invoke(
+        "inspect_chart", {"path": "analysis/charts/outpatient_operation/chart.png"}
+    )
+
+    assert before_evidence["code"] == "probe_stage_read_path_forbidden"
+    assert run_evidence["simulationMode"] == "mock_contract_simulation"
+    assert after_evidence["ok"] is True
+    assert before_chart["code"] == "probe_chart_not_accepted"
+    assert run_chart["simulationMode"] == "mock_contract_simulation"
+    assert after_chart["ok"] is True
+    assert after_chart["sha256"] != "a" * 64
 
 
 @pytest.mark.anyio
@@ -621,7 +869,7 @@ async def test_probe_rejects_update_with_wrong_original_content() -> None:
                 "+++ b/analysis/output/outpatient_chart.py\n"
                 "@@ -1 +1 @@\n"
                 "-print('wrong')\n"
-                "+print('repaired')\n"
+                "+repair_complete = True\n"
             )
         },
     )
@@ -629,7 +877,7 @@ async def test_probe_rejects_update_with_wrong_original_content() -> None:
     assert result["ok"] is False
     assert result["code"] == "probe_patch_invalid"
     assert await runtime.workspace.read_text("analysis/output/outpatient_chart.py") == (
-        "print('chart')\n"
+        _VISUALIZATION_SOURCE
     )
 
 
@@ -685,15 +933,7 @@ async def test_probe_rejects_runner_path_other_than_committed_script() -> None:
         output_policy=ReportingOutputPolicy(roots=("analysis/output", "analysis/charts")),
     )
     recorder = ProbeRecorder(runtime, scenario)
-    await recorder.invoke(
-        "apply_analysis_patch",
-        {
-            "patch": (
-                "--- /dev/null\n+++ b/analysis/output/outpatient_chart.py\n"
-                "@@ -0,0 +1 @@\n+print('chart')\n"
-            )
-        },
-    )
+    await recorder.invoke("apply_analysis_patch", _chart_patch())
 
     result = await recorder.invoke(
         "run_python_script", {"script_path": "analysis/output/other.py", "timeout": 30}
@@ -717,12 +957,7 @@ async def test_probe_rejects_analysis_runner_path_outside_signed_supplement() ->
     recorder = ProbeRecorder(runtime, scenario)
     await recorder.invoke(
         "apply_analysis_patch",
-        {
-            "patch": (
-                "--- /dev/null\n+++ b/analysis/output/other.py\n"
-                "@@ -0,0 +1 @@\n+print('analysis')\n"
-            )
-        },
+        _create_patch("analysis/output/other.py", _ANALYSIS_SOURCE),
     )
 
     result = await recorder.invoke(
@@ -732,7 +967,7 @@ async def test_probe_rejects_analysis_runner_path_outside_signed_supplement() ->
     assert result["ok"] is False
     assert result["code"] == "probe_script_path_forbidden"
     assert result["details"] == {"scriptPath": "analysis/output/supplement.py"}
-    assert [call["operation"] for call in runtime.calls] == ["write_text"]
+    assert runtime.calls == []
 
 
 def test_probe_scenarios_only_require_tools_allowed_by_current_task_schema() -> None:

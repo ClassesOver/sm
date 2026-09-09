@@ -11,6 +11,7 @@ from smart_reporting.reporting.tools.analysis_item import (
     MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
     MAX_VISUALIZATION_SCRIPT_BYTES,
     RuntimeAnalysisMixin,
+    validate_reporting_python_source,
 )
 from smart_reporting.reporting.tools.base import ReportingToolkitBase
 from smart_reporting.reporting.tools.context import (
@@ -354,6 +355,25 @@ async def test_analysis_python_source_gate_returns_uniform_shape_error() -> None
         "size": len(invalid.encode()),
         "lineCount": 1,
         "maxLineLength": len(invalid.rstrip("\n")),
+    }
+
+
+def test_analysis_python_source_gate_returns_stable_metrics() -> None:
+    path = "analysis/evidence/a1/supplement.py"
+    source = "value = 1\nprint(value)\n"
+
+    metrics = validate_reporting_python_source(
+        path=path,
+        content=source,
+        max_bytes=MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
+        visualization=False,
+    )
+
+    assert metrics == {
+        "path": path,
+        "sourceLineCount": 2,
+        "sizeBytes": len(source.encode()),
+        "sha256": hashlib.sha256(source.encode()).hexdigest(),
     }
 
 

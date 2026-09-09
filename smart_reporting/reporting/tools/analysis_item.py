@@ -160,6 +160,83 @@ def _valid_visualization_source(tree: ast.Module) -> bool:
     )
 
 
+def _reject_reporting_python_source(path: str, content: Any) -> None:
+    if isinstance(content, str):
+        try:
+            raw_content = content.encode("utf-8")
+        except UnicodeEncodeError:
+            raw_content = b""
+        lines = content.splitlines()
+    elif isinstance(content, bytes):
+        raw_content = content
+        lines = []
+    else:
+        raw_content = b""
+        lines = []
+    raise ReportingError(
+        "report_python_source_shape_invalid",
+        "签发 Python 源码形状无效，已拒绝写入。",
+        details={
+            "path": path,
+            "size": len(raw_content),
+            "lineCount": len(lines),
+            "maxLineLength": max(
+                (len(line.encode("utf-8", errors="replace")) for line in lines),
+                default=0,
+            ),
+        },
+    )
+
+
+def validate_reporting_python_source(
+    *,
+    path: str,
+    content: Any,
+    max_bytes: int,
+    visualization: bool,
+) -> dict[str, Any]:
+    """以生产门禁验证 Reporting Python 源码并返回稳定指标。"""
+
+    if not isinstance(content, str):
+        _reject_reporting_python_source(path, content)
+    try:
+        raw_content = content.encode("utf-8")
+    except UnicodeEncodeError:
+        _reject_reporting_python_source(path, content)
+    if len(raw_content) > max_bytes or "\r" in content or not content.endswith("\n"):
+        _reject_reporting_python_source(path, content)
+    lines = content.split("\n")
+    source_line_count = len(content.splitlines())
+    if source_line_count < 2:
+        _reject_reporting_python_source(path, content)
+    if any(len(line.encode("utf-8")) > MAX_ANALYSIS_PYTHON_LINE_BYTES for line in lines):
+        _reject_reporting_python_source(path, content)
+    try:
+        tree = ast.parse(content, filename=path)
+        compile(tree, path, "exec")
+    except SyntaxError:
+        _reject_reporting_python_source(path, content)
+    if visualization and not _valid_visualization_source(tree):
+        _reject_reporting_python_source(path, content)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            if (
+                len(node.value if isinstance(node.value, bytes) else node.value.encode("utf-8"))
+                > MAX_ANALYSIS_PYTHON_LITERAL_BYTES
+            ):
+                _reject_reporting_python_source(path, content)
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            item_count = len(node.elts) if not isinstance(node, ast.Dict) else len(node.keys)
+            if item_count > MAX_ANALYSIS_PYTHON_LITERAL_ITEMS:
+                _reject_reporting_python_source(path, content)
+    return {
+        "path": path,
+        "sourceLineCount": source_line_count,
+        "sizeBytes": len(raw_content),
+        "sha256": hashlib.sha256(raw_content).hexdigest(),
+    }
+
+
 def _fact_metric_codes(bundle: Mapping[str, Any]) -> tuple[str, ...]:
     """从单项确定性事实中提取真实指标代码，避免沿用计划阶段的通用占位符。"""
 
@@ -404,30 +481,6 @@ class RuntimeAnalysisMixin:
             normalized_script = None
             max_bytes = MAX_ANALYSIS_PYTHON_SOURCE_BYTES
 
-        def reject(path: str, content: Any) -> None:
-            if isinstance(content, str):
-                raw_content = content.encode("utf-8")
-                lines = content.splitlines()
-            elif isinstance(content, bytes):
-                raw_content = content
-                lines = []
-            else:
-                raw_content = b""
-                lines = []
-            line_count = len(lines)
-            max_line_length = max((len(line.encode("utf-8")) for line in lines), default=0)
-            details = {
-                "path": path,
-                "size": len(raw_content),
-                "lineCount": line_count,
-                "maxLineLength": max_line_length,
-            }
-            raise ReportingError(
-                "report_python_source_shape_invalid",
-                "签发 Python 源码形状无效，已拒绝写入。",
-                details=details,
-            )
-
         for change in changes:
             path = change.get("path")
             content = change.get("content")
@@ -438,41 +491,15 @@ class RuntimeAnalysisMixin:
             ):
                 continue
             if not isinstance(content, str):
-                reject(path, content)
-            content_bytes = len(content.encode("utf-8"))
+                _reject_reporting_python_source(path, content)
             if normalized_script is None or path != normalized_script:
-                reject(path, content)
-            if content_bytes > max_bytes or "\r" in content or not content.endswith("\n"):
-                reject(path, content)
-            lines = content.split("\n")
-            if len(content.splitlines()) < 2:
-                reject(path, content)
-            if any(len(line.encode("utf-8")) > MAX_ANALYSIS_PYTHON_LINE_BYTES for line in lines):
-                reject(path, content)
-            try:
-                tree = ast.parse(content, filename=path)
-                compile(tree, path, "exec")
-            except SyntaxError:
-                reject(path, content)
-            if task_kind == "visualization_section" and not _valid_visualization_source(tree):
-                reject(path, content)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
-                    if (
-                        len(
-                            node.value
-                            if isinstance(node.value, bytes)
-                            else node.value.encode("utf-8")
-                        )
-                        > MAX_ANALYSIS_PYTHON_LITERAL_BYTES
-                    ):
-                        reject(path, content)
-                elif isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
-                    item_count = (
-                        len(node.elts) if not isinstance(node, ast.Dict) else len(node.keys)
-                    )
-                    if item_count > MAX_ANALYSIS_PYTHON_LITERAL_ITEMS:
-                        reject(path, content)
+                _reject_reporting_python_source(path, content)
+            validate_reporting_python_source(
+                path=path,
+                content=content,
+                max_bytes=max_bytes,
+                visualization=task_kind == "visualization_section",
+            )
 
     async def apply_analysis_patch(
         self,
