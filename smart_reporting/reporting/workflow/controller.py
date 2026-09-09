@@ -628,7 +628,14 @@ class ReportWorkflowController:
             raise ReportingError("report_workflow_scope_mismatch", "报表工作流不属于当前用户。")
         self._assert_mcp_metadata_scope(getattr(output, "metadata", None), scope)
         control = self._control_from_output(output, scope, session_id, run_id)
-        await self._finalize_control(control, scope)
+        lock_acquired = False
+        try:
+            async with self._execution_lock(external_run_id):
+                lock_acquired = True
+                await self._finalize_control(control, scope)
+        except ReportingError as error:
+            if lock_acquired or error.code != "report_workflow_run_conflict":
+                raise
         return self._result(control, output)
 
     async def _register_external_request(
@@ -998,42 +1005,14 @@ class ReportWorkflowController:
         if existing is not None and existing.finalization_pending:
             existing_scope = self._scope(run_context, external_run_id=existing.external_run_id)
             self._assert_scope(existing, existing_scope)
-            await self._ensure_thread_owner(existing_scope)
-            cleaned = await self._cleanup_terminal_allowing_deferred(
-                existing_scope, existing.workflow_session_id, existing.workflow_run_id
-            )
-            if not cleaned:
-                return self._result(existing, None)
-            await self._update_reporting_run_status(
-                existing.workflow_run_id,
-                status=existing.status,
-                finalization_pending=False,
-            )
-            finalized = existing.model_copy(update={"finalization_pending": None})
-            await self._release_thread(existing_scope)
-            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = finalized.public_dict()
-            return self._result(finalized, None)
+            await self._finalize_control(existing, existing_scope, state=state)
+            return self._result(existing, None)
         if existing is None:
             parent_pending = await self._parent_pending_control(scope)
             if parent_pending is not None:
-                await self._ensure_thread_owner(scope)
-                cleaned = await self._cleanup_terminal_allowing_deferred(
-                    scope,
-                    parent_pending.workflow_session_id,
-                    parent_pending.workflow_run_id,
-                )
-                if not cleaned:
-                    state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = parent_pending.public_dict()
-                    return self._result(parent_pending, None)
-                await self._update_reporting_run_status(
-                    parent_pending.workflow_run_id,
-                    status=parent_pending.status,
-                    finalization_pending=False,
-                )
-                finalized = parent_pending.model_copy(update={"finalization_pending": None})
-                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = finalized.public_dict()
-                await self._release_thread(scope)
-                return self._result(finalized, None)
+                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = parent_pending.public_dict()
+                await self._finalize_control(parent_pending, scope, state=state)
+                return self._result(parent_pending, None)
         if existing is not None and existing.status in _ACTIVE_STATUSES:
             existing_scope = self._scope(run_context, external_run_id=existing.external_run_id)
             self._assert_scope(existing, existing_scope)
@@ -1049,6 +1028,7 @@ class ReportWorkflowController:
             if current.status in _ACTIVE_STATUSES:
                 return self._result(current, output)
             await self._finalize_control(current, existing_scope, state=state)
+            return self._result(current, output)
 
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
@@ -1365,14 +1345,34 @@ class ReportWorkflowController:
                 finalization_pending=None,
             )
             return
-        await self._update_reporting_run_status(
-            control.workflow_run_id,
-            status=control.status,
-            finalization_pending=control.status in {"cancelled", "failed"},
-        )
         # completed 的发布步骤已经在产物持久化后删除 sandbox；这里只覆盖没有发布
         # 收尾机会的取消和失败终态，避免成功路径二次清理反而遮蔽下载回执。
         if control.status in {"cancelled", "failed"}:
+            parent = await self._terminal_cleanup_parent(control, scope)
+            if parent is None:
+                return
+            parent_status = str(parent.get("status") or "")
+            if parent_status == control.status and not bool(
+                parent.get("finalization_pending")
+            ):
+                await self._release_thread(scope)
+                return
+            if parent_status not in {*_ACTIVE_STATUSES, control.status}:
+                return
+            if parent_status in _ACTIVE_STATUSES:
+                await self._update_reporting_run_status(
+                    control.workflow_run_id,
+                    status=control.status,
+                    finalization_pending=True,
+                )
+                parent = await self._terminal_cleanup_parent(control, scope)
+                if parent is None:
+                    return
+            if (
+                str(parent.get("status") or "") != control.status
+                or not bool(parent.get("finalization_pending"))
+            ):
+                return
             pending = control.model_copy(update={"finalization_pending": True})
             if state is not None:
                 state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.public_dict()
@@ -1390,7 +1390,45 @@ class ReportWorkflowController:
                 state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.model_copy(
                     update={"finalization_pending": None}
                 ).public_dict()
+        else:
+            await self._update_reporting_run_status(
+                control.workflow_run_id,
+                status=control.status,
+                finalization_pending=False,
+            )
         await self._release_thread(scope)
+
+    async def _terminal_cleanup_parent(
+        self, control: ReportWorkflowControl, scope: dict[str, str]
+    ) -> dict[str, Any] | None:
+        getter = getattr(self._thread_ownership, "get_run_by_external", None)
+        if not callable(getter):
+            return None
+        parent = await getter(control.external_run_id)
+        owner = await self._get_thread_owner(self._thread_scope_key(scope))
+        if not isinstance(parent, dict) or owner is None:
+            return None
+        parent_identity = (
+            str(parent.get("report_run_id") or ""),
+            str(parent.get("external_run_id") or ""),
+            str(parent.get("thread_id") or ""),
+            str(parent.get("owner_user_id") or ""),
+        )
+        owner_identity = (
+            str(owner.get("report_run_id") or ""),
+            str(owner.get("external_run_id") or ""),
+            str(owner.get("thread_id") or ""),
+            str(owner.get("owner_user_id") or ""),
+        )
+        expected = (
+            control.workflow_run_id,
+            scope["external_run_id"],
+            self._thread_scope_key(scope),
+            scope["user_id"],
+        )
+        if parent_identity != expected or owner_identity != expected:
+            return None
+        return parent
 
     async def _finalize_run_error(
         self,
@@ -1403,7 +1441,7 @@ class ReportWorkflowController:
         terminal_status: ReportWorkflowStatus = (
             "cancelled" if isinstance(run_error, asyncio.CancelledError) else "failed"
         )
-        pending = ReportWorkflowControl(
+        terminal = ReportWorkflowControl(
             workflowId=_WORKFLOW_ID,
             workflowRunId=workflow_run_id,
             workflowSessionId=workflow_session_id,
@@ -1411,14 +1449,25 @@ class ReportWorkflowController:
             threadId=scope["thread_id"],
             userId=scope["user_id"],
             status=terminal_status,
-            finalizationPending=True,
         )
+        state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = terminal.public_dict()
+        if await self._terminal_cleanup_parent(terminal, scope) is None:
+            return
+        pending = terminal.model_copy(update={"finalization_pending": True})
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.public_dict()
         await self._update_reporting_run_status(
             workflow_run_id,
             status=terminal_status,
             finalization_pending=True,
         )
+        parent = await self._terminal_cleanup_parent(terminal, scope)
+        if (
+            parent is None
+            or str(parent.get("status") or "") != terminal_status
+            or not bool(parent.get("finalization_pending"))
+        ):
+            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = terminal.public_dict()
+            return
         try:
             cleaned = await self._cleanup_terminal_allowing_deferred(
                 scope, workflow_session_id, workflow_run_id

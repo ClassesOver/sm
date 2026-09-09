@@ -505,8 +505,9 @@ class ReportingStateRepository:
         }
         if finalization_pending is not None:
             values["finalization_pending"] = finalization_pending
-        if status in {"completed", "cancelled", "failed"}:
-            values["finished_at"] = now
+        values["finished_at"] = (
+            now if status in {"completed", "cancelled", "failed"} else None
+        )
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
             result = await connection.execute(
                 update(self.runs)
@@ -895,9 +896,7 @@ class ReportingStateRepository:
             )
             await self._insert_command_receipts(connection, receipts)
             status = (
-                "completed"
-                if result.state.phase.value == "completed"
-                else "failed"
+                "failed"
                 if result.state.phase.value == "failed"
                 else "running"
             )
@@ -909,7 +908,7 @@ class ReportingStateRepository:
                     updated_at=result.state.updated_at,
                     finished_at=(
                         result.state.updated_at
-                        if status in {"completed", "failed"}
+                        if status == "failed"
                         else None
                     ),
                 )

@@ -379,6 +379,74 @@ async def test_repository_status_update_none_preserves_finalization_pending() ->
 
 
 @pytest.mark.anyio
+async def test_repository_nonterminal_status_clears_finished_at() -> None:
+    connection = _RecordingConnection(update_rowcounts=(1,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    await repository.update_run_status("report-run", status="running")
+
+    statement = next(item for item in connection.statements if getattr(item, "is_update", False))
+    assert statement.compile().params["finished_at"] is None
+
+
+@pytest.mark.anyio
+async def test_durable_complete_keeps_parent_running_until_workflow_terminal_update() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+    finalized = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:finalize",
+            "payload": {"checkpoint": {"phase": "finalize", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    class ApplyConnection(_RecordingConnection):
+        async def execute(self, statement: Any, _parameters: Any = None) -> _FakeResult:
+            self.statements.append(statement)
+            if getattr(statement, "is_select", False):
+                if "reporting_run_states" in str(statement):
+                    return _FakeResult(
+                        row=ReportingStateRepository._row_values(finalized)
+                    )
+                return _FakeResult()
+            return _FakeResult()
+
+    connection = ApplyConnection()
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    result = await repository.apply(
+        finalized.report_run_id,
+        {"name": "complete", "commandId": "report-complete:1:manifest"},
+        expected_version=finalized.state_version,
+    )
+
+    run_update = [
+        statement
+        for statement in connection.statements
+        if getattr(statement, "is_update", False)
+        and "reporting_runs" in str(statement)
+    ][-1]
+    assert result.state.phase is ReportingPhase.COMPLETED
+    assert run_update.compile().params["status"] == "running"
+    assert run_update.compile().params["finished_at"] is None
+
+    await repository.update_run_status(finalized.report_run_id, status="completed")
+
+    terminal_update = [
+        statement
+        for statement in connection.statements
+        if getattr(statement, "is_update", False)
+        and "reporting_runs" in str(statement)
+    ][-1]
+    assert terminal_update.compile().params["status"] == "completed"
+    assert terminal_update.compile().params["finished_at"] is not None
+
+
+@pytest.mark.anyio
 async def test_repository_reads_parent_run_by_report_and_external_identity() -> None:
     stored = _run_row(finalization_pending=True, status="failed")
     connection = _RecordingConnection(row=stored)

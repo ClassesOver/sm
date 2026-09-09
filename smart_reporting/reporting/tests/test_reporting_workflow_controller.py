@@ -31,9 +31,36 @@ def _context() -> RunContext:
     )
 
 
+def _parent_run(
+    *,
+    external_run_id: str = "external-run",
+    status: str = "failed",
+    finalization_pending: bool = True,
+) -> dict[str, object]:
+    session_id, run_id = reporting_workflow_ids(
+        user_id="user", thread_id="thread", external_run_id=external_run_id
+    )
+    return {
+        "report_run_id": run_id,
+        "external_run_id": external_run_id,
+        "workflow_id": "enterprise-reporting-workflow-v1",
+        "agno_session_id": session_id,
+        "agno_run_id": run_id,
+        "caller_session_id": "thread",
+        "caller_run_id": external_run_id,
+        "thread_id": "thread",
+        "owner_user_id": "user",
+        "database": "odoo",
+        "company_id": "11",
+        "status": status,
+        "finalization_pending": finalization_pending,
+    }
+
+
 class _ThreadOwnership:
     def __init__(self) -> None:
         self.owners: dict[str, tuple[str, str]] = {}
+        self.owner_report_run_ids: dict[str, str] = {}
         self.external_requests: dict[str, dict[str, str]] = {}
         self.run_registrations: list[dict[str, object]] = []
         self.request_attachments: list[tuple[str, str]] = []
@@ -60,6 +87,7 @@ class _ThreadOwnership:
             values["external_run_id"],
             values["owner_user_id"],
         )
+        self.owner_report_run_ids[values["thread_id"]] = values["report_run_id"]
         self.owner_attachments.append(dict(values))
 
     async def update_run_status(
@@ -110,6 +138,9 @@ class _ThreadOwnership:
             if thread_id in self.owners:
                 return False
             self.owners[thread_id] = (external_run_id, owner_user_id)
+            parent = self.parent_runs.get(external_run_id)
+            if parent is not None:
+                self.owner_report_run_ids[thread_id] = str(parent["report_run_id"])
             return True
 
     async def ensure_workflow_thread_owner(
@@ -117,6 +148,9 @@ class _ThreadOwnership:
     ) -> bool:
         async with self.lock:
             owner = self.owners.setdefault(thread_id, (external_run_id, owner_user_id))
+            parent = self.parent_runs.get(external_run_id)
+            if owner == (external_run_id, owner_user_id) and parent is not None:
+                self.owner_report_run_ids.setdefault(thread_id, str(parent["report_run_id"]))
             return owner == (external_run_id, owner_user_id)
 
     async def release_workflow_thread(
@@ -126,6 +160,7 @@ class _ThreadOwnership:
             if self.owners.get(thread_id) != (external_run_id, owner_user_id):
                 return False
             self.owners.pop(thread_id)
+            self.owner_report_run_ids.pop(thread_id, None)
             return True
 
     async def get_workflow_thread_owner(self, thread_id: str):
@@ -135,6 +170,7 @@ class _ThreadOwnership:
         external_run_id, owner_user_id = owner
         return {
             "thread_id": thread_id,
+            "report_run_id": self.owner_report_run_ids.get(thread_id),
             "external_run_id": external_run_id,
             "owner_user_id": owner_user_id,
             "created_at": datetime.now(UTC),
@@ -1428,6 +1464,217 @@ async def test_controller_reclaims_sandbox_after_terminal_start(
 
 
 @pytest.mark.anyio
+async def test_external_terminal_get_does_not_repeat_completed_cleanup() -> None:
+    cleanup_calls = 0
+    parent = _parent_run()
+    run_id = str(parent["report_run_id"])
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.error,
+                user_id="user",
+                metadata={
+                    "mcpRequestFingerprint": "a" * 64,
+                    "mcpDatabase": "odoo",
+                    "mcpCompanyId": "11",
+                    "mcpThreadId": "thread",
+                },
+                content=None,
+            )
+
+    async def cleanup(*_args, **_kwargs) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+
+    ownership = _ThreadOwnership()
+    ownership.parent_runs["external-run"] = parent
+    ownership.owners["thread"] = ("external-run", "user")
+    ownership.owner_report_run_ids["thread"] = run_id
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
+    )
+
+    first = await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+    second = await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert first["status"] == second["status"] == "failed"
+    assert cleanup_calls == 1
+    assert ownership.status_updates == [(run_id, "failed", False)]
+
+
+@pytest.mark.anyio
+async def test_concurrent_external_terminal_gets_cleanup_once() -> None:
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_calls = 0
+    parent = _parent_run()
+    run_id = str(parent["report_run_id"])
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.error,
+                user_id="user",
+                metadata={
+                    "mcpRequestFingerprint": "a" * 64,
+                    "mcpDatabase": "odoo",
+                    "mcpCompanyId": "11",
+                    "mcpThreadId": "thread",
+                },
+                content=None,
+            )
+
+    async def cleanup(*_args, **_kwargs) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    ownership = _ThreadOwnership()
+    ownership.parent_runs["external-run"] = parent
+    ownership.owners["thread"] = ("external-run", "user")
+    ownership.owner_report_run_ids["thread"] = run_id
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
+    )
+    query = {
+        "external_run_id": "external-run",
+        "thread_id": "thread",
+        "user_id": "user",
+        "database": "odoo",
+        "company_id": "11",
+    }
+
+    first = asyncio.create_task(controller.get_external(**query))
+    await cleanup_started.wait()
+    second = await controller.get_external(**query)
+    release_cleanup.set()
+
+    assert (await first)["status"] == second["status"] == "failed"
+    assert cleanup_calls == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("owner", "owner_report_run_id"),
+    [
+        (None, None),
+        (("new-run", "user"), "new-report-run"),
+        (("external-run", "other-user"), "new-report-run"),
+        (("external-run", "user"), "new-report-run"),
+    ],
+)
+async def test_external_terminal_get_does_not_cleanup_without_exact_owner(
+    owner: tuple[str, str] | None,
+    owner_report_run_id: str | None,
+) -> None:
+    cleanup = AsyncMock()
+    parent = _parent_run()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.error,
+                user_id="user",
+                metadata={
+                    "mcpRequestFingerprint": "a" * 64,
+                    "mcpDatabase": "odoo",
+                    "mcpCompanyId": "11",
+                    "mcpThreadId": "thread",
+                },
+                content=None,
+            )
+
+    ownership = _ThreadOwnership()
+    ownership.parent_runs["external-run"] = parent
+    if owner is not None:
+        ownership.owners["thread"] = owner
+    if owner_report_run_id is not None:
+        ownership.owner_report_run_ids["thread"] = owner_report_run_id
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
+    )
+
+    result = await controller.get_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
+
+    assert result["status"] == "failed"
+    cleanup.assert_not_awaited()
+    assert ownership.parent_runs["external-run"]["finalization_pending"] is True
+    assert ownership.status_updates == []
+    assert ownership.owners == ({"thread": owner} if owner is not None else {})
+
+
+@pytest.mark.anyio
+async def test_controller_returns_after_active_control_becomes_terminal() -> None:
+    cleanup_calls = 0
+    parent = _parent_run(status="running", finalization_pending=False)
+    session_id = str(parent["agno_session_id"])
+    run_id = str(parent["report_run_id"])
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(status=RunStatus.error, user_id="user", content=None)
+
+        async def arun(self, *_args, **_kwargs):
+            raise AssertionError("终态恢复后不得重新启动 workflow")
+
+    async def cleanup(*_args, **_kwargs) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+
+    ownership = _ThreadOwnership()
+    ownership.parent_runs["external-run"] = parent
+    ownership.owners["thread"] = ("external-run", "user")
+    ownership.owner_report_run_ids["thread"] = run_id
+    context = _context()
+    context.session_state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = {
+        "workflowId": "enterprise-reporting-workflow-v1",
+        "workflowRunId": run_id,
+        "workflowSessionId": session_id,
+        "externalRunId": "external-run",
+        "threadId": "thread",
+        "userId": "user",
+        "status": "running",
+    }
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
+    )
+
+    result = await controller.start(ReportingWorkflowInput(prompt="恢复终态"), context)
+
+    assert result["status"] == "failed"
+    assert cleanup_calls == 1
+    assert ownership.run_registrations == []
+
+
+@pytest.mark.anyio
 async def test_controller_reclaims_sandbox_when_workflow_raises() -> None:
     cleanup_calls: list[tuple[dict[str, str], str, str]] = []
     events: list[str] = []
@@ -1467,6 +1714,63 @@ async def test_controller_reclaims_sandbox_when_workflow_raises() -> None:
         (report_run_id, "failed", False),
     ]
     assert events == ["status:failed:True", "cleanup", "status:failed:False"]
+
+
+@pytest.mark.anyio
+async def test_controller_run_error_does_not_cleanup_replaced_owner() -> None:
+    cleanup = AsyncMock()
+    ownership = _ThreadOwnership()
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            ownership.owners["thread"] = ("new-run", "user")
+            ownership.owner_report_run_ids["thread"] = "new-report-run"
+            raise RuntimeError("workflow failed")
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
+    )
+
+    with pytest.raises(RuntimeError, match="workflow failed"):
+        await controller.start(ReportingWorkflowInput(prompt="生成报表"), _context())
+
+    cleanup.assert_not_awaited()
+    assert ownership.parent_runs["external-run"]["status"] == "running"
+    assert ownership.parent_runs["external-run"]["finalization_pending"] is False
+    assert ownership.status_updates == []
+    assert ownership.owners == {"thread": ("new-run", "user")}
+
+
+@pytest.mark.anyio
+async def test_controller_run_error_rechecks_owner_immediately_before_cleanup() -> None:
+    cleanup = AsyncMock()
+    ownership = _ThreadOwnership()
+    original_update = ownership.update_run_status
+
+    async def replace_owner_after_status(*args, **kwargs) -> None:
+        await original_update(*args, **kwargs)
+        ownership.owners["thread"] = ("new-run", "user")
+        ownership.owner_report_run_ids["thread"] = "new-report-run"
+
+    ownership.update_run_status = replace_owner_after_status  # type: ignore[method-assign]
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            raise RuntimeError("workflow failed")
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
+    )
+
+    with pytest.raises(RuntimeError, match="workflow failed"):
+        await controller.start(ReportingWorkflowInput(prompt="生成报表"), _context())
+
+    cleanup.assert_not_awaited()
+    assert ownership.owners == {"thread": ("new-run", "user")}
 
 
 @pytest.mark.anyio
@@ -1537,6 +1841,7 @@ async def test_controller_retries_parent_pending_cleanup_without_agno_failed_row
         user_id="user", thread_id="thread", external_run_id="external-run"
     )
     ownership.owners["thread"] = ("external-run", "user")
+    ownership.owner_report_run_ids["thread"] = run_id
     ownership.parent_runs["external-run"] = {
         "report_run_id": run_id,
         "external_run_id": "external-run",
