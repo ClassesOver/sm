@@ -1991,13 +1991,18 @@ class TaskExecutionKernel:
         *,
         content: str | None = None,
         expected_sha256: str | None = None,
+        _changes: list[dict[str, Any]] | None = None,
         _scope: TaskExecutionRuntime | None = None,
     ) -> dict[str, Any]:
         scope = _scope or await self.scope(run_context)
         if mode == "patch":
             if not isinstance(patch, str) or not patch.strip():
                 raise WorkspaceError("patch 模式必须提供完整补丁。")
-            changes = await abuild_workspace_changes(self.service, scope.thread_id, patch)
+            changes = (
+                _changes
+                if _changes is not None
+                else await abuild_workspace_changes(self.service, scope.thread_id, patch)
+            )
         elif mode == "replace":
             if not isinstance(path, str) or not isinstance(old_string, str) or not old_string:
                 raise WorkspaceError("replace 模式必须提供 path 和非空 old_string。")

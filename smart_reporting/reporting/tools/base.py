@@ -1051,6 +1051,7 @@ class ReportingToolkitBase(Toolkit):
             in {
                 "report_analysis_write_intent_invalid",
                 "report_analysis_python_syntax_invalid",
+                "report_python_source_shape_invalid",
                 "report_analysis_evidence_missing",
                 "report_analysis_evidence_not_registered",
                 "report_analysis_evidence_identity_mismatch",
@@ -1094,6 +1095,10 @@ class ReportingToolkitBase(Toolkit):
         elif code == "report_analysis_python_syntax_invalid":
             result["requiredActions"] = [
                 "修正 details.path 指向的 Python 语法错误后，使用原 operation 重新提交。"
+            ]
+        elif code == "report_python_source_shape_invalid":
+            result["requiredActions"] = [
+                "修正 details.path 指向的签发 Python 源码形状后，使用原 operation 重新提交。"
             ]
         elif code == "report_chart_registration_closed":
             result["requiredActions"] = ["图表已完成不可变登记；不要改图或重复提交。"]

@@ -30,6 +30,7 @@ from smart_reporting.reporting.tools.workspace_adapter import (
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 from smart_reporting.task_execution import abuild_workspace_changes
+from smart_reporting.workspace import WorkspaceService
 
 
 def test_reporting_toolkit_owns_agno_toolkit_boundary() -> None:
@@ -354,3 +355,308 @@ async def test_analysis_python_source_gate_returns_uniform_shape_error() -> None
         "lineCount": 1,
         "maxLineLength": len(invalid.rstrip("\n")),
     }
+
+
+@pytest.mark.anyio
+async def test_analysis_python_source_gate_requires_multiline_source() -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    source = "pass\n"
+
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={
+                "operations": [
+                    {
+                        "operation": "create",
+                        "path": "analysis/evidence/a1/supplement.py",
+                        "content": source,
+                    }
+                ]
+            },
+        )
+
+    assert caught.value.code == "report_python_source_shape_invalid"
+    assert caught.value.details == {
+        "path": "analysis/evidence/a1/supplement.py",
+        "size": len(source.encode()),
+        "lineCount": 1,
+        "maxLineLength": 4,
+    }
+
+
+@pytest.mark.anyio
+async def test_analysis_python_source_gate_counts_line_length_as_utf8_bytes() -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    source = "#" + "中" * 3000 + "\npass\n"
+
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={
+                "operations": [
+                    {
+                        "operation": "create",
+                        "path": "analysis/evidence/a1/supplement.py",
+                        "content": source,
+                    }
+                ]
+            },
+        )
+
+    assert caught.value.code == "report_python_source_shape_invalid"
+    assert caught.value.details["maxLineLength"] == len(source.splitlines()[0].encode())
+
+
+@pytest.mark.anyio
+async def test_invalid_python_source_does_not_record_intent_or_mutate_workspace() -> None:
+    class Scheduler:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def write(self):
+            return self
+
+    scope = SimpleNamespace(thread_id="thread-1")
+    workspace = SimpleNamespace(
+        normalize_path=WorkspaceService.normalize_path,
+        aapply_changes=AsyncMock(),
+    )
+    runtime = SimpleNamespace(
+        workspace=workspace,
+        scope=AsyncMock(return_value=scope),
+        bound_external_run_id=lambda _context: "run-1",
+        task_scheduler=lambda _run_id: Scheduler(),
+        patch=AsyncMock(),
+    )
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = runtime
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    harness._require_phase_tool = lambda *_args, **_kwargs: None
+    harness._require_analysis_task_output_paths = lambda *_args: None
+    harness._durable_state = AsyncMock()
+    harness._apply_durable = AsyncMock()
+    harness._failure = ReportingToolkit._failure
+    patch = "--- /dev/null\n+++ b/analysis/evidence/a1/supplement.py\n@@ -0,0 +1 @@\n+pass\n"
+
+    result = await harness.apply_analysis_patch(patch)
+
+    assert result["code"] == "report_python_source_shape_invalid"
+    assert result["details"] == {
+        "path": "analysis/evidence/a1/supplement.py",
+        "size": 5,
+        "lineCount": 1,
+        "maxLineLength": 4,
+    }
+    runtime.patch.assert_not_awaited()
+    workspace.aapply_changes.assert_not_awaited()
+    harness._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_analysis_patch_passes_intent_operations_to_kernel_unchanged() -> None:
+    class Scheduler:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def write(self):
+            return self
+
+    path = "analysis/evidence/a1/supplement.py"
+    source = "value = 1\nprint(value)\n"
+    identity = {"path": path, "size": len(source.encode()), "sha256": "a" * 64}
+    scope = SimpleNamespace(thread_id="thread-1")
+    workspace = SimpleNamespace(
+        normalize_path=WorkspaceService.normalize_path,
+        batch_hash_files=AsyncMock(return_value=[identity]),
+    )
+    runtime = SimpleNamespace(
+        workspace=workspace,
+        scope=AsyncMock(return_value=scope),
+        bound_external_run_id=lambda _context: "run-1",
+        task_scheduler=lambda _run_id: Scheduler(),
+        patch=AsyncMock(return_value={"ok": True}),
+    )
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = runtime
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    harness._require_phase_tool = lambda *_args, **_kwargs: None
+    harness._require_analysis_task_output_paths = lambda *_args: None
+    harness._durable_state = AsyncMock(return_value=SimpleNamespace(payload={}))
+    harness._apply_durable = AsyncMock()
+    harness._failure = ReportingToolkit._failure
+    patch = (
+        "--- /dev/null\n+++ b/analysis/evidence/a1/supplement.py\n@@ -0,0 +1,2 @@\n"
+        "+value = 1\n+print(value)\n"
+    )
+
+    result = await harness.apply_analysis_patch(patch)
+
+    assert result["ok"] is True
+    intent_operations = harness._apply_durable.await_args_list[0].kwargs["payload"]["intent"][
+        "arguments"
+    ]["operations"]
+    assert runtime.patch.await_args.kwargs["_changes"] == intent_operations
+
+
+def _python_source_of_size(size: int) -> str:
+    source = "value = 1\n"
+    remaining = size - len(source.encode())
+    while remaining:
+        line_size = min(8 * 1024, remaining)
+        source += "#" * (line_size - 1) + "\n"
+        remaining -= line_size
+    return source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("task_kind", "path", "limit"),
+    [
+        ("analysis_item", "analysis/evidence/a1/supplement.py", MAX_ANALYSIS_PYTHON_SOURCE_BYTES),
+        ("visualization_section", "analysis/charts/s1/charts.py", MAX_VISUALIZATION_SCRIPT_BYTES),
+    ],
+)
+async def test_analysis_python_source_gate_enforces_signed_source_size_boundary(
+    task_kind: str, path: str, limit: int
+) -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    contract = {"taskKind": task_kind, "analysisOutputRoot": "analysis/evidence/a1"}
+    if task_kind == "visualization_section":
+        contract["visualizationWorkspace"] = {"scriptPath": path}
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: ({}, contract)
+    harness._analysis_output_root = lambda value: value["analysisOutputRoot"]
+    accepted = _python_source_of_size(limit)
+
+    await harness._preflight_analysis_python_write(
+        scope=scope,
+        tool_name="apply_analysis_patch",
+        canonical={"operations": [{"operation": "create", "path": path, "content": accepted}]},
+    )
+
+    rejected = accepted + "\n"
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={"operations": [{"operation": "create", "path": path, "content": rejected}]},
+        )
+    assert caught.value.code == "report_python_source_shape_invalid"
+    assert caught.value.details["size"] == limit + 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path,source",
+    [
+        ("analysis/evidence/a1/supplement.py", "value = 1\r\nprint(value)\r\n"),
+        ("analysis/evidence/a1/supplement.py", "value = 1\nprint(value)"),
+        ("analysis/evidence/a1/other.py", "value = 1\nprint(value)\n"),
+        (
+            "analysis/evidence/a1/supplement.py",
+            "value = (\n    \"" + "a" * 5000 + "\"\n    \"" + "b" * 5000 + "\"\n)\nprint(value)\n",
+        ),
+        (
+            "analysis/evidence/a1/supplement.py",
+            "values = [\n" + "".join("    1,\n" for _ in range(4097)) + "]\nprint(len(values))\n",
+        ),
+        ("analysis/evidence/a1/supplement.py", "#" + "a" * 262139 + "\npass\n"),
+    ],
+)
+async def test_analysis_python_source_gate_rejects_invalid_shape(
+    path: str, source: str
+) -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={"operations": [{"operation": "create", "path": path, "content": source}]},
+        )
+
+    assert caught.value.code == "report_python_source_shape_invalid"
+    assert caught.value.details == {
+        "path": path,
+        "size": len(source.encode()),
+        "lineCount": len(source.splitlines()),
+        "maxLineLength": max((len(line.encode()) for line in source.splitlines()), default=0),
+    }
+
+
+@pytest.mark.anyio
+async def test_analysis_python_source_gate_enforces_eight_kib_line_boundary() -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    accepted = "#" + "a" * (8 * 1024 - 1) + "\npass\n"
+
+    await harness._preflight_analysis_python_write(
+        scope=scope,
+        tool_name="apply_analysis_patch",
+        canonical={
+            "operations": [
+                {
+                    "operation": "create",
+                    "path": "analysis/evidence/a1/supplement.py",
+                    "content": accepted,
+                }
+            ]
+        },
+    )
+
+    rejected = "#" + "a" * (8 * 1024) + "\npass\n"
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={
+                "operations": [
+                    {
+                        "operation": "create",
+                        "path": "analysis/evidence/a1/supplement.py",
+                        "content": rejected,
+                    }
+                ]
+            },
+        )
+    assert caught.value.details["maxLineLength"] == 8 * 1024 + 1

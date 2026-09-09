@@ -303,7 +303,7 @@ class RuntimeAnalysisMixin:
                 raw_content = b""
                 lines = []
             line_count = len(lines)
-            max_line_length = max((len(line) for line in lines), default=0)
+            max_line_length = max((len(line.encode("utf-8")) for line in lines), default=0)
             details = {
                 "path": path,
                 "size": len(raw_content),
@@ -329,6 +329,8 @@ class RuntimeAnalysisMixin:
             if content_bytes > max_bytes or "\r" in content or not content.endswith("\n"):
                 reject(path, content)
             lines = content.split("\n")
+            if len(content.splitlines()) < 2:
+                reject(path, content)
             if any(len(line.encode("utf-8")) > MAX_ANALYSIS_PYTHON_LINE_BYTES for line in lines):
                 reject(path, content)
             try:
@@ -430,7 +432,15 @@ class RuntimeAnalysisMixin:
             )
             try:
                 result = await self.runtime.patch(
-                    "patch", None, None, None, False, canonical["patch"], run_context, _scope=scope
+                    "patch",
+                    None,
+                    None,
+                    None,
+                    False,
+                    canonical["patch"],
+                    run_context,
+                    _changes=raw_operations,
+                    _scope=scope,
                 )
             except WorkspacePathConflict as error:
                 try:
