@@ -48,6 +48,7 @@ def _settings() -> object:
 
 
 _ANALYSIS_SOURCE = (
+    "# 中文补证脚本\n"
     "from pathlib import Path\n"
     'output_path = Path("analysis/output/supplement.json")\n'
     'output_path.write_text("{}", encoding="utf-8")\n'
@@ -207,6 +208,80 @@ async def test_probe_section_read_receipts_match_frozen_evidence_identity() -> N
     assert first["hasMore"] is True
     assert second["hasMore"] is False
     assert len((first["content"] + second["content"]).encode()) == identity["size"]
+
+
+@pytest.mark.anyio
+async def test_probe_reads_utf8_script_with_byte_aligned_pagination_receipt() -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
+    recorder = ProbeRecorder(_runtime(), scenario)
+    patch_result = await recorder.invoke(
+        "apply_analysis_patch",
+        _create_patch("analysis/output/supplement.py", _ANALYSIS_SOURCE),
+    )
+    raw = _ANALYSIS_SOURCE.encode("utf-8")
+    expected_sha256 = hashlib.sha256(raw).hexdigest()
+
+    complete = await recorder.invoke(
+        "read_file", {"path": "analysis/output/supplement.py", "offset": 0}
+    )
+    first = await recorder.invoke(
+        "read_file",
+        {"path": "analysis/output/supplement.py", "offset": 0, "max_bytes": 4},
+    )
+    second = await recorder.invoke(
+        "read_file",
+        {
+            "path": "analysis/output/supplement.py",
+            "offset": first["nextOffset"],
+            "max_bytes": 4,
+        },
+    )
+
+    assert patch_result["ok"] is True
+    assert complete["content"] == _ANALYSIS_SOURCE
+    assert complete["offset"] == 0
+    assert complete["nextOffset"] == complete["totalBytes"] == len(raw)
+    assert complete["sha256"] == expected_sha256
+    assert complete["hasMore"] is False
+    assert first["content"] == "# "
+    assert first["nextOffset"] == len(b"# ")
+    assert first["hasMore"] is True
+    assert second["content"] == "中"
+    assert second["offset"] == first["nextOffset"]
+    assert second["nextOffset"] == first["nextOffset"] + len("中".encode())
+    assert second["sha256"] == expected_sha256
+
+
+@pytest.mark.anyio
+async def test_probe_repair_runner_accepts_complete_utf8_read_receipt() -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "analysis-script-context")
+    recorder = ProbeRecorder(_runtime(), scenario)
+    committed = await recorder.invoke(
+        "apply_analysis_patch",
+        _create_patch("analysis/output/supplement.py", _ANALYSIS_SOURCE),
+    )
+    script = probe_module.FileIdentity.model_validate(committed["artifacts"][0])
+
+    result = await probe_module.ReportingCodeGenerationRunner(
+        agent_factory=_OfflineCodeAgent
+    ).repair(
+        script,
+        {"code": "probe_script_failed", "message": "需要修复"},
+        lambda **arguments: recorder.invoke("read_file", arguments),
+        lambda **arguments: recorder.invoke("apply_analysis_patch", arguments),
+    )
+
+    assert result.script_file.path == script.path
+    assert result.script_file.size == len(_REPAIRED_ANALYSIS_SOURCE.encode("utf-8"))
+    assert result.script_file.sha256 == hashlib.sha256(
+        _REPAIRED_ANALYSIS_SOURCE.encode("utf-8")
+    ).hexdigest()
+    assert [call["name"] for call in recorder.calls] == [
+        "apply_analysis_patch",
+        "read_file",
+        "apply_analysis_patch",
+    ]
+    assert await recorder.runtime.workspace.read_text(script.path) == _REPAIRED_ANALYSIS_SOURCE
 
 
 def test_section_probe_directives_never_authorize_fact_file_reads() -> None:

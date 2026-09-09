@@ -1019,11 +1019,21 @@ class ProbeRecorder:
                 end = min(len(raw_content), offset + max_bytes)
                 if self.scenario.branch == "truncated" and path.endswith("analysis_001.json"):
                     end = min(end, offset + max(1, len(raw_content) // 2))
+                while end > offset:
+                    try:
+                        content = raw_content[offset:end].decode("utf-8")
+                        break
+                    except UnicodeDecodeError:
+                        end -= 1
+                else:
+                    content = ""
+                if not content and offset < len(raw_content):
+                    raise WorkspaceError("read_file max_bytes 不足以读取下一个 UTF-8 字符。")
                 return {
                     "ok": True,
                     "path": path,
                     "offset": offset,
-                    "content": raw_content[offset:end].decode("ascii"),
+                    "content": content,
                     "sha256": hashlib.sha256(raw_content).hexdigest(),
                     "totalBytes": len(raw_content),
                     "nextOffset": end,
