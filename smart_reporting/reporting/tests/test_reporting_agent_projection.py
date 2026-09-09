@@ -312,6 +312,10 @@ def test_visualization_instructions_require_section_submission() -> None:
     assert "章节" in instructions
     assert "reportVisualTheme" in instructions
     assert "颜色不得成为唯一信息通道" in instructions
+    assert "禁止提交空图、仅坐标轴或仅图例的图表" in instructions
+    assert "未知、空字符串或重复占位标签" in instructions
+    assert "每个声明的指标或系列都必须实际绘制" in instructions
+    assert "跨年同比必须按相同月份对齐" in instructions
 
 
 def test_section_instructions_require_h3_before_h4() -> None:
