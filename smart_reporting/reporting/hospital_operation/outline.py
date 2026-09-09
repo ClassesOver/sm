@@ -274,6 +274,9 @@ def freeze_outline(
                 analysisIds=section.analysis_ids,
             )
         )
+    missing = analysis_ids - referenced_analysis_ids
+    if missing:
+        raise ValueError(f"提纲遗漏 analysisId: {', '.join(sorted(missing))}")
     return ReportOutline(
         reportType=proposal_obj.report_type,
         title=proposal_obj.title,

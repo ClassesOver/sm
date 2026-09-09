@@ -2654,6 +2654,71 @@ async def test_generate_outline_retries_on_validation_error_instead_of_crashing(
 
 
 @pytest.mark.anyio
+async def test_generate_outline_repairs_missing_analysis_reference_in_same_run() -> None:
+    planner_calls = 0
+    stage = _outline_planner_stage()
+    incomplete = _valid_outline_proposal()
+    complete = incomplete.model_copy(
+        update={
+            "sections": (
+                incomplete.sections[0].model_copy(
+                    update={"analysis_ids": ("analysis_001", "analysis_002")}
+                ),
+            )
+        }
+    )
+
+    async def fake_run_planner(_agent, payload, _run_context, **_kwargs):
+        nonlocal planner_calls
+        planner_calls += 1
+        if planner_calls == 1:
+            return incomplete
+        correction = payload["correction"]
+        assert correction["allowedPaths"] == ["sections"]
+        assert correction["previousOutput"]["sections"][0]["analysisIds"] == [
+            "analysis_001"
+        ]
+        assert "analysis_002" in correction["validationFeedback"]["issues"][0]["reason"]
+        return complete
+
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate(
+        {
+            "reportGoal": "整体运营分析",
+            "reportType": "comprehensive",
+            "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            "sourceIds": ["source-1"],
+        }
+    )
+    detailed_plan = _detailed_analysis_plan_payload()
+    second_analysis = dict(detailed_plan["analyses"][0])
+    second_analysis.update(
+        {
+            "analysisId": "analysis_002",
+            "managementQuestion": "成本效率如何",
+        }
+    )
+    detailed_plan["analyses"].append(second_analysis)
+    state: dict[str, Any] = {
+        REPORT_WORKFLOW_INPUT_STATE_KEY: envelope.model_dump(mode="json", by_alias=True),
+        REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: detailed_plan,
+    }
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = stage
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: envelope
+    runtime._assert_state_safe = lambda _state: None
+    runtime._run_planner = fake_run_planner
+
+    output = await runtime.generate_outline(
+        SimpleNamespace(additional_data=None), SimpleNamespace(session_state=state)
+    )
+
+    assert planner_calls == 2
+    outline = ReportOutline.model_validate(output.content)
+    assert outline.sections[0].analysis_ids == ("analysis_001", "analysis_002")
+
+
+@pytest.mark.anyio
 async def test_generate_outline_routes_assumption_failure_to_assumptions_only() -> None:
     planner_calls = 0
     stage = _outline_planner_stage()
