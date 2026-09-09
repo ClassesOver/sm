@@ -429,6 +429,25 @@ async def test_external_background_aclose_keeps_owner_when_cleanup_is_deferred()
 
     assert ownership.owners == {"thread": ("external-run", "user")}
     assert ownership.status_updates[-1][1:] == ("cancelled", True)
+    assert "external-run" in controller._background_cleanup_deferred
+
+
+@pytest.mark.anyio
+async def test_prune_completed_background_task_clears_deferred_cleanup_marker(
+    monkeypatch,
+) -> None:
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: None, thread_ownership=ownership)
+    completed = asyncio.create_task(asyncio.sleep(0, result={"ok": True}))
+    await completed
+    controller._background_tasks["external-run"] = completed
+    controller._background_cleanup_deferred.add("external-run")
+    monkeypatch.setattr(controller_module, "_MAX_RETAINED_BACKGROUND_TASKS", 0)
+
+    controller._prune_background_tasks()
+
+    assert "external-run" not in controller._background_tasks
+    assert "external-run" not in controller._background_cleanup_deferred
 
 
 @pytest.mark.anyio
@@ -1548,6 +1567,7 @@ async def test_controller_retries_parent_pending_cleanup_without_agno_failed_row
     controller = ReportWorkflowController(
         lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=cleanup
     )
+    controller._background_cleanup_deferred.add("external-run")
 
     result = await controller.start(ReportingWorkflowInput(prompt="重试清理"), context)
 
@@ -1556,6 +1576,7 @@ async def test_controller_retries_parent_pending_cleanup_without_agno_failed_row
     cleanup.assert_awaited_once()
     assert ownership.status_updates == [(run_id, "failed", False)]
     assert ownership.owners == {}
+    assert "external-run" not in controller._background_cleanup_deferred
 
 
 @pytest.mark.anyio

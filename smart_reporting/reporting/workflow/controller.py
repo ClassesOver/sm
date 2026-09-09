@@ -779,6 +779,7 @@ class ReportWorkflowController:
             self._background_scopes.pop(external_run_id, None)
             self._background_request_fingerprints.pop(external_run_id, None)
             self._external_request_fingerprints.pop(external_run_id, None)
+            self._background_cleanup_deferred.discard(external_run_id)
             overflow -= 1
             if overflow < 0:
                 break
@@ -1529,6 +1530,7 @@ class ReportWorkflowController:
                 raise
             self._log_deferred_sandbox_cleanup(scope, error)
             return False
+        self._background_cleanup_deferred.discard(scope["external_run_id"])
         return True
 
     @staticmethod
