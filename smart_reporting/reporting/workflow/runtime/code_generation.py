@@ -146,6 +146,10 @@ class ReportingCodeGenerationRunner:
                 "+<each_source_line>"
             )
             hunk = "@@ -0,0 +1,<exact_new_line_count> @@"
+            example = (
+                f"--- /dev/null\n+++ b/{script_path}\n"
+                "@@ -0,0 +1,2 @@\n+line one\n+line two\n"
+            )
             prefixes = {"source": "+"}
         else:
             template = (
@@ -154,6 +158,10 @@ class ReportingCodeGenerationRunner:
                 " <unchanged_source_line>\n-<removed_source_line>\n+<added_source_line>"
             )
             hunk = "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@"
+            example = (
+                f"--- a/{script_path}\n+++ b/{script_path}\n"
+                "@@ -1,2 +1,2 @@\n unchanged line\n-removed line\n+added line\n"
+            )
             prefixes = {"context": " ", "removed": "-", "added": "+"}
         return {
             "operation": operation,
@@ -162,6 +170,7 @@ class ReportingCodeGenerationRunner:
             "maxPhysicalLineBytes": MAX_PHYSICAL_LINE_BYTES,
             "template": template,
             "hunk": hunk,
+            "example": example,
             "linePrefixes": prefixes,
             "lineEnding": "LF",
             "trailingNewline": True,

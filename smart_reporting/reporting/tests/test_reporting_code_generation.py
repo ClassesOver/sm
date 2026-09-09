@@ -114,6 +114,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
             "+<each_source_line>"
         ),
         "hunk": "@@ -0,0 +1,<exact_new_line_count> @@",
+        "example": "--- /dev/null\n+++ b/analysis/script.py\n@@ -0,0 +1,2 @@\n+line one\n+line two\n",
         "linePrefixes": {"source": "+"},
         "lineEnding": "LF",
         "trailingNewline": True,
@@ -1019,6 +1020,10 @@ async def test_generate_injects_dynamic_update_diff_contract():
         " <unchanged_source_line>\n-<removed_source_line>\n+<added_source_line>"
     )
     assert protocol["hunk"] == "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@"
+    assert protocol["example"] == (
+        "--- a/analysis/script.py\n+++ b/analysis/script.py\n"
+        "@@ -1,2 +1,2 @@\n unchanged line\n-removed line\n+added line\n"
+    )
     assert protocol["linePrefixes"] == {"context": " ", "removed": "-", "added": "+"}
     assert protocol["lineEnding"] == "LF"
     assert protocol["trailingNewline"] is True
