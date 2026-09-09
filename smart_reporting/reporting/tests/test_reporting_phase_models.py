@@ -258,6 +258,13 @@ def test_section_block_content_rejects_disallowed_heading_level() -> None:
         SectionBlockContent(markdown="## 非法章节标题\n\n正文")
 
 
+def test_section_block_content_rejects_heading_with_301_visible_characters() -> None:
+    with pytest.raises(ValidationError, match="report_draft_heading_title_too_long") as raised:
+        SectionBlockContent(markdown=f"### {'甲' * 301}\n\n正文")
+
+    assert raised.value.errors(include_url=False)[0]["loc"] == ("markdown",)
+
+
 def test_section_block_content_allows_h4_parented_by_previous_block() -> None:
     content = SectionBlockContent(markdown="#### 同比变化\n\n正文")
 

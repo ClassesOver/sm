@@ -696,6 +696,32 @@ async def test_section_semantic_error_still_consumes_business_correction() -> No
 
 
 @pytest.mark.anyio
+async def test_long_section_heading_exposes_markdown_issue_and_is_corrected() -> None:
+    executor = ReportingStructuredOutputExecutor(
+        _schema_agent(SectionBlockContent), idle_timeout_seconds=5
+    )
+    executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            (executor.agent, Mock(content={"markdown": f"### {'甲' * 301}\n\n正文"})),
+            (executor.agent, Mock(content={"markdown": "### 精简标题\n\n正文"})),
+        ]
+    )
+
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-heading-length-correction",
+        user_id="user-1",
+    )
+
+    correction_messages = executor._execute_mode.await_args_list[1].args[2]
+    serialized_correction = "".join(str(message.content) for message in correction_messages)
+    assert '"path":"$.markdown"' in serialized_correction
+    assert "report_draft_heading_title_too_long" in serialized_correction
+    assert result.content.markdown == "### 精简标题\n\n正文"
+
+
+@pytest.mark.anyio
 async def test_syntax_correction_log_contains_location_without_source() -> None:
     executor = ReportingStructuredOutputExecutor(
         _schema_agent(VisualizationScriptDraft), idle_timeout_seconds=5
