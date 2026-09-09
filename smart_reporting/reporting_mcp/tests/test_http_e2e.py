@@ -49,6 +49,29 @@ def _capability(secret: str, *, thread_id: str) -> str:
     return f"{payload}.{signature}"
 
 
+def _dsh_capability(secret: str, *, session_id: str) -> str:
+    now = int(time.time())
+    header = _segment({"alg": "HS256", "typ": "DSH-REPORTING"})
+    claims = _segment(
+        {
+            "iss": "dsh",
+            "aud": "smart-reporting-mcp",
+            "sub": session_id,
+            "thread": session_id,
+            "database": "dsh",
+            "company": "default",
+            "iat": now,
+            "exp": now + 300,
+            "ver": 1,
+        }
+    )
+    payload = f"{header}.{claims}"
+    signature = base64.urlsafe_b64encode(
+        hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+    ).decode().rstrip("=")
+    return f"{payload}.{signature}"
+
+
 class _Controller:
     def __init__(self) -> None:
         self.scopes: list[tuple[str, str, str, str]] = []
@@ -219,6 +242,25 @@ async def test_reporting_tools_work_over_authenticated_streamable_http() -> None
             )
             assert cancelled.structured_content is not None
             assert cancelled.structured_content["status"] == "cancelled"
+
+        dsh_session_id = "session-dsh"
+        async with Client(
+            f"http://127.0.0.1:{port}/mcp",
+            auth=_dsh_capability(secret, session_id=dsh_session_id),
+        ) as client:
+            tools = await client.list_tools()
+            assert {tool.name for tool in tools} == {
+                "reporting_start",
+                "reporting_get",
+                "reporting_review",
+                "reporting_cancel",
+            }
+            completed = await client.call_tool(
+                "reporting_get",
+                {"operationId": "op-dsh", "threadId": dsh_session_id},
+            )
+            assert completed.structured_content is not None
+            assert completed.structured_content["status"] == "completed"
     finally:
         server.should_exit = True
         await server_task
@@ -229,4 +271,7 @@ async def test_reporting_tools_work_over_authenticated_streamable_http() -> None
             logger.propagate = propagate
             logger.disabled = disabled
 
-    assert controller.scopes == [(thread_id, "7", "odoo", "11")] * 4
+    assert controller.scopes == [
+        *((thread_id, "7", "odoo", "11"),) * 4,
+        (dsh_session_id, dsh_session_id, "dsh", "default"),
+    ]
