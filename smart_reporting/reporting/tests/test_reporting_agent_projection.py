@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from agno.models.message import Message
 from agno.run import RunContext
+from agno.tools.function import Function
 
 from smart_reporting.context_management import TaskExecutionContextProjector
 from smart_reporting.reporting.agent import (
@@ -10,7 +11,7 @@ from smart_reporting.reporting.agent import (
     _phase_filtered_report_messages,
     _phase_filtered_report_tools,
     _reporting_tools_cache_key,
-    _visualization_history_state,
+    create_reporting_code_agent,
     normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
@@ -24,15 +25,14 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     bind_reporting_run_context,
-    reporting_python_script_failed,
     reporting_task_kind_from_acceptance_contract,
     reporting_task_kind_from_run_context,
 )
 from smart_reporting.reporting.tools.capabilities import tools_for_task
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    ReportingCodeGenerationRunner,
+)
 
 
 def _context(phase: str, task_kind: str) -> RunContext:
@@ -47,20 +47,6 @@ def _context(phase: str, task_kind: str) -> RunContext:
             }
         },
     )
-
-
-def _visible_tool_names(context: RunContext) -> set[str]:
-    source_tools = [
-        {"function": {"name": name}}
-        for name in tools_for_task("analysis", "visualization_section") or ()
-    ]
-    with bind_reporting_run_context(context):
-        return {
-            tool["function"]["name"]
-            for tool in _phase_filtered_report_tools(
-                [Message(role="user", content="probe")], source_tools
-            )
-        }
 
 
 @pytest.mark.parametrize(
@@ -79,11 +65,11 @@ def test_current_task_kinds_are_projected_from_run_context(phase: str, task_kind
     ("phase", "task_kind", "expected"),
     (
         ("analysis", "analysis_item", "auto"),
-        ("analysis", "visualization_section", "required"),
+        ("analysis", "visualization_section", "auto"),
         ("section", "section", "auto"),
     ),
 )
-def test_phase_agent_only_requires_a_tool_call_for_visualization_first_round(
+def test_phase_agent_does_not_require_model_tool_calls(
     phase: str, task_kind: str, expected: str
 ) -> None:
     with bind_reporting_run_context(_context(phase, task_kind)):
@@ -96,11 +82,11 @@ def test_phase_agent_only_requires_a_tool_call_for_visualization_first_round(
     ("phase", "task_kind", "expected"),
     (
         ("analysis", "analysis_item", "auto"),
-        ("analysis", "visualization_section", "required"),
+        ("analysis", "visualization_section", "auto"),
         ("section", "section", "auto"),
     ),
 )
-def test_phase_agent_allows_non_visualization_tasks_to_finish_after_tool_history(
+def test_phase_agent_allows_tasks_to_finish_after_tool_history(
     phase: str, task_kind: str, expected: str
 ) -> None:
     messages = [
@@ -113,6 +99,20 @@ def test_phase_agent_allows_non_visualization_tasks_to_finish_after_tool_history
         assert ReportingPhaseOpenAIChat._phase_request_kwargs(
             messages, {"tool_choice": "auto"}
         ) == {"tool_choice": expected}
+
+
+@pytest.mark.parametrize(
+    ("phase", "task_kind"),
+    (("analysis", "analysis_item"), ("analysis", "visualization_section")),
+)
+def test_fixed_workflows_keep_their_internal_tool_capabilities(
+    phase: str, task_kind: str
+) -> None:
+    tools = tools_for_task(phase, task_kind)
+
+    assert tools
+    assert "apply_analysis_patch" in tools
+    assert "run_python_script" in tools
 
 
 def test_model_route_is_projected_from_run_context() -> None:
@@ -304,14 +304,13 @@ def test_phase_agent_tool_cache_uses_smart_reporting_identity() -> None:
     )
 
 
-def test_visualization_instructions_require_section_submission() -> None:
+def test_visualization_instructions_delegate_execution_to_fixed_workflow() -> None:
     instructions = "\n".join(
         build_report_agent_instructions(_context("analysis", "visualization_section"))
     )
-    assert "submit_visualization_charts" in instructions
-    assert "章节" in instructions
-    assert "reportVisualTheme" in instructions
-    assert "颜色不得成为唯一信息通道" in instructions
+    assert "VisualizationPlanDraft" in instructions
+    assert "固定 Workflow" in instructions
+    assert "submit_visualization_charts" not in instructions
 
 
 def test_section_instructions_require_h3_before_h4() -> None:
@@ -343,122 +342,72 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
     )
 
 
-def test_visualization_initial_projection_hides_read_tools() -> None:
-    visible = _visible_tool_names(_context("analysis", "visualization_section"))
-
-    assert {"read_file", "read_tool_output"}.isdisjoint(visible)
-
-
-def test_visualization_written_script_projection_exposes_controlled_runner() -> None:
+@pytest.mark.parametrize("tool_name", ("read_file", "apply_analysis_patch"))
+def test_coding_runner_single_tool_survives_request_projection(tool_name: str) -> None:
     context = _context("analysis", "visualization_section")
-    context.session_state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
+    model = ReportingPhaseOpenAIChat(id="test", api_key="test")
+    runner = ReportingCodeGenerationRunner(
+        agent=create_reporting_code_agent(model=model, name="test-code-agent")
+    )
+    agent = runner._fresh_agent()
+    function = Function(
+        name=tool_name,
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        entrypoint=lambda: None,
+    )
+    runner._configure(agent, function, tool_name)
 
-    visible = _visible_tool_names(context)
+    with bind_reporting_run_context(context):
+        assert _phase_filtered_report_tools(
+            [Message(role="user", content="probe")], agent.tools
+        ) == agent.tools
 
-    assert "run_python_script" in visible
 
+@pytest.mark.parametrize("tool_name", ("read_file", "apply_analysis_patch"))
+def test_coding_runner_single_tool_survives_response_sanitizer(
+    monkeypatch: pytest.MonkeyPatch, tool_name: str
+) -> None:
+    context = _context("analysis", "visualization_section")
+    model = ReportingPhaseOpenAIChat(id="test", api_key="test")
+    call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": tool_name, "arguments": "{}"},
+    }
+    assistant = Message(role="assistant", tool_calls=[call])
+    observed: list[object] = []
+    monkeypatch.setattr(
+        model,
+        "_run_reporting_tool_calls",
+        lambda _assistant, _messages, _functions, calls: observed.extend(calls) or calls,
+    )
 
-def test_visualization_history_recognizes_controlled_runner_completion() -> None:
-    messages = [
-        Message(
-            role="tool",
-            tool_name="run_python_script",
-            tool_call_id="call-1",
-            content='{"ok":true,"status":"completed","exitCode":0}',
+    with bind_reporting_run_context(context):
+        result = model.get_function_calls_to_run(
+            assistant,
+            [Message(role="user", content="probe")],
+            functions={tool_name: object()},
         )
-    ]
 
-    assert _visualization_history_state(messages) == (False, False, True)
-
-
-def test_visualization_history_rejects_controlled_runner_failure_marker() -> None:
-    messages = [
-        Message(
-            role="tool",
-            tool_name="run_python_script",
-            tool_call_id="call-1",
-            content=(
-                '{"ok":true,"status":"completed","exitCode":0,'
-                '"output":"[FAIL] chart.png: image is blank"}'
-            ),
-        )
-    ]
-
-    assert _visualization_history_state(messages) == (False, False, False)
-
-
-def test_visualization_failure_budget_counts_controlled_runner_failure() -> None:
-    assert reporting_python_script_failed(
-        {"ok": False, "status": "failed", "exit_code": 1, "output": "boom"}
-    )
-
-
-@pytest.mark.parametrize(
-    "output",
-    (
-        "[FAIL] chart.png: image is blank",
-        "chart.png: ERROR image is blank",
-    ),
-)
-def test_visualization_failure_recognizes_protocol_markers(output: str) -> None:
-    assert reporting_python_script_failed(
-        {"ok": True, "status": "completed", "exitCode": 0, "output": output}
-    )
-
-
-def test_visualization_failure_checks_both_exit_code_fields() -> None:
-    assert reporting_python_script_failed(
-        {"ok": True, "status": "completed", "exitCode": None, "exit_code": 1}
-    )
-
-
-def test_visualization_rejection_does_not_count_as_script_execution_failure() -> None:
-    assert not reporting_python_script_failed(
-        {"ok": False, "status": "rejected", "code": "report_capability_invalid"}
-    )
-
-
-def test_visualization_missing_glyph_warning_does_not_count_as_script_failure() -> None:
-    assert not reporting_python_script_failed(
-        {
-            "ok": True,
-            "status": "completed",
-            "exitCode": 0,
-            "output": "UserWarning: Glyph 25910 missing from font(s) DejaVu Sans.",
-        }
-    )
+    assert result == [call]
+    assert observed == [call]
 
 
 @pytest.mark.anyio
-async def test_visualization_failure_marker_does_not_set_executed_state() -> None:
+async def test_visualization_tool_receipt_does_not_project_next_model_action() -> None:
     context = _context("analysis", "visualization_section")
 
     result = await normalize_reporting_tool_arguments(
         context,
-        "run_python_script",
-        lambda **_arguments: {
-            "ok": True,
-            "status": "completed",
-            "exitCode": 0,
-            "output": "[FAIL] chart.png: image is blank",
-        },
-        {"script_path": "charts/charts.py"},
+        "read_file",
+        lambda **_arguments: {"ok": True, "content": "source"},
+        {"path": "charts/charts.py"},
     )
 
-    assert result["ok"] is True
-    assert REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY not in context.session_state
-
-
-def test_visualization_recovery_projection_exposes_signed_script_reads() -> None:
-    context = _context("analysis", "visualization_section")
-    context.dependencies[REPORTING_TASK_DEPENDENCY][
-        REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY
-    ] = True
-
-    visible = _visible_tool_names(context)
-
-    assert {"read_file", "read_tool_output"}.issubset(visible)
-    assert "view_image" not in visible
+    assert result == {"ok": True, "content": "source"}
+    assert "nextTool" not in result
+    assert "requiredFields" not in result
+    assert "expected_sha256" not in result
 
 
 def test_visualization_projection_removes_skill_system_message() -> None:

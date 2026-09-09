@@ -32,7 +32,6 @@ from smart_reporting.reporting.structured_output.wire_schema import (
     StructuredOutputWireSchemaResolver,
 )
 from smart_reporting.reporting.workflow.execution import ReportingTaskInvocation
-from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import AnalysisScriptDraft
 from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
@@ -366,7 +365,6 @@ def test_structured_request_preserves_output_token_budget() -> None:
             '"DataUnderstandingTable":["sourceId","table","role","periodColumn",'
             '"periodGranularity"]',
         ),
-        (AnalysisScriptDraft, '"$":["script"]'),
     ],
 )
 def test_json_object_mode_explicitly_lists_nested_required_fields(

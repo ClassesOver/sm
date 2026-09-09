@@ -4,7 +4,9 @@ from smart_reporting.reporting.agent import (
     create_reporting_code_agent,
     create_reporting_generator_agent,
 )
-from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import AnalysisEvidencePlan
+from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    AnalysisEvidenceDecision,
+)
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionDecisionOutput,
     VisualizationPlanDraft,
@@ -61,18 +63,17 @@ def test_reporting_section_generator_uses_agno_supported_root_model() -> None:
     )
 
 
-def test_reporting_evidence_generator_declares_mutually_exclusive_branches() -> None:
+def test_reporting_evidence_generator_has_no_tools_or_source_contract() -> None:
     agent = create_reporting_generator_agent(
         model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
-        output_schema=AnalysisEvidencePlan,
+        output_schema=AnalysisEvidenceDecision,
         name="reporting-analysis-evidence-generator",
     )
 
-    assert any(
-        "requiresSupplementalEvidence=true" in instruction and "script" in instruction
-        for instruction in agent.instructions
-    )
-    assert any("script 必须是完整" in instruction for instruction in agent.instructions)
+    assert agent.tools == []
+    instructions = "\n".join(agent.instructions)
+    assert "script" not in instructions
+    assert "pythonSource" not in instructions
 
 
 def test_reporting_code_agent_is_unstructured_and_has_no_history_or_tools() -> None:

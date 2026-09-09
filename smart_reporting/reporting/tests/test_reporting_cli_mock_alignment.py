@@ -155,7 +155,7 @@ class _CliDraftAdapter:
         self.received_input: dict[str, Any] | None = None
         self.received_scope: dict[str, Any] | None = None
         self.contexts: list[RunContext] = []
-        self.tool_projections: list[tuple[str, tuple[str, ...]]] = []
+        self.workflow_tool_capabilities: list[tuple[str, tuple[str, ...]]] = []
         self.repository = _TaskRepository()
         self.execution_kernel = SimpleNamespace(
             cleanup_old_epoch=AsyncMock(), cleanup_disconnect=AsyncMock()
@@ -174,7 +174,9 @@ class _CliDraftAdapter:
             state_repository=cast(ReportingStateRepository, object()),
             run_context=run_context,
         )[0]
-        self.tool_projections.append((task_kind, tuple(sorted(toolkit.async_functions))))
+        self.workflow_tool_capabilities.append(
+            (task_kind, tuple(sorted(toolkit.async_functions)))
+        )
 
     async def _run_task(
         self, task_kind: str, payload: Mapping[str, Any], parent_context: RunContext
@@ -326,7 +328,7 @@ async def test_cli_input_reaches_production_draft_workflow() -> None:
         == "cli-session-1"
         for context in adapter.contexts
     )
-    assert adapter.tool_projections == [
+    assert adapter.workflow_tool_capabilities == [
         (
             "analysis_item",
             (

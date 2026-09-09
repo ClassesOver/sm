@@ -1089,40 +1089,13 @@ async def _empty_close() -> None:
     return None
 
 
-def test_analysis_item_instructions_submit_facts_without_model_evidence() -> None:
+def test_analysis_item_instructions_delegate_execution_to_fixed_workflow() -> None:
     instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
 
-    assert "任务 JSON 的 sectionGoal 标识当前分析所属章节" in instructions
-    assert "不得为其他章节生成证据或结论" in instructions
-    assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
-    assert "evidencePaths 传空数组" in instructions
-    assert "deterministicFactFile 直接冻结为 evidence" in instructions
-    assert "完整内联 deterministicFacts 时不得默认调用 query_analysis_facts" in instructions
-    assert "facts 被标记为 truncated" in instructions
-    assert (
-        "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations"
-        in instructions
-    )
-    assert "不得为探索 facts 结构" in instructions
-    assert "固定事实足够时立即调用 complete_analysis_item" in instructions
-    assert "truncated 或当前管理问题缺少必需事实" in instructions
-    assert "不得猜测、补齐或替代缺失事实" in instructions
-    assert "不执行摘要百分比启发式匹配" in instructions
-    assert "<analysisOutputRoot>/supplement.py" in instructions
-    assert "只将该路径原样传给 run_python_script" in instructions
-    assert "不得传入解释器或 workdir" in instructions
-    assert "python3 <analysisOutputRoot>/script.py" not in instructions
-    assert "不得 cd 到 evidence/analysis_*" in instructions
-    assert "不得猜测 /workspace" in instructions
-    assert "不得用 pwd、ls、find 或 wc 探测" in instructions
-    assert "不要给成功的脚本执行附加探测命令" in instructions
-    assert "脚本修改统一使用 apply_analysis_patch" in instructions
-    assert (
-        "成功脚本的 stdout 仅输出 evidencePath、处理行数、固定事实对账值和核心可比指标"
-        in instructions
-    )
-    assert "完整聚合结果只写入 evidence JSON" in instructions
-    assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
+    assert "AnalysisEvidenceDecision" in instructions
+    assert "固定 Workflow" in instructions
+    assert "Python 源码" in instructions
+    assert "expected_sha256" not in instructions
 
 
 def test_section_instructions_match_evidence_file_authorization() -> None:
@@ -1280,25 +1253,18 @@ def test_phase_instructions_prioritize_signed_execution_directive() -> None:
     visualization = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
     section = "\n".join(REPORT_SECTION_AGENT_INSTRUCTIONS)
 
-    for instructions in (analysis, visualization, section):
-        assert "executionDirective 是本任务的首要动作契约" in instructions
-        assert "不得输出解释文字" in instructions
-    assert "不得构造 shell 命令或选择解释器" in analysis
-    assert "不得重复完全相同的 patch 参数" in visualization
+    assert "固定 Workflow" in analysis
+    assert "固定 Workflow" in visualization
+    assert "executionDirective 是本任务的首要动作契约" in section
     assert "不得使用 read_file 读取 factFiles" in section
 
 
-def test_patch_instructions_include_complete_unified_diff_templates() -> None:
+def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
     analysis_instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
     visualization_instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
     for instructions in (analysis_instructions, visualization_instructions):
-        assert "--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@" in instructions
-        assert "--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@" in instructions
-        assert "--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@" in instructions
-        assert "单行文件更新必须使用 @@ -1 +1 @@" in instructions
-        assert "expected_sha256 的值必须是 64 位小写十六进制字符串" in instructions
-        assert "不需要基线时省略 expected_sha256" in instructions
+        assert "expected_sha256" not in instructions
 
 
 @pytest.mark.anyio
@@ -1955,21 +1921,17 @@ def test_instruction_component_bytes_reports_sizes_without_content() -> None:
 def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_data() -> None:
     instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
-    assert "未签发文件" in instructions
-    assert "缺失、为空或无法解析" in instructions
-    assert "跳过对应图表" in instructions
-    assert "结构化诊断" in instructions
-    assert "不得让单张图表失败终止整批脚本" in instructions
-    assert "先规范化为可迭代的空行集合" in instructions
-    assert "查询结果为 None 时必须使用空行集合" in instructions
+    assert "VisualizationPlanDraft" in instructions
+    assert "Python 源码" in instructions
+    assert "执行、检查和提交均由固定 Workflow 编排" in instructions
 
 
 def test_visualization_instructions_describe_overridable_noto_cjk_default() -> None:
     instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
-    assert "Noto Sans CJK SC" in instructions
-    assert "可以覆盖字体配置" in instructions
-    assert "缺字警告只作普通 warning，不视为脚本执行失败" in instructions
+    assert "read_file" not in instructions
+    assert "run_python_script" not in instructions
+    assert "submit_visualization_charts" not in instructions
     assert "fallback_to_default=False" not in instructions
 
 
