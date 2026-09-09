@@ -134,6 +134,43 @@ class ReportingCodeGenerationRunner:
     def _stable_code(value: Any, fallback: str) -> str:
         return value if isinstance(value, str) and _STABLE_CODE_RE.fullmatch(value) else fallback
 
+    @staticmethod
+    def _patch_protocol(
+        script_path: str, operation: str, max_source_bytes: int
+    ) -> dict[str, Any]:
+        """Return an explicit diff shape so models cannot infer stale fixed hunk counts."""
+        if operation == "create":
+            template = (
+                f"--- /dev/null\n+++ b/{script_path}\n"
+                "@@ -0,0 +1,<exact_new_line_count> @@\n"
+                "+<each_source_line>"
+            )
+            hunk = "@@ -0,0 +1,<exact_new_line_count> @@"
+            prefixes = {"source": "+"}
+        else:
+            template = (
+                f"--- a/{script_path}\n+++ b/{script_path}\n"
+                "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@\n"
+                " <unchanged_source_line>\n-<removed_source_line>\n+<added_source_line>"
+            )
+            hunk = "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@"
+            prefixes = {"context": " ", "removed": "-", "added": "+"}
+        return {
+            "operation": operation,
+            "path": script_path,
+            "maxSourceBytes": max_source_bytes,
+            "maxPhysicalLineBytes": MAX_PHYSICAL_LINE_BYTES,
+            "template": template,
+            "hunk": hunk,
+            "linePrefixes": prefixes,
+            "lineEnding": "LF",
+            "trailingNewline": True,
+            "countRule": (
+                "hunk line counts must exactly equal the physical source line counts; "
+                "do not use a fixed placeholder count"
+            ),
+        }
+
     @classmethod
     def _short_diagnostic(cls, diagnostic: Mapping[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -466,7 +503,7 @@ class ReportingCodeGenerationRunner:
                 )
                 raise ReportingError(
                     self._stable_code(error.code, "report_code_generation_patch_failed"),
-                    "脚本 patch 未被接受。",
+                    bounded.get("message", "脚本 patch 未被接受。"),
                     details=bounded.get("details", {"path": script_path}),
                 ) from error
             except Exception as error:
@@ -479,7 +516,7 @@ class ReportingCodeGenerationRunner:
                     self._stable_code(
                         receipt.get("code"), "report_code_generation_patch_failed"
                     ),
-                    "脚本 patch 未被接受。",
+                    bounded.get("message", "脚本 patch 未被接受。"),
                     details=bounded.get("details", {"path": script_path}),
                 )
             artifacts = receipt.get("artifacts")
@@ -524,12 +561,9 @@ class ReportingCodeGenerationRunner:
             prompt = {
                 "scriptPath": script_path,
                 "facts": dict(task_facts),
-                "patchProtocol": {
-                    "operation": _operation,
-                    "path": script_path,
-                    "maxSourceBytes": max_source_bytes,
-                    "maxPhysicalLineBytes": MAX_PHYSICAL_LINE_BYTES,
-                },
+                "patchProtocol": self._patch_protocol(
+                    script_path, _operation, max_source_bytes
+                ),
             }
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)

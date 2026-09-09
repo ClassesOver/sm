@@ -108,6 +108,19 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "path": "analysis/script.py",
         "maxSourceBytes": 128 * 1024,
         "maxPhysicalLineBytes": 8 * 1024,
+        "template": (
+            "--- /dev/null\n+++ b/analysis/script.py\n"
+            "@@ -0,0 +1,<exact_new_line_count> @@\n"
+            "+<each_source_line>"
+        ),
+        "hunk": "@@ -0,0 +1,<exact_new_line_count> @@",
+        "linePrefixes": {"source": "+"},
+        "lineEnding": "LF",
+        "trailingNewline": True,
+        "countRule": (
+            "hunk line counts must exactly equal the physical source line counts; "
+            "do not use a fixed placeholder count"
+        ),
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
 
@@ -868,7 +881,7 @@ async def test_generate_rejects_second_patch_after_one_mutation():
 @pytest.mark.parametrize(
     "receipt",
     [
-        {"ok": False, "code": "patch_rejected", "message": "SECRET_SOURCE"},
+        {"ok": False, "code": "patch_rejected", "message": "patch rejected"},
         {"ok": True, "artifacts": []},
         {
             "ok": True,
@@ -897,6 +910,8 @@ async def test_generate_rejects_failed_or_ambiguous_patch_receipts(receipt):
         "report_code_generation_artifact_invalid",
         "report_code_generation_path_mismatch",
     }
+    if receipt.get("ok") is False:
+        assert raised.value.message == "patch rejected"
     assert "SECRET_SOURCE" not in str(raised.value.details)
 
 
@@ -925,12 +940,65 @@ async def test_generate_preserves_only_bounded_patch_failure_diagnostics():
         )
 
     assert raised.value.code == "report_python_source_shape_invalid"
+    assert raised.value.message == "shape invalid"
     assert raised.value.details == {
         "path": "analysis/script.py",
         "size": 131073,
         "lineCount": 1,
         "maxLineLength": 131072,
     }
+
+
+@pytest.mark.anyio
+async def test_generate_preserves_reporting_error_code_and_message_after_tool_throw():
+    async def action(agent):
+        return await agent.tools[0].entrypoint(patch="diff")
+
+    async def patch(**_kwargs):
+        raise ReportingError(
+            "report_python_source_shape_invalid",
+            "脚本必须以 LF 换行结尾。",
+            details={"path": "analysis/script.py", "source": "SECRET_SOURCE"},
+        )
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_python_source_shape_invalid"
+    assert raised.value.message == "脚本必须以 LF 换行结尾。"
+    assert raised.value.details == {"path": "analysis/script.py"}
+    assert "SECRET_SOURCE" not in str(raised.value)
+
+
+@pytest.mark.anyio
+async def test_generate_injects_dynamic_update_diff_contract():
+    prompts: list[dict[str, object]] = []
+
+    async def action(agent):
+        prompts.append(json.loads(agent.prompt))
+        return await agent.tools[0].entrypoint(patch="diff")
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(2)\n")]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py", {}, patch, _operation="update"
+    )
+
+    protocol = prompts[0]["patchProtocol"]
+    assert protocol["path"] == "analysis/script.py"
+    assert protocol["operation"] == "update"
+    assert protocol["template"] == (
+        "--- a/analysis/script.py\n+++ b/analysis/script.py\n"
+        "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@\n"
+        " <unchanged_source_line>\n-<removed_source_line>\n+<added_source_line>"
+    )
+    assert protocol["hunk"] == "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@"
+    assert protocol["linePrefixes"] == {"context": " ", "removed": "-", "added": "+"}
+    assert protocol["lineEnding"] == "LF"
+    assert protocol["trailingNewline"] is True
 
 
 @pytest.mark.anyio

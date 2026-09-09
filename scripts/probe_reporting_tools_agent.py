@@ -1766,7 +1766,11 @@ async def _run_fixed_visualization_scenario(
             name=f"probe-{scenario.name}-code",
             instructions=[
                 "脚本必须写入 facts.visualizationWorkspace.scriptPath，"
-                "并生成 visualizationPlan 中全部 sourcePath。"
+                "并生成 visualizationPlan 中全部 sourcePath。",
+                "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径；"
+                "不得使用 __file__、cwd 或目录探测重新推导路径。",
+                "绘图只能使用 Matplotlib；在导入 matplotlib.pyplot 前调用 "
+                'matplotlib.use("Agg")，并使用 fig.savefig(...) 写入签发路径。',
             ],
         )
     )
