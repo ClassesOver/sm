@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -18,6 +20,11 @@ from ...models import ReportingError
 from ..checkpoint import FileIdentity
 
 ToolCallable = Callable[..., Awaitable[Mapping[str, Any]] | Mapping[str, Any]]
+MAX_CODE_READ_BYTES = 128 * 1024
+MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
+MAX_DIAGNOSTIC_PATH_LENGTH = 1024
+MAX_DIAGNOSTIC_POSITION = 1_000_000_000
+_STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +113,100 @@ class ReportingCodeGenerationRunner:
         ):
             raise ReportingError("report_code_generation_path_invalid", "脚本路径不是安全的工作区相对 Python 文件。")
 
+    @staticmethod
+    def _error(code: str, message: str, script_path: str) -> ReportingError:
+        return ReportingError(code, message, details={"path": script_path})
+
+    @staticmethod
+    def _stable_code(value: Any, fallback: str) -> str:
+        return value if isinstance(value, str) and _STABLE_CODE_RE.fullmatch(value) else fallback
+
+    @classmethod
+    def _short_diagnostic(cls, diagnostic: Mapping[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        code = diagnostic.get("code")
+        if cls._stable_code(code, ""):
+            result["code"] = code
+        message = diagnostic.get("message")
+        if isinstance(message, str) and message:
+            result["message"] = message[:MAX_DIAGNOSTIC_MESSAGE_LENGTH]
+        details = diagnostic.get("details")
+        if isinstance(details, Mapping):
+            safe_details: dict[str, Any] = {}
+            path = details.get("path")
+            if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH:
+                safe_details["path"] = path
+            for field in ("line", "offset"):
+                value = details.get(field)
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and 0 <= value <= MAX_DIAGNOSTIC_POSITION
+                ):
+                    safe_details[field] = value
+            if safe_details:
+                result["details"] = safe_details
+        return result
+
+    @classmethod
+    def _trusted_read_receipt(
+        cls, receipt: Mapping[str, Any], script_file: FileIdentity
+    ) -> dict[str, Any]:
+        content = receipt.get("content")
+        if receipt.get("ok", True) is not True or not isinstance(content, str):
+            raise cls._error(
+                "report_code_generation_read_invalid", "脚本读取回执无效。", script_file.path
+            )
+        if receipt.get("path") != script_file.path:
+            raise cls._error(
+                "report_code_generation_read_invalid", "脚本读取回执路径不匹配。", script_file.path
+            )
+        positions: dict[str, int] = {}
+        for field in ("offset", "nextOffset", "totalBytes"):
+            value = receipt.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise cls._error(
+                    "report_code_generation_read_invalid",
+                    "脚本读取回执分页字段无效。",
+                    script_file.path,
+                )
+            positions[field] = value
+        if positions["offset"] != 0 or positions["nextOffset"] != positions["totalBytes"]:
+            raise cls._error(
+                "report_code_generation_read_incomplete",
+                "脚本读取回执分页不完整。",
+                script_file.path,
+            )
+        content_bytes = content.encode("utf-8")
+        if (
+            positions["totalBytes"] != len(content_bytes)
+            or positions["totalBytes"] != script_file.size
+        ):
+            raise cls._error(
+                "report_code_generation_read_invalid",
+                "脚本读取回执字节数不匹配。",
+                script_file.path,
+            )
+        if len(content_bytes) > MAX_CODE_READ_BYTES:
+            raise cls._error(
+                "report_code_generation_read_too_large",
+                "脚本读取回执超过 Coding Agent 上下文上限。",
+                script_file.path,
+            )
+        content_sha256 = hashlib.sha256(content_bytes).hexdigest()
+        if receipt.get("sha256") != script_file.sha256 or content_sha256 != script_file.sha256:
+            raise cls._error(
+                "report_code_generation_read_invalid",
+                "脚本读取回执身份不匹配。",
+                script_file.path,
+            )
+        return {
+            "path": script_file.path,
+            "sha256": script_file.sha256,
+            "content": content,
+            "totalBytes": positions["totalBytes"],
+        }
+
     async def generate(
         self,
         script_path: str,
@@ -119,28 +220,55 @@ class ReportingCodeGenerationRunner:
 
         async def capture_patch(**kwargs: Any) -> Mapping[str, Any]:
             nonlocal result
-            try:
-                receipt = await _invoke(
-                    apply_analysis_patch, {"patch": kwargs.get("patch", "")}, run_context
+            patch = kwargs.get("patch")
+            if not isinstance(patch, str) or not patch:
+                raise self._error(
+                    "report_code_generation_tool_arguments_invalid",
+                    "Coding Agent 的 patch 参数无效。",
+                    script_path,
                 )
+            try:
+                receipt = await _invoke(apply_analysis_patch, {"patch": patch}, run_context)
             except ReportingError as error:
                 # 上游工具 details 可能包含参数；Coding 边界只透出稳定码和短路径。
                 raise ReportingError(
-                    error.code,
+                    self._stable_code(error.code, "report_code_generation_patch_failed"),
                     "脚本 patch 未被接受。",
                     details={"path": script_path},
                 ) from error
+            except Exception as error:
+                raise self._error(
+                    "report_code_generation_patch_failed", "脚本 patch 未被接受。", script_path
+                ) from error
             if receipt.get("ok") is not True:
-                raise ReportingError(str(receipt.get("code", "report_code_generation_patch_failed")), "脚本 patch 未被接受。")
+                raise self._error(
+                    self._stable_code(
+                        receipt.get("code"), "report_code_generation_patch_failed"
+                    ),
+                    "脚本 patch 未被接受。",
+                    script_path,
+                )
             artifacts = receipt.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
-                raise ReportingError("report_code_generation_artifact_invalid", "脚本 patch 必须返回唯一文件身份。")
+                raise self._error(
+                    "report_code_generation_artifact_invalid",
+                    "脚本 patch 必须返回唯一文件身份。",
+                    script_path,
+                )
             try:
                 identity = FileIdentity.model_validate(artifacts[0])
             except Exception as error:
-                raise ReportingError("report_code_generation_artifact_invalid", "脚本 patch 文件身份无效。") from error
+                raise self._error(
+                    "report_code_generation_artifact_invalid",
+                    "脚本 patch 文件身份无效。",
+                    script_path,
+                ) from error
             if identity.path != script_path:
-                raise ReportingError("report_code_generation_path_mismatch", "脚本写入回执路径与签发路径不一致。")
+                raise self._error(
+                    "report_code_generation_path_mismatch",
+                    "脚本写入回执路径与签发路径不一致。",
+                    script_path,
+                )
             result = CodeGenerationResult(identity)
             return receipt
 
@@ -149,7 +277,11 @@ class ReportingCodeGenerationRunner:
             nonlocal calls
             calls += 1
             if calls > 1:
-                raise ReportingError("report_code_generation_multiple_patches", "单轮 Coding Agent 只能提交一次 patch。")
+                raise self._error(
+                    "report_code_generation_multiple_patches",
+                    "单轮 Coding Agent 只能提交一次 patch。",
+                    script_path,
+                )
             return await capture_patch(**kwargs)
 
         agent = self._fresh_agent()
@@ -181,17 +313,25 @@ class ReportingCodeGenerationRunner:
             nonlocal reads, read_receipt
             reads += 1
             if reads > 1 or path != script_file.path:
-                raise ReportingError("report_code_generation_read_invalid", "修复阶段只能读取签发脚本一次。")
-            receipt = await _invoke(read_file, {"path": path}, run_context)
-            content = receipt.get("content")
-            if receipt.get("ok", True) is False or not isinstance(content, str):
-                raise ReportingError("report_code_generation_read_invalid", "脚本读取回执无效。")
-            if receipt.get("path") != script_file.path or receipt.get("sha256") != script_file.sha256:
-                raise ReportingError("report_code_generation_read_invalid", "脚本读取回执身份不匹配。")
-            if receipt.get("offset", 0) != 0 or receipt.get("nextOffset") != receipt.get("totalBytes"):
-                raise ReportingError("report_code_generation_read_incomplete", "脚本读取回执分页不完整。")
-            read_receipt = receipt
-            return receipt
+                raise self._error(
+                    "report_code_generation_read_invalid",
+                    "修复阶段只能读取签发脚本一次。",
+                    script_file.path,
+                )
+            try:
+                receipt = await _invoke(read_file, {"path": path}, run_context)
+            except ReportingError as error:
+                raise self._error(
+                    self._stable_code(error.code, "report_code_generation_read_failed"),
+                    "脚本读取失败。",
+                    script_file.path,
+                ) from error
+            except Exception as error:
+                raise self._error(
+                    "report_code_generation_read_failed", "脚本读取失败。", script_file.path
+                ) from error
+            read_receipt = self._trusted_read_receipt(receipt, script_file)
+            return read_receipt
 
         reader = self._fresh_agent()
         self._configure(reader, Function(name="read_file", description="读取签发脚本。", parameters=_tool_parameters("read_file"), strict=True, entrypoint=read_tool, stop_after_tool_call=True), "read_file")
@@ -202,10 +342,17 @@ class ReportingCodeGenerationRunner:
         except Exception as error:
             raise ReportingError("report_code_generation_read_invalid", "修复读取阶段失败。") from error
         if reads != 1 or read_receipt is None:
-            raise ReportingError("report_code_generation_read_invalid", "修复读取阶段未读取签发脚本。")
+            raise self._error(
+                "report_code_generation_read_invalid",
+                "修复读取阶段未读取签发脚本。",
+                script_file.path,
+            )
         return await self.generate(
             script_file.path,
-            {"readReceipt": dict(read_receipt), "diagnostic": dict(diagnostic)},
+            {
+                "readReceipt": read_receipt,
+                "diagnostic": self._short_diagnostic(diagnostic),
+            },
             apply_analysis_patch,
             run_context,
         )

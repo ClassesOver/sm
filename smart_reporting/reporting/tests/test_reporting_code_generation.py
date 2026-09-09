@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
@@ -19,12 +20,26 @@ class FakeAgent:
         self.tool_choice = None
 
     async def arun(self, _prompt, **_kwargs):
+        self.prompt = _prompt
         return await self.action(self)
 
 
 def identity(path: str, content: str) -> FileIdentity:
     raw = content.encode()
     return FileIdentity(path=path, size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+
+
+def read_receipt(script: FileIdentity, content: str = "print(1)\n") -> dict[str, object]:
+    size = len(content.encode())
+    return {
+        "ok": True,
+        "path": script.path,
+        "content": content,
+        "sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "offset": 0,
+        "nextOffset": size,
+        "totalBytes": size,
+    }
 
 
 @pytest.mark.anyio
@@ -83,15 +98,9 @@ async def test_repair_reads_once_then_uses_fresh_patch_agent():
         return await tool.entrypoint(patch="diff")
 
     async def read_file(**kwargs):
-        return {
-            "ok": True,
-            "path": kwargs["path"],
-            "content": "print(1)\n",
-            "sha256": script.sha256,
-            "offset": 0,
-            "nextOffset": len("print(1)\n"),
-            "totalBytes": len("print(1)\n"),
-        }
+        receipt = read_receipt(script)
+        receipt["path"] = kwargs["path"]
+        return receipt
 
     async def patch(**_kwargs):
         return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
@@ -102,3 +111,313 @@ async def test_repair_reads_once_then_uses_fresh_patch_agent():
     assert result.script_file.sha256 == hashlib.sha256(b"print(2)\n").hexdigest()
     assert seen_tools == ["read_file", "apply_analysis_patch"]
     assert agents[0] is not agents[1]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("offset", True),
+        ("nextOffset", True),
+        ("totalBytes", True),
+        ("offset", -1),
+        ("nextOffset", -1),
+        ("totalBytes", -1),
+    ],
+)
+async def test_repair_rejects_invalid_pagination_values(field, value):
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        receipt = read_receipt(script)
+        receipt[field] = value
+        return receipt
+
+    async def patch(**_kwargs):
+        pytest.fail("invalid read receipt must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code == "report_code_generation_read_invalid"
+    assert raised.value.details == {"path": script.path}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field", ["offset", "nextOffset", "totalBytes"])
+async def test_repair_requires_all_pagination_fields(field):
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        receipt = read_receipt(script)
+        receipt.pop(field)
+        return receipt
+
+    async def patch(**_kwargs):
+        pytest.fail("incomplete read receipt must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code == "report_code_generation_read_invalid"
+    assert raised.value.details == {"path": script.path}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"nextOffset": 1},
+        {"totalBytes": 1},
+        {"sha256": "0" * 64},
+        {"content": "print(2)\n"},
+    ],
+)
+async def test_repair_rejects_incomplete_or_identity_mismatched_read_receipt(update):
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        return {**read_receipt(script), **update}
+
+    async def patch(**_kwargs):
+        pytest.fail("invalid read receipt must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code in {
+        "report_code_generation_read_incomplete",
+        "report_code_generation_read_invalid",
+    }
+    assert raised.value.details == {"path": script.path}
+
+
+@pytest.mark.anyio
+async def test_repair_requires_read_byte_count_to_match_script_identity():
+    original = identity("analysis/script.py", "print(1)\n")
+    script = FileIdentity(path=original.path, size=original.size + 1, sha256=original.sha256)
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        return read_receipt(original)
+
+    async def patch(**_kwargs):
+        pytest.fail("identity byte mismatch must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code == "report_code_generation_read_invalid"
+    assert raised.value.details == {"path": script.path}
+
+
+@pytest.mark.anyio
+async def test_repair_rejects_oversized_read_receipt_before_patch_prompt():
+    content = "#" * (128 * 1024 + 1)
+    script = identity("analysis/script.py", content)
+    prompts = []
+
+    async def action(agent):
+        prompts.append(agent.prompt)
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        return read_receipt(script, content)
+
+    async def patch(**_kwargs):
+        pytest.fail("oversized read receipt must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code == "report_code_generation_read_too_large"
+    assert raised.value.details == {"path": script.path}
+    assert len(prompts) == 1
+
+
+@pytest.mark.anyio
+async def test_repair_normalizes_diagnostic_and_read_receipt_before_patch_prompt():
+    script = identity("analysis/script.py", "print(1)\n")
+    prompts = []
+
+    async def action(agent):
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=script.path)
+        prompts.append(json.loads(agent.prompt))
+        return await tool.entrypoint(patch="diff")
+
+    async def read_file(**_kwargs):
+        return {**read_receipt(script), "untrusted": "x" * 10_000}
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
+
+    diagnostic = {
+        "code": "repair_failed",
+        "message": "m" * 10_000,
+        "details": {"path": script.path, "line": 4, "source": "SECRET_SOURCE"},
+        "receipt": "SECRET_RECEIPT",
+    }
+    await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
+        script, diagnostic, read_file, patch
+    )
+
+    facts = prompts[0]["facts"]
+    assert set(facts["diagnostic"]) <= {"code", "message", "details"}
+    assert facts["diagnostic"]["code"] == "repair_failed"
+    assert len(facts["diagnostic"]["message"]) <= 512
+    assert facts["diagnostic"]["details"] == {"path": script.path, "line": 4}
+    assert "SECRET_SOURCE" not in agent_prompt_text(facts)
+    assert "SECRET_RECEIPT" not in agent_prompt_text(facts)
+    assert set(facts["readReceipt"]) == {"path", "sha256", "content", "totalBytes"}
+
+
+def agent_prompt_text(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@pytest.mark.anyio
+async def test_repair_redacts_read_callback_errors():
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        raise ReportingError("workspace_read_failed", "SECRET_SOURCE", details={"content": "secret"})
+
+    async def patch(**_kwargs):
+        pytest.fail("read errors must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code == "workspace_read_failed"
+    assert raised.value.details == {"path": script.path}
+    assert "SECRET_SOURCE" not in str(raised.value.details)
+
+
+@pytest.mark.anyio
+async def test_repair_redacts_non_reporting_read_errors():
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(path=script.path)
+
+    async def read_file(**_kwargs):
+        raise RuntimeError("SECRET_TOOL_RECEIPT")
+
+    async def patch(**_kwargs):
+        pytest.fail("read errors must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch
+        )
+
+    assert raised.value.code == "report_code_generation_read_failed"
+    assert raised.value.details == {"path": script.path}
+    assert "SECRET_TOOL_RECEIPT" not in str(raised.value.details)
+
+
+@pytest.mark.anyio
+async def test_generate_rejects_second_patch_after_one_mutation():
+    calls = 0
+
+    async def action(agent):
+        await agent.tools[0].entrypoint(patch="first")
+        await agent.tools[0].entrypoint(patch="second")
+
+    async def patch(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
+
+    with pytest.raises(ReportingError, match="multiple_patches"):
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert calls == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"ok": False, "code": "patch_rejected", "message": "SECRET_SOURCE"},
+        {"ok": True, "artifacts": []},
+        {
+            "ok": True,
+            "artifacts": [
+                identity("analysis/script.py", "print(1)\n"),
+                identity("analysis/other.py", "print(2)\n"),
+            ],
+        },
+        {"ok": True, "artifacts": [identity("analysis/other.py", "print(1)\n")]},
+    ],
+)
+async def test_generate_rejects_failed_or_ambiguous_patch_receipts(receipt):
+    async def action(agent):
+        return await agent.tools[0].entrypoint(patch="diff")
+
+    async def patch(**_kwargs):
+        return receipt
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code in {
+        "patch_rejected",
+        "report_code_generation_artifact_invalid",
+        "report_code_generation_path_mismatch",
+    }
+    assert "SECRET_SOURCE" not in str(raised.value.details)
+
+
+@pytest.mark.anyio
+async def test_generate_rejects_malformed_tool_arguments_without_mutation():
+    mutated = False
+
+    async def action(agent):
+        await agent.tools[0].entrypoint()  # truncated/malformed tool JSON has no patch field
+
+    async def patch(**_kwargs):
+        nonlocal mutated
+        mutated = True
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_code_generation_tool_arguments_invalid"
+    assert mutated is False
+    assert raised.value.details == {"path": "analysis/script.py"}
