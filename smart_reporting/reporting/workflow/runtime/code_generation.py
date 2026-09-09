@@ -92,6 +92,8 @@ def _reject_python_source(path: str, source: Any) -> NoReturn:
 def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> str:
     if not isinstance(source, str):
         _reject_python_source(path, source)
+    if source and "\r" not in source and not source.endswith("\n"):
+        source += "\n"
     try:
         raw_source = source.encode("utf-8")
     except UnicodeEncodeError:
