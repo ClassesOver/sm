@@ -278,6 +278,7 @@ async def _drive_workflow_unlocked(
             stream=False,
         )
     except BaseException:
+        await _update_cli_run_status(runtime, run_id, "failed")
         await runtime.cleanup_terminal(
             _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
             session_id,
@@ -295,6 +296,7 @@ async def _drive_workflow_unlocked(
     )
 
     status = _status(output)
+    await _update_cli_run_status(runtime, run_id, status)
     content = getattr(output, "content", None)
     if status in {"cancelled", "failed"}:
         await runtime.cleanup_terminal(
@@ -457,6 +459,7 @@ async def _resume_workflow_unlocked(
         retry_delivery_error=True,
     )
     status = _status(output)
+    await _update_cli_run_status(runtime, run_id, status)
     if status in {"cancelled", "failed"}:
         await runtime.cleanup_terminal(
             _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
@@ -498,6 +501,13 @@ async def _register_cli_run(
         database=database,
         company_id=company_id,
     )
+
+
+async def _update_cli_run_status(runtime: Any, run_id: str, status: str) -> None:
+    repository = getattr(runtime, "state_repository", None)
+    update_status = getattr(repository, "update_run_status", None)
+    if callable(update_status):
+        await update_status(run_id, status=status)
 
 
 async def run_cli(
