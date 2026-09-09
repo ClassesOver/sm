@@ -649,11 +649,13 @@ class RuntimeAnalysisMixin:
                             ).run(payload, scope=invocation.scope, run_context=task_context),
                         )
 
-                    code_runner = (
-                        ReportingCodeGenerationRunner(agent=self.visualization_recovery)
-                        if self.visualization_recovery is not None
-                        else None
-                    )
+                    def code_runner() -> ReportingCodeGenerationRunner:
+                        if self.visualization_recovery is None:
+                            raise ReportingError(
+                                "report_visualization_code_agent_missing",
+                                "章节图表代码 Agent 未配置。",
+                            )
+                        return ReportingCodeGenerationRunner(agent=self.visualization_recovery)
 
                     async def apply_patch(
                         *, patch: str, run_context: RunContext | None = None
@@ -666,12 +668,7 @@ class RuntimeAnalysisMixin:
                     async def generate_script(
                         plan: VisualizationPlanDraft, task_context: RunContext
                     ) -> CodeGenerationResult:
-                        if code_runner is None:
-                            raise ReportingError(
-                                "report_visualization_code_agent_missing",
-                                "章节图表代码 Agent 未配置。",
-                            )
-                        return await code_runner.generate(
+                        return await code_runner().generate(
                             script_path,
                             {
                                 "visualizationFacts": facts,
@@ -687,19 +684,16 @@ class RuntimeAnalysisMixin:
                     async def repair_script(
                         script_file: FileIdentity,
                         diagnostic: Mapping[str, Any],
+                        task_facts: Mapping[str, Any],
                         task_context: RunContext,
                     ) -> CodeGenerationResult:
-                        if code_runner is None:
-                            raise ReportingError(
-                                "report_visualization_code_agent_missing",
-                                "章节图表代码 Agent 未配置。",
-                            )
-                        return await code_runner.repair(
+                        return await code_runner().repair(
                             script_file,
                             diagnostic,
                             toolkit.read_file,
                             apply_patch,
                             task_context,
+                            task_facts=task_facts,
                         )
 
                     async def execute_script(

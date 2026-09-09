@@ -22,7 +22,13 @@ GenerateVisualizationScript = Callable[
     [VisualizationPlanDraft, RunContext], Awaitable[CodeGenerationResult]
 ]
 RepairVisualizationScript = Callable[
-    [FileIdentity, Mapping[str, Any], RunContext], Awaitable[CodeGenerationResult]
+    [
+        FileIdentity,
+        Mapping[str, Any],
+        Mapping[str, Any],
+        RunContext,
+    ],
+    Awaitable[CodeGenerationResult],
 ]
 ExecuteScript = Callable[[str, RunContext], Awaitable[Mapping[str, Any]]]
 InspectChart = Callable[[ChartDraft, RunContext], Awaitable[ChartVisualInspectionReceipt]]
@@ -41,6 +47,7 @@ _NON_RECOVERABLE_CODES = frozenset(
         "report_workspace_unavailable",
     }
 )
+_MAX_GENERATE_ATTEMPTS = 3
 
 
 def _signed_script_path(payload: Mapping[str, Any]) -> str:
@@ -63,9 +70,24 @@ def _repair_diagnostic(
         if isinstance(candidate, str) and candidate:
             path = candidate
 
-    diagnostic: dict[str, Any] = {"code": code, "details": {"path": path}}
+    message = error.message if isinstance(error, ReportingError) else "可视化固定 Workflow 执行失败。"
+    return {"code": code, "message": message, "details": {"path": path}}
+
+
+def _repair_task_facts(
+    plan: VisualizationPlanDraft, error: Exception, script_path: str
+) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    code = error.code if isinstance(error, ReportingError) else "report_visualization_failed"
+    path = script_path
+    details = error.details if isinstance(error, ReportingError) and isinstance(error.details, Mapping) else {}
+    nested = details.get("details") if isinstance(details.get("details"), Mapping) else details
+    candidate = nested.get("sourcePath", nested.get("path"))
+    if isinstance(candidate, str) and candidate:
+        path = candidate
+
     if code == "report_chart_file_missing":
-        diagnostic["missingCharts"] = [
+        facts["missingCharts"] = [
             {
                 "chartId": chart.chart_id,
                 "sourcePath": chart.source_path,
@@ -74,7 +96,35 @@ def _repair_diagnostic(
             for chart in plan.charts
             if chart.source_path == path
         ]
-    return diagnostic
+    elif code == "report_visualization_review_failed":
+        inspections = details.get("inspections")
+        if isinstance(inspections, list):
+            facts["inspections"] = [
+                {
+                    "sourcePath": inspection["sourcePath"],
+                    "visualReviewStatus": inspection.get("visualReviewStatus"),
+                    "requiresRevision": inspection.get("requiresRevision"),
+                    "issues": inspection.get("issues", []),
+                    "summary": inspection.get("summary"),
+                    "warnings": inspection.get("warnings", []),
+                    "suggestions": inspection.get("suggestions", []),
+                }
+                for inspection in inspections
+                if isinstance(inspection, Mapping)
+                and isinstance(inspection.get("sourcePath"), str)
+                and (
+                    inspection.get("requiresRevision") is True
+                    or inspection.get("visualReviewStatus") != "passed"
+                )
+            ]
+    return facts
+
+
+def _is_nonrecoverable(error: Exception) -> bool:
+    return isinstance(error, ReportingError) and (
+        error.code in _NON_RECOVERABLE_CODES
+        or (isinstance(error.details, Mapping) and error.details.get("retryable") is False)
+    )
 
 
 def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> FileIdentity:
@@ -143,8 +193,17 @@ class VisualizationSectionWorkflow:
             return VisualizationWorkflowResult("accepted", plan, None, ())
 
         script_path = _signed_script_path(payload)
-        generated = await self.generate_script(plan, run_context)
-        script_file = _ensure_script_identity(generated, script_path)
+        script_file: FileIdentity | None = None
+        for generate_attempt in range(_MAX_GENERATE_ATTEMPTS):
+            try:
+                generated = await self.generate_script(plan, run_context)
+                script_file = _ensure_script_identity(generated, script_path)
+                break
+            except Exception as error:
+                if _is_nonrecoverable(error) or generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
+                    raise
+        if script_file is None:
+            raise RuntimeError("可视化脚本生成状态不可达")
         recovery_used = False
 
         for attempt in range(2):
@@ -191,7 +250,7 @@ class VisualizationSectionWorkflow:
                     "accepted", plan, script_file, inspections, recovery_used
                 )
             except Exception as error:
-                if isinstance(error, ReportingError) and error.code in _NON_RECOVERABLE_CODES:
+                if _is_nonrecoverable(error):
                     raise
                 if attempt == 1 or self.repair_script is None:
                     raise
@@ -199,6 +258,7 @@ class VisualizationSectionWorkflow:
                 repaired = await self.repair_script(
                     script_file,
                     _repair_diagnostic(plan, error, script_path),
+                    _repair_task_facts(plan, error, script_path),
                     run_context,
                 )
                 script_file = _ensure_script_identity(repaired, script_path)
