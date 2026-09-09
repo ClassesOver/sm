@@ -1,9 +1,30 @@
 import asyncio
+import inspect
 import json
 from types import SimpleNamespace
 
 from scripts import probe_reporting_patch_agent
 from scripts.probe_reporting_patch_agent import _patch_function, _task
+
+
+def test_patch_probe_exposes_only_patch_to_the_model() -> None:
+    received: list[dict[str, object]] = []
+    target, _old, new, operation, _prompt = _task(1)
+    tool = _patch_function(received, target, operation)
+
+    assert tool.parameters == {
+        "type": "object",
+        "properties": {"patch": {"type": "string", "minLength": 1}},
+        "required": ["patch"],
+        "additionalProperties": False,
+    }
+    assert list(inspect.signature(tool.entrypoint).parameters) == ["patch"]
+
+    patch = f"--- /dev/null\n+++ b/{target}\n@@ -0,0 +1 @@\n+{new}"
+    result = tool.entrypoint(patch=patch)
+
+    assert result["ok"] is True
+    assert received == [{"patch": patch, "valid": True, "paths": [target]}]
 
 
 def test_task_uses_parser_operation_name_for_modify() -> None:

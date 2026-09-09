@@ -57,10 +57,8 @@ patch 参数必须是可直接交给 git apply 的标准 unified diff，必须�
 
 
 def _patch_function(received: list[dict[str, Any]], target: str, operation: str) -> Function:
-    def apply_analysis_patch(
-        patch: str, expected_sha256: dict[str, str] | None = None
-    ) -> dict[str, Any]:
-        record: dict[str, Any] = {"patch": patch, "expected_sha256": expected_sha256 or {}}
+    def apply_analysis_patch(patch: str) -> dict[str, Any]:
+        record: dict[str, Any] = {"patch": patch}
         received.append(record)
         try:
             operations = parse_unified_diff(patch)
@@ -80,18 +78,13 @@ def _patch_function(received: list[dict[str, Any]], target: str, operation: str)
         name="apply_analysis_patch",
         description=(
             "提交标准 Git unified diff。必须包含完整文件头、hunk 头和每一行内容；"
-            "单行更新使用 @@ -1 +1 @@。expected_sha256 只能是 64 位小写十六进制字符串；"
-            "新建文件或不需要基线时省略该字段，禁止填写 true、false 或其他布尔值。"
+            "单行更新使用 @@ -1 +1 @@。"
             "禁止 *** Begin Patch、*** Update File、Markdown 代码围栏和解释文字。"
         ),
         parameters={
             "type": "object",
             "properties": {
                 "patch": {"type": "string", "minLength": 1},
-                "expected_sha256": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
             },
             "required": ["patch"],
             "additionalProperties": False,
