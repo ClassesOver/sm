@@ -234,18 +234,27 @@ class ReportingStateRepository:
             raise ReportingStateError("report_run_registration_failed", "Reporting run 登记失败。")
         stored = dict(row._mapping)
         identity_keys = (
-            "external_run_id",
-            "workflow_id",
-            "agno_session_id",
-            "agno_run_id",
-            "thread_id",
-            "owner_user_id",
-            "database",
-            "company_id",
-            "revision",
+            (
+                "external_run_id",
+                "agno_run_id",
+                "thread_id",
+                "owner_user_id",
+                "revision",
+            )
+            if row_values["entrypoint"] == "unknown"
+            else (
+                "external_run_id",
+                "entrypoint",
+                "workflow_id",
+                "agno_session_id",
+                "agno_run_id",
+                "thread_id",
+                "owner_user_id",
+                "database",
+                "company_id",
+                "revision",
+            )
         )
-        if row_values["entrypoint"] != "unknown":
-            identity_keys += ("entrypoint",)
         for key in identity_keys:
             if stored[key] != row_values[key]:
                 raise ReportingStateError(
