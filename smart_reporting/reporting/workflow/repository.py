@@ -233,9 +233,8 @@ class ReportingStateRepository:
         if row is None:
             raise ReportingStateError("report_run_registration_failed", "Reporting run 登记失败。")
         stored = dict(row._mapping)
-        for key in (
+        identity_keys = (
             "external_run_id",
-            "entrypoint",
             "workflow_id",
             "agno_session_id",
             "agno_run_id",
@@ -244,7 +243,10 @@ class ReportingStateRepository:
             "database",
             "company_id",
             "revision",
-        ):
+        )
+        if row_values["entrypoint"] != "unknown":
+            identity_keys += ("entrypoint",)
+        for key in identity_keys:
             if stored[key] != row_values[key]:
                 raise ReportingStateError(
                     "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
