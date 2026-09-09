@@ -1,5 +1,6 @@
 """Reporting Workflow runtime public entrypoint."""
 
+from .code_generation import CodeGenerationResult, ReportingCodeGenerationRunner
 from .facade import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
@@ -48,4 +49,6 @@ __all__ = [
     "SectionWorkflowResult",
     "VisualizationSectionWorkflow",
     "VisualizationWorkflowResult",
+    "CodeGenerationResult",
+    "ReportingCodeGenerationRunner",
 ]

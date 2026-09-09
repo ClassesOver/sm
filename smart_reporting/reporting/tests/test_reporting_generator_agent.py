@@ -1,6 +1,9 @@
 from agno.models.openai import OpenAIChat
 
-from smart_reporting.reporting.agent import create_reporting_generator_agent
+from smart_reporting.reporting.agent import (
+    create_reporting_code_agent,
+    create_reporting_generator_agent,
+)
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import AnalysisEvidencePlan
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionDecisionOutput,
@@ -99,3 +102,23 @@ def test_reporting_evidence_generator_declares_mutually_exclusive_branches() -> 
         for instruction in agent.instructions
     )
     assert any("script 必须是完整" in instruction for instruction in agent.instructions)
+
+
+def test_reporting_code_agent_is_unstructured_and_has_no_history_or_tools() -> None:
+    agent = create_reporting_code_agent(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        name="reporting-code-agent",
+        role="签发分析脚本",
+        instructions=["只修改签发路径。"],
+    )
+
+    assert agent.output_schema is None
+    assert agent.parse_response is False
+    assert agent.structured_outputs is False
+    assert agent.use_json_mode is False
+    assert agent.tools == []
+    assert agent.retries == 0
+    assert agent.add_history_to_context is False
+    prompt = "\n".join(agent.instructions)
+    assert "普通文本不算成功" in prompt
+    assert "unified diff" in prompt

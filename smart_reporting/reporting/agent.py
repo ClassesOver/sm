@@ -3215,6 +3215,49 @@ def create_reporting_generator_agent(
     )
 
 
+def create_reporting_code_agent(
+    *, model: Any, name: str, role: str | None = None, instructions: Any = None
+) -> Agent:
+    """创建只用于签发 Python unified diff 的无结构化 Coding Agent。
+
+    Coding Agent 的源码和补丁都通过 Workflow 工具回执传递；普通文本永远不是成功结果。
+    """
+
+    base_instructions = [
+        "普通文本不算成功；Markdown、代码围栏或直接输出 Python 源码同样不算成功。",
+        "只能签发完整 Python 脚本对应的标准 unified diff，并通过唯一的 apply_analysis_patch 工具提交。",
+        "除 apply_analysis_patch 外不得调用任何工具；收到工具回执后立即结束。",
+    ]
+    if instructions:
+        if isinstance(instructions, str):
+            base_instructions.append(instructions)
+        else:
+            base_instructions.extend(str(item) for item in instructions)
+    return Agent(
+        id=name,
+        name=name,
+        role=role or "签发 Reporting Python 脚本的 unified diff。",
+        model=model,
+        instructions=base_instructions,
+        output_schema=None,
+        parse_response=False,
+        structured_outputs=False,
+        use_json_mode=False,
+        tools=[],
+        add_history_to_context=False,
+        num_history_runs=0,
+        store_history_messages=False,
+        read_chat_history=False,
+        read_tool_call_history=False,
+        enable_session_summaries=False,
+        add_session_summary_to_context=False,
+        retries=0,
+        exponential_backoff=False,
+        markdown=False,
+        telemetry=False,
+    )
+
+
 def create_report_agent(
     reporting_agent_template: Agent,
     controller: ReportWorkflowController,
