@@ -32,11 +32,6 @@ def analysis_patch_parameters() -> dict[str, Any]:
                 "minLength": 1,
                 "description": "标准 unified diff；路径必须使用 a/ 与 b/ 前缀。",
             },
-            "expected_sha256": {
-                "type": "object",
-                "description": "已有文件的基线 SHA-256 映射；新增文件不填写对应项。",
-                "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            },
         },
         "required": ["patch"],
         "additionalProperties": False,

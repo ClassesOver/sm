@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.tools import Toolkit
 
-from smart_reporting.reporting.tools.analysis_item import RuntimeAnalysisMixin
+from smart_reporting.reporting.tools.analysis_item import (
+    MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
+    MAX_VISUALIZATION_SCRIPT_BYTES,
+    RuntimeAnalysisMixin,
+)
 from smart_reporting.reporting.tools.base import ReportingToolkitBase
 from smart_reporting.reporting.tools.context import (
     ReportingFileRef,
@@ -322,3 +326,31 @@ async def test_production_port_rejects_missing_hash_target() -> None:
 
     with pytest.raises(ReportingWorkspaceError, match="missing.txt"):
         await port.hash_files(("inputs/missing.txt",))
+
+
+@pytest.mark.anyio
+async def test_analysis_python_source_gate_returns_uniform_shape_error() -> None:
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    invalid = "if True print('broken')\n"
+    with pytest.raises(Exception) as caught:
+        await harness._preflight_analysis_python_write(
+            scope=scope,
+            tool_name="apply_analysis_patch",
+            canonical={
+                "operations": [{"operation": "create", "path": "analysis/evidence/a1/supplement.py", "content": invalid}]
+            },
+        )
+    error = caught.value
+    assert error.code == "report_python_source_shape_invalid"
+    assert error.details == {
+        "path": "analysis/evidence/a1/supplement.py",
+        "size": len(invalid.encode()),
+        "lineCount": 1,
+        "maxLineLength": len(invalid.rstrip("\n")),
+    }

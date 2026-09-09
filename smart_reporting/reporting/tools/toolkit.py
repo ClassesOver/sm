@@ -282,9 +282,7 @@ class ReportingToolkit(
         for name, description, parameters, entrypoint in (
             (
                 "apply_analysis_patch",
-                "使用标准 unified diff 原子修改 analysis 文件；已有文件的当前 SHA-256 "
-                "通过 expected_sha256 映射提供，值必须是 64 位小写十六进制字符串；新增文件或不需要基线时省略，"
-                "禁止填写 true、false 或其他布尔值。",
+                "使用标准 unified diff 原子修改当前 Task 签发的 analysis 文件；已有文件的并发基线由工作区在提交锁内自动复核。",
                 analysis_patch_parameters,
                 self.apply_analysis_patch,
             ),

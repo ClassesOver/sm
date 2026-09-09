@@ -203,42 +203,26 @@ def _build_changes_from_originals(
 def _normalized_patch_inputs(
     service: WorkspaceService,
     patch: str,
-    expected_sha256: dict[str, str] | None,
 ) -> tuple[str, list[tuple[_PatchOperation, str]]]:
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
     paths = [
         (operation, service.normalize_path(operation.path, allow_root=False)[0])
         for operation in parse_unified_diff(normalized)
     ]
-    for operation, path in paths:
-        if operation.operation == "create" and expected_sha256 and path in expected_sha256:
-            raise WorkspaceError("新增文件不能提供已有文件的基线 SHA-256。")
     return normalized, paths
-
-
-def _validate_original_hash(
-    path: str,
-    current: str,
-    expected_sha256: dict[str, str] | None,
-) -> None:
-    digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
-    if expected_sha256 and expected_sha256.get(path) != digest:
-        raise WorkspaceError("文件内容已变化，请重新读取文件和哈希后再应用补丁。")
 
 
 def build_workspace_changes(
     service: WorkspaceService,
     thread: str,
     patch: str,
-    expected_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    normalized, paths = _normalized_patch_inputs(service, patch, expected_sha256)
+    normalized, paths = _normalized_patch_inputs(service, patch)
     originals: dict[str, str] = {}
     for operation, path in paths:
         if operation.operation == "create":
             continue
         current = service.read_text(thread, path)
-        _validate_original_hash(path, current, expected_sha256)
         originals[path] = current
     return _build_changes_from_originals(normalized, paths, originals)
 
@@ -247,14 +231,12 @@ async def abuild_workspace_changes(
     service: WorkspaceService,
     thread: str,
     patch: str,
-    expected_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    normalized, paths = _normalized_patch_inputs(service, patch, expected_sha256)
+    normalized, paths = _normalized_patch_inputs(service, patch)
     originals: dict[str, str] = {}
     for operation, path in paths:
         if operation.operation == "create":
             continue
         current = await service.aread_text(thread, path)
-        _validate_original_hash(path, current, expected_sha256)
         originals[path] = current
     return await asyncio.to_thread(_build_changes_from_originals, normalized, paths, originals)

@@ -11,6 +11,7 @@ from agno.run import RunContext
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tools.sections import RuntimeSectionsMixin
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
+from smart_reporting.reporting.tools.validation import analysis_patch_parameters
 from smart_reporting.task_execution import MAX_TOOL_OUTPUT_READ_BYTES
 
 
@@ -43,6 +44,22 @@ def test_render_report_section_is_bound_to_toolkit_instance() -> None:
     descriptor = inspect.getattr_static(RuntimeSectionsMixin, "render_report_section")
 
     assert not isinstance(descriptor, staticmethod)
+
+
+def test_analysis_patch_contract_is_patch_only() -> None:
+    schema = analysis_patch_parameters()
+    assert set(schema["properties"]) == {"patch"}
+    with pytest.raises(Exception):
+        from jsonschema import Draft202012Validator
+
+        Draft202012Validator(schema).validate(
+            {"patch": "--- /dev/null\n+++ b/analysis/new.py\n@@ -0,0 +1 @@\n+x\n", "expected_sha256": {}}
+        )
+
+
+def test_apply_analysis_patch_signature_hides_expected_sha256() -> None:
+    signature = inspect.signature(ReportingToolkit.apply_analysis_patch)
+    assert "expected_sha256" not in signature.parameters
 
 
 def test_signed_fact_page_preserves_structured_read_receipt() -> None:
