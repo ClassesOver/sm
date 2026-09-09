@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import sys
 import time
 from typing import Any, Literal, cast
@@ -77,8 +76,14 @@ from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer  # noqa: E402 - 同上
 from smart_reporting.reporting.tools.context import ReportingOutputPolicy  # noqa: E402 - 同上
-from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.mock_workspace import (  # noqa: E402 - 同上
+    MockReportingToolRuntime,
+    MockReportingWorkspace,
+)
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.workspace_port import (  # noqa: E402 - 同上
+    ReportingWorkspaceError,
+)
 from smart_reporting.reporting.structured_output import (  # noqa: E402 - 同上
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
     ReportingStructuredOutputExecutor,
@@ -117,8 +122,11 @@ from smart_reporting.reporting.workflow.runtime.visualization_section_workflow i
     VisualizationSectionWorkflow,
 )
 from smart_reporting.runtime.settings import AgentSettings  # noqa: E402 - 同上
-from smart_reporting.workspace import WorkspaceService  # noqa: E402 - 同上
-from smart_reporting.task_execution import TaskExecutionScope  # noqa: E402 - 同上
+from smart_reporting.workspace import WorkspaceError, WorkspaceService  # noqa: E402 - 同上
+from smart_reporting.task_execution import (  # noqa: E402 - 同上
+    TaskExecutionScope,
+    abuild_workspace_changes,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +168,20 @@ class ProbeToolProjection:
         self.batches.append(
             sorted(name for name in (_report_model_tool_name(tool) for tool in tools or ()) if name)
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbePatchWorkspace:
+    """把 probe 内存工作区投影为 patch candidate builder 所需的只读端口。"""
+
+    workspace: MockReportingWorkspace
+
+    @staticmethod
+    def normalize_path(path: str, *, allow_root: bool) -> tuple[str, str]:
+        return WorkspaceService.normalize_path(path, allow_root=allow_root)
+
+    async def aread_text(self, _thread: str, path: str) -> str:
+        return await self.workspace.read_text(path)
 
 
 class ProbeReportingPhaseOpenAIChat(ReportingPhaseOpenAIChat):
@@ -736,7 +758,6 @@ class ProbeRecorder:
     script_completed: bool = False
     script_executions: int = 0
     committed_script_path: str | None = None
-    committed_script_sha256: str | None = None
     tools: list[Function] = field(default_factory=list)
 
     async def prepare(self) -> None:
@@ -977,8 +998,27 @@ class ProbeRecorder:
                 response.update({"truncated": True, "handle": self.output_handle})
             return response
         if name == "apply_analysis_patch":
-            match = re.search(r"^\+\+\+ b/(.+)$", str(arguments["patch"]), re.MULTILINE)
-            path = match.group(1) if match is not None else "analysis/output/probe.py"
+            patch = arguments.get("patch")
+            if not isinstance(patch, str):
+                return self._reject("probe_patch_invalid", "patch 必须是标准 unified diff 字符串。")
+            try:
+                changes = await abuild_workspace_changes(
+                    _ProbePatchWorkspace(workspace), "probe", patch
+                )
+            except (WorkspaceError, ReportingWorkspaceError) as error:
+                return self._reject("probe_patch_invalid", str(error))
+            if len(changes) != 1:
+                return self._reject("probe_patch_invalid", "Coding Agent 每次只能修改一个脚本文件。")
+            change = changes[0]
+            operation = change.get("operation")
+            path = change.get("path")
+            content = change.get("content")
+            if (
+                operation not in {"create", "update"}
+                or not isinstance(path, str)
+                or not isinstance(content, str)
+            ):
+                return self._reject("probe_patch_invalid", "Coding Agent patch 必须创建或更新一个脚本。")
             if (
                 self.scenario is not None
                 and self.scenario.task_kind == "visualization_section"
@@ -990,15 +1030,21 @@ class ProbeRecorder:
                     details={"scriptPath": "analysis/output/outpatient_chart.py"},
                     required_actions=["只使用 apply_analysis_patch 写入 details.scriptPath。"],
                 )
-            overwrite = path == self.committed_script_path
-            identity = await workspace.write_text(
-                path,
-                "print('probe')\n",
-                overwrite=overwrite,
-                expected_sha256=self.committed_script_sha256 if overwrite else None,
-            )
+            overwrite = operation == "update"
+            try:
+                identity = await workspace.write_text(
+                    path,
+                    content,
+                    overwrite=overwrite,
+                    expected_sha256=(
+                        str(change["expected_sha256"])
+                        if overwrite and isinstance(change.get("expected_sha256"), str)
+                        else None
+                    ),
+                )
+            except ReportingWorkspaceError as error:
+                return self._reject("probe_patch_invalid", str(error))
             self.committed_script_path = identity.path
-            self.committed_script_sha256 = identity.sha256
             state = self.run_context.session_state if self.run_context is not None else None
             if isinstance(state, dict):
                 state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
@@ -1008,7 +1054,7 @@ class ProbeRecorder:
                 "artifacts": [
                     {
                         "path": identity.path,
-                        "size": len(b"print('probe')\n"),
+                        "size": identity.size,
                         "sha256": identity.sha256,
                     }
                 ],
@@ -1665,15 +1711,47 @@ async def _run_scenario(
     actual_completion = set(called_names) & completion_tools
     unexpected_tools = sorted(set(called_names) - set(expected_names))
     task_completed = error is None and called_names[-1:] == [scenario.completion_tool]
+    protocol_failures = list(recorder.failures)
+    if missing_tools:
+        protocol_failures.append(
+            {
+                "code": "probe_required_tools_missing",
+                "message": "场景缺少必要工具调用。",
+                "details": {"missingTools": missing_tools},
+            }
+        )
+    if actual_completion != expected_completion:
+        protocol_failures.append(
+            {
+                "code": "probe_completion_tool_mismatch",
+                "message": "场景终态工具不匹配。",
+                "details": {
+                    "expected": sorted(expected_completion),
+                    "actual": sorted(actual_completion),
+                },
+            }
+        )
+    if unexpected_tools:
+        protocol_failures.append(
+            {
+                "code": "probe_unexpected_tools",
+                "message": "场景调用了未签发工具。",
+                "details": {"unexpectedTools": unexpected_tools},
+            }
+        )
+    if projection.not_visible_calls:
+        protocol_failures.append(
+            {
+                "code": "probe_hidden_tool_called",
+                "message": "模型调用了当前投影不可见的工具。",
+                "details": {"calls": projection.not_visible_calls},
+            }
+        )
     protocol_compliant = (
         task_completed
-        and not missing_tools
-        and actual_completion == expected_completion
-        and not recorder.failures
-        and not unexpected_tools
-        and not projection.not_visible_calls
+        and not protocol_failures
     )
-    valid = task_completed
+    valid = task_completed and protocol_compliant
     if not valid and error is None:
         error = (
             "cli_task_contract_failed: "
@@ -1693,7 +1771,7 @@ async def _run_scenario(
         "unexpected_tools": unexpected_tools,
         "visible_tool_batches": projection.batches,
         "not_visible_calls": projection.not_visible_calls,
-        "protocol_failures": recorder.failures,
+        "protocol_failures": protocol_failures,
         "task_completed": task_completed,
         "protocol_compliant": protocol_compliant,
         "calls": recorder.calls,
@@ -1751,7 +1829,11 @@ async def _run(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
-    return 0 if valid_count == len(results) else 1
+    return (
+        0
+        if valid_count == len(results) and protocol_compliant_count == len(results)
+        else 1
+    )
 
 
 def main() -> None:

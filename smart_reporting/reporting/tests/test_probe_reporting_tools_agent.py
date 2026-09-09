@@ -50,7 +50,7 @@ def _chart_patch() -> dict[str, str]:
     return {
         "patch": (
             "--- /dev/null\n+++ b/analysis/output/outpatient_chart.py\n"
-            "@@ -0,0 +1 @@\n+print('chart')"
+            "@@ -0,0 +1 @@\n+print('chart')\n"
         )
     }
 
@@ -70,9 +70,22 @@ class _OfflineCodeAgent:
             f"--- {'a/' + path if repair else '/dev/null'}\n"
             f"+++ b/{path}\n"
             f"@@ {'-1 +1' if repair else '-0,0 +1'} @@\n"
-            + ("-print('probe')\n+print('repaired')" if repair else "+print('probe')")
+            + (
+                "-print('probe')\n+print('repaired')\n"
+                if repair
+                else "+print('probe')\n"
+            )
         )
         return await tool.entrypoint(patch=patch)
+
+
+class _InvalidCodeAgent:
+    def __init__(self, output: object) -> None:
+        self.output = output
+        self.tools: list[object] = []
+
+    async def arun(self, _prompt: str, **_kwargs: object) -> object:
+        return self.output
 
 
 class _OfflineStructuredExecutor:
@@ -289,7 +302,7 @@ async def test_probe_recovery_requires_script_repair(scenario_name: str) -> None
     patch = (
         "--- /dev/null\n"
         f"+++ b/{'analysis/output/supplement.py' if scenario.task_kind == 'analysis_item' else 'analysis/output/outpatient_chart.py'}\n"
-        "@@ -0,0 +1 @@\n+print('probe')"
+        "@@ -0,0 +1 @@\n+print('probe')\n"
     )
     await recorder.invoke("apply_analysis_patch", {"patch": patch})
 
@@ -362,6 +375,92 @@ async def test_probe_fixed_workflow_owns_recovery_after_coding_agent_stops(
     assert names[-1] == scenario.completion_tool
     if scenario.task_kind == "visualization_section":
         assert names[-2:] == ["inspect_chart", "submit_visualization_charts"]
+
+    content = await recorder.runtime.workspace.read_text(recorder.committed_script_path)
+    assert content == "print('repaired')\n"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("model_output", ["处理完成。", "print('direct python')", None])
+async def test_probe_rejects_non_patch_coding_output_after_workflow_soft_fallback(
+    monkeypatch: pytest.MonkeyPatch, model_output: object
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
+    monkeypatch.setattr(
+        probe_module,
+        "_build_model",
+        lambda *_args, **_kwargs: SimpleNamespace(id="test"),
+    )
+    monkeypatch.setattr(probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor)
+    monkeypatch.setattr(
+        probe_module,
+        "create_reporting_generator_agent",
+        lambda **kwargs: SimpleNamespace(output_schema=kwargs["output_schema"]),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "create_reporting_code_agent",
+        lambda **_kwargs: _InvalidCodeAgent(model_output),
+    )
+
+    result = await _run_scenario(
+        _settings(),
+        scenario,
+        model_tier="fast",
+        thinking=False,
+        timeout_seconds=5,
+    )
+
+    assert result["task_completed"] is True
+    assert result["protocol_compliant"] is False
+    assert result["valid"] is False
+    assert {"apply_analysis_patch", "run_python_script"}.issubset(result["missing_tools"])
+    assert any(
+        failure["code"] == "probe_required_tools_missing"
+        for failure in result["protocol_failures"]
+    )
+
+
+@pytest.mark.anyio
+async def test_probe_run_returns_nonzero_for_completed_noncompliant_result(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scenario = probe_scenarios()[0]
+
+    async def noncompliant_result(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "valid": True,
+            "protocol_compliant": False,
+            "task_completed": True,
+            "expected_tools": [],
+            "calls": [],
+        }
+
+    monkeypatch.setattr(probe_module, "probe_scenarios", lambda: (scenario,))
+    monkeypatch.setattr(
+        probe_module.AgentSettings,
+        "from_environment",
+        lambda: SimpleNamespace(model_fast_id="test", model_standard_id="test"),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_run_scenario",
+        noncompliant_result,
+    )
+
+    exit_code = await probe_module._run(
+        SimpleNamespace(
+            env_file=".env",
+            runs=1,
+            model_tier="fast",
+            thinking=False,
+            task_timeout=5,
+            progress_file=None,
+        )
+    )
+
+    assert exit_code == 1
+    assert json.loads(capsys.readouterr().out)["protocol_compliant_count"] == 0
 
 
 @pytest.mark.anyio
@@ -481,6 +580,60 @@ async def test_probe_tools_use_mock_workspace_for_file_and_command_calls() -> No
 
 
 @pytest.mark.anyio
+async def test_probe_applies_valid_unified_diff_content() -> None:
+    runtime = _runtime()
+    recorder = ProbeRecorder(runtime)
+
+    result = await recorder.invoke("apply_analysis_patch", _chart_patch())
+
+    assert result["ok"] is True
+    assert await runtime.workspace.read_text("analysis/output/outpatient_chart.py") == (
+        "print('chart')\n"
+    )
+    assert result["artifacts"][0]["size"] == len(b"print('chart')\n")
+
+
+@pytest.mark.anyio
+async def test_probe_rejects_invalid_unified_diff_without_writing() -> None:
+    runtime = _runtime()
+    recorder = ProbeRecorder(runtime)
+
+    result = await recorder.invoke(
+        "apply_analysis_patch", {"patch": "print('direct python')"}
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "probe_patch_invalid"
+    assert runtime.calls == []
+
+
+@pytest.mark.anyio
+async def test_probe_rejects_update_with_wrong_original_content() -> None:
+    runtime = _runtime()
+    recorder = ProbeRecorder(runtime)
+    await recorder.invoke("apply_analysis_patch", _chart_patch())
+
+    result = await recorder.invoke(
+        "apply_analysis_patch",
+        {
+            "patch": (
+                "--- a/analysis/output/outpatient_chart.py\n"
+                "+++ b/analysis/output/outpatient_chart.py\n"
+                "@@ -1 +1 @@\n"
+                "-print('wrong')\n"
+                "+print('repaired')\n"
+            )
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "probe_patch_invalid"
+    assert await runtime.workspace.read_text("analysis/output/outpatient_chart.py") == (
+        "print('chart')\n"
+    )
+
+
+@pytest.mark.anyio
 async def test_probe_rejects_section_read_of_unissued_dataset_input() -> None:
     scenario = next(item for item in probe_scenarios() if item.name == "section-evidence-rework")
     runtime = MockReportingToolRuntime(
@@ -537,7 +690,7 @@ async def test_probe_rejects_runner_path_other_than_committed_script() -> None:
         {
             "patch": (
                 "--- /dev/null\n+++ b/analysis/output/outpatient_chart.py\n"
-                "@@ -0,0 +1 @@\n+print('chart')"
+                "@@ -0,0 +1 @@\n+print('chart')\n"
             )
         },
     )
@@ -566,7 +719,8 @@ async def test_probe_rejects_analysis_runner_path_outside_signed_supplement() ->
         "apply_analysis_patch",
         {
             "patch": (
-                "--- /dev/null\n+++ b/analysis/output/other.py\n@@ -0,0 +1 @@\n+print('analysis')"
+                "--- /dev/null\n+++ b/analysis/output/other.py\n"
+                "@@ -0,0 +1 @@\n+print('analysis')\n"
             )
         },
     )
