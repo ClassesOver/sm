@@ -949,6 +949,28 @@ class ReportingStateRepository:
     def _workflow_execution_lock_key(external_run_id: str) -> str:
         return f"reporting-workflow-execution:{external_run_id}"
 
+    @asynccontextmanager
+    async def workflow_thread_lifecycle_lock(self, thread_id: str) -> AsyncIterator[None]:
+        """串行化同一 thread 的 workspace 清理与 owner 交接。"""
+
+        engine = self.db.db_engine  # type: ignore[attr-defined]
+        lock_key = f"reporting-workflow-thread-lifecycle:{thread_id}"
+        async with engine.connect() as connection:
+            await connection.execute(
+                text("SELECT pg_advisory_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": lock_key},
+            )
+            await connection.commit()
+            try:
+                yield
+            finally:
+                with anyio.CancelScope(shield=True):
+                    await connection.execute(
+                        text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+                        {"lock_key": lock_key},
+                    )
+                    await connection.commit()
+
     async def is_workflow_run_active(self, external_run_id: str) -> bool:
         """探测旧 run 是否仍被其他进程推进，供 thread owner 恢复使用。"""
 

@@ -1519,6 +1519,19 @@ async def test_repository_rejects_concurrent_workflow_execution_lock(state_repos
 
 @pytest.mark.anyio
 @pytest.mark.integration
+async def test_repository_serializes_same_thread_lifecycle_lock(state_repository) -> None:
+    async with state_repository.workflow_thread_lifecycle_lock("thread-1"):
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                async with state_repository.workflow_thread_lifecycle_lock("thread-1"):
+                    pass
+
+    async with state_repository.workflow_thread_lifecycle_lock("thread-1"):
+        pass
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_persists_workflow_thread_owner_across_instances(
     state_repository,
 ) -> None:

@@ -69,6 +69,8 @@ class _ThreadOwnership:
         self.parent_runs: dict[str, dict[str, object]] = {}
         self.lock = asyncio.Lock()
         self.execution_locks: dict[str, asyncio.Lock] = {}
+        self.thread_lifecycle_locks: dict[str, asyncio.Lock] = {}
+        self.thread_lifecycle_waiting = asyncio.Event()
 
     async def register_run(self, **values: object) -> dict[str, object]:
         self.run_registrations.append(dict(values))
@@ -119,6 +121,19 @@ class _ThreadOwnership:
                 yield
             finally:
                 lock.release()
+
+        return locked()
+
+    def workflow_thread_lifecycle_lock(self, thread_id: str):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def locked():
+            lock = self.thread_lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+            if lock.locked():
+                self.thread_lifecycle_waiting.set()
+            async with lock:
+                yield
 
         return locked()
 
@@ -1569,6 +1584,83 @@ async def test_concurrent_external_terminal_gets_cleanup_once() -> None:
 
     assert (await first)["status"] == second["status"] == "failed"
     assert cleanup_calls == 1
+
+
+@pytest.mark.anyio
+async def test_terminal_cleanup_finishes_before_new_run_claims_same_thread() -> None:
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    destroyed_owner: list[tuple[str, str] | None] = []
+    parent = _parent_run()
+    old_run_id = str(parent["report_run_id"])
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, run_id: str, **_kwargs):
+            if run_id != old_run_id:
+                return None
+            return SimpleNamespace(
+                status=RunStatus.error,
+                user_id="user",
+                metadata={
+                    "mcpRequestFingerprint": "a" * 64,
+                    "mcpDatabase": "odoo",
+                    "mcpCompanyId": "11",
+                    "mcpThreadId": "thread",
+                },
+                content=None,
+            )
+
+    async def old_cleanup(*_args, **_kwargs) -> None:
+        cleanup_started.set()
+        await release_cleanup.wait()
+        destroyed_owner.append(ownership.owners.get("thread"))
+
+    ownership = _ThreadOwnership()
+    ownership.parent_runs["external-run"] = parent
+    ownership.owners["thread"] = ("external-run", "user")
+    ownership.owner_report_run_ids["thread"] = old_run_id
+    ownership.is_workflow_run_active = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    old_controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=old_cleanup
+    )
+    new_controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=ownership, terminal_cleanup=AsyncMock()
+    )
+
+    old_get = asyncio.create_task(
+        old_controller.get_external(
+            external_run_id="external-run",
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+    )
+    await cleanup_started.wait()
+    new_reserve = asyncio.create_task(
+        new_controller.reserve_external_request(
+            external_run_id="new-run",
+            request_fingerprint="b" * 64,
+            thread_id="thread",
+            user_id="user",
+            database="odoo",
+            company_id="11",
+        )
+    )
+    lifecycle_waiter = asyncio.create_task(ownership.thread_lifecycle_waiting.wait())
+    await asyncio.wait({new_reserve, lifecycle_waiter}, return_when=asyncio.FIRST_COMPLETED)
+    release_cleanup.set()
+
+    old_result, reserved = await asyncio.gather(old_get, new_reserve)
+    if not lifecycle_waiter.done():
+        lifecycle_waiter.cancel()
+
+    assert old_result["status"] == "failed"
+    assert reserved is False
+    assert destroyed_owner == [("external-run", "user")]
+    assert ownership.owners == {"thread": ("new-run", "user")}
 
 
 @pytest.mark.anyio

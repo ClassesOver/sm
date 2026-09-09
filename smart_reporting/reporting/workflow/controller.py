@@ -132,6 +132,8 @@ class WorkflowThreadOwnership(Protocol):
 
     def workflow_execution_lock(self, external_run_id: str) -> Any: ...
 
+    def workflow_thread_lifecycle_lock(self, thread_id: str) -> Any: ...
+
     async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None: ...
 
     async def is_workflow_run_active(self, external_run_id: str) -> bool: ...
@@ -253,41 +255,42 @@ class ReportWorkflowController:
                     )
                 self._external_request_fingerprints[external_run_id] = request_fingerprint
                 return True
-            claimed = await self._thread_ownership.claim_workflow_thread(
-                thread_id=thread_id,
-                external_run_id=external_run_id,
-                owner_user_id=user_id,
-            )
-            if not claimed:
-                owner = await self._get_thread_owner(thread_id)
-                if owner is None:
-                    raise ReportingError(
-                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
-                    )
-                same_run = (
-                    str(owner.get("external_run_id")),
-                    str(owner.get("owner_user_id")),
-                ) == (external_run_id, user_id)
-                owner_active = (
-                    False
-                    if same_run and run_lock_held
-                    else await self._owner_run_active(str(owner.get("external_run_id") or ""))
-                )
-                if owner_active:
-                    raise ReportingError(
-                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
-                    )
-                owner_output = await self._load_owner_output(owner)
-                if not await self._reclaim_inactive_owner(
-                    owner, owner_output, same_run=same_run
-                ) or not await self._thread_ownership.claim_workflow_thread(
+            async with self._thread_lifecycle_lock(thread_id):
+                claimed = await self._thread_ownership.claim_workflow_thread(
                     thread_id=thread_id,
                     external_run_id=external_run_id,
                     owner_user_id=user_id,
-                ):
-                    raise ReportingError(
-                        "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                )
+                if not claimed:
+                    owner = await self._get_thread_owner(thread_id)
+                    if owner is None:
+                        raise ReportingError(
+                            "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                        )
+                    same_run = (
+                        str(owner.get("external_run_id")),
+                        str(owner.get("owner_user_id")),
+                    ) == (external_run_id, user_id)
+                    owner_active = (
+                        False
+                        if same_run and run_lock_held
+                        else await self._owner_run_active(str(owner.get("external_run_id") or ""))
                     )
+                    if owner_active:
+                        raise ReportingError(
+                            "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                        )
+                    owner_output = await self._load_owner_output(owner)
+                    if not await self._reclaim_inactive_owner(
+                        owner, owner_output, same_run=same_run
+                    ) or not await self._thread_ownership.claim_workflow_thread(
+                        thread_id=thread_id,
+                        external_run_id=external_run_id,
+                        owner_user_id=user_id,
+                    ):
+                        raise ReportingError(
+                            "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                        )
             self._external_request_fingerprints[external_run_id] = request_fingerprint
             self._background_scopes[external_run_id] = (
                 thread_id,
@@ -309,10 +312,12 @@ class ReportWorkflowController:
                     self._background_scopes.pop(external_run_id, None)
         if scope is not None:
             thread_id, user_id, _database, _company_id = scope
-            await self._thread_ownership.release_workflow_thread(
-                thread_id=thread_id,
-                external_run_id=external_run_id,
-                owner_user_id=user_id,
+            await self._release_thread(
+                {
+                    "thread_id": thread_id,
+                    "external_run_id": external_run_id,
+                    "user_id": user_id,
+                }
             )
 
     async def start_external_background(
@@ -470,31 +475,45 @@ class ReportWorkflowController:
         except BaseException as error:
             cleanup_error: BaseException | None = None
             cleanup_deferred = False
-            if inputs_prepared and not workflow_started and prepared_input_cleanup is not None:
-                try:
-                    await prepared_input_cleanup()
-                except BaseException as failure:
-                    cleanup_error = failure
-            needs_workspace_recovery = cleanup_error is not None or self._contains_error_code(
+            cleanup_prepared_input = (
+                inputs_prepared and not workflow_started and prepared_input_cleanup is not None
+            )
+            attachment_cleanup_failed = self._contains_error_code(
                 error, "report_attachment_cleanup_failed"
             )
-            if needs_workspace_recovery:
-                if self._terminal_cleanup is None:
-                    if not ready.done():
-                        ready.set_exception(error)
-                    raise error from cleanup_error
-                workflow_session_id, workflow_run_id = self._workflow_ids(scope)
-                try:
-                    # operation 目录删除失败后，只有完整 workspace 已销毁或成功隔离，
-                    # 才能释放 thread owner；否则下一次运行会重新接触残留附件。
-                    cleaned = await self._cleanup_terminal_allowing_deferred(
-                        scope, workflow_session_id, workflow_run_id
+            if cleanup_prepared_input or attachment_cleanup_failed:
+                async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
+                    owner = await self._get_thread_owner(self._thread_scope_key(scope))
+                    owner_matches = owner is None or (
+                        str(owner.get("external_run_id") or "") == scope["external_run_id"]
+                        and str(owner.get("owner_user_id") or "") == scope["user_id"]
                     )
-                    cleanup_deferred = not cleaned
-                except BaseException as finalization_error:
-                    if not ready.done():
-                        ready.set_exception(error)
-                    raise error from finalization_error
+                    if owner_matches and cleanup_prepared_input:
+                        assert prepared_input_cleanup is not None
+                        try:
+                            await prepared_input_cleanup()
+                        except BaseException as failure:
+                            cleanup_error = failure
+                    needs_workspace_recovery = (
+                        cleanup_error is not None or attachment_cleanup_failed
+                    )
+                    if owner_matches and needs_workspace_recovery:
+                        if self._terminal_cleanup is None:
+                            if not ready.done():
+                                ready.set_exception(error)
+                            raise error from cleanup_error
+                        workflow_session_id, workflow_run_id = self._workflow_ids(scope)
+                        try:
+                            # operation 目录删除失败后，只有完整 workspace 已销毁或成功隔离，
+                            # 才能释放 thread owner；否则下一次运行会重新接触残留附件。
+                            cleaned = await self._cleanup_terminal_allowing_deferred(
+                                scope, workflow_session_id, workflow_run_id
+                            )
+                            cleanup_deferred = not cleaned
+                        except BaseException as finalization_error:
+                            if not ready.done():
+                                ready.set_exception(error)
+                            raise error from finalization_error
             parent_pending = await self._parent_pending_control(scope)
             if cleanup_deferred or parent_pending is not None:
                 self._background_cleanup_deferred.add(scope["external_run_id"])
@@ -1050,21 +1069,22 @@ class ReportWorkflowController:
                 # arun 是同步等待的；拿到执行锁后仍读到 running，只能是进程崩溃或
                 # 旧版本留下的半成品。继续返回 running 会让同一个请求永久卡住，必须
                 # 在当前 owner 身份一致时清理后按确定性 run_id 重新执行。
-                owner = await self._get_thread_owner(scope["thread_id"])
-                owner_matches = owner is None or (
-                    str(owner.get("external_run_id")) == scope["external_run_id"]
-                    and str(owner.get("owner_user_id")) == scope["user_id"]
-                )
-                if owner_matches:
-                    await self._cleanup_terminal_allowing_deferred(
-                        scope, workflow_session_id, workflow_run_id
+                async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
+                    owner = await self._get_thread_owner(scope["thread_id"])
+                    owner_matches = owner is None or (
+                        str(owner.get("external_run_id")) == scope["external_run_id"]
+                        and str(owner.get("owner_user_id")) == scope["user_id"]
                     )
-                    await self._release_thread(scope)
-                    persisted_output = None
-                else:
-                    # 另一个 run 占用同一 thread 时，不能清理其 sandbox；交给下面的
-                    # thread claim 路径返回明确冲突。
-                    persisted_output = None
+                    if owner_matches:
+                        await self._cleanup_terminal_allowing_deferred(
+                            scope, workflow_session_id, workflow_run_id
+                        )
+                        await self._release_thread_locked(scope)
+                        persisted_output = None
+                    else:
+                        # 另一个 run 占用同一 thread 时，不能清理其 sandbox；交给下面的
+                        # thread claim 路径返回明确冲突。
+                        persisted_output = None
             if persisted_output is not None:
                 state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
                 if control.status in _ACTIVE_STATUSES:
@@ -1348,48 +1368,48 @@ class ReportWorkflowController:
         # completed 的发布步骤已经在产物持久化后删除 sandbox；这里只覆盖没有发布
         # 收尾机会的取消和失败终态，避免成功路径二次清理反而遮蔽下载回执。
         if control.status in {"cancelled", "failed"}:
-            parent = await self._terminal_cleanup_parent(control, scope)
-            if parent is None:
-                return
-            parent_status = str(parent.get("status") or "")
-            if parent_status == control.status and not bool(
-                parent.get("finalization_pending")
-            ):
-                await self._release_thread(scope)
-                return
-            if parent_status not in {*_ACTIVE_STATUSES, control.status}:
-                return
-            if parent_status in _ACTIVE_STATUSES:
-                await self._update_reporting_run_status(
-                    control.workflow_run_id,
-                    status=control.status,
-                    finalization_pending=True,
-                )
+            async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
                 parent = await self._terminal_cleanup_parent(control, scope)
                 if parent is None:
                     return
-            if (
-                str(parent.get("status") or "") != control.status
-                or not bool(parent.get("finalization_pending"))
-            ):
-                return
-            pending = control.model_copy(update={"finalization_pending": True})
-            if state is not None:
-                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.public_dict()
-            cleaned = await self._cleanup_terminal_allowing_deferred(
-                scope, control.workflow_session_id, control.workflow_run_id
-            )
-            if not cleaned:
-                return
-            await self._update_reporting_run_status(
-                control.workflow_run_id,
-                status=control.status,
-                finalization_pending=False,
-            )
-            if state is not None:
-                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.model_copy(
-                    update={"finalization_pending": None}
-                ).public_dict()
+                parent_status = str(parent.get("status") or "")
+                if parent_status == control.status and not bool(parent.get("finalization_pending")):
+                    await self._release_thread_locked(scope)
+                    return
+                if parent_status not in {*_ACTIVE_STATUSES, control.status}:
+                    return
+                if parent_status in _ACTIVE_STATUSES:
+                    await self._update_reporting_run_status(
+                        control.workflow_run_id,
+                        status=control.status,
+                        finalization_pending=True,
+                    )
+                    parent = await self._terminal_cleanup_parent(control, scope)
+                    if parent is None:
+                        return
+                if str(parent.get("status") or "") != control.status or not bool(
+                    parent.get("finalization_pending")
+                ):
+                    return
+                pending = control.model_copy(update={"finalization_pending": True})
+                if state is not None:
+                    state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.public_dict()
+                cleaned = await self._cleanup_terminal_allowing_deferred(
+                    scope, control.workflow_session_id, control.workflow_run_id
+                )
+                if not cleaned:
+                    return
+                await self._update_reporting_run_status(
+                    control.workflow_run_id,
+                    status=control.status,
+                    finalization_pending=False,
+                )
+                if state is not None:
+                    state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.model_copy(
+                        update={"finalization_pending": None}
+                    ).public_dict()
+                await self._release_thread_locked(scope)
+            return
         else:
             await self._update_reporting_run_status(
                 control.workflow_run_id,
@@ -1451,41 +1471,42 @@ class ReportWorkflowController:
             status=terminal_status,
         )
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = terminal.public_dict()
-        if await self._terminal_cleanup_parent(terminal, scope) is None:
-            return
-        pending = terminal.model_copy(update={"finalization_pending": True})
-        state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.public_dict()
-        await self._update_reporting_run_status(
-            workflow_run_id,
-            status=terminal_status,
-            finalization_pending=True,
-        )
-        parent = await self._terminal_cleanup_parent(terminal, scope)
-        if (
-            parent is None
-            or str(parent.get("status") or "") != terminal_status
-            or not bool(parent.get("finalization_pending"))
-        ):
-            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = terminal.public_dict()
-            return
-        try:
-            cleaned = await self._cleanup_terminal_allowing_deferred(
-                scope, workflow_session_id, workflow_run_id
+        async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
+            if await self._terminal_cleanup_parent(terminal, scope) is None:
+                return
+            pending = terminal.model_copy(update={"finalization_pending": True})
+            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.public_dict()
+            await self._update_reporting_run_status(
+                workflow_run_id,
+                status=terminal_status,
+                finalization_pending=True,
             )
-            if cleaned:
-                await self._update_reporting_run_status(
-                    workflow_run_id,
-                    status=terminal_status,
-                    finalization_pending=False,
+            parent = await self._terminal_cleanup_parent(terminal, scope)
+            if (
+                parent is None
+                or str(parent.get("status") or "") != terminal_status
+                or not bool(parent.get("finalization_pending"))
+            ):
+                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = terminal.public_dict()
+                return
+            try:
+                cleaned = await self._cleanup_terminal_allowing_deferred(
+                    scope, workflow_session_id, workflow_run_id
                 )
-                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.model_copy(
-                    update={"finalization_pending": None}
-                ).public_dict()
-                await self._release_thread(scope)
-        except BaseException as finalization_error:
-            # Agno 尚未返回可投影的 RunResponse，但持久化 owner 已占用成功。补偿失败
-            # 必须保留最小终态控制面，同时继续抛出原始运行异常，避免遮蔽主失败。
-            raise run_error from finalization_error
+                if cleaned:
+                    await self._update_reporting_run_status(
+                        workflow_run_id,
+                        status=terminal_status,
+                        finalization_pending=False,
+                    )
+                    state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = pending.model_copy(
+                        update={"finalization_pending": None}
+                    ).public_dict()
+                    await self._release_thread_locked(scope)
+            except BaseException as finalization_error:
+                # Agno 尚未返回可投影的 RunResponse，但持久化 owner 已占用成功。补偿失败
+                # 必须保留最小终态控制面，同时继续抛出原始运行异常，避免遮蔽主失败。
+                raise run_error from finalization_error
 
     async def _update_reporting_run_status(
         self,
@@ -1708,55 +1729,62 @@ class ReportWorkflowController:
 
         deadline = asyncio.get_running_loop().time() + _THREAD_CLAIM_WAIT_SECONDS
         while True:
-            if await self._thread_ownership.claim_workflow_thread(
-                thread_id=self._thread_scope_key(scope),
-                external_run_id=scope["external_run_id"],
-                owner_user_id=scope["user_id"],
-            ):
-                logger.debug(
-                    "report_workflow_owner_claimed external_run_id={} thread_id={}",
-                    scope["external_run_id"],
-                    scope["thread_id"],
-                )
-                return None
-            owner = await self._get_thread_owner(scope["thread_id"])
-            if owner is not None:
-                same_run = (
-                    owner["external_run_id"],
-                    owner["owner_user_id"],
-                ) == (scope["external_run_id"], scope["user_id"])
-                if not same_run and await self._owner_run_active(owner["external_run_id"]):
+            owner: dict[str, Any] | None = None
+            async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
+                if await self._thread_ownership.claim_workflow_thread(
+                    thread_id=self._thread_scope_key(scope),
+                    external_run_id=scope["external_run_id"],
+                    owner_user_id=scope["user_id"],
+                ):
                     logger.debug(
-                        "report_workflow_owner_active old_external_run_id={} "
-                        "new_external_run_id={} thread_id={}",
-                        owner.get("external_run_id"),
+                        "report_workflow_owner_claimed external_run_id={} thread_id={}",
                         scope["external_run_id"],
                         scope["thread_id"],
                     )
-                    output = None
-                else:
-                    output = await self._load_owner_output(owner)
-                if same_run and output is not None:
-                    return output
-                if await self._reclaim_inactive_owner(owner, output, same_run=same_run):
-                    logger.warning(
-                        "report_workflow_owner_reclaimed old_external_run_id={} "
-                        "new_external_run_id={} thread_id={} same_run={}",
-                        owner.get("external_run_id"),
-                        scope["external_run_id"],
-                        scope["thread_id"],
-                        same_run,
-                    )
-                    continue
-                if same_run:
-                    logger.warning(
-                        "report_workflow_same_run_conflict external_run_id={} thread_id={}",
-                        scope["external_run_id"],
-                        scope["thread_id"],
-                    )
-                    raise ReportingError(
-                        "report_workflow_run_conflict", "同一报表请求正在启动，请稍后重试。"
-                    )
+                    return None
+                owner = await self._get_thread_owner(scope["thread_id"])
+                if owner is not None:
+                    same_run = (
+                        owner["external_run_id"],
+                        owner["owner_user_id"],
+                    ) == (scope["external_run_id"], scope["user_id"])
+                    if not same_run and await self._owner_run_active(owner["external_run_id"]):
+                        logger.debug(
+                            "report_workflow_owner_active old_external_run_id={} "
+                            "new_external_run_id={} thread_id={}",
+                            owner.get("external_run_id"),
+                            scope["external_run_id"],
+                            scope["thread_id"],
+                        )
+                        output = None
+                    else:
+                        output = await self._load_owner_output(owner)
+                    if same_run and output is not None:
+                        return output
+                    if await self._reclaim_inactive_owner(owner, output, same_run=same_run):
+                        logger.warning(
+                            "report_workflow_owner_reclaimed old_external_run_id={} "
+                            "new_external_run_id={} thread_id={} same_run={}",
+                            owner.get("external_run_id"),
+                            scope["external_run_id"],
+                            scope["thread_id"],
+                            same_run,
+                        )
+                        if await self._thread_ownership.claim_workflow_thread(
+                            thread_id=self._thread_scope_key(scope),
+                            external_run_id=scope["external_run_id"],
+                            owner_user_id=scope["user_id"],
+                        ):
+                            return None
+                    if same_run:
+                        logger.warning(
+                            "report_workflow_same_run_conflict external_run_id={} thread_id={}",
+                            scope["external_run_id"],
+                            scope["thread_id"],
+                        )
+                        raise ReportingError(
+                            "report_workflow_run_conflict", "同一报表请求正在启动，请稍后重试。"
+                        )
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 logger.warning(
@@ -1852,19 +1880,39 @@ class ReportWorkflowController:
             ) from error
 
     async def _ensure_thread_owner(self, scope: dict[str, str]) -> None:
-        if not await self._thread_ownership.ensure_workflow_thread_owner(
-            thread_id=self._thread_scope_key(scope),
-            external_run_id=scope["external_run_id"],
-            owner_user_id=scope["user_id"],
-        ):
+        async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
+            owned = await self._thread_ownership.ensure_workflow_thread_owner(
+                thread_id=self._thread_scope_key(scope),
+                external_run_id=scope["external_run_id"],
+                owner_user_id=scope["user_id"],
+            )
+        if not owned:
             raise ReportingError("report_workflow_active", "当前 thread 已有未完成的报表工作流。")
 
     async def _release_thread(self, scope: dict[str, str]) -> None:
+        async with self._thread_lifecycle_lock(self._thread_scope_key(scope)):
+            await self._release_thread_locked(scope)
+
+    async def _release_thread_locked(self, scope: dict[str, str]) -> None:
         await self._thread_ownership.release_workflow_thread(
             thread_id=self._thread_scope_key(scope),
             external_run_id=scope["external_run_id"],
             owner_user_id=scope["user_id"],
         )
+
+    @asynccontextmanager
+    async def _thread_lifecycle_lock(self, thread_id: str) -> Any:
+        lock = getattr(self._thread_ownership, "workflow_thread_lifecycle_lock", None)
+        if not callable(lock):
+            raise ReportingError(
+                "report_workflow_runtime_invalid",
+                "Reporting runtime 缺少 workflow thread 生命周期锁。",
+            )
+        try:
+            async with lock(thread_id):
+                yield
+        except ReportingStateError as error:
+            raise ReportingError(error.code, error.message) from error
 
     @asynccontextmanager
     async def _execution_lock(self, external_run_id: str) -> Any:
