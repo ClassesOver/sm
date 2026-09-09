@@ -15,8 +15,9 @@ from uuid import uuid4
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
 from agno.exceptions import AgentRunException, StopAgentRun
+from agno.models.base import Model
 from agno.models.message import Message
-from agno.models.openai import OpenAIChat
+from agno.models.openai import OpenAIChat, OpenAIResponses
 from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
@@ -2577,13 +2578,17 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
             yield response
 
 
-class ReportingCodeOpenAIChat(ReportingPhaseOpenAIChat):
-    """仅为 Coding Agent 桥接 OpenAI-compatible custom text tool。"""
+class ReportingCodeOpenAIResponses(OpenAIResponses):
+    """仅为 Coding Agent 桥接 Responses API custom text tool。"""
 
     _report_code_custom_tool_active = False
 
-    def _format_tools(self, tools: Any) -> list[dict[str, Any]]:
-        formatted_tools = super()._format_tools(tools)
+    def _format_tool_params(
+        self,
+        messages: list[Message],
+        tools: Any = None,
+    ) -> list[dict[str, Any]]:
+        formatted_tools = super()._format_tool_params(messages, tools)
         custom_tools = [
             tool
             for tool in formatted_tools
@@ -2598,7 +2603,7 @@ class ReportingCodeOpenAIChat(ReportingPhaseOpenAIChat):
             self._report_code_custom_tool_active = False
             return formatted_tools
 
-        function = custom_tools[0].get("function")
+        function = custom_tools[0]
         description = (
             function.get("description")
             if isinstance(function, Mapping) and isinstance(function.get("description"), str)
@@ -2608,70 +2613,186 @@ class ReportingCodeOpenAIChat(ReportingPhaseOpenAIChat):
         return [
             {
                 "type": "custom",
-                "custom": {
-                    "name": _REPORT_CODE_SOURCE_TOOL_NAME,
-                    "description": description,
-                    "format": {"type": "text"},
-                },
+                "name": _REPORT_CODE_SOURCE_TOOL_NAME,
+                "description": description,
+                "format": {"type": "text"},
             }
         ]
 
     def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         params = super().get_request_params(*args, **kwargs)
-        if self._report_code_custom_tool_active:
-            params["tool_choice"] = {
-                "type": "custom",
-                "custom": {"name": _REPORT_CODE_SOURCE_TOOL_NAME},
-            }
+        # DashScope thinking 模式拒绝 required/object tool_choice，且只接受
+        # extra_body 中的 enable_thinking/thinking_budget。
+        params["tool_choice"] = "auto"
+        params.pop("reasoning", None)
         return params
+
+    def count_tokens(
+        self,
+        messages: list[Message],
+        tools: Any = None,
+        output_schema: Any = None,
+    ) -> int:
+        return Model.count_tokens(self, messages, tools, output_schema)
+
+    def _phase_request_model(self, messages: list[Message]) -> "ReportingCodeOpenAIResponses":
+        base_profile = reporting_thinking_profile_from_model(self)
+        profile = base_profile
+        previous_error = self.report_run_error()
+        bound_effort = reporting_thinking_effort_from_run_context(current_reporting_run_context())
+        if _reporting_phase_from_messages(messages) == "section" or bound_effort == "off":
+            profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
+        elif bound_effort in {"high", "max"} and base_profile.enabled:
+            budget = base_profile.thinking_budget
+            if budget is not None:
+                requested_budget = reporting_thinking_budget_from_run_context(
+                    current_reporting_run_context()
+                )
+                if requested_budget is not None:
+                    budget = min(budget, requested_budget)
+                profile = ReportingThinkingProfile.on(
+                    reasoning_effort=bound_effort,
+                    thinking_budget=budget,
+                    temperature=base_profile.temperature,
+                )
+        else:
+            escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
+            escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
+            if isinstance(escalation_profile, ReportingThinkingProfile) and (
+                isinstance(previous_error, ValidationError)
+                or (
+                    isinstance(escalation_fields, tuple)
+                    and _reporting_request_uses_escalation(messages, escalation_fields)
+                )
+            ):
+                profile = escalation_profile
+
+        request_model = copy(self)
+        model_route = reporting_model_route_from_run_context(current_reporting_run_context())
+        if model_route is not None:
+            _, request_model.id = model_route
+        task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+        if task_kind == "visualization_section":
+            output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
+        elif task_kind == "section":
+            output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
+        else:
+            output_limit = None
+        limits = [
+            value
+            for value in (
+                request_model.max_output_tokens,
+                output_limit,
+                reporting_model_output_token_limit(request_model.id),
+            )
+            if isinstance(value, int) and value > 0
+        ]
+        request_model.max_output_tokens = min(limits) if limits else None
+        extra_body = dict(request_model.extra_body or {})
+        extra_body.pop("thinking_budget", None)
+        extra_body["enable_thinking"] = profile.enabled
+        if profile.enabled:
+            extra_body["thinking_budget"] = profile.thinking_budget
+        request_model.extra_body = extra_body
+        request_model.temperature = profile.temperature
+        request_model.reasoning = None
+        request_model.reasoning_effort = None
+        request_model.reasoning_summary = None
+        return request_model
+
+    def _project(
+        self,
+        messages: list[Message],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> list[Message]:
+        response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
+        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        tools = _phase_filtered_report_tools(messages, tools)
+        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
+        if (
+            not isinstance(configured_cap, int)
+            or isinstance(configured_cap, bool)
+            or configured_cap < 1
+        ):
+            configured_cap = (
+                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+            )
+        output_reserve = (
+            self.max_output_tokens
+            if isinstance(self.max_output_tokens, int) and self.max_output_tokens > 0
+            else 0
+        )
+        hard_cap = resolve_reporting_input_token_hard_cap(
+            configured_input_token_cap=configured_cap,
+            model_id=self.id,
+            output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve),
+            absolute_input_token_cap=(
+                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+            ),
+        )
+        projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+            _with_reporting_durable_identities(messages),
+            model=self,
+            tools=tools,
+            response_format=response_format,
+            hard_cap=hard_cap,
+        )
+        record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
+        return projected
 
     @staticmethod
     def _raw_field(value: Any, field: str) -> Any:
         return value.get(field) if isinstance(value, Mapping) else getattr(value, field, None)
-
-    @classmethod
-    def _raw_tool_calls(cls, choice: Any) -> list[Any]:
-        message = cls._raw_field(choice, "message")
-        calls = cls._raw_field(message, "tool_calls")
-        return list(calls) if isinstance(calls, (list, tuple)) else []
 
     @staticmethod
     def _invalid_custom_response(message: str) -> ReportingError:
         return ReportingError(_REPORT_CODE_SOURCE_TOOL_ERROR, message)
 
     def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
-        choices = self._raw_field(response, "choices")
-        choices = list(choices) if isinstance(choices, (list, tuple)) else []
+        if self._raw_field(response, "error") is not None:
+            return super()._parse_provider_response(response, **kwargs)
+        output = self._raw_field(response, "output")
+        output = list(output) if isinstance(output, (list, tuple)) else []
         custom_calls = [
-            call
-            for choice in choices
-            for call in self._raw_tool_calls(choice)
-            if self._raw_field(call, "type") == "custom"
+            item
+            for item in output
+            if self._raw_field(item, "type") == "custom_tool_call"
         ]
         if not self._report_code_custom_tool_active:
             if custom_calls:
                 raise self._invalid_custom_response("当前阶段收到未知 custom 工具调用。")
             return super()._parse_provider_response(response, **kwargs)
 
-        if len(choices) != 1 or self._raw_field(choices[0], "finish_reason") != "tool_calls":
-            raise self._invalid_custom_response("源码 custom 工具响应未以 tool_calls 正常结束。")
-        calls = self._raw_tool_calls(choices[0])
-        if len(calls) != 1 or self._raw_field(calls[0], "type") != "custom":
+        if any(
+            self._raw_field(item, "type") not in {"reasoning", "custom_tool_call"}
+            for item in output
+        ):
+            raise self._invalid_custom_response("源码 custom 工具响应包含文本或其他工具输出。")
+        if len(custom_calls) != 1:
             raise self._invalid_custom_response("源码 custom 工具响应必须只包含一次工具调用。")
-        call = calls[0]
-        custom = self._raw_field(call, "custom")
-        name = self._raw_field(custom, "name")
-        source = self._raw_field(custom, "input")
+        call = custom_calls[0]
+        name = self._raw_field(call, "name")
+        source = self._raw_field(call, "input")
         call_id = self._raw_field(call, "id")
+        provider_call_id = self._raw_field(call, "call_id")
         if name != _REPORT_CODE_SOURCE_TOOL_NAME:
             raise self._invalid_custom_response("源码 custom 工具响应包含未知工具调用。")
-        if not isinstance(source, str) or not isinstance(call_id, str) or not call_id:
+        if (
+            not isinstance(source, str)
+            or not source
+            or not isinstance(call_id, str)
+            or not call_id
+            or not isinstance(provider_call_id, str)
+            or not provider_call_id
+        ):
             raise self._invalid_custom_response("源码 custom 工具响应缺少有效 input 或调用身份。")
 
         parsed = super()._parse_provider_response(response, **kwargs)
         parsed.tool_calls = [
             {
                 "id": call_id,
+                "call_id": provider_call_id,
                 "type": "function",
                 "function": {
                     "name": _REPORT_CODE_SOURCE_TOOL_NAME,
@@ -2681,6 +2802,8 @@ class ReportingCodeOpenAIChat(ReportingPhaseOpenAIChat):
                 },
             }
         ]
+        parsed.extra = parsed.extra or {}
+        parsed.extra["tool_call_ids"] = [provider_call_id]
         return parsed
 
     @staticmethod
@@ -2689,16 +2812,54 @@ class ReportingCodeOpenAIChat(ReportingPhaseOpenAIChat):
         if isinstance(cause, ReportingError) and cause.code == _REPORT_CODE_SOURCE_TOOL_ERROR:
             raise cause
 
-    def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+    def _clear_report_run_error(self) -> None:
+        _REPORT_MODEL_RUN_ERROR.set(None)
+
+    def _record_report_run_error(self, error: Exception) -> None:
+        _REPORT_MODEL_RUN_ERROR.set((id(self), error))
+
+    def report_run_error(self) -> Exception | None:
+        recorded = _REPORT_MODEL_RUN_ERROR.get()
+        return recorded[1] if recorded is not None and recorded[0] == id(self) else None
+
+    def response(self, messages: list[Message], *args: Any, **kwargs: Any) -> ModelResponse:
+        request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
         try:
-            return super().invoke(messages, *args, **kwargs)
+            response = OpenAIResponses.response(request_model, messages, *args, **kwargs)
+            self._clear_report_run_error()
+            return response
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    async def aresponse(self, messages: list[Message], *args: Any, **kwargs: Any) -> ModelResponse:
+        request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
+        try:
+            response = await OpenAIResponses.aresponse(request_model, messages, *args, **kwargs)
+            self._clear_report_run_error()
+            return response
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
+        messages = self._project(messages, args, kwargs)
+        try:
+            return OpenAIResponses.invoke(self, messages, *args, **kwargs)
         except Exception as error:
             self._raise_stable_custom_error(error)
             raise
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
+        messages = self._project(messages, args, kwargs)
         try:
-            return await super().ainvoke(messages, *args, **kwargs)
+            return await OpenAIResponses.ainvoke(self, messages, *args, **kwargs)
         except Exception as error:
             self._raise_stable_custom_error(error)
             raise
@@ -2984,11 +3145,41 @@ def create_reporting_generator_agent(
     )
 
 
-def _reporting_code_model(model: Any) -> ReportingCodeOpenAIChat:
+def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
     if not isinstance(model, OpenAIChat):
         raise TypeError("Reporting code agent requires OpenAIChat")
-    code_model = ReportingCodeOpenAIChat(
-        **{field.name: getattr(model, field.name) for field in fields(model)}
+    request_params = model.request_params if isinstance(model.request_params, Mapping) else {}
+    code_model = ReportingCodeOpenAIResponses(
+        id=model.id,
+        api_key=model.api_key,
+        organization=model.organization,
+        base_url=model.base_url,
+        timeout=model.timeout,
+        max_retries=model.max_retries,
+        default_headers=model.default_headers,
+        default_query=model.default_query,
+        http_client=model.http_client,
+        client_params=model.client_params,
+        role_map=dict(model.role_map or OPENAI_COMPATIBLE_ROLE_MAP),
+        store=model.store,
+        metadata=model.metadata,
+        parallel_tool_calls=request_params.get("parallel_tool_calls"),
+        temperature=model.temperature,
+        top_p=model.top_p,
+        service_tier=model.service_tier,
+        strict_output=model.strict_output,
+        extra_headers=model.extra_headers,
+        extra_query=model.extra_query,
+        extra_body=deepcopy(model.extra_body),
+        max_output_tokens=model.max_tokens or model.max_completion_tokens,
+        # 仅作为进程内 thinking profile 输入；单次请求副本会清空该字段，
+        # get_request_params 也会移除 Responses reasoning 对象。
+        reasoning_effort=model.reasoning_effort,
+        retries=model.retries,
+        delay_between_retries=model.delay_between_retries,
+        exponential_backoff=model.exponential_backoff,
+        retry_with_guidance=model.retry_with_guidance,
+        retry_with_guidance_limit=model.retry_with_guidance_limit,
     )
     for attribute in (
         "_task_execution_input_token_budget",
