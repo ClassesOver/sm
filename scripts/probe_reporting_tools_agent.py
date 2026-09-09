@@ -801,11 +801,43 @@ def _script_constant_paths(tree: ast.Module) -> dict[str, str]:
     return values
 
 
+def _statically_reachable(
+    node: ast.AST, parents: Mapping[ast.AST, ast.AST]
+) -> bool:
+    current = node
+    while current in parents:
+        parent = parents[current]
+        for field_name, value in ast.iter_fields(parent):
+            if not isinstance(value, list) or current not in value:
+                continue
+            preceding = value[: value.index(current)]
+            if any(
+                isinstance(item, (ast.Raise, ast.Return, ast.Break, ast.Continue))
+                for item in preceding
+            ):
+                return False
+            if isinstance(parent, (ast.If, ast.While)) and isinstance(
+                parent.test, ast.Constant
+            ):
+                test_value = bool(parent.test.value)
+                if (field_name == "body" and not test_value) or (
+                    field_name == "orelse" and test_value
+                ):
+                    return False
+        current = parent
+    return True
+
+
 def _script_writes_expected_artifact(
     source: str, *, task_kind: ReportingTaskKind, expected_path: str
 ) -> bool:
     tree = ast.parse(source)
     constant_paths = _script_constant_paths(tree)
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
 
     def resolve(node: ast.AST) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -822,7 +854,7 @@ def _script_writes_expected_artifact(
         return None
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or not _statically_reachable(node, parents):
             continue
         if task_kind == "visualization_section":
             if (

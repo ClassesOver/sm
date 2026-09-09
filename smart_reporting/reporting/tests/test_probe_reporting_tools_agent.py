@@ -800,6 +800,49 @@ async def test_probe_simulation_rejects_wrong_artifact_output_path(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scenario_name", "script_path", "source"),
+    [
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            "from pathlib import Path\n"
+            "raise RuntimeError('stop')\n"
+            'output_path = Path("analysis/output/supplement.json")\n'
+            'output_path.write_text("{}", encoding="utf-8")\n',
+        ),
+        (
+            "visualization-inspection",
+            "analysis/output/outpatient_chart.py",
+            "import matplotlib\n"
+            'matplotlib.use("Agg")\n'
+            "import matplotlib.pyplot as plt\n"
+            "if False:\n"
+            '    plt.savefig("analysis/charts/outpatient_operation/chart.png")\n',
+        ),
+    ],
+)
+async def test_probe_simulation_rejects_statically_unreachable_artifact_write(
+    scenario_name: str, script_path: str, source: str
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
+    recorder = ProbeRecorder(_runtime(), scenario)
+    patch_result = await recorder.invoke(
+        "apply_analysis_patch", _create_patch(script_path, source)
+    )
+
+    result = await recorder.invoke(
+        "run_python_script", {"script_path": script_path, "timeout": 30}
+    )
+
+    assert patch_result["ok"] is True
+    assert result["ok"] is False
+    assert result["code"] == "probe_artifact_contract_invalid"
+    assert result["simulationMode"] == "mock_contract_simulation"
+    assert recorder.accepted_artifact_paths == set()
+
+
+@pytest.mark.anyio
 async def test_probe_artifacts_are_unavailable_until_simulated_script_acceptance() -> None:
     analysis = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
     analysis_recorder = ProbeRecorder(_runtime(), analysis)
