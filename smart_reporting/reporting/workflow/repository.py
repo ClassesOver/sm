@@ -44,6 +44,8 @@ from .state import (
 
 REPORTING_DB_SCHEMA = "agentos_reporting"
 _REPORTING_SCHEMA_LOCK_KEY = 1_381_125_712
+_WORKFLOW_THREAD_LOCK_WAIT_SECONDS = 2.0
+_WORKFLOW_THREAD_LOCK_RETRY_DELAY_SECONDS = 0.1
 
 
 def _utc(value: datetime) -> datetime:
@@ -955,21 +957,38 @@ class ReportingStateRepository:
 
         engine = self.db.db_engine  # type: ignore[attr-defined]
         lock_key = f"reporting-workflow-thread-lifecycle:{thread_id}"
-        async with engine.connect() as connection:
-            await connection.execute(
-                text("SELECT pg_advisory_lock(hashtextextended(:lock_key, 0))"),
-                {"lock_key": lock_key},
-            )
-            await connection.commit()
-            try:
-                yield
-            finally:
-                with anyio.CancelScope(shield=True):
-                    await connection.execute(
-                        text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+        deadline = asyncio.get_running_loop().time() + _WORKFLOW_THREAD_LOCK_WAIT_SECONDS
+        while True:
+            async with engine.connect() as connection:
+                acquired = bool(
+                    await connection.scalar(
+                        text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
                         {"lock_key": lock_key},
                     )
-                    await connection.commit()
+                )
+                if acquired:
+                    try:
+                        await connection.commit()
+                        yield
+                    finally:
+                        with anyio.CancelScope(shield=True):
+                            await connection.execute(
+                                text(
+                                    "SELECT pg_advisory_unlock("
+                                    "hashtextextended(:lock_key, 0))"
+                                ),
+                                {"lock_key": lock_key},
+                            )
+                            await connection.commit()
+                    return
+                await connection.commit()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ReportingStateError(
+                    "report_workflow_run_conflict",
+                    "Reporting thread 生命周期操作等待超时。",
+                )
+            await asyncio.sleep(min(_WORKFLOW_THREAD_LOCK_RETRY_DELAY_SECONDS, remaining))
 
     async def is_workflow_run_active(self, external_run_id: str) -> bool:
         """探测旧 run 是否仍被其他进程推进，供 thread owner 恢复使用。"""

@@ -484,6 +484,45 @@ async def test_external_background_aclose_keeps_owner_when_cleanup_is_deferred()
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["cancel_external", "aclose"])
+async def test_background_release_waits_for_thread_lifecycle_lock(operation: str) -> None:
+    ownership = _ThreadOwnership()
+    ownership.owners["thread"] = ("external-run", "user")
+    controller = ReportWorkflowController(lambda: None, thread_ownership=ownership)
+    background = asyncio.create_task(asyncio.sleep(10))
+    controller._background_tasks["external-run"] = background  # type: ignore[assignment]
+    controller._background_scopes["external-run"] = ("thread", "user", "odoo", "11")
+    operation_task: asyncio.Task[object] | None = None
+
+    try:
+        async with ownership.workflow_thread_lifecycle_lock("thread"):
+            call = (
+                controller.cancel_external(
+                    external_run_id="external-run",
+                    thread_id="thread",
+                    user_id="user",
+                    database="odoo",
+                    company_id="11",
+                )
+                if operation == "cancel_external"
+                else controller.aclose()
+            )
+            operation_task = asyncio.create_task(call)
+            await asyncio.wait_for(ownership.thread_lifecycle_waiting.wait(), timeout=0.1)
+
+            assert not operation_task.done()
+            assert ownership.owners == {"thread": ("external-run", "user")}
+    finally:
+        if operation_task is not None:
+            await asyncio.gather(operation_task, return_exceptions=True)
+        else:
+            background.cancel()
+            await asyncio.gather(background, return_exceptions=True)
+
+    assert ownership.owners == {}
+
+
+@pytest.mark.anyio
 async def test_prune_completed_background_task_clears_deferred_cleanup_marker(
     monkeypatch,
 ) -> None:

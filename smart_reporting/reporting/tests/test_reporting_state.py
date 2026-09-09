@@ -203,8 +203,139 @@ class _RecordingEngine:
         yield self.connection
 
 
+class _LifecycleLockConnection:
+    def __init__(self, engine: _LifecycleLockEngine) -> None:
+        self.engine = engine
+        self.holds_lock = False
+
+    async def execute(self, statement: Any, _parameters: Any = None) -> _FakeResult:
+        sql = str(statement)
+        if "pg_advisory_unlock" in sql:
+            if self.holds_lock:
+                self.holds_lock = False
+                self.engine.advisory_lock.release()
+            return _FakeResult()
+        if "pg_advisory_lock" in sql:
+            self.engine.record_lock_attempt()
+            await self.engine.advisory_lock.acquire()
+            self.holds_lock = True
+        return _FakeResult()
+
+    async def scalar(self, statement: Any, _parameters: Any = None) -> bool:
+        assert "pg_try_advisory_lock" in str(statement)
+        self.engine.record_lock_attempt()
+        if self.engine.advisory_lock.locked():
+            return False
+        await self.engine.advisory_lock.acquire()
+        self.holds_lock = True
+        return True
+
+    async def commit(self) -> None:
+        if (
+            self.engine.block_first_acquire_commit
+            and self.holds_lock
+            and not self.engine.acquire_commit_blocked
+        ):
+            self.engine.acquire_commit_blocked = True
+            self.engine.acquire_commit_started.set()
+            await asyncio.Future()
+
+
+class _LifecycleLockEngine:
+    dialect = SimpleNamespace(name="postgresql")
+
+    def __init__(self, *, pool_size: int, block_first_acquire_commit: bool = False) -> None:
+        self.pool = asyncio.Semaphore(pool_size)
+        self.advisory_lock = asyncio.Lock()
+        self.lock_attempts = 0
+        self.second_lock_attempted = asyncio.Event()
+        self.block_first_acquire_commit = block_first_acquire_commit
+        self.acquire_commit_blocked = False
+        self.acquire_commit_started = asyncio.Event()
+
+    def record_lock_attempt(self) -> None:
+        self.lock_attempts += 1
+        if self.lock_attempts >= 2:
+            self.second_lock_attempted.set()
+
+    @asynccontextmanager
+    async def connect(self):
+        await self.pool.acquire()
+        try:
+            yield _LifecycleLockConnection(self)
+        finally:
+            self.pool.release()
+
+
 def _fake_repository(connection: _RecordingConnection) -> ReportingStateRepository:
     return ReportingStateRepository(SimpleNamespace(db_engine=_RecordingEngine(connection)))  # type: ignore[arg-type]
+
+
+def _lifecycle_lock_repository(engine: _LifecycleLockEngine) -> ReportingStateRepository:
+    return ReportingStateRepository(SimpleNamespace(db_engine=engine))  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_lifecycle_lock_waiter_releases_pool_connection_between_attempts() -> None:
+    engine = _LifecycleLockEngine(pool_size=2)
+    repository = _lifecycle_lock_repository(engine)
+
+    async def wait_for_lock() -> None:
+        async with repository.workflow_thread_lifecycle_lock("thread"):
+            pass
+
+    async with repository.workflow_thread_lifecycle_lock("thread"):
+        waiter = asyncio.create_task(wait_for_lock())
+        await engine.second_lock_attempted.wait()
+        try:
+            async with asyncio.timeout(0.05):
+                async with engine.connect():
+                    pass
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_lifecycle_lock_cancellation_during_acquire_commit_releases_session_lock() -> None:
+    engine = _LifecycleLockEngine(pool_size=1, block_first_acquire_commit=True)
+    repository = _lifecycle_lock_repository(engine)
+
+    async def hold_lock() -> None:
+        async with repository.workflow_thread_lifecycle_lock("thread"):
+            pass
+
+    holder = asyncio.create_task(hold_lock())
+    await engine.acquire_commit_started.wait()
+    holder.cancel()
+    await asyncio.gather(holder, return_exceptions=True)
+
+    async with asyncio.timeout(0.05):
+        async with repository.workflow_thread_lifecycle_lock("thread"):
+            pass
+
+
+@pytest.mark.anyio
+async def test_lifecycle_lock_contention_times_out_and_returns_pool_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _LifecycleLockEngine(pool_size=1)
+    repository = _lifecycle_lock_repository(engine)
+    await engine.advisory_lock.acquire()
+    monkeypatch.setattr(reporting_repository_module, "_WORKFLOW_THREAD_LOCK_WAIT_SECONDS", 0)
+
+    try:
+        with pytest.raises(ReportingStateError) as conflict:
+            async with asyncio.timeout(0.05):
+                async with repository.workflow_thread_lifecycle_lock("thread"):
+                    pass
+    finally:
+        engine.advisory_lock.release()
+
+    assert conflict.value.code == "report_workflow_run_conflict"
+    async with asyncio.timeout(0.05):
+        async with engine.connect():
+            pass
 
 
 def _run_row(**overrides: Any) -> dict[str, Any]:

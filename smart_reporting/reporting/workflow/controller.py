@@ -760,11 +760,7 @@ class ReportWorkflowController:
                 "company_id": company_id,
             }
             if await self._parent_pending_control(scope) is None:
-                await self._thread_ownership.release_workflow_thread(
-                    thread_id=thread_id,
-                    external_run_id=external_run_id,
-                    owner_user_id=user_id,
-                )
+                await self._release_thread(scope)
             return {"ok": True, "status": "cancelled"}
         context = await self.external_context(
             external_run_id=external_run_id,
@@ -833,22 +829,17 @@ class ReportWorkflowController:
             if scope is None:
                 continue
             thread_id, user_id, _database, _company_id = scope
-            pending = await self._parent_pending_control(
-                {
-                    "external_run_id": external_run_id,
-                    "thread_id": thread_id,
-                    "user_id": user_id,
-                    "database": _database,
-                    "company_id": _company_id,
-                }
-            )
+            scope = {
+                "external_run_id": external_run_id,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "database": _database,
+                "company_id": _company_id,
+            }
+            pending = await self._parent_pending_control(scope)
             if pending is not None or external_run_id in self._background_cleanup_deferred:
                 continue
-            await self._thread_ownership.release_workflow_thread(
-                thread_id=thread_id,
-                external_run_id=external_run_id,
-                owner_user_id=user_id,
-            )
+            await self._release_thread(scope)
 
     @staticmethod
     def _log_background_result(external_run_id: str, task: asyncio.Task[dict[str, Any]]) -> None:
