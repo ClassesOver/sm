@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import inspect
@@ -10,7 +11,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, NoReturn
 
 from agno.agent import Agent
 from agno.run import RunContext
@@ -53,12 +54,107 @@ def _tool_parameters(name: str) -> dict[str, Any]:
             "required": ["path"],
             "additionalProperties": False,
         }
-    return {
-        "type": "object",
-        "properties": {"patch": {"type": "string", "minLength": 1}},
-        "required": ["patch"],
-        "additionalProperties": False,
-    }
+    if name == "submit_python_source":
+        return {
+            "type": "object",
+            "properties": {"source": {"type": "string", "minLength": 1}},
+            "required": ["source"],
+            "additionalProperties": False,
+        }
+    raise ValueError(f"未知 Coding 工具：{name}")
+
+
+def _reject_python_source(path: str, source: Any) -> NoReturn:
+    if isinstance(source, str):
+        try:
+            raw_source = source.encode("utf-8")
+        except UnicodeEncodeError:
+            raw_source = b""
+        lines = source.splitlines()
+    else:
+        raw_source = b""
+        lines = []
+    raise ReportingError(
+        "report_python_source_shape_invalid",
+        "签发 Python 源码形状无效，已拒绝写入。",
+        details={
+            "path": path,
+            "size": len(raw_source),
+            "lineCount": len(lines),
+            "maxLineLength": max(
+                (len(line.encode("utf-8", errors="replace")) for line in lines),
+                default=0,
+            ),
+        },
+    )
+
+
+def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> str:
+    if not isinstance(source, str):
+        _reject_python_source(path, source)
+    try:
+        raw_source = source.encode("utf-8")
+    except UnicodeEncodeError:
+        _reject_python_source(path, source)
+    lines = source.split("\n")
+    if (
+        len(raw_source) > max_source_bytes
+        or "\r" in source
+        or not source.endswith("\n")
+        or len(source.splitlines()) < 2
+        or any(len(line.encode("utf-8")) > MAX_PHYSICAL_LINE_BYTES for line in lines)
+    ):
+        _reject_python_source(path, source)
+    try:
+        tree = ast.parse(source, filename=path)
+        compile(tree, path, "exec")
+    except (SyntaxError, TypeError, ValueError):
+        _reject_python_source(path, source)
+    return source
+
+
+def _diff_content_lines(content: str, prefix: str) -> list[str]:
+    result: list[str] = []
+    for line in content.splitlines(keepends=True):
+        result.append(f"{prefix}{line}" if line.endswith("\n") else f"{prefix}{line}\n")
+        if not line.endswith("\n"):
+            result.append("\\ No newline at end of file\n")
+    return result
+
+
+def _python_source_patch(
+    path: str,
+    source: str,
+    *,
+    operation: str,
+    previous_source: str | None,
+) -> str:
+    source_lines = source.splitlines(keepends=True)
+    if operation == "create":
+        return "".join(
+            [
+                "--- /dev/null\n",
+                f"+++ b/{path}\n",
+                f"@@ -0,0 +1,{len(source_lines)} @@\n",
+                *_diff_content_lines(source, "+"),
+            ]
+        )
+    if not isinstance(previous_source, str):
+        raise ReportingError(
+            "report_code_generation_read_invalid",
+            "脚本更新缺少受信原始源码。",
+            details={"path": path},
+        )
+    previous_lines = previous_source.splitlines(keepends=True)
+    return "".join(
+        [
+            f"--- a/{path}\n",
+            f"+++ b/{path}\n",
+            f"@@ -1,{len(previous_lines)} +1,{len(source_lines)} @@\n",
+            *_diff_content_lines(previous_source, "-"),
+            *_diff_content_lines(source, "+"),
+        ]
+    )
 
 
 async def _invoke(callback: ToolCallable, arguments: dict[str, Any], run_context: RunContext | None) -> Mapping[str, Any]:
@@ -81,7 +177,7 @@ async def _invoke(callback: ToolCallable, arguments: dict[str, Any], run_context
 
 
 class ReportingCodeGenerationRunner:
-    """每次阶段调用都创建独立上下文，并以唯一 patch 工具回执收口。"""
+    """每次阶段调用都创建独立上下文，并以唯一源码提交和 patch 回执收口。"""
 
     def __init__(
         self,
@@ -133,49 +229,6 @@ class ReportingCodeGenerationRunner:
     @staticmethod
     def _stable_code(value: Any, fallback: str) -> str:
         return value if isinstance(value, str) and _STABLE_CODE_RE.fullmatch(value) else fallback
-
-    @staticmethod
-    def _patch_protocol(
-        script_path: str, operation: str, max_source_bytes: int
-    ) -> dict[str, Any]:
-        """生成显式 diff 形状，避免模型沿用过期的固定 hunk 计数。"""
-        if operation == "create":
-            template = (
-                f"--- /dev/null\n+++ b/{script_path}\n"
-                "@@ -0,0 +1,<exact_new_line_count> @@\n"
-                "+<each_source_line>"
-            )
-            hunk = "@@ -0,0 +1,<exact_new_line_count> @@"
-            example = (
-                f"--- /dev/null\n+++ b/{script_path}\n"
-                "@@ -0,0 +1,2 @@\n+line one\n+line two\n"
-            )
-            prefixes = {"source": "+"}
-        else:
-            template = (
-                f"--- a/{script_path}\n+++ b/{script_path}\n"
-                "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@\n"
-                " <unchanged_source_line>\n-<removed_source_line>\n+<added_source_line>"
-            )
-            hunk = "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@"
-            example = (
-                f"--- a/{script_path}\n+++ b/{script_path}\n"
-                "@@ -1,2 +1,2 @@\n unchanged line\n-removed line\n+added line\n"
-            )
-            prefixes = {"context": " ", "removed": "-", "added": "+"}
-        return {
-            "operation": operation,
-            "path": script_path,
-            "maxSourceBytes": max_source_bytes,
-            "maxPhysicalLineBytes": MAX_PHYSICAL_LINE_BYTES,
-            "template": template,
-            "hunk": hunk,
-            "example": example,
-            "linePrefixes": prefixes,
-            "lineEnding": "LF",
-            "trailingNewline": True,
-            "countRule": "hunk 头中的行数必须与实际物理源码行数精确一致；不得使用固定占位计数",
-        }
 
     @classmethod
     def _short_diagnostic(cls, diagnostic: Mapping[str, Any]) -> dict[str, Any]:
@@ -475,8 +528,9 @@ class ReportingCodeGenerationRunner:
         diagnostic: Mapping[str, Any] | None = None,
         max_source_bytes: int = MAX_CODE_READ_BYTES,
         _operation: str = "create",
+        _previous_source: str | None = None,
     ) -> CodeGenerationResult:
-        """运行一次写阶段；普通输出和零/多次工具调用均失败。"""
+        """运行一次写阶段；模型只提交源码，diff 由服务端构造。"""
         self._validate_script_path(script_path)
         if (
             isinstance(max_source_bytes, bool)
@@ -488,21 +542,28 @@ class ReportingCodeGenerationRunner:
             )
         if _operation not in {"create", "update"}:
             raise self._error(
-                "report_code_generation_operation_invalid", "脚本 patch 操作无效。", script_path
+                "report_code_generation_operation_invalid", "脚本签发操作无效。", script_path
             )
         result: CodeGenerationResult | None = None
         patch_error: ReportingError | None = None
 
-        async def capture_patch(**kwargs: Any) -> Mapping[str, Any]:
+        async def capture_source(**kwargs: Any) -> Mapping[str, Any]:
             nonlocal patch_error, result
-            patch = kwargs.get("patch")
-            if not isinstance(patch, str) or not patch:
-                patch_error = self._error(
-                    "report_code_generation_tool_arguments_invalid",
-                    "Coding Agent 的 patch 参数无效。",
+            try:
+                source = _validate_python_source(
                     script_path,
+                    kwargs.get("source"),
+                    max_source_bytes,
                 )
-                raise patch_error
+                patch = _python_source_patch(
+                    script_path,
+                    source,
+                    operation=_operation,
+                    previous_source=_previous_source,
+                )
+            except ReportingError as error:
+                patch_error = error
+                raise
             try:
                 receipt = await _invoke(apply_analysis_patch, {"patch": patch}, run_context)
             except ReportingError as error:
@@ -555,31 +616,39 @@ class ReportingCodeGenerationRunner:
             return receipt
 
         calls = 0
-        async def wrapped_patch(**kwargs: Any) -> Mapping[str, Any]:
+        async def wrapped_source(**kwargs: Any) -> Mapping[str, Any]:
             nonlocal calls, patch_error
             calls += 1
             if calls > 1:
                 patch_error = self._error(
-                    "report_code_generation_multiple_patches",
-                    "单轮 Coding Agent 只能提交一次 patch。",
+                    "report_code_generation_multiple_sources",
+                    "单轮 Coding Agent 只能提交一次 Python 源码。",
                     script_path,
                 )
                 raise patch_error
             try:
-                return await capture_patch(**kwargs)
+                return await capture_source(**kwargs)
             except ReportingError as error:
                 patch_error = patch_error or error
                 raise
 
         agent = self._fresh_agent()
-        self._configure(agent, Function(name="apply_analysis_patch", description="提交 unified diff。", parameters=_tool_parameters("apply_analysis_patch"), strict=True, entrypoint=wrapped_patch, stop_after_tool_call=True), "apply_analysis_patch")
+        self._configure(
+            agent,
+            Function(
+                name="submit_python_source",
+                description="提交签发路径的完整 Python 源码；不要提交 diff 或 Markdown 围栏。",
+                parameters=_tool_parameters("submit_python_source"),
+                strict=True,
+                entrypoint=wrapped_source,
+                stop_after_tool_call=True,
+            ),
+            "submit_python_source",
+        )
         try:
             prompt = {
                 "scriptPath": script_path,
                 "facts": dict(task_facts),
-                "patchProtocol": self._patch_protocol(
-                    script_path, _operation, max_source_bytes
-                ),
             }
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)
@@ -591,7 +660,10 @@ class ReportingCodeGenerationRunner:
         if result is None and patch_error is not None:
             raise patch_error
         if result is None:
-            raise ReportingError("report_code_generation_no_patch", "Coding Agent 未提交脚本 patch。")
+            raise ReportingError(
+                "report_code_generation_no_source",
+                "Coding Agent 未提交完整 Python 源码。",
+            )
         return result
 
     async def repair(
@@ -605,7 +677,7 @@ class ReportingCodeGenerationRunner:
         task_facts: Mapping[str, Any] | None = None,
         max_source_bytes: int = MAX_CODE_READ_BYTES,
     ) -> CodeGenerationResult:
-        """先只读一次受信脚本回执，再用 fresh Agent 提交一次修复 patch。"""
+        """先只读一次受信脚本回执，再用 fresh Agent 提交完整修复源码。"""
         self._validate_script_path(script_file.path)
         bounded_task_facts = self._repair_task_facts(task_facts, script_file.path)
         reads = 0
@@ -665,4 +737,5 @@ class ReportingCodeGenerationRunner:
             diagnostic=diagnostic,
             max_source_bytes=max_source_bytes,
             _operation="update",
+            _previous_source=read_receipt["content"],
         )
