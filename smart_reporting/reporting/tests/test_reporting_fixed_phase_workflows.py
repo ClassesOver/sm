@@ -28,7 +28,10 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     RuntimeAnalysisMixin,
     _visualization_section_completion_conditions,
 )
-from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    CodeGenerationResult,
+    ReportingCodeGenerationRunner,
+)
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
     ChartDraft,
@@ -427,6 +430,139 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
             },
         }
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure_kind", ["missing_chart", "visual_review"])
+async def test_visualization_repair_adapter_preserves_restricted_task_facts_in_runner_prompt(
+    failure_kind: str,
+) -> None:
+    source = "print(1)\n"
+    script_file = FileIdentity(
+        path="charts/charts.py",
+        size=len(source.encode()),
+        sha256=hashlib.sha256(source.encode()).hexdigest(),
+    )
+    prompts: list[dict[str, object]] = []
+
+    class FakeAgent:
+        def __init__(self) -> None:
+            self.tools: list[object] = []
+            self.tool_choice: object | None = None
+
+        async def arun(self, prompt: str, **_kwargs: object) -> object:
+            tool = self.tools[0]
+            if tool.name == "read_file":
+                return await tool.entrypoint(path=script_file.path)
+            prompts.append(json.loads(prompt))
+            return await tool.entrypoint(patch="diff")
+
+    async def read_file(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "path": script_file.path,
+            "content": source,
+            "sha256": script_file.sha256,
+            "offset": 0,
+            "nextOffset": script_file.size,
+            "totalBytes": script_file.size,
+        }
+
+    async def apply_patch(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "artifacts": [
+                {
+                    "path": script_file.path,
+                    "size": len(source.encode()),
+                    "sha256": script_file.sha256,
+                }
+            ],
+        }
+
+    runner = ReportingCodeGenerationRunner(agent_factory=FakeAgent)
+
+    async def repair(script, diagnostic, task_facts, context):
+        return await runner.repair(
+            script,
+            diagnostic,
+            read_file,
+            apply_patch,
+            context,
+            task_facts=task_facts,
+        )
+
+    failed_inspection = _inspection().model_copy(
+        update={
+            "visual_review_status": "failed",
+            "requires_revision": True,
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="text_overlap",
+                    severity="critical",
+                    description="图例遮挡横轴标签。",
+                ),
+            ),
+        }
+    )
+    missing_receipt = {
+        "status": "rejected",
+        "code": "report_chart_file_missing",
+        "message": "图表源文件不存在。",
+        "details": {"sourcePath": "charts/chart.png"},
+    }
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+        repair_script=repair,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=(
+            None
+            if failure_kind == "missing_chart"
+            else AsyncMock(side_effect=[failed_inspection, _inspection()])
+        ),
+        submit=AsyncMock(
+            side_effect=([missing_receipt, {"status": "accepted"}])
+            if failure_kind == "missing_chart"
+            else [{"status": "accepted"}]
+        ),
+    )
+
+    await workflow.run(_visualization_payload(), _context())
+
+    assert len(prompts) == 1
+    task_facts = prompts[0]["facts"]["taskFacts"]
+    if failure_kind == "missing_chart":
+        assert task_facts == {
+            "missingCharts": [
+                {
+                    "chartId": "chart_001",
+                    "sourcePath": "charts/chart.png",
+                    "title": "收入趋势",
+                }
+            ]
+        }
+    else:
+        assert task_facts == {
+            "inspections": [
+                {
+                    "sourcePath": "charts/chart.png",
+                    "visualReviewStatus": "failed",
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "text_overlap",
+                            "severity": "critical",
+                            "description": "图例遮挡横轴标签。",
+                        }
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            ]
+        }
+        assert "modelId" not in json.dumps(task_facts)
+        assert "sha256" not in json.dumps(task_facts)
 
 
 @pytest.mark.anyio
