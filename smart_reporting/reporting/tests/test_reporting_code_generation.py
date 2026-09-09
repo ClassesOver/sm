@@ -445,6 +445,72 @@ async def test_repair_normalizes_diagnostic_and_read_receipt_before_patch_prompt
     assert set(facts["readReceipt"]) == {"path", "sha256", "content", "totalBytes"}
 
 
+@pytest.mark.anyio
+async def test_repair_preserves_bounded_missing_facts_in_patch_prompt():
+    script = identity("analysis/script.py", "print(1)\n")
+    prompts = []
+
+    async def action(agent):
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=script.path)
+        prompts.append(json.loads(agent.prompt))
+        return await tool.entrypoint(patch="diff")
+
+    async def read_file(**_kwargs):
+        return read_receipt(script)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
+
+    missing_facts = [f"fact-{index}: " + "x" * 600 for index in range(30)]
+    await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
+        script,
+        {"code": "repair_failed", "message": "brief diagnostic"},
+        read_file,
+        patch,
+        task_facts={"missingFacts": missing_facts, "pythonSource": "SECRET_SOURCE"},
+    )
+
+    facts = prompts[0]["facts"]
+    assert set(facts) == {"readReceipt", "diagnostic", "taskFacts"}
+    assert facts["taskFacts"].keys() == {"missingFacts"}
+    assert len(facts["taskFacts"]["missingFacts"]) == 20
+    assert all(len(item) == 512 for item in facts["taskFacts"]["missingFacts"])
+    assert facts["taskFacts"]["missingFacts"][0].startswith("fact-0:")
+    assert "SECRET_SOURCE" not in agent_prompt_text(facts)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "task_facts",
+    [
+        {"missingFacts": "not-an-array"},
+        {"missingFacts": ["valid", {"source": "SECRET_SOURCE"}]},
+        {"missingFacts": ["valid", 3]},
+    ],
+)
+async def test_repair_rejects_illegal_task_facts_before_read(task_facts):
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(_agent):
+        pytest.fail("invalid task facts must fail before model invocation")
+
+    async def read_file(**_kwargs):
+        pytest.fail("invalid task facts must not read")
+
+    async def patch(**_kwargs):
+        pytest.fail("invalid task facts must not mutate")
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+            script, {}, read_file, patch, task_facts=task_facts
+        )
+
+    assert raised.value.code == "report_code_generation_task_facts_invalid"
+    assert raised.value.details == {"path": script.path}
+
+
 def agent_prompt_text(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False)
 

@@ -24,6 +24,8 @@ MAX_CODE_READ_BYTES = 128 * 1024
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
 MAX_DIAGNOSTIC_PATH_LENGTH = 1024
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
+MAX_TASK_MISSING_FACTS = 20
+MAX_TASK_MISSING_FACT_LENGTH = 512
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 
@@ -147,6 +149,30 @@ class ReportingCodeGenerationRunner:
             if safe_details:
                 result["details"] = safe_details
         return result
+
+    @classmethod
+    def _repair_task_facts(
+        cls, task_facts: Mapping[str, Any] | None, script_path: str
+    ) -> dict[str, list[str]]:
+        if task_facts is None:
+            return {}
+        missing_facts = task_facts.get("missingFacts")
+        if missing_facts is None:
+            return {}
+        if not isinstance(missing_facts, list) or any(
+            not isinstance(item, str) for item in missing_facts
+        ):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复任务事实必须是受限的 missingFacts 字符串数组。",
+                script_path,
+            )
+        return {
+            "missingFacts": [
+                item[:MAX_TASK_MISSING_FACT_LENGTH]
+                for item in missing_facts[:MAX_TASK_MISSING_FACTS]
+            ]
+        }
 
     @classmethod
     def _trusted_read_receipt(
@@ -303,9 +329,12 @@ class ReportingCodeGenerationRunner:
         read_file: ToolCallable,
         apply_analysis_patch: ToolCallable,
         run_context: RunContext | None = None,
+        *,
+        task_facts: Mapping[str, Any] | None = None,
     ) -> CodeGenerationResult:
         """先只读一次受信脚本回执，再用 fresh Agent 提交一次修复 patch。"""
         self._validate_script_path(script_file.path)
+        bounded_task_facts = self._repair_task_facts(task_facts, script_file.path)
         reads = 0
         read_receipt: Mapping[str, Any] | None = None
 
@@ -352,6 +381,7 @@ class ReportingCodeGenerationRunner:
             {
                 "readReceipt": read_receipt,
                 "diagnostic": self._short_diagnostic(diagnostic),
+                "taskFacts": bounded_task_facts,
             },
             apply_analysis_patch,
             run_context,
