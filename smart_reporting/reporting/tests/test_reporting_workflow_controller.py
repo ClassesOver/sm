@@ -6,8 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.db.in_memory import InMemoryDb
 from agno.run import RunContext
 from agno.run.base import RunStatus
+from agno.workflow import HumanReview, OnError, Step, Workflow
+from agno.workflow.types import StepOutput
 
 import smart_reporting.reporting.workflow.controller as controller_module
 from smart_reporting.reporting.contract import ReportingWorkflowInput
@@ -1360,38 +1363,33 @@ async def test_controller_recovery_pause_retries_error_without_cleanup(step_id: 
 
 @pytest.mark.anyio
 async def test_controller_can_cancel_recovery_pause_and_then_cleanup() -> None:
-    class Requirement:
-        step_id = "assemble-report"
-        step_name = "汇编最终报告"
-        is_resolved = False
+    after_assembly_calls = 0
 
-    requirement = Requirement()
+    async def fail_assembly(*_args, **_kwargs) -> StepOutput:
+        raise RuntimeError("assembly failed")
 
-    class Workflow:
-        id = "enterprise-reporting-workflow-v1"
-        status = RunStatus.paused
-
-        async def arun(self, *_args, **_kwargs):
-            return SimpleNamespace(
-                status=self.status,
-                step_requirements=[],
-                error_requirements=[requirement],
-            )
-
-        async def aget_run(self, *_args, **_kwargs):
-            return SimpleNamespace(
-                status=self.status,
-                step_requirements=[],
-                error_requirements=[requirement] if self.status is RunStatus.paused else [],
-            )
-
-        async def acancel_run(self, *_args, **_kwargs):
-            self.status = RunStatus.cancelled
-            return True
+    async def after_assembly(*_args, **_kwargs) -> StepOutput:
+        nonlocal after_assembly_calls
+        after_assembly_calls += 1
+        return StepOutput(content="must not run")
 
     cleanup = AsyncMock()
     ownership = _ThreadOwnership()
-    workflow = Workflow()
+    workflow = Workflow(
+        id="enterprise-reporting-workflow-v1",
+        db=InMemoryDb(),
+        steps=[
+            Step(
+                step_id="assemble-report",
+                name="汇编最终报告",
+                executor=fail_assembly,
+                max_retries=0,
+                human_review=HumanReview(on_error=OnError.pause),
+            ),
+            Step(step_id="after-assembly", name="后续步骤", executor=after_assembly),
+        ],
+        telemetry=False,
+    )
     controller = ReportWorkflowController(
         lambda: workflow,
         thread_ownership=ownership,
@@ -1403,6 +1401,13 @@ async def test_controller_can_cancel_recovery_pause_and_then_cleanup() -> None:
     cancelled = await controller.cancel(context)
 
     assert cancelled["status"] == "cancelled"
+    session_id, run_id = reporting_workflow_ids(
+        user_id="user", thread_id="thread", external_run_id="external-run"
+    )
+    persisted = await workflow.aget_run(run_id, session_id=session_id)
+    assert persisted is not None
+    assert controller._status(persisted.status) == "cancelled"
+    assert after_assembly_calls == 0
     cleanup.assert_awaited_once()
     assert ownership.owners == {}
 

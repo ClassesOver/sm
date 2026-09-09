@@ -1140,10 +1140,15 @@ class ReportWorkflowController:
             status = self._status(getattr(output, "status", None))
             workflow = self._workflow()
             if status == "paused":
-                if self._active_error_requirement(output) is not None:
+                error_requirement = self._active_error_requirement(output)
+                if error_requirement is not None:
+                    error_requirement.skip()
                     await workflow.acancel_run(control.workflow_run_id)
-                    output = await workflow.aget_run(
-                        control.workflow_run_id, session_id=control.workflow_session_id
+                    output = await workflow.acontinue_run(
+                        run_response=output,
+                        step_requirements=list(getattr(output, "step_requirements", None) or []),
+                        dependencies=self._workflow_dependencies(scope),
+                        stream=False,
                     )
                 else:
                     requirement = self._active_requirement(output)
