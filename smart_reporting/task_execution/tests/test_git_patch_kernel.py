@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from smart_reporting.task_execution.tools import abuild_workspace_changes, build_workspace_changes
 from smart_reporting.task_execution.execution import TaskExecutionKernel, TaskExecutionRuntime
+from smart_reporting.task_execution.tools import abuild_workspace_changes, build_workspace_changes
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
 
 
