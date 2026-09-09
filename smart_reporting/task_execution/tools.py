@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +30,31 @@ def _unified_diff_path(value: str) -> str:
     return value[2:]
 
 
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$"
+)
+
+
+def _canonicalize_patch_lines(patch: str) -> list[str]:
+    lines = patch.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    canonical: list[str] = []
+    for line in lines:
+        match = _HUNK_HEADER_RE.match(line.rstrip("\n"))
+        if match:
+            source_start, source_length, target_start, target_length, section = match.groups()
+            source_length = source_length or "1"
+            target_length = target_length or "1"
+            newline = "\n" if line.endswith("\n") else ""
+            line = (
+                f"@@ -{source_start},{source_length} +{target_start},{target_length} @@"
+                f"{section}{newline}"
+            )
+        canonical.append(line)
+    return canonical
+
+
 def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
     if not isinstance(patch, str) or not patch.strip():
         raise WorkspaceError("补丁不能为空。")
@@ -39,6 +65,8 @@ def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
         parsed = PatchSet(normalized)
     except (UnidiffParseError, ValueError) as error:
         raise WorkspaceError("标准 unified diff 语法无效。") from error
+    if _canonicalize_patch_lines(normalized) != _canonicalize_patch_lines(str(parsed)):
+        raise WorkspaceError("unified diff hunk 存在未被计数消费的尾部内容。")
     if not 1 <= len(parsed) <= MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
     operations: list[_PatchOperation] = []

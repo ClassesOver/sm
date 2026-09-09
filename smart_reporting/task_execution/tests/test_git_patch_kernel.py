@@ -94,6 +94,24 @@ def test_git_patch_kernel_rejects_hunk_that_does_not_match_current_content() -> 
         build_workspace_changes(service, "thread", patch)
 
 
+@pytest.mark.parametrize(("declared_lines", "provided_lines"), [(3, 5), (120, 125)])
+def test_git_patch_kernel_rejects_unconsumed_hunk_tail(
+    declared_lines: int,
+    provided_lines: int,
+) -> None:
+    service = _Workspace({})
+    patch_lines = "".join(f"+line-{index}\n" for index in range(provided_lines))
+    patch = (
+        "--- /dev/null\n"
+        "+++ b/create.txt\n"
+        f"@@ -0,0 +1,{declared_lines} @@\n"
+        f"{patch_lines}"
+    )
+
+    with pytest.raises(WorkspaceError, match="hunk"):
+        build_workspace_changes(service, "thread", patch)
+
+
 @pytest.mark.anyio
 async def test_internal_baseline_cas_rejects_change_between_build_and_apply() -> None:
     service = _Workspace({"report.py": "actual = 1\n"})
