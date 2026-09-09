@@ -169,9 +169,6 @@ class RuntimeAnalysisMixin:
             expected_states[path] = state
 
         operations = parse_unified_diff(raw["patch"])
-        operation_paths = {
-            WorkspaceService.normalize_path(item.path, allow_root=False)[0] for item in operations
-        }
         for operation in operations:
             add_path(operation.path, "present")
 
@@ -336,7 +333,7 @@ class RuntimeAnalysisMixin:
             try:
                 tree = ast.parse(content, filename=path)
                 compile(tree, path, "exec")
-            except SyntaxError as error:
+            except SyntaxError:
                 reject(path, content)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
