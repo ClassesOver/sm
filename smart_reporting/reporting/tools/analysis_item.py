@@ -17,6 +17,7 @@ from typing import Any
 from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+from pydantic import ValidationError
 
 from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
@@ -614,7 +615,6 @@ class RuntimeAnalysisMixin:
             thread_id=scope.thread_id, paths=(path,)
         )
         current = current_rows[0] if current_rows else {"path": path, "missing": True}
-        saw_intent = False
         for intent_id, intent in reversed(tuple(intents.items())):
             if not isinstance(intent, Mapping) or intent.get("toolName") != "apply_analysis_patch":
                 continue
@@ -636,15 +636,31 @@ class RuntimeAnalysisMixin:
                 raise ReportingError(
                     "report_analysis_write_intent_invalid", "脚本写入意图操作无效。"
                 )
-            saw_intent = True
-            if intent.get("status") == "committed":
+            status = intent.get("status")
+            if status == "committed":
                 artifacts = intent.get("artifacts")
-                expected = artifacts[0] if isinstance(artifacts, list) and len(artifacts) == 1 else None
-                if current == expected:
-                    return FileIdentity.model_validate(expected)
-                continue
-            if intent.get("status") != "pending":
-                continue
+                if not isinstance(artifacts, list) or len(artifacts) != 1:
+                    raise ReportingError(
+                        "report_analysis_write_intent_invalid",
+                        "已提交写入意图缺少唯一文件身份。",
+                    )
+                try:
+                    expected = FileIdentity.model_validate(artifacts[0])
+                except ValidationError as error:
+                    raise ReportingError(
+                        "report_analysis_write_intent_invalid",
+                        "已提交写入意图的文件身份无效。",
+                    ) from error
+                if current == expected.model_dump():
+                    return expected
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "签发脚本身份与 durable write intent 不一致。",
+                )
+            if status != "pending":
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "脚本写入意图状态无效。"
+                )
             content = change["content"]
             desired = {
                 "path": path,
@@ -660,13 +676,12 @@ class RuntimeAnalysisMixin:
                 )
                 return FileIdentity.model_validate(desired)
             if change.get("operation") == "create" and current.get("missing") is True:
-                continue
+                return None
             if (
                 change.get("operation") == "update"
                 and current.get("sha256") == change.get("expected_sha256")
             ):
-                continue
-        if saw_intent and current.get("missing") is not True:
+                return None
             raise ReportingError(
                 "report_phase_artifact_changed", "签发脚本身份与 durable write intent 不一致。"
             )

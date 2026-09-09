@@ -612,6 +612,147 @@ async def test_signed_script_loader_recovers_pending_post_mutation_identity(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["create", "update"])
+async def test_signed_script_loader_leaves_pending_pre_mutation_for_normal_flow(
+    operation: str,
+) -> None:
+    path = "analysis/evidence/a1/supplement.py"
+    previous = "value = 1\nprint(value)\n"
+    source = "value = 2\nprint(value)\n"
+    change = {"operation": operation, "path": path, "content": source}
+    if operation == "update":
+        change["expected_sha256"] = hashlib.sha256(previous.encode()).hexdigest()
+        current = {
+            "path": path,
+            "size": len(previous.encode()),
+            "sha256": hashlib.sha256(previous.encode()).hexdigest(),
+        }
+    else:
+        current = {"path": path, "missing": True}
+    intent = {
+        "intentId": "b" * 64,
+        "status": "pending",
+        "toolName": "apply_analysis_patch",
+        "arguments": {"patch": "diff", "operations": [change]},
+        "affectedPaths": [path],
+        "expectedStates": {path: "present"},
+    }
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        workspace=SimpleNamespace(batch_hash_files=AsyncMock(return_value=[current])),
+    )
+    harness._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"writeIntents": {"b" * 64: intent}})
+    )
+    harness._apply_durable = AsyncMock()
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+
+    recovered = await harness.recover_signed_analysis_script(path, None)
+
+    assert recovered is None
+    harness._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_signed_script_loader_rejects_current_identity_matching_older_commit() -> None:
+    path = "analysis/evidence/a1/supplement.py"
+    older_identity = {"path": path, "size": 1, "sha256": "a" * 64}
+    latest_identity = {"path": path, "size": 2, "sha256": "b" * 64}
+
+    def committed_intent(intent_id: str, identity: dict[str, object]) -> dict[str, object]:
+        return {
+            "intentId": intent_id,
+            "status": "committed",
+            "toolName": "apply_analysis_patch",
+            "arguments": {
+                "patch": "diff",
+                "operations": [
+                    {"operation": "create", "path": path, "content": "value = 1\n"}
+                ],
+            },
+            "affectedPaths": [path],
+            "expectedStates": {path: "present"},
+            "artifacts": [identity],
+        }
+
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        workspace=SimpleNamespace(
+            batch_hash_files=AsyncMock(return_value=[older_identity])
+        ),
+    )
+    harness._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "writeIntents": {
+                    "a" * 64: committed_intent("a" * 64, older_identity),
+                    "b" * 64: committed_intent("b" * 64, latest_identity),
+                }
+            }
+        )
+    )
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+
+    with pytest.raises(Exception) as caught:
+        await harness.recover_signed_analysis_script(path, None)
+
+    assert caught.value.code == "report_phase_artifact_changed"
+
+
+@pytest.mark.anyio
+async def test_signed_script_loader_rejects_missing_latest_committed_artifact() -> None:
+    path = "analysis/evidence/a1/supplement.py"
+    intent_id = "b" * 64
+    intent = {
+        "intentId": intent_id,
+        "status": "committed",
+        "toolName": "apply_analysis_patch",
+        "arguments": {
+            "patch": "diff",
+            "operations": [
+                {"operation": "create", "path": path, "content": "value = 1\n"}
+            ],
+        },
+        "affectedPaths": [path],
+        "expectedStates": {path: "present"},
+        "artifacts": [{"path": path, "size": 10, "sha256": "b" * 64}],
+    }
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        workspace=SimpleNamespace(
+            batch_hash_files=AsyncMock(return_value=[{"path": path, "missing": True}])
+        ),
+    )
+    harness._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"writeIntents": {intent_id: intent}})
+    )
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+
+    with pytest.raises(Exception) as caught:
+        await harness.recover_signed_analysis_script(path, None)
+
+    assert caught.value.code == "report_phase_artifact_changed"
+
+
+@pytest.mark.anyio
 async def test_analysis_patch_recovers_pending_update_before_rebuilding_old_hunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
