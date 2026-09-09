@@ -165,6 +165,8 @@ _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
+_REPORT_CODE_SOURCE_TOOL_NAME = "submit_python_source"
+_REPORT_CODE_SOURCE_TOOL_ERROR = "report_code_source_tool_response_invalid"
 
 
 def _duration_ms(started_at: float) -> int:
@@ -1785,6 +1787,9 @@ def _report_model_tool_name(tool: Any) -> str | None:
         function = tool.get("function")
         if isinstance(function, dict) and isinstance(function.get("name"), str):
             return function["name"]
+        custom = tool.get("custom")
+        if isinstance(custom, dict) and isinstance(custom.get("name"), str):
+            return custom["name"]
         return tool.get("name") if isinstance(tool.get("name"), str) else None
     name = getattr(tool, "name", None)
     if isinstance(name, str):
@@ -1792,6 +1797,10 @@ def _report_model_tool_name(tool: Any) -> str | None:
     function = getattr(tool, "function", None)
     function_name = getattr(function, "name", None)
     return function_name if isinstance(function_name, str) else None
+
+
+def _report_tool_admission_name(name: str) -> str:
+    return "apply_analysis_patch" if name == _REPORT_CODE_SOURCE_TOOL_NAME else name
 
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
@@ -1804,7 +1813,9 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         tool
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
-        and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+        and reporting_phase_allows_tool(
+            phase, _report_tool_admission_name(name), task_kind=task_kind
+        )
     ]
 
 
@@ -1945,10 +1956,12 @@ def _phase_filtered_model_call(
             if (name := _report_model_tool_name(tool)) is not None
         ]
         if len(visible_names) == 1:
-            updated_kwargs["tool_choice"] = {
-                "type": "function",
-                "function": {"name": visible_names[0]},
-            }
+            tool_name = visible_names[0]
+            updated_kwargs["tool_choice"] = (
+                {"type": "custom", "custom": {"name": tool_name}}
+                if tool_name == _REPORT_CODE_SOURCE_TOOL_NAME
+                else {"type": "function", "function": {"name": tool_name}}
+            )
     return tuple(positional), updated_kwargs
 
 
@@ -2400,7 +2413,7 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
                 and phase in {"analysis", "section"}
                 and not reporting_phase_allows_tool(
                     phase,
-                    name,
+                    _report_tool_admission_name(name),
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
@@ -2562,6 +2575,133 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         async for response in super().ainvoke_stream(messages, *args, **kwargs):
             yield response
+
+
+class ReportingCodeOpenAIChat(ReportingPhaseOpenAIChat):
+    """仅为 Coding Agent 桥接 OpenAI-compatible custom text tool。"""
+
+    _report_code_custom_tool_active = False
+
+    def _format_tools(self, tools: Any) -> list[dict[str, Any]]:
+        formatted_tools = super()._format_tools(tools)
+        custom_tools = [
+            tool
+            for tool in formatted_tools
+            if _report_model_tool_name(tool) == _REPORT_CODE_SOURCE_TOOL_NAME
+        ]
+        if custom_tools and len(formatted_tools) != 1:
+            raise ReportingError(
+                _REPORT_CODE_SOURCE_TOOL_ERROR,
+                "源码提交阶段只能暴露唯一 custom 工具。",
+            )
+        if not custom_tools:
+            self._report_code_custom_tool_active = False
+            return formatted_tools
+
+        function = custom_tools[0].get("function")
+        description = (
+            function.get("description")
+            if isinstance(function, Mapping) and isinstance(function.get("description"), str)
+            else "提交完整原始 Python 源码。"
+        )
+        self._report_code_custom_tool_active = True
+        return [
+            {
+                "type": "custom",
+                "custom": {
+                    "name": _REPORT_CODE_SOURCE_TOOL_NAME,
+                    "description": description,
+                    "format": {"type": "text"},
+                },
+            }
+        ]
+
+    def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        params = super().get_request_params(*args, **kwargs)
+        if self._report_code_custom_tool_active:
+            params["tool_choice"] = {
+                "type": "custom",
+                "custom": {"name": _REPORT_CODE_SOURCE_TOOL_NAME},
+            }
+        return params
+
+    @staticmethod
+    def _raw_field(value: Any, field: str) -> Any:
+        return value.get(field) if isinstance(value, Mapping) else getattr(value, field, None)
+
+    @classmethod
+    def _raw_tool_calls(cls, choice: Any) -> list[Any]:
+        message = cls._raw_field(choice, "message")
+        calls = cls._raw_field(message, "tool_calls")
+        return list(calls) if isinstance(calls, (list, tuple)) else []
+
+    @staticmethod
+    def _invalid_custom_response(message: str) -> ReportingError:
+        return ReportingError(_REPORT_CODE_SOURCE_TOOL_ERROR, message)
+
+    def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
+        choices = self._raw_field(response, "choices")
+        choices = list(choices) if isinstance(choices, (list, tuple)) else []
+        custom_calls = [
+            call
+            for choice in choices
+            for call in self._raw_tool_calls(choice)
+            if self._raw_field(call, "type") == "custom"
+        ]
+        if not self._report_code_custom_tool_active:
+            if custom_calls:
+                raise self._invalid_custom_response("当前阶段收到未知 custom 工具调用。")
+            return super()._parse_provider_response(response, **kwargs)
+
+        if len(choices) != 1 or self._raw_field(choices[0], "finish_reason") != "tool_calls":
+            raise self._invalid_custom_response("源码 custom 工具响应未以 tool_calls 正常结束。")
+        calls = self._raw_tool_calls(choices[0])
+        if len(calls) != 1 or self._raw_field(calls[0], "type") != "custom":
+            raise self._invalid_custom_response("源码 custom 工具响应必须只包含一次工具调用。")
+        call = calls[0]
+        custom = self._raw_field(call, "custom")
+        name = self._raw_field(custom, "name")
+        source = self._raw_field(custom, "input")
+        call_id = self._raw_field(call, "id")
+        if name != _REPORT_CODE_SOURCE_TOOL_NAME:
+            raise self._invalid_custom_response("源码 custom 工具响应包含未知工具调用。")
+        if not isinstance(source, str) or not isinstance(call_id, str) or not call_id:
+            raise self._invalid_custom_response("源码 custom 工具响应缺少有效 input 或调用身份。")
+
+        parsed = super()._parse_provider_response(response, **kwargs)
+        parsed.tool_calls = [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": _REPORT_CODE_SOURCE_TOOL_NAME,
+                    "arguments": json.dumps(
+                        {"source": source}, ensure_ascii=False, separators=(",", ":")
+                    ),
+                },
+            }
+        ]
+        return parsed
+
+    @staticmethod
+    def _raise_stable_custom_error(error: Exception) -> None:
+        cause = error.__cause__
+        if isinstance(cause, ReportingError) and cause.code == _REPORT_CODE_SOURCE_TOOL_ERROR:
+            raise cause
+
+    def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super().invoke(messages, *args, **kwargs)
+        except Exception as error:
+            self._raise_stable_custom_error(error)
+            raise
+
+    async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await super().ainvoke(messages, *args, **kwargs)
+        except Exception as error:
+            self._raise_stable_custom_error(error)
+            raise
 
 
 class ReportFacadeOpenAIChat(ReportingOpenAIChat):
@@ -2844,20 +2984,33 @@ def create_reporting_generator_agent(
     )
 
 
+def _reporting_code_model(model: Any) -> ReportingCodeOpenAIChat:
+    if not isinstance(model, OpenAIChat):
+        raise TypeError("Reporting code agent requires OpenAIChat")
+    code_model = ReportingCodeOpenAIChat(
+        **{field.name: getattr(model, field.name) for field in fields(model)}
+    )
+    budget = getattr(model, "_task_execution_input_token_budget", None)
+    if isinstance(budget, int) and budget > 0:
+        code_model._task_execution_input_token_budget = budget
+    return code_model
+
+
 def create_reporting_code_agent(
     *, model: Any, name: str, role: str | None = None, instructions: Any = None
 ) -> Agent:
-    """创建只用于签发 Python unified diff 的无结构化 Coding Agent。
+    """创建只通过 custom text tool 签发 Python 源码的 Coding Agent。
 
-    Coding Agent 的源码和补丁都通过 Workflow 工具回执传递；普通文本永远不是成功结果。
+    原始源码只在 provider custom.input 与进程内 Function 参数之间流转；普通文本
+    永远不是成功结果，其他 Reporting Agent 继续使用原有 function-call 协议。
     """
 
     base_instructions = [
-        "普通文本不算成功；Markdown、代码围栏或直接输出 Python 源码同样不算成功。",
-        "严格服从本阶段唯一工具授权：初次/写入阶段只调用一次 apply_analysis_patch，修复读取阶段只调用一次 read_file。",
-        "patchProtocol.operation=create 时必须使用 --- /dev/null 到精确签发路径；operation=update 时必须更新同一路径。",
-        "补丁只能包含该签发 Python 文件，源码必须为 UTF-8/LF、多物理行且以换行结尾，并遵守 patchProtocol 的字节与行长上限。",
-        "写入阶段只能签发完整 Python 脚本对应的标准 unified diff；收到工具回执后立即结束。",
+        "普通文本、Markdown、代码围栏和解释都不算成功。",
+        "写入阶段只调用一次 submit_python_source；将完整原始 Python 源码直接作为 custom input 提交，收到工具回执后立即结束。",
+        "custom input 只能包含 Python 源码本身，不得包含 unified diff、文件头、hunk、JSON 包装或说明文字。",
+        "源码必须使用 UTF-8/LF、多物理行并以换行结尾，且遵守 sourceProtocol 的字节与物理行长度上限。",
+        "修复读取阶段仍只调用一次 read_file，并逐字使用其受信回执生成完整修复源码。",
     ]
     if instructions:
         if isinstance(instructions, str):
@@ -2867,8 +3020,8 @@ def create_reporting_code_agent(
     return Agent(
         id=name,
         name=name,
-        role=role or "签发 Reporting Python 脚本的 unified diff。",
-        model=model,
+        role=role or "通过 custom text tool 签发完整 Reporting Python 源码。",
+        model=_reporting_code_model(model),
         instructions=base_instructions,
         output_schema=None,
         parse_response=False,
