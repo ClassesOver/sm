@@ -106,7 +106,10 @@ class ReportingStateRepository:
             Column(
                 "report_run_id",
                 String(256),
-                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+                ForeignKey(
+                    f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id",
+                    name="fk_reporting_run_states_report_run_id",
+                ),
                 primary_key=True,
             ),
             Column("external_run_id", String(256), nullable=False, unique=True),
@@ -126,7 +129,10 @@ class ReportingStateRepository:
             Column(
                 "report_run_id",
                 String(256),
-                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+                ForeignKey(
+                    f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id",
+                    name="fk_reporting_command_receipts_report_run_id",
+                ),
                 primary_key=True,
             ),
             Column("command_id", String(256), primary_key=True),
@@ -140,11 +146,15 @@ class ReportingStateRepository:
             Column(
                 "report_run_id",
                 String(256),
-                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+                ForeignKey(
+                    f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id",
+                    name="fk_reporting_workflow_thread_owners_report_run_id",
+                ),
             ),
             Column("external_run_id", String(256), nullable=False),
             Column("owner_user_id", String(256), nullable=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
+            Index("ix_reporting_workflow_thread_owners_report_run_id", "report_run_id"),
         )
         self.mcp_requests = Table(
             "reporting_mcp_requests",
@@ -153,7 +163,10 @@ class ReportingStateRepository:
             Column(
                 "report_run_id",
                 String(256),
-                ForeignKey(f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id"),
+                ForeignKey(
+                    f"{REPORTING_DB_SCHEMA}.reporting_runs.report_run_id",
+                    name="fk_reporting_mcp_requests_report_run_id",
+                ),
             ),
             Column("request_fingerprint", String(64), nullable=False),
             Column("thread_id", String(256), nullable=False),
@@ -161,6 +174,7 @@ class ReportingStateRepository:
             Column("database", String(256), nullable=False),
             Column("company_id", String(256), nullable=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
+            Index("ix_reporting_mcp_requests_report_run_id", "report_run_id"),
         )
         self._initialized = False
         shared_lock = getattr(db, "_agentos_reporting_state_initialize_lock", None)
@@ -187,7 +201,92 @@ class ReportingStateRepository:
                             'ADD COLUMN IF NOT EXISTS report_run_id VARCHAR(256)'
                         )
                     )
+                for statement in self._legacy_upgrade_statements():
+                    await connection.execute(text(statement))
             self._initialized = True
+
+    @staticmethod
+    def _legacy_upgrade_statements() -> tuple[str, ...]:
+        schema = REPORTING_DB_SCHEMA
+        statements = [
+            f"""
+            INSERT INTO {schema}.reporting_runs (
+                report_run_id, external_run_id, entrypoint, workflow_id,
+                agno_session_id, agno_run_id, caller_session_id, caller_run_id,
+                thread_id, owner_user_id, database, company_id, revision, status,
+                finalization_pending, created_at, started_at, finished_at, updated_at
+            )
+            SELECT
+                state.report_run_id, state.external_run_id, 'unknown',
+                'enterprise-reporting-workflow-v1', state.thread_id, state.report_run_id,
+                NULL, NULL, state.thread_id, state.owner_user_id, 'default', 'default',
+                state.revision,
+                CASE
+                    WHEN state.phase = 'completed' THEN 'completed'
+                    WHEN state.phase = 'failed' THEN 'failed'
+                    ELSE 'running'
+                END,
+                FALSE, state.created_at, state.created_at,
+                CASE
+                    WHEN state.phase IN ('completed', 'failed') THEN state.updated_at
+                    ELSE NULL
+                END,
+                state.updated_at
+            FROM {schema}.reporting_run_states AS state
+            ON CONFLICT DO NOTHING
+            """,
+            f"""
+            UPDATE {schema}.reporting_workflow_thread_owners AS owner
+            SET report_run_id = run.report_run_id
+            FROM {schema}.reporting_runs AS run
+            WHERE owner.report_run_id IS NULL
+              AND owner.external_run_id = run.external_run_id
+            """,
+            f"""
+            UPDATE {schema}.reporting_mcp_requests AS request
+            SET report_run_id = run.report_run_id
+            FROM {schema}.reporting_runs AS run
+            WHERE request.report_run_id IS NULL
+              AND request.external_run_id = run.external_run_id
+            """,
+            f"CREATE INDEX IF NOT EXISTS ix_reporting_workflow_thread_owners_report_run_id "
+            f"ON {schema}.reporting_workflow_thread_owners (report_run_id)",
+            f"CREATE INDEX IF NOT EXISTS ix_reporting_mcp_requests_report_run_id "
+            f"ON {schema}.reporting_mcp_requests (report_run_id)",
+        ]
+        constraints = (
+            ("reporting_run_states", "fk_reporting_run_states_report_run_id"),
+            ("reporting_command_receipts", "fk_reporting_command_receipts_report_run_id"),
+            (
+                "reporting_workflow_thread_owners",
+                "fk_reporting_workflow_thread_owners_report_run_id",
+            ),
+            ("reporting_mcp_requests", "fk_reporting_mcp_requests_report_run_id"),
+        )
+        for table_name, constraint_name in constraints:
+            statements.extend(
+                (
+                    f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = '{constraint_name}'
+                              AND conrelid = '{schema}.{table_name}'::regclass
+                        ) THEN
+                            ALTER TABLE {schema}.{table_name}
+                            ADD CONSTRAINT {constraint_name}
+                            FOREIGN KEY (report_run_id)
+                            REFERENCES {schema}.reporting_runs (report_run_id)
+                            NOT VALID;
+                        END IF;
+                    END $$
+                    """,
+                    f"ALTER TABLE {schema}.{table_name} "
+                    f"VALIDATE CONSTRAINT {constraint_name}",
+                )
+            )
+        return tuple(statements)
 
     async def register_run(self, **values: Any) -> dict[str, Any]:
         """登记 Reporting 顶层运行及其 Agno 身份；重复登记只读取首条绑定。"""
@@ -201,8 +300,16 @@ class ReportingStateRepository:
             "workflow_id": str(values.get("workflow_id") or "enterprise-reporting-workflow-v1"),
             "agno_session_id": str(values["agno_session_id"]),
             "agno_run_id": str(values["agno_run_id"]),
-            "caller_session_id": values.get("caller_session_id"),
-            "caller_run_id": values.get("caller_run_id"),
+            "caller_session_id": (
+                str(values["caller_session_id"])
+                if values.get("caller_session_id") is not None
+                else None
+            ),
+            "caller_run_id": (
+                str(values["caller_run_id"])
+                if values.get("caller_run_id") is not None
+                else None
+            ),
             "thread_id": str(values["thread_id"]),
             "owner_user_id": str(values["owner_user_id"]),
             "database": str(values.get("database") or "default"),
@@ -227,48 +334,127 @@ class ReportingStateRepository:
                 ) from error
             row = (
                 await connection.execute(
-                    select(self.runs).where(self.runs.c.report_run_id == row_values["report_run_id"])
+                    select(self.runs)
+                    .where(self.runs.c.report_run_id == row_values["report_run_id"])
+                    .with_for_update()
                 )
             ).first()
-        if row is None:
-            raise ReportingStateError("report_run_registration_failed", "Reporting run 登记失败。")
-        stored = dict(row._mapping)
-        identity_keys = (
-            (
-                "external_run_id",
-                "agno_run_id",
-                "thread_id",
-                "owner_user_id",
-                "revision",
-            )
-            if row_values["entrypoint"] == "unknown"
-            else (
-                "external_run_id",
-                "entrypoint",
-                "workflow_id",
-                "agno_session_id",
-                "agno_run_id",
-                "thread_id",
-                "owner_user_id",
-                "database",
-                "company_id",
-                "revision",
-            )
-        )
-        for key in identity_keys:
-            if stored[key] != row_values[key]:
+            if row is None:
                 raise ReportingStateError(
-                    "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+                    "report_run_registration_failed", "Reporting run 登记失败。"
+                )
+            stored = dict(row._mapping)
+            core_identity_keys = (
+                "external_run_id",
+                "agno_run_id",
+                "thread_id",
+                "owner_user_id",
+                "revision",
+            )
+            self._assert_run_identity(stored, row_values, core_identity_keys)
+            if stored["entrypoint"] == "unknown" and row_values["entrypoint"] != "unknown":
+                upgrade_values = {
+                    key: row_values[key]
+                    for key in (
+                        "entrypoint",
+                        "workflow_id",
+                        "agno_session_id",
+                        "caller_session_id",
+                        "caller_run_id",
+                        "database",
+                        "company_id",
+                    )
+                }
+                try:
+                    result = await connection.execute(
+                        update(self.runs)
+                        .where(
+                            self.runs.c.report_run_id == row_values["report_run_id"],
+                            self.runs.c.entrypoint == "unknown",
+                            *(self.runs.c[key] == row_values[key] for key in core_identity_keys),
+                        )
+                        .values(**upgrade_values)
+                    )
+                except IntegrityError as error:
+                    raise ReportingStateError(
+                        "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+                    ) from error
+                if result.rowcount != 1:
+                    raise ReportingStateError(
+                        "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+                    )
+                row = (
+                    await connection.execute(
+                        select(self.runs).where(
+                            self.runs.c.report_run_id == row_values["report_run_id"]
+                        )
+                    )
+                ).first()
+                if row is None:
+                    raise ReportingStateError(
+                        "report_run_registration_failed", "Reporting run 登记失败。"
+                    )
+                stored = dict(row._mapping)
+            if row_values["entrypoint"] != "unknown":
+                self._assert_run_identity(
+                    stored,
+                    row_values,
+                    (
+                        "entrypoint",
+                        "workflow_id",
+                        "agno_session_id",
+                        "caller_session_id",
+                        "caller_run_id",
+                        "database",
+                        "company_id",
+                    ),
                 )
         return stored
+
+    @staticmethod
+    def _assert_run_identity(
+        stored: Mapping[str, Any], expected: Mapping[str, Any], keys: tuple[str, ...]
+    ) -> None:
+        if any(stored[key] != expected[key] for key in keys):
+            raise ReportingStateError(
+                "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+            )
 
     async def attach_request_run(self, external_run_id: str, report_run_id: str) -> None:
         await self.initialize()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            await connection.execute(
+            result = await connection.execute(
                 update(self.mcp_requests)
                 .where(self.mcp_requests.c.external_run_id == external_run_id)
                 .values(report_run_id=report_run_id)
+            )
+        if result.rowcount != 1:
+            raise ReportingStateError(
+                "report_mcp_request_not_found", "Reporting MCP 请求不存在。"
+            )
+
+    async def attach_workflow_owner_run(
+        self,
+        *,
+        thread_id: str,
+        external_run_id: str,
+        owner_user_id: str,
+        report_run_id: str,
+    ) -> None:
+        await self.initialize()
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            result = await connection.execute(
+                update(self.workflow_thread_owners)
+                .where(
+                    self.workflow_thread_owners.c.thread_id == thread_id,
+                    self.workflow_thread_owners.c.external_run_id == external_run_id,
+                    self.workflow_thread_owners.c.owner_user_id == owner_user_id,
+                )
+                .values(report_run_id=report_run_id)
+            )
+        if result.rowcount != 1:
+            raise ReportingStateError(
+                "report_workflow_owner_not_found", "Reporting workflow owner 不存在。"
             )
 
     async def update_run_status(
@@ -276,23 +462,26 @@ class ReportingStateRepository:
         report_run_id: str,
         *,
         status: str,
-        finalization_pending: bool = False,
+        finalization_pending: bool | None = None,
     ) -> None:
         await self.initialize()
         now = datetime.now(UTC)
         values: dict[str, Any] = {
             "status": status,
-            "finalization_pending": finalization_pending,
             "updated_at": now,
         }
+        if finalization_pending is not None:
+            values["finalization_pending"] = finalization_pending
         if status in {"completed", "cancelled", "failed"}:
             values["finished_at"] = now
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            await connection.execute(
+            result = await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.report_run_id == report_run_id)
                 .values(**values)
             )
+        if result.rowcount != 1:
+            raise ReportingStateError("report_run_not_found", "Reporting run 不存在。")
 
     @staticmethod
     def _state_from_row(row: Any) -> ReportingRunState:
@@ -344,6 +533,26 @@ class ReportingStateRepository:
                 )
             ).first()
         return self._state_from_row(row) if row is not None else None
+
+    async def get_run(self, report_run_id: str) -> dict[str, Any] | None:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+            row = (
+                await connection.execute(
+                    select(self.runs).where(self.runs.c.report_run_id == report_run_id)
+                )
+            ).first()
+        return dict(row._mapping) if row is not None else None
+
+    async def get_run_by_external(self, external_run_id: str) -> dict[str, Any] | None:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+            row = (
+                await connection.execute(
+                    select(self.runs).where(self.runs.c.external_run_id == external_run_id)
+                )
+            ).first()
+        return dict(row._mapping) if row is not None else None
 
     async def claim_workflow_thread(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str

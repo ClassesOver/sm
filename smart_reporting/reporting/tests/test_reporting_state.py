@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections import deque
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -133,6 +136,252 @@ def test_repository_models_run_identity_as_parent_aggregate() -> None:
     assert repository.command_receipts.c.report_run_id.foreign_keys
     assert repository.workflow_thread_owners.c.report_run_id.foreign_keys
     assert repository.mcp_requests.c.report_run_id.nullable is True
+    assert {index.name for index in repository.workflow_thread_owners.indexes} >= {
+        "ix_reporting_workflow_thread_owners_report_run_id"
+    }
+    assert {index.name for index in repository.mcp_requests.indexes} >= {
+        "ix_reporting_mcp_requests_report_run_id"
+    }
+
+
+class _FakeResult:
+    def __init__(self, *, row: dict[str, Any] | None = None, rowcount: int = 1) -> None:
+        self._row = SimpleNamespace(_mapping=row) if row is not None else None
+        self.rowcount = rowcount
+
+    def first(self):
+        return self._row
+
+
+class _RecordingConnection:
+    def __init__(
+        self,
+        *,
+        row: dict[str, Any] | None = None,
+        upgraded_row: dict[str, Any] | None = None,
+        update_rowcounts: tuple[int, ...] = (),
+    ) -> None:
+        self.statements: list[Any] = []
+        self.row = row
+        self.upgraded_row = upgraded_row
+        self.update_rowcounts = deque(update_rowcounts)
+        self.run_sync_calls = 0
+
+    async def execute(self, statement: Any) -> _FakeResult:
+        self.statements.append(statement)
+        if getattr(statement, "is_update", False):
+            rowcount = self.update_rowcounts.popleft() if self.update_rowcounts else 1
+            if rowcount == 1 and self.upgraded_row is not None:
+                self.row = self.upgraded_row
+            return _FakeResult(rowcount=rowcount)
+        if getattr(statement, "is_select", False):
+            return _FakeResult(row=self.row)
+        return _FakeResult()
+
+    async def run_sync(self, callback) -> None:
+        self.run_sync_calls += 1
+
+
+class _RecordingEngine:
+    dialect = SimpleNamespace(name="postgresql")
+
+    def __init__(self, connection: _RecordingConnection) -> None:
+        self.connection = connection
+
+    @asynccontextmanager
+    async def begin(self):
+        yield self.connection
+
+    @asynccontextmanager
+    async def connect(self):
+        yield self.connection
+
+
+def _fake_repository(connection: _RecordingConnection) -> ReportingStateRepository:
+    return ReportingStateRepository(SimpleNamespace(db_engine=_RecordingEngine(connection)))  # type: ignore[arg-type]
+
+
+def _run_row(**overrides: Any) -> dict[str, Any]:
+    now = datetime(2026, 9, 9, tzinfo=UTC)
+    return {
+        "report_run_id": "report-run",
+        "external_run_id": "external-run",
+        "entrypoint": "agentos",
+        "workflow_id": "enterprise-reporting-workflow-v1",
+        "agno_session_id": "workflow-session",
+        "agno_run_id": "report-run",
+        "caller_session_id": "caller-session",
+        "caller_run_id": "external-run",
+        "thread_id": "thread",
+        "owner_user_id": "user",
+        "database": "odoo",
+        "company_id": "11",
+        "revision": 1,
+        "status": "running",
+        "finalization_pending": False,
+        "created_at": now,
+        "started_at": now,
+        "finished_at": None,
+        "updated_at": now,
+        **overrides,
+    }
+
+
+@pytest.mark.anyio
+async def test_repository_initialize_upgrades_legacy_schema_in_dependency_order() -> None:
+    connection = _RecordingConnection()
+    repository = _fake_repository(connection)
+
+    await repository.initialize()
+
+    sql = [str(statement) for statement in connection.statements]
+    joined = "\n".join(sql)
+    assert connection.run_sync_calls == 1
+    assert "INSERT INTO agentos_reporting.reporting_runs" in joined
+    assert "FROM agentos_reporting.reporting_run_states" in joined
+    assert joined.index("INSERT INTO agentos_reporting.reporting_runs") < joined.index(
+        "UPDATE agentos_reporting.reporting_workflow_thread_owners"
+    )
+    assert joined.index("UPDATE agentos_reporting.reporting_workflow_thread_owners") < joined.index(
+        "VALIDATE CONSTRAINT fk_reporting_workflow_thread_owners_report_run_id"
+    )
+    assert "fk_reporting_run_states_report_run_id" in joined
+    assert "fk_reporting_command_receipts_report_run_id" in joined
+    assert "fk_reporting_mcp_requests_report_run_id" in joined
+    assert "ON CONFLICT" in joined
+    assert "DROP " not in joined.upper()
+
+
+@pytest.mark.anyio
+async def test_repository_initialize_legacy_upgrade_sql_is_repeatable() -> None:
+    connection = _RecordingConnection()
+    database = SimpleNamespace(db_engine=_RecordingEngine(connection))
+    first_repository = ReportingStateRepository(database)  # type: ignore[arg-type]
+    second_repository = ReportingStateRepository(database)  # type: ignore[arg-type]
+
+    await first_repository.initialize()
+    first_count = len(connection.statements)
+    await second_repository.initialize()
+
+    assert len(connection.statements) == first_count * 2
+    assert [str(item) for item in connection.statements[:first_count]] == [
+        str(item) for item in connection.statements[first_count:]
+    ]
+    assert all(
+        "IF NOT EXISTS" in str(statement) or "ON CONFLICT" in str(statement)
+        or "UPDATE agentos_reporting" in str(statement)
+        or "VALIDATE CONSTRAINT" in str(statement)
+        or "CREATE SCHEMA IF NOT EXISTS" in str(statement)
+        for statement in connection.statements
+    )
+
+
+@pytest.mark.anyio
+async def test_repository_upgrades_unknown_placeholder_to_real_registration() -> None:
+    placeholder = _run_row(
+        entrypoint="unknown",
+        agno_session_id="thread",
+        caller_session_id=None,
+        caller_run_id=None,
+        database="default",
+        company_id="default",
+    )
+    real = _run_row()
+    connection = _RecordingConnection(row=placeholder, upgraded_row=real)
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    stored = await repository.register_run(**real)
+
+    assert stored == real
+    assert any(getattr(statement, "is_update", False) for statement in connection.statements)
+
+
+@pytest.mark.anyio
+async def test_repository_rejects_real_registration_with_changed_caller_identity() -> None:
+    stored = _run_row()
+    connection = _RecordingConnection(row=stored)
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    with pytest.raises(ReportingStateError) as conflict:
+        await repository.register_run(
+            **{**stored, "caller_session_id": "other-session", "caller_run_id": "other-run"}
+        )
+
+    assert conflict.value.code == "report_run_identity_conflict"
+
+
+@pytest.mark.anyio
+async def test_repository_unknown_upgrade_fails_closed_on_concurrent_conflict() -> None:
+    placeholder = _run_row(
+        entrypoint="unknown",
+        agno_session_id="thread",
+        caller_session_id=None,
+        caller_run_id=None,
+        database="default",
+        company_id="default",
+    )
+    connection = _RecordingConnection(row=placeholder, update_rowcounts=(0,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    with pytest.raises(ReportingStateError) as conflict:
+        await repository.register_run(**_run_row())
+
+    assert conflict.value.code == "report_run_identity_conflict"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("operation", "expected_code"),
+    [
+        ("attach", "report_mcp_request_not_found"),
+        ("status", "report_run_not_found"),
+    ],
+)
+async def test_repository_write_to_missing_parent_link_fails_closed(
+    operation: str, expected_code: str
+) -> None:
+    connection = _RecordingConnection(update_rowcounts=(0,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    with pytest.raises(ReportingStateError) as missing:
+        if operation == "attach":
+            await repository.attach_request_run("missing-external", "report-run")
+        else:
+            await repository.update_run_status("missing-report", status="failed")
+
+    assert missing.value.code == expected_code
+
+
+@pytest.mark.anyio
+async def test_repository_status_update_none_preserves_finalization_pending() -> None:
+    connection = _RecordingConnection(update_rowcounts=(1,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    await repository.update_run_status(
+        "report-run", status="failed", finalization_pending=None
+    )
+
+    statement = next(item for item in connection.statements if getattr(item, "is_update", False))
+    assert "finalization_pending" not in statement.compile().params
+
+
+@pytest.mark.anyio
+async def test_repository_reads_parent_run_by_report_and_external_identity() -> None:
+    stored = _run_row(finalization_pending=True, status="failed")
+    connection = _RecordingConnection(row=stored)
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    assert await repository.get_run("report-run") == stored
+    assert await repository.get_run_by_external("external-run") == stored
+
+    selects = [item for item in connection.statements if getattr(item, "is_select", False)]
+    assert len(selects) == 2
 
 
 def test_submit_visualization_charts_persists_section_submission() -> None:

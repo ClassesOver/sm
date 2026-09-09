@@ -52,17 +52,20 @@ class ErrorRequirement:
 
 class UncontendedStateRepository:
     def __init__(self) -> None:
-        self.status_updates: list[tuple[str, str]] = []
+        self.status_updates: list[tuple[str, str, bool | None]] = []
 
     @asynccontextmanager
     async def workflow_execution_lock(self, _run_id: str):
         yield
 
     async def update_run_status(
-        self, report_run_id: str, *, status: str, finalization_pending: bool = False
+        self,
+        report_run_id: str,
+        *,
+        status: str,
+        finalization_pending: bool | None = None,
     ) -> None:
-        assert finalization_pending is False
-        self.status_updates.append((report_run_id, status))
+        self.status_updates.append((report_run_id, status, finalization_pending))
 
 
 def runtime(**values: object) -> SimpleNamespace:
@@ -509,7 +512,10 @@ async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -
     )
 
     assert result["status"] == terminal_status
-    assert current_runtime.state_repository.status_updates == [("run-1", terminal_status)]
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", terminal_status, True),
+        ("run-1", terminal_status, False),
+    ]
     cleanup.assert_awaited_once_with(
         {
             "external_run_id": "run-1",
@@ -519,6 +525,32 @@ async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -
         "session-1",
         "run-1",
     )
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_marks_completed_without_cleanup_pending() -> None:
+    cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status=RunStatus.completed, content=None)
+
+    result = await drive_workflow(
+        SimpleNamespace(arun=run),
+        current_runtime,
+        {"version": "1", "prompt": "生成运营报告"},
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert result["status"] == "completed"
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "completed", False)
+    ]
+    cleanup.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -541,7 +573,10 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
             company_id="3",
         )
 
-    assert current_runtime.state_repository.status_updates == [("run-1", "failed")]
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "failed", True),
+        ("run-1", "failed", False),
+    ]
     cleanup.assert_awaited_once_with(
         {
             "external_run_id": "run-1",
@@ -551,6 +586,31 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
         "session-1",
         "run-1",
     )
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_maps_agno_error_to_failed_and_keeps_pending_on_cleanup_error() -> None:
+    async def cleanup(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("cleanup failed")
+
+    current_runtime = runtime(cleanup_terminal=cleanup)
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status=RunStatus.error, content=None)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await drive_workflow(
+            SimpleNamespace(arun=run),
+            current_runtime,
+            {"version": "1", "prompt": "生成运营报告"},
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+            database="odoo",
+            company_id="3",
+        )
+
+    assert current_runtime.state_repository.status_updates == [("run-1", "failed", True)]
 
 
 @pytest.mark.anyio

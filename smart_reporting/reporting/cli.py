@@ -278,11 +278,12 @@ async def _drive_workflow_unlocked(
             stream=False,
         )
     except BaseException:
-        await _update_cli_run_status(runtime, run_id, "failed")
-        await runtime.cleanup_terminal(
-            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
-            session_id,
-            run_id,
+        await _finalize_cli_run(
+            runtime,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            status="failed",
         )
         raise
 
@@ -296,14 +297,14 @@ async def _drive_workflow_unlocked(
     )
 
     status = _status(output)
-    await _update_cli_run_status(runtime, run_id, status)
     content = getattr(output, "content", None)
-    if status in {"cancelled", "failed"}:
-        await runtime.cleanup_terminal(
-            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
-            session_id,
-            run_id,
-        )
+    await _finalize_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        status=status,
+    )
     return {
         "status": status,
         "runId": run_id,
@@ -461,13 +462,13 @@ async def _resume_workflow_unlocked(
         retry_delivery_error=True,
     )
     status = _status(output)
-    await _update_cli_run_status(runtime, run_id, status)
-    if status in {"cancelled", "failed"}:
-        await runtime.cleanup_terminal(
-            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
-            session_id,
-            run_id,
-        )
+    await _finalize_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        status=status,
+    )
     return {
         "status": status,
         "runId": run_id,
@@ -505,11 +506,46 @@ async def _register_cli_run(
     )
 
 
-async def _update_cli_run_status(runtime: Any, run_id: str, status: str) -> None:
+async def _update_cli_run_status(
+    runtime: Any,
+    run_id: str,
+    status: str,
+    *,
+    finalization_pending: bool | None = None,
+) -> None:
     repository = getattr(runtime, "state_repository", None)
     update_status = getattr(repository, "update_run_status", None)
     if callable(update_status):
-        await update_status(run_id, status=status)
+        await update_status(
+            run_id,
+            status=status,
+            finalization_pending=finalization_pending,
+        )
+
+
+async def _finalize_cli_run(
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    status: str,
+) -> None:
+    if status not in {"cancelled", "failed"}:
+        await _update_cli_run_status(
+            runtime,
+            run_id,
+            status,
+            finalization_pending=False if status == "completed" else None,
+        )
+        return
+    await _update_cli_run_status(runtime, run_id, status, finalization_pending=True)
+    await runtime.cleanup_terminal(
+        _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+        session_id,
+        run_id,
+    )
+    await _update_cli_run_status(runtime, run_id, status, finalization_pending=False)
 
 
 async def run_cli(
@@ -585,7 +621,8 @@ async def run_cli(
 def _status(output: Any) -> str:
     value = getattr(output, "status", None)
     normalized = value.value if isinstance(value, RunStatus) else str(value or "")
-    return normalized.lower()
+    status = normalized.lower()
+    return "failed" if status in {"error", "failed"} else status
 
 
 def main(argv: list[str] | None = None) -> None:
