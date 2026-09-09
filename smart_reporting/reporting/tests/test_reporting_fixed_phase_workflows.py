@@ -29,14 +29,14 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     RuntimeAnalysisMixin,
     _visualization_section_completion_conditions,
 )
-from smart_reporting.reporting.workflow.runtime.code_generation import (
-    CodeGenerationResult,
-    ReportingCodeGenerationRunner,
-)
 from smart_reporting.reporting.workflow.runtime.base import (
     REPORT_ARTIFACTS_STATE_KEY,
     REPORT_DATASET_LINEAGE_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
+)
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    CodeGenerationResult,
+    ReportingCodeGenerationRunner,
 )
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
