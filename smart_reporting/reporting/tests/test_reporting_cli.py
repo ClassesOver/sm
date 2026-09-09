@@ -589,6 +589,36 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
 
 
 @pytest.mark.anyio
+async def test_drive_workflow_finalizes_when_initial_run_raises_reporting_error() -> None:
+    cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
+    workflow = SimpleNamespace(
+        arun=AsyncMock(
+            side_effect=ReportingError("report_workflow_step_failed", "Agno step failed")
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await drive_workflow(
+            workflow,
+            current_runtime,
+            {"version": "1", "prompt": "生成运营报告"},
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+            database="odoo",
+            company_id="3",
+        )
+
+    assert raised.value.code == "report_workflow_step_failed"
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "failed", True),
+        ("run-1", "failed", False),
+    ]
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_drive_workflow_maps_agno_error_to_failed_and_keeps_pending_on_cleanup_error() -> None:
     async def cleanup(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("cleanup failed")
@@ -625,10 +655,12 @@ async def test_drive_workflow_finalizes_when_review_continue_raises() -> None:
                 error_requirements=[requirement],
             )
         ),
-        acontinue_run=AsyncMock(side_effect=RuntimeError("continue failed")),
+        acontinue_run=AsyncMock(
+            side_effect=ReportingError("report_workflow_step_failed", "continue failed")
+        ),
     )
 
-    with pytest.raises(RuntimeError, match="continue failed"):
+    with pytest.raises(ReportingError) as raised:
         await drive_workflow(
             workflow,
             current_runtime,
@@ -640,6 +672,7 @@ async def test_drive_workflow_finalizes_when_review_continue_raises() -> None:
             company_id="3",
         )
 
+    assert raised.value.code == "report_workflow_step_failed"
     assert current_runtime.state_repository.status_updates == [
         ("run-1", "failed", True),
         ("run-1", "failed", False),
@@ -704,9 +737,7 @@ async def test_resume_workflow_finishes_parent_pending_before_rejecting_terminal
         state_repository=repository,
         cleanup_terminal=cleanup,
     )
-    workflow = SimpleNamespace(
-        aget_run_output=AsyncMock(return_value=SimpleNamespace(status=RunStatus.error))
-    )
+    workflow = SimpleNamespace(aget_run_output=AsyncMock(return_value=None))
 
     result = await resume_workflow(
         workflow,
@@ -721,6 +752,7 @@ async def test_resume_workflow_finishes_parent_pending_before_rejecting_terminal
     assert result["status"] == "failed"
     assert repository.status_updates[-1] == ("run-1", "failed", False)
     cleanup.assert_awaited_once()
+    workflow.aget_run_output.assert_not_awaited()
 
 
 @pytest.mark.anyio

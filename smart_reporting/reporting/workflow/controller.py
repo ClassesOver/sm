@@ -160,6 +160,7 @@ class ReportWorkflowController:
         self._background_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._background_scopes: dict[str, tuple[str, str, str, str]] = {}
         self._background_request_fingerprints: dict[str, str] = {}
+        self._background_cleanup_deferred: set[str] = set()
 
     async def start_external(
         self,
@@ -495,6 +496,8 @@ class ReportWorkflowController:
                         ready.set_exception(error)
                     raise error from finalization_error
             parent_pending = await self._parent_pending_control(scope)
+            if cleanup_deferred or parent_pending is not None:
+                self._background_cleanup_deferred.add(scope["external_run_id"])
             if (
                 not cleanup_deferred
                 and parent_pending is None
@@ -803,6 +806,17 @@ class ReportWorkflowController:
             if scope is None:
                 continue
             thread_id, user_id, _database, _company_id = scope
+            pending = await self._parent_pending_control(
+                {
+                    "external_run_id": external_run_id,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "database": _database,
+                    "company_id": _company_id,
+                }
+            )
+            if pending is not None or external_run_id in self._background_cleanup_deferred:
+                continue
             await self._thread_ownership.release_workflow_thread(
                 thread_id=thread_id,
                 external_run_id=external_run_id,
@@ -1193,22 +1207,46 @@ class ReportWorkflowController:
                 if error_requirement is not None:
                     error_requirement.skip()
                     await workflow.acancel_run(control.workflow_run_id)
-                    output = await workflow.acontinue_run(
-                        run_response=output,
-                        step_requirements=list(getattr(output, "step_requirements", None) or []),
-                        dependencies=self._workflow_dependencies(scope),
-                        stream=False,
-                    )
+                    try:
+                        output = await workflow.acontinue_run(
+                            run_response=output,
+                            step_requirements=list(
+                                getattr(output, "step_requirements", None) or []
+                            ),
+                            dependencies=self._workflow_dependencies(scope),
+                            stream=False,
+                        )
+                    except BaseException as run_error:
+                        await self._finalize_run_error(
+                            run_error,
+                            scope,
+                            control.workflow_session_id,
+                            control.workflow_run_id,
+                            state,
+                        )
+                        raise
                 else:
                     requirement = self._active_requirement(output)
                     requirement.on_reject = OnReject.cancel
                     requirement.reject(feedback="用户取消报表工作流。")
-                    output = await workflow.acontinue_run(
-                        run_response=output,
-                        step_requirements=list(getattr(output, "step_requirements", None) or []),
-                        dependencies=self._workflow_dependencies(scope),
-                        stream=False,
-                    )
+                    try:
+                        output = await workflow.acontinue_run(
+                            run_response=output,
+                            step_requirements=list(
+                                getattr(output, "step_requirements", None) or []
+                            ),
+                            dependencies=self._workflow_dependencies(scope),
+                            stream=False,
+                        )
+                    except BaseException as run_error:
+                        await self._finalize_run_error(
+                            run_error,
+                            scope,
+                            control.workflow_session_id,
+                            control.workflow_run_id,
+                            state,
+                        )
+                        raise
             elif status == "running":
                 await workflow.acancel_run(control.workflow_run_id)
                 output = await workflow.aget_run(

@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import delete, insert, text, update
 
+from smart_reporting.reporting.workflow import repository as reporting_repository_module
 from smart_reporting.reporting.workflow import state as reporting_state_module
 from smart_reporting.reporting.workflow.checkpoint import (
     CheckpointError,
@@ -400,10 +401,22 @@ async def test_repository_serializes_first_schema_initialization_across_engines(
     try:
         async with first_database.async_engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+            await connection.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": reporting_repository_module._REPORTING_SCHEMA_LOCK_KEY},
+            )
+            initializations = (
+                asyncio.create_task(
+                    ReportingStateRepository(first_database.async_db).initialize()
+                ),
+                asyncio.create_task(
+                    ReportingStateRepository(second_database.async_db).initialize()
+                ),
+            )
+            await asyncio.sleep(0.1)
+            assert all(not initialization.done() for initialization in initializations)
 
-        first = ReportingStateRepository(first_database.async_db)
-        second = ReportingStateRepository(second_database.async_db)
-        await asyncio.gather(first.initialize(), second.initialize())
+        await asyncio.wait_for(asyncio.gather(*initializations), timeout=2)
 
         async with first_database.async_engine.connect() as connection:
             table_count = await connection.scalar(

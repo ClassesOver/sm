@@ -43,7 +43,7 @@ from .state import (
 )
 
 REPORTING_DB_SCHEMA = "agentos_reporting"
-_REPORTING_SCHEMA_LOCK_NAMESPACE = 1_381_125_712
+_REPORTING_SCHEMA_LOCK_KEY = 1_381_125_712
 
 
 def _utc(value: datetime) -> datetime:
@@ -192,13 +192,8 @@ class ReportingStateRepository:
                 return
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
                 await connection.execute(
-                    text(
-                        "SELECT pg_advisory_xact_lock(:namespace, :version)"
-                    ),
-                    {
-                        "namespace": _REPORTING_SCHEMA_LOCK_NAMESPACE,
-                        "version": REPORTING_STATE_SCHEMA_VERSION,
-                    },
+                    text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                    {"lock_key": _REPORTING_SCHEMA_LOCK_KEY},
                 )
                 await connection.execute(
                     text(f'CREATE SCHEMA IF NOT EXISTS "{REPORTING_DB_SCHEMA}"')
