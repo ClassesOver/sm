@@ -66,7 +66,6 @@ from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -1045,9 +1044,6 @@ class ProbeRecorder:
             except ReportingWorkspaceError as error:
                 return self._reject("probe_patch_invalid", str(error))
             self.committed_script_path = identity.path
-            state = self.run_context.session_state if self.run_context is not None else None
-            if isinstance(state, dict):
-                state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
             return {
                 "ok": True,
                 "status": "committed",
