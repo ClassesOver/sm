@@ -1666,6 +1666,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
                     **planner_payload,
                     "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
                 },
+                diagnostic=None,
                 run_context=task_context,
             )
             await self.repair_script(
@@ -1711,6 +1712,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         ),
         run_python_script=AsyncMock(),
         complete_analysis_item=AsyncMock(),
+        recover_signed_analysis_script=AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.build_reporting_tools",

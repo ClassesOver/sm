@@ -978,7 +978,7 @@ class ReportingToolkitBase(Toolkit):
                     "recoveryOperation": error.details.get("recoveryOperation"),
                 }
             result["requiredActions"] = [
-                "只使用 details.currentFiles 中当前 64 位 sha256 调用 apply_analysis_patch 覆盖。"
+                "基于 details.currentFiles 反映的当前文件状态重新生成标准 unified diff。"
             ]
         elif (
             code == "report_analysis_dependency_missing"

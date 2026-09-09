@@ -75,14 +75,6 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
         "read_tool_output",
     }
 )
-REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
-    {
-        "apply_analysis_patch",
-        "run_python_script",
-        "submit_visualization_charts",
-    }
-)
-
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
     "reporting_projection_metrics", default=None
 )

@@ -30,6 +30,7 @@ from smart_reporting.reporting.tools.workspace_adapter import (
     WorkspaceServiceReportingRuntime,
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
+from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.task_execution import abuild_workspace_changes
 from smart_reporting.workspace import WorkspaceService
 
@@ -495,6 +496,258 @@ async def test_invalid_python_source_does_not_record_intent_or_mutate_workspace(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "patch",
+    [
+        (
+            "diff --git a/analysis/evidence/a1/supplement.py b/analysis/evidence/a1/supplement.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n+++ b/analysis/evidence/a1/supplement.py\n@@ -0,0 +1,2 @@\n"
+            "+value = 1\n+print(value)\n"
+            "diff --git a/analysis/evidence/a1/extra.txt b/analysis/evidence/a1/extra.txt\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n+++ b/analysis/evidence/a1/extra.txt\n@@ -0,0 +1 @@\n"
+            "+extra\n"
+        ),
+        "--- /dev/null\n+++ b/analysis/evidence/a1/extra.txt\n@@ -0,0 +1 @@\n+extra\n",
+        (
+            "--- a/analysis/evidence/a1/supplement.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n"
+            "-value = 1\n-print(value)\n"
+        ),
+    ],
+)
+async def test_analysis_patch_rejects_non_single_signed_script_before_intent_or_mutation(
+    patch: str,
+) -> None:
+    class Scheduler:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def write(self):
+            return self
+
+    scope = SimpleNamespace(thread_id="thread-1")
+    runtime = SimpleNamespace(
+        workspace=SimpleNamespace(
+            normalize_path=WorkspaceService.normalize_path,
+            aread_text=AsyncMock(return_value="value = 1\nprint(value)\n"),
+        ),
+        scope=AsyncMock(return_value=scope),
+        bound_external_run_id=lambda _context: "run-1",
+        task_scheduler=lambda _run_id: Scheduler(),
+        patch=AsyncMock(),
+    )
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = runtime
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    harness._require_phase_tool = lambda *_args, **_kwargs: None
+    harness._require_analysis_task_output_paths = lambda *_args, **_kwargs: None
+    harness._durable_state = AsyncMock(return_value=SimpleNamespace(payload={}))
+    harness._apply_durable = AsyncMock()
+    harness._failure = ReportingToolkit._failure
+
+    result = await harness.apply_analysis_patch(patch)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_python_source_shape_invalid"
+    runtime.patch.assert_not_awaited()
+    harness._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["create", "update"])
+async def test_signed_script_loader_recovers_pending_post_mutation_identity(
+    operation: str,
+) -> None:
+    path = "analysis/evidence/a1/supplement.py"
+    source = "value = 2\nprint(value)\n"
+    identity = {
+        "path": path,
+        "size": len(source.encode()),
+        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+    }
+    change = {"operation": operation, "path": path, "content": source}
+    if operation == "update":
+        change["expected_sha256"] = hashlib.sha256(b"value = 1\nprint(value)\n").hexdigest()
+    intent = {
+        "intentId": "a" * 64,
+        "status": "pending",
+        "toolName": "apply_analysis_patch",
+        "arguments": {"patch": "diff", "operations": [change]},
+        "affectedPaths": [path],
+        "expectedStates": {path: "present"},
+    }
+    scope = SimpleNamespace(thread_id="thread-1")
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        workspace=SimpleNamespace(batch_hash_files=AsyncMock(return_value=[identity])),
+    )
+    harness._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"writeIntents": {"a" * 64: intent}})
+    )
+    harness._apply_durable = AsyncMock()
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+
+    recovered = await harness.recover_signed_analysis_script(path, None)
+
+    assert recovered == FileIdentity.model_validate(identity)
+    harness._apply_durable.assert_awaited_once_with(
+        scope,
+        name="commit_write_intent",
+        payload={"intentId": "a" * 64, "artifacts": [identity]},
+        command_id=f"write-commit:{'a' * 64}",
+    )
+
+
+@pytest.mark.anyio
+async def test_analysis_patch_recovers_pending_update_before_rebuilding_old_hunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Scheduler:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def write(self):
+            return self
+
+    path = "analysis/evidence/a1/supplement.py"
+    previous = "value = 1\nprint(value)\n"
+    source = "value = 2\nprint(value)\n"
+    patch = (
+        f"--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@\n"
+        "-value = 1\n+value = 2\n print(value)\n"
+    )
+    identity = {
+        "path": path,
+        "size": len(source.encode()),
+        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+    }
+    intent_id = "a" * 64
+    intent = {
+        "intentId": intent_id,
+        "status": "pending",
+        "toolName": "apply_analysis_patch",
+        "arguments": {
+            "patch": patch,
+            "operations": [
+                {
+                    "operation": "update",
+                    "path": path,
+                    "content": source,
+                    "expected_sha256": hashlib.sha256(previous.encode()).hexdigest(),
+                }
+            ],
+        },
+        "affectedPaths": [path],
+        "expectedStates": {path: "present"},
+    }
+    scope = SimpleNamespace(thread_id="thread-1")
+    runtime = SimpleNamespace(
+        workspace=SimpleNamespace(batch_hash_files=AsyncMock(return_value=[identity])),
+        scope=AsyncMock(return_value=scope),
+        bound_external_run_id=lambda _context: "run-1",
+        task_scheduler=lambda _run_id: Scheduler(),
+        patch=AsyncMock(),
+    )
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = runtime
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    harness._require_phase_tool = lambda *_args, **_kwargs: None
+    harness._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"writeIntents": {intent_id: intent}})
+    )
+    harness._apply_durable = AsyncMock()
+    harness._failure = ReportingToolkit._failure
+    rebuild = AsyncMock(side_effect=AssertionError("旧 hunk 不应在恢复前重建"))
+    monkeypatch.setattr(
+        "smart_reporting.reporting.tools.analysis_item.abuild_workspace_changes", rebuild
+    )
+
+    result = await harness.apply_analysis_patch(patch)
+
+    assert result["ok"] is True
+    assert result["recovered"] is True
+    rebuild.assert_not_awaited()
+    runtime.patch.assert_not_awaited()
+    harness._apply_durable.assert_awaited_once_with(
+        scope,
+        name="commit_write_intent",
+        payload={"intentId": intent_id, "artifacts": [identity]},
+        command_id=f"write-commit:{intent_id}",
+    )
+
+
+@pytest.mark.anyio
+async def test_analysis_patch_rejects_create_for_existing_script_before_intent_or_mutation() -> None:
+    class Scheduler:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def write(self):
+            return self
+
+    path = "analysis/evidence/a1/supplement.py"
+    scope = SimpleNamespace(thread_id="thread-1")
+    workspace = SimpleNamespace(
+        normalize_path=WorkspaceService.normalize_path,
+        batch_hash_files=AsyncMock(
+            return_value=[{"path": path, "size": 10, "sha256": "a" * 64}]
+        ),
+    )
+    runtime = SimpleNamespace(
+        workspace=workspace,
+        scope=AsyncMock(return_value=scope),
+        bound_external_run_id=lambda _context: "run-1",
+        task_scheduler=lambda _run_id: Scheduler(),
+        patch=AsyncMock(),
+    )
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness.runtime = runtime
+    harness._phase_parameters = lambda *_args: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis/evidence/a1"},
+    )
+    harness._analysis_output_root = lambda contract: contract["analysisOutputRoot"]
+    harness._require_phase_tool = lambda *_args, **_kwargs: None
+    harness._durable_state = AsyncMock(return_value=SimpleNamespace(payload={}))
+    harness._apply_durable = AsyncMock()
+    harness._failure = ReportingToolkit._failure
+    patch = (
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,2 @@\n"
+        "+value = 1\n+print(value)\n"
+    )
+
+    result = await harness.apply_analysis_patch(patch)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_write_path_conflict"
+    runtime.patch.assert_not_awaited()
+    harness._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_analysis_patch_passes_intent_operations_to_kernel_unchanged() -> None:
     class Scheduler:
         async def __aenter__(self):
@@ -512,7 +765,9 @@ async def test_analysis_patch_passes_intent_operations_to_kernel_unchanged() -> 
     scope = SimpleNamespace(thread_id="thread-1")
     workspace = SimpleNamespace(
         normalize_path=WorkspaceService.normalize_path,
-        batch_hash_files=AsyncMock(return_value=[identity]),
+        batch_hash_files=AsyncMock(
+            side_effect=[[{"path": path, "missing": True}], [identity]]
+        ),
     )
     runtime = SimpleNamespace(
         workspace=workspace,

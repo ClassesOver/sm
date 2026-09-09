@@ -153,8 +153,9 @@ async def test_visualization_workflow_orders_fixed_steps() -> None:
         events.append("generate_plan")
         return plan
 
-    async def generate_script(received_plan, _context):
+    async def generate_script(received_plan, _context, *, diagnostic):
         assert received_plan is plan
+        assert diagnostic is None
         events.append("generate_script")
         return CodeGenerationResult(file_identity)
 
@@ -260,7 +261,11 @@ async def test_visualization_workflow_repairs_script_failure_once_with_frozen_pl
     assert diagnostic == {
         "code": "report_visualization_script_failed",
         "message": "可视化脚本执行失败。",
-        "details": {"path": "charts/charts.py"},
+        "details": {
+            "path": "charts/charts.py",
+            "exitCode": 0,
+            "output": "[FAIL] chart.png: image is blank",
+        },
     }
     assert task_facts == {}
     assert execute.await_count == 2
@@ -279,8 +284,16 @@ async def test_visualization_workflow_retries_initial_generation_with_frozen_pla
     generate_plan = AsyncMock(return_value=plan)
     generate_script = AsyncMock(
         side_effect=[
-            ReportingError(failure_code, "生成失败"),
-            ReportingError(failure_code, "生成失败"),
+            ReportingError(
+                failure_code,
+                "生成失败",
+                details={"size": 65537, "lineCount": 1, "maxLineLength": 65536},
+            ),
+            ReportingError(
+                failure_code,
+                "生成失败",
+                details={"size": 65537, "lineCount": 1, "maxLineLength": 65536},
+            ),
             CodeGenerationResult(script_file),
         ]
     )
@@ -298,6 +311,39 @@ async def test_visualization_workflow_retries_initial_generation_with_frozen_pla
     generate_plan.assert_awaited_once()
     assert generate_script.await_count == 3
     assert [call.args[0] for call in generate_script.await_args_list] == [plan, plan, plan]
+    assert generate_script.await_args_list[0].kwargs["diagnostic"] is None
+    assert [call.kwargs["diagnostic"]["code"] for call in generate_script.await_args_list[1:]] == [
+        failure_code,
+        failure_code,
+    ]
+    assert generate_script.await_args_list[1].kwargs["diagnostic"]["details"] == {
+        "path": "charts/charts.py",
+        "size": 65537,
+        "lineCount": 1,
+        "maxLineLength": 65536,
+    }
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_hydrates_committed_script_without_regeneration() -> None:
+    plan = _visualization_plan()
+    script_file = FileIdentity(path="charts/charts.py", size=20, sha256="a" * 64)
+    load_script = AsyncMock(return_value=script_file)
+    generate_script = AsyncMock()
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=generate_script,
+        repair_script=None,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=AsyncMock(return_value=_inspection()),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+        load_script=load_script,
+    ).run(_visualization_payload(), _context())
+
+    assert result.script_file is script_file
+    load_script.assert_awaited_once_with("charts/charts.py", ANY)
+    generate_script.assert_not_awaited()
 
 
 @pytest.mark.anyio

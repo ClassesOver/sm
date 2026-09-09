@@ -918,6 +918,96 @@ async def test_probe_simulation_rejects_statically_unreachable_artifact_write(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scenario_name", "script_path", "source"),
+    [
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            "from pathlib import Path\n"
+            "def never_called():\n"
+            '    Path("analysis/output/supplement.json").write_text("{}")\n'
+            "print('done')\n",
+        ),
+        (
+            "visualization-inspection",
+            "analysis/output/outpatient_chart.py",
+            "import matplotlib\n"
+            'matplotlib.use("Agg")\n'
+            "import matplotlib.pyplot as plt\n"
+            "class Renderer:\n"
+            "    def render(self):\n"
+            '        plt.savefig("analysis/charts/outpatient_operation/chart.png")\n'
+            "print('done')\n",
+        ),
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            "from pathlib import Path\n"
+            "def write_output():\n"
+            '    Path("analysis/output/supplement.json").write_text("{}")\n'
+            "if False:\n"
+            "    write_output()\n",
+        ),
+    ],
+)
+async def test_probe_simulation_rejects_artifact_write_outside_finite_entry_call_graph(
+    scenario_name: str, script_path: str, source: str
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
+    recorder = ProbeRecorder(_runtime(), scenario)
+    await recorder.invoke("apply_analysis_patch", _create_patch(script_path, source))
+
+    result = await recorder.invoke(
+        "run_python_script", {"script_path": script_path, "timeout": 30}
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "probe_artifact_contract_invalid"
+    assert recorder.accepted_artifact_paths == set()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scenario_name", "script_path", "source"),
+    [
+        (
+            "analysis-script-foreground",
+            "analysis/output/supplement.py",
+            "from pathlib import Path\n"
+            "def main():\n"
+            '    Path("analysis/output/supplement.json").write_text("{}")\n'
+            'if __name__ == "__main__":\n'
+            "    main()\n",
+        ),
+        (
+            "visualization-inspection",
+            "analysis/output/outpatient_chart.py",
+            "import matplotlib\n"
+            'matplotlib.use("Agg")\n'
+            "import matplotlib.pyplot as plt\n"
+            "def render():\n"
+            '    plt.savefig("analysis/charts/outpatient_operation/chart.png")\n'
+            'if __name__ == "__main__":\n'
+            "    render()\n",
+        ),
+    ],
+)
+async def test_probe_simulation_accepts_artifact_write_from_explicit_main_call_graph(
+    scenario_name: str, script_path: str, source: str
+) -> None:
+    scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
+    recorder = ProbeRecorder(_runtime(), scenario)
+    await recorder.invoke("apply_analysis_patch", _create_patch(script_path, source))
+
+    result = await recorder.invoke(
+        "run_python_script", {"script_path": script_path, "timeout": 30}
+    )
+
+    assert result["ok"] is True
+
+
+@pytest.mark.anyio
 async def test_probe_artifacts_are_unavailable_until_simulated_script_acceptance() -> None:
     analysis = next(item for item in probe_scenarios() if item.name == "analysis-script-foreground")
     analysis_recorder = ProbeRecorder(_runtime(), analysis)

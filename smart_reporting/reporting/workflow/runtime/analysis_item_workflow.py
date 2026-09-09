@@ -342,6 +342,7 @@ GenerateScript = Callable[..., Awaitable[CodeGenerationResult]]
 RepairScript = Callable[..., Awaitable[CodeGenerationResult]]
 Summarize = Callable[[Mapping[str, Any]], Awaitable[AnalysisSummaryDraft]]
 ToolCall = Callable[..., Awaitable[dict[str, Any]]]
+LoadScript = Callable[[str, RunContext], Awaitable[FileIdentity | None]]
 
 
 @dataclass
@@ -382,6 +383,7 @@ class AnalysisItemWorkflow:
         read_file: ToolCall,
         run_script: ToolCall,
         complete: ToolCall,
+        load_script: LoadScript | None = None,
     ) -> None:
         self.decide_evidence = decide_evidence
         self.generate_script = generate_script
@@ -390,6 +392,7 @@ class AnalysisItemWorkflow:
         self.read_file = read_file
         self.run_script = run_script
         self.complete = complete
+        self.load_script = load_script
 
     async def run(
         self, instruction: Mapping[str, Any], run_context: RunContext
@@ -656,11 +659,19 @@ class AnalysisItemWorkflow:
             )
         script_path = self._script_path(state)
         try:
+            if state.script_file is None and self.load_script is not None:
+                loaded = await self.load_script(script_path, run_context)
+                if loaded is not None:
+                    state.script_file = self._signed_script_file(
+                        CodeGenerationResult(loaded), script_path
+                    )
+                    state.failure = None
             if state.script_file is None:
                 state.generation_attempts += 1
                 generated = await self.generate_script(
                     script_path=script_path,
                     task_facts=self._script_task_facts(state),
+                    diagnostic=self._repair_error(state.failure),
                     run_context=run_context,
                 )
             elif state.failure is not None:
@@ -674,12 +685,10 @@ class AnalysisItemWorkflow:
                     run_context=run_context,
                 )
             else:
-                raise ReportingError(
-                    "report_analysis_script_state_invalid",
-                    "补证脚本状态无法进入生成或修复阶段。",
-                )
-            state.script_file = self._signed_script_file(generated, script_path)
-            state.failure = None
+                generated = None
+            if generated is not None:
+                state.script_file = self._signed_script_file(generated, script_path)
+                state.failure = None
             execution = await self.run_script(
                 script_path=state.script_file.path,
                 run_context=run_context,

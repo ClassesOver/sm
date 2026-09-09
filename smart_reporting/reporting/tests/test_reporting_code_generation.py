@@ -64,6 +64,129 @@ async def test_generate_exposes_only_patch_and_returns_single_identity():
 
 
 @pytest.mark.anyio
+async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
+    prompts: list[dict[str, object]] = []
+
+    async def action(agent):
+        prompts.append(json.loads(agent.prompt))
+        return await agent.tools[0].entrypoint(patch="diff")
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
+
+    diagnostic = {
+        "code": "report_python_source_shape_invalid",
+        "message": "m" * 800,
+        "details": {
+            "path": "analysis/script.py",
+            "size": 131073,
+            "lineCount": 1,
+            "maxLineLength": 131072,
+            "source": "SECRET_SOURCE",
+        },
+    }
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py",
+        {},
+        patch,
+        diagnostic=diagnostic,
+        max_source_bytes=128 * 1024,
+    )
+
+    assert prompts[0]["diagnostic"] == {
+        "code": "report_python_source_shape_invalid",
+        "message": "m" * 512,
+        "details": {
+            "path": "analysis/script.py",
+            "size": 131073,
+            "lineCount": 1,
+            "maxLineLength": 131072,
+        },
+    }
+    assert prompts[0]["patchProtocol"] == {
+        "operation": "create",
+        "path": "analysis/script.py",
+        "maxSourceBytes": 128 * 1024,
+        "maxPhysicalLineBytes": 8 * 1024,
+    }
+    assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
+
+
+@pytest.mark.anyio
+async def test_repair_requests_full_analysis_script_from_real_read_callback():
+    content = "value = 1\n" + ("#" + "x" * 4094 + "\n") * 17
+    assert 64 * 1024 < len(content.encode()) < 128 * 1024
+    script = identity("analysis/script.py", content)
+    observed_max_bytes: list[int] = []
+
+    async def action(agent):
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=script.path)
+        return await tool.entrypoint(patch="diff")
+
+    async def read_file(*, path: str, max_bytes: int):
+        observed_max_bytes.append(max_bytes)
+        assert path == script.path
+        return read_receipt(script, content)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, "value = 2\nprint(value)\n")]}
+
+    await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
+        script,
+        {"code": "report_analysis_script_failed"},
+        read_file,
+        patch,
+        max_source_bytes=128 * 1024,
+    )
+
+    assert observed_max_bytes == [128 * 1024]
+
+
+@pytest.mark.anyio
+async def test_repair_preserves_bounded_execution_failure_details():
+    script = identity("analysis/script.py", "print(1)\n")
+    patch_prompts: list[dict[str, object]] = []
+
+    async def action(agent):
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=script.path)
+        patch_prompts.append(json.loads(agent.prompt))
+        return await tool.entrypoint(patch="diff")
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
+
+    await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
+        script,
+        {
+            "code": "report_analysis_script_failed",
+            "details": {
+                "exitCode": 7,
+                "output": "failure-output-" * 500,
+                "outputTruncated": True,
+                "toolCode": "sandbox_process_failed",
+                "toolMessage": "process failed",
+                "secret": "SECRET_DETAIL",
+            },
+        },
+        lambda **_kwargs: read_receipt(script),
+        patch,
+    )
+
+    diagnostic = patch_prompts[0]["facts"]["diagnostic"]
+    assert diagnostic["details"]["exitCode"] == 7
+    assert diagnostic["details"]["outputTruncated"] is True
+    assert diagnostic["details"]["toolCode"] == "sandbox_process_failed"
+    assert diagnostic["details"]["toolMessage"] == "process failed"
+    assert len(diagnostic["details"]["output"]) == 2000
+    assert "SECRET_DETAIL" not in json.dumps(patch_prompts, ensure_ascii=False)
+    assert patch_prompts[0]["patchProtocol"]["operation"] == "update"
+
+
+@pytest.mark.anyio
 async def test_generate_rejects_plain_text_without_mutation():
     async def action(_agent):
         return "print('source')"
@@ -775,6 +898,39 @@ async def test_generate_rejects_failed_or_ambiguous_patch_receipts(receipt):
         "report_code_generation_path_mismatch",
     }
     assert "SECRET_SOURCE" not in str(raised.value.details)
+
+
+@pytest.mark.anyio
+async def test_generate_preserves_only_bounded_patch_failure_diagnostics():
+    async def action(agent):
+        return await agent.tools[0].entrypoint(patch="diff")
+
+    async def patch(**_kwargs):
+        return {
+            "ok": False,
+            "code": "report_python_source_shape_invalid",
+            "message": "shape invalid",
+            "details": {
+                "path": "analysis/script.py",
+                "size": 131073,
+                "lineCount": 1,
+                "maxLineLength": 131072,
+                "source": "SECRET_SOURCE",
+            },
+        }
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_python_source_shape_invalid"
+    assert raised.value.details == {
+        "path": "analysis/script.py",
+        "size": 131073,
+        "lineCount": 1,
+        "maxLineLength": 131072,
+    }
 
 
 @pytest.mark.anyio

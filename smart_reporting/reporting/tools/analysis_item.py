@@ -22,6 +22,7 @@ from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
+    FileIdentity,
     MetricDefinition,
 )
 from ..workflow.state import ReportingRunState
@@ -315,6 +316,24 @@ def _derive_durable_analysis_binding(
 
 
 class RuntimeAnalysisMixin:
+    def _signed_analysis_script_contract(self, scope: Any) -> tuple[str, int, bool]:
+        _parameters, contract = self._phase_parameters(scope, "analysis")
+        workspace = contract.get("visualizationWorkspace")
+        script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+        task_kind = contract.get("taskKind")
+        if task_kind == "visualization_section":
+            normalized = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            return normalized, MAX_VISUALIZATION_SCRIPT_BYTES, True
+        if task_kind == "analysis_item":
+            return (
+                f"{self._analysis_output_root(contract)}/supplement.py",
+                MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
+                False,
+            )
+        raise ReportingError(
+            "report_phase_contract_invalid", "当前 analysis Task 缺少脚本签发契约。"
+        )
+
     def _validate_analysis_write_arguments(
         self, tool_name: str, arguments: Mapping[str, Any]
     ) -> tuple[dict[str, Any], tuple[str, ...], dict[str, str], int]:
@@ -454,6 +473,66 @@ class RuntimeAnalysisMixin:
             )
         return None
 
+    async def _recover_recorded_analysis_write(
+        self,
+        *,
+        scope: Any,
+        tool_name: str,
+        canonical: Mapping[str, Any],
+        paths: tuple[str, ...],
+        payload_bytes: int,
+    ) -> dict[str, Any] | None:
+        """在重建 patch 前恢复同一 durable 写入，避免旧 hunk 再次应用。"""
+
+        durable = await self._durable_state(scope)
+        intents = durable.payload.get("writeIntents")
+        if not isinstance(intents, Mapping):
+            return None
+        for intent_id, intent in reversed(tuple(intents.items())):
+            if not isinstance(intent, Mapping) or intent.get("toolName") != tool_name:
+                continue
+            if intent.get("affectedPaths") != list(paths):
+                continue
+            arguments = intent.get("arguments")
+            if not isinstance(arguments, Mapping) or arguments.get("patch") != canonical.get(
+                "patch"
+            ):
+                continue
+            status = intent.get("status")
+            if status == "pending":
+                return await self._recover_pending_analysis_write(
+                    scope=scope,
+                    tool_name=tool_name,
+                    canonical=arguments,
+                    paths=paths,
+                    intent_sha256=str(intent_id),
+                    payload_bytes=payload_bytes,
+                )
+            if status != "committed":
+                continue
+            artifacts = intent.get("artifacts")
+            if not isinstance(artifacts, list):
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "已提交写入意图缺少文件身份。"
+                )
+            current = await self._analysis_write_hash_files(
+                thread_id=scope.thread_id, paths=paths
+            )
+            if current != artifacts:
+                raise ReportingError(
+                    "report_analysis_write_identity_mismatch",
+                    "已提交写入意图的文件身份发生变化。",
+                )
+            return {
+                "ok": True,
+                "status": "committed",
+                "intentSha256": str(intent_id),
+                "bytes": payload_bytes,
+                "artifacts": artifacts,
+                "recovered": True,
+            }
+        return None
+
     async def _preflight_analysis_python_write(
         self,
         *,
@@ -464,42 +543,134 @@ class RuntimeAnalysisMixin:
         """在提交 Workspace mutation 前验证签发 Python 源码的形状。"""
 
         changes = list(canonical.get("operations", ()))
+        normalized_script, max_bytes, visualization = self._signed_analysis_script_contract(scope)
+        if len(changes) != 1:
+            _reject_reporting_python_source(normalized_script, "")
+        change = changes[0]
+        path = change.get("path")
+        content = change.get("content")
+        if (
+            change.get("operation") not in {"create", "update"}
+            or path != normalized_script
+            or not isinstance(content, str)
+        ):
+            _reject_reporting_python_source(
+                path if isinstance(path, str) else normalized_script, content
+            )
+        validate_reporting_python_source(
+            path=path,
+            content=content,
+            max_bytes=max_bytes,
+            visualization=visualization,
+        )
 
-        # Kernel patch 的实际提交发生在这之后；预检只使用同一候选文本，保证语法错误时
-        # Workspace 与 write intent 都不产生可恢复但无效的中间状态。
-        _parameters, contract = self._phase_parameters(scope, "analysis")
-        workspace = contract.get("visualizationWorkspace")
-        script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-        task_kind = contract.get("taskKind")
-        if task_kind == "visualization_section":
-            normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            max_bytes = MAX_VISUALIZATION_SCRIPT_BYTES
-        elif task_kind == "analysis_item":
-            normalized_script = f"{self._analysis_output_root(contract)}/supplement.py"
-            max_bytes = MAX_ANALYSIS_PYTHON_SOURCE_BYTES
-        else:
-            normalized_script = None
-            max_bytes = MAX_ANALYSIS_PYTHON_SOURCE_BYTES
+    def _analysis_patch_operation(self, scope: Any, patch: str) -> str:
+        operations = parse_unified_diff(patch)
+        normalized_script, _max_bytes, _visualization = (
+            self._signed_analysis_script_contract(scope)
+        )
+        if len(operations) != 1:
+            _reject_reporting_python_source(normalized_script, "")
+        operation = operations[0]
+        if operation.operation not in {"create", "update"} or operation.path != normalized_script:
+            _reject_reporting_python_source(operation.path, "")
+        return operation.operation
 
-        for change in changes:
-            path = change.get("path")
-            content = change.get("content")
+    async def _reject_create_for_existing_script(
+        self, *, scope: Any, operations: Sequence[Mapping[str, Any]]
+    ) -> None:
+        change = operations[0]
+        if change.get("operation") != "create":
+            return
+        path = str(change["path"])
+        current = await self._analysis_write_hash_files(
+            thread_id=scope.thread_id, paths=(path,)
+        )
+        if current and current[0].get("missing") is not True:
+            raise ReportingError(
+                "report_analysis_write_path_conflict",
+                "create diff 的签发脚本已存在。",
+                details={"paths": [path], "currentFiles": current},
+            )
+
+    async def recover_signed_analysis_script(
+        self,
+        path: str,
+        run_context: RunContext | None,
+    ) -> FileIdentity | None:
+        """从 committed/pending write intent 恢复签发脚本身份。"""
+
+        scope = await self.runtime.scope(run_context)
+        normalized, _max_bytes, _visualization = self._signed_analysis_script_contract(scope)
+        if path != normalized:
+            raise ReportingError(
+                "report_phase_artifact_changed", "恢复脚本路径与当前签发路径不一致。"
+            )
+        durable = await self._durable_state(scope)
+        intents = durable.payload.get("writeIntents")
+        if not isinstance(intents, Mapping):
+            return None
+        current_rows = await self._analysis_write_hash_files(
+            thread_id=scope.thread_id, paths=(path,)
+        )
+        current = current_rows[0] if current_rows else {"path": path, "missing": True}
+        saw_intent = False
+        for intent_id, intent in reversed(tuple(intents.items())):
+            if not isinstance(intent, Mapping) or intent.get("toolName") != "apply_analysis_patch":
+                continue
+            if intent.get("affectedPaths") != [path]:
+                continue
+            arguments = intent.get("arguments")
+            operations = arguments.get("operations") if isinstance(arguments, Mapping) else None
+            if not isinstance(operations, list) or len(operations) != 1:
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "脚本写入意图缺少唯一操作。"
+                )
+            change = operations[0]
             if (
-                change.get("operation") not in {"create", "update"}
-                or not isinstance(path, str)
-                or not path.endswith(".py")
+                not isinstance(change, Mapping)
+                or change.get("path") != path
+                or change.get("operation") not in {"create", "update"}
+                or not isinstance(change.get("content"), str)
+            ):
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "脚本写入意图操作无效。"
+                )
+            saw_intent = True
+            if intent.get("status") == "committed":
+                artifacts = intent.get("artifacts")
+                expected = artifacts[0] if isinstance(artifacts, list) and len(artifacts) == 1 else None
+                if current == expected:
+                    return FileIdentity.model_validate(expected)
+                continue
+            if intent.get("status") != "pending":
+                continue
+            content = change["content"]
+            desired = {
+                "path": path,
+                "size": len(content.encode("utf-8")),
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
+            if current == desired:
+                await self._apply_durable(
+                    scope,
+                    name="commit_write_intent",
+                    payload={"intentId": intent_id, "artifacts": [desired]},
+                    command_id=f"write-commit:{intent_id}",
+                )
+                return FileIdentity.model_validate(desired)
+            if change.get("operation") == "create" and current.get("missing") is True:
+                continue
+            if (
+                change.get("operation") == "update"
+                and current.get("sha256") == change.get("expected_sha256")
             ):
                 continue
-            if not isinstance(content, str):
-                _reject_reporting_python_source(path, content)
-            if normalized_script is None or path != normalized_script:
-                _reject_reporting_python_source(path, content)
-            validate_reporting_python_source(
-                path=path,
-                content=content,
-                max_bytes=max_bytes,
-                visualization=task_kind == "visualization_section",
+        if saw_intent and current.get("missing") is not True:
+            raise ReportingError(
+                "report_phase_artifact_changed", "签发脚本身份与 durable write intent 不一致。"
             )
+        return None
 
     async def apply_analysis_patch(
         self,
@@ -516,6 +687,17 @@ class RuntimeAnalysisMixin:
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
+            operation = self._analysis_patch_operation(scope, canonical["patch"])
+            if operation == "update":
+                recovered = await self._recover_recorded_analysis_write(
+                    scope=scope,
+                    tool_name=canonical_tool_name,
+                    canonical=canonical,
+                    paths=paths,
+                    payload_bytes=payload_bytes,
+                )
+                if recovered is not None:
+                    return recovered
             raw_operations = await abuild_workspace_changes(
                 self.runtime.workspace,
                 scope.thread_id,
@@ -526,6 +708,19 @@ class RuntimeAnalysisMixin:
                 scope=scope,
                 tool_name=canonical_tool_name,
                 canonical=canonical,
+            )
+            if operation == "create":
+                recovered = await self._recover_recorded_analysis_write(
+                    scope=scope,
+                    tool_name=canonical_tool_name,
+                    canonical=canonical,
+                    paths=paths,
+                    payload_bytes=payload_bytes,
+                )
+                if recovered is not None:
+                    return recovered
+            await self._reject_create_for_existing_script(
+                scope=scope, operations=raw_operations
             )
             self._require_analysis_task_output_paths(contract, paths)
             payload = json.dumps(

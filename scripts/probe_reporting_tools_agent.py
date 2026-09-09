@@ -828,6 +828,52 @@ def _statically_reachable(
     return True
 
 
+def _top_level_function_owner(
+    node: ast.AST, parents: Mapping[ast.AST, ast.AST]
+) -> str | None:
+    current = node
+    while current in parents:
+        current = parents[current]
+        if isinstance(current, (ast.ClassDef, ast.Lambda)):
+            return ""
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current.name if isinstance(parents.get(current), ast.Module) else ""
+    return None
+
+
+def _reachable_top_level_functions(
+    tree: ast.Module, parents: Mapping[ast.AST, ast.AST]
+) -> frozenset[str]:
+    functions = {
+        statement.name
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls: dict[str | None, set[str]] = {}
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Name)
+            or node.func.id not in functions
+            or not _statically_reachable(node, parents)
+        ):
+            continue
+        owner = _top_level_function_owner(node, parents)
+        if owner == "":
+            continue
+        calls.setdefault(owner, set()).add(node.func.id)
+
+    reachable = set(calls.get(None, ()))
+    pending = list(reachable)
+    while pending:
+        owner = pending.pop()
+        for called in calls.get(owner, ()):
+            if called not in reachable:
+                reachable.add(called)
+                pending.append(called)
+    return frozenset(reachable)
+
+
 def _script_writes_expected_artifact(
     source: str, *, task_kind: ReportingTaskKind, expected_path: str
 ) -> bool:
@@ -838,6 +884,7 @@ def _script_writes_expected_artifact(
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
+    reachable_functions = _reachable_top_level_functions(tree, parents)
 
     def resolve(node: ast.AST) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -855,6 +902,9 @@ def _script_writes_expected_artifact(
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not _statically_reachable(node, parents):
+            continue
+        owner = _top_level_function_owner(node, parents)
+        if owner == "" or (owner is not None and owner not in reachable_functions):
             continue
         if task_kind == "visualization_section":
             if (
@@ -1640,9 +1690,20 @@ async def _run_fixed_analysis_scenario(
         return await recorder.invoke("apply_analysis_patch", arguments)
 
     async def generate_script(
-        *, script_path: str, task_facts: Mapping[str, Any], run_context: RunContext
+        *,
+        script_path: str,
+        task_facts: Mapping[str, Any],
+        diagnostic: Mapping[str, Any] | None,
+        run_context: RunContext,
     ) -> CodeGenerationResult:
-        return await code_runner.generate(script_path, task_facts, apply_patch, run_context)
+        return await code_runner.generate(
+            script_path,
+            task_facts,
+            apply_patch,
+            run_context,
+            diagnostic=diagnostic,
+            max_source_bytes=128 * 1024,
+        )
 
     async def repair_script(
         *,
@@ -1658,6 +1719,7 @@ async def _run_fixed_analysis_scenario(
             apply_patch,
             run_context,
             task_facts={"missingFacts": list(decision.missing_facts)},
+            max_source_bytes=128 * 1024,
         )
 
     async def run_script(**arguments: Any) -> dict[str, Any]:
@@ -1740,7 +1802,10 @@ async def _run_fixed_visualization_scenario(
         return await recorder.invoke("apply_analysis_patch", arguments)
 
     async def generate_script(
-        plan: VisualizationPlanDraft, task_context: RunContext
+        plan: VisualizationPlanDraft,
+        task_context: RunContext,
+        *,
+        diagnostic: Mapping[str, Any] | None,
     ) -> CodeGenerationResult:
         return await code_runner.generate(
             signed_script,
@@ -1751,6 +1816,8 @@ async def _run_fixed_visualization_scenario(
             },
             apply_patch,
             task_context,
+            diagnostic=diagnostic,
+            max_source_bytes=64 * 1024,
         )
 
     async def repair_script(
@@ -1766,6 +1833,7 @@ async def _run_fixed_visualization_scenario(
             apply_patch,
             task_context,
             task_facts=task_facts,
+            max_source_bytes=64 * 1024,
         )
 
     async def execute_script(script_path: str, _task_context: RunContext) -> Mapping[str, Any]:

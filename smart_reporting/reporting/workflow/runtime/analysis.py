@@ -120,6 +120,8 @@ async def _completed_reporting_step_output() -> StepOutput:
 
 
 _ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
+_ANALYSIS_SCRIPT_MAX_BYTES = 128 * 1024
+_VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
     {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
 )
@@ -666,7 +668,10 @@ class RuntimeAnalysisMixin:
                         )
 
                     async def generate_script(
-                        plan: VisualizationPlanDraft, task_context: RunContext
+                        plan: VisualizationPlanDraft,
+                        task_context: RunContext,
+                        *,
+                        diagnostic: Mapping[str, Any] | None,
                     ) -> CodeGenerationResult:
                         return await code_runner().generate(
                             script_path,
@@ -679,6 +684,8 @@ class RuntimeAnalysisMixin:
                             },
                             apply_patch,
                             task_context,
+                            diagnostic=diagnostic,
+                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
                         )
 
                     async def repair_script(
@@ -694,6 +701,14 @@ class RuntimeAnalysisMixin:
                             apply_patch,
                             task_context,
                             task_facts=task_facts,
+                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
+                        )
+
+                    async def load_script(
+                        path: str, task_context: RunContext
+                    ) -> FileIdentity | None:
+                        return await toolkit.recover_signed_analysis_script(
+                            path, task_context
                         )
 
                     async def execute_script(
@@ -746,6 +761,7 @@ class RuntimeAnalysisMixin:
                                 inspect_chart if self.vision_reviewer is not None else None
                             ),
                             submit=submit,
+                            load_script=load_script,
                         ).run(instruction_payload, invocation.run_context)
                     ).plan
 
@@ -1845,6 +1861,7 @@ class RuntimeAnalysisMixin:
             *,
             script_path: str,
             task_facts: Mapping[str, Any],
+            diagnostic: Mapping[str, Any] | None,
             run_context: RunContext,
         ) -> CodeGenerationResult:
             return await code_runner.generate(
@@ -1852,6 +1869,8 @@ class RuntimeAnalysisMixin:
                 task_facts,
                 toolkit.apply_analysis_patch,
                 run_context,
+                diagnostic=diagnostic,
+                max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
             )
 
         async def repair_script(
@@ -1887,6 +1906,7 @@ class RuntimeAnalysisMixin:
                     toolkit.apply_analysis_patch,
                     run_context,
                     task_facts={"missingFacts": list(decision.missing_facts)},
+                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
             finally:
                 for key, restored_value in (
@@ -1920,6 +1940,7 @@ class RuntimeAnalysisMixin:
             read_file=toolkit.read_file,
             run_script=toolkit.run_python_script,
             complete=toolkit.complete_analysis_item,
+            load_script=toolkit.recover_signed_analysis_script,
         )
         result = await workflow.run(payload, task_run_context)
         return result.output

@@ -22,8 +22,10 @@ from ..checkpoint import FileIdentity
 ToolCallable = Callable[..., Awaitable[Mapping[str, Any]] | Mapping[str, Any]]
 MAX_CODE_READ_BYTES = 128 * 1024
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
+MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
 MAX_DIAGNOSTIC_PATH_LENGTH = 1024
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
+MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_TASK_MISSING_FACTS = 20
 MAX_TASK_MISSING_FACT_LENGTH = 512
 MAX_TASK_MISSING_CHARTS = 100
@@ -147,7 +149,7 @@ class ReportingCodeGenerationRunner:
             path = details.get("path")
             if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH:
                 safe_details["path"] = path
-            for field in ("line", "offset"):
+            for field in ("line", "offset", "size", "lineCount", "maxLineLength"):
                 value = details.get(field)
                 if (
                     isinstance(value, int)
@@ -155,6 +157,25 @@ class ReportingCodeGenerationRunner:
                     and 0 <= value <= MAX_DIAGNOSTIC_POSITION
                 ):
                     safe_details[field] = value
+            exit_code = details.get("exitCode")
+            if (
+                isinstance(exit_code, int)
+                and not isinstance(exit_code, bool)
+                and -MAX_DIAGNOSTIC_POSITION <= exit_code <= MAX_DIAGNOSTIC_POSITION
+            ):
+                safe_details["exitCode"] = exit_code
+            output = details.get("output")
+            if isinstance(output, str) and output:
+                safe_details["output"] = output[:MAX_DIAGNOSTIC_OUTPUT_LENGTH]
+            output_truncated = details.get("outputTruncated")
+            if isinstance(output_truncated, bool):
+                safe_details["outputTruncated"] = output_truncated
+            tool_code = details.get("toolCode")
+            if cls._stable_code(tool_code, ""):
+                safe_details["toolCode"] = tool_code
+            tool_message = details.get("toolMessage")
+            if isinstance(tool_message, str) and tool_message:
+                safe_details["toolMessage"] = tool_message[:MAX_DIAGNOSTIC_MESSAGE_LENGTH]
             if safe_details:
                 result["details"] = safe_details
         return result
@@ -407,9 +428,25 @@ class ReportingCodeGenerationRunner:
         task_facts: Mapping[str, Any],
         apply_analysis_patch: ToolCallable,
         run_context: RunContext | None = None,
+        *,
+        diagnostic: Mapping[str, Any] | None = None,
+        max_source_bytes: int = MAX_CODE_READ_BYTES,
+        _operation: str = "create",
     ) -> CodeGenerationResult:
         """运行一次写阶段；普通输出和零/多次工具调用均失败。"""
         self._validate_script_path(script_path)
+        if (
+            isinstance(max_source_bytes, bool)
+            or not isinstance(max_source_bytes, int)
+            or not 1 <= max_source_bytes <= MAX_CODE_READ_BYTES
+        ):
+            raise self._error(
+                "report_code_generation_limit_invalid", "脚本源码上限无效。", script_path
+            )
+        if _operation not in {"create", "update"}:
+            raise self._error(
+                "report_code_generation_operation_invalid", "脚本 patch 操作无效。", script_path
+            )
         result: CodeGenerationResult | None = None
 
         async def capture_patch(**kwargs: Any) -> Mapping[str, Any]:
@@ -424,23 +461,26 @@ class ReportingCodeGenerationRunner:
             try:
                 receipt = await _invoke(apply_analysis_patch, {"patch": patch}, run_context)
             except ReportingError as error:
-                # 上游工具 details 可能包含参数；Coding 边界只透出稳定码和短路径。
+                bounded = self._short_diagnostic(
+                    {"code": error.code, "message": error.message, "details": error.details}
+                )
                 raise ReportingError(
                     self._stable_code(error.code, "report_code_generation_patch_failed"),
                     "脚本 patch 未被接受。",
-                    details={"path": script_path},
+                    details=bounded.get("details", {"path": script_path}),
                 ) from error
             except Exception as error:
                 raise self._error(
                     "report_code_generation_patch_failed", "脚本 patch 未被接受。", script_path
                 ) from error
             if receipt.get("ok") is not True:
-                raise self._error(
+                bounded = self._short_diagnostic(receipt)
+                raise ReportingError(
                     self._stable_code(
                         receipt.get("code"), "report_code_generation_patch_failed"
                     ),
                     "脚本 patch 未被接受。",
-                    script_path,
+                    details=bounded.get("details", {"path": script_path}),
                 )
             artifacts = receipt.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
@@ -481,7 +521,19 @@ class ReportingCodeGenerationRunner:
         agent = self._fresh_agent()
         self._configure(agent, Function(name="apply_analysis_patch", description="提交 unified diff。", parameters=_tool_parameters("apply_analysis_patch"), strict=True, entrypoint=wrapped_patch, stop_after_tool_call=True), "apply_analysis_patch")
         try:
-            await agent.arun(self._prompt({"scriptPath": script_path, "facts": dict(task_facts)}), run_context=run_context)
+            prompt = {
+                "scriptPath": script_path,
+                "facts": dict(task_facts),
+                "patchProtocol": {
+                    "operation": _operation,
+                    "path": script_path,
+                    "maxSourceBytes": max_source_bytes,
+                    "maxPhysicalLineBytes": MAX_PHYSICAL_LINE_BYTES,
+                },
+            }
+            if diagnostic is not None:
+                prompt["diagnostic"] = self._short_diagnostic(diagnostic)
+            await agent.arun(self._prompt(prompt), run_context=run_context)
         except ReportingError:
             raise
         except Exception as error:
@@ -499,6 +551,7 @@ class ReportingCodeGenerationRunner:
         run_context: RunContext | None = None,
         *,
         task_facts: Mapping[str, Any] | None = None,
+        max_source_bytes: int = MAX_CODE_READ_BYTES,
     ) -> CodeGenerationResult:
         """先只读一次受信脚本回执，再用 fresh Agent 提交一次修复 patch。"""
         self._validate_script_path(script_file.path)
@@ -516,7 +569,11 @@ class ReportingCodeGenerationRunner:
                     script_file.path,
                 )
             try:
-                receipt = await _invoke(read_file, {"path": path}, run_context)
+                receipt = await _invoke(
+                    read_file,
+                    {"path": path, "max_bytes": max_source_bytes},
+                    run_context,
+                )
             except ReportingError as error:
                 raise self._error(
                     self._stable_code(error.code, "report_code_generation_read_failed"),
@@ -553,4 +610,7 @@ class ReportingCodeGenerationRunner:
             },
             apply_analysis_patch,
             run_context,
+            diagnostic=diagnostic,
+            max_source_bytes=max_source_bytes,
+            _operation="update",
         )

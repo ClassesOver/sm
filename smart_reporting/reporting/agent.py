@@ -946,7 +946,7 @@ def _stop_rejected_analysis_patch(
         "runDisposition": "stop_current_run",
         "recovery": {"kind": "fresh_task_retry"},
         "requiredActions": [
-            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须重新读取目标文件和当前 SHA-256 后生成完整标准 unified diff。"
+            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须按当前签发路径与文件状态生成完整标准 unified diff。"
         ],
     }
     serialized = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
@@ -2854,8 +2854,10 @@ def create_reporting_code_agent(
 
     base_instructions = [
         "普通文本不算成功；Markdown、代码围栏或直接输出 Python 源码同样不算成功。",
-        "只能签发完整 Python 脚本对应的标准 unified diff，并通过唯一的 apply_analysis_patch 工具提交。",
-        "除 apply_analysis_patch 外不得调用任何工具；收到工具回执后立即结束。",
+        "严格服从本阶段唯一工具授权：初次/写入阶段只调用一次 apply_analysis_patch，修复读取阶段只调用一次 read_file。",
+        "patchProtocol.operation=create 时必须使用 --- /dev/null 到精确签发路径；operation=update 时必须更新同一路径。",
+        "补丁只能包含该签发 Python 文件，源码必须为 UTF-8/LF、多物理行且以换行结尾，并遵守 patchProtocol 的字节与行长上限。",
+        "写入阶段只能签发完整 Python 脚本对应的标准 unified diff；收到工具回执后立即结束。",
     ]
     if instructions:
         if isinstance(instructions, str):

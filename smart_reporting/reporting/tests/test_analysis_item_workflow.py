@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from agno.run import RunContext
@@ -384,6 +384,92 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
     assert complete.await_args.kwargs["evidencePaths"] == [
         "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
     ]
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_hydrates_committed_script_without_regeneration() -> None:
+    script_file = FileIdentity(
+        path="报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+        size=20,
+        sha256="a" * 64,
+    )
+    evidence = json.dumps(
+        {
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账", "passed": True}],
+            "warnings": [],
+        }
+    )
+    load_script = AsyncMock(return_value=script_file)
+    generate_script = AsyncMock()
+    run_script = AsyncMock(return_value=_tool_result(exitCode=0, output=""))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少收入构成",
+                missingFacts=("收入构成",),
+            )
+        ),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        summarize=AsyncMock(
+            return_value=AnalysisSummaryDraft(summary="补证完成。", warnings=())
+        ),
+        read_file=AsyncMock(
+            side_effect=[_facts_read_result(), _tool_result(content=evidence, sha256="b" * 64)]
+        ),
+        run_script=run_script,
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+        load_script=load_script,
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="session-1"))
+
+    load_script.assert_awaited_once_with(script_file.path, ANY)
+    generate_script.assert_not_awaited()
+    run_script.assert_awaited_once_with(script_path=script_file.path, run_context=ANY)
+
+
+@pytest.mark.anyio
+async def test_analysis_item_fresh_generation_retry_receives_previous_diagnostic() -> None:
+    first_error = ReportingError(
+        "report_python_source_shape_invalid",
+        "invalid shape",
+        details={"size": 131073, "lineCount": 1, "maxLineLength": 131072},
+    )
+    generate_script = AsyncMock(side_effect=[first_error, _code_result()])
+    evidence = json.dumps(
+        {
+            "findings": [],
+            "reconciliations": [{"name": "检查", "passed": True}],
+            "warnings": [],
+        }
+    )
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少事实",
+                missingFacts=("事实",),
+            )
+        ),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="完成。", warnings=())),
+        read_file=AsyncMock(
+            side_effect=[_facts_read_result(), _tool_result(content=evidence, sha256="b" * 64)]
+        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="session-1"))
+
+    assert generate_script.await_args_list[0].kwargs["diagnostic"] is None
+    assert generate_script.await_args_list[1].kwargs["diagnostic"]["code"] == (
+        "report_python_source_shape_invalid"
+    )
 
 
 @pytest.mark.anyio
