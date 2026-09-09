@@ -117,10 +117,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "linePrefixes": {"source": "+"},
         "lineEnding": "LF",
         "trailingNewline": True,
-        "countRule": (
-            "hunk line counts must exactly equal the physical source line counts; "
-            "do not use a fixed placeholder count"
-        ),
+        "countRule": "hunk 头中的行数必须与实际物理源码行数精确一致；不得使用固定占位计数",
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
 
@@ -970,6 +967,32 @@ async def test_generate_preserves_reporting_error_code_and_message_after_tool_th
     assert raised.value.message == "脚本必须以 LF 换行结尾。"
     assert raised.value.details == {"path": "analysis/script.py"}
     assert "SECRET_SOURCE" not in str(raised.value)
+
+
+@pytest.mark.anyio
+async def test_generate_does_not_misclassify_swallowed_patch_error_as_no_patch():
+    async def action(agent):
+        try:
+            await agent.tools[0].entrypoint(patch="diff")
+        except ReportingError:
+            # Agno's Function layer can turn tool exceptions into a tool receipt.
+            return None
+        return None
+
+    async def patch(**_kwargs):
+        raise ReportingError(
+            "report_python_source_shape_invalid",
+            "脚本必须以 LF 换行结尾。",
+            details={"path": "analysis/script.py"},
+        )
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_python_source_shape_invalid"
+    assert raised.value.message == "脚本必须以 LF 换行结尾。"
 
 
 @pytest.mark.anyio

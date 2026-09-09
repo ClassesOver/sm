@@ -1025,25 +1025,48 @@ class ReportingToolkitBase(Toolkit):
             # expected/actual 字段，避免模型只能看到第一个错误后重新生成整个章节。
             result["details"] = dict(error.details)
         elif (
-            code == "report_draft_heading_parent_missing"
+            code
+            in {
+                "report_draft_heading_parent_missing",
+                "report_draft_heading_title_too_long",
+            }
             and isinstance(error, ReportingError)
             and isinstance(error.details, Mapping)
         ):
             issues = error.details.get("issues")
             if isinstance(issues, list):
-                stable_issues = [
-                    {
+                stable_issues: list[dict[str, Any]] = []
+                for issue in issues[:20]:
+                    if (
+                        not isinstance(issue, Mapping)
+                        or not isinstance(issue.get("path"), str)
+                        or re.fullmatch(
+                            r"(?:\$\.markdown|\$\.blocks\[[0-9]+\]\.markdown)",
+                            issue["path"],
+                        )
+                        is None
+                        or not isinstance(issue.get("type"), str)
+                        or not isinstance(issue.get("message"), str)
+                    ):
+                        continue
+                    stable_issue: dict[str, Any] = {
                         "path": issue["path"],
                         "type": issue["type"],
                         "message": issue["message"],
                     }
-                    for issue in issues[:20]
-                    if isinstance(issue, Mapping)
-                    and isinstance(issue.get("path"), str)
-                    and issue["path"].startswith("$.blocks[")
-                    and isinstance(issue.get("type"), str)
-                    and isinstance(issue.get("message"), str)
-                ]
+                    if code == "report_draft_heading_title_too_long":
+                        max_length = issue.get("maxLength")
+                        actual_length = issue.get("actualLength")
+                        if (
+                            not isinstance(max_length, int)
+                            or isinstance(max_length, bool)
+                            or not isinstance(actual_length, int)
+                            or isinstance(actual_length, bool)
+                        ):
+                            continue
+                        stable_issue["maxLength"] = max_length
+                        stable_issue["actualLength"] = actual_length
+                    stable_issues.append(stable_issue)
                 if stable_issues:
                     result["details"] = {"issues": stable_issues}
         elif (
@@ -1067,6 +1090,10 @@ class ReportingToolkitBase(Toolkit):
         if validation_errors:
             result["validationErrors"] = validation_errors
             result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
+        elif code == "report_draft_heading_title_too_long":
+            result["requiredActions"] = [
+                "只缩短 details.issues 指向的标题，保留对应 Markdown 正文及其他有效内容后重试。"
+            ]
         elif code == "report_analysis_evidence_missing":
             result["requiredActions"] = [
                 "先使用 apply_analysis_patch 写入真实 evidence，再重试当前 analysis 提交。"

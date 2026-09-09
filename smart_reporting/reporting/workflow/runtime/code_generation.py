@@ -138,7 +138,7 @@ class ReportingCodeGenerationRunner:
     def _patch_protocol(
         script_path: str, operation: str, max_source_bytes: int
     ) -> dict[str, Any]:
-        """Return an explicit diff shape so models cannot infer stale fixed hunk counts."""
+        """生成显式 diff 形状，避免模型沿用过期的固定 hunk 计数。"""
         if operation == "create":
             template = (
                 f"--- /dev/null\n+++ b/{script_path}\n"
@@ -165,10 +165,7 @@ class ReportingCodeGenerationRunner:
             "linePrefixes": prefixes,
             "lineEnding": "LF",
             "trailingNewline": True,
-            "countRule": (
-                "hunk line counts must exactly equal the physical source line counts; "
-                "do not use a fixed placeholder count"
-            ),
+            "countRule": "hunk 头中的行数必须与实际物理源码行数精确一致；不得使用固定占位计数",
         }
 
     @classmethod
@@ -485,40 +482,45 @@ class ReportingCodeGenerationRunner:
                 "report_code_generation_operation_invalid", "脚本 patch 操作无效。", script_path
             )
         result: CodeGenerationResult | None = None
+        patch_error: ReportingError | None = None
 
         async def capture_patch(**kwargs: Any) -> Mapping[str, Any]:
-            nonlocal result
+            nonlocal patch_error, result
             patch = kwargs.get("patch")
             if not isinstance(patch, str) or not patch:
-                raise self._error(
+                patch_error = self._error(
                     "report_code_generation_tool_arguments_invalid",
                     "Coding Agent 的 patch 参数无效。",
                     script_path,
                 )
+                raise patch_error
             try:
                 receipt = await _invoke(apply_analysis_patch, {"patch": patch}, run_context)
             except ReportingError as error:
                 bounded = self._short_diagnostic(
                     {"code": error.code, "message": error.message, "details": error.details}
                 )
-                raise ReportingError(
+                patch_error = ReportingError(
                     self._stable_code(error.code, "report_code_generation_patch_failed"),
                     bounded.get("message", "脚本 patch 未被接受。"),
                     details=bounded.get("details", {"path": script_path}),
-                ) from error
+                )
+                raise patch_error from error
             except Exception as error:
-                raise self._error(
+                patch_error = self._error(
                     "report_code_generation_patch_failed", "脚本 patch 未被接受。", script_path
-                ) from error
+                )
+                raise patch_error from error
             if receipt.get("ok") is not True:
                 bounded = self._short_diagnostic(receipt)
-                raise ReportingError(
+                patch_error = ReportingError(
                     self._stable_code(
                         receipt.get("code"), "report_code_generation_patch_failed"
                     ),
                     bounded.get("message", "脚本 patch 未被接受。"),
                     details=bounded.get("details", {"path": script_path}),
                 )
+                raise patch_error
             artifacts = receipt.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
                 raise self._error(
@@ -545,15 +547,20 @@ class ReportingCodeGenerationRunner:
 
         calls = 0
         async def wrapped_patch(**kwargs: Any) -> Mapping[str, Any]:
-            nonlocal calls
+            nonlocal calls, patch_error
             calls += 1
             if calls > 1:
-                raise self._error(
+                patch_error = self._error(
                     "report_code_generation_multiple_patches",
                     "单轮 Coding Agent 只能提交一次 patch。",
                     script_path,
                 )
-            return await capture_patch(**kwargs)
+                raise patch_error
+            try:
+                return await capture_patch(**kwargs)
+            except ReportingError as error:
+                patch_error = patch_error or error
+                raise
 
         agent = self._fresh_agent()
         self._configure(agent, Function(name="apply_analysis_patch", description="提交 unified diff。", parameters=_tool_parameters("apply_analysis_patch"), strict=True, entrypoint=wrapped_patch, stop_after_tool_call=True), "apply_analysis_patch")
@@ -572,6 +579,8 @@ class ReportingCodeGenerationRunner:
             raise
         except Exception as error:
             raise ReportingError("report_code_generation_agent_failed", "Coding Agent 调用失败。") from error
+        if result is None and patch_error is not None:
+            raise patch_error
         if result is None:
             raise ReportingError("report_code_generation_no_patch", "Coding Agent 未提交脚本 patch。")
         return result

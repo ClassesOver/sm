@@ -168,6 +168,7 @@ def create_reporting_workflow(
     prepare_analysis_context: StepExecutor,
     generate_detailed_analysis_plan: StepExecutor,
     run_reporting_analysis: StepExecutor,
+    assemble_report: StepExecutor,
     validate_report: StepExecutor,
     finalize_publication: StepExecutor,
 ) -> Workflow:
@@ -299,6 +300,13 @@ def create_reporting_workflow(
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             create_reporting_analysis_step(run_reporting_analysis),
+            Step(
+                step_id="assemble-report",
+                name="汇编最终报告",
+                executor=_timed_step_executor(assemble_report, step_id="assemble-report"),
+                max_retries=0,
+                human_review=HumanReview(on_error=OnError.pause),
+            ),
             Step(
                 step_id="validate-report",
                 name="PDF/Word 双格式验收",

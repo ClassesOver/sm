@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from collections import deque
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import delete, update
+from sqlalchemy import delete, insert, text, update
 
+from smart_reporting.reporting.workflow import repository as reporting_repository_module
 from smart_reporting.reporting.workflow import state as reporting_state_module
 from smart_reporting.reporting.workflow.checkpoint import (
     CheckpointError,
@@ -105,6 +110,593 @@ def test_repository_requires_postgresql() -> None:
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         ReportingStateRepository(database)  # type: ignore[arg-type]
+
+
+def test_repository_models_run_identity_as_parent_aggregate() -> None:
+    database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+
+    repository = ReportingStateRepository(database)  # type: ignore[arg-type]
+
+    assert {
+        "report_run_id",
+        "external_run_id",
+        "entrypoint",
+        "workflow_id",
+        "agno_session_id",
+        "agno_run_id",
+        "caller_session_id",
+        "caller_run_id",
+        "thread_id",
+        "owner_user_id",
+        "database",
+        "company_id",
+        "revision",
+        "status",
+        "finalization_pending",
+    } <= set(repository.runs.c.keys())
+    assert repository.states.c.report_run_id.foreign_keys
+    assert repository.command_receipts.c.report_run_id.foreign_keys
+    assert repository.workflow_thread_owners.c.report_run_id.foreign_keys
+    assert repository.mcp_requests.c.report_run_id.nullable is True
+    assert {index.name for index in repository.workflow_thread_owners.indexes} >= {
+        "ix_reporting_workflow_thread_owners_report_run_id"
+    }
+    assert {index.name for index in repository.mcp_requests.indexes} >= {
+        "ix_reporting_mcp_requests_report_run_id"
+    }
+
+
+class _FakeResult:
+    def __init__(self, *, row: dict[str, Any] | None = None, rowcount: int = 1) -> None:
+        self._row = SimpleNamespace(_mapping=row) if row is not None else None
+        self.rowcount = rowcount
+
+    def first(self):
+        return self._row
+
+
+class _RecordingConnection:
+    def __init__(
+        self,
+        *,
+        row: dict[str, Any] | None = None,
+        upgraded_row: dict[str, Any] | None = None,
+        update_rowcounts: tuple[int, ...] = (),
+    ) -> None:
+        self.statements: list[Any] = []
+        self.row = row
+        self.upgraded_row = upgraded_row
+        self.update_rowcounts = deque(update_rowcounts)
+        self.run_sync_calls = 0
+
+    async def execute(self, statement: Any, _parameters: Any = None) -> _FakeResult:
+        self.statements.append(statement)
+        if getattr(statement, "is_update", False):
+            rowcount = self.update_rowcounts.popleft() if self.update_rowcounts else 1
+            if rowcount == 1 and self.upgraded_row is not None:
+                self.row = self.upgraded_row
+            return _FakeResult(rowcount=rowcount)
+        if getattr(statement, "is_select", False):
+            return _FakeResult(row=self.row)
+        return _FakeResult()
+
+    async def scalar(self, statement: Any) -> bool:
+        self.statements.append(statement)
+        return False
+
+    async def run_sync(self, callback) -> None:
+        self.run_sync_calls += 1
+
+
+class _RecordingEngine:
+    dialect = SimpleNamespace(name="postgresql")
+
+    def __init__(self, connection: _RecordingConnection) -> None:
+        self.connection = connection
+
+    @asynccontextmanager
+    async def begin(self):
+        yield self.connection
+
+    @asynccontextmanager
+    async def connect(self):
+        yield self.connection
+
+
+class _LifecycleLockConnection:
+    def __init__(self, engine: _LifecycleLockEngine) -> None:
+        self.engine = engine
+        self.holds_lock = False
+
+    async def execute(self, statement: Any, _parameters: Any = None) -> _FakeResult:
+        sql = str(statement)
+        if "pg_advisory_unlock" in sql:
+            if self.holds_lock:
+                self.holds_lock = False
+                self.engine.advisory_lock.release()
+            return _FakeResult()
+        if "pg_advisory_lock" in sql:
+            self.engine.record_lock_attempt()
+            await self.engine.advisory_lock.acquire()
+            self.holds_lock = True
+        return _FakeResult()
+
+    async def scalar(self, statement: Any, _parameters: Any = None) -> bool:
+        assert "pg_try_advisory_lock" in str(statement)
+        self.engine.record_lock_attempt()
+        if self.engine.advisory_lock.locked():
+            return False
+        await self.engine.advisory_lock.acquire()
+        self.holds_lock = True
+        return True
+
+    async def commit(self) -> None:
+        if (
+            self.engine.block_first_acquire_commit
+            and self.holds_lock
+            and not self.engine.acquire_commit_blocked
+        ):
+            self.engine.acquire_commit_blocked = True
+            self.engine.acquire_commit_started.set()
+            await asyncio.Future()
+
+
+class _LifecycleLockEngine:
+    dialect = SimpleNamespace(name="postgresql")
+
+    def __init__(self, *, pool_size: int, block_first_acquire_commit: bool = False) -> None:
+        self.pool = asyncio.Semaphore(pool_size)
+        self.advisory_lock = asyncio.Lock()
+        self.lock_attempts = 0
+        self.second_lock_attempted = asyncio.Event()
+        self.block_first_acquire_commit = block_first_acquire_commit
+        self.acquire_commit_blocked = False
+        self.acquire_commit_started = asyncio.Event()
+
+    def record_lock_attempt(self) -> None:
+        self.lock_attempts += 1
+        if self.lock_attempts >= 2:
+            self.second_lock_attempted.set()
+
+    @asynccontextmanager
+    async def connect(self):
+        await self.pool.acquire()
+        try:
+            yield _LifecycleLockConnection(self)
+        finally:
+            self.pool.release()
+
+
+def _fake_repository(connection: _RecordingConnection) -> ReportingStateRepository:
+    return ReportingStateRepository(SimpleNamespace(db_engine=_RecordingEngine(connection)))  # type: ignore[arg-type]
+
+
+def _lifecycle_lock_repository(engine: _LifecycleLockEngine) -> ReportingStateRepository:
+    return ReportingStateRepository(SimpleNamespace(db_engine=engine))  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_lifecycle_lock_waiter_releases_pool_connection_between_attempts() -> None:
+    engine = _LifecycleLockEngine(pool_size=2)
+    repository = _lifecycle_lock_repository(engine)
+
+    async def wait_for_lock() -> None:
+        async with repository.workflow_thread_lifecycle_lock("thread"):
+            pass
+
+    async with repository.workflow_thread_lifecycle_lock("thread"):
+        waiter = asyncio.create_task(wait_for_lock())
+        await engine.second_lock_attempted.wait()
+        try:
+            async with asyncio.timeout(0.05):
+                async with engine.connect():
+                    pass
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_lifecycle_lock_cancellation_during_acquire_commit_releases_session_lock() -> None:
+    engine = _LifecycleLockEngine(pool_size=1, block_first_acquire_commit=True)
+    repository = _lifecycle_lock_repository(engine)
+
+    async def hold_lock() -> None:
+        async with repository.workflow_thread_lifecycle_lock("thread"):
+            pass
+
+    holder = asyncio.create_task(hold_lock())
+    await engine.acquire_commit_started.wait()
+    holder.cancel()
+    await asyncio.gather(holder, return_exceptions=True)
+
+    async with asyncio.timeout(0.05):
+        async with repository.workflow_thread_lifecycle_lock("thread"):
+            pass
+
+
+@pytest.mark.anyio
+async def test_lifecycle_lock_contention_times_out_and_returns_pool_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _LifecycleLockEngine(pool_size=1)
+    repository = _lifecycle_lock_repository(engine)
+    await engine.advisory_lock.acquire()
+    monkeypatch.setattr(reporting_repository_module, "_WORKFLOW_THREAD_LOCK_WAIT_SECONDS", 0)
+
+    try:
+        with pytest.raises(ReportingStateError) as conflict:
+            async with asyncio.timeout(0.05):
+                async with repository.workflow_thread_lifecycle_lock("thread"):
+                    pass
+    finally:
+        engine.advisory_lock.release()
+
+    assert conflict.value.code == "report_workflow_thread_lifecycle_timeout"
+    async with asyncio.timeout(0.05):
+        async with engine.connect():
+            pass
+
+
+def _run_row(**overrides: Any) -> dict[str, Any]:
+    now = datetime(2026, 9, 9, tzinfo=UTC)
+    return {
+        "report_run_id": "report-run",
+        "external_run_id": "external-run",
+        "entrypoint": "agentos",
+        "workflow_id": "enterprise-reporting-workflow-v1",
+        "agno_session_id": "workflow-session",
+        "agno_run_id": "report-run",
+        "caller_session_id": "caller-session",
+        "caller_run_id": "external-run",
+        "thread_id": "thread",
+        "owner_user_id": "user",
+        "database": "odoo",
+        "company_id": "11",
+        "revision": 1,
+        "status": "running",
+        "finalization_pending": False,
+        "created_at": now,
+        "started_at": now,
+        "finished_at": None,
+        "updated_at": now,
+        **overrides,
+    }
+
+
+@pytest.mark.anyio
+async def test_repository_initialize_upgrades_legacy_schema_in_dependency_order() -> None:
+    connection = _RecordingConnection()
+    repository = _fake_repository(connection)
+
+    await repository.initialize()
+
+    sql = [str(statement) for statement in connection.statements]
+    joined = "\n".join(sql)
+    assert connection.run_sync_calls == 1
+    assert "INSERT INTO agentos_reporting.reporting_runs" in joined
+    assert "FROM agentos_reporting.reporting_run_states" in joined
+    assert joined.index("INSERT INTO agentos_reporting.reporting_runs") < joined.index(
+        "UPDATE agentos_reporting.reporting_workflow_thread_owners"
+    )
+    assert joined.index("UPDATE agentos_reporting.reporting_workflow_thread_owners") < joined.index(
+        "VALIDATE CONSTRAINT fk_reporting_workflow_thread_owners_report_run_id"
+    )
+    assert "fk_reporting_run_states_report_run_id" in joined
+    assert "fk_reporting_command_receipts_report_run_id" in joined
+    assert "fk_reporting_mcp_requests_report_run_id" in joined
+    assert "ON CONFLICT" in joined
+    assert "DROP " not in joined.upper()
+
+
+@pytest.mark.anyio
+async def test_repository_initialize_legacy_upgrade_sql_is_repeatable() -> None:
+    connection = _RecordingConnection()
+    database = SimpleNamespace(db_engine=_RecordingEngine(connection))
+    first_repository = ReportingStateRepository(database)  # type: ignore[arg-type]
+    second_repository = ReportingStateRepository(database)  # type: ignore[arg-type]
+
+    await first_repository.initialize()
+    first_count = len(connection.statements)
+    await second_repository.initialize()
+
+    assert len(connection.statements) == first_count * 2
+    assert [str(item) for item in connection.statements[:first_count]] == [
+        str(item) for item in connection.statements[first_count:]
+    ]
+    assert all(
+        "IF NOT EXISTS" in str(statement) or "ON CONFLICT" in str(statement)
+        or "UPDATE agentos_reporting" in str(statement)
+        or "VALIDATE CONSTRAINT" in str(statement)
+        or "CREATE SCHEMA IF NOT EXISTS" in str(statement)
+        or "pg_advisory_xact_lock" in str(statement)
+        or "SELECT EXISTS" in str(statement)
+        for statement in connection.statements
+    )
+
+
+@pytest.mark.anyio
+async def test_repository_upgrades_unknown_placeholder_to_real_registration() -> None:
+    placeholder = _run_row(
+        entrypoint="unknown",
+        agno_session_id="thread",
+        caller_session_id=None,
+        caller_run_id=None,
+        database="default",
+        company_id="default",
+    )
+    real = _run_row()
+    connection = _RecordingConnection(row=placeholder, upgraded_row=real)
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    stored = await repository.register_run(**real)
+
+    assert stored == real
+    assert any(getattr(statement, "is_update", False) for statement in connection.statements)
+
+
+@pytest.mark.anyio
+async def test_repository_rejects_real_registration_with_changed_caller_identity() -> None:
+    stored = _run_row()
+    connection = _RecordingConnection(row=stored)
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    with pytest.raises(ReportingStateError) as conflict:
+        await repository.register_run(
+            **{**stored, "caller_session_id": "other-session", "caller_run_id": "other-run"}
+        )
+
+    assert conflict.value.code == "report_run_identity_conflict"
+
+
+@pytest.mark.anyio
+async def test_repository_unknown_upgrade_fails_closed_on_concurrent_conflict() -> None:
+    placeholder = _run_row(
+        entrypoint="unknown",
+        agno_session_id="thread",
+        caller_session_id=None,
+        caller_run_id=None,
+        database="default",
+        company_id="default",
+    )
+    connection = _RecordingConnection(row=placeholder, update_rowcounts=(0,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    with pytest.raises(ReportingStateError) as conflict:
+        await repository.register_run(**_run_row())
+
+    assert conflict.value.code == "report_run_identity_conflict"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("operation", "expected_code"),
+    [
+        ("attach", "report_mcp_request_not_found"),
+        ("status", "report_run_not_found"),
+    ],
+)
+async def test_repository_write_to_missing_parent_link_fails_closed(
+    operation: str, expected_code: str
+) -> None:
+    connection = _RecordingConnection(update_rowcounts=(0,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    with pytest.raises(ReportingStateError) as missing:
+        if operation == "attach":
+            await repository.attach_request_run("missing-external", "report-run")
+        else:
+            await repository.update_run_status("missing-report", status="failed")
+
+    assert missing.value.code == expected_code
+
+
+@pytest.mark.anyio
+async def test_repository_status_update_none_preserves_finalization_pending() -> None:
+    connection = _RecordingConnection(update_rowcounts=(1,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    await repository.update_run_status(
+        "report-run", status="failed", finalization_pending=None
+    )
+
+    statement = next(item for item in connection.statements if getattr(item, "is_update", False))
+    assert "finalization_pending" not in statement.compile().params
+
+
+@pytest.mark.anyio
+async def test_repository_nonterminal_status_clears_finished_at() -> None:
+    connection = _RecordingConnection(update_rowcounts=(1,))
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    await repository.update_run_status("report-run", status="running")
+
+    statement = next(item for item in connection.statements if getattr(item, "is_update", False))
+    assert statement.compile().params["finished_at"] is None
+
+
+@pytest.mark.anyio
+async def test_durable_complete_keeps_parent_running_until_workflow_terminal_update() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+    finalized = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:finalize",
+            "payload": {"checkpoint": {"phase": "finalize", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    class ApplyConnection(_RecordingConnection):
+        async def execute(self, statement: Any, _parameters: Any = None) -> _FakeResult:
+            self.statements.append(statement)
+            if getattr(statement, "is_select", False):
+                if "reporting_run_states" in str(statement):
+                    return _FakeResult(
+                        row=ReportingStateRepository._row_values(finalized)
+                    )
+                return _FakeResult()
+            return _FakeResult()
+
+    connection = ApplyConnection()
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    result = await repository.apply(
+        finalized.report_run_id,
+        {"name": "complete", "commandId": "report-complete:1:manifest"},
+        expected_version=finalized.state_version,
+    )
+
+    run_update = [
+        statement
+        for statement in connection.statements
+        if getattr(statement, "is_update", False)
+        and "reporting_runs" in str(statement)
+    ][-1]
+    assert result.state.phase is ReportingPhase.COMPLETED
+    assert run_update.compile().params["status"] == "running"
+    assert run_update.compile().params["finished_at"] is None
+
+    await repository.update_run_status(finalized.report_run_id, status="completed")
+
+    terminal_update = [
+        statement
+        for statement in connection.statements
+        if getattr(statement, "is_update", False)
+        and "reporting_runs" in str(statement)
+    ][-1]
+    assert terminal_update.compile().params["status"] == "completed"
+    assert terminal_update.compile().params["finished_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_repository_reads_parent_run_by_report_and_external_identity() -> None:
+    stored = _run_row(finalization_pending=True, status="failed")
+    connection = _RecordingConnection(row=stored)
+    repository = _fake_repository(connection)
+    repository._initialized = True
+
+    assert await repository.get_run("report-run") == stored
+    assert await repository.get_run_by_external("external-run") == stored
+
+    selects = [item for item in connection.statements if getattr(item, "is_select", False)]
+    assert len(selects) == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_repository_serializes_first_schema_initialization_across_engines() -> None:
+    database_url = _integration_database_url()
+    first_database = create_agent_database(database_url)
+    second_database = create_agent_database(database_url)
+    try:
+        async with first_database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+            await connection.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": reporting_repository_module._REPORTING_SCHEMA_LOCK_KEY},
+            )
+            initializations = (
+                asyncio.create_task(
+                    ReportingStateRepository(first_database.async_db).initialize()
+                ),
+                asyncio.create_task(
+                    ReportingStateRepository(second_database.async_db).initialize()
+                ),
+            )
+            await asyncio.sleep(0.1)
+            assert all(not initialization.done() for initialization in initializations)
+
+        await asyncio.wait_for(asyncio.gather(*initializations), timeout=2)
+
+        async with first_database.async_engine.connect() as connection:
+            table_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema = 'agentos_reporting'"
+                )
+            )
+        assert table_count == 5
+    finally:
+        async with first_database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+        await first_database.async_engine.dispose()
+        first_database.sync_engine.dispose()
+        await second_database.async_engine.dispose()
+        second_database.sync_engine.dispose()
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_repository_rejects_legacy_state_parent_identity_conflict() -> None:
+    database = create_agent_database(_integration_database_url())
+    repository = ReportingStateRepository(database.async_db)
+    now = datetime(2026, 9, 9, tzinfo=UTC)
+    try:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+            await connection.execute(text("CREATE SCHEMA agentos_reporting"))
+            await connection.run_sync(repository.runs.create)
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE agentos_reporting.reporting_run_states (
+                        report_run_id VARCHAR(256) PRIMARY KEY,
+                        external_run_id VARCHAR(256) NOT NULL UNIQUE,
+                        thread_id VARCHAR(256) NOT NULL,
+                        owner_user_id VARCHAR(256) NOT NULL,
+                        revision BIGINT NOT NULL,
+                        schema_version BIGINT NOT NULL,
+                        state_version BIGINT NOT NULL,
+                        phase VARCHAR(64) NOT NULL,
+                        payload JSON NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                insert(repository.runs).values(
+                    **_run_row(
+                        external_run_id="external-run",
+                        owner_user_id="wrong-owner",
+                    )
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO agentos_reporting.reporting_run_states (
+                        report_run_id, external_run_id, thread_id, owner_user_id,
+                        revision, schema_version, state_version, phase, payload,
+                        created_at, updated_at
+                    ) VALUES (
+                        'report-run', 'external-run', 'thread', 'user',
+                        1, 1, 0, 'analysis_running', '{}'::json, :now, :now
+                    )
+                    """
+                ),
+                {"now": now},
+            )
+
+        with pytest.raises(ReportingStateError) as conflict:
+            await repository.initialize()
+
+        assert conflict.value.code == "report_run_legacy_identity_conflict"
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA IF EXISTS agentos_reporting CASCADE"))
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 def test_submit_visualization_charts_persists_section_submission() -> None:
@@ -435,6 +1027,60 @@ def test_complete_analysis_items_can_finish_out_of_order_and_remain_running():
     ).state
     assert completed.phase is ReportingPhase.ANALYSIS_RUNNING
     assert completed.payload["currentAnalysisId"] is None
+
+
+def test_finalize_checkpoint_advances_durable_phase_in_same_reducer_call() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+
+    finalized = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:finalize",
+            "payload": {"checkpoint": {"phase": "finalize", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    assert finalized.phase is ReportingPhase.FINALIZE
+    assert finalized.payload["workflowCheckpoint"]["phase"] == "finalize"
+    completed = apply_phase(finalized, "complete")
+    assert completed.phase is ReportingPhase.COMPLETED
+
+
+def test_non_finalize_checkpoint_does_not_advance_durable_phase() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+
+    persisted = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:analysis",
+            "payload": {"checkpoint": {"phase": "analysis", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    assert persisted.phase is ReportingPhase.ANALYSIS_RUNNING
+
+
+def test_v2_finalize_checkpoint_is_not_blocked_by_legacy_command_receipt() -> None:
+    running = apply_phase(initial_state(), "start_analysis")
+    running.payload["appliedCommands"]["workflow-checkpoint:1:same-digest"] = {
+        "name": "set_workflow_checkpoint"
+    }
+
+    finalized = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "set_workflow_checkpoint",
+            "commandId": "workflow-checkpoint-v2:1:same-digest",
+            "payload": {"checkpoint": {"phase": "finalize", "revision": 1}},
+        },
+        running.state_version,
+    ).state
+
+    assert finalized.phase is ReportingPhase.FINALIZE
 
 
 def test_complete_transitions_directly_from_section_phase() -> None:
@@ -1000,6 +1646,19 @@ async def test_repository_rejects_concurrent_workflow_execution_lock(state_repos
 
     assert conflict.value.code == "report_workflow_run_conflict"
     assert not await state_repository.is_workflow_run_active("external-run-1")
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_repository_serializes_same_thread_lifecycle_lock(state_repository) -> None:
+    async with state_repository.workflow_thread_lifecycle_lock("thread-1"):
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                async with state_repository.workflow_thread_lifecycle_lock("thread-1"):
+                    pass
+
+    async with state_repository.workflow_thread_lifecycle_lock("thread-1"):
+        pass
 
 
 @pytest.mark.anyio

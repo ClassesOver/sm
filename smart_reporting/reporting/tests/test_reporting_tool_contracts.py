@@ -234,6 +234,42 @@ def test_section_heading_failure_preserves_stable_issue_path() -> None:
     assert result["details"] == error.details
 
 
+def test_long_section_heading_failure_preserves_safe_length_issue() -> None:
+    error = ReportingError(
+        "report_draft_heading_title_too_long",
+        "章节正文标题可见文本不得超过 300 个字符。",
+        details={
+            "issues": [
+                {
+                    "path": "$.blocks[1].markdown",
+                    "type": "heading_title_too_long",
+                    "message": "章节正文标题可见文本不得超过 300 个字符。",
+                    "maxLength": 300,
+                    "actualLength": 301,
+                    "title": "敏感标题正文",
+                }
+            ]
+        },
+    )
+
+    result = ReportingToolkit._failure(error)
+
+    assert result["details"] == {
+        "issues": [
+            {
+                "path": "$.blocks[1].markdown",
+                "type": "heading_title_too_long",
+                "message": "章节正文标题可见文本不得超过 300 个字符。",
+                "maxLength": 300,
+                "actualLength": 301,
+            }
+        ]
+    }
+    assert result["requiredActions"] == [
+        "只缩短 details.issues 指向的标题，保留对应 Markdown 正文及其他有效内容后重试。"
+    ]
+
+
 @pytest.mark.anyio
 async def test_visualization_run_python_script_accepts_signed_script_path() -> None:
     script_path = "analysis/charts/section_001/charts.py"

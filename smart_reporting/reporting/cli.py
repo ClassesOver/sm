@@ -7,7 +7,7 @@ import asyncio
 import json
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from time import monotonic
@@ -259,8 +259,26 @@ async def _drive_workflow_unlocked(
         "companyId": company_id,
     }
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
-    try:
-        output = await workflow.arun(
+    await _register_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
+
+    async def finalize_failed() -> None:
+        await _finalize_cli_run(
+            runtime,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            status="failed",
+        )
+
+    output = await _call_workflow(
+        lambda: workflow.arun(
             report_input,
             run_id=run_id,
             session_id=session_id,
@@ -268,15 +286,9 @@ async def _drive_workflow_unlocked(
             session_state={REPORT_WORKFLOW_SCOPE_STATE_KEY: scope},
             dependencies=dependencies,
             stream=False,
-        )
-    except BaseException:
-        await runtime.cleanup_terminal(
-            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
-            session_id,
-            run_id,
-        )
-        raise
-
+        ),
+        on_error=finalize_failed,
+    )
     output = await _continue_workflow_reviews(
         workflow,
         output,
@@ -284,16 +296,18 @@ async def _drive_workflow_unlocked(
         read=read,
         write=write,
         retry_delivery_error=True,
+        on_continue_error=finalize_failed,
     )
 
     status = _status(output)
     content = getattr(output, "content", None)
-    if status in {"cancelled", "failed"}:
-        await runtime.cleanup_terminal(
-            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
-            session_id,
-            run_id,
-        )
+    await _finalize_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        status=status,
+    )
     return {
         "status": status,
         "runId": run_id,
@@ -310,6 +324,7 @@ async def _continue_workflow_reviews(
     read: Callable[[str], str],
     write: Callable[[str], None],
     retry_delivery_error: bool,
+    on_continue_error: Callable[[], Awaitable[None]],
 ) -> Any:
     delivery_retries = 0
     while _status(output) == "paused":
@@ -319,20 +334,25 @@ async def _continue_workflow_reviews(
         ]
         if unresolved_errors:
             requirement = unresolved_errors[-1]
-            if str(getattr(requirement, "step_id", "")) != "validate-report":
+            step_id = str(getattr(requirement, "step_id", ""))
+            if step_id not in {"assemble-report", "validate-report"}:
                 raise ReportingError(
                     "report_workflow_resume_unsupported",
-                    "仅支持恢复 PDF/Word 双格式验收步骤。",
+                    "仅支持恢复最终汇编或 PDF/Word 双格式验收步骤。",
                 )
             if not retry_delivery_error or delivery_retries >= 1:
                 break
-            write("PDF/Word 双格式验收失败，正在基于同一持久化 run 重试末端步骤。")
+            step_label = "最终报告汇编" if step_id == "assemble-report" else "PDF/Word 双格式验收"
+            write(f"{step_label}失败，正在基于同一持久化 run 重试末端步骤。")
             requirement.retry()
             delivery_retries += 1
-            output = await workflow.acontinue_run(
-                run_response=output,
-                dependencies=dependencies,
-                stream=False,
+            output = await _call_workflow(
+                lambda: workflow.acontinue_run(
+                    run_response=output,
+                    dependencies=dependencies,
+                    stream=False,
+                ),
+                on_error=on_continue_error,
             )
             continue
         requirements = list(getattr(output, "step_requirements", None) or [])
@@ -342,11 +362,14 @@ async def _continue_workflow_reviews(
         if not unresolved:
             raise ReportingError("report_workflow_review_invalid", "报表工作流没有待处理审核项。")
         resolve_requirement(unresolved[-1], read=read, write=write)
-        output = await workflow.acontinue_run(
-            run_response=output,
-            step_requirements=requirements,
-            dependencies=dependencies,
-            stream=False,
+        output = await _call_workflow(
+            lambda: workflow.acontinue_run(
+                run_response=output,
+                step_requirements=requirements,
+                dependencies=dependencies,
+                stream=False,
+            ),
+            on_error=on_continue_error,
         )
     return output
 
@@ -399,6 +422,31 @@ async def _resume_workflow_unlocked(
     write: Callable[[str], None],
 ) -> dict[str, Any]:
 
+    await _register_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
+
+    pending_status = await _finish_pending_cli_terminal(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
+    if pending_status is not None:
+        return {
+            "status": pending_status,
+            "runId": run_id,
+            "sessionId": session_id,
+            "content": None,
+        }
+
     output = await workflow.aget_run_output(
         run_id=run_id,
         session_id=session_id,
@@ -420,16 +468,28 @@ async def _resume_workflow_unlocked(
         "companyId": company_id,
     }
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
+
+    async def finalize_failed() -> None:
+        await _finalize_cli_run(
+            runtime,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            status="failed",
+        )
+
     if status == "running":
         # Agno Workflow 2.8.2 只允许 acontinue_run 接收 PAUSED，但进程被终止时
         # 数据库保留的最后 checkpoint 是 RUNNING。这里只转换同一持久化 run 的
-        # 执行态，由 Agno 已保存的 step results 决定续点；CANCELLED/COMPLETED
-        # 仍在上方失败关闭，Reporting 业务恢复事实继续来自数据库 durable state。
+        # 执行态，由 Agno 已保存的 step results 决定续点。
         output.status = RunStatus.paused
-        output = await workflow.acontinue_run(
-            run_response=output,
-            dependencies=dependencies,
-            stream=False,
+        output = await _call_workflow(
+            lambda: workflow.acontinue_run(
+                run_response=output,
+                dependencies=dependencies,
+                stream=False,
+            ),
+            on_error=finalize_failed,
         )
     output = await _continue_workflow_reviews(
         workflow,
@@ -438,20 +498,157 @@ async def _resume_workflow_unlocked(
         read=read,
         write=write,
         retry_delivery_error=True,
+        on_continue_error=finalize_failed,
     )
     status = _status(output)
-    if status in {"cancelled", "failed"}:
-        await runtime.cleanup_terminal(
-            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
-            session_id,
-            run_id,
-        )
+    await _finalize_cli_run(
+        runtime,
+        run_id=run_id,
+        session_id=session_id,
+        user_id=user_id,
+        status=status,
+    )
     return {
         "status": status,
         "runId": run_id,
         "sessionId": session_id,
         "content": getattr(output, "content", None),
     }
+
+
+async def _register_cli_run(
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    database: str,
+    company_id: str,
+) -> None:
+    repository = getattr(runtime, "state_repository", None)
+    register = getattr(repository, "register_run", None)
+    if not callable(register):
+        return
+    await register(
+        report_run_id=run_id,
+        external_run_id=run_id,
+        entrypoint="cli",
+        workflow_id="enterprise-reporting-workflow-v1",
+        agno_session_id=session_id,
+        agno_run_id=run_id,
+        caller_session_id=session_id,
+        caller_run_id=run_id,
+        thread_id=session_id,
+        owner_user_id=user_id,
+        database=database,
+        company_id=company_id,
+    )
+
+
+async def _update_cli_run_status(
+    runtime: Any,
+    run_id: str,
+    status: str,
+    *,
+    finalization_pending: bool | None = None,
+) -> None:
+    repository = getattr(runtime, "state_repository", None)
+    update_status = getattr(repository, "update_run_status", None)
+    if callable(update_status):
+        await update_status(
+            run_id,
+            status=status,
+            finalization_pending=finalization_pending,
+        )
+
+
+async def _finish_pending_cli_terminal(
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    database: str,
+    company_id: str,
+) -> str | None:
+    repository = getattr(runtime, "state_repository", None)
+    get_run = getattr(repository, "get_run", None)
+    if not callable(get_run):
+        return None
+    stored = await get_run(run_id)
+    if stored is None:
+        return None
+    expected_identity = {
+        "report_run_id": run_id,
+        "external_run_id": run_id,
+        "entrypoint": "cli",
+        "workflow_id": "enterprise-reporting-workflow-v1",
+        "agno_session_id": session_id,
+        "agno_run_id": run_id,
+        "caller_session_id": session_id,
+        "caller_run_id": run_id,
+        "thread_id": session_id,
+        "owner_user_id": user_id,
+        "database": database,
+        "company_id": company_id,
+    }
+    if any(str(stored.get(key) or "") != value for key, value in expected_identity.items()):
+        raise ReportingError(
+            "report_workflow_scope_mismatch",
+            "Reporting 父运行不属于当前 CLI、租户或 session。",
+        )
+    if not bool(stored.get("finalization_pending")):
+        return None
+    status = str(stored.get("status") or "")
+    if status not in {"cancelled", "failed"}:
+        raise ReportingError(
+            "report_workflow_resume_invalid",
+            "Reporting 父运行不是待清理终态。",
+        )
+    await runtime.cleanup_terminal(
+        _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+        session_id,
+        run_id,
+    )
+    await _update_cli_run_status(runtime, run_id, status, finalization_pending=False)
+    return status
+
+
+async def _call_workflow(
+    operation: Callable[[], Awaitable[Any]],
+    *,
+    on_error: Callable[[], Awaitable[None]],
+) -> Any:
+    try:
+        return await operation()
+    except BaseException:
+        await on_error()
+        raise
+
+
+async def _finalize_cli_run(
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    status: str,
+) -> None:
+    if status not in {"cancelled", "failed"}:
+        await _update_cli_run_status(
+            runtime,
+            run_id,
+            status,
+            finalization_pending=False if status == "completed" else None,
+        )
+        return
+    await _update_cli_run_status(runtime, run_id, status, finalization_pending=True)
+    await runtime.cleanup_terminal(
+        _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+        session_id,
+        run_id,
+    )
+    await _update_cli_run_status(runtime, run_id, status, finalization_pending=False)
 
 
 async def run_cli(
@@ -527,7 +724,8 @@ async def run_cli(
 def _status(output: Any) -> str:
     value = getattr(output, "status", None)
     normalized = value.value if isinstance(value, RunStatus) else str(value or "")
-    return normalized.lower()
+    status = normalized.lower()
+    return "failed" if status in {"error", "failed"} else status
 
 
 def main(argv: list[str] | None = None) -> None:
