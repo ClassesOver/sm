@@ -245,8 +245,8 @@ def _model(settings: AgentSettings, *, thinking: bool) -> Any:
     profile = (
         ReportingThinkingProfile.on(
             reasoning_effort="high",
-            thinking_budget=settings.report_coding_thinking_budget,
-            temperature=settings.report_coding_temperature,
+            thinking_budget=settings.report_phase_thinking_budget,
+            temperature=settings.report_phase_temperature,
         )
         if thinking
         else ReportingThinkingProfile.off(temperature=0.0)
@@ -275,7 +275,7 @@ async def _probe_once(
         scenario,
         model_id=model_id,
         thinking=thinking,
-        thinking_budget=settings.report_coding_thinking_budget,
+        thinking_budget=settings.report_phase_thinking_budget,
     )
     workspace = ProbeWorkspace(scenario.path, scenario.initial_source)
     accepted: dict[str, Any] | None = None
