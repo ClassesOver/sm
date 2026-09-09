@@ -985,7 +985,7 @@ class ReportingStateRepository:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 raise ReportingStateError(
-                    "report_workflow_run_conflict",
+                    "report_workflow_thread_lifecycle_timeout",
                     "Reporting thread 生命周期操作等待超时。",
                 )
             await asyncio.sleep(min(_WORKFLOW_THREAD_LOCK_RETRY_DELAY_SECONDS, remaining))

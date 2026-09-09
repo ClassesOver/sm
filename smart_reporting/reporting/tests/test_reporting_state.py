@@ -332,7 +332,7 @@ async def test_lifecycle_lock_contention_times_out_and_returns_pool_connection(
     finally:
         engine.advisory_lock.release()
 
-    assert conflict.value.code == "report_workflow_run_conflict"
+    assert conflict.value.code == "report_workflow_thread_lifecycle_timeout"
     async with asyncio.timeout(0.05):
         async with engine.connect():
             pass

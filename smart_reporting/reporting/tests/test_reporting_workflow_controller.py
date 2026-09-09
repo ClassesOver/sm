@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,6 +14,7 @@ from agno.workflow import HumanReview, OnError, Step, Workflow
 from agno.workflow.types import StepOutput
 
 import smart_reporting.reporting.workflow.controller as controller_module
+import smart_reporting.reporting.workflow.repository as repository_module
 from smart_reporting.reporting.contract import ReportingWorkflowInput
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import (
@@ -20,6 +22,7 @@ from smart_reporting.reporting.workflow.controller import (
     ReportWorkflowController,
     reporting_workflow_ids,
 )
+from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 
 
 def _context() -> RunContext:
@@ -2918,6 +2921,56 @@ async def test_controller_duplicate_retry_keeps_original_wait_deadline(monkeypat
         )
 
     assert error.value.code == "report_workflow_run_conflict"
+
+
+@pytest.mark.anyio
+async def test_controller_lifecycle_timeout_is_not_retried_as_duplicate(monkeypatch) -> None:
+    connection = SimpleNamespace(
+        scalar=AsyncMock(return_value=False),
+        commit=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def connect():
+        yield connection
+
+    ownership = _ThreadOwnership()
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), connect=connect)
+    repository = ReportingStateRepository(  # type: ignore[arg-type]
+        SimpleNamespace(db_engine=engine)
+    )
+    lifecycle_lock_calls = 0
+
+    def lifecycle_lock(thread_id: str):
+        @asynccontextmanager
+        async def locked():
+            nonlocal lifecycle_lock_calls
+            lifecycle_lock_calls += 1
+            async with repository.workflow_thread_lifecycle_lock(thread_id):
+                yield
+
+        return locked()
+
+    ownership.workflow_thread_lifecycle_lock = lifecycle_lock  # type: ignore[method-assign]
+    monkeypatch.setattr(repository_module, "_WORKFLOW_THREAD_LOCK_WAIT_SECONDS", 0.02)
+    monkeypatch.setattr(repository_module, "_WORKFLOW_THREAD_LOCK_RETRY_DELAY_SECONDS", 0.005)
+    monkeypatch.setattr(controller_module, "_THREAD_CLAIM_WAIT_SECONDS", 0.04)
+    monkeypatch.setattr(controller_module, "_THREAD_CLAIM_RETRY_DELAY_SECONDS", 0.005)
+    workflow = SimpleNamespace(
+        id="enterprise-reporting-workflow-v1",
+        aget_run=AsyncMock(return_value=None),
+    )
+    controller = ReportWorkflowController(lambda: workflow, thread_ownership=ownership)
+
+    with pytest.raises(ReportingError, match="Reporting thread 生命周期操作等待超时") as error:
+        await asyncio.wait_for(
+            controller.start(ReportingWorkflowInput(prompt="生命周期锁超时"), _context()),
+            timeout=0.2,
+        )
+
+    assert error.value.code == "report_workflow_thread_lifecycle_timeout"
+    assert error.value.message == "Reporting thread 生命周期操作等待超时。"
+    assert lifecycle_lock_calls == 1
 
 
 @pytest.mark.anyio
