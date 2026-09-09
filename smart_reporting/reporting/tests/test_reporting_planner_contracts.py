@@ -95,7 +95,6 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
@@ -108,6 +107,7 @@ from smart_reporting.reporting.workflow.runtime.base import (
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
 )
+from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
 from smart_reporting.reporting.workflow.runtime.datasets import (
     RuntimeDatasetsMixin,
     _requirement_measure_field_refs,
@@ -1621,6 +1621,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     )
     observed: list[tuple[str, str, int]] = []
     planner_requests: list[dict[str, Any]] = []
+    code_requests: list[tuple[str, dict[str, Any]]] = []
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = SimpleNamespace()
     runtime.task_runner = SimpleNamespace(repository=SimpleNamespace())
@@ -1641,17 +1642,54 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         )
         if payload["analysisBlock"]["blockId"].endswith(":summary"):
             return AnalysisSummaryDraft(summary="完成摘要", warnings=())
-        if payload["analysisBlock"]["blockId"].endswith(":decision"):
-            return AnalysisEvidenceDecision(
-                requiresSupplementalEvidence=True,
-                reason="缺少构成",
-                missingFacts=("构成",),
+        return AnalysisEvidenceDecision(
+            requiresSupplementalEvidence=True,
+            reason="缺少构成",
+            missingFacts=("构成",),
+        )
+
+    class FakeCodeRunner:
+        def __init__(self, *, agent):
+            assert agent is runtime._analysis_script_agent
+
+        async def generate(self, script_path, task_facts, apply_analysis_patch, run_context):
+            binding = task_context.dependencies["AgentOS 任务执行"]
+            observed.append(
+                (
+                    "analysis_001:evidence:script:initial",
+                    binding["reportingThinkingEffort"],
+                    binding["reportingThinkingBudget"],
+                )
             )
-        return AnalysisScriptDraft(script="print('evidence')")
+            assert apply_analysis_patch is toolkit.apply_analysis_patch
+            code_requests.append(("generate", dict(task_facts)))
+            return CodeGenerationResult(FileIdentity(path=script_path, size=1, sha256="b" * 64))
+
+        async def repair(
+            self, script_file, diagnostic, read_file, apply_analysis_patch, run_context
+        ):
+            binding = task_context.dependencies["AgentOS 任务执行"]
+            observed.append(
+                (
+                    "analysis_001:evidence:script:repair",
+                    binding["reportingThinkingEffort"],
+                    binding["reportingThinkingBudget"],
+                )
+            )
+            assert read_file is toolkit.read_file
+            assert apply_analysis_patch is toolkit.apply_analysis_patch
+            code_requests.append(("repair", dict(diagnostic)))
+            return CodeGenerationResult(
+                FileIdentity(path=script_file.path, size=1, sha256="c" * 64)
+            )
 
     class FakeAnalysisItemWorkflow:
-        def __init__(self, *, plan_evidence, summarize, **_kwargs):
-            self.plan_evidence = plan_evidence
+        def __init__(
+            self, *, decide_evidence, generate_script, repair_script, summarize, **_kwargs
+        ):
+            self.decide_evidence = decide_evidence
+            self.generate_script = generate_script
+            self.repair_script = repair_script
             self.summarize = summarize
 
         async def run(self, _payload, _run_context):
@@ -1663,35 +1701,43 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
                 "scriptPath": "evidence/analysis_001/supplement.py",
                 "evidencePath": "evidence/analysis_001/supplement.json",
             }
-            initial = await self.plan_evidence(planner_payload, repair=False)
-            await self.plan_evidence(
-                {
+            decision = await self.decide_evidence(planner_payload)
+            script_path = planner_payload["scriptPath"]
+            initial = await self.generate_script(
+                script_path=script_path,
+                task_facts={
                     **planner_payload,
-                    "correction": {
-                        "attempt": 2,
-                        "previousPlan": initial.model_dump(mode="json", by_alias=True),
-                        "error": {
-                            "code": "report_analysis_script_failed",
-                            "message": "脚本执行失败。",
-                        },
-                    },
+                    "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
                 },
-                repair=True,
+                run_context=task_context,
+            )
+            await self.repair_script(
+                script_file=initial.script_file,
+                diagnostic={
+                    "code": "report_analysis_script_failed",
+                    "message": "脚本执行失败。",
+                    "missingFacts": list(decision.missing_facts),
+                    "scriptPath": script_path,
+                },
+                run_context=task_context,
             )
             await self.summarize({})
             return SimpleNamespace(output=StepOutput(content={"ok": True}))
 
     runtime._run_planner = run_planner
+    toolkit = SimpleNamespace(
+        read_file=AsyncMock(),
+        apply_analysis_patch=AsyncMock(),
+        run_python_script=AsyncMock(),
+        complete_analysis_item=AsyncMock(),
+    )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.build_reporting_tools",
-        lambda *_args, **_kwargs: [
-            SimpleNamespace(
-                read_file=AsyncMock(),
-                apply_analysis_patch=AsyncMock(),
-                run_python_script=AsyncMock(),
-                complete_analysis_item=AsyncMock(),
-            )
-        ],
+        lambda *_args, **_kwargs: [toolkit],
+    )
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCodeGenerationRunner",
+        FakeCodeRunner,
     )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.AnalysisItemWorkflow",
@@ -1717,10 +1763,18 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         "deterministicFacts",
         "analysisBlock",
     }
-    assert "deterministicFacts" not in planner_requests[1]
-    assert planner_requests[1]["evidenceDecision"]["missingFacts"] == ["构成"]
-    assert "deterministicFacts" not in planner_requests[2]
-    assert planner_requests[2]["previousScript"] == "print('evidence')"
+    assert len(planner_requests) == 2
+    assert code_requests[0][0] == "generate"
+    assert code_requests[0][1]["evidenceDecision"]["missingFacts"] == ["构成"]
+    assert code_requests[1] == (
+        "repair",
+        {
+            "code": "report_analysis_script_failed",
+            "message": "脚本执行失败。",
+            "missingFacts": ["构成"],
+            "scriptPath": "evidence/analysis_001/supplement.py",
+        },
+    )
     assert task_context.dependencies["AgentOS 任务执行"] == {
         "reportingThinkingEffort": "high",
         "reportingThinkingBudget": 4096,
@@ -1976,6 +2030,9 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         "所有后续读取的局部变量" in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
+    assert runtime._analysis_script_agent.output_schema is None
+    assert runtime._analysis_script_agent.tools == []
+    assert runtime._analysis_script_agent.add_history_to_context is False
     assert any(
         "只含 findings、reconciliations、warnings" in instruction
         and "不得输出 analysisId 或 datasetIds" in instruction

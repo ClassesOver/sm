@@ -27,9 +27,7 @@ from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
 from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
     AnalysisEvidenceDecision,
-    AnalysisEvidencePlan,
     AnalysisItemWorkflow,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
     _project_analysis_summary_payload,
 )
@@ -108,6 +106,7 @@ from .base import (
     time,
     validate_metric_code_bindings,
 )
+from .code_generation import CodeGenerationResult, ReportingCodeGenerationRunner
 from .datasets import _profile_coverage_instruction_projection
 from .phase_models import ChartDraft, VisualizationScriptDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
@@ -1863,6 +1862,7 @@ class RuntimeAnalysisMixin:
             raise ReportingError("report_phase_contract_invalid", "单项分析 Toolkit 装配结果无效。")
         toolkit = toolkits[0]
         analysis_id = str(payload.get("currentAnalysisId") or "")
+        code_runner = ReportingCodeGenerationRunner(agent=self._analysis_script_agent)
 
         async def run_structured_agent(
             agent: Any,
@@ -1879,126 +1879,77 @@ class RuntimeAnalysisMixin:
                 )
             return output
 
-        async def plan_evidence(
-            planner_payload: Mapping[str, Any], *, repair: bool
-        ) -> AnalysisEvidencePlan:
+        async def decide_evidence(
+            planner_payload: Mapping[str, Any],
+        ) -> AnalysisEvidenceDecision:
+            decision_request = {
+                "currentAnalysis": planner_payload.get("currentAnalysis"),
+                "deterministicFacts": planner_payload.get("deterministicFacts"),
+                "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
+            }
+            return cast(
+                AnalysisEvidenceDecision,
+                await run_structured_agent(
+                    self._analysis_evidence_agent,
+                    decision_request,
+                    AnalysisEvidenceDecision,
+                ),
+            )
+
+        async def generate_script(
+            *,
+            script_path: str,
+            task_facts: Mapping[str, Any],
+            run_context: RunContext,
+        ) -> CodeGenerationResult:
+            return await code_runner.generate(
+                script_path,
+                task_facts,
+                toolkit.apply_analysis_patch,
+                run_context,
+            )
+
+        async def repair_script(
+            *,
+            script_file: FileIdentity,
+            diagnostic: Mapping[str, Any],
+            run_context: RunContext,
+        ) -> CodeGenerationResult:
             dependencies = (
                 task_run_context.dependencies
                 if isinstance(task_run_context.dependencies, dict)
                 else None
             )
             binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
-            previous_effort = previous_budget = _missing = object()
-            repair_correction: Mapping[str, Any] | None = None
-            if repair:
-                if not isinstance(binding, dict):
-                    raise ReportingError(
-                        "report_phase_contract_invalid",
-                        "脚本修复缺少隔离的 thinking 契约。",
-                    )
-                # repair 与正常计划共享 Agent，但只在当前顺序步骤内临时升级。finally
-                # 必须恢复原档位，防止同一 Task 的最终摘要继承 max 预算。
-                previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
-                previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
-                binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "max"
-                binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_THINKING_BUDGETS[
-                    "complex"
-                ]
+            if not isinstance(binding, dict):
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "脚本修复缺少隔离的 thinking 契约。",
+                )
+            _missing = object()
+            previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
+            previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
+            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "max"
+            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_THINKING_BUDGETS[
+                "complex"
+            ]
             try:
-                if repair:
-                    raw_correction = planner_payload.get("correction")
-                    repair_correction = (
-                        raw_correction if isinstance(raw_correction, Mapping) else None
-                    )
-                    previous_raw = (
-                        repair_correction.get("previousPlan")
-                        if repair_correction is not None
-                        else None
-                    )
-                    try:
-                        previous = AnalysisEvidencePlan.model_validate(previous_raw)
-                    except ValidationError as error:
-                        raise ReportingError(
-                            "report_analysis_script_repair_invalid",
-                            "脚本修复缺少有效的既有事实缺口和脚本。",
-                        ) from error
-                    if not previous.requires_supplemental_evidence or previous.script is None:
-                        raise ReportingError(
-                            "report_analysis_script_repair_invalid",
-                            "脚本修复不得绕过既有事实缺口。",
-                        )
-                    decision = AnalysisEvidenceDecision(
-                        requiresSupplementalEvidence=True,
-                        reason=previous.reason,
-                        missingFacts=previous.missing_facts,
-                    )
-                else:
-                    decision_request = {
-                        "currentAnalysis": planner_payload.get("currentAnalysis"),
-                        "deterministicFacts": planner_payload.get("deterministicFacts"),
-                        "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
-                    }
-                    decision = cast(
-                        AnalysisEvidenceDecision,
-                        await run_structured_agent(
-                            self._analysis_evidence_agent,
-                            decision_request,
-                            AnalysisEvidenceDecision,
-                        ),
-                    )
-                    if not decision.requires_supplemental_evidence:
-                        return AnalysisEvidencePlan(
-                            requiresSupplementalEvidence=False,
-                            reason=decision.reason,
-                            missingFacts=(),
-                            script=None,
-                        )
-
-                script_request = {
-                    "currentAnalysis": planner_payload.get("currentAnalysis"),
-                    "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
-                    "datasets": planner_payload.get("datasets", []),
-                    "analysisOutputRoot": planner_payload.get("analysisOutputRoot"),
-                    "scriptPath": planner_payload.get("scriptPath"),
-                    "evidencePath": planner_payload.get("evidencePath"),
-                    "analysisBlock": {
-                        "blockId": (
-                            f"{analysis_id}:evidence:script:{'repair' if repair else 'initial'}"
-                        )
-                    },
-                }
-                if repair:
-                    assert repair_correction is not None
-                    assert previous.script is not None
-                    script_request["previousScript"] = previous.script
-                    script_request["correction"] = {
-                        "attempt": repair_correction.get("attempt"),
-                        "error": repair_correction.get("error"),
-                    }
-                script_draft = cast(
-                    AnalysisScriptDraft,
-                    await run_structured_agent(
-                        self._analysis_script_agent,
-                        script_request,
-                        AnalysisScriptDraft,
-                    ),
+                return await code_runner.repair(
+                    script_file,
+                    diagnostic,
+                    toolkit.read_file,
+                    toolkit.apply_analysis_patch,
+                    run_context,
                 )
             finally:
-                if repair and isinstance(binding, dict):
-                    for key, restored_value in (
-                        (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
-                        (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
-                    ):
-                        if restored_value is _missing:
-                            binding.pop(key, None)
-                        else:
-                            binding[key] = restored_value
-            return AnalysisEvidencePlan(
-                requiresSupplementalEvidence=True,
-                reason=decision.reason,
-                missingFacts=decision.missing_facts,
-                script=script_draft.script,
-            )
+                for key, restored_value in (
+                    (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
+                    (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
+                ):
+                    if restored_value is _missing:
+                        binding.pop(key, None)
+                    else:
+                        binding[key] = restored_value
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             summary_request = _prepare_analysis_summary_request(
@@ -2015,10 +1966,11 @@ class RuntimeAnalysisMixin:
             return cast(AnalysisSummaryDraft, output)
 
         workflow = AnalysisItemWorkflow(
-            plan_evidence=plan_evidence,
+            decide_evidence=decide_evidence,
+            generate_script=generate_script,
+            repair_script=repair_script,
             summarize=summarize,
             read_file=toolkit.read_file,
-            apply_patch=toolkit.apply_analysis_patch,
             run_script=toolkit.run_python_script,
             complete=toolkit.complete_analysis_item,
         )
