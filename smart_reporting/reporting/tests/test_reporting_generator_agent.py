@@ -42,6 +42,11 @@ def test_reporting_generator_agent_is_structured_and_has_no_tools() -> None:
             '"value": number}；必须读取 period，不得使用 periodStart。'
         ),
         (
+            "编写每张图的 Matplotlib 调用前，先以冻结 facts 校验待绘制数据：空数据、未知/空/重复占位分类、"
+            "缺失声明系列或无法按同月对齐的跨年同比不得绘制；跳过该图并输出结构化诊断。图中数值、单位、"
+            "期间和预算执行率必须直接来自冻结 facts；所有中文文字必须可显示，数值标签不得重叠。"
+        ),
+        (
             "pythonSource 绘图只能使用 Matplotlib；必须在导入 matplotlib.pyplot 之前调用 "
             'matplotlib.use("Agg")，并统一使用 fig.savefig(...) 写入图表文件；'
             "禁止使用 Plotly、Kaleido 或 Seaborn。"
