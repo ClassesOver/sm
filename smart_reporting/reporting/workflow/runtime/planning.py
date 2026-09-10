@@ -174,8 +174,6 @@ class RuntimePlanningMixin:
         self._record_request_context(state, request.prompt, feedback)
         explicit_type = _explicit_report_type(request.prompt, feedback)
         resolution = resolve_domain_mentions(f"{request.prompt}\n{feedback or ''}")
-        if resolution.is_ambiguous and explicit_type != "comprehensive":
-            return StepOutput(content={"clarificationQuestion": "请明确主分析领域：全成本或费控。"})
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
         if feedback:
             prompt_payload["supplement"] = feedback
@@ -185,11 +183,31 @@ class RuntimePlanningMixin:
         missing: list[str] = []
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
+        semantic_domains = tuple(dict.fromkeys(normalized.domains))
+        normalized_type = explicit_type or normalized.report_type
+        if normalized_type != "comprehensive" and not resolution.selected and not semantic_domains:
+            missing.append(normalized.clarification_question or "请明确需要分析的业务主题。")
+        cost_ambiguity_resolved = bool({"full_cost", "cost_control"}.intersection(semantic_domains))
+        if (
+            resolution.is_ambiguous
+            and not cost_ambiguity_resolved
+            and normalized_type != "comprehensive"
+        ):
+            missing.append(normalized.clarification_question or "请明确主分析领域：全成本或费控。")
         if missing:
-            return StepOutput(content={"clarificationQuestion": " ".join(missing)})
+            return StepOutput(content={"clarificationQuestion": " ".join(dict.fromkeys(missing))})
         assert period is not None
-        domains = DOMAIN_CODES if explicit_type == "comprehensive" else resolution.selected or None
-        report_type = _resolved_report_type(explicit_type or normalized.report_type, domains)
+        domains = (
+            DOMAIN_CODES
+            if normalized_type == "comprehensive"
+            else tuple(
+                code
+                for code in DOMAIN_CODES
+                if code in resolution.selected or code in semantic_domains
+            )
+            or None
+        )
+        report_type = _resolved_report_type(normalized_type, domains)
         if report_type == "comprehensive" and domains is None:
             domains = DOMAIN_CODES
         envelope = ReportRequestEnvelope.from_untrusted(

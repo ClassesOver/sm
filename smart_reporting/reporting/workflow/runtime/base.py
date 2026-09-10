@@ -514,7 +514,9 @@ class _ReportWorkflowRuntimeBase:
             thinking_profile=planner_off,
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
-                "只归一化分析期间；领域优先由服务端别名规则识别，领域歧义状态返回澄清内容",
+                "根据用户整句语义归一化分析领域和分析期间；domains 只能使用输入指引中的领域代码",
+                "可返回多个 domains；topic 表示非全域专题，不表示只能包含一个领域",
+                "明确别名和整句语义可以共同确定领域；仅有‘成本’等仍无法区分具体领域的短词时返回澄清内容",
                 "不得推断或返回数据源、Agent、医院或系统标识",
                 "单个明确日历年份转换为该年1月1日至12月31日",
                 "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短且陈述式的 clarificationQuestion",

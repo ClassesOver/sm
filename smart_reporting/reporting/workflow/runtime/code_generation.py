@@ -762,70 +762,26 @@ class ReportingCodeGenerationRunner:
         task_facts: Mapping[str, Any] | None = None,
         max_source_bytes: int = MAX_CODE_READ_BYTES,
     ) -> CodeGenerationResult:
-        """先只读一次受信脚本回执，再用 fresh Agent 提交完整修复源码。"""
+        """直接读取一次受信脚本回执，再用 fresh Agent 提交完整修复源码。"""
         self._validate_script_path(script_file.path)
         bounded_task_facts = self._repair_task_facts(task_facts, script_file.path)
-        reads = 0
-        read_receipt: Mapping[str, Any] | None = None
-
-        async def read_tool(*, path: str, **_kwargs: Any) -> Mapping[str, Any]:
-            nonlocal reads, read_receipt
-            reads += 1
-            if reads > 1 or path != script_file.path:
-                raise self._error(
-                    "report_code_generation_read_invalid",
-                    "修复阶段只能读取签发脚本一次。",
-                    script_file.path,
-                )
-            try:
-                receipt = await _invoke(
-                    read_file,
-                    {"path": path, "max_bytes": max_source_bytes},
-                    run_context,
-                )
-            except ReportingError as error:
-                raise self._error(
-                    self._stable_code(error.code, "report_code_generation_read_failed"),
-                    "脚本读取失败。",
-                    script_file.path,
-                ) from error
-            except Exception as error:
-                raise self._error(
-                    "report_code_generation_read_failed", "脚本读取失败。", script_file.path
-                ) from error
-            read_receipt = self._trusted_read_receipt(receipt, script_file)
-            return read_receipt
-
-        reader = self._fresh_agent()
-        self._configure(
-            reader,
-            Function(
-                name="read_file",
-                description="读取签发脚本。",
-                parameters=_tool_parameters("read_file"),
-                strict=True,
-                entrypoint=read_tool,
-                stop_after_tool_call=True,
-            ),
-            "read_file",
-        )
         try:
-            await reader.arun(
-                self._prompt({"scriptPath": script_file.path, "task": "读取脚本并返回受信回执"}),
-                run_context=run_context,
+            receipt = await _invoke(
+                read_file,
+                {"path": script_file.path, "max_bytes": max_source_bytes},
+                run_context,
             )
-        except ReportingError:
-            raise
-        except Exception as error:
-            raise ReportingError(
-                "report_code_generation_read_invalid", "修复读取阶段失败。"
-            ) from error
-        if reads != 1 or read_receipt is None:
+        except ReportingError as error:
             raise self._error(
-                "report_code_generation_read_invalid",
-                "修复读取阶段未读取签发脚本。",
+                self._stable_code(error.code, "report_code_generation_read_failed"),
+                "脚本读取失败。",
                 script_file.path,
-            )
+            ) from error
+        except Exception as error:
+            raise self._error(
+                "report_code_generation_read_failed", "脚本读取失败。", script_file.path
+            ) from error
+        read_receipt = self._trusted_read_receipt(receipt, script_file)
         result = await self.generate(
             script_file.path,
             {

@@ -2041,7 +2041,7 @@ class ReportWorkflowController:
             content = content.model_dump(mode="json", by_alias=True)
         if "规范化报表请求" in name:
             stage = "request"
-            title = "补充分析期间"
+            title = "补充报表信息"
             allowed = {"clarificationQuestion"}
         elif "提纲" in name:
             stage = "outline"
