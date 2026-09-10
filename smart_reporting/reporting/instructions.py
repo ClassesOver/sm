@@ -122,8 +122,11 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
     (
         "章节 title 由服务端统一插入，block 不得重复一级或二级章节标题；"
         "每个 block 的首个子标题必须是三级标题；四级标题只能出现在已有三级标题之后。"
-        "H3/H4 必须使用短标题，建议不超过 40 个中文字符；标题行只能写标题文本并在行尾结束，"
-        "正文必须另起空行段落，禁止『### 标题：正文……』同一行混写。"
+        "H3/H4 必须使用不超过 40 个中文字符的短标题，每个标题必须独占一个物理行；"
+        "标题行后必须立即换行，正文必须再隔一个空行另起段落。"
+        "正确格式是『### 收入分析\n\n本季度收入……』；"
+        "禁止『### 收入分析：本季度收入……』同一行混写。"
+        "标题中不得包含正文、citationId、chartId、文件名、HTML 标签或 <sup> 脚注。"
         "章节内部可使用段落、列表、引用、强调和表格组织管理叙事。"
     ),
     (
@@ -141,6 +144,8 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "正文块提交 blockId、Markdown、citationIds、chartIds 和 claimIds，不提交 analysisIds。"
         "引用由 datasetId、requirementId、snapshotHash 共同绑定，不得猜测或改写。当前 WorkItem 的"
         " citationIds 必须在对应数据事实正文块中引用。"
+        "citationIds、chartIds 和图表文件名只填入 JSON 结构化字段，"
+        "不得写入 Markdown 标题或正文。"
     ),
     (
         "每个正文块必须引用至少一个结构化 claim；claim 使用 SectionWorkItem 的"

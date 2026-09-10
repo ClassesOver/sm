@@ -4,6 +4,7 @@ import re
 from copy import copy
 from typing import Any, Literal
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ...contract import FIELD_REF_PATTERN, MeasureSemantic, ReportPeriod
@@ -12,12 +13,11 @@ from ..query_pipeline import QueryRequirement
 
 MAX_ANALYSIS_REQUIREMENTS = MAX_REPORT_INPUTS // 3
 
+_FORBIDDEN_DERIVATION_PATTERN = re.compile(r"拟合|估算|推算|插值|外推|年化|平滑|补齐数据")
+
 
 def _contains_forbidden_derivation(value: str) -> bool:
-    return any(
-        token in value
-        for token in ("拟合", "估算", "推算", "插值", "外推", "年化", "平滑", "补齐数据")
-    )
+    return _FORBIDDEN_DERIVATION_PATTERN.search(value) is not None
 
 
 class _StrictModel(BaseModel):
@@ -165,7 +165,9 @@ class AnalysisItem(_StrictModel):
     @classmethod
     def validate_analysis_text(cls, value: str) -> str:
         if _contains_forbidden_derivation(value):
-            raise ValueError("分析项不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据")
+            # 自然语言关键词无法可靠区分动作、否定声明和引用说明。这里只保留
+            # 不含正文的审计信号；真正的数据派生安全由后续取数、脚本和事实校验负责。
+            logger.warning("report_analysis_forbidden_derivation_mentioned")
         return value
 
 

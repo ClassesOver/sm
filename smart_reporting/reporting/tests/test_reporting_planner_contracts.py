@@ -345,6 +345,52 @@ def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:
     )
 
 
+@pytest.mark.parametrize(
+    "description",
+    [
+        "基于可用期间描述实际值，不做全年外推。",
+        "汇总收入、成本和利润，不做后续外推。",
+        "仅披露原始值，不得估算、年化或补齐数据。",
+    ],
+)
+def test_analysis_bundle_allows_explicitly_negated_derivations(description: str) -> None:
+    payload = analysis_bundle(
+        table="rj.dwd_hdc_income_summary_view", period_granularity="date"
+    ).model_dump(mode="json", by_alias=True)
+    payload["analyses"][0]["description"] = description
+
+    bundle = AnalysisBundle.model_validate(payload)
+
+    assert bundle.analyses[0].description == description
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "基于可用期间估算全年收入。",
+        "不做外推，但仍估算全年收入。",
+        "禁止外推，然而继续平滑缺失期间。",
+        "不得外推并继续估算全年收入。",
+    ],
+)
+def test_analysis_bundle_soft_warns_positive_derivations(description: str) -> None:
+    payload = analysis_bundle(
+        table="rj.dwd_hdc_income_summary_view", period_granularity="date"
+    ).model_dump(mode="json", by_alias=True)
+    payload["analyses"][0]["description"] = description
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="WARNING", format="{message}")
+    try:
+        bundle = AnalysisBundle.model_validate(payload)
+    finally:
+        logger.remove(sink_id)
+
+    assert bundle.analyses[0].description == description
+    assert records == ["report_analysis_forbidden_derivation_mentioned\n"]
+    assert description not in "".join(records)
+
+
 def test_normalize_analysis_bundle_collapses_qualified_column_refs() -> None:
     candidate = {
         "analyses": [
