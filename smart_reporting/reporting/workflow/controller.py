@@ -27,10 +27,10 @@ from ..models import (
     ReportReviewSnapshot,
     ReportWorkflowControl,
 )
+from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
-REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
 REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY = "Reporting MCP 请求指纹"
 REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY = "Reporting MCP 已占用 thread"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"

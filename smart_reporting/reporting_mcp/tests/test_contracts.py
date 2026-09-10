@@ -1,10 +1,10 @@
 from typing import get_type_hints
 
 import pytest
-from agno.agent import Agent
 from agno.os import AgentOS
 from agno.os.config import MCPServerConfig
 from agno.os.mcp import build_mcp_server
+from agno.workflow import Workflow
 from fastmcp import FastMCP
 from pydantic import ValidationError
 
@@ -139,21 +139,27 @@ async def test_fastmcp_tool_list_contains_closed_input_and_output_schema() -> No
 
 @pytest.mark.anyio
 async def test_agentos_embedded_mcp_exposes_only_reporting_tools() -> None:
-    functions = create_reporting_mcp_tools(object())  # type: ignore[arg-type]
+    workflow = Workflow(
+        id="enterprise-reporting-workflow-v1",
+        name="企业智能运营报表",
+        steps=[],
+    )
     agent_os = AgentOS(
         name="reporting-test",
-        agents=[Agent(id="reporting-test-agent")],
+        agents=[],
         teams=[],
-        workflows=[],
-        mcp_server=MCPServerConfig(tools=functions, enable_builtin_tools=False),
+        workflows=[workflow],
+        mcp_server=MCPServerConfig(
+            tools=[workflow.as_tool(name="run_reporting_workflow")],
+            default_tools=False,
+        ),
         telemetry=False,
     )
 
     tools = await build_mcp_server(agent_os).list_tools()
 
     assert {tool.name for tool in tools} == {
-        "reporting_start",
-        "reporting_get",
-        "reporting_review",
-        "reporting_cancel",
+        "run_reporting_workflow",
+        "continue_run",
+        "cancel_run",
     }

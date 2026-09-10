@@ -1,6 +1,5 @@
 import asyncio
 import json
-from contextlib import asynccontextmanager
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -13,12 +12,12 @@ from smart_reporting.runtime.application import ApplicationContext, create_agent
 from smart_reporting.runtime.settings import AgentSettings
 
 
-class FakeAssistant:
+class FakeWorkflow:
     id = "smart-reporting"
     name = "测试助手"
 
     def deep_copy(self, *, update=None):
-        copied = FakeAssistant()
+        copied = FakeWorkflow()
         for key, value in (update or {}).items():
             setattr(copied, key, value)
         return copied
@@ -68,12 +67,12 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     first_context = ApplicationContext(
         settings,
         object(),
-        FakeAssistant(),
+        FakeWorkflow(),
     )
     second_context = ApplicationContext(
         settings,
         object(),
-        FakeAssistant(),
+        FakeWorkflow(),
     )
 
     first_os, first_app = create_agentos_app(first_context, first_base)
@@ -85,10 +84,10 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert created[0].values["db"] is None
-    assert [agent.id for agent in created[0].values["agents"]] == ["smart-reporting"]
-    assert created[0].values["agents"][0] is first_context.report_agent
+    assert created[0].values["agents"] == []
     assert created[0].values["teams"] == []
-    assert created[0].values["workflows"] == []
+    assert [workflow.id for workflow in created[0].values["workflows"]] == ["smart-reporting"]
+    assert created[0].values["workflows"][0] is first_context.report_workflow
     assert created[0].values["interfaces"] == []
     assert created[0].values["telemetry"] is False
     assert created[0].values["mcp_server"] is False
@@ -111,7 +110,7 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
     context = ApplicationContext(
         settings,
         object(),
-        FakeAssistant(),
+        FakeWorkflow(),
         database=database,
     )
 
@@ -137,7 +136,7 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
     context = ApplicationContext(
         settings,
         workspace,
-        FakeAssistant(),
+        FakeWorkflow(),
     )
 
     create_agentos_app(context, FastAPI())
@@ -177,7 +176,7 @@ async def test_application_lifespan_stops_optional_sandbox_reconciler(monkeypatc
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
         workspace,
-        FakeAssistant(),
+        FakeWorkflow(),
     )
 
     create_agentos_app(context, FastAPI())
@@ -185,50 +184,6 @@ async def test_application_lifespan_stops_optional_sandbox_reconciler(monkeypatc
         await asyncio.wait_for(workspace.reconcile_started.wait(), timeout=0.1)
 
     assert workspace.reconcile_stopped.is_set()
-
-
-@pytest.mark.anyio
-async def test_application_closes_reporting_tasks_before_agentos_database(monkeypatch):
-    events: list[str] = []
-
-    class Controller:
-        async def aclose(self) -> None:
-            events.append("controller-close")
-
-    class FakeAgentOS:
-        def __init__(self, **values):
-            self.values = values
-
-        def get_app(self):
-            app = self.values["base_app"]
-
-            @asynccontextmanager
-            async def agentos_lifespan(_app):
-                events.append("database-open")
-                yield
-                events.append("database-close")
-
-            app.router.lifespan_context = agentos_lifespan
-            return app
-
-    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
-    context = ApplicationContext(
-        AgentSettings.from_environment({}, load_env_file=False),
-        FakeWorkspace("lifespan"),
-        FakeAssistant(),
-        report_workflow_controller=Controller(),  # type: ignore[arg-type]
-    )
-
-    _agent_os, app = create_agentos_app(context, FastAPI())
-    async with app.router.lifespan_context(app):
-        events.append("serving")
-
-    assert events == [
-        "database-open",
-        "serving",
-        "controller-close",
-        "database-close",
-    ]
 
 
 @pytest.mark.anyio
@@ -266,10 +221,13 @@ def test_default_application_exposes_explicit_context():
     context = app_module.base_app.state.agentos_context
     assert context.settings is app_module.settings
     assert context.workspace_service is app_module.workspace_service
-    assert context.report_agent is app_module.report_agent
+    assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db
     assert app_module.reporting_agent_template.id == "smart-reporting"
-    assert [agent.id for agent in app_module.agent_os.agents or []] == ["smart-reporting"]
+    assert app_module.agent_os.agents == []
+    assert [workflow.id for workflow in app_module.agent_os.workflows or []] == [
+        "enterprise-reporting-workflow-v1"
+    ]
     assert str(app_module.base_app.url_path_for("reporting_dependency_diagnostics")) == (
         "/diagnostics/reporting-dependencies"
     )

@@ -38,6 +38,7 @@ from smart_reporting.reporting.tests.delivery_fakes import (
 )
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting.workflow.runtime import base as runtime_module
+from smart_reporting.reporting.workflow.scope import reporting_scope_keys
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
@@ -1031,7 +1032,13 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
     assert result.content["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
     assert result.content["publicationGate"] == output["publicationGate"]
     runtime.issue_http_publication.assert_awaited_once_with(
-        thread_id="thread",
+        thread_id=reporting_scope_keys(
+            database="default",
+            company_id="default",
+            user_id="native",
+            thread_id="thread",
+            run_id="workflow-run",
+        ).workspace_key,
         user_id="native",
         workflow_session_id="thread",
         workflow_run_id="workflow-run",
@@ -1147,7 +1154,13 @@ async def test_workflow_publication_keeps_workspace_paths_without_http_services(
 
     assert result.content["path"] == "reports/report.pdf"
     runtime.issue_workspace_publication.assert_awaited_once_with(
-        thread_id="thread",
+        thread_id=reporting_scope_keys(
+            database="default",
+            company_id="default",
+            user_id="native",
+            thread_id="thread",
+            run_id="workflow-run",
+        ).workspace_key,
         output=output,
     )
     runtime.issue_http_publication.assert_not_awaited()

@@ -29,7 +29,6 @@ from .integrations.agno_function_arguments import install_agno_function_argument
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
-from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.data_source.starrocks import StarRocksSourceConfig
 from .reporting.delivery.publishing import (
@@ -45,12 +44,7 @@ from .reporting.diagnostics import (
     ReportingDependencyDiagnostics,
     create_reporting_dependency_diagnostics_router,
 )
-from .reporting.workflow.controller import ReportWorkflowController
 from .reporting.workflow.repository import REPORTING_DB_SCHEMA
-from .reporting_mcp import (
-    ReportingMcpAdapter,
-    create_reporting_mcp_tools,
-)
 from .reporting_mcp.identity import CapabilityTokenVerifier
 from .runtime.application import ApplicationContext, create_agentos_app
 from .runtime.database import check_database, create_agent_database
@@ -411,12 +405,7 @@ reporting_agent_template, report_runtime = create_report_runtime(
     artifact_persistence=report_artifact_persistence,
     quality_warning_service=quality_warning_service,
 )
-report_workflow_controller = ReportWorkflowController(
-    report_runtime.workflow,
-    thread_ownership=report_runtime.state_repository,
-    terminal_cleanup=report_runtime.cleanup_terminal,
-)
-report_agent = create_report_agent(reporting_agent_template, report_workflow_controller)
+report_workflow = report_runtime.workflow()
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
     sources=tuple(
         source
@@ -449,18 +438,20 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
 application_context = ApplicationContext(
     settings,
     workspace_service,
-    report_agent,
+    report_workflow,
     database=agent_database,
     quality_warning_service=quality_warning_service,
     mcp_config=MCPServerConfig(
-        tools=create_reporting_mcp_tools(
-            ReportingMcpAdapter(report_workflow_controller, workspace_service)
-        ),
-        enable_builtin_tools=False,
+        tools=[
+            report_workflow.as_tool(
+                name="run_reporting_workflow",
+                description="运行企业智能运营报表工作流，返回官方 Run 状态和审核要求。",
+            )
+        ],
+        default_tools=False,
         allowed_hosts=list(settings.reporting_mcp_allowed_hosts),
     ),
     mcp_auth=CapabilityTokenVerifier(settings.workspace_hmac_secret),
-    report_workflow_controller=report_workflow_controller,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)
