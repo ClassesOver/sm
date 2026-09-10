@@ -70,6 +70,7 @@ thinking_enabled
 request_normalization
 domain_resolution
 data_understanding
+measure_semantics
 outline_planning
 sql_planning
 analysis_planning
@@ -116,6 +117,7 @@ reason
 | 请求归一化 | Off | Schema 失败时 1K |
 | 领域识别 | Off | 不升级；无法唯一判断时请求澄清 |
 | 数据理解 | 2K | Schema 或能力映射失败时 4K |
+| 指标语义 | 2K | Schema 或能力映射失败时 4K |
 | 提纲规划 | Off | Schema 失败时 2K |
 | SQL 规划 | 2K | Schema 或 SQL 校验失败时 4K |
 | 分析计划 | 2K | Schema 失败时 4K |
@@ -336,4 +338,3 @@ token、是否升级和最终状态。日志不得包含完整 prompt、源码�
 - 运行错误由 Sandbox 执行回执捕获；
 - 图表质量由文件门禁和视觉审查捕获；
 - 修复失败不会无限重试或继续增加预算。
-
