@@ -349,7 +349,7 @@ git commit -m "feat: budget reporting structured retries"
 - Consumes: Task 1 的 operation 策略；Task 3 的 `thinking_request` 执行参数。
 - Produces: `_run_planner(..., thinking_complexity="standard", failure_kind=None, attempt=0)` 和每个 Planner 的固定 `ThinkingPolicyConfig`。
 
-- [ ] **Step 1: 写各 Planner 初始预算和纠错预算的失败测试**
+- [x] **Step 1: 写各 Planner 初始预算和纠错预算的失败测试**
 
 更新原 `test_runtime_planners_use_stage_specific_thinking_profiles`，不再读取模型上的固定 profile，改为断言
 Agent 的 operation 配置。增加 Fake executor 记录请求：
@@ -365,13 +365,13 @@ assert selected_budgets["sql_planning"] == [2048, 4096]
 同时断言 request normalizer、领域识别和 outline 首次 Off，analysis planner 首次 2K；
 `planner_enable_thinking=False` 时全部 operation 决策为 Off。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_planner_contracts.py -k 'thinking or data_understanding or sql'`
 
 Expected: FAIL，当前数据理解和 SQL 首次均为 Off，且 Planner 仍持有 initial/escalation profile。
 
-- [ ] **Step 3: 用 operation 配置替换 Planner 固定 profile**
+- [x] **Step 3: 用 operation 配置替换 Planner 固定 profile**
 
 在 `model_policy.py` 定义：
 
@@ -387,7 +387,7 @@ class ThinkingPolicyConfig:
 `_reporting_thinking` 属性。Planner 模型模板只保留全局开关和硬上限，不再通过
 `_report_escalation_thinking_profile` 表达业务预算。
 
-- [ ] **Step 4: 扩展 `_run_planner` 传递调用级请求**
+- [x] **Step 4: 扩展 `_run_planner` 传递调用级请求**
 
 签名增加：
 
@@ -408,7 +408,7 @@ async def _run_planner(
 从 Agent 读取 `ThinkingPolicyConfig`，构造 `ThinkingRequest` 后传给 executor。配置缺失时抛
 `report_thinking_policy_missing`，不静默退回 8K。
 
-- [ ] **Step 5: 给规划循环传入精确失败类型**
+- [x] **Step 5: 给规划循环传入精确失败类型**
 
 逐个绑定：请求归一化=`request_normalization`；数据理解=`data_understanding`，服务端能力映射反馈为
 `capability_mapping_failure`；指标语义=`measure_semantics`，首次 2K、Schema 或候选字段能力映射失败时
@@ -417,7 +417,7 @@ async def _run_planner(
 
 外层循环使用 `attempt=0` 或 `1`，第二次及以后保持 1；超过一次升级不会增加预算。
 
-- [ ] **Step 6: 运行定点测试并提交**
+- [x] **Step 6: 运行定点测试并提交**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_planner_contracts.py -k 'thinking or data_understanding or sql or analysis_plan or outline'`
 

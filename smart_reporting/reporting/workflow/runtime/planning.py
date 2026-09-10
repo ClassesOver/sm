@@ -536,6 +536,10 @@ class RuntimePlanningMixin:
                 payload,
                 run_context,
                 call_budget=call_budget,
+                attempt=min(attempt - 1, 1),
+                failure_kind=(
+                    "capability_mapping_failure" if validation_feedback is not None else None
+                ),
             )
             plan, previous_output, validation_feedback = _data_understanding_result(
                 output, snapshots
@@ -730,6 +734,10 @@ class RuntimePlanningMixin:
                     payload,
                     run_context,
                     call_budget=call_budget,
+                    attempt=min(attempt - 1, 1),
+                    failure_kind=(
+                        "capability_mapping_failure" if validation_feedback is not None else None
+                    ),
                 )
             except ValidationError as error:
                 # 兼容端点可能接受 strict tool schema 却仍漏掉嵌套必填字段。
@@ -908,6 +916,8 @@ class RuntimePlanningMixin:
                     payload,
                     run_context,
                     call_budget=call_budget,
+                    attempt=min(attempt - 1, 1),
+                    failure_kind="schema_failure" if validation_feedback is not None else None,
                 )
             except ValidationError as error:
                 # Agno 的 Agent 重试只对同一输入盲重试，无法携带结构校验失败的原因；
@@ -1104,6 +1114,8 @@ class RuntimePlanningMixin:
                     payload,
                     run_context,
                     call_budget=call_budget,
+                    attempt=min(attempt - 1, 1),
+                    failure_kind="schema_failure" if validation_feedback is not None else None,
                 )
             except ValidationError as error:
                 # Analysis planner 已关闭 Agno 对同一输入的盲重试。结构错误必须携带
@@ -1320,6 +1332,8 @@ class RuntimePlanningMixin:
                 payload,
                 run_context,
                 call_budget=call_budget,
+                attempt=min(attempt - 1, 1),
+                failure_kind="sql_validation_failure" if validation_feedback is not None else None,
             )
             assert isinstance(output, GeneratedQueryBatch)
             approved, issues = _approve_generated_queries(

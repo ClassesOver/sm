@@ -35,6 +35,7 @@ from pydantic import (
 
 from ....async_utils import complete_cleanup
 from ....context_management import TaskExecutionContextHardLimitError
+from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
@@ -130,8 +131,10 @@ from ...instructions import (
 from ...metadata import ReportingMetadataClient
 from ...model_policy import (
     ReportingThinkingProfile,
+    ThinkingFailureKind,
+    ThinkingPolicyConfig,
+    ThinkingRequest,
     apply_reporting_thinking_profile,
-    reporting_thinking_profile_from_model,
 )
 from ...models import ReportingError
 from ...phase import (
@@ -491,27 +494,15 @@ class _ReportWorkflowRuntimeBase:
             if planner_enable_thinking
             else planner_off
         )
-        # 分析计划首次请求只需要整理已冻结的 Schema、画像能力和管理问题；将
-        # 首次推理预算减半可以避免每次正常请求都支付 max 档成本。结构化校验
-        # 或服务端 correction 仍通过 planner_max 使用完整预算，不能削弱失败修复能力。
-        planner_analysis_initial = (
-            ReportingThinkingProfile.on(
-                reasoning_effort="high",
-                thinking_budget=max(4096, planner_thinking_budget // 2),
-            )
-            if planner_enable_thinking
-            else planner_off
-        )
-        # DeepSeek V4 只有 off/high/max 三个真实档位。数据理解和指标语义 Planner
-        # 首次请求关闭 thinking，只有 Schema 校验失败或服务端签发 correction 时才升级；
-        # 分析计划首次使用 high，只有 Schema 校验失败或服务端签发 correction 时才升级 max，
-        # 因为正常请求只需整理已批准能力，失败修复才需要完整推理预算。
-        # SQL 在首次请求关闭 thinking，失败后升到 max；归一化和提纲始终 off。
         self._request_normalizer = self._planning_agent(
             reporting_agent_template,
             "report-request-normalizer",
             NormalizedReportPrompt,
-            thinking_profile=planner_off,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="request_normalization",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
                 "根据用户整句语义归一化分析领域和分析期间；domains 只能使用输入指引中的领域代码",
@@ -527,8 +518,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-data-understanding-planner",
             DataUnderstandingPlan,
-            thinking_profile=planner_off,
-            escalation_thinking_profile=planner_high,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="data_understanding",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "只选择完成报告目标所需的数据表",
                 "sourceId 必须与输入 Schema 完全一致",
@@ -551,8 +545,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-measure-semantic-proposer",
             MeasureSemanticProposal,
-            thinking_profile=planner_off,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="measure_semantics",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "这是待用户审核的候选，不是已确认业务事实；只依据输入 Schema、术语和受限数据画像分类",
                 "candidateFieldRefs 中每个字段必须且只能在 decisions 中出现一次，不得增加、遗漏或替换字段",
@@ -576,7 +573,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-outline-planner",
             ReportOutlineProposal,
-            thinking_profile=planner_off,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="outline_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
                 "只返回 reportType、中文报告标题、sections 和 assumptions；sections 每项只能包含 title 和 analysisIds",
@@ -590,8 +591,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-planner",
             AnalysisBundle,
-            thinking_profile=planner_analysis_initial,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="analysis_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
@@ -625,8 +629,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-evidence-planner",
             AnalysisEvidenceDecision,
-            thinking_profile=planner_high,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="analysis_evidence",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
                 "只返回 requiresSupplementalEvidence、reason、missingFacts，不得生成 script 或任何代码。",
@@ -671,7 +678,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-summary-writer",
             AnalysisSummaryDraft,
-            thinking_profile=planner_off,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="analysis_summary",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
                 "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
@@ -686,8 +697,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-sql-planner",
             GeneratedQueryBatch,
-            thinking_profile=planner_off,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="sql_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
                 "每项只生成一条 SELECT 或只读 CTE",
@@ -709,24 +723,18 @@ class _ReportWorkflowRuntimeBase:
         agent_id: str,
         output_schema: type[BaseModel],
         *,
-        thinking_profile: ReportingThinkingProfile,
-        escalation_thinking_profile: ReportingThinkingProfile | None = None,
-        thinking_escalation_fields: tuple[str, ...] = ("correction",),
+        thinking_policy: ThinkingPolicyConfig,
         stage_instructions: tuple[str, ...] = (),
     ) -> Agent:
         if not isinstance(planner.model, OpenAIChat):
             raise TypeError("Report planner requires OpenAIChat")
         planner_model = copy(planner.model)
-        apply_reporting_thinking_profile(planner_model, thinking_profile)
+        apply_reporting_thinking_profile(planner_model, ReportingThinkingProfile.off())
         planner_model.top_p = 1.0
         planner_model.retries = 0
         planner_model.exponential_backoff = False
-        setattr(
-            planner_model,
-            "_report_escalation_thinking_profile",
-            escalation_thinking_profile,
-        )
-        setattr(planner_model, "_report_thinking_escalation_fields", thinking_escalation_fields)
+        planner_model.__dict__.pop("_report_escalation_thinking_profile", None)
+        planner_model.__dict__.pop("_report_thinking_escalation_fields", None)
 
         def validate_response(content: Any) -> BaseModel:
             candidate = _planner_candidate(content)
@@ -743,7 +751,6 @@ class _ReportWorkflowRuntimeBase:
                 raise
 
         setattr(planner_model, "_report_response_validator", validate_response)
-        agent_retries = 0 if output_schema in {AnalysisBundle, AnalysisEvidenceDecision} else 2
         agent = planner.deep_copy(
             update={
                 "id": agent_id,
@@ -751,10 +758,9 @@ class _ReportWorkflowRuntimeBase:
                 "name": _PLANNER_DISPLAY_NAMES.get(agent_id, agent_id),
                 "role": "只根据已批准的结构、术语和画像生成结构化报表规划。",
                 "model": planner_model,
-                # 结构化执行器会显式回灌 ValidationError；这些阶段关闭 Agno 对同一
-                # 输入的盲重试，其他 planner 继续沿用既有 Agno retry 边界。
-                "retries": agent_retries,
-                "exponential_backoff": agent_retries > 0,
+                # 结构化执行器负责携带校验事实的有界重试，Agent 不再对相同输入盲重试。
+                "retries": 0,
+                "exponential_backoff": False,
                 "instructions": [
                     "只返回与 output_schema 匹配的 JSON。",
                     "不得输出分析过程、解释、Markdown 或 schema 之外的字段。",
@@ -782,6 +788,7 @@ class _ReportWorkflowRuntimeBase:
             }
         )
         agent.num_history_runs = None
+        setattr(agent, "_reporting_thinking", thinking_policy)
         return agent
 
     def workflow(self):
@@ -882,7 +889,24 @@ class _ReportWorkflowRuntimeBase:
         run_context: RunContext,
         *,
         call_budget: StructuredOutputCallBudget | None = None,
+        thinking_complexity: TaskComplexity = "standard",
+        failure_kind: ThinkingFailureKind | None = None,
+        attempt: int = 0,
     ) -> BaseModel:
+        thinking_policy = getattr(agent, "_reporting_thinking", None)
+        if not isinstance(thinking_policy, ThinkingPolicyConfig):
+            raise ReportingError(
+                "report_thinking_policy_missing",
+                f"报表规划器缺少调用级 thinking 策略（{agent.id}）。",
+            )
+        thinking_request = ThinkingRequest(
+            operation=thinking_policy.operation,
+            complexity=thinking_complexity,
+            attempt=min(attempt, 1),
+            failure_kind=failure_kind,
+            configured_budget_cap=thinking_policy.configured_budget_cap,
+            thinking_enabled=thinking_policy.thinking_enabled,
+        )
         scope = self._scope(run_context)
         block_identity = payload.get("analysisBlock")
         if isinstance(block_identity, Mapping):
@@ -905,6 +929,7 @@ class _ReportWorkflowRuntimeBase:
                 # routing_context 读取，不把任务工具上下文传入无工具规划器。
                 agent_run_context=None,
                 call_budget=call_budget,
+                thinking_request=thinking_request,
             )
         except TaskExecutionContextHardLimitError as error:
             hard_limit_metrics = error.metrics

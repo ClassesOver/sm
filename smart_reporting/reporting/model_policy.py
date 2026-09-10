@@ -96,6 +96,25 @@ _RECOVERY_THINKING_BUDGETS: dict[
 
 
 @dataclass(frozen=True, slots=True)
+class ThinkingPolicyConfig:
+    operation: ThinkingOperation
+    thinking_enabled: bool
+    configured_budget_cap: int
+
+    def __post_init__(self) -> None:
+        if self.operation not in _INITIAL_THINKING_BUDGETS:
+            raise ValueError("operation 无效")
+        if not isinstance(self.thinking_enabled, bool):
+            raise ValueError("thinking_enabled 必须是布尔值")
+        if (
+            isinstance(self.configured_budget_cap, bool)
+            or not isinstance(self.configured_budget_cap, int)
+            or self.configured_budget_cap < 1
+        ):
+            raise ValueError("configured_budget_cap 必须是正整数")
+
+
+@dataclass(frozen=True, slots=True)
 class ThinkingRequest:
     operation: ThinkingOperation
     complexity: TaskComplexity = "standard"
