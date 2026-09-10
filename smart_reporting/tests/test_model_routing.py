@@ -17,6 +17,7 @@ def test_default_profiles_use_requested_model_presets() -> None:
     assert DEFAULT_MODEL_PROFILES["fast"].model_id == "qwen3.6-35b-a3b"
     assert DEFAULT_MODEL_PROFILES["standard"].model_id == "deepseek-v4-flash-0731"
     assert DEFAULT_MODEL_PROFILES["strong"].model_id == "deepseek-v4-flash-0731"
+    assert all(not hasattr(profile, "reasoning_effort") for profile in DEFAULT_MODEL_PROFILES.values())
 
 
 def test_deployment_can_override_profile_model_ids_without_changing_policy() -> None:

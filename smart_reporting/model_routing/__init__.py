@@ -9,7 +9,7 @@ from .models import (
     TaskComplexity,
     TaskPolicy,
 )
-from .observability import log_model_selection
+from .observability import log_model_selection, log_thinking_selection
 from .policy import (
     DEFAULT_FAST_MODEL_ID,
     DEFAULT_MODEL_PROFILES,
@@ -37,4 +37,5 @@ __all__ = [
     "TaskPolicy",
     "build_model_profiles",
     "log_model_selection",
+    "log_thinking_selection",
 ]

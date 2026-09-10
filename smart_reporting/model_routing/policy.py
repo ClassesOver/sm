@@ -14,13 +14,9 @@ DEFAULT_STRONG_MODEL_ID = "deepseek-v4-flash-0731"
 
 DEFAULT_MODEL_PROFILES: Mapping[ModelTier, ModelProfile] = MappingProxyType(
     {
-        "fast": ModelProfile(tier="fast", model_id=DEFAULT_FAST_MODEL_ID, reasoning_effort="off"),
-        "standard": ModelProfile(
-            tier="standard", model_id=DEFAULT_STANDARD_MODEL_ID, reasoning_effort="high"
-        ),
-        "strong": ModelProfile(
-            tier="strong", model_id=DEFAULT_STRONG_MODEL_ID, reasoning_effort="max"
-        ),
+        "fast": ModelProfile(tier="fast", model_id=DEFAULT_FAST_MODEL_ID),
+        "standard": ModelProfile(tier="standard", model_id=DEFAULT_STANDARD_MODEL_ID),
+        "strong": ModelProfile(tier="strong", model_id=DEFAULT_STRONG_MODEL_ID),
     }
 )
 
@@ -35,15 +31,9 @@ def build_model_profiles(
 
     return MappingProxyType(
         {
-            "fast": ModelProfile(
-                tier="fast", model_id=fast_model_id.strip(), reasoning_effort="off"
-            ),
-            "standard": ModelProfile(
-                tier="standard", model_id=standard_model_id.strip(), reasoning_effort="high"
-            ),
-            "strong": ModelProfile(
-                tier="strong", model_id=strong_model_id.strip(), reasoning_effort="max"
-            ),
+            "fast": ModelProfile(tier="fast", model_id=fast_model_id.strip()),
+            "standard": ModelProfile(tier="standard", model_id=standard_model_id.strip()),
+            "strong": ModelProfile(tier="strong", model_id=strong_model_id.strip()),
         }
     )
 

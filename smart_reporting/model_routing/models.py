@@ -20,21 +20,14 @@ class RouteFailure(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ModelProfile:
-    """一个档位的当前模型实现和无敏感请求策略。"""
+    """一个档位的当前模型实现。"""
 
     tier: ModelTier
     model_id: str
-    reasoning_effort: Literal["off", "high", "max"]
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
             raise ValueError("model_id 不能为空")
-        if self.tier == "fast" and self.reasoning_effort != "off":
-            raise ValueError("fast 档位必须关闭 reasoning")
-        if self.tier == "standard" and self.reasoning_effort != "high":
-            raise ValueError("standard 档位必须使用 high reasoning")
-        if self.tier == "strong" and self.reasoning_effort != "max":
-            raise ValueError("strong 档位必须使用 max reasoning")
 
 
 @dataclass(frozen=True, slots=True)

@@ -40,7 +40,7 @@
 - Consumes: 现有 `TaskComplexity = Literal["simple", "standard", "complex"]`。
 - Produces: `ThinkingOperation`、`ThinkingFailureKind`、`ThinkingRequest`、`ThinkingDecision`、`select_reporting_thinking(request)` 和 `log_thinking_selection(fields)`。
 
-- [ ] **Step 1: 写失败的预算矩阵测试**
+- [x] **Step 1: 写失败的预算矩阵测试**
 
 在新测试文件中加入表驱动用例，明确固定预算、复杂度预算、升级边界和环境上限：
 
@@ -71,13 +71,13 @@ def test_initial_thinking_budget_matrix(operation, complexity, budget):
 
 补充独立断言：`evidence_incomplete` 将 `analysis_evidence` 升到 6144/`max`；SQL 校验失败升到 4096；脚本执行失败升到 2048；视觉失败升到 4096；`transient`、`semantic_warning` 和 `attempt=2` 不升级；`configured_budget_cap=1536` 将 2K/4K/6K 截到 1536；`thinking_enabled=False` 返回 Off。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_thinking_policy.py smart_reporting/tests/test_model_routing.py`
 
 Expected: FAIL，原因是新的策略类型尚不存在，且 `ModelProfile` 仍要求 `reasoning_effort`。
 
-- [ ] **Step 3: 实现不可变策略类型和纯选择函数**
+- [x] **Step 3: 实现不可变策略类型和纯选择函数**
 
 在 `reporting/model_policy.py` 增加精确类型：
 
@@ -132,7 +132,7 @@ class ThinkingDecision:
 
 实现 `_INITIAL_BUDGETS` 和 `_RECOVERY_BUDGETS` 常量表。`select_reporting_thinking()` 必须验证 cap 和 attempt，先处理全局关闭，再选择初始预算；仅 `attempt == 1` 且 failure 在 operation 的白名单中时选择恢复预算。预算为零返回 Off，非零预算取 `min(policy_budget, configured_budget_cap)`；只有 `analysis_evidence + evidence_incomplete/fact_incomplete` 的 6144 使用 `max`，其余启用档均使用 `high`。
 
-- [ ] **Step 4: 删除模型档位到 reasoning 的强绑定**
+- [x] **Step 4: 删除模型档位到 reasoning 的强绑定**
 
 将 `ModelProfile` 收窄为：
 
@@ -145,7 +145,7 @@ class ModelProfile:
 
 同步修改 `DEFAULT_MODEL_PROFILES`、`build_model_profiles()` 和路由测试。`ModelSelection`、`ModelRouter`、三档模型 ID 及 task policy 均保持不变。
 
-- [ ] **Step 5: 增加 thinking 选择日志边界**
+- [x] **Step 5: 增加 thinking 选择日志边界**
 
 在 `model_routing/observability.py` 添加 `log_thinking_selection()`，固定输出：
 
@@ -155,7 +155,7 @@ report_thinking_selected operation={} complexity={} enabled={} effort={} budget=
 
 为 `ThinkingDecision.event_fields()` 添加不含业务数据的稳定字段，并在测试中用 Loguru sink 断言事件不包含 prompt、facts 或 source。
 
-- [ ] **Step 6: 运行定点测试并提交**
+- [x] **Step 6: 运行定点测试并提交**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_thinking_policy.py smart_reporting/tests/test_model_routing.py`
 

@@ -8,8 +8,190 @@ from typing import Literal
 from agno.models.openai import OpenAIChat, OpenAIResponses
 
 from ..integrations.model_config import reasoning_transport_fields
+from ..model_routing import TaskComplexity
 
 ReportingReasoningEffort = Literal["high", "max"]
+ThinkingOperation = Literal[
+    "request_normalization",
+    "domain_resolution",
+    "data_understanding",
+    "measure_semantics",
+    "outline_planning",
+    "sql_planning",
+    "analysis_planning",
+    "analysis_evidence",
+    "analysis_summary",
+    "analysis_script",
+    "visualization_plan",
+    "visualization_script",
+    "section_generation",
+]
+ThinkingFailureKind = Literal[
+    "schema_failure",
+    "capability_mapping_failure",
+    "evidence_incomplete",
+    "fact_incomplete",
+    "sql_validation_failure",
+    "python_compile_failure",
+    "python_execution_failure",
+    "visual_review_failure",
+    "transient",
+    "semantic_warning",
+]
+
+_COMPLEXITY_BUDGETS = {"simple": 1024, "standard": 2048, "complex": 4096}
+_INITIAL_THINKING_BUDGETS: dict[ThinkingOperation, int | dict[TaskComplexity, int]] = {
+    "request_normalization": 0,
+    "domain_resolution": 0,
+    "data_understanding": 2048,
+    "measure_semantics": 2048,
+    "outline_planning": 0,
+    "sql_planning": 2048,
+    "analysis_planning": 2048,
+    "analysis_evidence": _COMPLEXITY_BUDGETS,
+    "analysis_summary": _COMPLEXITY_BUDGETS,
+    "analysis_script": 0,
+    "visualization_plan": _COMPLEXITY_BUDGETS,
+    "visualization_script": 0,
+    "section_generation": 0,
+}
+_RECOVERY_THINKING_BUDGETS: dict[
+    ThinkingOperation, dict[ThinkingFailureKind, tuple[int, ReportingReasoningEffort]]
+] = {
+    "request_normalization": {"schema_failure": (1024, "high")},
+    "data_understanding": {
+        "schema_failure": (4096, "high"),
+        "capability_mapping_failure": (4096, "high"),
+    },
+    "measure_semantics": {
+        "schema_failure": (4096, "high"),
+        "capability_mapping_failure": (4096, "high"),
+    },
+    "outline_planning": {"schema_failure": (2048, "high")},
+    "sql_planning": {
+        "schema_failure": (4096, "high"),
+        "sql_validation_failure": (4096, "high"),
+    },
+    "analysis_planning": {"schema_failure": (4096, "high")},
+    "analysis_evidence": {
+        "evidence_incomplete": (6144, "max"),
+        "fact_incomplete": (6144, "max"),
+    },
+    "analysis_summary": {"schema_failure": (4096, "high")},
+    "analysis_script": {
+        "python_compile_failure": (2048, "high"),
+        "python_execution_failure": (2048, "high"),
+    },
+    "visualization_plan": {"schema_failure": (4096, "high")},
+    "visualization_script": {
+        "python_compile_failure": (2048, "high"),
+        "python_execution_failure": (2048, "high"),
+        "visual_review_failure": (4096, "high"),
+    },
+    "section_generation": {"schema_failure": (2048, "high")},
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingRequest:
+    operation: ThinkingOperation
+    complexity: TaskComplexity = "standard"
+    attempt: int = 0
+    failure_kind: ThinkingFailureKind | None = None
+    configured_budget_cap: int = 8192
+    thinking_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if self.operation not in _INITIAL_THINKING_BUDGETS:
+            raise ValueError("operation 无效")
+        if self.complexity not in _COMPLEXITY_BUDGETS:
+            raise ValueError("complexity 无效")
+        if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
+            raise ValueError("attempt 必须是非负整数")
+        if (
+            isinstance(self.configured_budget_cap, bool)
+            or not isinstance(self.configured_budget_cap, int)
+            or self.configured_budget_cap < 1
+        ):
+            raise ValueError("configured_budget_cap 必须是正整数")
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingDecision:
+    operation: ThinkingOperation
+    complexity: TaskComplexity
+    enabled: bool
+    reasoning_effort: ReportingReasoningEffort | None
+    thinking_budget: int
+    attempt: int
+    reason: str
+    policy_version: str = "v1"
+
+    def event_fields(self) -> dict[str, str | int | bool]:
+        return {
+            "event": "report_thinking_selected",
+            "operation": self.operation,
+            "complexity": self.complexity,
+            "enabled": self.enabled,
+            "effort": self.reasoning_effort or "off",
+            "budget": self.thinking_budget,
+            "attempt": self.attempt,
+            "reason": self.reason,
+            "policy_version": self.policy_version,
+        }
+
+
+def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
+    """按单次模型操作选择 thinking，不从模型能力档位推导预算。"""
+
+    budget_source = _INITIAL_THINKING_BUDGETS[request.operation]
+    initial_budget = (
+        budget_source[request.complexity] if isinstance(budget_source, dict) else budget_source
+    )
+    budget = initial_budget
+    effort: ReportingReasoningEffort = "high"
+    reason = "initial_policy" if budget else "initial_off"
+
+    recovery = _RECOVERY_THINKING_BUDGETS.get(request.operation, {}).get(
+        request.failure_kind  # type: ignore[arg-type]
+    )
+    if request.attempt == 1 and recovery is not None:
+        budget, effort = recovery
+        reason = str(request.failure_kind)
+    elif request.attempt > 1:
+        reason = "retry_limit_reached"
+    elif request.attempt == 1:
+        reason = "retry_same_budget"
+
+    if not request.thinking_enabled:
+        return ThinkingDecision(
+            operation=request.operation,
+            complexity=request.complexity,
+            enabled=False,
+            reasoning_effort=None,
+            thinking_budget=0,
+            attempt=request.attempt,
+            reason="thinking_disabled",
+        )
+    if budget == 0:
+        return ThinkingDecision(
+            operation=request.operation,
+            complexity=request.complexity,
+            enabled=False,
+            reasoning_effort=None,
+            thinking_budget=0,
+            attempt=request.attempt,
+            reason=reason,
+        )
+    return ThinkingDecision(
+        operation=request.operation,
+        complexity=request.complexity,
+        enabled=True,
+        reasoning_effort=effort,
+        thinking_budget=min(budget, request.configured_budget_cap),
+        attempt=request.attempt,
+        reason=reason,
+    )
 
 _VERIFIED_REPORTING_CONTEXT_TOKEN_LIMITS: tuple[tuple[tuple[str, ...], int], ...] = (
     (("qwen3.6", "qwen3.8"), 256 * 1024),
