@@ -11,6 +11,7 @@ import pytest
 from agno.run import RunContext
 from agno.workflow.types import StepOutput
 from loguru import logger
+from pydantic import ValidationError
 
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
@@ -267,6 +268,61 @@ def test_supplemental_evidence_rejects_ambiguous_or_non_finite_tabular_values(
                 "warnings": [],
             }
         )
+
+
+@pytest.mark.parametrize(
+    "warnings, expected",
+    [
+        ([], ()),
+        ([" 原有告警 "], (" 原有告警 ",)),
+        (
+            [
+                "原有告警",
+                {"code": "invalid_rows", "message": " 存在非数值行 "},
+                {"code": "dimension_source"},
+            ],
+            ("原有告警", "存在非数值行", "dimension_source"),
+        ),
+        ([{"message": "  ", "code": " fallback "}], ("fallback",)),
+        ([{"message": None, "code": "fallback"}], ("fallback",)),
+        (["告警"] * 100, ("告警",) * 100),
+    ],
+)
+def test_supplemental_evidence_normalizes_structured_warnings(
+    warnings: list[Any], expected: tuple[str, ...]
+) -> None:
+    original = deepcopy(warnings)
+    evidence = item_workflow.SupplementalEvidence.model_validate(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "check", "passed": True}],
+            "warnings": warnings,
+        }
+    )
+
+    assert evidence.warnings == expected
+    assert evidence.model_dump(mode="json")["warnings"] == list(expected)
+    assert warnings == original
+
+
+@pytest.mark.parametrize(
+    "warnings",
+    [[{}], [{"message": " "}], [{"code": 12}], [None], [12], "告警", ["告警"] * 101],
+)
+def test_supplemental_evidence_rejects_invalid_warnings(warnings: Any) -> None:
+    with pytest.raises(ValidationError) as caught:
+        item_workflow.SupplementalEvidence.model_validate(
+            {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset-1"],
+                "findings": [{"name": "收入构成", "value": 80}],
+                "reconciliations": [{"name": "check", "passed": True}],
+                "warnings": warnings,
+            }
+        )
+    assert all(issue["loc"][0] == "warnings" for issue in caught.value.errors())
 
 
 @pytest.mark.anyio

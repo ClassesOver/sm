@@ -604,7 +604,10 @@ class _ReportWorkflowRuntimeBase:
                 "优先为每张表生成独立 requirement，由 analyses 引用多个单表 requirement 完成综合分析",
                 "比较、差异和相关性分析默认引用多个单表 requirement，由后续分析组合，不为这些分析直接生成多表 SQL",
                 "数据覆盖、缺失期间和局限性直接引用 observedDataFacts，不为这些叙述创建多表 requirement",
-                "analyses[].description 只描述分析动作、比较方式和所引用 requirement，不复述数据覆盖、缺失期间、时间进度或事实结论",
+                (
+                    "analyses[].description 只描述分析动作、比较方式和所引用 requirement，"
+                    "不复述数据覆盖、缺失期间、时间进度、事实结论或『不外推/不估算/不补齐』等系统限制"
+                ),
                 "单表 requirement 的 relations 必须为空；多表 requirement 的 relations 必须连接全部表",
                 (
                     "仅当各表 periodGranularity 一致、全部 grainColumns 真实存在于每张表、"
@@ -890,21 +893,6 @@ class _ReportWorkflowRuntimeBase:
         serialized_payload = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":"), default=str
         )
-        input_bytes = serialized_payload.encode()
-        input_sha256 = hashlib.sha256(input_bytes).hexdigest()
-        logger.debug(
-            "report_planner_request agent_id={} block_id={} attempt={} "
-            "input_bytes={} input_sha256={}",
-            agent.id,
-            session_suffix or "-",
-            (
-                payload["correction"].get("attempt", 1)
-                if isinstance(payload.get("correction"), Mapping)
-                else 1
-            ),
-            len(input_bytes),
-            input_sha256,
-        )
         try:
             structured = await ReportingStructuredOutputExecutor(agent).execute(
                 serialized_payload,
@@ -918,17 +906,6 @@ class _ReportWorkflowRuntimeBase:
             )
         except TaskExecutionContextHardLimitError as error:
             hard_limit_metrics = error.metrics
-            loguru_logger.bind(
-                agent_id=agent.id,
-                error_code=error.code,
-                canonical_estimated_tokens=hard_limit_metrics.get("canonical_estimated_tokens", 0),
-                irreducible_prefix_estimated_tokens=hard_limit_metrics.get(
-                    "irreducible_prefix_estimated_tokens", 0
-                ),
-                input_token_hard_cap=hard_limit_metrics.get("input_token_hard_cap", 0),
-                tool_schema_bytes=hard_limit_metrics.get("tool_schema_bytes", 0),
-                response_format_bytes=hard_limit_metrics.get("response_format_bytes", 0),
-            ).debug("report_planner_context_hard_limit_exceeded")
             raise ReportingError(
                 "report_planner_context_budget_exceeded",
                 f"报表规划输入的不可约简上下文超过当前模型输入预算（{agent.id}）。",
@@ -940,25 +917,6 @@ class _ReportWorkflowRuntimeBase:
         content = structured.content
         metrics = getattr(output, "metrics", None)
         record_step_model_metrics(metrics)
-        content_bytes = _payload_bytes(content)
-        logger.debug(
-            "report_planner_response agent_id={} input_sha256={} output_bytes={} "
-            "output_sha256={} input_tokens={} output_tokens={} total_tokens={} "
-            "reasoning_tokens={} cache_read_tokens={} cache_write_tokens={} "
-            "duration={} time_to_first_token={}",
-            agent.id,
-            input_sha256,
-            len(content_bytes),
-            hashlib.sha256(content_bytes).hexdigest(),
-            getattr(metrics, "input_tokens", None),
-            getattr(metrics, "output_tokens", None),
-            getattr(metrics, "total_tokens", None),
-            getattr(metrics, "reasoning_tokens", None),
-            getattr(metrics, "cache_read_tokens", None),
-            getattr(metrics, "cache_write_tokens", None),
-            getattr(metrics, "duration", None),
-            getattr(metrics, "time_to_first_token", None),
-        )
         schema = agent.output_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             raise ReportingError("report_planner_invalid", "报表规划器缺少结构化输出。")

@@ -192,6 +192,80 @@ def test_section_block_content_rejects_heading_with_301_visible_characters() -> 
     assert raised.value.errors(include_url=False)[0]["loc"] == ("markdown",)
 
 
+def test_section_block_content_splits_runon_heading_into_title_and_body() -> None:
+    body = (
+        "本季度收入预算执行率达到95.2%，门诊收入完成预算的98%，"
+        "住院收入完成预算的93%，需持续关注后续走势。" * 6
+    )
+
+    content = SectionBlockContent(markdown=f"### 收入预算执行情况分析：{body}")
+
+    assert content.markdown == f"### 收入预算执行情况分析\n\n{body}"
+
+
+def test_section_block_content_rejects_runon_heading_with_inline_markdown() -> None:
+    body = "本季度收入增长。" * 50
+
+    with pytest.raises(ValidationError, match="report_draft_heading_title_too_long"):
+        SectionBlockContent(markdown=f"### **收入分析：{body}**")
+
+
+def test_section_block_content_splits_single_line_runon_document() -> None:
+    body = (
+        "门诊收入增长且结构占比提升，住院收入下降主要受DRG支付改革影响，"
+        "需持续关注成本控制压力与月度执行走势。" * 6
+    )
+    content = SectionBlockContent(markdown=f"### 收入总览。{body}")
+
+    assert content.markdown == f"### 收入总览\n\n{body}"
+
+
+def test_section_block_content_keeps_body_lines_after_runon_heading_split() -> None:
+    content = SectionBlockContent(markdown=f"### 收入预算执行分析。{'甲' * 350}。\n\n正文段落。")
+
+    assert content.markdown == f"### 收入预算执行分析\n\n{'甲' * 350}。\n\n正文段落。"
+
+
+def test_section_block_content_normalizes_runon_subordinate_heading() -> None:
+    content = SectionBlockContent(markdown=f"##### 明细说明：{'甲' * 350}。")
+
+    assert content.markdown == f"#### 明细说明\n\n{'甲' * 350}。"
+
+
+def test_section_block_content_keeps_short_heading_with_punctuation() -> None:
+    content = SectionBlockContent(markdown="### 收入分析：门诊与住院\n\n正文。")
+
+    assert content.markdown == "### 收入分析：门诊与住院\n\n正文。"
+
+
+def test_section_block_content_rejects_runon_heading_without_short_prefix() -> None:
+    # 首个句末标点之前的可见文本仍超上限：不猜测拆分点，失败关闭。
+    with pytest.raises(ValidationError, match="report_draft_heading_title_too_long"):
+        SectionBlockContent(markdown=f"### {'甲' * 301}。正文内容。")
+
+
+def test_section_block_content_heading_feedback_reports_line_and_length() -> None:
+    with pytest.raises(ValidationError) as raised:
+        SectionBlockContent(markdown=f"### 正常标题\n\n正文。\n\n### {'甲' * 301}\n\n正文。")
+
+    message = str(raised.value)
+    assert "report_draft_heading_title_too_long" in message
+    assert "第 5 行" in message
+    assert "301 个字符" in message
+    assert "上限 300" in message
+    assert "甲" in message
+    assert "短标题" in message
+
+
+def test_section_block_content_heading_feedback_truncates_preview() -> None:
+    with pytest.raises(ValidationError) as raised:
+        SectionBlockContent(markdown=f"### {'乙' * 400}")
+
+    message = str(raised.value)
+    assert f"{'乙' * 50}…" in message
+    assert "乙" * 51 not in message
+
+
 def test_section_block_content_allows_h4_parented_by_previous_block() -> None:
     content = SectionBlockContent(markdown="#### 同比变化\n\n正文")
 

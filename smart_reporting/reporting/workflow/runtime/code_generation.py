@@ -11,11 +11,13 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from time import perf_counter
 from typing import Any, NoReturn
 
 from agno.agent import Agent
 from agno.run import RunContext
 from agno.tools.function import Function
+from loguru import logger
 
 from ...models import ReportingError
 from ..checkpoint import FileIdentity
@@ -64,7 +66,7 @@ def _tool_parameters(name: str) -> dict[str, Any]:
     raise ValueError(f"未知 Coding 工具：{name}")
 
 
-def _reject_python_source(path: str, source: Any) -> NoReturn:
+def _python_source_shape_details(path: str, source: Any) -> dict[str, Any]:
     if isinstance(source, str):
         try:
             raw_source = source.encode("utf-8")
@@ -74,22 +76,39 @@ def _reject_python_source(path: str, source: Any) -> NoReturn:
     else:
         raw_source = b""
         lines = []
+    return {
+        "path": path,
+        "size": len(raw_source),
+        "lineCount": len(lines),
+        "maxLineLength": max(
+            (len(line.encode("utf-8", errors="replace")) for line in lines),
+            default=0,
+        ),
+    }
+
+
+def _reject_python_source(path: str, source: Any) -> NoReturn:
     raise ReportingError(
         "report_python_source_shape_invalid",
         "签发 Python 源码形状无效，已拒绝写入。",
-        details={
-            "path": path,
-            "size": len(raw_source),
-            "lineCount": len(lines),
-            "maxLineLength": max(
-                (len(line.encode("utf-8", errors="replace")) for line in lines),
-                default=0,
-            ),
-        },
+        details=_python_source_shape_details(path, source),
     )
 
 
-def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> str:
+def _reject_python_syntax(path: str, source: str, error: SyntaxError) -> NoReturn:
+    details = _python_source_shape_details(path, source)
+    for field, value in (("line", error.lineno), ("offset", error.offset)):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            details[field] = value
+    syntax_message = str(error.msg or "invalid syntax")[:200].rstrip(".。")
+    raise ReportingError(
+        "report_python_source_shape_invalid",
+        f"签发 Python 源码存在 Python 3.12 语法错误，已拒绝写入：{syntax_message}。",
+        details=details,
+    ) from None
+
+
+def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int) -> str:
     if not isinstance(source, str):
         _reject_python_source(path, source)
     if source and "\r" not in source and not source.endswith("\n"):
@@ -107,12 +126,17 @@ def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> st
         or any(len(line.encode("utf-8")) > MAX_PHYSICAL_LINE_BYTES for line in lines)
     ):
         _reject_python_source(path, source)
+    return source
+
+
+def _compile_python_source(path: str, source: str) -> None:
     try:
         tree = ast.parse(source, filename=path)
         compile(tree, path, "exec")
-    except (SyntaxError, TypeError, ValueError):
+    except SyntaxError as error:
+        _reject_python_syntax(path, source, error)
+    except (TypeError, ValueError):
         _reject_python_source(path, source)
-    return source
 
 
 def _diff_content_lines(content: str, prefix: str) -> list[str]:
@@ -531,6 +555,7 @@ class ReportingCodeGenerationRunner:
         max_source_bytes: int = MAX_CODE_READ_BYTES,
         _operation: str = "create",
         _previous_source: str | None = None,
+        _log_base_info: bool = True,
     ) -> CodeGenerationResult:
         """运行一次写阶段；模型只提交源码，diff 由服务端构造。"""
         self._validate_script_path(script_path)
@@ -548,26 +573,52 @@ class ReportingCodeGenerationRunner:
             )
         result: CodeGenerationResult | None = None
         patch_error: ReportingError | None = None
+        generation_started_at = perf_counter()
+        model_started_at: float | None = None
+
+        def log_step(step: int, step_name: str, started_at: float) -> None:
+            completed_at = perf_counter()
+            logger.info(
+                "report_code_generation_step_completed step={} step_name={} duration_ms={} "
+                "total_duration_ms={} operation={} path={}",
+                step,
+                step_name,
+                max(0, round((completed_at - started_at) * 1000)),
+                max(0, round((completed_at - generation_started_at) * 1000)),
+                _operation,
+                script_path,
+            )
 
         async def capture_source(**kwargs: Any) -> Mapping[str, Any]:
             nonlocal patch_error, result
+            if model_started_at is not None:
+                log_step(1, "model_generate_source", model_started_at)
             try:
-                source = _validate_python_source(
+                step_started_at = perf_counter()
+                source = _validate_python_source_shape(
                     script_path,
                     kwargs.get("source"),
                     max_source_bytes,
                 )
+                log_step(2, "source_shape_validate", step_started_at)
+                step_started_at = perf_counter()
+                _compile_python_source(script_path, source)
+                log_step(3, "python_compile", step_started_at)
+                step_started_at = perf_counter()
                 patch = _python_source_patch(
                     script_path,
                     source,
                     operation=_operation,
                     previous_source=_previous_source,
                 )
+                log_step(4, "patch_build", step_started_at)
             except ReportingError as error:
                 patch_error = error
                 raise
             try:
+                step_started_at = perf_counter()
                 receipt = await _invoke(apply_analysis_patch, {"patch": patch}, run_context)
+                log_step(5, "patch_apply", step_started_at)
             except ReportingError as error:
                 bounded = self._short_diagnostic(
                     {"code": error.code, "message": error.message, "details": error.details}
@@ -591,6 +642,7 @@ class ReportingCodeGenerationRunner:
                     details=bounded.get("details", {"path": script_path}),
                 )
                 raise patch_error
+            step_started_at = perf_counter()
             artifacts = receipt.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
                 raise self._error(
@@ -613,6 +665,7 @@ class ReportingCodeGenerationRunner:
                     script_path,
                 )
             result = CodeGenerationResult(identity)
+            log_step(6, "receipt_validate", step_started_at)
             return receipt
 
         calls = 0
@@ -657,10 +710,17 @@ class ReportingCodeGenerationRunner:
                     "minPhysicalLines": 2,
                     "lineEnding": "LF",
                     "trailingNewline": True,
+                    "pythonVersion": "3.12",
+                    "compilationRequired": True,
+                    "syntaxRequirements": [
+                        "提交前确保完整源码可通过 ast.parse 和 compile",
+                        "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
+                    ],
                 },
             }
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)
+            model_started_at = perf_counter()
             await agent.arun(self._prompt(prompt), run_context=run_context)
         except ReportingError:
             raise
@@ -674,6 +734,20 @@ class ReportingCodeGenerationRunner:
             raise ReportingError(
                 "report_code_generation_no_source",
                 "Coding Agent 未提交完整 Python 源码。",
+            )
+        if _log_base_info:
+            logger.info(
+                "report_code_generation_base_info script={}",
+                json.dumps(
+                    {
+                        "operation": _operation,
+                        "path": result.script_file.path,
+                        "size": result.script_file.size,
+                        "sha256": result.script_file.sha256,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             )
         return result
 
@@ -752,7 +826,7 @@ class ReportingCodeGenerationRunner:
                 "修复读取阶段未读取签发脚本。",
                 script_file.path,
             )
-        return await self.generate(
+        result = await self.generate(
             script_file.path,
             {
                 "readReceipt": read_receipt,
@@ -765,4 +839,20 @@ class ReportingCodeGenerationRunner:
             max_source_bytes=max_source_bytes,
             _operation="update",
             _previous_source=read_receipt["content"],
+            _log_base_info=False,
         )
+        logger.info(
+            "report_code_repair_base_info script={}",
+            json.dumps(
+                {
+                    "operation": "repair",
+                    "path": result.script_file.path,
+                    "size": result.script_file.size,
+                    "sha256": result.script_file.sha256,
+                    "diagnosticCode": self._stable_code(diagnostic.get("code"), "unknown"),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        return result

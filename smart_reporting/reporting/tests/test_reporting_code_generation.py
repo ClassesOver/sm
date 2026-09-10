@@ -4,6 +4,7 @@ import hashlib
 import json
 
 import pytest
+from loguru import logger
 
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
@@ -77,6 +78,77 @@ async def test_generate_exposes_only_source_and_returns_single_identity():
 
 
 @pytest.mark.anyio
+async def test_generate_logs_script_base_info_at_info_level():
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=SOURCE)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{level}:{message}")
+    try:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {"fact": 1}, patch
+        )
+    finally:
+        logger.remove(sink_id)
+
+    events = [
+        line for line in "".join(records).splitlines() if "report_code_generation_base_info" in line
+    ]
+    assert events == [
+        "INFO:report_code_generation_base_info "
+        'script={"operation":"create","path":"analysis/script.py","size":9,'
+        '"sha256":"cc42155088fca5730758db72b2a5bca33112a941dfaa2d43098ec422ce4ea213"}'
+    ]
+
+
+@pytest.mark.anyio
+async def test_generate_logs_six_internal_step_durations_without_source():
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=SOURCE)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {"fact": 1}, patch
+        )
+    finally:
+        logger.remove(sink_id)
+
+    events = [
+        line
+        for line in "".join(records).splitlines()
+        if "report_code_generation_step_completed" in line
+    ]
+    assert len(events) == 6
+    assert [f"step={index}" in event for index, event in enumerate(events, start=1)] == [True] * 6
+    assert [
+        name in event
+        for name, event in zip(
+            (
+                "model_generate_source",
+                "source_shape_validate",
+                "python_compile",
+                "patch_build",
+                "patch_apply",
+                "receipt_validate",
+            ),
+            events,
+            strict=True,
+        )
+    ] == [True] * 6
+    assert all("duration_ms=" in event and "total_duration_ms=" in event for event in events)
+    assert all("operation=create path=analysis/script.py" in event for event in events)
+    assert SOURCE not in "".join(events)
+
+
+@pytest.mark.anyio
 async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
     prompts: list[dict[str, object]] = []
 
@@ -92,6 +164,8 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "message": "m" * 800,
         "details": {
             "path": "analysis/script.py",
+            "line": 284,
+            "offset": 62,
             "size": 131073,
             "lineCount": 1,
             "maxLineLength": 131072,
@@ -111,6 +185,8 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "message": "m" * 512,
         "details": {
             "path": "analysis/script.py",
+            "line": 284,
+            "offset": 62,
             "size": 131073,
             "lineCount": 1,
             "maxLineLength": 131072,
@@ -123,6 +199,12 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "minPhysicalLines": 2,
         "lineEnding": "LF",
         "trailingNewline": True,
+        "pythonVersion": "3.12",
+        "compilationRequired": True,
+        "syntaxRequirements": [
+            "提交前确保完整源码可通过 ast.parse 和 compile",
+            "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
+        ],
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
 
@@ -265,6 +347,42 @@ async def test_repair_reads_once_then_uses_fresh_patch_agent():
     assert result.script_file.sha256 == hashlib.sha256(b"print(2)\n").hexdigest()
     assert seen_tools == ["read_file", "submit_python_source"]
     assert agents[0] is not agents[1]
+
+
+@pytest.mark.anyio
+async def test_repair_logs_script_base_info_at_info_level():
+    script = identity("analysis/script.py", "print(1)\n")
+
+    async def action(agent):
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            return await tool.entrypoint(path=script.path)
+        return await tool.entrypoint(source=UPDATED_SOURCE)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{level}:{message}")
+    try:
+        await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
+            script,
+            {"code": "report_analysis_script_failed"},
+            lambda **_kwargs: read_receipt(script),
+            patch,
+        )
+    finally:
+        logger.remove(sink_id)
+
+    events = [
+        line for line in "".join(records).splitlines() if "report_code_repair_base_info" in line
+    ]
+    assert events == [
+        "INFO:report_code_repair_base_info "
+        'script={"operation":"repair","path":"analysis/script.py","size":9,'
+        '"sha256":"0111afd387e1ad576083c5039aa542faa2ed4a53d3e128bd03de990f9ea4255f",'
+        '"diagnosticCode":"report_analysis_script_failed"}'
+    ]
 
 
 @pytest.mark.anyio
@@ -1067,3 +1185,43 @@ async def test_generate_rejects_malformed_tool_arguments_without_mutation():
         "lineCount": 0,
         "maxLineLength": 0,
     }
+
+
+@pytest.mark.anyio
+async def test_generate_reports_bounded_python_syntax_location_without_source():
+    invalid_source = (
+        "total_current = 10\n"
+        "total_prior = 8\n"
+        "total_delta = total_current - prior_total_base := total_prior\n"
+    )
+    mutated = False
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=invalid_source)
+
+    async def patch(**_kwargs):
+        nonlocal mutated
+        mutated = True
+        return {"ok": True, "artifacts": []}
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_python_source_shape_invalid"
+    assert raised.value.message == (
+        "签发 Python 源码存在 Python 3.12 语法错误，已拒绝写入：invalid syntax。"
+    )
+    assert raised.value.details == {
+        "path": "analysis/script.py",
+        "size": len(invalid_source.encode()),
+        "lineCount": 3,
+        "maxLineLength": max(len(line.encode()) for line in invalid_source.splitlines()),
+        "line": 3,
+        "offset": 48,
+    }
+    assert raised.value.__suppress_context__ is True
+    assert invalid_source.splitlines()[2] not in str(raised.value)
+    assert invalid_source.splitlines()[2] not in str(raised.value.details)
+    assert mutated is False

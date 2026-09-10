@@ -107,6 +107,27 @@ class SupplementalEvidence(_StrictModel):
     reconciliations: tuple[dict[str, Any], ...] = Field(min_length=1, max_length=100)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def normalize_structured_warnings(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[Any] = []
+        for warning in value:
+            if not isinstance(warning, Mapping):
+                normalized.append(warning)
+                continue
+            message = warning.get("message")
+            code = warning.get("code")
+            if isinstance(message, str) and message.strip():
+                normalized.append(message.strip())
+            elif isinstance(code, str) and code.strip():
+                normalized.append(code.strip())
+            else:
+                # 不猜测对象含义，保留原值供字符串契约拒绝。
+                normalized.append(warning)
+        return normalized
+
     @field_validator("reconciliations", mode="before")
     @classmethod
     def require_reconciliation_shape(cls, value: Any) -> Any:

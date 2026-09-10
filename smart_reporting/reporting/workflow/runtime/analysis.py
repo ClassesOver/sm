@@ -97,7 +97,6 @@ from .base import (
     datetime,
     hashlib,
     json,
-    logger,
     loguru_logger,
     partial,
     payload_sha256,
@@ -121,6 +120,7 @@ async def _completed_reporting_step_output() -> StepOutput:
 
 
 _ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
+_ANALYSIS_SCRIPT_THINKING_BUDGETS = {"simple": 1024, "standard": 1536, "complex": 2048}
 _ANALYSIS_SCRIPT_MAX_BYTES = 128 * 1024
 _VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
@@ -324,6 +324,15 @@ def _analysis_item_thinking_policy(
     if retry and evidence_retry:
         return "max", _ANALYSIS_THINKING_BUDGETS["complex"], tier
     return "high", _ANALYSIS_THINKING_BUDGETS[tier], tier
+
+
+def _analysis_script_generation_budget(
+    plan: Mapping[str, Any], diagnostic: Mapping[str, Any] | None
+) -> int:
+    if diagnostic is not None:
+        return 2048
+    _, tier = _analysis_item_complexity(plan)
+    return _ANALYSIS_SCRIPT_THINKING_BUDGETS[tier]
 
 
 _MODEL_FACT_IDENTITY_KEYS = frozenset(
@@ -1925,14 +1934,47 @@ class RuntimeAnalysisMixin:
             diagnostic: Mapping[str, Any] | None,
             run_context: RunContext,
         ) -> CodeGenerationResult:
-            return await code_runner.generate(
-                script_path,
-                task_facts,
-                toolkit.apply_analysis_patch,
-                run_context,
-                diagnostic=diagnostic,
-                max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
+            dependencies = (
+                task_run_context.dependencies
+                if isinstance(task_run_context.dependencies, dict)
+                else None
             )
+            binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
+            if not isinstance(binding, dict):
+                return await code_runner.generate(
+                    script_path,
+                    task_facts,
+                    toolkit.apply_analysis_patch,
+                    run_context,
+                    diagnostic=diagnostic,
+                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
+                )
+            _missing = object()
+            previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
+            previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
+            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "high"
+            current_analysis = task_facts.get("currentAnalysis")
+            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _analysis_script_generation_budget(
+                current_analysis if isinstance(current_analysis, Mapping) else {}, diagnostic
+            )
+            try:
+                return await code_runner.generate(
+                    script_path,
+                    task_facts,
+                    toolkit.apply_analysis_patch,
+                    run_context,
+                    diagnostic=diagnostic,
+                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
+                )
+            finally:
+                for key, restored_value in (
+                    (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
+                    (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
+                ):
+                    if restored_value is _missing:
+                        binding.pop(key, None)
+                    else:
+                        binding[key] = restored_value
 
         async def repair_script(
             *,
@@ -1955,8 +1997,8 @@ class RuntimeAnalysisMixin:
             _missing = object()
             previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
             previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
-            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "max"
-            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_THINKING_BUDGETS[
+            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "high"
+            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_SCRIPT_THINKING_BUDGETS[
                 "complex"
             ]
             try:
@@ -2190,7 +2232,6 @@ class RuntimeAnalysisMixin:
                 ),
                 "durableAnalysisItem": recovery_payload,
             }
-            instruction_component_bytes = self._instruction_component_bytes(instruction_payload)
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
@@ -2212,17 +2253,6 @@ class RuntimeAnalysisMixin:
             complexity_score, _ = _analysis_item_complexity(analysis_plan)
             analysis_effort = self._analysis_thinking_effort()
             thinking_effort = "off" if analysis_effort == "off" else policy_effort
-            loguru_logger.debug(
-                "report_analysis_thinking_policy analysis_id={} effort={} budget={} "
-                "complexity_tier={} complexity_score={} "
-                "escalation_reason={}",
-                analysis_id,
-                thinking_effort,
-                thinking_budget,
-                complexity_tier,
-                complexity_score,
-                effective_retry_reason if thinking_effort == "max" else "-",
-            )
             analysis_fact_queries_used = _analysis_fact_retry_usage(last_error)
             analysis_recovery = _analysis_fact_recovery_required(last_error)
             contract = build_report_phase_acceptance_contract(
@@ -2354,19 +2384,6 @@ class RuntimeAnalysisMixin:
                     last_error=None,
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
-                logger.debug(
-                    "report_phase_context phase=analysis work_kind=analysis_item "
-                    "analysis_id={} task_id={} instruction_bytes={} duration_seconds={:.3f} "
-                    "component_bytes={} tool_events={} attempt={} retry_reason={}",
-                    analysis_id,
-                    task_id,
-                    instruction_bytes,
-                    trace_metrics["duration_seconds"],
-                    instruction_component_bytes,
-                    trace_metrics.get("tool_event_count", 0),
-                    attempt,
-                    retry_reason or "-",
-                )
                 return checkpoint
             except Exception as error:
                 last_error = error

@@ -13,7 +13,11 @@ from pydantic import ConfigDict, Field, RootModel, TypeAdapter, field_validator,
 
 from ...contract import StrictModel
 from ...delivery.draft_v1 import (
+    _ATX_HEADING,
+    _MANUAL_HEADING_NUMBER,
+    REPORT_HEADING_TITLE_MAX_LENGTH,
     ReportDraftBlock,
+    _inline_heading_text,
     normalize_model_block_markdown,
     validate_report_block_markdown,
 )
@@ -23,6 +27,7 @@ from ..checkpoint import FileIdentity, SectionClaimSubmission
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
 _CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t]+)")
+_RUNON_HEADING_BREAK_RE = re.compile(r"[。！？；：]")
 
 
 def _normalize_subordinate_heading_levels(markdown: str) -> str:
@@ -47,6 +52,125 @@ def _normalize_subordinate_heading_levels(markdown: str) -> str:
             "report_section_heading_level_normalized"
         )
     return "".join(lines)
+
+
+def _normalize_runon_heading_lines(markdown: str) -> str:
+    """把正文混入标题行的超长标题按首个句末标点拆分为短标题和正文段。
+
+    标题行契约要求可见文本不超过上限且不得包含正文；弱模型常把标题和整段正文
+    写在同一行，导致纠错反馈无法自愈。句末标点（。！？；：）不可能出现在合规
+    短标题内，因此按首个句末标点拆分是内容零丢失的确定性收敛；标点前缀仍超
+    上限或没有句末标点时不猜测拆分点，保留原值由严格校验失败关闭。
+    """
+
+    lines = markdown.splitlines(keepends=True)
+    normalized_count = 0
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if token.type != "heading_open" or token.map is None or token.tag not in {"h3", "h4"}:
+            continue
+        line_index = token.map[0]
+        if line_index >= len(lines):
+            continue
+        raw_line = lines[line_index].rstrip("\r\n")
+        match = _ATX_HEADING.fullmatch(raw_line)
+        if match is None:
+            continue
+        title = match.group("title").strip()
+        visible_title = _inline_heading_text(_MANUAL_HEADING_NUMBER.sub("", title).strip())
+        if len(visible_title) <= REPORT_HEADING_TITLE_MAX_LENGTH:
+            continue
+        inline_tokens = MarkdownIt("commonmark").parseInline(title)
+        inline_children = inline_tokens[0].children if inline_tokens else ()
+        if any(item.type != "text" for item in inline_children or ()):
+            # 不在成对的行内 Markdown 中间拆分，交给严格校验纠错。
+            continue
+        break_match = _RUNON_HEADING_BREAK_RE.search(title)
+        if break_match is None:
+            continue
+        prefix = title[: break_match.start()].strip()
+        visible_prefix = (
+            _inline_heading_text(_MANUAL_HEADING_NUMBER.sub("", prefix).strip()) if prefix else ""
+        )
+        if not visible_prefix or len(visible_prefix) > REPORT_HEADING_TITLE_MAX_LENGTH:
+            continue
+        remainder = title[break_match.end() :].strip()
+        marker = "#" * int(token.tag.removeprefix("h"))
+        ending = lines[line_index][len(raw_line) :]
+        rebuilt = (
+            f"{marker} {prefix}\n\n{remainder}{ending}"
+            if remainder
+            else f"{marker} {prefix}{ending}"
+        )
+        lines[line_index] = rebuilt
+        normalized_count += 1
+    if normalized_count:
+        logger.bind(normalized_heading_count=normalized_count).warning(
+            "report_section_runon_heading_normalized"
+        )
+    return "".join(lines)
+
+
+_OVERLONG_HEADING_PREVIEW_CHARS = 50
+
+
+def _overlong_heading_diagnostics(markdown: str) -> tuple[dict[str, Any], ...]:
+    """定位可见文本超限的 H3/H4 标题行，为结构化纠错反馈提供可行动事实。
+
+    与 _normalize_runon_heading_lines 使用同一长度判定：可按句末标点拆分修复的
+    超长标题行已在 before 校验阶段收敛，这里报告的必然是归一化放弃修复、
+    需要模型按反馈缩短的原始超长标题。
+    """
+
+    lines = markdown.splitlines(keepends=True)
+    diagnostics: list[dict[str, Any]] = []
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if token.type != "heading_open" or token.map is None or token.tag not in {"h3", "h4"}:
+            continue
+        line_index = token.map[0]
+        if line_index >= len(lines):
+            continue
+        match = _ATX_HEADING.fullmatch(lines[line_index].rstrip("\r\n"))
+        if match is None:
+            continue
+        visible = _inline_heading_text(
+            _MANUAL_HEADING_NUMBER.sub("", match.group("title").strip()).strip()
+        )
+        if len(visible) > REPORT_HEADING_TITLE_MAX_LENGTH:
+            preview = visible[:_OVERLONG_HEADING_PREVIEW_CHARS]
+            if len(visible) > _OVERLONG_HEADING_PREVIEW_CHARS:
+                preview = f"{preview}…"
+            diagnostics.append(
+                {
+                    "lineNumber": line_index + 1,
+                    "actualLength": len(visible),
+                    "preview": preview,
+                }
+            )
+    return tuple(diagnostics)
+
+
+def _block_validation_feedback(markdown: str, error: ReportingError) -> str:
+    """把正文块协议错误转成模型可定位、可修复的纠错消息。
+
+    结构化执行器回灌 issues 时只保留 path/type/message（validation 上下文与
+    input 都会被裁剪）。消息是唯一能送达模型的通道，因此把行号、实际长度和
+    具体修正动作并入消息；其他错误码沿用原始 message，行为不变。
+    """
+
+    message = str(error)
+    if error.code != "report_draft_heading_title_too_long":
+        return message
+    segments = [message]
+    for item in _overlong_heading_diagnostics(markdown):
+        segments.append(
+            f"第 {item['lineNumber']} 行标题可见文本 {item['actualLength']} 个字符"
+            f"（上限 {REPORT_HEADING_TITLE_MAX_LENGTH}）：『{item['preview']}』。"
+        )
+    segments.append(
+        "请缩短超限标题行的可见文本；若标题行混入了正文，"
+        "改写为『### 短标题』后接空行，正文另起段落。"
+    )
+    return "".join(segments)
 
 
 class ChartDraft(StrictModel):
@@ -224,7 +348,8 @@ class SectionBlockContent(StrictModel):
             raise ValueError("章节正文清洗后不能为空。")
         # 确定性清洗必须先于 Pydantic 长度和业务校验。否则大段内部 repair comment
         # 会让本可接受的正文先触发 max_length，并错误消耗模型业务纠错额度。
-        return _normalize_subordinate_heading_levels(markdown)
+        markdown = _normalize_subordinate_heading_levels(markdown)
+        return _normalize_runon_heading_lines(markdown)
 
     @field_validator("markdown")
     @classmethod
@@ -234,7 +359,7 @@ class SectionBlockContent(StrictModel):
             # H4 的父级关系仍由整章提交校验跨 block 判定。
             validate_report_block_markdown(markdown)
         except ReportingError as error:
-            raise ValueError(str(error)) from error
+            raise ValueError(_block_validation_feedback(markdown, error)) from error
         return markdown
 
 

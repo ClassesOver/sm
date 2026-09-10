@@ -697,6 +697,8 @@ async def test_long_section_heading_exposes_markdown_issue_and_is_corrected() ->
     serialized_correction = "".join(str(message.content) for message in correction_messages)
     assert '"path":"$.markdown"' in serialized_correction
     assert "report_draft_heading_title_too_long" in serialized_correction
+    assert "第 1 行" in serialized_correction
+    assert "301 个字符" in serialized_correction
     assert result.content.markdown == "### 精简标题\n\n正文"
 
 

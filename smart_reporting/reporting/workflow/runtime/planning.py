@@ -1080,17 +1080,6 @@ class RuntimePlanningMixin:
                             " requirementIds 删除失效引用"
                         )
                 payload["correction"] = correction
-                logger.debug(
-                    "report_planner_correction agent_id={} attempt={} "
-                    "previous_output_sha256={} allowed_mutation_paths={} "
-                    "required_deletion_paths={} issue_signature={}",
-                    getattr(self._analysis_agent, "id", "report-analysis-planner"),
-                    attempt,
-                    _payload_sha256(previous_output) if previous_output is not None else "none",
-                    json.dumps(allowed_mutation_paths, ensure_ascii=True, separators=(",", ":")),
-                    json.dumps(required_deletion_paths, ensure_ascii=True, separators=(",", ":")),
-                    _payload_sha256(_compact_validation_feedback(validation_feedback)),
-                )
             try:
                 output = await self._run_planner(
                     self._analysis_agent,
@@ -1123,10 +1112,6 @@ class RuntimePlanningMixin:
             normalized_output, column_repairs = _normalize_requirement_columns(output, snapshots)
             if column_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.debug(
-                    "report_planner_columns_normalized repairs={}",
-                    json.dumps(column_repairs, ensure_ascii=False, separators=(",", ":")),
-                )
                 output = normalized_output
                 output_payload = normalized_payload
             normalized_output, period_repairs = _normalize_requirement_periods(
@@ -1135,10 +1120,6 @@ class RuntimePlanningMixin:
             )
             if period_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.debug(
-                    "report_planner_periods_normalized repairs={}",
-                    json.dumps(period_repairs, ensure_ascii=False, separators=(",", ":")),
-                )
                 output = normalized_output
                 output_payload = normalized_payload
             if previous_output is not None:
@@ -1169,22 +1150,11 @@ class RuntimePlanningMixin:
                         tuple(unexpected_paths),
                     )
                     output = AnalysisBundle.model_validate(output_payload)
-                    loguru_logger.debug(
-                        "report_planner_correction_scope_normalized agent_id={} attempt={} "
-                        "restored_paths={}",
-                        getattr(self._analysis_agent, "id", "report-analysis-planner"),
-                        attempt,
-                        json.dumps(unexpected_paths, ensure_ascii=True, separators=(",", ":")),
-                    )
             normalized_output, split_repairs = _normalize_unsafe_multi_table_requirements(
                 output, snapshots, data_shapes
             )
             if split_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.debug(
-                    "report_planner_unsafe_multi_table_normalized repairs={}",
-                    json.dumps(split_repairs, ensure_ascii=False, separators=(",", ":")),
-                )
                 output = normalized_output
                 output_payload = normalized_payload
             normalized_output, grain_repairs = _normalize_analysis_bundle_grain(
@@ -1192,23 +1162,11 @@ class RuntimePlanningMixin:
             )
             if grain_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.debug(
-                    "report_planner_grain_normalized agent_id={} before_sha256={} "
-                    "after_sha256={} repairs={}",
-                    getattr(self._analysis_agent, "id", "report-analysis-planner"),
-                    _payload_sha256(output_payload),
-                    _payload_sha256(normalized_payload),
-                    json.dumps(grain_repairs, ensure_ascii=True, separators=(",", ":")),
-                )
                 output = normalized_output
                 output_payload = normalized_payload
             normalized_output, requirement_repairs = _normalize_duplicate_requirements(output)
             if requirement_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.debug(
-                    "report_planner_requirements_normalized repairs={}",
-                    json.dumps(requirement_repairs, ensure_ascii=False, separators=(",", ":")),
-                )
                 output = normalized_output
                 output_payload = normalized_payload
             normalized_output, comparison_repairs = _normalize_comparison_roles(
@@ -1216,10 +1174,6 @@ class RuntimePlanningMixin:
             )
             if comparison_repairs:
                 normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
-                logger.debug(
-                    "report_planner_comparison_roles_normalized repairs={}",
-                    json.dumps(comparison_repairs, ensure_ascii=False, separators=(",", ":")),
-                )
                 output = normalized_output
                 output_payload = normalized_payload
             semantic_issues = _analysis_bundle_semantic_issues(
