@@ -2849,7 +2849,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         messages = self._project(messages, args, kwargs)
         try:
-            return OpenAIResponses.invoke(self, messages, *args, **kwargs)
+            # OpenInference 通过描述符包装 Agno 模型方法；显式传 self 会破坏参数绑定。
+            return super().invoke(messages, *args, **kwargs)
         except Exception as error:
             self._raise_stable_custom_error(error)
             raise
@@ -2859,7 +2860,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         messages = self._project(messages, args, kwargs)
         try:
-            return await OpenAIResponses.ainvoke(self, messages, *args, **kwargs)
+            return await super().ainvoke(messages, *args, **kwargs)
         except Exception as error:
             self._raise_stable_custom_error(error)
             raise
