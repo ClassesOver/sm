@@ -92,5 +92,5 @@ def test_reporting_code_agent_is_unstructured_and_has_no_history_or_tools() -> N
     assert agent.retries == 0
     assert agent.add_history_to_context is False
     prompt = "\n".join(agent.instructions)
-    assert "普通文本不算成功" in prompt
-    assert "unified diff" in prompt
+    assert "普通文本、Markdown、代码围栏和解释都不算成功" in prompt
+    assert "完整原始 Python 源码" in prompt

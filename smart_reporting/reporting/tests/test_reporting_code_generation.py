@@ -12,6 +12,9 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
     ReportingCodeGenerationRunner,
 )
 
+SOURCE = "value = 1\nprint(value)\n"
+UPDATED_SOURCE = "value = 2\nprint(value)\n"
+
 
 class FakeAgent:
     def __init__(self, action):
@@ -43,13 +46,13 @@ def read_receipt(script: FileIdentity, content: str = "print(1)\n") -> dict[str,
 
 
 @pytest.mark.anyio
-async def test_generate_exposes_only_patch_and_returns_single_identity():
+async def test_generate_exposes_only_source_and_returns_single_identity():
     calls = []
 
     async def action(agent):
-        assert [tool.name for tool in agent.tools] == ["apply_analysis_patch"]
-        assert agent.tool_choice["function"]["name"] == "apply_analysis_patch"
-        return await agent.tools[0].entrypoint(patch="diff")
+        assert [tool.name for tool in agent.tools] == ["submit_python_source"]
+        assert agent.tool_choice["function"]["name"] == "submit_python_source"
+        return await agent.tools[0].entrypoint(source=SOURCE)
 
     async def patch(**kwargs):
         calls.append(kwargs)
@@ -60,7 +63,17 @@ async def test_generate_exposes_only_patch_and_returns_single_identity():
 
     assert isinstance(result, CodeGenerationResult)
     assert result.script_file.path == "analysis/script.py"
-    assert calls == [{"patch": "diff"}]
+    assert calls == [
+        {
+            "patch": (
+                "--- /dev/null\n"
+                "+++ b/analysis/script.py\n"
+                "@@ -0,0 +1,2 @@\n"
+                "+value = 1\n"
+                "+print(value)\n"
+            )
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -69,7 +82,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
 
     async def action(agent):
         prompts.append(json.loads(agent.prompt))
-        return await agent.tools[0].entrypoint(patch="diff")
+        return await agent.tools[0].entrypoint(source=SOURCE)
 
     async def patch(**_kwargs):
         return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
@@ -103,22 +116,13 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
             "maxLineLength": 131072,
         },
     }
-    assert prompts[0]["patchProtocol"] == {
-        "operation": "create",
+    assert prompts[0]["sourceProtocol"] == {
         "path": "analysis/script.py",
         "maxSourceBytes": 128 * 1024,
         "maxPhysicalLineBytes": 8 * 1024,
-        "template": (
-            "--- /dev/null\n+++ b/analysis/script.py\n"
-            "@@ -0,0 +1,<exact_new_line_count> @@\n"
-            "+<each_source_line>"
-        ),
-        "hunk": "@@ -0,0 +1,<exact_new_line_count> @@",
-        "example": "--- /dev/null\n+++ b/analysis/script.py\n@@ -0,0 +1,2 @@\n+line one\n+line two\n",
-        "linePrefixes": {"source": "+"},
+        "minPhysicalLines": 2,
         "lineEnding": "LF",
         "trailingNewline": True,
-        "countRule": "hunk 头中的行数必须与实际物理源码行数精确一致；不得使用固定占位计数",
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
 
@@ -134,7 +138,7 @@ async def test_repair_requests_full_analysis_script_from_real_read_callback():
         tool = agent.tools[0]
         if tool.name == "read_file":
             return await tool.entrypoint(path=script.path)
-        return await tool.entrypoint(patch="diff")
+        return await tool.entrypoint(source=UPDATED_SOURCE)
 
     async def read_file(*, path: str, max_bytes: int):
         observed_max_bytes.append(max_bytes)
@@ -165,7 +169,7 @@ async def test_repair_preserves_bounded_execution_failure_details():
         if tool.name == "read_file":
             return await tool.entrypoint(path=script.path)
         patch_prompts.append(json.loads(agent.prompt))
-        return await tool.entrypoint(patch="diff")
+        return await tool.entrypoint(source=UPDATED_SOURCE)
 
     async def patch(**_kwargs):
         return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
@@ -194,7 +198,7 @@ async def test_repair_preserves_bounded_execution_failure_details():
     assert diagnostic["details"]["toolMessage"] == "process failed"
     assert len(diagnostic["details"]["output"]) == 2000
     assert "SECRET_DETAIL" not in json.dumps(patch_prompts, ensure_ascii=False)
-    assert patch_prompts[0]["patchProtocol"]["operation"] == "update"
+    assert patch_prompts[0]["sourceProtocol"]["path"] == script.path
 
 
 @pytest.mark.anyio
@@ -213,7 +217,7 @@ async def test_generate_rejects_plain_text_without_mutation():
     with pytest.raises(ReportingError) as raised:
         await runner.generate("analysis/script.py", {}, patch)
 
-    assert raised.value.code == "report_code_generation_no_patch"
+    assert raised.value.code == "report_code_generation_no_source"
     assert mutated is False
 
 
@@ -230,7 +234,7 @@ async def test_generate_rejects_zero_tool_calls_without_mutation():
             "analysis/script.py", {}, patch
         )
 
-    assert raised.value.code == "report_code_generation_no_patch"
+    assert raised.value.code == "report_code_generation_no_source"
 
 
 @pytest.mark.anyio
@@ -245,7 +249,7 @@ async def test_repair_reads_once_then_uses_fresh_patch_agent():
         seen_tools.append(tool.name)
         if tool.name == "read_file":
             return await tool.entrypoint(path="analysis/script.py")
-        return await tool.entrypoint(patch="diff")
+        return await tool.entrypoint(source=UPDATED_SOURCE)
 
     async def read_file(**kwargs):
         receipt = read_receipt(script)
@@ -259,7 +263,7 @@ async def test_repair_reads_once_then_uses_fresh_patch_agent():
     result = await runner.repair(script, {"code": "bad"}, read_file, patch)
 
     assert result.script_file.sha256 == hashlib.sha256(b"print(2)\n").hexdigest()
-    assert seen_tools == ["read_file", "apply_analysis_patch"]
+    assert seen_tools == ["read_file", "submit_python_source"]
     assert agents[0] is not agents[1]
 
 
@@ -357,8 +361,8 @@ async def test_repair_rejects_write_stage_without_a_patch(output):
             script, {}, read_file, patch
         )
 
-    assert raised.value.code == "report_code_generation_no_patch"
-    assert [agent.tools[0].name for agent in agents] == ["read_file", "apply_analysis_patch"]
+    assert raised.value.code == "report_code_generation_no_source"
+    assert [agent.tools[0].name for agent in agents] == ["read_file", "submit_python_source"]
 
 
 @pytest.mark.anyio
@@ -373,7 +377,7 @@ async def test_repair_malformed_read_call_fails_before_a_fresh_retry_succeeds():
         return await agent.tools[0].entrypoint(path=script.path)
 
     async def write(agent):
-        return await agent.tools[0].entrypoint(patch="diff")
+        return await agent.tools[0].entrypoint(source=UPDATED_SOURCE)
 
     actions = iter([malformed, read, write])
     runner = ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(next(actions)))
@@ -551,7 +555,7 @@ async def test_repair_normalizes_diagnostic_and_read_receipt_before_patch_prompt
         if tool.name == "read_file":
             return await tool.entrypoint(path=script.path)
         prompts.append(json.loads(agent.prompt))
-        return await tool.entrypoint(patch="diff")
+        return await tool.entrypoint(source=UPDATED_SOURCE)
 
     async def read_file(**_kwargs):
         return {**read_receipt(script), "untrusted": "x" * 10_000}
@@ -589,7 +593,7 @@ async def test_repair_preserves_bounded_missing_facts_in_patch_prompt():
         if tool.name == "read_file":
             return await tool.entrypoint(path=script.path)
         prompts.append(json.loads(agent.prompt))
-        return await tool.entrypoint(patch="diff")
+        return await tool.entrypoint(source=UPDATED_SOURCE)
 
     async def read_file(**_kwargs):
         return read_receipt(script)
@@ -625,7 +629,7 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
         if tool.name == "read_file":
             return await tool.entrypoint(path=script.path)
         prompts.append(json.loads(agent.prompt))
-        return await tool.entrypoint(patch="diff")
+        return await tool.entrypoint(source=UPDATED_SOURCE)
 
     async def read_file(**_kwargs):
         return read_receipt(script)
@@ -816,7 +820,9 @@ async def test_repair_redacts_read_callback_errors():
         return await agent.tools[0].entrypoint(path=script.path)
 
     async def read_file(**_kwargs):
-        raise ReportingError("workspace_read_failed", "SECRET_SOURCE", details={"content": "secret"})
+        raise ReportingError(
+            "workspace_read_failed", "SECRET_SOURCE", details={"content": "secret"}
+        )
 
     async def patch(**_kwargs):
         pytest.fail("read errors must not mutate")
@@ -855,23 +861,24 @@ async def test_repair_redacts_non_reporting_read_errors():
 
 
 @pytest.mark.anyio
-async def test_generate_rejects_second_patch_after_one_mutation():
+async def test_generate_rejects_second_source_after_one_mutation():
     calls = 0
 
     async def action(agent):
-        await agent.tools[0].entrypoint(patch="first")
-        await agent.tools[0].entrypoint(patch="second")
+        await agent.tools[0].entrypoint(source=SOURCE)
+        await agent.tools[0].entrypoint(source=UPDATED_SOURCE)
 
     async def patch(**_kwargs):
         nonlocal calls
         calls += 1
         return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
 
-    with pytest.raises(ReportingError, match="multiple_patches"):
+    with pytest.raises(ReportingError) as raised:
         await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
             "analysis/script.py", {}, patch
         )
 
+    assert raised.value.code == "report_code_generation_multiple_sources"
     assert calls == 1
 
 
@@ -893,7 +900,7 @@ async def test_generate_rejects_second_patch_after_one_mutation():
 )
 async def test_generate_rejects_failed_or_ambiguous_patch_receipts(receipt):
     async def action(agent):
-        return await agent.tools[0].entrypoint(patch="diff")
+        return await agent.tools[0].entrypoint(source=SOURCE)
 
     async def patch(**_kwargs):
         return receipt
@@ -916,7 +923,7 @@ async def test_generate_rejects_failed_or_ambiguous_patch_receipts(receipt):
 @pytest.mark.anyio
 async def test_generate_preserves_only_bounded_patch_failure_diagnostics():
     async def action(agent):
-        return await agent.tools[0].entrypoint(patch="diff")
+        return await agent.tools[0].entrypoint(source=SOURCE)
 
     async def patch(**_kwargs):
         return {
@@ -950,7 +957,7 @@ async def test_generate_preserves_only_bounded_patch_failure_diagnostics():
 @pytest.mark.anyio
 async def test_generate_preserves_reporting_error_code_and_message_after_tool_throw():
     async def action(agent):
-        return await agent.tools[0].entrypoint(patch="diff")
+        return await agent.tools[0].entrypoint(source=SOURCE)
 
     async def patch(**_kwargs):
         raise ReportingError(
@@ -974,7 +981,7 @@ async def test_generate_preserves_reporting_error_code_and_message_after_tool_th
 async def test_generate_does_not_misclassify_swallowed_patch_error_as_no_patch():
     async def action(agent):
         try:
-            await agent.tools[0].entrypoint(patch="diff")
+            await agent.tools[0].entrypoint(source=SOURCE)
         except ReportingError:
             # Agno's Function layer can turn tool exceptions into a tool receipt.
             return None
@@ -997,36 +1004,42 @@ async def test_generate_does_not_misclassify_swallowed_patch_error_as_no_patch()
 
 
 @pytest.mark.anyio
-async def test_generate_injects_dynamic_update_diff_contract():
+async def test_generate_builds_update_diff_from_complete_source():
     prompts: list[dict[str, object]] = []
+    patches: list[str] = []
 
     async def action(agent):
         prompts.append(json.loads(agent.prompt))
-        return await agent.tools[0].entrypoint(patch="diff")
+        return await agent.tools[0].entrypoint(source=UPDATED_SOURCE)
 
-    async def patch(**_kwargs):
+    async def patch(*, patch: str):
+        patches.append(patch)
         return {"ok": True, "artifacts": [identity("analysis/script.py", "print(2)\n")]}
 
     await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
-        "analysis/script.py", {}, patch, _operation="update"
+        "analysis/script.py",
+        {},
+        patch,
+        _operation="update",
+        _previous_source=SOURCE,
     )
 
-    protocol = prompts[0]["patchProtocol"]
+    protocol = prompts[0]["sourceProtocol"]
     assert protocol["path"] == "analysis/script.py"
-    assert protocol["operation"] == "update"
-    assert protocol["template"] == (
-        "--- a/analysis/script.py\n+++ b/analysis/script.py\n"
-        "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@\n"
-        " <unchanged_source_line>\n-<removed_source_line>\n+<added_source_line>"
-    )
-    assert protocol["hunk"] == "@@ -1,<exact_old_line_count> +1,<exact_new_line_count> @@"
-    assert protocol["example"] == (
-        "--- a/analysis/script.py\n+++ b/analysis/script.py\n"
-        "@@ -1,2 +1,2 @@\n unchanged line\n-removed line\n+added line\n"
-    )
-    assert protocol["linePrefixes"] == {"context": " ", "removed": "-", "added": "+"}
+    assert protocol["minPhysicalLines"] == 2
     assert protocol["lineEnding"] == "LF"
     assert protocol["trailingNewline"] is True
+    assert patches == [
+        (
+            "--- a/analysis/script.py\n"
+            "+++ b/analysis/script.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-value = 1\n"
+            "-print(value)\n"
+            "+value = 2\n"
+            "+print(value)\n"
+        )
+    ]
 
 
 @pytest.mark.anyio
@@ -1034,7 +1047,7 @@ async def test_generate_rejects_malformed_tool_arguments_without_mutation():
     mutated = False
 
     async def action(agent):
-        await agent.tools[0].entrypoint()  # truncated/malformed tool JSON has no patch field
+        await agent.tools[0].entrypoint()  # truncated custom input has no source
 
     async def patch(**_kwargs):
         nonlocal mutated
@@ -1046,6 +1059,11 @@ async def test_generate_rejects_malformed_tool_arguments_without_mutation():
             "analysis/script.py", {}, patch
         )
 
-    assert raised.value.code == "report_code_generation_tool_arguments_invalid"
+    assert raised.value.code == "report_python_source_shape_invalid"
     assert mutated is False
-    assert raised.value.details == {"path": "analysis/script.py"}
+    assert raised.value.details == {
+        "path": "analysis/script.py",
+        "size": 0,
+        "lineCount": 0,
+        "maxLineLength": 0,
+    }

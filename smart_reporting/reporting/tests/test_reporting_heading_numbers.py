@@ -358,9 +358,7 @@ def _docx_manifest_with_heading_count(
         sourceMarkdownSha256="b" * 64,
         docx=ArtifactFile(
             path="reports/report.docx",
-            mediaType=(
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ),
+            mediaType=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
             size=1,
             sha256="c" * 64,
         ),

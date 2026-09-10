@@ -104,7 +104,14 @@ class WorkflowThreadOwnership(Protocol):
 
     async def attach_request_run(self, external_run_id: str, report_run_id: str) -> None: ...
 
-    async def attach_workflow_owner_run(self, **values: str) -> None: ...
+    async def attach_workflow_owner_run(
+        self,
+        *,
+        thread_id: str,
+        external_run_id: str,
+        owner_user_id: str,
+        report_run_id: str,
+    ) -> None: ...
 
     async def update_run_status(
         self,
@@ -825,10 +832,10 @@ class ReportWorkflowController:
         for (external_run_id, _task), result in zip(active, results, strict=True):
             if isinstance(result, BaseException) and result.__cause__ is not None:
                 continue
-            scope = self._background_scopes.get(external_run_id)
-            if scope is None:
+            background_scope = self._background_scopes.get(external_run_id)
+            if background_scope is None:
                 continue
-            thread_id, user_id, _database, _company_id = scope
+            thread_id, user_id, _database, _company_id = background_scope
             scope = {
                 "external_run_id": external_run_id,
                 "thread_id": thread_id,
@@ -1161,9 +1168,7 @@ class ReportWorkflowController:
             attach = getattr(self._thread_ownership, "attach_request_run", None)
             if callable(attach):
                 await attach(scope["external_run_id"], workflow_run_id)
-            attach_owner = getattr(
-                self._thread_ownership, "attach_workflow_owner_run", None
-            )
+            attach_owner = getattr(self._thread_ownership, "attach_workflow_owner_run", None)
             if callable(attach_owner):
                 await attach_owner(
                     thread_id=self._thread_scope_key(scope),
@@ -1514,9 +1519,7 @@ class ReportWorkflowController:
                 finalization_pending=finalization_pending,
             )
 
-    async def _parent_pending_control(
-        self, scope: dict[str, str]
-    ) -> ReportWorkflowControl | None:
+    async def _parent_pending_control(self, scope: dict[str, str]) -> ReportWorkflowControl | None:
         getter = getattr(self._thread_ownership, "get_run_by_external", None)
         if not callable(getter):
             return None
@@ -1564,6 +1567,9 @@ class ReportWorkflowController:
                 "report_workflow_scope_mismatch",
                 "Reporting 父运行不属于当前租户或不是待清理终态。",
             )
+        terminal_status: Literal["cancelled", "failed"] = (
+            "cancelled" if status == "cancelled" else "failed"
+        )
         return ReportWorkflowControl(
             workflowId=_WORKFLOW_ID,
             workflowRunId=workflow_run_id,
@@ -1571,7 +1577,7 @@ class ReportWorkflowController:
             externalRunId=scope["external_run_id"],
             threadId=scope["thread_id"],
             userId=scope["user_id"],
-            status=status,
+            status=terminal_status,
             finalizationPending=True,
         )
 

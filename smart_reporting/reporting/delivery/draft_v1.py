@@ -364,19 +364,17 @@ def _validated_block_headings(
         if not markdown_title or not title:
             raise ReportingError("report_draft_heading_format_invalid", "章节正文标题不能为空。")
         if len(title) > REPORT_HEADING_TITLE_MAX_LENGTH:
+            message = f"章节正文标题可见文本不得超过 {REPORT_HEADING_TITLE_MAX_LENGTH} 个字符。"
             issue = {
                 "path": issue_path,
                 "type": "heading_title_too_long",
-                "message": (
-                    "章节正文标题可见文本不得超过 "
-                    f"{REPORT_HEADING_TITLE_MAX_LENGTH} 个字符。"
-                ),
+                "message": message,
                 "maxLength": REPORT_HEADING_TITLE_MAX_LENGTH,
                 "actualLength": len(title),
             }
             raise ReportingError(
                 "report_draft_heading_title_too_long",
-                issue["message"],
+                message,
                 details={"issues": [issue]},
             )
         headings.append((level, line_index, match, markdown_title, title))

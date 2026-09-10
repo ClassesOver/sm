@@ -30,9 +30,7 @@ def _unified_diff_path(value: str) -> str:
     return value[2:]
 
 
-_HUNK_HEADER_RE = re.compile(
-    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$"
-)
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 
 
 def _canonicalize_patch_lines(patch: str) -> list[str]:

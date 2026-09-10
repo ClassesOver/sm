@@ -331,9 +331,7 @@ def test_completed_external_result_preserves_html_preview() -> None:
 
     result = ReportWorkflowController._result(control, output)
 
-    assert result["report"]["html"] == {
-        "previewUrl": "https://reports.example.com/report.html"
-    }
+    assert result["report"]["html"] == {"previewUrl": "https://reports.example.com/report.html"}
 
 
 @pytest.mark.anyio
@@ -2338,6 +2336,7 @@ async def test_controller_can_cancel_recovery_pause_and_then_cleanup() -> None:
     cleanup = AsyncMock()
     ownership = _ThreadOwnership()
     workflow = Workflow(
+        name="enterprise-reporting-workflow-v1",
         id="enterprise-reporting-workflow-v1",
         db=InMemoryDb(),
         steps=[
@@ -2483,9 +2482,7 @@ async def test_controller_keeps_thread_owned_when_sandbox_quarantine_fails() -> 
 
 
 @pytest.mark.anyio
-async def test_controller_preserves_run_error_and_owner_after_sandbox_cleanup_failure() -> (
-    None
-):
+async def test_controller_preserves_run_error_and_owner_after_sandbox_cleanup_failure() -> None:
     run_calls = 0
 
     class Workflow:

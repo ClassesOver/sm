@@ -101,12 +101,7 @@ def test_git_patch_kernel_rejects_unconsumed_hunk_tail(
 ) -> None:
     service = _Workspace({})
     patch_lines = "".join(f"+line-{index}\n" for index in range(provided_lines))
-    patch = (
-        "--- /dev/null\n"
-        "+++ b/create.txt\n"
-        f"@@ -0,0 +1,{declared_lines} @@\n"
-        f"{patch_lines}"
-    )
+    patch = f"--- /dev/null\n+++ b/create.txt\n@@ -0,0 +1,{declared_lines} @@\n{patch_lines}"
 
     with pytest.raises(WorkspaceError, match="hunk"):
         build_workspace_changes(service, "thread", patch)

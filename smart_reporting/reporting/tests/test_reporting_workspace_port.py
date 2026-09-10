@@ -346,7 +346,13 @@ async def test_analysis_python_source_gate_returns_uniform_shape_error() -> None
             scope=scope,
             tool_name="apply_analysis_patch",
             canonical={
-                "operations": [{"operation": "create", "path": "analysis/evidence/a1/supplement.py", "content": invalid}]
+                "operations": [
+                    {
+                        "operation": "create",
+                        "path": "analysis/evidence/a1/supplement.py",
+                        "content": invalid,
+                    }
+                ]
             },
         )
     error = caught.value
@@ -726,9 +732,7 @@ async def test_signed_script_loader_rejects_current_identity_matching_older_comm
             "toolName": "apply_analysis_patch",
             "arguments": {
                 "patch": "diff",
-                "operations": [
-                    {"operation": "create", "path": path, "content": "value = 1\n"}
-                ],
+                "operations": [{"operation": "create", "path": path, "content": "value = 1\n"}],
             },
             "affectedPaths": [path],
             "expectedStates": {path: "present"},
@@ -739,9 +743,7 @@ async def test_signed_script_loader_rejects_current_identity_matching_older_comm
     harness = object.__new__(RuntimeAnalysisMixin)
     harness.runtime = SimpleNamespace(
         scope=AsyncMock(return_value=scope),
-        workspace=SimpleNamespace(
-            batch_hash_files=AsyncMock(return_value=[older_identity])
-        ),
+        workspace=SimpleNamespace(batch_hash_files=AsyncMock(return_value=[older_identity])),
     )
     harness._durable_state = AsyncMock(
         return_value=SimpleNamespace(
@@ -775,9 +777,7 @@ async def test_signed_script_loader_rejects_missing_latest_committed_artifact() 
         "toolName": "apply_analysis_patch",
         "arguments": {
             "patch": "diff",
-            "operations": [
-                {"operation": "create", "path": path, "content": "value = 1\n"}
-            ],
+            "operations": [{"operation": "create", "path": path, "content": "value = 1\n"}],
         },
         "affectedPaths": [path],
         "expectedStates": {path: "present"},
@@ -823,10 +823,7 @@ async def test_analysis_patch_recovers_pending_update_before_rebuilding_old_hunk
     path = "analysis/evidence/a1/supplement.py"
     previous = "value = 1\nprint(value)\n"
     source = "value = 2\nprint(value)\n"
-    patch = (
-        f"--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@\n"
-        "-value = 1\n+value = 2\n print(value)\n"
-    )
+    patch = f"--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@\n-value = 1\n+value = 2\n print(value)\n"
     identity = {
         "path": path,
         "size": len(source.encode()),
@@ -892,7 +889,9 @@ async def test_analysis_patch_recovers_pending_update_before_rebuilding_old_hunk
 
 
 @pytest.mark.anyio
-async def test_analysis_patch_rejects_create_for_existing_script_before_intent_or_mutation() -> None:
+async def test_analysis_patch_rejects_create_for_existing_script_before_intent_or_mutation() -> (
+    None
+):
     class Scheduler:
         async def __aenter__(self):
             return self
@@ -907,9 +906,7 @@ async def test_analysis_patch_rejects_create_for_existing_script_before_intent_o
     scope = SimpleNamespace(thread_id="thread-1")
     workspace = SimpleNamespace(
         normalize_path=WorkspaceService.normalize_path,
-        batch_hash_files=AsyncMock(
-            return_value=[{"path": path, "size": 10, "sha256": "a" * 64}]
-        ),
+        batch_hash_files=AsyncMock(return_value=[{"path": path, "size": 10, "sha256": "a" * 64}]),
     )
     runtime = SimpleNamespace(
         workspace=workspace,
@@ -929,10 +926,7 @@ async def test_analysis_patch_rejects_create_for_existing_script_before_intent_o
     harness._durable_state = AsyncMock(return_value=SimpleNamespace(payload={}))
     harness._apply_durable = AsyncMock()
     harness._failure = ReportingToolkit._failure
-    patch = (
-        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,2 @@\n"
-        "+value = 1\n+print(value)\n"
-    )
+    patch = f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,2 @@\n+value = 1\n+print(value)\n"
 
     result = await harness.apply_analysis_patch(patch)
 
@@ -960,9 +954,7 @@ async def test_analysis_patch_passes_intent_operations_to_kernel_unchanged() -> 
     scope = SimpleNamespace(thread_id="thread-1")
     workspace = SimpleNamespace(
         normalize_path=WorkspaceService.normalize_path,
-        batch_hash_files=AsyncMock(
-            side_effect=[[{"path": path, "missing": True}], [identity]]
-        ),
+        batch_hash_files=AsyncMock(side_effect=[[{"path": path, "missing": True}], [identity]]),
     )
     runtime = SimpleNamespace(
         workspace=workspace,
@@ -1092,9 +1084,7 @@ async def test_visualization_python_source_gate_enforces_rendering_policy(source
         await harness._preflight_analysis_python_write(
             scope=scope,
             tool_name="apply_analysis_patch",
-            canonical={
-                "operations": [{"operation": "create", "path": path, "content": source}]
-            },
+            canonical={"operations": [{"operation": "create", "path": path, "content": source}]},
         )
 
     assert caught.value.code == "report_python_source_shape_invalid"
@@ -1109,7 +1099,7 @@ async def test_visualization_python_source_gate_enforces_rendering_policy(source
         ("analysis/evidence/a1/other.py", "value = 1\nprint(value)\n"),
         (
             "analysis/evidence/a1/supplement.py",
-            "value = (\n    \"" + "a" * 5000 + "\"\n    \"" + "b" * 5000 + "\"\n)\nprint(value)\n",
+            'value = (\n    "' + "a" * 5000 + '"\n    "' + "b" * 5000 + '"\n)\nprint(value)\n',
         ),
         (
             "analysis/evidence/a1/supplement.py",
@@ -1118,9 +1108,7 @@ async def test_visualization_python_source_gate_enforces_rendering_policy(source
         ("analysis/evidence/a1/supplement.py", "#" + "a" * 262139 + "\npass\n"),
     ],
 )
-async def test_analysis_python_source_gate_rejects_invalid_shape(
-    path: str, source: str
-) -> None:
+async def test_analysis_python_source_gate_rejects_invalid_shape(path: str, source: str) -> None:
     scope = SimpleNamespace(thread_id="thread-1")
     harness = object.__new__(RuntimeAnalysisMixin)
     harness._phase_parameters = lambda *_args: (

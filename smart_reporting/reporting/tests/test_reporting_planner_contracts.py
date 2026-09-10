@@ -46,6 +46,7 @@ from smart_reporting.reporting.hospital_operation.deterministic_analysis import 
 from smart_reporting.reporting.hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
+    freeze_outline,
 )
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
@@ -964,7 +965,6 @@ def test_outline_section_can_reference_multiple_atomic_analysis_items() -> None:
             "sections": [
                 {
                     "title": "经营结果与资源效率",
-                    "focus": ["比较经营结果与资源投入"],
                     "analysisIds": ["analysis_001", "analysis_002", "analysis_003"],
                 }
             ],
@@ -977,6 +977,54 @@ def test_outline_section_can_reference_multiple_atomic_analysis_items() -> None:
         "analysis_002",
         "analysis_003",
     )
+
+
+def test_outline_proposal_rejects_legacy_focus_field() -> None:
+    with pytest.raises(ValidationError):
+        ReportOutlineProposal.model_validate(
+            {
+                "reportType": "comprehensive",
+                "title": "年度运营分析报告",
+                "sections": [
+                    {
+                        "title": "经营结果与资源效率",
+                        "focus": ["比较经营结果与资源投入"],
+                        "analysisIds": ["analysis_001"],
+                    }
+                ],
+            }
+        )
+
+
+def test_outline_schema_exposes_analysis_id_pattern() -> None:
+    schema = ReportOutlineProposal.model_json_schema()
+
+    analysis_id_items = schema["$defs"]["OutlineSectionProposal"]["properties"]["analysisIds"][
+        "items"
+    ]
+
+    assert analysis_id_items["pattern"] == "^analysis_[0-9]{3,6}$"
+
+
+def test_freeze_outline_derives_focus_from_signed_management_questions() -> None:
+    outline = freeze_outline(
+        {
+            "reportType": "comprehensive",
+            "title": "年度运营分析报告",
+            "sections": [
+                {
+                    "title": "经营结果与资源效率",
+                    "analysisIds": ["analysis_002", "analysis_001"],
+                }
+            ],
+        },
+        analyses=[
+            {"analysisId": "analysis_001", "managementQuestion": "收入趋势如何"},
+            {"analysisId": "analysis_002", "managementQuestion": "成本效率如何"},
+        ],
+    )
+
+    assert outline.sections[0].focus == ("成本效率如何", "收入趋势如何")
 
 
 @pytest.mark.anyio
@@ -1636,7 +1684,8 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
                 )
             )
             code_prompts.append(request)
-            return await tool.entrypoint(patch="diff")
+            source = repaired_content if "taskFacts" in facts else initial_content
+            return await tool.entrypoint(source=source)
 
     runtime._analysis_script_agent = CapturingCodeAgent()
 
@@ -1683,8 +1732,8 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
 
     runtime._run_planner = run_planner
     script_path = "evidence/analysis_001/supplement.py"
-    initial_content = "print(1)\n"
-    repaired_content = "print(2)\n"
+    initial_content = "value = 1\nprint(value)\n"
+    repaired_content = "value = 2\nprint(value)\n"
 
     def script_identity(content: str) -> dict[str, Any]:
         return {
@@ -2476,12 +2525,10 @@ def _duplicate_analysis_outline_payload() -> dict[str, Any]:
         "sections": [
             {
                 "title": "收入与成本",
-                "focus": ["比较收入与成本"],
                 "analysisIds": ["analysis_001"],
             },
             {
                 "title": "利润与效率",
-                "focus": ["比较利润与效率"],
                 "analysisIds": ["analysis_001"],
             },
         ],
@@ -2570,7 +2617,6 @@ def _valid_outline_proposal() -> ReportOutlineProposal:
             "sections": [
                 {
                     "title": "经营结果与资源效率",
-                    "focus": ["比较经营结果与资源投入"],
                     "analysisIds": ["analysis_001"],
                 }
             ],
@@ -2703,9 +2749,7 @@ async def test_generate_outline_repairs_missing_analysis_reference_in_same_run()
             return incomplete
         correction = payload["correction"]
         assert correction["allowedPaths"] == ["sections"]
-        assert correction["previousOutput"]["sections"][0]["analysisIds"] == [
-            "analysis_001"
-        ]
+        assert correction["previousOutput"]["sections"][0]["analysisIds"] == ["analysis_001"]
         assert "analysis_002" in correction["validationFeedback"]["issues"][0]["reason"]
         return complete
 

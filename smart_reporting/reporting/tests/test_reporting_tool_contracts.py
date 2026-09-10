@@ -53,7 +53,10 @@ def test_analysis_patch_contract_is_patch_only() -> None:
         from jsonschema import Draft202012Validator
 
         Draft202012Validator(schema).validate(
-            {"patch": "--- /dev/null\n+++ b/analysis/new.py\n@@ -0,0 +1 @@\n+x\n", "expected_sha256": {}}
+            {
+                "patch": "--- /dev/null\n+++ b/analysis/new.py\n@@ -0,0 +1 @@\n+x\n",
+                "expected_sha256": {},
+            }
         )
 
 

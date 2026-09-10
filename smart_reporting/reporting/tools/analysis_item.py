@@ -516,9 +516,7 @@ class RuntimeAnalysisMixin:
                 raise ReportingError(
                     "report_analysis_write_intent_invalid", "已提交写入意图缺少文件身份。"
                 )
-            current = await self._analysis_write_hash_files(
-                thread_id=scope.thread_id, paths=paths
-            )
+            current = await self._analysis_write_hash_files(thread_id=scope.thread_id, paths=paths)
             if current != artifacts:
                 raise ReportingError(
                     "report_analysis_write_identity_mismatch",
@@ -567,9 +565,7 @@ class RuntimeAnalysisMixin:
 
     def _analysis_patch_operation(self, scope: Any, patch: str) -> str:
         operations = parse_unified_diff(patch)
-        normalized_script, _max_bytes, _visualization = (
-            self._signed_analysis_script_contract(scope)
-        )
+        normalized_script, _max_bytes, _visualization = self._signed_analysis_script_contract(scope)
         if len(operations) != 1:
             _reject_reporting_python_source(normalized_script, "")
         operation = operations[0]
@@ -584,9 +580,7 @@ class RuntimeAnalysisMixin:
         if change.get("operation") != "create":
             return
         path = str(change["path"])
-        current = await self._analysis_write_hash_files(
-            thread_id=scope.thread_id, paths=(path,)
-        )
+        current = await self._analysis_write_hash_files(thread_id=scope.thread_id, paths=(path,))
         if current and current[0].get("missing") is not True:
             raise ReportingError(
                 "report_analysis_write_path_conflict",
@@ -744,9 +738,7 @@ class RuntimeAnalysisMixin:
                 )
                 if recovered is not None:
                     return recovered
-            await self._reject_create_for_existing_script(
-                scope=scope, operations=raw_operations
-            )
+            await self._reject_create_for_existing_script(scope=scope, operations=raw_operations)
             self._require_analysis_task_output_paths(contract, paths)
             payload = json.dumps(
                 {

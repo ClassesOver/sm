@@ -43,9 +43,13 @@ def _capability(secret: str, *, thread_id: str) -> str:
         }
     )
     payload = f"{header}.{claims}"
-    signature = base64.urlsafe_b64encode(
-        hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
-    ).decode().rstrip("=")
+    signature = (
+        base64.urlsafe_b64encode(
+            hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+        )
+        .decode()
+        .rstrip("=")
+    )
     return f"{payload}.{signature}"
 
 
@@ -66,9 +70,13 @@ def _dsh_capability(secret: str, *, session_id: str) -> str:
         }
     )
     payload = f"{header}.{claims}"
-    signature = base64.urlsafe_b64encode(
-        hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
-    ).decode().rstrip("=")
+    signature = (
+        base64.urlsafe_b64encode(
+            hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+        )
+        .decode()
+        .rstrip("=")
+    )
     return f"{payload}.{signature}"
 
 
@@ -143,9 +151,7 @@ async def _start_http_server(app: Any) -> tuple[uvicorn.Server, asyncio.Task[Non
     listener.listen()
     listener.setblocking(False)
     port = listener.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(app, log_level="error", access_log=False, lifespan="on")
-    )
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False, lifespan="on"))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     for _ in range(100):
         if server.started:

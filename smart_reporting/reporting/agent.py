@@ -1042,9 +1042,7 @@ def _reporting_invalid_argument_receipt(
             f"下一条响应只调用一次 {tool_name}；参数必须是完整严格 JSON 对象，不得附加 Markdown 或解释文字。",
         ],
     }
-    receipt["requiredActions"].append(
-        "按 schemaHint 重新生成参数；不要修补、猜测或隐藏无效 JSON。"
-    )
+    receipt["requiredActions"].append("按 schemaHint 重新生成参数；不要修补、猜测或隐藏无效 JSON。")
     return receipt
 
 
@@ -1973,18 +1971,19 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
 
     def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         params = super().get_request_params(*args, **kwargs)
+        endpoint = str(self.base_url) if self.base_url is not None else None
         params = normalize_openai_chat_output_limit(
             params,
-            endpoint=self.base_url,
+            endpoint=endpoint,
             structured_output=bool(getattr(self, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, False)),
         )
-        params = normalize_openai_chat_reasoning(params, endpoint=self.base_url)
+        params = normalize_openai_chat_reasoning(params, endpoint=endpoint)
         extra_body = params.get("extra_body")
         if (
             params.get("reasoning_effort") is not None
             and isinstance(extra_body, dict)
             and isinstance(extra_body.get("thinking_budget"), int)
-            and uses_dashscope_qwen_thinking_protocol(self.id, self.base_url)
+            and uses_dashscope_qwen_thinking_protocol(self.id, endpoint)
         ):
             # 百炼 Qwen 的公开 OpenAI-compatible 契约使用 enable_thinking 与
             # thinking_budget，真实端点拒绝同时提交顶层 reasoning_effort。
@@ -2755,9 +2754,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         output = self._raw_field(response, "output")
         output = list(output) if isinstance(output, (list, tuple)) else []
         custom_calls = [
-            item
-            for item in output
-            if self._raw_field(item, "type") == "custom_tool_call"
+            item for item in output if self._raw_field(item, "type") == "custom_tool_call"
         ]
         if not self._report_code_custom_tool_active:
             if custom_calls:

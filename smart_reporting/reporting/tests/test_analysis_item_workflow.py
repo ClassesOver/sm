@@ -413,9 +413,7 @@ async def test_analysis_item_workflow_hydrates_committed_script_without_regenera
         ),
         generate_script=generate_script,
         repair_script=AsyncMock(),
-        summarize=AsyncMock(
-            return_value=AnalysisSummaryDraft(summary="补证完成。", warnings=())
-        ),
+        summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="补证完成。", warnings=())),
         read_file=AsyncMock(
             side_effect=[_facts_read_result(), _tool_result(content=evidence, sha256="b" * 64)]
         ),

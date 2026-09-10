@@ -45,6 +45,7 @@ def format_heading_label(*, level: int, number: str, title: str) -> str:
 
     return f"{number}. {title}" if level == 2 else f"{number} {title}"
 
+
 _CJK_STRONG_MARKER = re.compile(
     r"(?P<left>[^\s*`])(?<!\*)(?P<open>\*\*)(?P<content>[^*\r\n`]*[\u3400-\u9fff][^*\r\n`]*?)(?P<close>\*\*)(?P<right>[^\s*`])"
 )
@@ -312,9 +313,7 @@ def _bind_heading_anchors(tokens: list[Any], headings_contract: list[dict[str, A
     expected = [
         (
             item["level"],
-            format_heading_label(
-                level=item["level"], number=item["number"], title=item["title"]
-            ),
+            format_heading_label(level=item["level"], number=item["number"], title=item["title"]),
         )
         for item in headings_contract
     ]

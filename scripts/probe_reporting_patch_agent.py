@@ -52,6 +52,8 @@ from smart_reporting.workspace import WorkspaceError, WorkspaceService  # noqa: 
 
 ANALYSIS_MAX_BYTES = 128 * 1024
 VISUALIZATION_MAX_BYTES = 64 * 1024
+CREATE_MAX_ATTEMPTS = 3
+REPAIR_MAX_ATTEMPTS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +264,14 @@ def _short_error(error: BaseException) -> str:
     return type(error).__name__
 
 
+def _retry_diagnostic(error: BaseException) -> dict[str, Any]:
+    if isinstance(error, ReportingError):
+        return ReportingCodeGenerationRunner._short_diagnostic(
+            {"code": error.code, "message": error.message, "details": error.details}
+        )
+    return {"code": "report_code_generation_failed", "message": _short_error(error)}
+
+
 async def _probe_once(
     settings: AgentSettings,
     scenario: ProbeScenario,
@@ -312,7 +322,7 @@ async def _probe_once(
                 ],
             }
         except ReportingError as error:
-            return {"ok": False, "code": error.code, "message": error.message}
+            return {"ok": False, **_retry_diagnostic(error)}
         except WorkspaceError:
             return {
                 "ok": False,
@@ -359,33 +369,53 @@ async def _probe_once(
         )
     )
 
+    attempts = 0
+    first_attempt_valid = False
+
     async def invoke() -> None:
-        if scenario.operation == "create":
-            await runner.generate(
-                scenario.path,
-                scenario.facts,
-                apply_patch,
-                context,
-                max_source_bytes=scenario.max_bytes,
-            )
-            return
-        initial_source = scenario.initial_source
-        if initial_source is None or scenario.diagnostic is None:
-            raise RuntimeError("repair scenario is incomplete")
-        raw = initial_source.encode("utf-8")
-        await runner.repair(
-            FileIdentity(
-                path=scenario.path,
-                size=len(raw),
-                sha256=hashlib.sha256(raw).hexdigest(),
-            ),
-            scenario.diagnostic,
-            read_file,
-            apply_patch,
-            context,
-            task_facts=scenario.facts,
-            max_source_bytes=scenario.max_bytes,
+        nonlocal accepted, attempts, first_attempt_valid
+        diagnostic = scenario.diagnostic
+        max_attempts = (
+            CREATE_MAX_ATTEMPTS if scenario.operation == "create" else REPAIR_MAX_ATTEMPTS
         )
+        for attempt in range(1, max_attempts + 1):
+            attempts = attempt
+            accepted = None
+            try:
+                if scenario.operation == "create":
+                    await runner.generate(
+                        scenario.path,
+                        scenario.facts,
+                        apply_patch,
+                        context,
+                        diagnostic=diagnostic,
+                        max_source_bytes=scenario.max_bytes,
+                    )
+                else:
+                    initial_source = scenario.initial_source
+                    if initial_source is None or diagnostic is None:
+                        raise RuntimeError("repair scenario is incomplete")
+                    raw = initial_source.encode("utf-8")
+                    await runner.repair(
+                        FileIdentity(
+                            path=scenario.path,
+                            size=len(raw),
+                            sha256=hashlib.sha256(raw).hexdigest(),
+                        ),
+                        diagnostic,
+                        read_file,
+                        apply_patch,
+                        context,
+                        task_facts=scenario.facts,
+                        max_source_bytes=scenario.max_bytes,
+                    )
+            except Exception as error:
+                if attempt == max_attempts:
+                    raise
+                diagnostic = _retry_diagnostic(error)
+                continue
+            first_attempt_valid = attempt == 1
+            return
 
     started = time.perf_counter()
     error: str | None = None
@@ -401,6 +431,8 @@ async def _probe_once(
         "model": model_id,
         "scenario": scenario.name,
         "valid": error is None and accepted is not None,
+        "attempts": attempts,
+        "firstAttemptValid": first_attempt_valid,
         "operation": accepted.get("operation") if accepted else scenario.operation,
         "path": accepted.get("path") if accepted else scenario.path,
         "size": accepted.get("size") if accepted else None,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from agno.run import RunContext
 from loguru import logger
@@ -18,9 +18,19 @@ from .phase_models import ChartDraft, VisualizationPlanDraft
 GenerateVisualizationPlan = Callable[
     [Mapping[str, Any], RunContext], Awaitable[VisualizationPlanDraft]
 ]
-GenerateVisualizationScript = Callable[
-    [VisualizationPlanDraft, RunContext], Awaitable[CodeGenerationResult]
-]
+
+
+class GenerateVisualizationScript(Protocol):
+    def __call__(
+        self,
+        plan: VisualizationPlanDraft,
+        run_context: RunContext,
+        /,
+        *,
+        diagnostic: Mapping[str, Any] | None,
+    ) -> Awaitable[CodeGenerationResult]: ...
+
+
 RepairVisualizationScript = Callable[
     [
         FileIdentity,
@@ -68,14 +78,14 @@ def _repair_diagnostic(
     raw_details: Mapping[str, Any] = {}
     if isinstance(error, ReportingError) and isinstance(error.details, Mapping):
         nested = error.details.get("details")
-        raw_details = (
-            {**error.details, **nested} if isinstance(nested, Mapping) else error.details
-        )
+        raw_details = {**error.details, **nested} if isinstance(nested, Mapping) else error.details
         candidate = raw_details.get("sourcePath", raw_details.get("path"))
         if isinstance(candidate, str) and candidate:
             path = candidate
 
-    message = error.message if isinstance(error, ReportingError) else "可视化固定 Workflow 执行失败。"
+    message = (
+        error.message if isinstance(error, ReportingError) else "可视化固定 Workflow 执行失败。"
+    )
     details: dict[str, Any] = {"path": path}
     for field in ("size", "lineCount", "maxLineLength", "exitCode"):
         value = raw_details.get(field)
@@ -100,8 +110,13 @@ def _repair_task_facts(
     facts: dict[str, Any] = {}
     code = error.code if isinstance(error, ReportingError) else "report_visualization_failed"
     path = script_path
-    details = error.details if isinstance(error, ReportingError) and isinstance(error.details, Mapping) else {}
-    nested = details.get("details") if isinstance(details.get("details"), Mapping) else details
+    details = (
+        error.details
+        if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
+        else {}
+    )
+    nested_details = details.get("details")
+    nested = nested_details if isinstance(nested_details, Mapping) else details
     candidate = nested.get("sourcePath", nested.get("path"))
     if isinstance(candidate, str) and candidate:
         path = candidate

@@ -147,9 +147,7 @@ class LocalFileSystemApi:
     async def create_folder(self, path: str, mode: str) -> None:
         await self._action("mkdir", {"path": path, "mode": mode})
 
-    async def upload_file(
-        self, content: bytes, path: str, *, timeout: int | None = None
-    ) -> None:
+    async def upload_file(self, content: bytes, path: str, *, timeout: int | None = None) -> None:
         await self._api.request(
             "PUT",
             f"/v1/workspaces/{self._ref.resource_id}/files/content",

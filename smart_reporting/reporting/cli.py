@@ -246,8 +246,8 @@ async def _drive_workflow_unlocked(
     run_id: str,
     session_id: str,
     user_id: str,
-    database: str | None = None,
-    company_id: str | None = None,
+    database: str,
+    company_id: str,
     read: Callable[[str], str],
     write: Callable[[str], None],
 ) -> dict[str, Any]:

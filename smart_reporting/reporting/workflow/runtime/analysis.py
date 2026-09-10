@@ -708,9 +708,7 @@ class RuntimeAnalysisMixin:
                     async def load_script(
                         path: str, task_context: RunContext
                     ) -> FileIdentity | None:
-                        return await toolkit.recover_signed_analysis_script(
-                            path, task_context
-                        )
+                        return await toolkit.recover_signed_analysis_script(path, task_context)
 
                     async def execute_script(
                         script_path: str, task_context: RunContext

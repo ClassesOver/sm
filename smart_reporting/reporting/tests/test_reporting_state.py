@@ -113,7 +113,9 @@ def test_repository_requires_postgresql() -> None:
 
 
 def test_repository_models_run_identity_as_parent_aggregate() -> None:
-    database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    database = SimpleNamespace(
+        db_engine=SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    )
 
     repository = ReportingStateRepository(database)  # type: ignore[arg-type]
 
@@ -405,7 +407,8 @@ async def test_repository_initialize_legacy_upgrade_sql_is_repeatable() -> None:
         str(item) for item in connection.statements[first_count:]
     ]
     assert all(
-        "IF NOT EXISTS" in str(statement) or "ON CONFLICT" in str(statement)
+        "IF NOT EXISTS" in str(statement)
+        or "ON CONFLICT" in str(statement)
         or "UPDATE agentos_reporting" in str(statement)
         or "VALIDATE CONSTRAINT" in str(statement)
         or "CREATE SCHEMA IF NOT EXISTS" in str(statement)
@@ -501,9 +504,7 @@ async def test_repository_status_update_none_preserves_finalization_pending() ->
     repository = _fake_repository(connection)
     repository._initialized = True
 
-    await repository.update_run_status(
-        "report-run", status="failed", finalization_pending=None
-    )
+    await repository.update_run_status("report-run", status="failed", finalization_pending=None)
 
     statement = next(item for item in connection.statements if getattr(item, "is_update", False))
     assert "finalization_pending" not in statement.compile().params
@@ -539,9 +540,7 @@ async def test_durable_complete_keeps_parent_running_until_workflow_terminal_upd
             self.statements.append(statement)
             if getattr(statement, "is_select", False):
                 if "reporting_run_states" in str(statement):
-                    return _FakeResult(
-                        row=ReportingStateRepository._row_values(finalized)
-                    )
+                    return _FakeResult(row=ReportingStateRepository._row_values(finalized))
                 return _FakeResult()
             return _FakeResult()
 
@@ -558,8 +557,7 @@ async def test_durable_complete_keeps_parent_running_until_workflow_terminal_upd
     run_update = [
         statement
         for statement in connection.statements
-        if getattr(statement, "is_update", False)
-        and "reporting_runs" in str(statement)
+        if getattr(statement, "is_update", False) and "reporting_runs" in str(statement)
     ][-1]
     assert result.state.phase is ReportingPhase.COMPLETED
     assert run_update.compile().params["status"] == "running"
@@ -570,8 +568,7 @@ async def test_durable_complete_keeps_parent_running_until_workflow_terminal_upd
     terminal_update = [
         statement
         for statement in connection.statements
-        if getattr(statement, "is_update", False)
-        and "reporting_runs" in str(statement)
+        if getattr(statement, "is_update", False) and "reporting_runs" in str(statement)
     ][-1]
     assert terminal_update.compile().params["status"] == "completed"
     assert terminal_update.compile().params["finished_at"] is not None
@@ -605,9 +602,7 @@ async def test_repository_serializes_first_schema_initialization_across_engines(
                 {"lock_key": reporting_repository_module._REPORTING_SCHEMA_LOCK_KEY},
             )
             initializations = (
-                asyncio.create_task(
-                    ReportingStateRepository(first_database.async_db).initialize()
-                ),
+                asyncio.create_task(ReportingStateRepository(first_database.async_db).initialize()),
                 asyncio.create_task(
                     ReportingStateRepository(second_database.async_db).initialize()
                 ),

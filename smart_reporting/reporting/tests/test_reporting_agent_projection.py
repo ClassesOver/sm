@@ -105,9 +105,7 @@ def test_phase_agent_allows_tasks_to_finish_after_tool_history(
     ("phase", "task_kind"),
     (("analysis", "analysis_item"), ("analysis", "visualization_section")),
 )
-def test_fixed_workflows_keep_their_internal_tool_capabilities(
-    phase: str, task_kind: str
-) -> None:
+def test_fixed_workflows_keep_their_internal_tool_capabilities(phase: str, task_kind: str) -> None:
     tools = tools_for_task(phase, task_kind)
 
     assert tools
@@ -358,9 +356,10 @@ def test_coding_runner_single_tool_survives_request_projection(tool_name: str) -
     runner._configure(agent, function, tool_name)
 
     with bind_reporting_run_context(context):
-        assert _phase_filtered_report_tools(
-            [Message(role="user", content="probe")], agent.tools
-        ) == agent.tools
+        assert (
+            _phase_filtered_report_tools([Message(role="user", content="probe")], agent.tools)
+            == agent.tools
+        )
 
 
 @pytest.mark.parametrize("tool_name", ("read_file", "apply_analysis_patch"))

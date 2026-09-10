@@ -174,9 +174,7 @@ class _CliDraftAdapter:
             state_repository=cast(ReportingStateRepository, object()),
             run_context=run_context,
         )[0]
-        self.workflow_tool_capabilities.append(
-            (task_kind, tuple(sorted(toolkit.async_functions)))
-        )
+        self.workflow_tool_capabilities.append((task_kind, tuple(sorted(toolkit.async_functions))))
 
     async def _run_task(
         self, task_kind: str, payload: Mapping[str, Any], parent_context: RunContext

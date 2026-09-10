@@ -472,7 +472,7 @@ async def test_visualization_workflow_repairs_script_failure_once_with_frozen_pl
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "failure_code",
-    ["report_code_generation_no_patch", "report_python_source_shape_invalid"],
+    ["report_code_generation_no_source", "report_python_source_shape_invalid"],
 )
 async def test_visualization_workflow_retries_initial_generation_with_frozen_plan(
     failure_code: str,
@@ -681,7 +681,7 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
 async def test_visualization_repair_adapter_preserves_restricted_task_facts_in_runner_prompt(
     failure_kind: str,
 ) -> None:
-    source = "print(1)\n"
+    source = "value = 1\nprint(value)\n"
     script_file = FileIdentity(
         path="charts/charts.py",
         size=len(source.encode()),
@@ -699,7 +699,7 @@ async def test_visualization_repair_adapter_preserves_restricted_task_facts_in_r
             if tool.name == "read_file":
                 return await tool.entrypoint(path=script_file.path)
             prompts.append(json.loads(prompt))
-            return await tool.entrypoint(patch="diff")
+            return await tool.entrypoint(source=source)
 
     async def read_file(**_kwargs: object) -> dict[str, object]:
         return {

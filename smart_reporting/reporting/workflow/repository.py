@@ -205,14 +205,12 @@ class ReportingStateRepository:
                     await connection.execute(
                         text(
                             f'ALTER TABLE "{REPORTING_DB_SCHEMA}"."{table_name}" '
-                            'ADD COLUMN IF NOT EXISTS report_run_id VARCHAR(256)'
+                            "ADD COLUMN IF NOT EXISTS report_run_id VARCHAR(256)"
                         )
                     )
                 upgrade_statements = self._legacy_upgrade_statements()
                 await connection.execute(text(upgrade_statements[0]))
-                conflict = await connection.scalar(
-                    text(self._legacy_parent_conflict_query())
-                )
+                conflict = await connection.scalar(text(self._legacy_parent_conflict_query()))
                 if conflict:
                     raise ReportingStateError(
                         "report_run_legacy_identity_conflict",
@@ -317,8 +315,7 @@ class ReportingStateRepository:
                         END IF;
                     END $$
                     """,
-                    f"ALTER TABLE {schema}.{table_name} "
-                    f"VALIDATE CONSTRAINT {constraint_name}",
+                    f"ALTER TABLE {schema}.{table_name} VALIDATE CONSTRAINT {constraint_name}",
                 )
             )
         return tuple(statements)
@@ -341,9 +338,7 @@ class ReportingStateRepository:
                 else None
             ),
             "caller_run_id": (
-                str(values["caller_run_id"])
-                if values.get("caller_run_id") is not None
-                else None
+                str(values["caller_run_id"]) if values.get("caller_run_id") is not None else None
             ),
             "thread_id": str(values["thread_id"]),
             "owner_user_id": str(values["owner_user_id"]),
@@ -358,9 +353,7 @@ class ReportingStateRepository:
         }
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
             statement: Any = postgresql_insert(self.runs).values(**row_values)
-            statement = statement.on_conflict_do_nothing(
-                index_elements=[self.runs.c.report_run_id]
-            )
+            statement = statement.on_conflict_do_nothing(index_elements=[self.runs.c.report_run_id])
             try:
                 await connection.execute(statement)
             except IntegrityError as error:
@@ -464,9 +457,7 @@ class ReportingStateRepository:
                 .values(report_run_id=report_run_id)
             )
         if result.rowcount != 1:
-            raise ReportingStateError(
-                "report_mcp_request_not_found", "Reporting MCP 请求不存在。"
-            )
+            raise ReportingStateError("report_mcp_request_not_found", "Reporting MCP 请求不存在。")
 
     async def attach_workflow_owner_run(
         self,
@@ -507,14 +498,10 @@ class ReportingStateRepository:
         }
         if finalization_pending is not None:
             values["finalization_pending"] = finalization_pending
-        values["finished_at"] = (
-            now if status in {"completed", "cancelled", "failed"} else None
-        )
+        values["finished_at"] = now if status in {"completed", "cancelled", "failed"} else None
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
             result = await connection.execute(
-                update(self.runs)
-                .where(self.runs.c.report_run_id == report_run_id)
-                .values(**values)
+                update(self.runs).where(self.runs.c.report_run_id == report_run_id).values(**values)
             )
         if result.rowcount != 1:
             raise ReportingStateError("report_run_not_found", "Reporting run 不存在。")
@@ -897,22 +884,14 @@ class ReportingStateRepository:
                 }
             )
             await self._insert_command_receipts(connection, receipts)
-            status = (
-                "failed"
-                if result.state.phase.value == "failed"
-                else "running"
-            )
+            status = "failed" if result.state.phase.value == "failed" else "running"
             await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.report_run_id == report_run_id)
                 .values(
                     status=status,
                     updated_at=result.state.updated_at,
-                    finished_at=(
-                        result.state.updated_at
-                        if status == "failed"
-                        else None
-                    ),
+                    finished_at=(result.state.updated_at if status == "failed" else None),
                 )
             )
             return result
@@ -973,10 +952,7 @@ class ReportingStateRepository:
                     finally:
                         with anyio.CancelScope(shield=True):
                             await connection.execute(
-                                text(
-                                    "SELECT pg_advisory_unlock("
-                                    "hashtextextended(:lock_key, 0))"
-                                ),
+                                text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
                                 {"lock_key": lock_key},
                             )
                             await connection.commit()

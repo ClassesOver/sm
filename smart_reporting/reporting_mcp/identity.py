@@ -139,9 +139,7 @@ def verify_dsh_reporting_token(
             signing_input.encode("ascii"),
             hashlib.sha256,
         ).digest()
-        if not hmac.compare_digest(
-            expected_signature, _decode_segment(signature_value)
-        ):
+        if not hmac.compare_digest(expected_signature, _decode_segment(signature_value)):
             raise CapabilityError("dsh_reporting_signature_invalid")
         header = json.loads(_decode_segment(header_value))
         claims: dict[str, Any] = json.loads(_decode_segment(claims_value))
@@ -169,11 +167,7 @@ def verify_dsh_reporting_token(
         raise CapabilityError("dsh_reporting_time_invalid")
     if expires_at <= now:
         raise CapabilityError("dsh_reporting_expired")
-    if (
-        issued_at > now
-        or expires_at <= issued_at
-        or expires_at - issued_at > DSH_REPORTING_MAX_TTL
-    ):
+    if issued_at > now or expires_at <= issued_at or expires_at - issued_at > DSH_REPORTING_MAX_TTL:
         raise CapabilityError("dsh_reporting_time_invalid")
 
     subject = claims.get("sub")

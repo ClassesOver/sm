@@ -547,9 +547,7 @@ async def test_drive_workflow_marks_completed_without_cleanup_pending() -> None:
     )
 
     assert result["status"] == "completed"
-    assert current_runtime.state_repository.status_updates == [
-        ("run-1", "completed", False)
-    ]
+    assert current_runtime.state_repository.status_updates == [("run-1", "completed", False)]
     cleanup.assert_not_awaited()
 
 
@@ -619,7 +617,9 @@ async def test_drive_workflow_finalizes_when_initial_run_raises_reporting_error(
 
 
 @pytest.mark.anyio
-async def test_drive_workflow_maps_agno_error_to_failed_and_keeps_pending_on_cleanup_error() -> None:
+async def test_drive_workflow_maps_agno_error_to_failed_and_keeps_pending_on_cleanup_error() -> (
+    None
+):
     async def cleanup(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("cleanup failed")
 

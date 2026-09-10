@@ -689,8 +689,14 @@ class AnalysisItemWorkflow:
             if generated is not None:
                 state.script_file = self._signed_script_file(generated, script_path)
                 state.failure = None
+            script_file = state.script_file
+            if script_file is None:
+                raise ReportingError(
+                    "report_analysis_script_generation_invalid",
+                    "补充分析脚本生成后缺少签发文件身份。",
+                )
             execution = await self.run_script(
-                script_path=state.script_file.path,
+                script_path=script_file.path,
                 run_context=run_context,
             )
             exit_code = execution.get("exitCode", execution.get("exit_code"))
@@ -758,12 +764,15 @@ class AnalysisItemWorkflow:
         return result.script_file
 
     def _repair_diagnostic(self, state: _AnalysisItemState) -> dict[str, Any]:
-        if state.decision is None or state.script_file is None:
+        if state.decision is None or state.script_file is None or state.failure is None:
             raise ReportingError(
                 "report_analysis_script_repair_invalid",
-                "脚本修复缺少既有事实缺口或签发文件身份。",
+                "脚本修复缺少既有事实缺口、签发文件身份或失败诊断。",
             )
-        return self._repair_error(state.failure)
+        diagnostic = self._repair_error(state.failure)
+        if diagnostic is None:
+            raise RuntimeError("脚本修复诊断状态不可达")
+        return diagnostic
 
     async def _validate_evidence(
         self, state: _AnalysisItemState, run_context: RunContext

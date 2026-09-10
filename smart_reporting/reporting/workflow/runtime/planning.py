@@ -879,8 +879,9 @@ class RuntimePlanningMixin:
                     "allowedPaths": list(allowed_paths),
                     "validationFeedback": _compact_validation_feedback(validation_feedback),
                     "instruction": (
-                        "修正全部 issues 并返回完整 ReportOutlineProposal；sections 不得包含 code，"
-                        "每个章节必须引用已注册 analysisId；不返回正文、解释或 Markdown"
+                        "修正全部 issues 并返回完整 ReportOutlineProposal；sections 每项只能包含 "
+                        "title 和 analysisIds，不得包含 code 或 focus；每个章节必须引用已注册 "
+                        "analysisId；不返回正文、解释或 Markdown"
                     ),
                 }
             try:

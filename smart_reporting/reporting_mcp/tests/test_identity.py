@@ -144,12 +144,7 @@ async def test_dsh_verifier_rejects_invalid_protocol_claims(
     secret = "s" * 32
     verifier = CapabilityTokenVerifier(secret, clock=lambda: clock)
 
-    assert (
-        await verifier.verify_token(
-            _dsh_token(secret, claims_override=claims_override)
-        )
-        is None
-    )
+    assert await verifier.verify_token(_dsh_token(secret, claims_override=claims_override)) is None
 
 
 @pytest.mark.anyio
@@ -189,12 +184,7 @@ async def test_dsh_header_never_falls_back_to_workspace_capability() -> None:
         "thread": "session-1",
     }
 
-    assert (
-        await verifier.verify_token(
-            _dsh_token(secret, claims_override=odoo_claims)
-        )
-        is None
-    )
+    assert await verifier.verify_token(_dsh_token(secret, claims_override=odoo_claims)) is None
 
 
 def test_request_identity_rejects_cross_thread() -> None:

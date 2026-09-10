@@ -577,8 +577,9 @@ class _ReportWorkflowRuntimeBase:
             thinking_profile=planner_off,
             stage_instructions=(
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
-                "只返回 reportType、中文报告标题、sections 和 assumptions；sections 不得提交 code",
-                "每个章节必须引用一个或多个 outlineContext.analyses 中已注册的 analysisId",
+                "只返回 reportType、中文报告标题、sections 和 assumptions；sections 每项只能包含 title 和 analysisIds",
+                "analysisIds 必须逐字复制 outlineContext.analyses 中已注册的 analysisId，不得生成、截断或改写",
+                "章节重点由服务端根据 analysisIds 对应的 managementQuestion 生成，模型不得提交 focus",
                 OUTLINE_SECTION_COUNT_INSTRUCTION,
                 "section code 由服务端在批准后生成，模型不得提交或猜测 section_NNN",
             ),
@@ -629,6 +630,8 @@ class _ReportWorkflowRuntimeBase:
         )
         from ...agent import create_reporting_code_agent
 
+        if not isinstance(reporting_agent_template.model, OpenAIChat):
+            raise TypeError("Report analysis code agent requires OpenAIChat")
         analysis_code_model = copy(reporting_agent_template.model)
         apply_reporting_thinking_profile(analysis_code_model, planner_high)
         analysis_code_model.top_p = 1.0

@@ -100,18 +100,9 @@ class _OfflineCodeAgent:
             return await tool.entrypoint(path=payload["scriptPath"])
         path = payload["scriptPath"]
         repair = "readReceipt" in payload["facts"]
-        source = (
-            _VISUALIZATION_SOURCE
-            if "chart" in path
-            else _ANALYSIS_SOURCE
-        )
-        repaired = (
-            _REPAIRED_VISUALIZATION_SOURCE
-            if "chart" in path
-            else _REPAIRED_ANALYSIS_SOURCE
-        )
-        patch = _update_patch(path, source, repaired) if repair else _create_patch(path, source)["patch"]
-        return await tool.entrypoint(patch=patch)
+        source = _VISUALIZATION_SOURCE if "chart" in path else _ANALYSIS_SOURCE
+        repaired = _REPAIRED_VISUALIZATION_SOURCE if "chart" in path else _REPAIRED_ANALYSIS_SOURCE
+        return await tool.entrypoint(source=repaired if repair else source)
 
 
 class _InvalidCodeAgent:
@@ -273,9 +264,10 @@ async def test_probe_repair_runner_accepts_complete_utf8_read_receipt() -> None:
 
     assert result.script_file.path == script.path
     assert result.script_file.size == len(_REPAIRED_ANALYSIS_SOURCE.encode("utf-8"))
-    assert result.script_file.sha256 == hashlib.sha256(
-        _REPAIRED_ANALYSIS_SOURCE.encode("utf-8")
-    ).hexdigest()
+    assert (
+        result.script_file.sha256
+        == hashlib.sha256(_REPAIRED_ANALYSIS_SOURCE.encode("utf-8")).hexdigest()
+    )
     assert [call["name"] for call in recorder.calls] == [
         "apply_analysis_patch",
         "read_file",
@@ -469,7 +461,9 @@ async def test_probe_fixed_workflow_owns_recovery_after_coding_agent_stops(
         scenario,
         context,
     )
-    monkeypatch.setattr(probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor)
+    monkeypatch.setattr(
+        probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor
+    )
     monkeypatch.setattr(
         probe_module,
         "create_reporting_generator_agent",
@@ -535,7 +529,9 @@ async def test_probe_rejects_non_patch_coding_output_after_workflow_soft_fallbac
         "_build_model",
         lambda *_args, **_kwargs: SimpleNamespace(id="test"),
     )
-    monkeypatch.setattr(probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor)
+    monkeypatch.setattr(
+        probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor
+    )
     monkeypatch.setattr(
         probe_module,
         "create_reporting_generator_agent",
@@ -560,8 +556,7 @@ async def test_probe_rejects_non_patch_coding_output_after_workflow_soft_fallbac
     assert result["valid"] is False
     assert {"apply_analysis_patch", "run_python_script"}.issubset(result["missing_tools"])
     assert any(
-        failure["code"] == "probe_required_tools_missing"
-        for failure in result["protocol_failures"]
+        failure["code"] == "probe_required_tools_missing" for failure in result["protocol_failures"]
     )
 
 
@@ -575,7 +570,9 @@ async def test_probe_run_reports_final_script_metrics(
         "_build_model",
         lambda *_args, **_kwargs: SimpleNamespace(id="test"),
     )
-    monkeypatch.setattr(probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor)
+    monkeypatch.setattr(
+        probe_module, "ReportingStructuredOutputExecutor", _OfflineStructuredExecutor
+    )
     monkeypatch.setattr(
         probe_module,
         "create_reporting_generator_agent",
@@ -753,9 +750,7 @@ def test_probe_uses_current_reporting_toolkit_schema(phase: str, task_kind: str)
 async def test_probe_runner_uses_contract_simulation_without_executor() -> None:
     scenario = next(item for item in probe_scenarios() if item.name == "visualization-inspection")
     runtime = _runtime()
-    tools, recorder = build_mock_probe_tools(
-        scenario.phase, scenario.task_kind, runtime, scenario
-    )
+    tools, recorder = build_mock_probe_tools(scenario.phase, scenario.task_kind, runtime, scenario)
     by_name = {tool.name: tool for tool in tools}
 
     await by_name["apply_analysis_patch"].entrypoint(**_chart_patch())
@@ -902,13 +897,9 @@ async def test_probe_simulation_rejects_statically_unreachable_artifact_write(
 ) -> None:
     scenario = next(item for item in probe_scenarios() if item.name == scenario_name)
     recorder = ProbeRecorder(_runtime(), scenario)
-    patch_result = await recorder.invoke(
-        "apply_analysis_patch", _create_patch(script_path, source)
-    )
+    patch_result = await recorder.invoke("apply_analysis_patch", _create_patch(script_path, source))
 
-    result = await recorder.invoke(
-        "run_python_script", {"script_path": script_path, "timeout": 30}
-    )
+    result = await recorder.invoke("run_python_script", {"script_path": script_path, "timeout": 30})
 
     assert patch_result["ok"] is True
     assert result["ok"] is False
@@ -958,9 +949,7 @@ async def test_probe_simulation_rejects_artifact_write_outside_finite_entry_call
     recorder = ProbeRecorder(_runtime(), scenario)
     await recorder.invoke("apply_analysis_patch", _create_patch(script_path, source))
 
-    result = await recorder.invoke(
-        "run_python_script", {"script_path": script_path, "timeout": 30}
-    )
+    result = await recorder.invoke("run_python_script", {"script_path": script_path, "timeout": 30})
 
     assert result["ok"] is False
     assert result["code"] == "probe_artifact_contract_invalid"
@@ -1000,9 +989,7 @@ async def test_probe_simulation_accepts_artifact_write_from_explicit_main_call_g
     recorder = ProbeRecorder(_runtime(), scenario)
     await recorder.invoke("apply_analysis_patch", _create_patch(script_path, source))
 
-    result = await recorder.invoke(
-        "run_python_script", {"script_path": script_path, "timeout": 30}
-    )
+    result = await recorder.invoke("run_python_script", {"script_path": script_path, "timeout": 30})
 
     assert result["ok"] is True
 
@@ -1054,9 +1041,7 @@ async def test_probe_rejects_invalid_unified_diff_without_writing() -> None:
     runtime = _runtime()
     recorder = ProbeRecorder(runtime)
 
-    result = await recorder.invoke(
-        "apply_analysis_patch", {"patch": "print('direct python')"}
-    )
+    result = await recorder.invoke("apply_analysis_patch", {"patch": "print('direct python')"})
 
     assert result["ok"] is False
     assert result["code"] == "probe_patch_invalid"

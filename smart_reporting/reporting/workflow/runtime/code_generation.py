@@ -159,7 +159,9 @@ def _python_source_patch(
     )
 
 
-async def _invoke(callback: ToolCallable, arguments: dict[str, Any], run_context: RunContext | None) -> Mapping[str, Any]:
+async def _invoke(
+    callback: ToolCallable, arguments: dict[str, Any], run_context: RunContext | None
+) -> Mapping[str, Any]:
     if run_context is not None:
         try:
             signature = inspect.signature(callback)
@@ -187,14 +189,18 @@ class ReportingCodeGenerationRunner:
         agent: Agent | Callable[[], Agent] | None = None,
         agent_factory: Callable[[], Agent] | None = None,
     ):
-        if agent is None and agent_factory is None:
+        agent_source = agent_factory if agent_factory is not None else agent
+        if agent_source is None:
             raise TypeError("ReportingCodeGenerationRunner requires agent or agent_factory")
-        self._agent_source = agent_factory if agent_factory is not None else agent
+        self._agent_source: Agent | Callable[[], Agent] | None = agent_source
 
     def _fresh_agent(self) -> Agent:
-        if callable(self._agent_source) and not isinstance(self._agent_source, Agent):
-            return self._agent_source()
-        return copy.copy(self._agent_source)
+        agent_source = self._agent_source
+        if agent_source is None:
+            raise RuntimeError("Coding Agent source is not configured")
+        if callable(agent_source) and not isinstance(agent_source, Agent):
+            return agent_source()
+        return copy.copy(agent_source)
 
     @staticmethod
     def _configure(agent: Agent, function: Function, tool_choice: str) -> None:
@@ -222,7 +228,9 @@ class ReportingCodeGenerationRunner:
             or ".." in candidate.parts
             or candidate.suffix != ".py"
         ):
-            raise ReportingError("report_code_generation_path_invalid", "脚本路径不是安全的工作区相对 Python 文件。")
+            raise ReportingError(
+                "report_code_generation_path_invalid", "脚本路径不是安全的工作区相对 Python 文件。"
+            )
 
     @staticmethod
     def _error(code: str, message: str, script_path: str) -> ReportingError:
@@ -279,9 +287,7 @@ class ReportingCodeGenerationRunner:
         return result
 
     @classmethod
-    def _repair_task_facts(
-        cls, task_facts: Any, script_path: str
-    ) -> dict[str, Any]:
+    def _repair_task_facts(cls, task_facts: Any, script_path: str) -> dict[str, Any]:
         if task_facts is None:
             return {}
         if not isinstance(task_facts, Mapping):
@@ -308,18 +314,14 @@ class ReportingCodeGenerationRunner:
             ]
         missing_charts = task_facts.get("missingCharts")
         if missing_charts is not None:
-            result["missingCharts"] = cls._repair_missing_charts(
-                missing_charts, script_path
-            )
+            result["missingCharts"] = cls._repair_missing_charts(missing_charts, script_path)
         inspections = task_facts.get("inspections")
         if inspections is not None:
             result["inspections"] = cls._repair_inspections(inspections, script_path)
         return result
 
     @classmethod
-    def _repair_missing_charts(
-        cls, missing_charts: Any, script_path: str
-    ) -> list[dict[str, str]]:
+    def _repair_missing_charts(cls, missing_charts: Any, script_path: str) -> list[dict[str, str]]:
         if not isinstance(missing_charts, list):
             raise cls._error(
                 "report_code_generation_task_facts_invalid",
@@ -337,7 +339,11 @@ class ReportingCodeGenerationRunner:
             chart_id = chart.get("chartId")
             source_path = chart.get("sourcePath")
             title = chart.get("title")
-            if not all(isinstance(value, str) for value in (chart_id, source_path, title)):
+            if (
+                not isinstance(chart_id, str)
+                or not isinstance(source_path, str)
+                or not isinstance(title, str)
+            ):
                 raise cls._error(
                     "report_code_generation_task_facts_invalid",
                     "缺失图表身份字段必须是字符串。",
@@ -353,9 +359,7 @@ class ReportingCodeGenerationRunner:
         return result
 
     @classmethod
-    def _repair_inspections(
-        cls, inspections: Any, script_path: str
-    ) -> list[dict[str, Any]]:
+    def _repair_inspections(cls, inspections: Any, script_path: str) -> list[dict[str, Any]]:
         if not isinstance(inspections, list):
             raise cls._error(
                 "report_code_generation_task_facts_invalid",
@@ -368,9 +372,7 @@ class ReportingCodeGenerationRunner:
         ]
 
     @classmethod
-    def _repair_inspection(
-        cls, inspection: Any, script_path: str
-    ) -> dict[str, Any]:
+    def _repair_inspection(cls, inspection: Any, script_path: str) -> dict[str, Any]:
         if not isinstance(inspection, Mapping):
             raise cls._error(
                 "report_code_generation_task_facts_invalid",
@@ -431,9 +433,7 @@ class ReportingCodeGenerationRunner:
         return result
 
     @classmethod
-    def _repair_inspection_issue(
-        cls, issue: Any, script_path: str
-    ) -> dict[str, str]:
+    def _repair_inspection_issue(cls, issue: Any, script_path: str) -> dict[str, str]:
         if not isinstance(issue, Mapping):
             raise cls._error(
                 "report_code_generation_task_facts_invalid",
@@ -586,9 +586,7 @@ class ReportingCodeGenerationRunner:
             if receipt.get("ok") is not True:
                 bounded = self._short_diagnostic(receipt)
                 patch_error = ReportingError(
-                    self._stable_code(
-                        receipt.get("code"), "report_code_generation_patch_failed"
-                    ),
+                    self._stable_code(receipt.get("code"), "report_code_generation_patch_failed"),
                     bounded.get("message", "脚本 patch 未被接受。"),
                     details=bounded.get("details", {"path": script_path}),
                 )
@@ -618,6 +616,7 @@ class ReportingCodeGenerationRunner:
             return receipt
 
         calls = 0
+
         async def wrapped_source(**kwargs: Any) -> Mapping[str, Any]:
             nonlocal calls, patch_error
             calls += 1
@@ -666,7 +665,9 @@ class ReportingCodeGenerationRunner:
         except ReportingError:
             raise
         except Exception as error:
-            raise ReportingError("report_code_generation_agent_failed", "Coding Agent 调用失败。") from error
+            raise ReportingError(
+                "report_code_generation_agent_failed", "Coding Agent 调用失败。"
+            ) from error
         if result is None and patch_error is not None:
             raise patch_error
         if result is None:
@@ -722,13 +723,29 @@ class ReportingCodeGenerationRunner:
             return read_receipt
 
         reader = self._fresh_agent()
-        self._configure(reader, Function(name="read_file", description="读取签发脚本。", parameters=_tool_parameters("read_file"), strict=True, entrypoint=read_tool, stop_after_tool_call=True), "read_file")
+        self._configure(
+            reader,
+            Function(
+                name="read_file",
+                description="读取签发脚本。",
+                parameters=_tool_parameters("read_file"),
+                strict=True,
+                entrypoint=read_tool,
+                stop_after_tool_call=True,
+            ),
+            "read_file",
+        )
         try:
-            await reader.arun(self._prompt({"scriptPath": script_file.path, "task": "读取脚本并返回受信回执"}), run_context=run_context)
+            await reader.arun(
+                self._prompt({"scriptPath": script_file.path, "task": "读取脚本并返回受信回执"}),
+                run_context=run_context,
+            )
         except ReportingError:
             raise
         except Exception as error:
-            raise ReportingError("report_code_generation_read_invalid", "修复读取阶段失败。") from error
+            raise ReportingError(
+                "report_code_generation_read_invalid", "修复读取阶段失败。"
+            ) from error
         if reads != 1 or read_receipt is None:
             raise self._error(
                 "report_code_generation_read_invalid",

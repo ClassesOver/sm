@@ -70,11 +70,7 @@ def configure_file_logging(
 
     root = logging.getLogger()
     handler = next(
-        (
-            item
-            for item in root.handlers
-            if getattr(item, _FILE_HANDLER_MARKER, False)
-        ),
+        (item for item in root.handlers if getattr(item, _FILE_HANDLER_MARKER, False)),
         None,
     )
     if handler is None:
