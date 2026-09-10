@@ -3,7 +3,7 @@ name = "smart-reporting"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "agno==3.0.1",
+    "agno==3.0.9",
     "fastmcp>=3.4.3,<4",
     "daytona==0.189.0",
     "cryptography>=45,<51",
