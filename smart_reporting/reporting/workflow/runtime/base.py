@@ -192,6 +192,7 @@ from ..query_pipeline import (
     state_contains_connection_data,
 )
 from ..repository import ReportingStateRepository
+from ..scope import reporting_scope_keys, resolve_reporting_workflow_scope
 from ..state import ReportingCommand, ReportingStateError
 from ..state import ReportingPhase as DurableReportingPhase
 from .analysis_item_workflow import (
@@ -858,6 +859,7 @@ class _ReportWorkflowRuntimeBase:
 
         return create_reporting_workflow(
             db=self.db,
+            lifecycle=self,
             normalize_report_request=self.normalize_report_request,
             confirm_source=self.confirm_source,
             prepare_data_profile=self.prepare_data_profile,
@@ -1038,7 +1040,7 @@ class _ReportWorkflowRuntimeBase:
             durable = await self.state_repository.get_or_create(
                 report_run_id=report_run_id,
                 external_run_id=scope["externalRunId"],
-                thread_id=scope["threadId"],
+                thread_id=scope["sessionId"],
                 owner_user_id=scope["userId"],
             )
         # 多个章节 child task 可以同时完成；CAS 冲突只重读当前版本并重放同一
@@ -1050,7 +1052,7 @@ class _ReportWorkflowRuntimeBase:
                     durable = await self.state_repository.get_or_create(
                         report_run_id=report_run_id,
                         external_run_id=scope["externalRunId"],
-                        thread_id=scope["threadId"],
+                        thread_id=scope["sessionId"],
                         owner_user_id=scope["userId"],
                     )
                 try:
@@ -1073,40 +1075,140 @@ class _ReportWorkflowRuntimeBase:
     @staticmethod
     def _scope(run_context: RunContext) -> dict[str, str]:
         state = _ReportWorkflowRuntimeBase._state(run_context)
-        value = (run_context.dependencies or {}).get("AgentOS 报表工作流")
-        if isinstance(value, dict):
-            scope = {
-                key: str(value.get(key) or "")
-                for key in ("externalRunId", "threadId", "userId", "database", "companyId")
-            }
-        else:
-            value = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
-            scope = (
-                {
-                    key: str(value.get(key) or "")
-                    for key in ("externalRunId", "threadId", "userId", "database", "companyId")
-                }
-                if isinstance(value, dict)
-                else {
-                    "externalRunId": str(run_context.run_id or ""),
-                    "threadId": str(run_context.session_id or ""),
-                    "userId": str(run_context.user_id or ""),
-                    "database": "",
-                    "companyId": "",
-                }
-            )
-        if not scope["database"] and not scope["companyId"]:
-            scope["database"] = "default"
-            scope["companyId"] = "default"
-        elif not scope["database"] or not scope["companyId"]:
-            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
-        if (
-            any(not item for key, item in scope.items() if key not in {"database", "companyId"})
-            or str(run_context.user_id or "") != scope["userId"]
-        ):
-            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
-        state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = dict(scope)
+        stored = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
+        scope = resolve_reporting_workflow_scope(
+            run_id=str(run_context.run_id or ""),
+            session_id=str(run_context.session_id or ""),
+            user_id=str(run_context.user_id or "") or None,
+            dependencies=(
+                dict(run_context.dependencies)
+                if isinstance(run_context.dependencies, Mapping)
+                else None
+            ),
+            stored_scope=stored if isinstance(stored, dict) and "sessionId" in stored else None,
+        ).as_state()
+        state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
+
+    def prepare_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        user_id: str | None,
+        dependencies: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        scope = resolve_reporting_workflow_scope(
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            dependencies=dependencies,
+        )
+        return {REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state()}
+
+    async def start_run(self, run_id: str, session_state: dict[str, Any]) -> None:
+        value = session_state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
+        if not isinstance(value, dict):
+            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
+        scope = resolve_reporting_workflow_scope(
+            run_id=run_id,
+            session_id=str(value.get("sessionId") or ""),
+            user_id=str(value.get("userId") or "") or None,
+            stored_scope=value,
+        )
+        await self.state_repository.register_run(
+            report_run_id=run_id,
+            external_run_id=run_id,
+            entrypoint="agentos",
+            workflow_id="enterprise-reporting-workflow-v1",
+            agno_session_id=scope.session_id,
+            agno_run_id=run_id,
+            thread_id=scope.session_id,
+            owner_user_id=scope.user_id,
+            database=scope.database,
+            company_id=scope.company_id,
+            status="running",
+        )
+        claimed = await self.state_repository.claim_workflow_thread(
+            thread_id=scope.thread_lease_key,
+            external_run_id=run_id,
+            owner_user_id=scope.user_id,
+        )
+        if not claimed:
+            await self.state_repository.update_run_status(run_id, status="failed")
+            raise ReportingError(
+                "report_workflow_thread_busy",
+                "当前 thread 已有进行中的报表工作流，请等待其结束。",
+            )
+
+    async def assert_resumable(self, run_id: str) -> None:
+        run = await self.state_repository.get_run_by_external(run_id)
+        if run is None or str(run.get("status")) != "paused":
+            raise ReportingError("report_workflow_not_paused", "Reporting Workflow 不处于暂停状态。")
+        keys = reporting_scope_keys(
+            database=str(run["database"]),
+            company_id=str(run["company_id"]),
+            user_id=str(run["owner_user_id"]),
+            thread_id=str(run["thread_id"]),
+            run_id=run_id,
+        )
+        owner = await self.state_repository.get_workflow_thread_owner(keys.thread_lease_key)
+        if owner is None or owner["external_run_id"] != run_id:
+            raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 不再拥有当前 thread。")
+
+    async def settle_run(self, run_id: str, status: str) -> None:
+        if status not in {"completed", "cancelled", "failed", "paused"}:
+            raise ValueError(f"未知 Reporting Workflow 状态：{status}")
+        if status == "paused":
+            await self.state_repository.update_run_status(run_id, status="paused")
+            return
+        run = await self.state_repository.get_run_by_external(run_id)
+        if run is None:
+            raise ReportingError("report_run_not_found", "Reporting run 不存在。")
+        await self.state_repository.update_run_status(
+            run_id,
+            status=status,
+            finalization_pending=True,
+        )
+        keys = reporting_scope_keys(
+            database=str(run["database"]),
+            company_id=str(run["company_id"]),
+            user_id=str(run["owner_user_id"]),
+            thread_id=str(run["thread_id"]),
+            run_id=run_id,
+        )
+        async with self.state_repository.workflow_thread_lifecycle_lock(
+            keys.thread_lease_key
+        ):
+            try:
+                await self.cleanup_terminal(
+                    {"thread_id": keys.workspace_key},
+                    str(run["agno_session_id"]),
+                    run_id,
+                )
+            except ReportingError as error:
+                if error.code != "report_sandbox_cleanup_failed":
+                    raise
+                loguru_logger.warning(
+                    "report_workflow_workspace_cleanup_deferred run_id={} workspace_key={}",
+                    run_id,
+                    keys.workspace_key,
+                )
+            released = await self.state_repository.release_workflow_thread(
+                thread_id=keys.thread_lease_key,
+                external_run_id=run_id,
+                owner_user_id=str(run["owner_user_id"]),
+            )
+            if not released:
+                raise ReportingError(
+                    "report_workflow_scope_mismatch",
+                    "Reporting Workflow thread owner 释放失败。",
+                )
+        await self.state_repository.update_run_status(
+            run_id,
+            status=status,
+            finalization_pending=False,
+        )
 
     @staticmethod
     def _workflow_result(state: dict[str, Any]) -> dict[str, Any]:

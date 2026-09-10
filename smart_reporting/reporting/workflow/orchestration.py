@@ -16,6 +16,8 @@ from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
 from loguru import logger
 
+from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
+
 StepExecutor = Any
 
 
@@ -156,6 +158,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
 def create_reporting_workflow(
     *,
     db: BaseDb | Any,
+    lifecycle: ReportingWorkflowLifecycle,
     normalize_report_request: StepExecutor,
     confirm_source: StepExecutor,
     prepare_data_profile: StepExecutor,
@@ -174,11 +177,14 @@ def create_reporting_workflow(
 ) -> Workflow:
     """创建可注册到现有 AgentOS 的报表 Workflow，不建立第二条传输链路。"""
 
-    workflow = Workflow(
+    workflow = ManagedReportingWorkflow(
         id="enterprise-reporting-workflow-v1",
         name="企业智能运营报表",
         description="来源绑定、分析规划、受控取数、Reporting 分析和报告发布。",
         db=db,
+        lifecycle=lifecycle,
+        session_state={},
+        overwrite_db_session_state=True,
         # Console 的 Workflow WebSocket 只发送自然语言 message；首步骤继续使用
         # Reporting 自己的严格输入契约完成解析和校验，避免要求通用前端了解领域 Schema。
         input_schema=None,

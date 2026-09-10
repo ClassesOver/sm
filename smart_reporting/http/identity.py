@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ..reporting.workflow.controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+from ..reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 
 
 def requires_workspace_capability(path: str, *, has_thread: bool, has_capability: bool) -> bool:

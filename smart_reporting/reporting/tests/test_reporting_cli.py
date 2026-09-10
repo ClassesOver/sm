@@ -36,6 +36,20 @@ from smart_reporting.reporting.workflow.orchestration import (
 from smart_reporting.runtime.settings import AgentSettings
 
 
+class NoopWorkflowLifecycle:
+    def prepare_run(self, **_values: object) -> dict[str, object]:
+        return {}
+
+    async def start_run(self, _run_id: str, _session_state: dict[str, object]) -> None:
+        return None
+
+    async def assert_resumable(self, _run_id: str) -> None:
+        return None
+
+    async def settle_run(self, _run_id: str, _status: str) -> None:
+        return None
+
+
 class ErrorRequirement:
     def __init__(self, step_id: str = "validate-report") -> None:
         self.step_id = step_id
@@ -781,6 +795,7 @@ def test_only_tail_steps_pause_for_error_recovery() -> None:
 
     workflow = create_reporting_workflow(
         db=object(),
+        lifecycle=NoopWorkflowLifecycle(),
         normalize_report_request=executor,
         confirm_source=executor,
         prepare_data_profile=executor,
@@ -818,6 +833,7 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
 
     workflow = create_reporting_workflow(
         db=object(),
+        lifecycle=NoopWorkflowLifecycle(),
         normalize_report_request=executor,
         confirm_source=executor,
         prepare_data_profile=executor,
@@ -873,6 +889,7 @@ async def test_outline直接流向coding节点而不暂停() -> None:
 
     workflow = create_reporting_workflow(
         db=InMemoryDb(),
+        lifecycle=NoopWorkflowLifecycle(),
         normalize_report_request=executor("normalize-report-request"),
         confirm_source=executor("confirm-source"),
         prepare_data_profile=executor("prepare-data-profile"),
@@ -927,6 +944,7 @@ async def test_assemble_error_pause_retries_only_assembly_step() -> None:
 
     workflow = create_reporting_workflow(
         db=InMemoryDb(),
+        lifecycle=NoopWorkflowLifecycle(),
         normalize_report_request=executor("normalize-report-request"),
         confirm_source=executor("confirm-source"),
         prepare_data_profile=executor("prepare-data-profile"),
