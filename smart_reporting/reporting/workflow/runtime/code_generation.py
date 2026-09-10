@@ -19,6 +19,7 @@ from agno.run import RunContext
 from agno.tools.function import Function
 from loguru import logger
 
+from ...model_policy import current_reporting_thinking_decision
 from ...models import ReportingError
 from ..checkpoint import FileIdentity
 
@@ -222,9 +223,16 @@ class ReportingCodeGenerationRunner:
         agent_source = self._agent_source
         if agent_source is None:
             raise RuntimeError("Coding Agent source is not configured")
-        if callable(agent_source) and not isinstance(agent_source, Agent):
-            return agent_source()
-        return copy.copy(agent_source)
+        agent = (
+            agent_source()
+            if callable(agent_source) and not isinstance(agent_source, Agent)
+            else copy.copy(agent_source)
+        )
+        decision = current_reporting_thinking_decision()
+        if decision is not None and not decision.enabled:
+            agent.reasoning_model = None
+            agent.reasoning_agent = None
+        return agent
 
     @staticmethod
     def _configure(agent: Agent, function: Function, tool_choice: str) -> None:

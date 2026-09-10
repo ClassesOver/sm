@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal
 
 from agno.models.openai import OpenAIChat, OpenAIResponses
 
 from ..integrations.model_config import reasoning_transport_fields
-from ..model_routing import TaskComplexity
+from ..model_routing import TaskComplexity, log_thinking_selection
 
 ReportingReasoningEffort = Literal["high", "max"]
 ThinkingOperation = Literal[
@@ -139,6 +142,28 @@ class ThinkingDecision:
             "reason": self.reason,
             "policy_version": self.policy_version,
         }
+
+
+_CURRENT_REPORTING_THINKING: ContextVar[ThinkingDecision | None] = ContextVar(
+    "current_reporting_thinking",
+    default=None,
+)
+
+
+@contextmanager
+def bind_reporting_thinking(decision: ThinkingDecision) -> Iterator[None]:
+    """将不可变 thinking 决策绑定到当前协程，并在退出时精确恢复。"""
+
+    token = _CURRENT_REPORTING_THINKING.set(decision)
+    log_thinking_selection(decision.event_fields())
+    try:
+        yield
+    finally:
+        _CURRENT_REPORTING_THINKING.reset(token)
+
+
+def current_reporting_thinking_decision() -> ThinkingDecision | None:
+    return _CURRENT_REPORTING_THINKING.get()
 
 
 def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:

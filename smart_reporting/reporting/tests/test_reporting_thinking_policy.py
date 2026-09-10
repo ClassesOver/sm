@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anyio
 import pytest
 
 from smart_reporting import model_routing
@@ -13,8 +14,56 @@ def test_thinking_policy_api_is_available() -> None:
 
 
 ThinkingRequest = getattr(model_policy, "ThinkingRequest", None)
+ThinkingDecision = getattr(model_policy, "ThinkingDecision", None)
+bind_reporting_thinking = getattr(model_policy, "bind_reporting_thinking", None)
+current_reporting_thinking_decision = getattr(
+    model_policy, "current_reporting_thinking_decision", None
+)
 select_reporting_thinking = getattr(model_policy, "select_reporting_thinking", None)
 log_thinking_selection = getattr(model_routing, "log_thinking_selection", None)
+
+
+def _decision(operation: str, budget: int):
+    return ThinkingDecision(
+        operation=operation,
+        complexity="standard",
+        enabled=budget > 0,
+        reasoning_effort="high" if budget else None,
+        thinking_budget=budget,
+        attempt=0,
+        reason="test",
+    )
+
+
+def test_thinking_binding_restores_nested_and_exception_context() -> None:
+    outer = _decision("data_understanding", 2048)
+    inner = _decision("analysis_evidence", 4096)
+
+    with bind_reporting_thinking(outer):
+        assert current_reporting_thinking_decision() is outer
+        with pytest.raises(RuntimeError, match="stop"):
+            with bind_reporting_thinking(inner):
+                assert current_reporting_thinking_decision() is inner
+                raise RuntimeError("stop")
+        assert current_reporting_thinking_decision() is outer
+    assert current_reporting_thinking_decision() is None
+
+
+@pytest.mark.anyio
+async def test_thinking_binding_is_isolated_between_concurrent_tasks() -> None:
+    decisions = (_decision("analysis_evidence", 4096), _decision("visualization_script", 0))
+    observed: dict[str, object] = {}
+
+    async def record(name: str, decision) -> None:
+        with bind_reporting_thinking(decision):
+            await anyio.sleep(0)
+            observed[name] = current_reporting_thinking_decision()
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(record, "analysis", decisions[0])
+        task_group.start_soon(record, "visualization", decisions[1])
+
+    assert observed == {"analysis": decisions[0], "visualization": decisions[1]}
 
 
 @pytest.mark.parametrize(

@@ -66,6 +66,7 @@ from .model_policy import (
     ReportingReasoningEffort,
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
+    current_reporting_thinking_decision,
     reporting_model_output_token_limit,
     reporting_thinking_profile_from_model,
     resolve_reporting_input_token_hard_cap,
@@ -2025,41 +2026,51 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         """为单次请求生成隔离配置，禁止并发 Section 修改共享 Agent 模型。"""
 
         base_profile = reporting_thinking_profile_from_model(self)
-        profile = base_profile
-        previous_error = self.report_run_error()
-        bound_effort = reporting_thinking_effort_from_run_context(current_reporting_run_context())
-        if _reporting_phase_from_messages(messages) == "section" or bound_effort == "off":
-            profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
-        elif bound_effort in {"high", "max"}:
-            budget = base_profile.thinking_budget
-            if budget is not None:
-                requested_budget = reporting_thinking_budget_from_run_context(
-                    current_reporting_run_context()
-                )
-                if requested_budget is not None:
-                    budget = min(budget, requested_budget)
-                profile = ReportingThinkingProfile.on(
-                    reasoning_effort=bound_effort,
-                    thinking_budget=budget,
+        thinking_decision = current_reporting_thinking_decision()
+        if thinking_decision is not None:
+            profile = (
+                ReportingThinkingProfile.on(
+                    reasoning_effort=thinking_decision.reasoning_effort,
+                    thinking_budget=thinking_decision.thinking_budget,
                     temperature=base_profile.temperature,
                 )
-            # 全局关闭 thinking 时，任务契约的 high/max 只是路由复杂度建议，不能反向
-            # 开启模型能力；保留 off profile 使 extra_body 清除历史预算，避免 Agno 重试。
+                if thinking_decision.enabled
+                and thinking_decision.reasoning_effort is not None
+                and thinking_decision.thinking_budget > 0
+                else ReportingThinkingProfile.off(temperature=base_profile.temperature)
+            )
         else:
-            escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
-            escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
-            # Planner 的 Pydantic validator 在模型响应边界失败后，Agno 会使用同一模型
-            # 自动重试，但不会改写原始 user message。错误由 ContextVar 按异步任务和
-            # 模型实例隔离；因此只有紧邻的 Schema 重试或显式 correction 才能升级，
-            # 首次请求和并发 Planner 不会继承其他请求的 thinking 状态。
-            if isinstance(escalation_profile, ReportingThinkingProfile) and (
-                isinstance(previous_error, ValidationError)
-                or (
-                    isinstance(escalation_fields, tuple)
-                    and _reporting_request_uses_escalation(messages, escalation_fields)
-                )
-            ):
-                profile = escalation_profile
+            profile = base_profile
+            previous_error = self.report_run_error()
+            bound_effort = reporting_thinking_effort_from_run_context(
+                current_reporting_run_context()
+            )
+            if _reporting_phase_from_messages(messages) == "section" or bound_effort == "off":
+                profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
+            elif bound_effort in {"high", "max"}:
+                budget = base_profile.thinking_budget
+                if budget is not None:
+                    requested_budget = reporting_thinking_budget_from_run_context(
+                        current_reporting_run_context()
+                    )
+                    if requested_budget is not None:
+                        budget = min(budget, requested_budget)
+                    profile = ReportingThinkingProfile.on(
+                        reasoning_effort=bound_effort,
+                        thinking_budget=budget,
+                        temperature=base_profile.temperature,
+                    )
+            else:
+                escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
+                escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
+                if isinstance(escalation_profile, ReportingThinkingProfile) and (
+                    isinstance(previous_error, ValidationError)
+                    or (
+                        isinstance(escalation_fields, tuple)
+                        and _reporting_request_uses_escalation(messages, escalation_fields)
+                    )
+                ):
+                    profile = escalation_profile
         request_model = copy(self)
         model_route = reporting_model_route_from_run_context(current_reporting_run_context())
         if model_route is not None:

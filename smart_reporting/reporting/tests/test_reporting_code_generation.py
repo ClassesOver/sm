@@ -6,6 +6,7 @@ import json
 import pytest
 from loguru import logger
 
+from smart_reporting.reporting.model_policy import ThinkingDecision, bind_reporting_thinking
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.reporting.workflow.runtime.code_generation import (
@@ -26,6 +27,30 @@ class FakeAgent:
     async def arun(self, _prompt, **_kwargs):
         self.prompt = _prompt
         return await self.action(self)
+
+
+def test_fresh_code_agent_drops_reasoning_only_for_bound_off_decision() -> None:
+    template = FakeAgent(lambda _agent: None)
+    template.reasoning_model = object()
+    template.reasoning_agent = object()
+    runner = ReportingCodeGenerationRunner(agent=template)
+    off = ThinkingDecision(
+        operation="visualization_script",
+        complexity="complex",
+        enabled=False,
+        reasoning_effort=None,
+        thinking_budget=0,
+        attempt=0,
+        reason="initial_off",
+    )
+
+    with bind_reporting_thinking(off):
+        fresh = runner._fresh_agent()
+
+    assert fresh.reasoning_model is None
+    assert fresh.reasoning_agent is None
+    assert template.reasoning_model is not None
+    assert template.reasoning_agent is not None
 
 
 def identity(path: str, content: str) -> FileIdentity:

@@ -180,7 +180,7 @@ git commit -m "refactor: separate reporting thinking policy"
 - Consumes: Task 1 的 `ThinkingDecision`。
 - Produces: `bind_reporting_thinking(decision)`、`current_reporting_thinking_decision()`；`ReportingOpenAIChat` 和 Coding Agent 对当前协程决策的隔离消费。
 
-- [ ] **Step 1: 写请求隔离和 Off 清理的失败测试**
+- [x] **Step 1: 写请求隔离和 Off 清理的失败测试**
 
 增加以下行为测试：
 
@@ -209,13 +209,13 @@ def test_phase_request_uses_bound_decision_without_mutating_shared_model():
 
 另加并发 AnyIO 测试：一个协程绑定 4096，另一个绑定 Off；两者得到各自请求副本，共享模型仍为原配置。补充 Off 测试，断言 request 副本不含 `thinking_budget`、顶层 `reasoning_effort` 或 Responses `reasoning`。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_agent_projection.py smart_reporting/reporting/tests/test_reporting_generator_agent.py smart_reporting/reporting/tests/test_reporting_code_generation.py`
 
 Expected: FAIL，模型请求尚未读取 ContextVar，Coding Agent 仍会无条件保留 reasoning Agent。
 
-- [ ] **Step 3: 实现 ContextVar 绑定**
+- [x] **Step 3: 实现 ContextVar 绑定**
 
 在 `reporting/model_policy.py` 增加：
 
@@ -237,14 +237,14 @@ def bind_reporting_thinking(decision: ThinkingDecision):
 
 `current_reporting_thinking_decision()` 只返回当前协程值。嵌套绑定必须在退出后恢复外层值；测试覆盖异常退出和嵌套恢复。
 
-- [ ] **Step 4: 让 Chat 请求副本消费精确决策**
+- [x] **Step 4: 让 Chat 请求副本消费精确决策**
 
 在 `ReportingOpenAIChat._phase_request_model()` 中先复制模型和选择 routed `model_id`，再读取当前
 `ThinkingDecision`。存在决策时从 request 副本清除历史字段并调用
 `apply_reporting_thinking_profile()` 应用精确预算；不存在决策时保留现有 profile 行为作为非 Reporting
 调用兼容路径。删除从 `ModelProfile.reasoning_effort` 或外层 tier 推断预算的逻辑。
 
-- [ ] **Step 5: 让 Coding Agent 首次 Off 时跳过 reasoning 调用**
+- [x] **Step 5: 让 Coding Agent 首次 Off 时跳过 reasoning 调用**
 
 `ReportingCodeOpenAIResponses` 继续始终关闭输出模型自身 thinking。`ReportingCodeGenerationRunner._fresh_agent()`
 读取当前决策：若为 Off，则在浅复制 Agent 上将 `reasoning_model` 和 `reasoning_agent` 设为 `None`；若启用则
@@ -253,7 +253,7 @@ def bind_reporting_thinking(decision: ThinkingDecision):
 增加测试断言首次生成只发生一次 Responses 输出调用；绑定 2048 的修复会发生一次 reasoning 调用和一次
 非 thinking Responses 输出调用；两个路径均只提交一次 `submit_python_source`。
 
-- [ ] **Step 6: 运行定点测试并提交**
+- [x] **Step 6: 运行定点测试并提交**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_agent_projection.py smart_reporting/reporting/tests/test_reporting_generator_agent.py smart_reporting/reporting/tests/test_reporting_code_generation.py`
 
