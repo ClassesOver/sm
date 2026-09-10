@@ -40,12 +40,9 @@ from .base import (
     anyio,
     build_profile_coverage_manifest,
     hashlib,
-    json,
-    logger,
     profile_csv_dataset,
     project_measure_semantics_to_query_outputs,
     resolve_domain_mentions,
-    time,
     time_series_diagnostics_requested,
 )
 from .validation import (
@@ -217,8 +214,6 @@ class RuntimeDatasetsMixin:
             sandbox = await self.workspace_service._asandbox_for(client, thread_id)
 
             async def prepare_one(index: int, handle: DatasetHandle) -> None:
-                started_at = time.monotonic()
-                cache_hit = False
                 try:
                     cached = cached_context(handle)
                     if cached is not None:
@@ -237,7 +232,6 @@ class RuntimeDatasetsMixin:
                             == cached.profile_file.sha256
                         ):
                             contexts[index] = cached
-                            cache_hit = True
                             return
 
                     _relative, remote = self.workspace_service.normalize_path(
@@ -336,29 +330,6 @@ class RuntimeDatasetsMixin:
                     contexts[index] = profiled.context
                 except Exception as error:
                     errors[index] = error
-                finally:
-                    context = contexts[index]
-                    logger.debug(
-                        "report_dataset_profile dataset_id={} row_count={} profile_bytes={} "
-                        "model_view_bytes={} duration_ms={} cache_hit={}",
-                        handle.dataset_id,
-                        context.row_count if context is not None else handle.row_count,
-                        context.profile_file.size if context is not None else 0,
-                        (
-                            len(
-                                json.dumps(
-                                    context.profile_model_view,
-                                    ensure_ascii=False,
-                                    sort_keys=True,
-                                    separators=(",", ":"),
-                                ).encode("utf-8")
-                            )
-                            if context is not None
-                            else 0
-                        ),
-                        int((time.monotonic() - started_at) * 1000),
-                        cache_hit,
-                    )
 
             async with anyio.create_task_group() as task_group:
                 for index, handle in enumerate(handles):

@@ -97,7 +97,6 @@ from .base import (
     datetime,
     hashlib,
     json,
-    logger,
     loguru_logger,
     partial,
     payload_sha256,
@@ -2190,7 +2189,6 @@ class RuntimeAnalysisMixin:
                 ),
                 "durableAnalysisItem": recovery_payload,
             }
-            instruction_component_bytes = self._instruction_component_bytes(instruction_payload)
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
@@ -2212,17 +2210,6 @@ class RuntimeAnalysisMixin:
             complexity_score, _ = _analysis_item_complexity(analysis_plan)
             analysis_effort = self._analysis_thinking_effort()
             thinking_effort = "off" if analysis_effort == "off" else policy_effort
-            loguru_logger.debug(
-                "report_analysis_thinking_policy analysis_id={} effort={} budget={} "
-                "complexity_tier={} complexity_score={} "
-                "escalation_reason={}",
-                analysis_id,
-                thinking_effort,
-                thinking_budget,
-                complexity_tier,
-                complexity_score,
-                effective_retry_reason if thinking_effort == "max" else "-",
-            )
             analysis_fact_queries_used = _analysis_fact_retry_usage(last_error)
             analysis_recovery = _analysis_fact_recovery_required(last_error)
             contract = build_report_phase_acceptance_contract(
@@ -2354,19 +2341,6 @@ class RuntimeAnalysisMixin:
                     last_error=None,
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
-                logger.debug(
-                    "report_phase_context phase=analysis work_kind=analysis_item "
-                    "analysis_id={} task_id={} instruction_bytes={} duration_seconds={:.3f} "
-                    "component_bytes={} tool_events={} attempt={} retry_reason={}",
-                    analysis_id,
-                    task_id,
-                    instruction_bytes,
-                    trace_metrics["duration_seconds"],
-                    instruction_component_bytes,
-                    trace_metrics.get("tool_event_count", 0),
-                    attempt,
-                    retry_reason or "-",
-                )
                 return checkpoint
             except Exception as error:
                 last_error = error

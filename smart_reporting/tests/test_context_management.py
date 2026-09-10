@@ -197,36 +197,26 @@ def test_reporting_context_controller按模型窗口保留最大输出预算():
     assert controller.input_token_budget == 655_360
 
 
-def test_context_budget_check_logs_safe_timing_without_message_content():
+def test_context_budget_check_does_not_emit_routine_debug_logs():
     controller = ContextBudgetController(
         model=CountingModel(),
         context_token_budget=200_000,
     )
-    sensitive_prompt = "private-report-prompt"
     debug_records: list[str] = []
-    info_records: list[str] = []
     debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
-    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
 
     try:
         should_compress = controller.should_compress(
-            [Message(role="user", content=sensitive_prompt)],
+            [Message(role="user", content="private-report-prompt")],
             tools=[{"type": "function", "function": {"name": "safe_tool"}}],
         )
     finally:
         logger.remove(debug_sink_id)
-        logger.remove(info_sink_id)
 
     log_text = "".join(debug_records)
-    info_text = "".join(info_records)
     assert should_compress is False
-    assert "context_budget_check_started" in log_text
-    assert "context_budget_check_completed" in log_text
-    assert "message_count=1" in log_text
-    assert "tool_count=1" in log_text
-    assert sensitive_prompt not in log_text
-    assert "context_budget_check_started" not in info_text
-    assert "context_budget_check_completed" not in info_text
+    assert "context_budget_check_started" not in log_text
+    assert "context_budget_check_completed" not in log_text
 
 
 def test_configured_tiktoken_cache_downloads_missing_o200k_file(monkeypatch, tmp_path):
@@ -781,7 +771,7 @@ async def test_projected_model_writes_request_and_batch_metrics_inside_model_str
 
 
 @pytest.mark.anyio
-async def test_projected_model_logs_safe_provider_timing_and_host(monkeypatch):
+async def test_projected_model_logs_only_safe_provider_completion(monkeypatch):
     async def model_stream(_self, _messages, *_args, **_kwargs):
         yield ModelResponse(content="private-model-output")
 
@@ -810,17 +800,16 @@ async def test_projected_model_logs_safe_provider_timing_and_host(monkeypatch):
     log_text = "".join(debug_records)
     info_text = "".join(info_records)
     assert len(responses) == 1
-    assert "model_projection_completed" in log_text
-    assert "model_provider_first_chunk" in log_text
-    assert "model_provider_stream_completed" in log_text
+    assert "model_projection_completed" not in log_text
+    assert "model_context_composition" not in log_text
+    assert "model_provider_first_chunk" not in log_text
+    assert log_text.count("model_provider_stream_completed") == 1
     assert "host=vllm.internal:8000" in log_text
     assert "private-model-input" not in log_text
     assert "private-model-output" not in log_text
     assert "internal-user" not in log_text
     assert "internal-password" not in log_text
     assert "private-api-key" not in log_text
-    assert "model_projection_completed" not in info_text
-    assert "model_provider_first_chunk" not in info_text
     assert "model_provider_stream_completed" not in info_text
 
 
@@ -1058,41 +1047,6 @@ def test_coding_context_projector_records_context_composition_without_content():
         for role in ("system", "user", "assistant", "tool", "other")
     )
     assert sensitive_prompt not in str(metrics)
-
-
-@pytest.mark.anyio
-async def test_projected_model_logs_context_composition_without_content(monkeypatch):
-    async def model_call(_self, _messages, *_args, **_kwargs):
-        return ModelResponse(content="private-model-output")
-
-    monkeypatch.setattr(OpenAIChat, "ainvoke", model_call)
-    model = ProjectedOpenAIChat(id="test")
-    debug_records: list[str] = []
-    info_records: list[str] = []
-    debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
-    info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
-
-    try:
-        await model.ainvoke(
-            [
-                Message(role="system", content="private-system"),
-                Message(role="user", content="private-user"),
-            ],
-            tools=[{"type": "function", "function": {"name": "safe_tool"}}],
-        )
-    finally:
-        logger.remove(debug_sink_id)
-        logger.remove(info_sink_id)
-
-    log_text = "".join(debug_records)
-    info_text = "".join(info_records)
-    assert "model_context_composition" in log_text
-    assert "canonical_system_bytes=" in log_text
-    assert "projected_message_bytes=" in log_text
-    assert "private-system" not in log_text
-    assert "private-user" not in log_text
-    assert "private-model-output" not in log_text
-    assert "model_context_composition" not in info_text
 
 
 def test_coding_context_projector_compacts_create_files_content_without_mutating_raw():

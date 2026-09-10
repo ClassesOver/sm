@@ -209,11 +209,6 @@ def _model_log_fields(model: Any) -> tuple[str, str]:
     return model_id, host
 
 
-def _tool_count(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int:
-    tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-    return len(tools) if isinstance(tools, (list, tuple)) else 0
-
-
 def _skill_resource(message: Message) -> tuple[tuple[str, str, str], str, dict[str, Any]] | None:
     if message.role != "tool" or message.tool_name not in SKILL_TOOL_NAMES:
         return None
@@ -888,18 +883,7 @@ class ContextBudgetController(ProtectedCompressionManager):
 
     def should_compress(self, messages, tools=None, model=None, response_format=None):
         counting_model = model or self.model
-        model_id, _host = _model_log_fields(counting_model)
         started_at = perf_counter()
-        tool_count = len(tools) if isinstance(tools, (list, tuple)) else 0
-        logger.debug(
-            "context_budget_check_started model_id={} message_count={} tool_count={} "
-            "input_token_budget={}",
-            model_id,
-            len(messages),
-            tool_count,
-            self.input_token_budget,
-        )
-        fallback = False
         try:
             token_count = (
                 counting_model.count_tokens(messages, tools, response_format)
@@ -907,7 +891,7 @@ class ContextBudgetController(ProtectedCompressionManager):
                 else 0
             )
         except Exception as error:
-            fallback = True
+            model_id, _host = _model_log_fields(counting_model)
             logger.warning(
                 "context_budget_token_count_failed model_id={} duration_ms={} error_type={}",
                 model_id,
@@ -915,21 +899,7 @@ class ContextBudgetController(ProtectedCompressionManager):
                 type(error).__name__,
             )
             token_count = _fallback_context_token_count(messages, tools, response_format)
-        should_compress = token_count > self.input_token_budget
-        logger.debug(
-            "context_budget_check_completed model_id={} duration_ms={} message_count={} "
-            "tool_count={} input_tokens={} input_token_budget={} fallback={} "
-            "should_compress={}",
-            model_id,
-            _duration_ms(started_at),
-            len(messages),
-            tool_count,
-            token_count,
-            self.input_token_budget,
-            str(fallback).lower(),
-            str(should_compress).lower(),
-        )
-        return should_compress
+        return token_count > self.input_token_budget
 
     async def ashould_compress(self, messages, tools=None, model=None, response_format=None):
         return self.should_compress(messages, tools, model, response_format)
@@ -1509,38 +1479,6 @@ def _set_current_span_attributes(attributes: dict[str, Any]) -> None:
         return
 
 
-def _log_context_composition(*, model_id: str, host: str, metrics: dict[str, Any]) -> None:
-    logger.debug(
-        "model_context_composition model_id={} host={} "
-        "canonical_context_bytes={} projected_context_bytes={} "
-        "canonical_message_bytes={} projected_message_bytes={} "
-        "canonical_system_bytes={} projected_system_bytes={} "
-        "canonical_user_bytes={} projected_user_bytes={} "
-        "canonical_assistant_bytes={} projected_assistant_bytes={} "
-        "canonical_tool_bytes={} projected_tool_bytes={} "
-        "canonical_other_bytes={} projected_other_bytes={} "
-        "tool_schema_bytes={} response_format_bytes={}",
-        model_id,
-        host,
-        metrics.get("canonical_context_bytes", 0),
-        metrics.get("projected_context_bytes", 0),
-        metrics.get("canonical_message_bytes", 0),
-        metrics.get("projected_message_bytes", 0),
-        metrics.get("canonical_system_bytes", 0),
-        metrics.get("projected_system_bytes", 0),
-        metrics.get("canonical_user_bytes", 0),
-        metrics.get("projected_user_bytes", 0),
-        metrics.get("canonical_assistant_bytes", 0),
-        metrics.get("projected_assistant_bytes", 0),
-        metrics.get("canonical_tool_bytes", 0),
-        metrics.get("projected_tool_bytes", 0),
-        metrics.get("canonical_other_bytes", 0),
-        metrics.get("projected_other_bytes", 0),
-        metrics.get("tool_schema_bytes", 0),
-        metrics.get("response_format_bytes", 0),
-    )
-
-
 _TASK_EXECUTION_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
     "task_execution_request_metrics", default=None
 )
@@ -1572,23 +1510,7 @@ class ProjectedOpenAIChat(OpenAIChat):
 
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         model_id, host = _model_log_fields(self)
-        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.debug(
-            "model_projection_completed mode=sync model_id={} host={} duration_ms={} "
-            "message_count={} projected_message_count={} tool_count={} "
-            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
-            model_id,
-            host,
-            _duration_ms(projection_started_at),
-            len(messages),
-            len(projected),
-            _tool_count(args, kwargs),
-            metrics.get("canonical_estimated_tokens", 0),
-            metrics.get("projected_estimated_tokens", 0),
-            str(bool(metrics.get("window_rebased", False))).lower(),
-        )
-        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
@@ -1623,23 +1545,7 @@ class ProjectedOpenAIChat(OpenAIChat):
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         model_id, host = _model_log_fields(self)
-        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.debug(
-            "model_projection_completed mode=async model_id={} host={} duration_ms={} "
-            "message_count={} projected_message_count={} tool_count={} "
-            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
-            model_id,
-            host,
-            _duration_ms(projection_started_at),
-            len(messages),
-            len(projected),
-            _tool_count(args, kwargs),
-            metrics.get("canonical_estimated_tokens", 0),
-            metrics.get("projected_estimated_tokens", 0),
-            str(bool(metrics.get("window_rebased", False))).lower(),
-        )
-        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
@@ -1674,23 +1580,7 @@ class ProjectedOpenAIChat(OpenAIChat):
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         model_id, host = _model_log_fields(self)
-        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.debug(
-            "model_projection_completed mode=sync_stream model_id={} host={} duration_ms={} "
-            "message_count={} projected_message_count={} tool_count={} "
-            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
-            model_id,
-            host,
-            _duration_ms(projection_started_at),
-            len(messages),
-            len(projected),
-            _tool_count(args, kwargs),
-            metrics.get("canonical_estimated_tokens", 0),
-            metrics.get("projected_estimated_tokens", 0),
-            str(bool(metrics.get("window_rebased", False))).lower(),
-        )
-        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         tool_calls: dict[int, dict[str, Any]] = {}
         token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
@@ -1703,12 +1593,6 @@ class ProjectedOpenAIChat(OpenAIChat):
                 chunk_count += 1
                 if first_chunk_ms is None:
                     first_chunk_ms = _duration_ms(provider_started_at)
-                    logger.debug(
-                        "model_provider_first_chunk mode=sync model_id={} host={} duration_ms={}",
-                        model_id,
-                        host,
-                        first_chunk_ms,
-                    )
                 _update_stream_tool_calls(response, tool_calls)
                 if tool_calls:
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
@@ -1746,23 +1630,7 @@ class ProjectedOpenAIChat(OpenAIChat):
         self, messages: list[Message], *args: Any, **kwargs: Any
     ) -> AsyncIterator[Any]:
         model_id, host = _model_log_fields(self)
-        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
-        logger.debug(
-            "model_projection_completed mode=async_stream model_id={} host={} duration_ms={} "
-            "message_count={} projected_message_count={} tool_count={} "
-            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
-            model_id,
-            host,
-            _duration_ms(projection_started_at),
-            len(messages),
-            len(projected),
-            _tool_count(args, kwargs),
-            metrics.get("canonical_estimated_tokens", 0),
-            metrics.get("projected_estimated_tokens", 0),
-            str(bool(metrics.get("window_rebased", False))).lower(),
-        )
-        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         tool_calls: dict[int, dict[str, Any]] = {}
         token = _TASK_EXECUTION_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
@@ -1775,12 +1643,6 @@ class ProjectedOpenAIChat(OpenAIChat):
                 chunk_count += 1
                 if first_chunk_ms is None:
                     first_chunk_ms = _duration_ms(provider_started_at)
-                    logger.debug(
-                        "model_provider_first_chunk mode=async model_id={} host={} duration_ms={}",
-                        model_id,
-                        host,
-                        first_chunk_ms,
-                    )
                 _update_stream_tool_calls(response, tool_calls)
                 if tool_calls:
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))

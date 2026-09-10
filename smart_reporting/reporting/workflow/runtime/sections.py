@@ -72,7 +72,6 @@ from .base import (
     cast,
     hashlib,
     json,
-    logger,
     payload_sha256,
     reporting_phase_task_key,
     validate_report_draft_blocks,
@@ -662,7 +661,9 @@ def _section_stage_agent(agent: Any, output_schema: type[Any], stage: str) -> An
             "不得输出 H1/H2、图片语法、内部 ID、协议标记或无证据数字。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
-                "H3/H4 必须是短标题，标题行不得写正文，建议不超过 40 个中文字符。"
+                "H3/H4 必须是短标题，建议不超过 40 个中文字符；"
+                "标题行只能写标题文本并在行尾结束，正文必须从标题行之后的空行段落开始，"
+                "禁止把标题和正文写在同一行（『### 收入分析：本季度收入增长……』是错误格式）。"
             ),
             "存在 correction 时只修正 issues 指向的当前 block，并返回完整 JSON 对象。",
         ]
@@ -1254,7 +1255,9 @@ class RuntimeSectionsMixin:
                 "章节编号和 title 由服务端插入，模型不得在标题中写编号或重复 H1/H2",
                 (
                     "章节内部标题只使用 H3/H4，H4 必须位于对应 H3 之后；"
-                    "H3/H4 必须是短标题，标题行不得写正文，建议不超过 40 个中文字符"
+                    "H3/H4 必须是短标题，建议不超过 40 个中文字符；"
+                    "标题行只能写标题文本并在行尾结束，正文另起空行段落，"
+                    "禁止『### 标题：正文……』同一行混写"
                 ),
                 "粗体强调必须使用 **文本**，两个标记的内侧不得留空格",
                 "表格直接使用标准 Markdown 管道表，不得渲染为图片",
@@ -1757,20 +1760,6 @@ class RuntimeSectionsMixin:
                     ),
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
-                logger.debug(
-                    "report_phase_context phase=section task_id={} section_code={} "
-                    "instruction_bytes={} model_input_tokens={} model_requests={} "
-                    "max_projected_tokens={} rebases={} hard_cap={} attempt={}",
-                    task_id,
-                    work_item.section_code,
-                    instruction_bytes,
-                    trace_metrics.get("model_input_tokens"),
-                    trace_metrics.get("model_request_count", 0),
-                    trace_metrics.get("max_projected_tokens", 0),
-                    trace_metrics.get("rebase_count", 0),
-                    trace_metrics.get("input_token_hard_cap", 0),
-                    attempt,
-                )
                 return checkpoint, artifact, None
             except Exception as error:
                 last_error = error

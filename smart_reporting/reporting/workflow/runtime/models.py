@@ -176,12 +176,64 @@ class AnalysisBundle(_StrictModel):
     )
 
 
+def _strip_source_table_prefix(value: str, source_id: Any) -> str:
+    normalized = value.strip()
+    if not isinstance(source_id, str):
+        return normalized
+    prefix = f"{source_id}."
+    table_ref = normalized[len(prefix) :] if normalized.startswith(prefix) else normalized
+    return table_ref if table_ref.count(".") == 1 else normalized
+
+
+def _column_leaf(value: str, source_id: Any, table_refs: list[Any]) -> str:
+    # 列字段契约只允许裸列名。模型偶尔把 measureSemantics.fieldRef
+    # （source.database.table.column）或 table.column 全量复制进列字段；
+    # 仅在限定符能精确绑定到当前数据源和目标表时收敛到裸列名。
+    normalized = value.strip()
+    qualifier, separator, column = normalized.rpartition(".")
+    if not separator or not isinstance(source_id, str):
+        return normalized
+
+    allowed_qualifiers: set[str] = set()
+    for table_ref in table_refs:
+        if not isinstance(table_ref, str):
+            continue
+        normalized_table = _strip_source_table_prefix(table_ref, source_id).lower()
+        table_parts = normalized_table.split(".")
+        if len(table_parts) not in {1, 2}:
+            continue
+        allowed_qualifiers.add(table_parts[-1].lower())
+        allowed_qualifiers.add(normalized_table)
+
+    # SQL 表引用沿用表名契约的小写归一化；sourceId 仍须精确匹配。
+    if qualifier.lower() in allowed_qualifiers:
+        return column
+    source_prefix = f"{source_id}."
+    if qualifier.startswith(source_prefix) and (
+        qualifier[len(source_prefix) :].lower() in allowed_qualifiers
+    ):
+        return column
+    return normalized
+
+
+def _column_leaf_list(values: list[Any], source_id: Any, table_refs: list[Any]) -> list[Any]:
+    return [
+        _column_leaf(item, source_id, table_refs) if isinstance(item, str) else item
+        for item in values
+    ]
+
+
+_RELATION_TABLE_FIELDS = ("leftTable", "rightTable", "left_table", "right_table")
+
+
 def _normalize_analysis_bundle_table_refs(candidate: Any) -> Any:
     if not isinstance(candidate, dict) or not isinstance(candidate.get("requirements"), list):
         return candidate
 
-    # 模型偶尔把 sourceId 当成 SQL catalog 前缀，生成 sourceId.database.table。
-    # 仅精确移除当前 requirement 的 sourceId；其他三段式引用仍由严格 Schema 拒绝。
+    # 模型偶尔把 sourceId 当成 SQL catalog 前缀，生成 sourceId.database.table；
+    # 也会把完整 fieldRef（source.database.table.column）复制进列字段。
+    # 这里仅做服务端可证明的收敛：表引用精确移除当前 requirement 的 sourceId，
+    # 列引用的限定符匹配目标表时才收敛到裸列名；其余引用由严格 Schema 拒绝。
     normalized = copy(candidate)
     normalized_requirements: list[Any] = []
     for raw_requirement in candidate["requirements"]:
@@ -189,16 +241,37 @@ def _normalize_analysis_bundle_table_refs(candidate: Any) -> Any:
             normalized_requirements.append(raw_requirement)
             continue
         requirement = copy(raw_requirement)
+        source_id = raw_requirement.get("sourceId", raw_requirement.get("source_id"))
+        raw_tables = raw_requirement.get("tables")
+        requirement_table_refs = (
+            [item.get("table") for item in raw_tables if isinstance(item, dict)]
+            if isinstance(raw_tables, list)
+            else []
+        )
+
+        dimension_key = (
+            "dimensionColumns" if "dimensionColumns" in requirement else "dimension_columns"
+        )
+        grain_key = "grainColumns" if "grainColumns" in requirement else "grain_columns"
+        column_keys = (
+            (dimension_key, grain_key)
+            if isinstance(raw_tables, list) and len(raw_tables) == 1
+            else (grain_key,)
+        )
+        for key in column_keys:
+            values = requirement.get(key)
+            if isinstance(values, list):
+                requirement[key] = _column_leaf_list(
+                    values,
+                    source_id,
+                    requirement_table_refs,
+                )
 
         # grainColumns 是 dimensionColumns 的物化子集，这个关系是协议结构事实，不是
         # 业务推断。模型在复杂计划中常只把共同粒度写入 grainColumns；若等到
         # QueryRequirement 构造后再修正，Pydantic 会先拒绝整份 Bundle，Reporting
         # 的带反馈纠错也就没有机会运行。这里只追加已经由模型明确声明的合法字符串，
         # 未知列、重复列、字段上限及后续语义约束仍由原有严格校验失败关闭。
-        dimension_key = (
-            "dimensionColumns" if "dimensionColumns" in requirement else "dimension_columns"
-        )
-        grain_key = "grainColumns" if "grainColumns" in requirement else "grain_columns"
         dimensions = requirement.get(dimension_key)
         grain = requirement.get(grain_key)
         if isinstance(dimensions, list) and isinstance(grain, list):
@@ -210,11 +283,6 @@ def _normalize_analysis_bundle_table_refs(candidate: Any) -> Any:
                     known.add(item.casefold())
             requirement[dimension_key] = merged
 
-        source_id = raw_requirement.get("sourceId", raw_requirement.get("source_id"))
-        if not isinstance(source_id, str):
-            normalized_requirements.append(requirement)
-            continue
-
         for key in ("tables", "relations"):
             raw_items = raw_requirement.get(key)
             if not isinstance(raw_items, list):
@@ -225,23 +293,33 @@ def _normalize_analysis_bundle_table_refs(candidate: Any) -> Any:
                     items.append(raw_item)
                     continue
                 item = copy(raw_item)
-                fields = (
-                    ("table",)
+                target_table_refs = (
+                    [raw_item.get("table")]
                     if key == "tables"
-                    else (
-                        "leftTable",
-                        "rightTable",
-                        "left_table",
-                        "right_table",
-                    )
+                    else [raw_item.get(field) for field in _RELATION_TABLE_FIELDS]
                 )
-                for field in fields:
-                    value = item.get(field)
-                    if not isinstance(value, str):
-                        continue
-                    parts = value.split(".")
-                    if len(parts) == 3 and parts[0] == source_id:
-                        item[field] = ".".join(parts[1:])
+                for column_key in ("measureColumns", "measure_columns"):
+                    if isinstance(item.get(column_key), list):
+                        item[column_key] = _column_leaf_list(
+                            item[column_key], source_id, target_table_refs
+                        )
+                for column_key in ("joinColumns", "join_columns"):
+                    if isinstance(item.get(column_key), list):
+                        item[column_key] = _column_leaf_list(
+                            item[column_key], source_id, target_table_refs
+                        )
+                for column_key in ("periodColumn", "period_column"):
+                    if isinstance(item.get(column_key), str):
+                        item[column_key] = _column_leaf(
+                            item[column_key], source_id, target_table_refs
+                        )
+                fields = ("table",) if key == "tables" else _RELATION_TABLE_FIELDS
+                if isinstance(source_id, str):
+                    for field in fields:
+                        value = item.get(field)
+                        if not isinstance(value, str):
+                            continue
+                        item[field] = _strip_source_table_prefix(value, source_id)
                 items.append(item)
             requirement[key] = items
         normalized_requirements.append(requirement)

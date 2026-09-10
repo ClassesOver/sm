@@ -84,6 +84,7 @@ from smart_reporting.reporting.workflow.runtime import (
 from smart_reporting.reporting.workflow.runtime import base as reporting_runtime_base
 from smart_reporting.reporting.workflow.runtime import datasets as reporting_datasets
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
+from smart_reporting.reporting.workflow.runtime import sections as reporting_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_complexity,
     _analysis_item_dataset_inputs,
@@ -116,7 +117,9 @@ from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
     MeasureSemanticProposal,
+    _normalize_analysis_bundle_table_refs,
 )
+from smart_reporting.reporting.workflow.runtime.phase_models import SectionBlockContent
 from smart_reporting.reporting.workflow.runtime.planning import (
     _PLANNER_DISPLAY_NAMES,
     _outline_candidate,
@@ -340,6 +343,224 @@ def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:
             ],
         }
     )
+
+
+def test_normalize_analysis_bundle_collapses_qualified_column_refs() -> None:
+    candidate = {
+        "analyses": [
+            {
+                "code": "income_trend",
+                "description": "分析收入趋势",
+                "managementQuestion": "收入趋势是否变化？",
+                "primaryMetricFamily": "收入",
+                "requirementIds": ["req_income"],
+            }
+        ],
+        "requirements": [
+            {
+                "requirementId": "req_income",
+                "sourceId": "rj",
+                "tables": [
+                    {
+                        "table": "rj.rj.dwd_income_budget_view",
+                        "periodColumn": "rj.rj.dwd_income_budget_view.data_date",
+                        "periodGranularity": "date",
+                        "measureColumns": [
+                            "rj.rj.dwd_income_budget_view.actual_test_income",
+                        ],
+                    }
+                ],
+                "dimensionColumns": ["rj.rj.dwd_income_budget_view.budget_type"],
+                "grainColumns": ["rj.rj.dwd_income_budget_view.budget_type"],
+                "relations": [],
+            },
+            {
+                "requirementId": "req_join",
+                "sourceId": "rj",
+                "tables": [
+                    {
+                        "table": "rj.rj.dwd_income_view",
+                        "periodColumn": "data_date",
+                        "periodGranularity": "month",
+                        "measureColumns": ["rj.rj.dwd_income_view.income"],
+                    },
+                    {
+                        "table": "rj.rj.dwd_dept_view",
+                        "periodColumn": "data_date",
+                        "periodGranularity": "month",
+                        "measureColumns": ["rj.rj.dwd_dept_view.headcount"],
+                    },
+                ],
+                "dimensionColumns": ["dept_code"],
+                "grainColumns": ["dept_code"],
+                "relations": [
+                    {
+                        "leftTable": "rj.rj.dwd_income_view",
+                        "rightTable": "rj.rj.dwd_dept_view",
+                        "joinColumns": ["rj.rj.dwd_income_view.dept_code"],
+                    }
+                ],
+            },
+        ],
+    }
+    original_measure = candidate["requirements"][0]["tables"][0]["measureColumns"]
+
+    normalized = _normalize_analysis_bundle_table_refs(candidate)
+    bundle = AnalysisBundle.model_validate(normalized)
+
+    requirement = bundle.requirements[0]
+    assert requirement.tables[0].table == "rj.dwd_income_budget_view"
+    assert requirement.tables[0].measure_columns == ("actual_test_income",)
+    assert requirement.tables[0].period_column == "data_date"
+    assert requirement.dimension_columns == ("budget_type",)
+    assert requirement.grain_columns == ("budget_type",)
+
+    joined = bundle.requirements[1]
+    assert [item.table for item in joined.tables] == [
+        "rj.dwd_income_view",
+        "rj.dwd_dept_view",
+    ]
+    assert joined.tables[0].measure_columns == ("income",)
+    assert joined.relations[0].join_columns == ("dept_code",)
+    assert joined.dimension_columns == ("dept_code",)
+
+    assert candidate["requirements"][0]["tables"][0]["measureColumns"] == original_measure
+    assert candidate["requirements"][0]["tables"][0]["periodColumn"] == (
+        "rj.rj.dwd_income_budget_view.data_date"
+    )
+    assert candidate["requirements"][1]["relations"][0]["joinColumns"] == [
+        "rj.rj.dwd_income_view.dept_code"
+    ]
+
+
+@pytest.mark.parametrize(
+    "table, qualifier",
+    [
+        ("rj.dwd_income_budget_view", "dwd_income_budget_view"),
+        ("rj.rj.dwd_income_budget_view", "dwd_income_budget_view"),
+        ("rj.dwd_income_budget_view", "DWD_INCOME_BUDGET_VIEW"),
+        ("RJ.DWD_INCOME_BUDGET_VIEW", "rj.dwd_income_budget_view"),
+        ("rj.RJ.DWD_INCOME_BUDGET_VIEW", "rj.rj.dwd_income_budget_view"),
+        ("rj.dwd_income_budget_view", "rj.RJ.DWD_INCOME_BUDGET_VIEW"),
+    ],
+)
+def test_normalize_analysis_bundle_accepts_table_qualified_columns(
+    table: str, qualifier: str
+) -> None:
+    candidate = analysis_bundle(
+        table="rj.dwd_income_budget_view", period_granularity="date"
+    ).model_dump(mode="json", by_alias=True)
+    requirement = candidate["requirements"][0]
+    requirement["tables"][0].update(
+        table=table,
+        measureColumns=[f"{qualifier}.actual_medical_income"],
+    )
+    requirement["dimensionColumns"] = [f"{qualifier}.area"]
+    requirement["grainColumns"] = [f"{qualifier}.area"]
+
+    bundle = AnalysisBundle.model_validate(_normalize_analysis_bundle_table_refs(candidate))
+
+    assert bundle.requirements[0].tables[0].measure_columns == ("actual_medical_income",)
+    assert bundle.requirements[0].dimension_columns == ("area",)
+    assert bundle.requirements[0].grain_columns == ("area",)
+    assert requirement["dimensionColumns"] == [f"{qualifier}.area"]
+
+
+def test_normalize_analysis_bundle_accepts_dotted_source_id() -> None:
+    candidate = analysis_bundle(
+        table="rj.dwd_income_budget_view", period_granularity="date"
+    ).model_dump(mode="json", by_alias=True)
+    requirement = candidate["requirements"][0]
+    requirement["sourceId"] = "prod.rj"
+    requirement["tables"][0].update(
+        table="prod.rj.rj.dwd_income_budget_view",
+        periodColumn="prod.rj.rj.dwd_income_budget_view.data_date",
+        measureColumns=["prod.rj.rj.dwd_income_budget_view.actual_medical_income"],
+    )
+    requirement["dimensionColumns"] = ["prod.rj.rj.dwd_income_budget_view.area"]
+    requirement["grainColumns"] = ["prod.rj.rj.dwd_income_budget_view.area"]
+
+    bundle = AnalysisBundle.model_validate(_normalize_analysis_bundle_table_refs(candidate))
+
+    normalized = bundle.requirements[0]
+    assert normalized.source_id == "prod.rj"
+    assert normalized.tables[0].table == "rj.dwd_income_budget_view"
+    assert normalized.tables[0].period_column == "data_date"
+    assert normalized.tables[0].measure_columns == ("actual_medical_income",)
+    assert normalized.dimension_columns == ("area",)
+    assert normalized.grain_columns == ("area",)
+
+
+def test_normalize_analysis_bundle_rejects_qualified_dimension_for_multiple_tables() -> None:
+    candidate = {
+        "analyses": [
+            {
+                "code": "joined_analysis",
+                "description": "分析跨表指标",
+                "managementQuestion": "跨表指标如何变化？",
+                "primaryMetricFamily": "income",
+                "requirementIds": ["req_join"],
+            }
+        ],
+        "requirements": [
+            {
+                "requirementId": "req_join",
+                "sourceId": "rj",
+                "tables": [
+                    {
+                        "table": "rj.left_fact",
+                        "periodColumn": "data_date",
+                        "periodGranularity": "date",
+                        "measureColumns": ["income"],
+                    },
+                    {
+                        "table": "rj.right_dim",
+                        "periodColumn": "data_date",
+                        "periodGranularity": "date",
+                        "measureColumns": ["headcount"],
+                    },
+                ],
+                "dimensionColumns": ["left_fact.right_only_dimension", "dept_code"],
+                "grainColumns": ["dept_code"],
+                "relations": [
+                    {
+                        "leftTable": "rj.left_fact",
+                        "rightTable": "rj.right_dim",
+                        "joinColumns": ["dept_code"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="dimensionColumns"):
+        AnalysisBundle.model_validate(_normalize_analysis_bundle_table_refs(candidate))
+
+
+@pytest.mark.parametrize(
+    "qualified_measure",
+    [
+        "other_source.rj.dwd_hdc_income_summary_view.indicator_value",
+        "rj.rj.other_income_view.indicator_value",
+        "other_income_view.indicator_value",
+        "other_database.dwd_hdc_income_summary_view.indicator_value",
+        "RJ.rj.dwd_hdc_income_summary_view.indicator_value",
+    ],
+)
+def test_normalize_analysis_bundle_preserves_measure_qualified_to_other_table(
+    qualified_measure: str,
+) -> None:
+    candidate = analysis_bundle(
+        table="rj.dwd_hdc_income_summary_view",
+        period_granularity="date",
+    ).model_dump(mode="json", by_alias=True)
+    candidate["requirements"][0]["tables"][0]["measureColumns"] = [qualified_measure]
+
+    normalized = _normalize_analysis_bundle_table_refs(candidate)
+
+    assert normalized["requirements"][0]["tables"][0]["measureColumns"] == [qualified_measure]
+    with pytest.raises(ValidationError, match="measureColumns"):
+        AnalysisBundle.model_validate(normalized)
 
 
 def data_understanding() -> DataUnderstandingPlan:
@@ -1154,6 +1375,20 @@ def test_section_instructions_match_evidence_file_authorization() -> None:
     assert "factFiles 仅用于事实身份和追溯元数据" in instructions
     assert "只按 factFiles 定点读取" not in instructions
     assert "补读原始 facts/evidence" not in instructions
+
+
+def test_section_block_stage_instructions_keep_heading_metadata_out_of_markdown() -> None:
+    stage = reporting_sections._section_stage_agent(
+        Agent(model=ReportingPhaseOpenAIChat(id="test", api_key="test")),
+        SectionBlockContent,
+        "block-0",
+    )
+    instructions = "\n".join(stage.instructions)
+
+    assert "标题行后必须立即换行" in instructions
+    assert "citationIds、chartIds" in instructions
+    assert "<sup>" in instructions
+    assert "report_draft_heading_title_too_long" in instructions
 
 
 @pytest.mark.anyio
