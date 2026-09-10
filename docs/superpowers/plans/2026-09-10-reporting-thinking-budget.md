@@ -274,7 +274,7 @@ git commit -m "refactor: bind reporting thinking per request"
 - Consumes: Task 1 的 `ThinkingRequest`、`select_reporting_thinking()`；Task 2 的 `bind_reporting_thinking()`。
 - Produces: `ReportingStructuredOutputExecutor.execute(..., thinking_request: ThinkingRequest | None)`，保证同一次结构化执行内首次与 Schema 纠错分别绑定预算。
 
-- [ ] **Step 1: 写结构化纠错预算的失败测试**
+- [x] **Step 1: 写结构化纠错预算的失败测试**
 
 用 Fake Agent 记录每次模型调用看到的决策，覆盖：
 
@@ -297,13 +297,13 @@ assert observed_budgets == [2048, 4096]
 第一轮返回领域 Schema 无效内容，第二轮返回有效内容。另测 JSON Schema 传输降级不算业务失败，预算保持
 2048；`StructuredOutputCallBudget` 耗尽时不创建额外 thinking 决策。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_structured_executor.py`
 
 Expected: FAIL，`execute()` 尚无 `thinking_request` 参数且内部调用未绑定决策。
 
-- [ ] **Step 3: 在每次真实模型调用边界选择并绑定预算**
+- [x] **Step 3: 在每次真实模型调用边界选择并绑定预算**
 
 为 `execute()` 增加可选 `thinking_request`。进入 `_execute_mode()` 前，以 `dataclasses.replace()` 构造本轮请求：
 
@@ -322,12 +322,12 @@ with bind_reporting_thinking(decision):
 transport fallback 不改变 failure、attempt 或预算。成功、异常和预算耗尽路径都依赖 ContextVar token
 自动恢复。
 
-- [ ] **Step 4: 保持无策略调用向后兼容**
+- [x] **Step 4: 保持无策略调用向后兼容**
 
 当 `thinking_request is None` 时使用 `nullcontext()`，现有测试和非 Reporting 调用不改变行为。不得从
 schema 名、Agent ID 或提示词猜测 operation。
 
-- [ ] **Step 5: 运行定点测试并提交**
+- [x] **Step 5: 运行定点测试并提交**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_structured_executor.py`
 

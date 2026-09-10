@@ -14,6 +14,10 @@ from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     create_reporting_generator_agent,
 )
+from smart_reporting.reporting.model_policy import (
+    ThinkingRequest,
+    current_reporting_thinking_decision,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.structured_output import (
     ReportingStructuredOutputExecutor,
@@ -284,6 +288,16 @@ def _schema_agent(schema: type[BaseModel] = _RequiredValue) -> Agent:
     return Agent(model=model, output_schema=schema, retries=0)
 
 
+def _json_object_agent(schema: type[BaseModel] = _RequiredValue) -> Agent:
+    agent = _schema_agent(schema)
+    setattr(
+        agent.model,
+        REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+        {"standard": StructuredOutputMode.JSON_OBJECT.value},
+    )
+    return agent
+
+
 def test_qwen_structured_mode_follows_dashscope_supported_model_matrix() -> None:
     resolver = VerifiedModelCapabilityResolver()
 
@@ -470,6 +484,72 @@ async def test_schema_transport_rejection_falls_back_with_original_instruction()
 
 
 @pytest.mark.anyio
+async def test_schema_correction_upgrades_data_understanding_thinking_budget() -> None:
+    executor = ReportingStructuredOutputExecutor(_json_object_agent(), idle_timeout_seconds=5)
+    responses = iter([{}, {"value": 7}])
+    observed_budgets: list[int | None] = []
+
+    async def execute_mode(*_args: object, **_kwargs: object) -> tuple[Agent, Mock]:
+        decision = current_reporting_thinking_decision()
+        observed_budgets.append(decision.thinking_budget if decision is not None else None)
+        return executor.agent, Mock(content=next(responses))
+
+    executor._execute_mode = execute_mode  # type: ignore[method-assign]
+
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-thinking-schema",
+        user_id="user-1",
+        thinking_request=ThinkingRequest(
+            operation="data_understanding",
+            complexity="standard",
+            configured_budget_cap=8192,
+        ),
+    )
+
+    assert observed_budgets == [2048, 4096]
+    assert result.content.value == 7
+
+
+@pytest.mark.anyio
+async def test_schema_transport_fallback_keeps_initial_thinking_budget() -> None:
+    executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
+    responses = iter(
+        [
+            RuntimeError("invalid response_format: json_schema is not supported"),
+            (executor.agent, Mock(content={"value": 7})),
+        ]
+    )
+    observed_budgets: list[int | None] = []
+
+    async def execute_mode(*_args: object, **_kwargs: object) -> tuple[Agent, Mock]:
+        decision = current_reporting_thinking_decision()
+        observed_budgets.append(decision.thinking_budget if decision is not None else None)
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    executor._execute_mode = execute_mode  # type: ignore[method-assign]
+
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-thinking-transport",
+        user_id="user-1",
+        thinking_request=ThinkingRequest(
+            operation="data_understanding",
+            complexity="standard",
+            configured_budget_cap=8192,
+        ),
+    )
+
+    assert observed_budgets == [2048, 2048]
+    assert result.content.value == 7
+
+
+@pytest.mark.anyio
 async def test_schema_transport_rejection_does_not_consume_business_corrections() -> None:
     executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
     invalid_outputs = [(executor.agent, Mock(content={"wrong": attempt})) for attempt in range(5)]
@@ -575,6 +655,36 @@ async def test_shared_call_budget_caps_nested_business_attempts() -> None:
         )
 
     repeated._execute_mode.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_exhausted_call_budget_does_not_select_thinking() -> None:
+    executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
+    executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
+        return_value=(executor.agent, Mock(content={"value": 22}))
+    )
+    budget = StructuredOutputCallBudget(max_model_calls=1, model_calls=1)
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record))
+    try:
+        with pytest.raises(ReportingError, match="业务调用已达到上限"):
+            await executor.execute(
+                "original instruction",
+                routing_context=None,
+                session_id="session-thinking-exhausted",
+                user_id="user-1",
+                call_budget=budget,
+                thinking_request=ThinkingRequest(
+                    operation="data_understanding",
+                    complexity="standard",
+                    configured_budget_cap=8192,
+                ),
+            )
+    finally:
+        logger.remove(sink_id)
+
+    assert not any(record["message"] == "report_thinking_selected" for record in records)
+    executor._execute_mode.assert_not_awaited()
 
 
 @pytest.mark.anyio

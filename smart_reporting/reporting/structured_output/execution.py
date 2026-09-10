@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from contextlib import nullcontext
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from inspect import isawaitable
 from typing import Any, Protocol
@@ -19,6 +19,12 @@ from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from ...task_execution import TaskExecutionScope
+from ..model_policy import (
+    ThinkingFailureKind,
+    ThinkingRequest,
+    bind_reporting_thinking,
+    select_reporting_thinking,
+)
 from ..models import ReportingError
 from ..phase import bind_reporting_run_context, reporting_model_route_from_run_context
 from .policy import (
@@ -124,6 +130,7 @@ class ReportingStructuredOutputExecutor:
         user_id: str,
         agent_run_context: RunContext | None = None,
         call_budget: StructuredOutputCallBudget | None = None,
+        thinking_request: ThinkingRequest | None = None,
     ) -> StructuredOutputResult:
         schema = getattr(self.agent, "output_schema", None)
         schema_name = _schema_name(schema)
@@ -165,25 +172,40 @@ class ReportingStructuredOutputExecutor:
         total_call_number = 0
         business_call_number = 0
         protocol_attempt_number = 0
+        thinking_attempt = min(thinking_request.attempt, 1) if thinking_request is not None else 0
+        next_failure_kind: ThinkingFailureKind | None = (
+            thinking_request.failure_kind if thinking_request is not None else None
+        )
         with route_binding, anyio.fail_after(self.idle_timeout_seconds):
             while True:
                 total_call_number += 1
                 if mode is StructuredOutputMode.JSON_SCHEMA:
                     protocol_attempt_number += 1
                 try:
-                    execution_agent, output = await self._execute_mode(
-                        mode,
-                        schema,
-                        current_instruction,
-                        session_id=f"{session_id}:structured:{total_call_number}",
-                        user_id=user_id,
-                        agent_run_context=agent_run_context,
-                        model_id=model_id,
-                        source=mode_source,
-                        call_number=total_call_number,
-                        protocol_attempt_number=protocol_attempt_number,
-                        wire_contract=wire_contract,
-                    )
+                    thinking_binding = nullcontext()
+                    if thinking_request is not None:
+                        call_request = replace(
+                            thinking_request,
+                            attempt=thinking_attempt,
+                            failure_kind=next_failure_kind,
+                        )
+                        thinking_binding = bind_reporting_thinking(
+                            select_reporting_thinking(call_request)
+                        )
+                    with thinking_binding:
+                        execution_agent, output = await self._execute_mode(
+                            mode,
+                            schema,
+                            current_instruction,
+                            session_id=f"{session_id}:structured:{total_call_number}",
+                            user_id=user_id,
+                            agent_run_context=agent_run_context,
+                            model_id=model_id,
+                            source=mode_source,
+                            call_number=total_call_number,
+                            protocol_attempt_number=protocol_attempt_number,
+                            wire_contract=wire_contract,
+                        )
                     _raise_recorded_agent_error(execution_agent)
                     content = _validate_content(
                         wire_contract.decode(getattr(output, "content", output)),
@@ -224,6 +246,8 @@ class ReportingStructuredOutputExecutor:
                         continue
 
                     assert validation_error is not None
+                    thinking_attempt = 1
+                    next_failure_kind = "schema_failure"
                     candidate = (
                         getattr(validation_error, "_report_candidate", None)
                         if validation_error is not None
