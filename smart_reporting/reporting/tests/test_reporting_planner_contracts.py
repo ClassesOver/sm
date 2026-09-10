@@ -1852,17 +1852,17 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
 
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason=None) == (
         "high",
-        4096,
+        2048,
         "simple",
     )
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason="schema_validation") == (
         "high",
-        4096,
+        2048,
         "simple",
     )
     assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
         "max",
-        8192,
+        4096,
         "simple",
     )
 
@@ -1870,7 +1870,7 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
 def test_analysis_script_generation_budget_follows_script_complexity() -> None:
     assert (
         _analysis_script_generation_budget({"metrics": ["income"], "datasetIds": ["ds-1"]}, None)
-        == 1024
+        == 2048
     )
     assert (
         _analysis_script_generation_budget(
@@ -1882,7 +1882,7 @@ def test_analysis_script_generation_budget_follows_script_complexity() -> None:
             },
             None,
         )
-        == 1536
+        == 3072
     )
     assert (
         _analysis_script_generation_budget(
@@ -1895,14 +1895,14 @@ def test_analysis_script_generation_budget_follows_script_complexity() -> None:
             },
             None,
         )
-        == 2048
+        == 4096
     )
     assert (
         _analysis_script_generation_budget(
             {"metrics": ["income"], "datasetIds": ["ds-1"]},
             {"code": "report_python_source_shape_invalid"},
         )
-        == 2048
+        == 4096
     )
 
 
@@ -1949,7 +1949,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         dependencies={
             "AgentOS 任务执行": {
                 "reportingThinkingEffort": "high",
-                "reportingThinkingBudget": 4096,
+                "reportingThinkingBudget": 2048,
             }
         },
     )
@@ -2102,10 +2102,10 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     )
 
     assert observed == [
-        ("analysis_001:evidence:decision", "high", 4096),
-        ("analysis_001:evidence:script:initial", "high", 1024),
-        ("analysis_001:evidence:script:repair", "high", 2048),
-        ("analysis_001:summary", "high", 4096),
+        ("analysis_001:evidence:decision", "high", 2048),
+        ("analysis_001:evidence:script:initial", "high", 2048),
+        ("analysis_001:evidence:script:repair", "high", 4096),
+        ("analysis_001:summary", "high", 2048),
     ]
     assert set(planner_requests[0]) == {
         "currentAnalysis",
@@ -2122,7 +2122,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     }
     assert task_context.dependencies["AgentOS 任务执行"] == {
         "reportingThinkingEffort": "high",
-        "reportingThinkingBudget": 4096,
+        "reportingThinkingBudget": 2048,
     }
 
 
