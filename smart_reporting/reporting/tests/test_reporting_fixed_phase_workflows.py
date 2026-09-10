@@ -1115,9 +1115,11 @@ async def test_section_generation_plans_then_renders_each_block_serially(
         factSummaries=("收入为100元",),
     )
     stages: list[str] = []
+    decisions = []
 
-    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+    async def fake_run_stage(_agent, _schema, stage, payload, **kwargs):
         stages.append(stage)
+        decisions.append(select_reporting_thinking(kwargs["thinking_request"]))
         if stage == "plan":
             assert "evidence" not in payload
             return SectionPlanOutput.model_validate(
@@ -1166,12 +1168,82 @@ async def test_section_generation_plans_then_renders_each_block_serially(
         work_item,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+            attempt=0,
+            configured_budget_cap=8192,
+            thinking_enabled=True,
+        ),
     )
 
     assert stages == ["plan", "block-1", "block-2"]
+    assert [(item.enabled, item.thinking_budget, item.attempt) for item in decisions] == [
+        (False, 0, 0),
+        (False, 0, 0),
+        (False, 0, 0),
+    ]
     assert isinstance(result, RenderSectionDecision)
     assert tuple(block.block_id for block in result.blocks) == ("block_001", "block_002")
     assert all(block.claim_ids == ("claim_001",) for block in result.blocks)
+
+
+@pytest.mark.anyio
+async def test_section_recovery_uses_one_bounded_thinking_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _section_work_item()
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+    decisions = []
+
+    async def fake_run_stage(_agent, _schema, _stage, _payload, **kwargs):
+        request = kwargs["thinking_request"]
+        decisions.append(select_reporting_thinking(request))
+        return SectionPlanOutput.model_validate(
+            {
+                "kind": "rework",
+                "sectionCode": "section_001",
+                "analysisIds": ["analysis_001"],
+                "reason": "缺少月度收入事实",
+                "missingEvidence": ["月度收入事实"],
+            }
+        )
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {
+            "reportGoal": "分析2025年收入",
+            "sectionGoal": {"sectionCode": "section_001"},
+            "sectionWorkItem": work_item.model_dump(mode="json", by_alias=True),
+        },
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        recovery={"code": "report_phase_output_invalid"},
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+            attempt=1,
+            failure_kind="schema_failure",
+            configured_budget_cap=8192,
+            thinking_enabled=True,
+        ),
+    )
+
+    assert isinstance(result, AnalysisReworkDecision)
+    assert [(item.thinking_budget, item.attempt) for item in decisions] == [(2048, 1)]
 
 
 @pytest.mark.anyio
@@ -1276,6 +1348,10 @@ async def test_section_generation_locally_regenerates_block_with_missing_heading
         work_item,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+        ),
     )
 
     assert stages == ["plan", "block-1", "block-1", "block-2"]
@@ -1368,6 +1444,10 @@ async def test_section_generation_corrects_plan_references_before_rendering_bloc
         work_item,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+        ),
     )
 
     assert stages == ["plan", "plan", "block-1"]
@@ -1504,6 +1584,10 @@ async def test_section_generation_projects_relevant_json_and_text_evidence_per_b
             work_item,
             scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
             run_context=_context(),
+            thinking_request=ThinkingRequest(
+                operation="section_generation",
+                complexity="standard",
+            ),
         )
 
     assert len(block_payloads) == 2

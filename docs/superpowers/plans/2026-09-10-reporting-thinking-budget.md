@@ -543,7 +543,7 @@ git commit -m "perf: layer analysis and visualization thinking"
 - Consumes: Tasks 1–5 的请求级策略。
 - Produces: 章节首次 Off、章节恢复 2K；acceptance contract 仅作外层默认值和兼容输入，不再控制内部子调用预算。
 
-- [ ] **Step 1: 写章节预算与外层契约兼容测试**
+- [x] **Step 1: 写章节预算与外层契约兼容测试**
 
 增加测试记录 `_generate_section_in_blocks()` 中每次请求看到的决策：正常生成 Off；结构化或 render 恢复
 调用为 2K；恢复再失败时不升到 4K。保留现有断言：业务语义差异只记录 warning，不能触发 recover。
@@ -551,13 +551,13 @@ git commit -m "perf: layer analysis and visualization thinking"
 在 coordinator 测试中断言模型路由仍选择相同 `tier/model_id`；acceptance contract 中已有
 `thinkingEffort/thinkingBudget` 可继续被解析，但内部显式 decision 优先。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_draft_workflow.py smart_reporting/reporting/tests/test_reporting_task_coordinator.py smart_reporting/reporting/tests/test_reporting_agent_projection.py -k 'thinking or section or model_route'`
 
 Expected: FAIL，章节当前只通过外层 `thinkingEffort=off` 控制，恢复调用没有独立 2K 决策。
 
-- [ ] **Step 3: 接入章节首次和恢复请求**
+- [x] **Step 3: 接入章节首次和恢复请求**
 
 为 `_generate_section_in_blocks()` 增加 `thinking_request` 参数并传给结构化执行器。`generate()` 使用：
 
@@ -574,13 +574,13 @@ ThinkingRequest(
 `recover()` 使用相同 operation、`attempt=1` 和 `failure_kind="schema_failure"`，得到 2K。业务语义 warning
 不构造 failure；现有 SectionWorkflow 两次尝试上限保持不变。
 
-- [ ] **Step 4: 收窄外层 acceptance thinking 字段的职责**
+- [x] **Step 4: 收窄外层 acceptance thinking 字段的职责**
 
 `workflow/execution.py` 继续解析历史 contract 的 `thinkingEffort/thinkingBudget`，供尚未迁移的外层 Agent
 兼容；已迁移的规划、分析、可视化和章节子调用必须优先消费 ContextVar decision。删除任何依据 routed
 tier 自动设置 high/max 的路径。不要改变 contract 版本和 durable payload 结构。
 
-- [ ] **Step 5: 运行一次最终定点测试集合**
+- [x] **Step 5: 运行一次最终定点测试集合**
 
 Run:
 
@@ -600,7 +600,7 @@ Run:
 
 Expected: PASS。不要再次运行这些文件或完整测试套件。
 
-- [ ] **Step 6: 检查 diff 并提交**
+- [x] **Step 6: 检查 diff 并提交**
 
 Run: `git diff --check`
 

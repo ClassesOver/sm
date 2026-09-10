@@ -12,7 +12,7 @@ from ....task_execution import (
 )
 from ...delivery.draft_v1 import ReportDraftBlock
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
-from ...model_policy import resolve_reporting_input_token_hard_cap
+from ...model_policy import ThinkingRequest, resolve_reporting_input_token_hard_cap
 from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
@@ -701,6 +701,7 @@ async def _run_section_stage(
     *,
     scope: TaskExecutionScope,
     run_context: RunContext,
+    thinking_request: ThinkingRequest,
 ) -> Any:
     stage_agent = _section_stage_agent(agent, output_schema, stage)
     result = await ReportingStructuredOutputExecutor(stage_agent).execute(
@@ -709,6 +710,7 @@ async def _run_section_stage(
         agent_run_context=run_context,
         session_id=f"task-execution:{scope.external_run_id}:{stage}",
         user_id=scope.owner_user_id,
+        thinking_request=thinking_request,
     )
     return result.content
 
@@ -772,6 +774,7 @@ async def _generate_section_in_blocks(
     *,
     scope: TaskExecutionScope,
     run_context: RunContext,
+    thinking_request: ThinkingRequest,
     recovery: Mapping[str, Any] | None = None,
 ) -> SectionDecision:
     """规划后串行生成正文块，限制单次模型输出的故障半径。"""
@@ -797,6 +800,7 @@ async def _generate_section_in_blocks(
             plan_payload,
             scope=scope,
             run_context=run_context,
+            thinking_request=thinking_request,
         )
         if not isinstance(planned, SectionPlanOutput):
             raise ReportingError("report_phase_output_invalid", "章节规划 Agent 未返回声明的结果。")
@@ -941,6 +945,7 @@ async def _generate_section_in_blocks(
                 block_payload,
                 scope=scope,
                 run_context=run_context,
+                thinking_request=thinking_request,
             )
             if not isinstance(content, SectionBlockContent):
                 raise ReportingError(
@@ -1600,6 +1605,13 @@ class RuntimeSectionsMixin:
                             work_item,
                             scope=invocation.scope,
                             run_context=task_context,
+                            thinking_request=ThinkingRequest(
+                                operation="section_generation",
+                                complexity="standard",
+                                attempt=0,
+                                configured_budget_cap=self._analysis_thinking_budget_cap,
+                                thinking_enabled=self._analysis_thinking_enabled,
+                            ),
                         )
 
                     async def recover(
@@ -1625,6 +1637,14 @@ class RuntimeSectionsMixin:
                             work_item,
                             scope=invocation.scope,
                             run_context=task_context,
+                            thinking_request=ThinkingRequest(
+                                operation="section_generation",
+                                complexity="standard",
+                                attempt=1,
+                                failure_kind="schema_failure",
+                                configured_budget_cap=self._analysis_thinking_budget_cap,
+                                thinking_enabled=self._analysis_thinking_enabled,
+                            ),
                             recovery=(
                                 diagnostic
                                 if isinstance(diagnostic, Mapping)
