@@ -90,6 +90,7 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_dataset_inputs,
     _analysis_item_output_root,
     _analysis_item_thinking_policy,
+    _analysis_script_generation_budget,
     _analysis_summary_input_token_budget,
     _model_facing_deterministic_facts,
     _prepare_analysis_summary_request,
@@ -1866,6 +1867,45 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
     )
 
 
+def test_analysis_script_generation_budget_follows_script_complexity() -> None:
+    assert (
+        _analysis_script_generation_budget({"metrics": ["income"], "datasetIds": ["ds-1"]}, None)
+        == 1024
+    )
+    assert (
+        _analysis_script_generation_budget(
+            {
+                "metrics": ["income"],
+                "datasetIds": ["ds-1"],
+                "comparisonBasis": ["yoy"],
+                "organizationGrain": ["area"],
+            },
+            None,
+        )
+        == 1536
+    )
+    assert (
+        _analysis_script_generation_budget(
+            {
+                "metrics": ["income", "volume"],
+                "datasetIds": ["ds-1", "ds-2"],
+                "comparisonBasis": ["yoy"],
+                "organizationGrain": ["area", "department"],
+                "actions": ["compare", "attribute", "recommend"],
+            },
+            None,
+        )
+        == 2048
+    )
+    assert (
+        _analysis_script_generation_budget(
+            {"metrics": ["income"], "datasetIds": ["ds-1"]},
+            {"code": "report_python_source_shape_invalid"},
+        )
+        == 2048
+    )
+
+
 def test_analysis_evidence_accepts_legacy_evidence_paths_without_bypassing_identity() -> None:
     payload = {
         "analysisId": "analysis_001",
@@ -2063,8 +2103,8 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
 
     assert observed == [
         ("analysis_001:evidence:decision", "high", 4096),
-        ("analysis_001:evidence:script:initial", "high", 4096),
-        ("analysis_001:evidence:script:repair", "max", 8192),
+        ("analysis_001:evidence:script:initial", "high", 1024),
+        ("analysis_001:evidence:script:repair", "high", 2048),
         ("analysis_001:summary", "high", 4096),
     ]
     assert set(planner_requests[0]) == {

@@ -105,6 +105,50 @@ async def test_generate_logs_script_base_info_at_info_level():
 
 
 @pytest.mark.anyio
+async def test_generate_logs_six_internal_step_durations_without_source():
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=SOURCE)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", "print(1)\n")]}
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+    try:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {"fact": 1}, patch
+        )
+    finally:
+        logger.remove(sink_id)
+
+    events = [
+        line
+        for line in "".join(records).splitlines()
+        if "report_code_generation_step_completed" in line
+    ]
+    assert len(events) == 6
+    assert [f"step={index}" in event for index, event in enumerate(events, start=1)] == [True] * 6
+    assert [
+        name in event
+        for name, event in zip(
+            (
+                "model_generate_source",
+                "source_shape_validate",
+                "python_compile",
+                "patch_build",
+                "patch_apply",
+                "receipt_validate",
+            ),
+            events,
+            strict=True,
+        )
+    ] == [True] * 6
+    assert all("duration_ms=" in event and "total_duration_ms=" in event for event in events)
+    assert all("operation=create path=analysis/script.py" in event for event in events)
+    assert SOURCE not in "".join(events)
+
+
+@pytest.mark.anyio
 async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
     prompts: list[dict[str, object]] = []
 

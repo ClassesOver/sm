@@ -11,6 +11,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from time import perf_counter
 from typing import Any, NoReturn
 
 from agno.agent import Agent
@@ -107,7 +108,7 @@ def _reject_python_syntax(path: str, source: str, error: SyntaxError) -> NoRetur
     ) from None
 
 
-def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> str:
+def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int) -> str:
     if not isinstance(source, str):
         _reject_python_source(path, source)
     if source and "\r" not in source and not source.endswith("\n"):
@@ -125,6 +126,10 @@ def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> st
         or any(len(line.encode("utf-8")) > MAX_PHYSICAL_LINE_BYTES for line in lines)
     ):
         _reject_python_source(path, source)
+    return source
+
+
+def _compile_python_source(path: str, source: str) -> None:
     try:
         tree = ast.parse(source, filename=path)
         compile(tree, path, "exec")
@@ -132,7 +137,6 @@ def _validate_python_source(path: str, source: Any, max_source_bytes: int) -> st
         _reject_python_syntax(path, source, error)
     except (TypeError, ValueError):
         _reject_python_source(path, source)
-    return source
 
 
 def _diff_content_lines(content: str, prefix: str) -> list[str]:
@@ -569,26 +573,52 @@ class ReportingCodeGenerationRunner:
             )
         result: CodeGenerationResult | None = None
         patch_error: ReportingError | None = None
+        generation_started_at = perf_counter()
+        model_started_at: float | None = None
+
+        def log_step(step: int, step_name: str, started_at: float) -> None:
+            completed_at = perf_counter()
+            logger.info(
+                "report_code_generation_step_completed step={} step_name={} duration_ms={} "
+                "total_duration_ms={} operation={} path={}",
+                step,
+                step_name,
+                max(0, round((completed_at - started_at) * 1000)),
+                max(0, round((completed_at - generation_started_at) * 1000)),
+                _operation,
+                script_path,
+            )
 
         async def capture_source(**kwargs: Any) -> Mapping[str, Any]:
             nonlocal patch_error, result
+            if model_started_at is not None:
+                log_step(1, "model_generate_source", model_started_at)
             try:
-                source = _validate_python_source(
+                step_started_at = perf_counter()
+                source = _validate_python_source_shape(
                     script_path,
                     kwargs.get("source"),
                     max_source_bytes,
                 )
+                log_step(2, "source_shape_validate", step_started_at)
+                step_started_at = perf_counter()
+                _compile_python_source(script_path, source)
+                log_step(3, "python_compile", step_started_at)
+                step_started_at = perf_counter()
                 patch = _python_source_patch(
                     script_path,
                     source,
                     operation=_operation,
                     previous_source=_previous_source,
                 )
+                log_step(4, "patch_build", step_started_at)
             except ReportingError as error:
                 patch_error = error
                 raise
             try:
+                step_started_at = perf_counter()
                 receipt = await _invoke(apply_analysis_patch, {"patch": patch}, run_context)
+                log_step(5, "patch_apply", step_started_at)
             except ReportingError as error:
                 bounded = self._short_diagnostic(
                     {"code": error.code, "message": error.message, "details": error.details}
@@ -612,6 +642,7 @@ class ReportingCodeGenerationRunner:
                     details=bounded.get("details", {"path": script_path}),
                 )
                 raise patch_error
+            step_started_at = perf_counter()
             artifacts = receipt.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
                 raise self._error(
@@ -634,6 +665,7 @@ class ReportingCodeGenerationRunner:
                     script_path,
                 )
             result = CodeGenerationResult(identity)
+            log_step(6, "receipt_validate", step_started_at)
             return receipt
 
         calls = 0
@@ -688,6 +720,7 @@ class ReportingCodeGenerationRunner:
             }
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)
+            model_started_at = perf_counter()
             await agent.arun(self._prompt(prompt), run_context=run_context)
         except ReportingError:
             raise
