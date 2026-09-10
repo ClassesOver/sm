@@ -5,6 +5,9 @@
 !uv.lock
 !smart_reporting/
 !smart_reporting/**
+!docker/
+!docker/sandbox-tools/
+!docker/sandbox-tools/**
 
 **/.env
 **/.env.*
