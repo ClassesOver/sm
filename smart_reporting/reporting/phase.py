@@ -46,14 +46,6 @@ REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "visualizationFactQuer
 REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY = "visualizationAttemptToolLimit"
 REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY = "visualizationTotalToolLimit"
 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
-REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
-    "agentos_reporting_visualization_production_only"
-)
-REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY = "agentos_reporting_visualization_script_written"
-REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY = (
-    "agentos_reporting_visualization_script_executed"
-)
-REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY = "agentos_reporting_visualization_recovery_read"
 REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
     "agentos_reporting_visualization_script_failure_pending"
 )
@@ -83,14 +75,6 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
         "read_tool_output",
     }
 )
-REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
-    {
-        "apply_analysis_patch",
-        "run_python_script",
-        "submit_visualization_charts",
-    }
-)
-
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
     "reporting_projection_metrics", default=None
 )
@@ -612,39 +596,6 @@ def reporting_visualization_recovery_from_run_context(run_context: RunContext | 
     )
 
 
-def _reporting_visualization_state_flag(
-    run_context: RunContext | None,
-    key: str,
-) -> bool:
-    if run_context is None or not isinstance(run_context.session_state, Mapping):
-        return False
-    return run_context.session_state.get(key) is True
-
-
-def reporting_visualization_script_written_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
-    return _reporting_visualization_state_flag(
-        run_context, REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY
-    )
-
-
-def reporting_visualization_script_executed_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
-    return _reporting_visualization_state_flag(
-        run_context, REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY
-    )
-
-
-def reporting_visualization_recovery_read_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
-    return _reporting_visualization_state_flag(
-        run_context, REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY
-    )
-
-
 def reporting_visualization_exploration_count(
     run_context: RunContext | None, tool_name: str
 ) -> int:
@@ -706,25 +657,6 @@ def reporting_visualization_exploration_budget_exhausted_from_run_context(
     ) or reporting_visualization_exploration_count(run_context, "read_file") >= limit(
         REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY, REPORTING_VISUALIZATION_READ_FILE_LIMIT
     )
-
-
-def reporting_visualization_production_only_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return False
-    if reporting_visualization_recovery_from_run_context(
-        run_context
-    ) or reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
-        return True
-    if run_context is None or not isinstance(run_context.session_state, Mapping):
-        return False
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
-    stored = run_context.session_state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
-    return stored is True or (isinstance(stored, Mapping) and stored.get(identity) is True)
 
 
 def reporting_visualization_budget_from_run_context(

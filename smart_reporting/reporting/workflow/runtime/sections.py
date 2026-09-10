@@ -660,7 +660,10 @@ def _section_stage_agent(agent: Any, output_schema: type[Any], stage: str) -> An
             "只返回满足 output_schema 的 JSON 对象，不得把整个响应写成 Markdown 或代码围栏。",
             "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。",
             "不得输出 H1/H2、图片语法、内部 ID、协议标记或无证据数字。",
-            "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表。",
+            (
+                "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
+                "H3/H4 必须是短标题，标题行不得写正文，建议不超过 40 个中文字符。"
+            ),
             "存在 correction 时只修正 issues 指向的当前 block，并返回完整 JSON 对象。",
         ]
     identifier = str(getattr(agent, "id", None) or "reporting-section-generator")
@@ -1148,7 +1151,7 @@ class RuntimeSectionsMixin:
             run_context,
             ReportingCommand(
                 name="set_workflow_checkpoint",
-                commandId=f"workflow-checkpoint:{checkpoint.revision}:{digest}",
+                commandId=f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}",
                 payload={
                     "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
                     "mirrorFile": identity.model_dump(mode="json", by_alias=True),
@@ -1249,7 +1252,10 @@ class RuntimeSectionsMixin:
             factSummaries=tuple(item.summary for item in selected_evidence),
             markdownRequirements=(
                 "章节编号和 title 由服务端插入，模型不得在标题中写编号或重复 H1/H2",
-                "章节内部标题只使用 H3/H4，H4 必须位于对应 H3 之后",
+                (
+                    "章节内部标题只使用 H3/H4，H4 必须位于对应 H3 之后；"
+                    "H3/H4 必须是短标题，标题行不得写正文，建议不超过 40 个中文字符"
+                ),
                 "粗体强调必须使用 **文本**，两个标记的内侧不得留空格",
                 "表格直接使用标准 Markdown 管道表，不得渲染为图片",
                 "正文不得自行写 citation、analysis、section 或图片协议标记",

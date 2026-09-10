@@ -33,9 +33,9 @@ def test_reporting_compose_only_exposes_daytona_sdk_url():
 
     assert "AGENT_DAYTONA_API_URL" not in environment
     assert environment["DAYTONA_API_URL"] == "http://host.docker.internal:33043/api"
-    assert "AGENT_DAYTONA_API_URL" not in (
-        repository_root / ".env.example"
-    ).read_text(encoding="utf-8")
+    assert "AGENT_DAYTONA_API_URL" not in (repository_root / ".env.example").read_text(
+        encoding="utf-8"
+    )
     assert "AGENT_DAYTONA_API_URL" not in (
         repository_root / "smart_reporting" / "README.md"
     ).read_text(encoding="utf-8")

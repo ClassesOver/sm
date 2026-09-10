@@ -51,9 +51,21 @@ class ErrorRequirement:
 
 
 class UncontendedStateRepository:
+    def __init__(self) -> None:
+        self.status_updates: list[tuple[str, str, bool | None]] = []
+
     @asynccontextmanager
     async def workflow_execution_lock(self, _run_id: str):
         yield
+
+    async def update_run_status(
+        self,
+        report_run_id: str,
+        *,
+        status: str,
+        finalization_pending: bool | None = None,
+    ) -> None:
+        self.status_updates.append((report_run_id, status, finalization_pending))
 
 
 def runtime(**values: object) -> SimpleNamespace:
@@ -254,6 +266,43 @@ async def test_resume_workflow_retries_only_failed_delivery_step() -> None:
 
 
 @pytest.mark.anyio
+async def test_resume_workflow_retries_failed_assembly_with_same_run_identity() -> None:
+    requirement = ErrorRequirement("assemble-report")
+    paused = SimpleNamespace(
+        status="paused",
+        run_id="run-1",
+        session_id="session-1",
+        content=None,
+        step_requirements=[],
+        error_requirements=[requirement],
+    )
+    completed = SimpleNamespace(status="completed", content={"path": "report.pdf"})
+    cleanup = AsyncMock()
+    workflow = SimpleNamespace(
+        arun=AsyncMock(),
+        aget_run_output=AsyncMock(return_value=paused),
+        acontinue_run=AsyncMock(return_value=completed),
+    )
+
+    result = await resume_workflow(
+        workflow,
+        runtime=runtime(cleanup_terminal=cleanup),
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert requirement.decision == "retry"
+    assert result["runId"] == "run-1"
+    assert result["sessionId"] == "session-1"
+    workflow.arun.assert_not_awaited()
+    assert workflow.acontinue_run.await_args.kwargs["run_response"] is paused
+    cleanup.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_resume_workflow_rejects_non_delivery_error() -> None:
     paused = SimpleNamespace(
         status="paused",
@@ -446,13 +495,14 @@ async def test_drive_workflow_holds_execution_lock_during_initial_run() -> None:
 @pytest.mark.parametrize("terminal_status", ["cancelled", "failed"])
 async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -> None:
     cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
 
     async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(status=terminal_status, content=None)
 
     result = await drive_workflow(
         SimpleNamespace(arun=run),
-        runtime(cleanup_terminal=cleanup),
+        current_runtime,
         {"version": "1", "prompt": "生成运营报告"},
         run_id="run-1",
         session_id="session-1",
@@ -462,6 +512,10 @@ async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -
     )
 
     assert result["status"] == terminal_status
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", terminal_status, True),
+        ("run-1", terminal_status, False),
+    ]
     cleanup.assert_awaited_once_with(
         {
             "external_run_id": "run-1",
@@ -474,8 +528,33 @@ async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -
 
 
 @pytest.mark.anyio
+async def test_drive_workflow_marks_completed_without_cleanup_pending() -> None:
+    cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status=RunStatus.completed, content=None)
+
+    result = await drive_workflow(
+        SimpleNamespace(arun=run),
+        current_runtime,
+        {"version": "1", "prompt": "生成运营报告"},
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert result["status"] == "completed"
+    assert current_runtime.state_repository.status_updates == [("run-1", "completed", False)]
+    cleanup.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> None:
     cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
 
     async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
         raise RuntimeError("workflow failed")
@@ -483,7 +562,7 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
     with pytest.raises(RuntimeError, match="workflow failed"):
         await drive_workflow(
             SimpleNamespace(arun=run),
-            runtime(cleanup_terminal=cleanup),
+            current_runtime,
             {"version": "1", "prompt": "生成运营报告"},
             run_id="run-1",
             session_id="session-1",
@@ -492,6 +571,10 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
             company_id="3",
         )
 
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "failed", True),
+        ("run-1", "failed", False),
+    ]
     cleanup.assert_awaited_once_with(
         {
             "external_run_id": "run-1",
@@ -501,6 +584,175 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
         "session-1",
         "run-1",
     )
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_finalizes_when_initial_run_raises_reporting_error() -> None:
+    cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
+    workflow = SimpleNamespace(
+        arun=AsyncMock(
+            side_effect=ReportingError("report_workflow_step_failed", "Agno step failed")
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await drive_workflow(
+            workflow,
+            current_runtime,
+            {"version": "1", "prompt": "生成运营报告"},
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+            database="odoo",
+            company_id="3",
+        )
+
+    assert raised.value.code == "report_workflow_step_failed"
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "failed", True),
+        ("run-1", "failed", False),
+    ]
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_maps_agno_error_to_failed_and_keeps_pending_on_cleanup_error() -> (
+    None
+):
+    async def cleanup(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("cleanup failed")
+
+    current_runtime = runtime(cleanup_terminal=cleanup)
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status=RunStatus.error, content=None)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await drive_workflow(
+            SimpleNamespace(arun=run),
+            current_runtime,
+            {"version": "1", "prompt": "生成运营报告"},
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+            database="odoo",
+            company_id="3",
+        )
+
+    assert current_runtime.state_repository.status_updates == [("run-1", "failed", True)]
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_finalizes_when_review_continue_raises() -> None:
+    cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
+    requirement = ErrorRequirement("validate-report")
+    workflow = SimpleNamespace(
+        arun=AsyncMock(
+            return_value=SimpleNamespace(
+                status=RunStatus.paused,
+                error_requirements=[requirement],
+            )
+        ),
+        acontinue_run=AsyncMock(
+            side_effect=ReportingError("report_workflow_step_failed", "continue failed")
+        ),
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await drive_workflow(
+            workflow,
+            current_runtime,
+            {"version": "1", "prompt": "生成运营报告"},
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+            database="odoo",
+            company_id="3",
+        )
+
+    assert raised.value.code == "report_workflow_step_failed"
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "failed", True),
+        ("run-1", "failed", False),
+    ]
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_resume_workflow_finalizes_when_continue_raises() -> None:
+    cleanup = AsyncMock()
+    current_runtime = runtime(cleanup_terminal=cleanup)
+    workflow = SimpleNamespace(
+        aget_run_output=AsyncMock(return_value=SimpleNamespace(status=RunStatus.running)),
+        acontinue_run=AsyncMock(side_effect=RuntimeError("continue failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="continue failed"):
+        await resume_workflow(
+            workflow,
+            current_runtime,
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+            database="odoo",
+            company_id="3",
+        )
+
+    assert current_runtime.state_repository.status_updates == [
+        ("run-1", "failed", True),
+        ("run-1", "failed", False),
+    ]
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_resume_workflow_finishes_parent_pending_before_rejecting_terminal_agno_output() -> (
+    None
+):
+    class StateRepository(UncontendedStateRepository):
+        async def get_run(self, report_run_id: str) -> dict[str, object]:
+            assert report_run_id == "run-1"
+            return {
+                "report_run_id": "run-1",
+                "external_run_id": "run-1",
+                "entrypoint": "cli",
+                "workflow_id": "enterprise-reporting-workflow-v1",
+                "agno_session_id": "session-1",
+                "agno_run_id": "run-1",
+                "caller_session_id": "session-1",
+                "caller_run_id": "run-1",
+                "thread_id": "session-1",
+                "owner_user_id": "cli",
+                "database": "odoo",
+                "company_id": "3",
+                "status": "failed",
+                "finalization_pending": True,
+            }
+
+    cleanup = AsyncMock()
+    repository = StateRepository()
+    current_runtime = SimpleNamespace(
+        state_repository=repository,
+        cleanup_terminal=cleanup,
+    )
+    workflow = SimpleNamespace(aget_run_output=AsyncMock(return_value=None))
+
+    result = await resume_workflow(
+        workflow,
+        current_runtime,
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert result["status"] == "failed"
+    assert repository.status_updates[-1] == ("run-1", "failed", False)
+    cleanup.assert_awaited_once()
+    workflow.aget_run_output.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -523,7 +775,7 @@ async def test_resume_workflow_rejects_cancelled_run() -> None:
     assert raised.value.code == "report_workflow_resume_invalid"
 
 
-def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
+def test_only_tail_steps_pause_for_error_recovery() -> None:
     async def executor(*_args: object, **_kwargs: object) -> None:
         return None
 
@@ -541,6 +793,7 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
         prepare_analysis_context=executor,
         generate_detailed_analysis_plan=executor,
         run_reporting_analysis=executor,
+        assemble_report=executor,
         validate_report=executor,
         finalize_publication=executor,
     )
@@ -552,6 +805,7 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
     assert steps["generate-outline"].human_review is not None
     assert steps["generate-outline"].human_review.requires_output_review is False
     assert steps["validate-report"].human_review.on_error is OnError.pause
+    assert steps["assemble-report"].human_review.on_error is OnError.pause
     assert steps["run-coding-analysis"].human_review.on_error is OnError.fail
     assert workflow.input_schema is None
     assert workflow.stream_executor_events is False
@@ -576,6 +830,7 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
         prepare_analysis_context=executor,
         generate_detailed_analysis_plan=executor,
         run_reporting_analysis=executor,
+        assemble_report=executor,
         validate_report=executor,
         finalize_publication=executor,
     )
@@ -598,6 +853,7 @@ def test_reporting_workflow_retries_transient_safe_steps_only() -> None:
         "commit-measure-semantics",
         "materialize-datasets",
         "run-coding-analysis",
+        "assemble-report",
         "validate-report",
         "finalize-publication",
     }:
@@ -629,6 +885,7 @@ async def test_outline直接流向coding节点而不暂停() -> None:
         prepare_analysis_context=executor("prepare-analysis-context"),
         generate_detailed_analysis_plan=executor("generate-detailed-analysis-plan"),
         run_reporting_analysis=executor("run-coding-analysis"),
+        assemble_report=executor("assemble-report"),
         validate_report=executor("validate-report"),
         finalize_publication=executor("finalize-publication"),
     )
@@ -643,6 +900,70 @@ async def test_outline直接流向coding节点而不暂停() -> None:
     assert output.status is RunStatus.completed
     outline_index = calls.index("generate-outline")
     assert calls[outline_index + 1] == "run-coding-analysis"
+    analysis_index = calls.index("run-coding-analysis")
+    assert calls[analysis_index : analysis_index + 3] == [
+        "run-coding-analysis",
+        "assemble-report",
+        "validate-report",
+    ]
+
+
+@pytest.mark.anyio
+async def test_assemble_error_pause_retries_only_assembly_step() -> None:
+    calls: list[str] = []
+    assembly_attempts = 0
+
+    def executor(name: str):
+        async def execute(*_args: object, **_kwargs: object) -> StepOutput:
+            nonlocal assembly_attempts
+            calls.append(name)
+            if name == "assemble-report":
+                assembly_attempts += 1
+                if assembly_attempts == 1:
+                    raise RuntimeError("assembly failed")
+            return StepOutput(content={"step": name})
+
+        return execute
+
+    workflow = create_reporting_workflow(
+        db=InMemoryDb(),
+        normalize_report_request=executor("normalize-report-request"),
+        confirm_source=executor("confirm-source"),
+        prepare_data_profile=executor("prepare-data-profile"),
+        propose_measure_semantics=executor("propose-measure-semantics"),
+        commit_measure_semantics=executor("commit-measure-semantics"),
+        generate_outline=executor("generate-outline"),
+        generate_analysis_plan=executor("generate-analysis-plan"),
+        generate_query_candidates=executor("generate-query-candidates"),
+        materialize_datasets=executor("materialize-datasets"),
+        prepare_analysis_context=executor("prepare-analysis-context"),
+        generate_detailed_analysis_plan=executor("generate-detailed-analysis-plan"),
+        run_reporting_analysis=executor("run-coding-analysis"),
+        assemble_report=executor("assemble-report"),
+        validate_report=executor("validate-report"),
+        finalize_publication=executor("finalize-publication"),
+    )
+
+    paused = await workflow.arun(
+        "生成 2025 年运营报告",
+        run_id="run-assembly-recovery",
+        session_id="session-assembly-recovery",
+        user_id="user-assembly-recovery",
+    )
+
+    assert paused.status is RunStatus.paused
+    assert paused.error_requirements is not None
+    assert paused.error_requirements[0].step_id == "assemble-report"
+    assert calls.count("run-coding-analysis") == 1
+    assert calls.count("validate-report") == 0
+
+    paused.error_requirements[0].retry()
+    completed = await workflow.acontinue_run(run_response=paused, stream=False)
+
+    assert completed.status is RunStatus.completed
+    assert calls.count("run-coding-analysis") == 1
+    assert calls.count("assemble-report") == 2
+    assert calls.count("validate-report") == 1
 
 
 def test_reporting_cli_applies_requested_debug_setting() -> None:

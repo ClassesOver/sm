@@ -978,7 +978,7 @@ class ReportingToolkitBase(Toolkit):
                     "recoveryOperation": error.details.get("recoveryOperation"),
                 }
             result["requiredActions"] = [
-                "只使用 details.currentFiles 中当前 64 位 sha256 调用 apply_analysis_patch 覆盖。"
+                "基于 details.currentFiles 反映的当前文件状态重新生成标准 unified diff。"
             ]
         elif (
             code == "report_analysis_dependency_missing"
@@ -1025,25 +1025,48 @@ class ReportingToolkitBase(Toolkit):
             # expected/actual 字段，避免模型只能看到第一个错误后重新生成整个章节。
             result["details"] = dict(error.details)
         elif (
-            code == "report_draft_heading_parent_missing"
+            code
+            in {
+                "report_draft_heading_parent_missing",
+                "report_draft_heading_title_too_long",
+            }
             and isinstance(error, ReportingError)
             and isinstance(error.details, Mapping)
         ):
             issues = error.details.get("issues")
             if isinstance(issues, list):
-                stable_issues = [
-                    {
+                stable_issues: list[dict[str, Any]] = []
+                for issue in issues[:20]:
+                    if (
+                        not isinstance(issue, Mapping)
+                        or not isinstance(issue.get("path"), str)
+                        or re.fullmatch(
+                            r"(?:\$\.markdown|\$\.blocks\[[0-9]+\]\.markdown)",
+                            issue["path"],
+                        )
+                        is None
+                        or not isinstance(issue.get("type"), str)
+                        or not isinstance(issue.get("message"), str)
+                    ):
+                        continue
+                    stable_issue: dict[str, Any] = {
                         "path": issue["path"],
                         "type": issue["type"],
                         "message": issue["message"],
                     }
-                    for issue in issues[:20]
-                    if isinstance(issue, Mapping)
-                    and isinstance(issue.get("path"), str)
-                    and issue["path"].startswith("$.blocks[")
-                    and isinstance(issue.get("type"), str)
-                    and isinstance(issue.get("message"), str)
-                ]
+                    if code == "report_draft_heading_title_too_long":
+                        max_length = issue.get("maxLength")
+                        actual_length = issue.get("actualLength")
+                        if (
+                            not isinstance(max_length, int)
+                            or isinstance(max_length, bool)
+                            or not isinstance(actual_length, int)
+                            or isinstance(actual_length, bool)
+                        ):
+                            continue
+                        stable_issue["maxLength"] = max_length
+                        stable_issue["actualLength"] = actual_length
+                    stable_issues.append(stable_issue)
                 if stable_issues:
                     result["details"] = {"issues": stable_issues}
         elif (
@@ -1051,6 +1074,7 @@ class ReportingToolkitBase(Toolkit):
             in {
                 "report_analysis_write_intent_invalid",
                 "report_analysis_python_syntax_invalid",
+                "report_python_source_shape_invalid",
                 "report_analysis_evidence_missing",
                 "report_analysis_evidence_not_registered",
                 "report_analysis_evidence_identity_mismatch",
@@ -1066,6 +1090,10 @@ class ReportingToolkitBase(Toolkit):
         if validation_errors:
             result["validationErrors"] = validation_errors
             result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
+        elif code == "report_draft_heading_title_too_long":
+            result["requiredActions"] = [
+                "只缩短 details.issues 指向的标题，保留对应 Markdown 正文及其他有效内容后重试。"
+            ]
         elif code == "report_analysis_evidence_missing":
             result["requiredActions"] = [
                 "先使用 apply_analysis_patch 写入真实 evidence，再重试当前 analysis 提交。"
@@ -1094,6 +1122,10 @@ class ReportingToolkitBase(Toolkit):
         elif code == "report_analysis_python_syntax_invalid":
             result["requiredActions"] = [
                 "修正 details.path 指向的 Python 语法错误后，使用原 operation 重新提交。"
+            ]
+        elif code == "report_python_source_shape_invalid":
+            result["requiredActions"] = [
+                "修正 details.path 指向的签发 Python 源码形状后，使用原 operation 重新提交。"
             ]
         elif code == "report_chart_registration_closed":
             result["requiredActions"] = ["图表已完成不可变登记；不要改图或重复提交。"]

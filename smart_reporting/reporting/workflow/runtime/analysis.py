@@ -2,7 +2,6 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
-import difflib
 from copy import copy
 from typing import Literal
 
@@ -27,9 +26,7 @@ from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
 from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
     AnalysisEvidenceDecision,
-    AnalysisEvidencePlan,
     AnalysisItemWorkflow,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
     _project_analysis_summary_payload,
 )
@@ -69,6 +66,7 @@ from .base import (
     Mapping,
     ProfileCoverageManifest,
     QueryRequirement,
+    ReportArtifactManifest,
     ReportingCheckpoint,
     ReportingCommand,
     ReportingError,
@@ -108,8 +106,9 @@ from .base import (
     time,
     validate_metric_code_bindings,
 )
+from .code_generation import CodeGenerationResult, ReportingCodeGenerationRunner
 from .datasets import _profile_coverage_instruction_projection
-from .phase_models import ChartDraft, VisualizationScriptDraft
+from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
 from .visualization_section_workflow import VisualizationSectionWorkflow
 
@@ -122,6 +121,8 @@ async def _completed_reporting_step_output() -> StepOutput:
 
 
 _ANALYSIS_THINKING_BUDGETS = {"simple": 4096, "standard": 6144, "complex": 8192}
+_ANALYSIS_SCRIPT_MAX_BYTES = 128 * 1024
+_VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
     {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
 )
@@ -425,22 +426,6 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
     return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
-def _has_chartable_visualization_facts(facts: Sequence[Mapping[str, Any]]) -> bool:
-    """仅当冻结事实含结构化指标时才进入图表生成。"""
-
-    return any(
-        isinstance(items, Sequence)
-        and not isinstance(items, (str, bytes))
-        and any(isinstance(item, Mapping) for item in items)
-        for fact in facts
-        for items in (
-            fact.get("metrics"),
-            fact.get("derivedMetrics"),
-            fact.get("comparisons"),
-        )
-    )
-
-
 class RuntimeAnalysisMixin:
     async def _run_visualization_section_task(
         self, section_code: str, *, context: Mapping[str, Any] | None = None
@@ -642,7 +627,7 @@ class RuntimeAnalysisMixin:
 
                 async def execute_fixed_visualization(
                     invocation: ReportingTaskInvocation,
-                ) -> VisualizationScriptDraft | None:
+                ) -> VisualizationPlanDraft:
                     toolkits = build_reporting_tools(
                         self.workspace_service,
                         self.task_runner.repository,
@@ -655,104 +640,75 @@ class RuntimeAnalysisMixin:
                             "report_phase_contract_invalid", "章节图表 Toolkit 装配结果无效。"
                         )
                     toolkit = toolkits[0]
-                    if not _has_chartable_visualization_facts(facts):
-                        # 工具与 durable 协议明确允许零图。冻结事实没有任何结构化指标时，
-                        # 图表无法满足 metricCode 绑定，不得让模型虚构占位图或空指标。
-                        receipt = await toolkit.submit_visualization_charts(
-                            section_code,
-                            [],
-                            run_context=invocation.run_context,
-                        )
-                        if receipt.get("status") not in {
-                            "accepted",
-                            "committed",
-                            "already_committed",
-                        }:
-                            raise ReportingError(
-                                str(receipt.get("code", "report_visualization_submit_rejected")),
-                                str(receipt.get("message", "章节零图提交未被接受。")),
-                                details=dict(receipt),
-                            )
-                        loguru_logger.debug(
-                            "report_visualization_section_empty_submitted section_code={}",
-                            section_code,
-                        )
-                        return None
-                    committed_source: str | None = None
-                    committed_sha256: str | None = None
 
-                    async def generate(
+                    async def generate_plan(
                         request: Mapping[str, Any], task_context: RunContext
-                    ) -> VisualizationScriptDraft:
+                    ) -> VisualizationPlanDraft:
                         payload = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
                         return cast(
-                            VisualizationScriptDraft,
+                            VisualizationPlanDraft,
                             await ReportingStructuredOutputExecutor(
                                 self.visualization_generator
                             ).run(payload, scope=invocation.scope, run_context=task_context),
                         )
 
-                    async def recover(
-                        repair: Mapping[str, Any], task_context: RunContext
-                    ) -> VisualizationScriptDraft:
+                    def code_runner() -> ReportingCodeGenerationRunner:
                         if self.visualization_recovery is None:
                             raise ReportingError(
-                                "report_visualization_recovery_missing",
-                                "章节图表恢复生成器未配置。",
+                                "report_visualization_code_agent_missing",
+                                "章节图表代码 Agent 未配置。",
                             )
-                        payload = json.dumps(
-                            {**instruction_payload, "recovery": dict(repair)},
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                        return cast(
-                            VisualizationScriptDraft,
-                            await ReportingStructuredOutputExecutor(
-                                self.visualization_recovery
-                            ).run(payload, scope=invocation.scope, run_context=task_context),
+                        return ReportingCodeGenerationRunner(agent=self.visualization_recovery)
+
+                    async def apply_patch(
+                        *, patch: str, run_context: RunContext | None = None
+                    ) -> Mapping[str, Any]:
+                        return await toolkit.apply_analysis_patch(
+                            patch,
+                            run_context=run_context,
                         )
 
-                    async def write_script(
-                        path: str, source: str, task_context: RunContext
-                    ) -> FileIdentity:
-                        nonlocal committed_sha256, committed_source
-                        normalized_source = source if source.endswith("\n") else f"{source}\n"
-                        patch = "".join(
-                            difflib.unified_diff(
-                                (
-                                    []
-                                    if committed_source is None
-                                    else committed_source.splitlines(keepends=True)
-                                ),
-                                normalized_source.splitlines(keepends=True),
-                                fromfile=("/dev/null" if committed_source is None else f"a/{path}"),
-                                tofile=f"b/{path}",
-                            )
+                    async def generate_script(
+                        plan: VisualizationPlanDraft,
+                        task_context: RunContext,
+                        *,
+                        diagnostic: Mapping[str, Any] | None,
+                    ) -> CodeGenerationResult:
+                        return await code_runner().generate(
+                            script_path,
+                            {
+                                "visualizationFacts": facts,
+                                "visualizationWorkspace": instruction_payload[
+                                    "visualizationWorkspace"
+                                ],
+                                "visualizationPlan": plan.model_dump(mode="json", by_alias=True),
+                            },
+                            apply_patch,
+                            task_context,
+                            diagnostic=diagnostic,
+                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
                         )
-                        receipt = await toolkit.apply_analysis_patch(
-                            patch,
-                            expected_sha256=(
-                                {path: committed_sha256} if committed_sha256 is not None else None
-                            ),
-                            run_context=task_context,
+
+                    async def repair_script(
+                        script_file: FileIdentity,
+                        diagnostic: Mapping[str, Any],
+                        task_facts: Mapping[str, Any],
+                        task_context: RunContext,
+                    ) -> CodeGenerationResult:
+                        return await code_runner().repair(
+                            script_file,
+                            diagnostic,
+                            toolkit.read_file,
+                            apply_patch,
+                            task_context,
+                            task_facts=task_facts,
+                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
                         )
-                        artifacts = (
-                            receipt.get("artifacts") if isinstance(receipt, Mapping) else None
-                        )
-                        if (
-                            receipt.get("ok") is not True
-                            or not isinstance(artifacts, list)
-                            or len(artifacts) != 1
-                        ):
-                            raise ReportingError(
-                                str(receipt.get("code", "report_visualization_write_failed")),
-                                str(receipt.get("message", "章节图表脚本写入未被接受。")),
-                                details=dict(receipt) if isinstance(receipt, Mapping) else None,
-                            )
-                        identity = FileIdentity.model_validate(artifacts[0])
-                        committed_source = normalized_source
-                        committed_sha256 = identity.sha256
-                        return identity
+
+                    async def load_script(
+                        path: str, task_context: RunContext
+                    ) -> FileIdentity | None:
+                        return await toolkit.recover_signed_analysis_script(path, task_context)
 
                     async def execute_script(
                         script_path: str, task_context: RunContext
@@ -782,28 +738,31 @@ class RuntimeAnalysisMixin:
                         return ChartVisualInspectionReceipt.model_validate(raw)
 
                     async def submit(
-                        draft: VisualizationScriptDraft,
+                        plan: VisualizationPlanDraft,
                         _inspections: tuple[ChartVisualInspectionReceipt, ...],
                         task_context: RunContext,
                     ) -> Mapping[str, Any]:
                         return await toolkit.submit_visualization_charts(
                             section_code,
-                            [item.model_dump(mode="json", by_alias=True) for item in draft.charts],
+                            [item.model_dump(mode="json", by_alias=True) for item in plan.charts],
                             run_context=task_context,
                         )
 
                     return (
                         await VisualizationSectionWorkflow(
-                            generate=generate,
-                            recover=recover if self.visualization_recovery is not None else None,
-                            write_script=write_script,
+                            generate_plan=generate_plan,
+                            generate_script=generate_script,
+                            repair_script=(
+                                repair_script if self.visualization_recovery is not None else None
+                            ),
                             execute_script=execute_script,
                             inspect_chart=(
                                 inspect_chart if self.vision_reviewer is not None else None
                             ),
                             submit=submit,
+                            load_script=load_script,
                         ).run(instruction_payload, invocation.run_context)
-                    ).draft
+                    ).plan
 
                 await self.task_runner.run(
                     task_scope,
@@ -973,6 +932,20 @@ class RuntimeAnalysisMixin:
             if isinstance(state.get(REPORT_OUTLINE_STATE_KEY), Mapping)
             else 1,
         )
+        if durable.phase is DurableReportingPhase.FINALIZE:
+            stored_checkpoint = durable.payload.get("workflowCheckpoint")
+            try:
+                checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
+            except (TypeError, ValueError, ValidationError) as error:
+                raise ReportingError(
+                    "report_checkpoint_invalid", "Reporting checkpoint 状态无效。"
+                ) from error
+            if checkpoint.phase != "finalize":
+                raise ReportingError(
+                    "report_checkpoint_conflict", "Finalize 状态与 Workflow checkpoint 不一致。"
+                )
+            result = self._workflow_result(state)
+            return StepOutput(content={"status": "ready", "jobId": result["jobId"]})
         if durable.phase not in {
             DurableReportingPhase.ANALYSIS_COVERAGE,
             DurableReportingPhase.ANALYSIS_RUNNING,
@@ -1304,20 +1277,70 @@ class RuntimeAnalysisMixin:
             profile_read_receipts=final_artifact.profile_read_receipts,
         )
         await self._persist_reporting_checkpoint(run_context, final_checkpoint)
+        return StepOutput(content={**content, "jobId": result["jobId"]})
+
+    async def assemble_report(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+        state = self._state(run_context)
+        scope = self._scope(run_context)
+        durable = await self.state_repository.get(str(run_context.run_id or scope["externalRunId"]))
+        if durable is None or durable.phase not in {
+            DurableReportingPhase.FINALIZE,
+            DurableReportingPhase.COMPLETED,
+        }:
+            raise ReportingError(
+                "report_state_version_unsupported", "当前 Reporting 运行状态不可执行汇编。"
+            )
+        stored_checkpoint = durable.payload.get("workflowCheckpoint")
+        try:
+            checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
+            lineage = tuple(
+                DatasetLineage.model_validate(item)
+                for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+            )
+        except (KeyError, TypeError, ValueError, ValidationError) as error:
+            raise ReportingError(
+                "report_checkpoint_invalid", "Finalize checkpoint 或冻结输入状态无效。"
+            ) from error
+        if checkpoint.phase not in {"finalize", "completed"}:
+            raise ReportingError(
+                "report_checkpoint_conflict", "当前 Workflow checkpoint 尚未进入 Finalize。"
+            )
+        if durable.phase is DurableReportingPhase.FINALIZE and checkpoint.phase != "finalize":
+            raise ReportingError(
+                "report_checkpoint_conflict", "Finalize durable 状态与 checkpoint 不一致。"
+            )
+
+        revision = checkpoint.revision
         markdown_path = f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.md"
         manifest_path = (
             f"报表/智能分析/{run_context.run_id}/report-revision-{revision}.manifest.json"
         )
-        _final_checkpoint, manifest = await self._finalize_reporting_sections(
-            run_context,
-            checkpoint=final_checkpoint,
-            revision=revision,
-            markdown_path=markdown_path,
-            manifest_path=manifest_path,
-            lineage=lineage,
-            citation_bindings=citation_bindings,
-            source_warnings=_source_warnings_from_state(state),
-        )
+        if checkpoint.phase == "completed":
+            manifest_file = next(
+                (item for item in checkpoint.files if item.path == manifest_path), None
+            )
+            if manifest_file is None:
+                raise ReportingError(
+                    "report_checkpoint_invalid", "Completed checkpoint 缺少报告 manifest。"
+                )
+            manifest = cast(
+                ReportArtifactManifest,
+                await self._read_identity_model(
+                    scope["threadId"], manifest_file, ReportArtifactManifest
+                ),
+            )
+        else:
+            _final_checkpoint, manifest = await self._finalize_reporting_sections(
+                run_context,
+                checkpoint=checkpoint,
+                revision=revision,
+                markdown_path=markdown_path,
+                manifest_path=manifest_path,
+                lineage=lineage,
+                citation_bindings=authoritative_citations(lineage),
+                source_warnings=_source_warnings_from_state(state),
+            )
+        result = self._workflow_result(state)
         result.update(
             {
                 "markdownPath": markdown_path,
@@ -1329,9 +1352,7 @@ class RuntimeAnalysisMixin:
         state[REPORT_ARTIFACTS_STATE_KEY] = {
             "draft": manifest.model_dump(mode="json", by_alias=True)
         }
-        return StepOutput(
-            content={**content, "jobId": result["jobId"], "markdownPath": markdown_path}
-        )
+        return StepOutput(content={"jobId": result["jobId"], "markdownPath": markdown_path})
 
     async def _write_artifact_validation_context(
         self,
@@ -1424,7 +1445,7 @@ class RuntimeAnalysisMixin:
             run_context,
             ReportingCommand(
                 name="set_workflow_checkpoint",
-                commandId=(f"workflow-checkpoint:{checkpoint.revision}:{digest}"),
+                commandId=(f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}"),
                 payload={
                     "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
                     "mirrorFile": identity.model_dump(mode="json", by_alias=True),
@@ -1863,6 +1884,7 @@ class RuntimeAnalysisMixin:
             raise ReportingError("report_phase_contract_invalid", "单项分析 Toolkit 装配结果无效。")
         toolkit = toolkits[0]
         analysis_id = str(payload.get("currentAnalysisId") or "")
+        code_runner = ReportingCodeGenerationRunner(agent=self._analysis_script_agent)
 
         async def run_structured_agent(
             agent: Any,
@@ -1879,126 +1901,83 @@ class RuntimeAnalysisMixin:
                 )
             return output
 
-        async def plan_evidence(
-            planner_payload: Mapping[str, Any], *, repair: bool
-        ) -> AnalysisEvidencePlan:
+        async def decide_evidence(
+            planner_payload: Mapping[str, Any],
+        ) -> AnalysisEvidenceDecision:
+            decision_request = {
+                "currentAnalysis": planner_payload.get("currentAnalysis"),
+                "deterministicFacts": planner_payload.get("deterministicFacts"),
+                "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
+            }
+            return cast(
+                AnalysisEvidenceDecision,
+                await run_structured_agent(
+                    self._analysis_evidence_agent,
+                    decision_request,
+                    AnalysisEvidenceDecision,
+                ),
+            )
+
+        async def generate_script(
+            *,
+            script_path: str,
+            task_facts: Mapping[str, Any],
+            diagnostic: Mapping[str, Any] | None,
+            run_context: RunContext,
+        ) -> CodeGenerationResult:
+            return await code_runner.generate(
+                script_path,
+                task_facts,
+                toolkit.apply_analysis_patch,
+                run_context,
+                diagnostic=diagnostic,
+                max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
+            )
+
+        async def repair_script(
+            *,
+            script_file: FileIdentity,
+            diagnostic: Mapping[str, Any],
+            decision: AnalysisEvidenceDecision,
+            run_context: RunContext,
+        ) -> CodeGenerationResult:
             dependencies = (
                 task_run_context.dependencies
                 if isinstance(task_run_context.dependencies, dict)
                 else None
             )
             binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
-            previous_effort = previous_budget = _missing = object()
-            repair_correction: Mapping[str, Any] | None = None
-            if repair:
-                if not isinstance(binding, dict):
-                    raise ReportingError(
-                        "report_phase_contract_invalid",
-                        "脚本修复缺少隔离的 thinking 契约。",
-                    )
-                # repair 与正常计划共享 Agent，但只在当前顺序步骤内临时升级。finally
-                # 必须恢复原档位，防止同一 Task 的最终摘要继承 max 预算。
-                previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
-                previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
-                binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "max"
-                binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_THINKING_BUDGETS[
-                    "complex"
-                ]
+            if not isinstance(binding, dict):
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "脚本修复缺少隔离的 thinking 契约。",
+                )
+            _missing = object()
+            previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
+            previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
+            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "max"
+            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_THINKING_BUDGETS[
+                "complex"
+            ]
             try:
-                if repair:
-                    raw_correction = planner_payload.get("correction")
-                    repair_correction = (
-                        raw_correction if isinstance(raw_correction, Mapping) else None
-                    )
-                    previous_raw = (
-                        repair_correction.get("previousPlan")
-                        if repair_correction is not None
-                        else None
-                    )
-                    try:
-                        previous = AnalysisEvidencePlan.model_validate(previous_raw)
-                    except ValidationError as error:
-                        raise ReportingError(
-                            "report_analysis_script_repair_invalid",
-                            "脚本修复缺少有效的既有事实缺口和脚本。",
-                        ) from error
-                    if not previous.requires_supplemental_evidence or previous.script is None:
-                        raise ReportingError(
-                            "report_analysis_script_repair_invalid",
-                            "脚本修复不得绕过既有事实缺口。",
-                        )
-                    decision = AnalysisEvidenceDecision(
-                        requiresSupplementalEvidence=True,
-                        reason=previous.reason,
-                        missingFacts=previous.missing_facts,
-                    )
-                else:
-                    decision_request = {
-                        "currentAnalysis": planner_payload.get("currentAnalysis"),
-                        "deterministicFacts": planner_payload.get("deterministicFacts"),
-                        "analysisBlock": {"blockId": f"{analysis_id}:evidence:decision"},
-                    }
-                    decision = cast(
-                        AnalysisEvidenceDecision,
-                        await run_structured_agent(
-                            self._analysis_evidence_agent,
-                            decision_request,
-                            AnalysisEvidenceDecision,
-                        ),
-                    )
-                    if not decision.requires_supplemental_evidence:
-                        return AnalysisEvidencePlan(
-                            requiresSupplementalEvidence=False,
-                            reason=decision.reason,
-                            missingFacts=(),
-                            script=None,
-                        )
-
-                script_request = {
-                    "currentAnalysis": planner_payload.get("currentAnalysis"),
-                    "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
-                    "datasets": planner_payload.get("datasets", []),
-                    "analysisOutputRoot": planner_payload.get("analysisOutputRoot"),
-                    "scriptPath": planner_payload.get("scriptPath"),
-                    "evidencePath": planner_payload.get("evidencePath"),
-                    "analysisBlock": {
-                        "blockId": (
-                            f"{analysis_id}:evidence:script:{'repair' if repair else 'initial'}"
-                        )
-                    },
-                }
-                if repair:
-                    assert repair_correction is not None
-                    assert previous.script is not None
-                    script_request["previousScript"] = previous.script
-                    script_request["correction"] = {
-                        "attempt": repair_correction.get("attempt"),
-                        "error": repair_correction.get("error"),
-                    }
-                script_draft = cast(
-                    AnalysisScriptDraft,
-                    await run_structured_agent(
-                        self._analysis_script_agent,
-                        script_request,
-                        AnalysisScriptDraft,
-                    ),
+                return await code_runner.repair(
+                    script_file,
+                    diagnostic,
+                    toolkit.read_file,
+                    toolkit.apply_analysis_patch,
+                    run_context,
+                    task_facts={"missingFacts": list(decision.missing_facts)},
+                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
             finally:
-                if repair and isinstance(binding, dict):
-                    for key, restored_value in (
-                        (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
-                        (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
-                    ):
-                        if restored_value is _missing:
-                            binding.pop(key, None)
-                        else:
-                            binding[key] = restored_value
-            return AnalysisEvidencePlan(
-                requiresSupplementalEvidence=True,
-                reason=decision.reason,
-                missingFacts=decision.missing_facts,
-                script=script_draft.script,
-            )
+                for key, restored_value in (
+                    (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
+                    (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
+                ):
+                    if restored_value is _missing:
+                        binding.pop(key, None)
+                    else:
+                        binding[key] = restored_value
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             summary_request = _prepare_analysis_summary_request(
@@ -2015,12 +1994,14 @@ class RuntimeAnalysisMixin:
             return cast(AnalysisSummaryDraft, output)
 
         workflow = AnalysisItemWorkflow(
-            plan_evidence=plan_evidence,
+            decide_evidence=decide_evidence,
+            generate_script=generate_script,
+            repair_script=repair_script,
             summarize=summarize,
             read_file=toolkit.read_file,
-            apply_patch=toolkit.apply_analysis_patch,
             run_script=toolkit.run_python_script,
             complete=toolkit.complete_analysis_item,
+            load_script=toolkit.recover_signed_analysis_script,
         )
         result = await workflow.run(payload, task_run_context)
         return result.output
@@ -2824,13 +2805,13 @@ def _visualization_section_retry_error(
 def _visualization_section_completion_conditions(last_error: Exception | None) -> list[str]:
     conditions = [
         "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
-        "返回完整 VisualizationScriptDraft；pythonSource 只读取签发事实并写入签发图表路径",
-        "固定 Workflow 负责脚本写入、执行、审查和图表提交；pythonSource 不得调用或导入任何编排工具",
+        "返回完整 VisualizationPlanDraft；只包含 charts 和 warnings，不得返回脚本路径或源码",
+        "固定 Workflow 负责脚本生成、执行、审查和图表提交",
     ]
     if _visualization_recovery_required(last_error):
         conditions.insert(
             0,
-            "上一轮工具或脚本失败；仅生成满足当前签发路径与冻结事实的最小完整草案，不重新探索工作区",
+            "上一轮工具或脚本失败；仅生成满足冻结事实的图表计划，不重新探索工作区",
         )
     return conditions
 

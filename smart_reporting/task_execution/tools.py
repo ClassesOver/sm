@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +30,29 @@ def _unified_diff_path(value: str) -> str:
     return value[2:]
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+
+
+def _canonicalize_patch_lines(patch: str) -> list[str]:
+    lines = patch.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    canonical: list[str] = []
+    for line in lines:
+        match = _HUNK_HEADER_RE.match(line.rstrip("\n"))
+        if match:
+            source_start, source_length, target_start, target_length, section = match.groups()
+            source_length = source_length or "1"
+            target_length = target_length or "1"
+            newline = "\n" if line.endswith("\n") else ""
+            line = (
+                f"@@ -{source_start},{source_length} +{target_start},{target_length} @@"
+                f"{section}{newline}"
+            )
+        canonical.append(line)
+    return canonical
+
+
 def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
     if not isinstance(patch, str) or not patch.strip():
         raise WorkspaceError("补丁不能为空。")
@@ -39,6 +63,8 @@ def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
         parsed = PatchSet(normalized)
     except (UnidiffParseError, ValueError) as error:
         raise WorkspaceError("标准 unified diff 语法无效。") from error
+    if _canonicalize_patch_lines(normalized) != _canonicalize_patch_lines(str(parsed)):
+        raise WorkspaceError("unified diff hunk 存在未被计数消费的尾部内容。")
     if not 1 <= len(parsed) <= MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
     operations: list[_PatchOperation] = []
@@ -203,42 +229,26 @@ def _build_changes_from_originals(
 def _normalized_patch_inputs(
     service: WorkspaceService,
     patch: str,
-    expected_sha256: dict[str, str] | None,
 ) -> tuple[str, list[tuple[_PatchOperation, str]]]:
     normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
     paths = [
         (operation, service.normalize_path(operation.path, allow_root=False)[0])
         for operation in parse_unified_diff(normalized)
     ]
-    for operation, path in paths:
-        if operation.operation == "create" and expected_sha256 and path in expected_sha256:
-            raise WorkspaceError("新增文件不能提供已有文件的基线 SHA-256。")
     return normalized, paths
-
-
-def _validate_original_hash(
-    path: str,
-    current: str,
-    expected_sha256: dict[str, str] | None,
-) -> None:
-    digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
-    if expected_sha256 and expected_sha256.get(path) != digest:
-        raise WorkspaceError("文件内容已变化，请重新读取文件和哈希后再应用补丁。")
 
 
 def build_workspace_changes(
     service: WorkspaceService,
     thread: str,
     patch: str,
-    expected_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    normalized, paths = _normalized_patch_inputs(service, patch, expected_sha256)
+    normalized, paths = _normalized_patch_inputs(service, patch)
     originals: dict[str, str] = {}
     for operation, path in paths:
         if operation.operation == "create":
             continue
         current = service.read_text(thread, path)
-        _validate_original_hash(path, current, expected_sha256)
         originals[path] = current
     return _build_changes_from_originals(normalized, paths, originals)
 
@@ -247,14 +257,12 @@ async def abuild_workspace_changes(
     service: WorkspaceService,
     thread: str,
     patch: str,
-    expected_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    normalized, paths = _normalized_patch_inputs(service, patch, expected_sha256)
+    normalized, paths = _normalized_patch_inputs(service, patch)
     originals: dict[str, str] = {}
     for operation, path in paths:
         if operation.operation == "create":
             continue
         current = await service.aread_text(thread, path)
-        _validate_original_hash(path, current, expected_sha256)
         originals[path] = current
     return await asyncio.to_thread(_build_changes_from_originals, normalized, paths, originals)

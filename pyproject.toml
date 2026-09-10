@@ -54,6 +54,7 @@ dev = [
 testpaths = [
     "smart_reporting/task_execution/tests",
     "smart_reporting/reporting/tests",
+    "smart_reporting/reporting_mcp/tests",
     "smart_reporting/tests",
 ]
 addopts = "-m 'not integration'"

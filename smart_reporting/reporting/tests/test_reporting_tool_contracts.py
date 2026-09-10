@@ -11,6 +11,7 @@ from agno.run import RunContext
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tools.sections import RuntimeSectionsMixin
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
+from smart_reporting.reporting.tools.validation import analysis_patch_parameters
 from smart_reporting.task_execution import MAX_TOOL_OUTPUT_READ_BYTES
 
 
@@ -43,6 +44,25 @@ def test_render_report_section_is_bound_to_toolkit_instance() -> None:
     descriptor = inspect.getattr_static(RuntimeSectionsMixin, "render_report_section")
 
     assert not isinstance(descriptor, staticmethod)
+
+
+def test_analysis_patch_contract_is_patch_only() -> None:
+    schema = analysis_patch_parameters()
+    assert set(schema["properties"]) == {"patch"}
+    with pytest.raises(Exception):
+        from jsonschema import Draft202012Validator
+
+        Draft202012Validator(schema).validate(
+            {
+                "patch": "--- /dev/null\n+++ b/analysis/new.py\n@@ -0,0 +1 @@\n+x\n",
+                "expected_sha256": {},
+            }
+        )
+
+
+def test_apply_analysis_patch_signature_hides_expected_sha256() -> None:
+    signature = inspect.signature(ReportingToolkit.apply_analysis_patch)
+    assert "expected_sha256" not in signature.parameters
 
 
 def test_signed_fact_page_preserves_structured_read_receipt() -> None:
@@ -215,6 +235,42 @@ def test_section_heading_failure_preserves_stable_issue_path() -> None:
     result = ReportingToolkit._failure(error)
 
     assert result["details"] == error.details
+
+
+def test_long_section_heading_failure_preserves_safe_length_issue() -> None:
+    error = ReportingError(
+        "report_draft_heading_title_too_long",
+        "章节正文标题可见文本不得超过 300 个字符。",
+        details={
+            "issues": [
+                {
+                    "path": "$.blocks[1].markdown",
+                    "type": "heading_title_too_long",
+                    "message": "章节正文标题可见文本不得超过 300 个字符。",
+                    "maxLength": 300,
+                    "actualLength": 301,
+                    "title": "敏感标题正文",
+                }
+            ]
+        },
+    )
+
+    result = ReportingToolkit._failure(error)
+
+    assert result["details"] == {
+        "issues": [
+            {
+                "path": "$.blocks[1].markdown",
+                "type": "heading_title_too_long",
+                "message": "章节正文标题可见文本不得超过 300 个字符。",
+                "maxLength": 300,
+                "actualLength": 301,
+            }
+        ]
+    }
+    assert result["requiredActions"] == [
+        "只缩短 details.issues 指向的标题，保留对应 Markdown 正文及其他有效内容后重试。"
+    ]
 
 
 @pytest.mark.anyio

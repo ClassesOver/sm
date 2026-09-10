@@ -196,7 +196,6 @@ from ..state import ReportingCommand, ReportingStateError
 from ..state import ReportingPhase as DurableReportingPhase
 from .analysis_item_workflow import (
     AnalysisEvidenceDecision,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
 from .models import (
@@ -578,8 +577,9 @@ class _ReportWorkflowRuntimeBase:
             thinking_profile=planner_off,
             stage_instructions=(
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
-                "只返回 reportType、中文报告标题、sections 和 assumptions；sections 不得提交 code",
-                "每个章节必须引用一个或多个 outlineContext.analyses 中已注册的 analysisId",
+                "只返回 reportType、中文报告标题、sections 和 assumptions；sections 每项只能包含 title 和 analysisIds",
+                "analysisIds 必须逐字复制 outlineContext.analyses 中已注册的 analysisId，不得生成、截断或改写",
+                "章节重点由服务端根据 analysisIds 对应的 managementQuestion 生成，模型不得提交 focus",
                 OUTLINE_SECTION_COUNT_INSTRUCTION,
                 "section code 由服务端在批准后生成，模型不得提交或猜测 section_NNN",
             ),
@@ -628,13 +628,25 @@ class _ReportWorkflowRuntimeBase:
                 "固定事实足够时 missingFacts 必须为空数组，不得为了探索数据而声明缺口。",
             ),
         )
-        self._analysis_script_agent = self._planning_agent(
-            reporting_agent_template,
-            "report-analysis-script-writer",
-            AnalysisScriptDraft,
-            thinking_profile=planner_high,
-            escalation_thinking_profile=planner_max,
-            stage_instructions=(
+        from ...agent import create_reporting_code_agent
+
+        if not isinstance(reporting_agent_template.model, OpenAIChat):
+            raise TypeError("Report analysis code agent requires OpenAIChat")
+        analysis_code_model = copy(reporting_agent_template.model)
+        apply_reporting_thinking_profile(analysis_code_model, planner_high)
+        analysis_code_model.top_p = 1.0
+        analysis_code_model.retries = 0
+        analysis_code_model.exponential_backoff = False
+        setattr(
+            analysis_code_model,
+            "_report_escalation_thinking_profile",
+            planner_max,
+        )
+        self._analysis_script_agent = create_reporting_code_agent(
+            model=analysis_code_model,
+            name="report-analysis-script-writer",
+            role="只根据签发事实缺口生成或修复补证 Python 脚本。",
+            instructions=(
                 "只针对 evidenceDecision.missingFacts 生成一个最小 Python 脚本；不得重新判断事实缺口。",
                 "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
                 "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
@@ -646,8 +658,8 @@ class _ReportWorkflowRuntimeBase:
                 "写入 evidencePath 时必须使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑编码；不得使用 indent，且不得删减任何已计算事实。",
                 "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
                 "脚本不得访问网络、环境变量、数据库、工作区其他路径或启动子进程。",
-                "correction 存在时保留 evidenceDecision，不改变事实缺口，只修正导致执行或 evidence 校验失败的代码。",
-                "correction.error 是服务端结构化失败事实；必须逐项读取 code、message 和 details.path，不得原样返回与 previousScript 相同的脚本。",
+                "readReceipt 存在时只修复该受信脚本，不改变原始事实缺口或签发路径。",
+                "diagnostic 是服务端结构化失败事实；必须逐项读取 code、message 和 details.path，修正导致执行或 evidence 校验失败的代码。",
             ),
         )
         self._analysis_summary_agent = self._planning_agent(
@@ -726,11 +738,7 @@ class _ReportWorkflowRuntimeBase:
                 raise
 
         setattr(planner_model, "_report_response_validator", validate_response)
-        agent_retries = (
-            0
-            if output_schema in {AnalysisBundle, AnalysisEvidenceDecision, AnalysisScriptDraft}
-            else 2
-        )
+        agent_retries = 0 if output_schema in {AnalysisBundle, AnalysisEvidenceDecision} else 2
         agent = planner.deep_copy(
             update={
                 "id": agent_id,
@@ -857,6 +865,7 @@ class _ReportWorkflowRuntimeBase:
             prepare_analysis_context=self.prepare_analysis_context,
             generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
             run_reporting_analysis=self.run_reporting_analysis,
+            assemble_report=self.assemble_report,
             validate_report=self.validate_report,
             finalize_publication=finalize_publication,
         )

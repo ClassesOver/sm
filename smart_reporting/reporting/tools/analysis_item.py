@@ -17,11 +17,13 @@ from typing import Any
 from agno.run import RunContext
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+from pydantic import ValidationError
 
 from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
+    FileIdentity,
     MetricDefinition,
 )
 from ..workflow.state import ReportingRunState
@@ -33,13 +35,208 @@ from .validation import (
 from .visualization import MAX_VISUALIZATION_SCRIPT_BYTES
 
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
-MAX_ANALYSIS_PYTHON_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_ANALYSIS_PYTHON_SOURCE_BYTES = 128 * 1024
+MAX_ANALYSIS_PYTHON_LINE_BYTES = 8 * 1024
+MAX_ANALYSIS_PYTHON_LITERAL_BYTES = 8 * 1024
+MAX_ANALYSIS_PYTHON_LITERAL_ITEMS = 4096
 MAX_ANALYSIS_WRITE_INTENT_BYTES = 4 * 1024 * 1024
 _ANALYSIS_SUMMARY_PERIOD_PATTERN = re.compile(
     r"(?P<year>\d{4})年(?:(?P<full>全年)|(?P<start>\d{1,2})(?:[-—–至到](?P<end>\d{1,2}))?月)"
 )
 _ANALYSIS_SUMMARY_SENTENCE_PATTERN = re.compile(r"[^。！？\n]+[。！？]?|\n")
 _INCOMPARABLE_YOY_WARNING = "摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"
+_FORBIDDEN_VISUALIZATION_MODULES = frozenset({"plotly", "kaleido", "seaborn"})
+
+
+def _is_pyplot_import(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Import)
+        and any(alias.name == "matplotlib.pyplot" for alias in node.names)
+    ) or (
+        isinstance(node, ast.ImportFrom)
+        and (
+            node.module == "matplotlib.pyplot"
+            or (node.module == "matplotlib" and any(alias.name == "pyplot" for alias in node.names))
+        )
+    )
+
+
+def _literal_dynamic_imported_module(node: ast.AST) -> str | None:
+    if (
+        not isinstance(node, ast.Call)
+        or not node.args
+        or not isinstance(node.args[0], ast.Constant)
+        or not isinstance(node.args[0].value, str)
+    ):
+        return None
+    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        return node.args[0].value.split(".")[0].lower()
+    if (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "importlib"
+        and node.func.attr == "import_module"
+    ):
+        return node.args[0].value.split(".")[0].lower()
+    return None
+
+
+def _valid_visualization_source(tree: ast.Module) -> bool:
+    forbidden_names = {
+        "__file__",
+        "apply_analysis_patch",
+        "null",
+        "run_python_script",
+        "submit_visualization_charts",
+        "true",
+        "false",
+    }
+    if any(
+        isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in forbidden_names
+        for node in ast.walk(tree)
+    ):
+        return False
+    if any(
+        module in _FORBIDDEN_VISUALIZATION_MODULES
+        for node in ast.walk(tree)
+        for module in (
+            [alias.name.split(".")[0].lower() for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module.split(".")[0].lower()]
+            if isinstance(node, ast.ImportFrom) and node.module
+            else []
+        )
+    ) or any(
+        _literal_dynamic_imported_module(node) in _FORBIDDEN_VISUALIZATION_MODULES
+        for node in ast.walk(tree)
+    ):
+        return False
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "write_image"
+        for node in ast.walk(tree)
+    ):
+        return False
+
+    matplotlib_imports = [
+        index
+        for index, node in enumerate(tree.body)
+        if isinstance(node, ast.Import)
+        and any(alias.name == "matplotlib" and alias.asname is None for alias in node.names)
+    ]
+    pyplot_imports = [index for index, node in enumerate(tree.body) if _is_pyplot_import(node)]
+    agg_setups = [
+        index
+        for index, node in enumerate(tree.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "matplotlib"
+        and node.value.func.attr == "use"
+        and node.value.args
+        and isinstance(node.value.args[0], ast.Constant)
+        and node.value.args[0].value == "Agg"
+    ]
+    if (
+        not matplotlib_imports
+        or not pyplot_imports
+        or not agg_setups
+        or min(matplotlib_imports) >= min(agg_setups)
+        or min(agg_setups) >= min(pyplot_imports)
+    ):
+        return False
+    first_agg = tree.body[min(agg_setups)]
+    if any(
+        (node.lineno, node.col_offset) < (first_agg.lineno, first_agg.col_offset)
+        for node in ast.walk(tree)
+        if _is_pyplot_import(node)
+    ):
+        return False
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "savefig"
+        for node in ast.walk(tree)
+    )
+
+
+def _reject_reporting_python_source(path: str, content: Any) -> None:
+    if isinstance(content, str):
+        try:
+            raw_content = content.encode("utf-8")
+        except UnicodeEncodeError:
+            raw_content = b""
+        lines = content.splitlines()
+    elif isinstance(content, bytes):
+        raw_content = content
+        lines = []
+    else:
+        raw_content = b""
+        lines = []
+    raise ReportingError(
+        "report_python_source_shape_invalid",
+        "签发 Python 源码形状无效，已拒绝写入。",
+        details={
+            "path": path,
+            "size": len(raw_content),
+            "lineCount": len(lines),
+            "maxLineLength": max(
+                (len(line.encode("utf-8", errors="replace")) for line in lines),
+                default=0,
+            ),
+        },
+    )
+
+
+def validate_reporting_python_source(
+    *,
+    path: str,
+    content: Any,
+    max_bytes: int,
+    visualization: bool,
+) -> dict[str, Any]:
+    """以生产门禁验证 Reporting Python 源码并返回稳定指标。"""
+
+    if not isinstance(content, str):
+        _reject_reporting_python_source(path, content)
+    try:
+        raw_content = content.encode("utf-8")
+    except UnicodeEncodeError:
+        _reject_reporting_python_source(path, content)
+    if len(raw_content) > max_bytes or "\r" in content or not content.endswith("\n"):
+        _reject_reporting_python_source(path, content)
+    lines = content.split("\n")
+    source_line_count = len(content.splitlines())
+    if source_line_count < 2:
+        _reject_reporting_python_source(path, content)
+    if any(len(line.encode("utf-8")) > MAX_ANALYSIS_PYTHON_LINE_BYTES for line in lines):
+        _reject_reporting_python_source(path, content)
+    try:
+        tree = ast.parse(content, filename=path)
+        compile(tree, path, "exec")
+    except SyntaxError:
+        _reject_reporting_python_source(path, content)
+    if visualization and not _valid_visualization_source(tree):
+        _reject_reporting_python_source(path, content)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            if (
+                len(node.value if isinstance(node.value, bytes) else node.value.encode("utf-8"))
+                > MAX_ANALYSIS_PYTHON_LITERAL_BYTES
+            ):
+                _reject_reporting_python_source(path, content)
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            item_count = len(node.elts) if not isinstance(node, ast.Dict) else len(node.keys)
+            if item_count > MAX_ANALYSIS_PYTHON_LITERAL_ITEMS:
+                _reject_reporting_python_source(path, content)
+    return {
+        "path": path,
+        "sourceLineCount": source_line_count,
+        "sizeBytes": len(raw_content),
+        "sha256": hashlib.sha256(raw_content).hexdigest(),
+    }
 
 
 def _fact_metric_codes(bundle: Mapping[str, Any]) -> tuple[str, ...]:
@@ -120,6 +317,24 @@ def _derive_durable_analysis_binding(
 
 
 class RuntimeAnalysisMixin:
+    def _signed_analysis_script_contract(self, scope: Any) -> tuple[str, int, bool]:
+        _parameters, contract = self._phase_parameters(scope, "analysis")
+        workspace = contract.get("visualizationWorkspace")
+        script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+        task_kind = contract.get("taskKind")
+        if task_kind == "visualization_section":
+            normalized = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            return normalized, MAX_VISUALIZATION_SCRIPT_BYTES, True
+        if task_kind == "analysis_item":
+            return (
+                f"{self._analysis_output_root(contract)}/supplement.py",
+                MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
+                False,
+            )
+        raise ReportingError(
+            "report_phase_contract_invalid", "当前 analysis Task 缺少脚本签发契约。"
+        )
+
     def _validate_analysis_write_arguments(
         self, tool_name: str, arguments: Mapping[str, Any]
     ) -> tuple[dict[str, Any], tuple[str, ...], dict[str, str], int]:
@@ -166,37 +381,8 @@ class RuntimeAnalysisMixin:
             expected_states[path] = state
 
         operations = parse_unified_diff(raw["patch"])
-        expected_sha256 = raw.get("expected_sha256", {})
-        if not isinstance(expected_sha256, dict):
-            raise ReportingError(
-                "report_analysis_write_intent_invalid", "expected_sha256 必须是对象。"
-            )
-        normalized_expected: dict[str, str] = {}
-        for path, digest in expected_sha256.items():
-            if not isinstance(path, str) or not isinstance(digest, str):
-                raise ReportingError(
-                    "report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。"
-                )
-            normalized_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
-            if (
-                normalized_path in normalized_expected
-                or len(digest) != 64
-                or any(character not in "0123456789abcdef" for character in digest)
-            ):
-                raise ReportingError(
-                    "report_analysis_write_intent_invalid", "基线 SHA-256 映射无效。"
-                )
-            normalized_expected[normalized_path] = digest
-        operation_paths = {
-            WorkspaceService.normalize_path(item.path, allow_root=False)[0] for item in operations
-        }
-        if set(normalized_expected) - operation_paths:
-            raise ReportingError(
-                "report_analysis_write_intent_invalid", "基线 SHA-256 包含非补丁目标路径。"
-            )
         for operation in operations:
             add_path(operation.path, "present")
-        raw["expected_sha256"] = normalized_expected
 
         payload_bytes = len(
             json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -288,6 +474,64 @@ class RuntimeAnalysisMixin:
             )
         return None
 
+    async def _recover_recorded_analysis_write(
+        self,
+        *,
+        scope: Any,
+        tool_name: str,
+        canonical: Mapping[str, Any],
+        paths: tuple[str, ...],
+        payload_bytes: int,
+    ) -> dict[str, Any] | None:
+        """在重建 patch 前恢复同一 durable 写入，避免旧 hunk 再次应用。"""
+
+        durable = await self._durable_state(scope)
+        intents = durable.payload.get("writeIntents")
+        if not isinstance(intents, Mapping):
+            return None
+        for intent_id, intent in reversed(tuple(intents.items())):
+            if not isinstance(intent, Mapping) or intent.get("toolName") != tool_name:
+                continue
+            if intent.get("affectedPaths") != list(paths):
+                continue
+            arguments = intent.get("arguments")
+            if not isinstance(arguments, Mapping) or arguments.get("patch") != canonical.get(
+                "patch"
+            ):
+                continue
+            status = intent.get("status")
+            if status == "pending":
+                return await self._recover_pending_analysis_write(
+                    scope=scope,
+                    tool_name=tool_name,
+                    canonical=arguments,
+                    paths=paths,
+                    intent_sha256=str(intent_id),
+                    payload_bytes=payload_bytes,
+                )
+            if status != "committed":
+                continue
+            artifacts = intent.get("artifacts")
+            if not isinstance(artifacts, list):
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "已提交写入意图缺少文件身份。"
+                )
+            current = await self._analysis_write_hash_files(thread_id=scope.thread_id, paths=paths)
+            if current != artifacts:
+                raise ReportingError(
+                    "report_analysis_write_identity_mismatch",
+                    "已提交写入意图的文件身份发生变化。",
+                )
+            return {
+                "ok": True,
+                "status": "committed",
+                "intentSha256": str(intent_id),
+                "bytes": payload_bytes,
+                "artifacts": artifacts,
+                "recovered": True,
+            }
+        return None
+
     async def _preflight_analysis_python_write(
         self,
         *,
@@ -295,86 +539,207 @@ class RuntimeAnalysisMixin:
         tool_name: str,
         canonical: Mapping[str, Any],
     ) -> None:
-        """在提交 Workspace mutation 前拒绝会破坏 Python 语法的写入。"""
+        """在提交 Workspace mutation 前验证签发 Python 源码的形状。"""
 
         changes = list(canonical.get("operations", ()))
-
-        # Kernel patch 的实际提交发生在这之后；预检只使用同一候选文本，保证语法错误时
-        # Workspace 与 write intent 都不产生可恢复但无效的中间状态。
-        _parameters, contract = self._phase_parameters(scope, "analysis")
-        workspace = contract.get("visualizationWorkspace")
-        script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-        normalized_script = (
-            WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            if contract.get("taskKind") == "visualization_section"
-            else None
+        normalized_script, max_bytes, visualization = self._signed_analysis_script_contract(scope)
+        if len(changes) != 1:
+            _reject_reporting_python_source(normalized_script, "")
+        change = changes[0]
+        path = change.get("path")
+        content = change.get("content")
+        if (
+            change.get("operation") not in {"create", "update"}
+            or path != normalized_script
+            or not isinstance(content, str)
+        ):
+            _reject_reporting_python_source(
+                path if isinstance(path, str) else normalized_script, content
+            )
+        validate_reporting_python_source(
+            path=path,
+            content=content,
+            max_bytes=max_bytes,
+            visualization=visualization,
         )
-        for change in changes:
-            path = change.get("path")
-            content = change.get("content")
-            if (
-                change.get("operation") not in {"create", "update"}
-                or not isinstance(path, str)
-                or not path.endswith(".py")
-                or not isinstance(content, str)
-            ):
+
+    def _analysis_patch_operation(self, scope: Any, patch: str) -> str:
+        operations = parse_unified_diff(patch)
+        normalized_script, _max_bytes, _visualization = self._signed_analysis_script_contract(scope)
+        if len(operations) != 1:
+            _reject_reporting_python_source(normalized_script, "")
+        operation = operations[0]
+        if operation.operation not in {"create", "update"} or operation.path != normalized_script:
+            _reject_reporting_python_source(operation.path, "")
+        return operation.operation
+
+    async def _reject_create_for_existing_script(
+        self, *, scope: Any, operations: Sequence[Mapping[str, Any]]
+    ) -> None:
+        change = operations[0]
+        if change.get("operation") != "create":
+            return
+        path = str(change["path"])
+        current = await self._analysis_write_hash_files(thread_id=scope.thread_id, paths=(path,))
+        if current and current[0].get("missing") is not True:
+            raise ReportingError(
+                "report_analysis_write_path_conflict",
+                "create diff 的签发脚本已存在。",
+                details={"paths": [path], "currentFiles": current},
+            )
+
+    async def recover_signed_analysis_script(
+        self,
+        path: str,
+        run_context: RunContext | None,
+    ) -> FileIdentity | None:
+        """从 committed/pending write intent 恢复签发脚本身份。"""
+
+        scope = await self.runtime.scope(run_context)
+        normalized, _max_bytes, _visualization = self._signed_analysis_script_contract(scope)
+        if path != normalized:
+            raise ReportingError(
+                "report_phase_artifact_changed", "恢复脚本路径与当前签发路径不一致。"
+            )
+        durable = await self._durable_state(scope)
+        intents = durable.payload.get("writeIntents")
+        if not isinstance(intents, Mapping):
+            return None
+        current_rows = await self._analysis_write_hash_files(
+            thread_id=scope.thread_id, paths=(path,)
+        )
+        current = current_rows[0] if current_rows else {"path": path, "missing": True}
+        for intent_id, intent in reversed(tuple(intents.items())):
+            if not isinstance(intent, Mapping) or intent.get("toolName") != "apply_analysis_patch":
                 continue
-            # visualization 的签发脚本必须能在一次工具回执中完整恢复。这里校验最终
-            # 候选文本，使 replace/patch 也无法通过分次写入绕过，并且发生在 intent
-            # 与 Workspace mutation 之前；错误详情只记录身份信息，不泄露脚本正文。
-            content_bytes = len(content.encode("utf-8"))
-            if path == normalized_script and content_bytes > MAX_VISUALIZATION_SCRIPT_BYTES:
+            if intent.get("affectedPaths") != [path]:
+                continue
+            arguments = intent.get("arguments")
+            operations = arguments.get("operations") if isinstance(arguments, Mapping) else None
+            if not isinstance(operations, list) or len(operations) != 1:
                 raise ReportingError(
-                    "report_visualization_script_too_large",
-                    "visualization 签发脚本超过 64 KiB 完整读取边界，已拒绝写入。",
-                    details={
-                        "path": path,
-                        "size": content_bytes,
-                        "limit": MAX_VISUALIZATION_SCRIPT_BYTES,
-                    },
+                    "report_analysis_write_intent_invalid", "脚本写入意图缺少唯一操作。"
                 )
-            try:
-                tree = ast.parse(content, filename=path)
-                compile(tree, path, "exec")
-            except SyntaxError as error:
+            change = operations[0]
+            if (
+                not isinstance(change, Mapping)
+                or change.get("path") != path
+                or change.get("operation") not in {"create", "update"}
+                or not isinstance(change.get("content"), str)
+            ):
                 raise ReportingError(
-                    "report_analysis_python_syntax_invalid",
-                    "写入会使分析 Python 脚本语法无效，已拒绝写入。",
-                    details={"path": path, "line": error.lineno, "offset": error.offset},
-                ) from error
+                    "report_analysis_write_intent_invalid", "脚本写入意图操作无效。"
+                )
+            status = intent.get("status")
+            if status == "committed":
+                artifacts = intent.get("artifacts")
+                if not isinstance(artifacts, list) or len(artifacts) != 1:
+                    raise ReportingError(
+                        "report_analysis_write_intent_invalid",
+                        "已提交写入意图缺少唯一文件身份。",
+                    )
+                try:
+                    expected = FileIdentity.model_validate(artifacts[0])
+                except ValidationError as error:
+                    raise ReportingError(
+                        "report_analysis_write_intent_invalid",
+                        "已提交写入意图的文件身份无效。",
+                    ) from error
+                if current == expected.model_dump():
+                    return expected
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "签发脚本身份与 durable write intent 不一致。",
+                )
+            if status != "pending":
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid", "脚本写入意图状态无效。"
+                )
+            expected_sha256 = change.get("expected_sha256")
+            if change.get("operation") == "update" and (
+                not isinstance(expected_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+            ):
+                raise ReportingError(
+                    "report_analysis_write_intent_invalid",
+                    "脚本更新意图缺少有效的原文件身份。",
+                )
+            content = change["content"]
+            desired = {
+                "path": path,
+                "size": len(content.encode("utf-8")),
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
+            if current == desired:
+                await self._apply_durable(
+                    scope,
+                    name="commit_write_intent",
+                    payload={"intentId": intent_id, "artifacts": [desired]},
+                    command_id=f"write-commit:{intent_id}",
+                )
+                return FileIdentity.model_validate(desired)
+            if change.get("operation") == "create" and current.get("missing") is True:
+                return None
+            if (
+                change.get("operation") == "update"
+                and current.get("missing") is not True
+                and current.get("sha256") == expected_sha256
+            ):
+                return None
+            raise ReportingError(
+                "report_phase_artifact_changed", "签发脚本身份与 durable write intent 不一致。"
+            )
+        return None
 
     async def apply_analysis_patch(
         self,
         patch: str,
-        expected_sha256: dict[str, str] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """保存固定操作的写入意图、执行写入并返回文件身份。"""
 
         canonical_tool_name = "apply_analysis_patch"
-        canonical_input = {
-            "patch": patch,
-            **({"expected_sha256": expected_sha256} if expected_sha256 else {}),
-        }
+        canonical_input = {"patch": patch}
 
         async def call(scope: Any) -> dict[str, Any]:
             _parameters, contract = self._phase_parameters(scope, "analysis")
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
+            operation = self._analysis_patch_operation(scope, canonical["patch"])
+            if operation == "update":
+                recovered = await self._recover_recorded_analysis_write(
+                    scope=scope,
+                    tool_name=canonical_tool_name,
+                    canonical=canonical,
+                    paths=paths,
+                    payload_bytes=payload_bytes,
+                )
+                if recovered is not None:
+                    return recovered
             raw_operations = await abuild_workspace_changes(
                 self.runtime.workspace,
                 scope.thread_id,
                 canonical["patch"],
-                canonical.get("expected_sha256"),
             )
             canonical["operations"] = raw_operations
-            self._require_analysis_task_output_paths(contract, paths)
             await self._preflight_analysis_python_write(
                 scope=scope,
                 tool_name=canonical_tool_name,
                 canonical=canonical,
             )
+            if operation == "create":
+                recovered = await self._recover_recorded_analysis_write(
+                    scope=scope,
+                    tool_name=canonical_tool_name,
+                    canonical=canonical,
+                    paths=paths,
+                    payload_bytes=payload_bytes,
+                )
+                if recovered is not None:
+                    return recovered
+            await self._reject_create_for_existing_script(scope=scope, operations=raw_operations)
+            self._require_analysis_task_output_paths(contract, paths)
             payload = json.dumps(
                 {
                     "version": "1",
@@ -433,7 +798,15 @@ class RuntimeAnalysisMixin:
             )
             try:
                 result = await self.runtime.patch(
-                    "patch", None, None, None, False, canonical["patch"], run_context, _scope=scope
+                    "patch",
+                    None,
+                    None,
+                    None,
+                    False,
+                    canonical["patch"],
+                    run_context,
+                    _changes=raw_operations,
+                    _scope=scope,
                 )
             except WorkspacePathConflict as error:
                 try:

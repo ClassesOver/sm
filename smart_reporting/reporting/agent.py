@@ -2,7 +2,7 @@ import ast
 import hashlib
 import inspect
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import fields
@@ -15,8 +15,9 @@ from uuid import uuid4
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
 from agno.exceptions import AgentRunException, StopAgentRun
+from agno.models.base import Model
 from agno.models.message import Message
-from agno.models.openai import OpenAIChat
+from agno.models.openai import OpenAIChat, OpenAIResponses
 from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
@@ -80,14 +81,10 @@ from .phase import (
     REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -107,9 +104,6 @@ from .phase import (
     reporting_visualization_exploration_budget_exhausted_from_run_context,
     reporting_visualization_exploration_count,
     reporting_visualization_recovery_from_run_context,
-    reporting_visualization_recovery_read_from_run_context,
-    reporting_visualization_script_executed_from_run_context,
-    reporting_visualization_script_written_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
 from .structured_output.agno_compat import install_agno_structured_output_parser
@@ -172,6 +166,8 @@ _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
+_REPORT_CODE_SOURCE_TOOL_NAME = "submit_python_source"
+_REPORT_CODE_SOURCE_TOOL_ERROR = "report_code_source_tool_response_invalid"
 
 
 def _duration_ms(started_at: float) -> int:
@@ -926,7 +922,7 @@ def _stop_rejected_analysis_patch(
     run_context: RunContext,
     result: Mapping[str, Any],
 ) -> None:
-    """关闭当前 Reporting attempt，让阶段层用新上下文重新读取并生成补丁。
+    """关闭当前 Reporting attempt，让阶段层用新上下文重新读取并生成源码。
 
     patch 拒绝说明模型持有的文件上下文、SHA 或 diff 结构已经不能继续使用；在同一
     上下文里让模型修补会把错误 hunk 和过期事实继续累积，容易形成长尾死循环。这里只
@@ -953,7 +949,7 @@ def _stop_rejected_analysis_patch(
         "runDisposition": "stop_current_run",
         "recovery": {"kind": "fresh_task_retry"},
         "requiredActions": [
-            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须重新读取目标文件和当前 SHA-256 后生成完整标准 unified diff。"
+            "当前 apply_analysis_patch 已被拒绝；结束本次 run。上层 fresh retry 必须重新读取当前签发文件并生成完整 Python 源码，由 Workflow 重建 patch。"
         ],
     }
     serialized = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
@@ -1021,20 +1017,11 @@ def _reporting_invalid_argument_receipt(
         attempt = int(previous) + 1 if isinstance(previous, int) else 1
         counts[tool_name] = attempt
         state[_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY] = counts
-    is_analysis_write = function_name == "apply_analysis_patch"
     receipt: dict[str, Any] = {
         "ok": False,
         "status": "rejected",
-        "code": (
-            "report_analysis_write_arguments_json_invalid"
-            if is_analysis_write
-            else "report_tool_arguments_json_invalid"
-        ),
-        "message": (
-            f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
-            if is_analysis_write
-            else f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按当前 schema 重试。"
-        ),
+        "code": "report_tool_arguments_json_invalid",
+        "message": f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按当前 schema 重试。",
         "retryable": True,
         "attempt": attempt,
         "schemaHint": dict(schema_hint or {"argumentsType": "object"}),
@@ -1055,20 +1042,7 @@ def _reporting_invalid_argument_receipt(
             f"下一条响应只调用一次 {tool_name}；参数必须是完整严格 JSON 对象，不得附加 Markdown 或解释文字。",
         ],
     }
-    if is_analysis_write:
-        receipt["retryContract"] = {
-            "path": "analysis/<name>.py",
-            "content": "# complete script\npass\n",
-        }
-        receipt["requiredActions"].append(
-            "按 retryContract 使用 content 单字符串一次提交完整脚本。"
-            if attempt == 1
-            else "继续使用完整 content；已有文件时先按服务端回执提供 expected_sha256 后重试。"
-        )
-    else:
-        receipt["requiredActions"].append(
-            "按 schemaHint 重新生成参数；不要修补、猜测或隐藏无效 JSON。"
-        )
+    receipt["requiredActions"].append("按 schemaHint 重新生成参数；不要修补、猜测或隐藏无效 JSON。")
     return receipt
 
 
@@ -1458,7 +1432,6 @@ async def normalize_reporting_tool_arguments(
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
 
     task_kind = reporting_task_kind_from_run_context(run_context)
-    state = _reporting_session_state(run_context)
     if (
         task_kind == "analysis_item"
         and reporting_analysis_recovery_from_run_context(run_context)
@@ -1484,20 +1457,6 @@ async def normalize_reporting_tool_arguments(
             succeeded=False,
             count_exploration=False,
         )
-        state = _reporting_session_state(run_context)
-        if isinstance(state, dict):
-            dependencies = (
-                run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-            )
-            binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-            binding = binding if isinstance(binding, Mapping) else {}
-            identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
-            production_states = state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
-            production_states = (
-                dict(production_states) if isinstance(production_states, Mapping) else {}
-            )
-            production_states[identity] = True
-            state[REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY] = production_states
         details = exploration_receipt["details"]
         if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
             details["allowedTerminalTools"] = [
@@ -1599,36 +1558,6 @@ async def normalize_reporting_tool_arguments(
             # 绕过去重。首次空回执保留；串行重复会在执行前短路，并行重复在完成时拒绝。
             empty_queries[query_identity] = details
     succeeded = isinstance(result, dict) and result.get("ok") is True
-    if succeeded and isinstance(state, dict) and task_kind == "visualization_section":
-        if reporting_visualization_recovery_from_run_context(run_context) and function_name in {
-            "read_file",
-            "read_tool_output",
-        }:
-            state[REPORTING_VISUALIZATION_RECOVERY_READ_STATE_KEY] = True
-        if (
-            function_name == "run_python_script"
-            and result.get("status") == "completed"
-            and not reporting_python_script_failed(result)
-        ):
-            state[REPORTING_VISUALIZATION_SCRIPT_EXECUTED_STATE_KEY] = True
-    if (
-        succeeded
-        and task_kind == "visualization_section"
-        and reporting_visualization_recovery_from_run_context(run_context)
-        and function_name in {"read_file", "read_tool_output"}
-        and isinstance(result, dict)
-    ):
-        # recovery 读取不是终态；把下一动作和 CAS 必填字段放进机器可读回执，
-        # 供模型与上层重放共同消费，避免模型把文件预览误判为任务完成。
-        result["nextTool"] = "apply_analysis_patch"
-        result["requiredFields"] = ["patch", "expected_sha256"]
-    if (
-        succeeded
-        and task_kind == "visualization_section"
-        and function_name == "apply_analysis_patch"
-        and isinstance(state, dict)
-    ):
-        state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
     _finish_reporting_success_tool_budget(analysis_reservation, succeeded=succeeded)
     _finish_analysis_fact_query(analysis_fact_reservation)
     _finish_visualization_tool_budget(
@@ -1857,6 +1786,9 @@ def _report_model_tool_name(tool: Any) -> str | None:
         function = tool.get("function")
         if isinstance(function, dict) and isinstance(function.get("name"), str):
             return function["name"]
+        custom = tool.get("custom")
+        if isinstance(custom, dict) and isinstance(custom.get("name"), str):
+            return custom["name"]
         return tool.get("name") if isinstance(tool.get("name"), str) else None
     name = getattr(tool, "name", None)
     if isinstance(name, str):
@@ -1866,233 +1798,22 @@ def _report_model_tool_name(tool: Any) -> str | None:
     return function_name if isinstance(function_name, str) else None
 
 
-def _visualization_history_state(messages: list[Message]) -> tuple[bool, bool, bool]:
-    """从 Agno 工具回执补齐当前 run 的可视化阶段状态。"""
-
-    recovery_read = script_written = script_executed = False
-    for message in messages:
-        role = getattr(message, "role", None)
-        if role != "tool" and str(role).lower() not in {"tool", "messagerole.tool"}:
-            continue
-        name = getattr(message, "tool_name", None) or getattr(message, "name", None)
-        content = getattr(message, "content", None)
-        payload: Any = content
-        if isinstance(content, str):
-            try:
-                payload = json.loads(content)
-            except (TypeError, ValueError):
-                try:
-                    payload = ast.literal_eval(content)
-                except (SyntaxError, ValueError):
-                    continue
-        elif isinstance(content, Sequence) and not isinstance(content, (bytes, bytearray, str)):
-            for part in content:
-                text = (
-                    part.get("text") if isinstance(part, Mapping) else getattr(part, "text", None)
-                )
-                if isinstance(text, str):
-                    try:
-                        payload = json.loads(text)
-                    except (TypeError, ValueError):
-                        try:
-                            payload = ast.literal_eval(text)
-                        except (SyntaxError, ValueError):
-                            continue
-                    break
-        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
-            continue
-        if name in {"read_file", "read_tool_output"}:
-            recovery_read = True
-        elif name == "apply_analysis_patch":
-            script_written = True
-        elif (
-            name == "run_python_script"
-            and payload.get("status") == "completed"
-            and not reporting_python_script_failed(payload)
-        ):
-            script_executed = True
-    return recovery_read, script_written, script_executed
-
-
-def _visualization_next_tool(messages: list[Message], run_context: RunContext | None) -> str | None:
-    """根据已完成工具回执确定下一步，避免模型在阶段边界自行停顿。"""
-
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return None
-    recovery_read, script_written, script_executed = _visualization_history_state(messages)
-    if not (recovery_read or script_written or script_executed) and not (
-        reporting_visualization_script_written_from_run_context(run_context)
-    ):
-        return None
-    for message in reversed(messages):
-        if getattr(message, "role", None) != "tool":
-            continue
-        name = getattr(message, "tool_name", None) or getattr(message, "name", None)
-        if name not in {"read_file", "read_tool_output"}:
-            continue
-        content = getattr(message, "content", None)
-        payload: Any = None
-        if isinstance(content, str):
-            try:
-                payload = json.loads(content)
-            except (TypeError, ValueError):
-                try:
-                    payload = ast.literal_eval(content)
-                except (SyntaxError, ValueError):
-                    payload = None
-        if isinstance(payload, Mapping) and payload.get("nextTool") == "apply_analysis_patch":
-            return "apply_analysis_patch"
-        break
-    recovery = reporting_visualization_recovery_from_run_context(run_context)
-    if recovery and not recovery_read:
-        return "read_file"
-    if not script_written:
-        return "apply_analysis_patch"
-    if not script_executed:
-        return "run_python_script"
-    successful_names = set()
-    preview_required = False
-    for message in messages:
-        if getattr(message, "role", None) != "tool":
-            continue
-        name = getattr(message, "tool_name", None) or getattr(message, "name", None)
-        if name not in {
-            "run_python_script",
-            "inspect_chart",
-            "view_image",
-            "submit_visualization_charts",
-        }:
-            continue
-        content = getattr(message, "content", None)
-        if isinstance(content, str):
-            try:
-                payload = json.loads(content)
-            except (TypeError, ValueError):
-                try:
-                    payload = ast.literal_eval(content)
-                except (SyntaxError, ValueError):
-                    payload = None
-            if isinstance(payload, Mapping) and payload.get("ok") is True:
-                successful_names.add(name)
-                if name == "run_python_script" and payload.get("truncated") is True:
-                    preview_required = True
-    if successful_names & {"inspect_chart", "view_image"}:
-        return "submit_visualization_charts"
-    if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
-        return "view_image" if preview_required else "inspect_chart"
-    return "submit_visualization_charts"
-
-
-def _visualization_production_tool_allowed(
-    run_context: RunContext | None,
-    tool_name: str,
-    *,
-    history_state: tuple[bool, bool, bool] | None = None,
-) -> bool:
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return True
-    # 可视化工具按受信状态逐步开放，避免模型在同一轮看到并提前调用后续动作。
-    # recovery 首轮只能读取已提交脚本；读取成功后只允许重新提交 patch。
-    history_recovery_read, history_written, history_executed = history_state or (
-        False,
-        False,
-        False,
-    )
-    recovery_read = (
-        reporting_visualization_recovery_read_from_run_context(run_context) or history_recovery_read
-    )
-    script_written = (
-        reporting_visualization_script_written_from_run_context(run_context) or history_written
-    )
-    script_executed = (
-        reporting_visualization_script_executed_from_run_context(run_context) or history_executed
-    )
-    if reporting_visualization_recovery_from_run_context(run_context):
-        if not recovery_read:
-            # 首轮同时保留 patch，允许模型在读取旧脚本后直接提交修复；受控 runner
-            # 和终态工具仍严格隐藏，避免恢复任务跳过脚本修复。
-            return tool_name in {"read_file", "read_tool_output", "apply_analysis_patch"}
-        if not script_written:
-            return tool_name == "apply_analysis_patch"
-    if not script_written:
-        return tool_name == "apply_analysis_patch"
-    if not script_executed:
-        return tool_name == "run_python_script"
-    if tool_name == "inspect_chart":
-        return reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
-    return tool_name == "submit_visualization_charts" or (
-        tool_name == "view_image"
-        and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
-    )
-
-
-def _visualization_lifecycle_tool_allowed(
-    run_context: RunContext | None,
-    tool_name: str,
-) -> bool:
-    """让模型 schema 与当前 run 的可视化生命周期状态共享同一门禁。"""
-
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return True
-    if reporting_visualization_recovery_from_run_context(run_context):
-        return tool_name not in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES or tool_name in {
-            "read_file",
-            "read_tool_output",
-        }
-    return tool_name not in {
-        "query_analysis_context",
-        "query_analysis_facts",
-        "read_file",
-        "read_tool_output",
-    }
+def _report_tool_admission_name(name: str) -> str:
+    return "apply_analysis_patch" if name == _REPORT_CODE_SOURCE_TOOL_NAME else name
 
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
     run_context = current_reporting_run_context()
     task_kind = reporting_task_kind_from_run_context(run_context)
-    history_state = _visualization_history_state(messages)
     if phase is None or tools is None:
         return tools
     return [
         tool
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
-        and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
-        and _visualization_lifecycle_tool_allowed(run_context, name)
-        and not (
-            task_kind == "analysis_item"
-            and run_context is not None
-            and reporting_analysis_recovery_from_run_context(run_context)
-            and name != "complete_analysis_item"
-        )
-        and not (
-            task_kind == "analysis_item"
-            and run_context is not None
-            and name == "query_analysis_facts"
-            and reporting_analysis_fact_usage_from_run_context(run_context)
-            >= _analysis_fact_query_limit(run_context)
-        )
-        and not (
-            task_kind == "visualization_section"
-            and run_context is not None
-            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
-            and not (
-                reporting_visualization_recovery_from_run_context(run_context)
-                and name in {"read_file", "read_tool_output"}
-            )
-            and (
-                _visualization_exploration_budget_receipt(run_context, name) is not None
-                or reporting_visualization_exploration_budget_exhausted_from_run_context(
-                    run_context
-                )
-            )
-        )
-        and not (
-            task_kind == "visualization_section"
-            and not _visualization_production_tool_allowed(
-                run_context, name, history_state=history_state
-            )
+        and reporting_phase_allows_tool(
+            phase, _report_tool_admission_name(name), task_kind=task_kind
         )
     ]
 
@@ -2234,10 +1955,12 @@ def _phase_filtered_model_call(
             if (name := _report_model_tool_name(tool)) is not None
         ]
         if len(visible_names) == 1:
-            updated_kwargs["tool_choice"] = {
-                "type": "function",
-                "function": {"name": visible_names[0]},
-            }
+            tool_name = visible_names[0]
+            updated_kwargs["tool_choice"] = (
+                {"type": "custom", "custom": {"name": tool_name}}
+                if tool_name == _REPORT_CODE_SOURCE_TOOL_NAME
+                else {"type": "function", "function": {"name": tool_name}}
+            )
     return tuple(positional), updated_kwargs
 
 
@@ -2248,18 +1971,19 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
 
     def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         params = super().get_request_params(*args, **kwargs)
+        endpoint = str(self.base_url) if self.base_url is not None else None
         params = normalize_openai_chat_output_limit(
             params,
-            endpoint=self.base_url,
+            endpoint=endpoint,
             structured_output=bool(getattr(self, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, False)),
         )
-        params = normalize_openai_chat_reasoning(params, endpoint=self.base_url)
+        params = normalize_openai_chat_reasoning(params, endpoint=endpoint)
         extra_body = params.get("extra_body")
         if (
             params.get("reasoning_effort") is not None
             and isinstance(extra_body, dict)
             and isinstance(extra_body.get("thinking_budget"), int)
-            and uses_dashscope_qwen_thinking_protocol(self.id, self.base_url)
+            and uses_dashscope_qwen_thinking_protocol(self.id, endpoint)
         ):
             # 百炼 Qwen 的公开 OpenAI-compatible 契约使用 enable_thinking 与
             # thinking_budget，真实端点拒绝同时提交顶层 reasoning_effort。
@@ -2362,24 +2086,10 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         messages: list[Message],
         kwargs: dict[str, Any],
     ) -> dict[str, Any]:
-        run_context = current_reporting_run_context()
-        task_kind = reporting_task_kind_from_run_context(run_context)
-        if task_kind == "visualization_section":
-            next_tool = _visualization_next_tool(messages, run_context)
-            if next_tool is not None and any(
-                message.role == "tool" or bool(message.tool_calls) for message in messages
-            ):
-                return {
-                    **kwargs,
-                    "tool_choice": {
-                        "type": "function",
-                        "function": {"name": next_tool},
-                    },
-                }
-            return {**kwargs, "tool_choice": "required"}
-        # analysis_item 和 section 的模型只是固定 Workflow 内的结构化生成器，真实
+        # 固定 Workflow 内的结构化生成器不直接调用工具，真实
         # 工具调用由 Workflow 回调完成。这里不得把 tool_choice=required 注入无工具
         # 请求，否则开启 thinking 的 Qwen 端点会在业务生成前直接拒绝参数组合。
+        _ = messages
         return kwargs
 
     @staticmethod
@@ -2694,7 +2404,6 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
         )
         allowed_calls = []
         blocked = []
-        history_state = _visualization_history_state(messages)
         for tool_call in tool_calls:
             function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
             name = function.get("name") if isinstance(function, dict) else None
@@ -2704,27 +2413,14 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
                 and phase in {"analysis", "section"}
                 and not reporting_phase_allows_tool(
                     phase,
-                    name,
+                    _report_tool_admission_name(name),
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
-            production_forbidden = isinstance(
-                name, str
-            ) and not _visualization_production_tool_allowed(
-                current_reporting_run_context(), name, history_state=history_state
-            )
-            lifecycle_forbidden = isinstance(
-                name, str
-            ) and not _visualization_lifecycle_tool_allowed(current_reporting_run_context(), name)
             vision_disabled = name in {"view_image", "inspect_chart"} and not getattr(
                 self, "_report_vision_enabled", True
             )
-            if (
-                not phase_forbidden
-                and not production_forbidden
-                and not lifecycle_forbidden
-                and not vision_disabled
-            ):
+            if not phase_forbidden and not vision_disabled:
                 allowed_calls.append(tool_call)
                 continue
             if not isinstance(call_id, str) or not call_id:
@@ -2758,18 +2454,6 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
                                     "继续使用已注册的文本和文件工具；不得重复调用视觉工具。"
                                 ],
                                 "recovery": {"kind": "continue_without_vision"},
-                                "retryable": True,
-                            }
-                            if not production_forbidden and not lifecycle_forbidden
-                            else {
-                                "ok": False,
-                                "status": "rejected",
-                                "code": "report_visualization_production_only",
-                                "message": "当前可视化已进入生产态，请直接生成、登记或完成图表。",
-                                "requiredActions": [
-                                    "停止探索，直接使用当前注册的图表生成、登记或完成工具。"
-                                ],
-                                "recovery": {"kind": "produce_visualization_artifacts"},
                                 "retryable": True,
                             }
                         ),
@@ -2891,6 +2575,292 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         async for response in super().ainvoke_stream(messages, *args, **kwargs):
             yield response
+
+
+class ReportingCodeOpenAIResponses(OpenAIResponses):
+    """仅为 Coding Agent 桥接 Responses API custom text tool。"""
+
+    _report_code_custom_tool_active = False
+
+    def _format_tool_params(
+        self,
+        messages: list[Message],
+        tools: Any = None,
+    ) -> list[dict[str, Any]]:
+        formatted_tools = super()._format_tool_params(messages, tools)
+        custom_tools = [
+            tool
+            for tool in formatted_tools
+            if _report_model_tool_name(tool) == _REPORT_CODE_SOURCE_TOOL_NAME
+        ]
+        if custom_tools and len(formatted_tools) != 1:
+            raise ReportingError(
+                _REPORT_CODE_SOURCE_TOOL_ERROR,
+                "源码提交阶段只能暴露唯一 custom 工具。",
+            )
+        if not custom_tools:
+            self._report_code_custom_tool_active = False
+            return formatted_tools
+
+        function = custom_tools[0]
+        description = (
+            function.get("description")
+            if isinstance(function, Mapping) and isinstance(function.get("description"), str)
+            else "提交完整原始 Python 源码。"
+        )
+        self._report_code_custom_tool_active = True
+        return [
+            {
+                "type": "custom",
+                "name": _REPORT_CODE_SOURCE_TOOL_NAME,
+                "description": description,
+                "format": {"type": "text"},
+            }
+        ]
+
+    def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        params = super().get_request_params(*args, **kwargs)
+        # DashScope thinking 模式拒绝 required/object tool_choice，且只接受
+        # extra_body 中的 enable_thinking/thinking_budget。
+        params["tool_choice"] = "auto"
+        params.pop("reasoning", None)
+        return params
+
+    def count_tokens(
+        self,
+        messages: list[Message],
+        tools: Any = None,
+        output_schema: Any = None,
+    ) -> int:
+        return Model.count_tokens(self, messages, tools, output_schema)
+
+    def _phase_request_model(self, messages: list[Message]) -> "ReportingCodeOpenAIResponses":
+        base_profile = reporting_thinking_profile_from_model(self)
+        profile = base_profile
+        previous_error = self.report_run_error()
+        bound_effort = reporting_thinking_effort_from_run_context(current_reporting_run_context())
+        if _reporting_phase_from_messages(messages) == "section" or bound_effort == "off":
+            profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
+        elif bound_effort in {"high", "max"} and base_profile.enabled:
+            budget = base_profile.thinking_budget
+            if budget is not None:
+                requested_budget = reporting_thinking_budget_from_run_context(
+                    current_reporting_run_context()
+                )
+                if requested_budget is not None:
+                    budget = min(budget, requested_budget)
+                profile = ReportingThinkingProfile.on(
+                    reasoning_effort=bound_effort,
+                    thinking_budget=budget,
+                    temperature=base_profile.temperature,
+                )
+        else:
+            escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
+            escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
+            if isinstance(escalation_profile, ReportingThinkingProfile) and (
+                isinstance(previous_error, ValidationError)
+                or (
+                    isinstance(escalation_fields, tuple)
+                    and _reporting_request_uses_escalation(messages, escalation_fields)
+                )
+            ):
+                profile = escalation_profile
+
+        request_model = copy(self)
+        model_route = reporting_model_route_from_run_context(current_reporting_run_context())
+        if model_route is not None:
+            _, request_model.id = model_route
+        task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+        if task_kind == "visualization_section":
+            output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
+        elif task_kind == "section":
+            output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
+        else:
+            output_limit = None
+        limits = [
+            value
+            for value in (
+                request_model.max_output_tokens,
+                output_limit,
+                reporting_model_output_token_limit(request_model.id),
+            )
+            if isinstance(value, int) and value > 0
+        ]
+        request_model.max_output_tokens = min(limits) if limits else None
+        extra_body = dict(request_model.extra_body or {})
+        extra_body.pop("thinking_budget", None)
+        extra_body["enable_thinking"] = profile.enabled
+        if profile.enabled:
+            extra_body["thinking_budget"] = profile.thinking_budget
+        request_model.extra_body = extra_body
+        request_model.temperature = profile.temperature
+        request_model.reasoning = None
+        request_model.reasoning_effort = None
+        request_model.reasoning_summary = None
+        return request_model
+
+    def _project(
+        self,
+        messages: list[Message],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> list[Message]:
+        response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
+        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        tools = _phase_filtered_report_tools(messages, tools)
+        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
+        if (
+            not isinstance(configured_cap, int)
+            or isinstance(configured_cap, bool)
+            or configured_cap < 1
+        ):
+            configured_cap = (
+                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+            )
+        output_reserve = (
+            self.max_output_tokens
+            if isinstance(self.max_output_tokens, int) and self.max_output_tokens > 0
+            else 0
+        )
+        hard_cap = resolve_reporting_input_token_hard_cap(
+            configured_input_token_cap=configured_cap,
+            model_id=self.id,
+            output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve),
+            absolute_input_token_cap=(
+                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
+            ),
+        )
+        projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+            _with_reporting_durable_identities(messages),
+            model=self,
+            tools=tools,
+            response_format=response_format,
+            hard_cap=hard_cap,
+        )
+        record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
+        return projected
+
+    @staticmethod
+    def _raw_field(value: Any, field: str) -> Any:
+        return value.get(field) if isinstance(value, Mapping) else getattr(value, field, None)
+
+    @staticmethod
+    def _invalid_custom_response(message: str) -> ReportingError:
+        return ReportingError(_REPORT_CODE_SOURCE_TOOL_ERROR, message)
+
+    def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
+        if self._raw_field(response, "error") is not None:
+            return super()._parse_provider_response(response, **kwargs)
+        output = self._raw_field(response, "output")
+        output = list(output) if isinstance(output, (list, tuple)) else []
+        custom_calls = [
+            item for item in output if self._raw_field(item, "type") == "custom_tool_call"
+        ]
+        if not self._report_code_custom_tool_active:
+            if custom_calls:
+                raise self._invalid_custom_response("当前阶段收到未知 custom 工具调用。")
+            return super()._parse_provider_response(response, **kwargs)
+
+        if any(
+            self._raw_field(item, "type") not in {"reasoning", "custom_tool_call"}
+            for item in output
+        ):
+            raise self._invalid_custom_response("源码 custom 工具响应包含文本或其他工具输出。")
+        if len(custom_calls) != 1:
+            raise self._invalid_custom_response("源码 custom 工具响应必须只包含一次工具调用。")
+        call = custom_calls[0]
+        name = self._raw_field(call, "name")
+        source = self._raw_field(call, "input")
+        call_id = self._raw_field(call, "id")
+        provider_call_id = self._raw_field(call, "call_id")
+        if name != _REPORT_CODE_SOURCE_TOOL_NAME:
+            raise self._invalid_custom_response("源码 custom 工具响应包含未知工具调用。")
+        if (
+            not isinstance(source, str)
+            or not source
+            or not isinstance(call_id, str)
+            or not call_id
+            or not isinstance(provider_call_id, str)
+            or not provider_call_id
+        ):
+            raise self._invalid_custom_response("源码 custom 工具响应缺少有效 input 或调用身份。")
+
+        parsed = super()._parse_provider_response(response, **kwargs)
+        parsed.tool_calls = [
+            {
+                "id": call_id,
+                "call_id": provider_call_id,
+                "type": "function",
+                "function": {
+                    "name": _REPORT_CODE_SOURCE_TOOL_NAME,
+                    "arguments": json.dumps(
+                        {"source": source}, ensure_ascii=False, separators=(",", ":")
+                    ),
+                },
+            }
+        ]
+        parsed.extra = parsed.extra or {}
+        parsed.extra["tool_call_ids"] = [provider_call_id]
+        return parsed
+
+    @staticmethod
+    def _raise_stable_custom_error(error: Exception) -> None:
+        cause = error.__cause__
+        if isinstance(cause, ReportingError) and cause.code == _REPORT_CODE_SOURCE_TOOL_ERROR:
+            raise cause
+
+    def _clear_report_run_error(self) -> None:
+        _REPORT_MODEL_RUN_ERROR.set(None)
+
+    def _record_report_run_error(self, error: Exception) -> None:
+        _REPORT_MODEL_RUN_ERROR.set((id(self), error))
+
+    def report_run_error(self) -> Exception | None:
+        recorded = _REPORT_MODEL_RUN_ERROR.get()
+        return recorded[1] if recorded is not None and recorded[0] == id(self) else None
+
+    def response(self, messages: list[Message], *args: Any, **kwargs: Any) -> ModelResponse:
+        request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
+        try:
+            response = OpenAIResponses.response(request_model, messages, *args, **kwargs)
+            self._clear_report_run_error()
+            return response
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    async def aresponse(self, messages: list[Message], *args: Any, **kwargs: Any) -> ModelResponse:
+        request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
+        try:
+            response = await OpenAIResponses.aresponse(request_model, messages, *args, **kwargs)
+            self._clear_report_run_error()
+            return response
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
+        messages = self._project(messages, args, kwargs)
+        try:
+            # OpenInference 通过描述符包装 Agno 模型方法；显式传 self 会破坏参数绑定。
+            return super().invoke(messages, *args, **kwargs)
+        except Exception as error:
+            self._raise_stable_custom_error(error)
+            raise
+
+    async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
+        messages = self._project(messages, args, kwargs)
+        try:
+            return await super().ainvoke(messages, *args, **kwargs)
+        except Exception as error:
+            self._raise_stable_custom_error(error)
+            raise
 
 
 class ReportFacadeOpenAIChat(ReportingOpenAIChat):
@@ -3139,39 +3109,10 @@ def create_reporting_generator_agent(
         "所有必填顶层字段必须各出现一次；不得把 schema 顶层字段只写入其他字段。",
         "长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
     ]
-    if getattr(output_schema, "__name__", "") == "VisualizationScriptDraft":
-        instructions[1] = (
-            "所有必填顶层字段必须各出现一次；不得把 charts 等顶层字段只写入 pythonSource。"
-        )
-        instructions[2] = (
-            "pythonSource 等长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。"
-        )
+    if getattr(output_schema, "__name__", "") == "VisualizationPlanDraft":
         instructions.append(
             "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
-            ".png、.jpg 或 .jpeg 后缀的具体文件；pythonSource 必须写入完全相同的路径。"
-        )
-        instructions.extend(
-            [
-                (
-                    "pythonSource 是由固定 Workflow 执行的独立 Python 程序；不得调用或导入 "
-                    "submit_visualization_charts、run_python_script、apply_analysis_patch 等编排工具，"
-                    "不得把工具参数或调用写进脚本。"
-                ),
-                (
-                    "Python 从工作区根目录执行；逐字使用任务 JSON 签发的 factFile.path 和输出路径，"
-                    "不得使用 __file__、Path.parents、cwd 或目录探测重新推导路径。"
-                ),
-                "pythonSource 必须使用 Python 的 None、True、False，不得写入 JSON 常量 null、true、false。",
-                (
-                    'facts 文件中 metrics[].periodValues 的每个元素固定为 {"period": string,'
-                    '"value": number}；必须读取 period，不得使用 periodStart。'
-                ),
-                (
-                    "pythonSource 绘图只能使用 Matplotlib；必须在导入 matplotlib.pyplot 之前调用 "
-                    'matplotlib.use("Agg")，并统一使用 fig.savefig(...) 写入图表文件；'
-                    "禁止使用 Plotly、Kaleido 或 Seaborn。"
-                ),
-            ]
+            ".png、.jpg 或 .jpeg 后缀的具体文件。"
         )
     elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
         instructions[1] = (
@@ -3181,14 +3122,6 @@ def create_reporting_generator_agent(
             "必须遵循受信 executionDirective：明确证据充足或禁止返工时只能返回 render；"
             "明确缺少必要证据并要求返工时只能返回 rework。"
         )
-    elif getattr(output_schema, "__name__", "") == "AnalysisEvidencePlan":
-        instructions[1] = (
-            "字段必须形成互斥分支：requiresSupplementalEvidence=true 时 missingFacts 必须非空且 script 必须是完整 Python 源码；false 时 missingFacts 必须为空数组且 script 必须为 null。"
-        )
-        instructions[2] = (
-            "script 必须是完整、合法的 JSON 字符串；所有后续读取的局部变量必须在条件分支前初始化，并确保每个分支都赋值。"
-        )
-
     return Agent(
         id=name,
         name=name,
@@ -3203,6 +3136,98 @@ def create_reporting_generator_agent(
         tools=[],
         add_history_to_context=False,
         enable_session_summaries=False,
+        retries=0,
+        exponential_backoff=False,
+        markdown=False,
+        telemetry=False,
+    )
+
+
+def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
+    if not isinstance(model, OpenAIChat):
+        raise TypeError("Reporting code agent requires OpenAIChat")
+    request_params = model.request_params if isinstance(model.request_params, Mapping) else {}
+    code_model = ReportingCodeOpenAIResponses(
+        id=model.id,
+        api_key=model.api_key,
+        organization=model.organization,
+        base_url=model.base_url,
+        timeout=model.timeout,
+        max_retries=model.max_retries,
+        default_headers=model.default_headers,
+        default_query=model.default_query,
+        http_client=model.http_client,
+        client_params=model.client_params,
+        role_map=dict(model.role_map or OPENAI_COMPATIBLE_ROLE_MAP),
+        store=model.store,
+        metadata=model.metadata,
+        parallel_tool_calls=request_params.get("parallel_tool_calls"),
+        temperature=model.temperature,
+        top_p=model.top_p,
+        service_tier=model.service_tier,
+        strict_output=model.strict_output,
+        extra_headers=model.extra_headers,
+        extra_query=model.extra_query,
+        extra_body=deepcopy(model.extra_body),
+        max_output_tokens=model.max_tokens or model.max_completion_tokens,
+        # 仅作为进程内 thinking profile 输入；单次请求副本会清空该字段，
+        # get_request_params 也会移除 Responses reasoning 对象。
+        reasoning_effort=model.reasoning_effort,
+        retries=model.retries,
+        delay_between_retries=model.delay_between_retries,
+        exponential_backoff=model.exponential_backoff,
+        retry_with_guidance=model.retry_with_guidance,
+        retry_with_guidance_limit=model.retry_with_guidance_limit,
+    )
+    for attribute in (
+        "_task_execution_input_token_budget",
+        "_report_escalation_thinking_profile",
+        "_report_thinking_escalation_fields",
+    ):
+        if hasattr(model, attribute):
+            setattr(code_model, attribute, getattr(model, attribute))
+    return code_model
+
+
+def create_reporting_code_agent(
+    *, model: Any, name: str, role: str | None = None, instructions: Any = None
+) -> Agent:
+    """创建只通过 custom text tool 签发 Python 源码的 Coding Agent。
+
+    原始源码只在 provider custom.input 与进程内 Function 参数之间流转；普通文本
+    永远不是成功结果，其他 Reporting Agent 继续使用原有 function-call 协议。
+    """
+
+    base_instructions = [
+        "普通文本、Markdown、代码围栏和解释都不算成功。",
+        "写入阶段只调用一次 submit_python_source；将完整原始 Python 源码直接作为 custom input 提交，收到工具回执后立即结束。",
+        "custom input 只能包含 Python 源码本身，不得包含 unified diff、文件头、hunk、JSON 包装或说明文字。",
+        "源码必须使用 UTF-8/LF、多物理行并以换行结尾，且遵守 sourceProtocol 的字节与物理行长度上限。",
+        "修复读取阶段仍只调用一次 read_file，并逐字使用其受信回执生成完整修复源码。",
+    ]
+    if instructions:
+        if isinstance(instructions, str):
+            base_instructions.append(instructions)
+        else:
+            base_instructions.extend(str(item) for item in instructions)
+    return Agent(
+        id=name,
+        name=name,
+        role=role or "通过 custom text tool 签发完整 Reporting Python 源码。",
+        model=_reporting_code_model(model),
+        instructions=base_instructions,
+        output_schema=None,
+        parse_response=False,
+        structured_outputs=False,
+        use_json_mode=False,
+        tools=[],
+        add_history_to_context=False,
+        num_history_runs=0,
+        store_history_messages=False,
+        read_chat_history=False,
+        read_tool_call_history=False,
+        enable_session_summaries=False,
+        add_session_summary_to_context=False,
         retries=0,
         exponential_backoff=False,
         markdown=False,

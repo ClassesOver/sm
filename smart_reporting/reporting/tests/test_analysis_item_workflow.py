@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from agno.run import RunContext
@@ -13,15 +13,14 @@ from agno.workflow.types import StepOutput
 from loguru import logger
 
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.reporting.workflow.runtime import analysis_item_workflow as item_workflow
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
-    AnalysisEvidencePlan,
     AnalysisItemWorkflow,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
-from smart_reporting.task_execution import MAX_READ_FILE_BYTES
+from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
 
 
 def _instruction() -> dict[str, Any]:
@@ -61,12 +60,12 @@ def _tool_result(**values: Any) -> dict[str, Any]:
     return {"ok": True, **values}
 
 
-def _script_identity(sha256: str = "c" * 64) -> dict[str, Any]:
-    return {
-        "path": "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
-        "size": 1,
-        "sha256": sha256,
-    }
+def _code_result(
+    sha256: str = "c" * 64,
+    *,
+    path: str = "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+) -> CodeGenerationResult:
+    return CodeGenerationResult(FileIdentity(path=path, size=1, sha256=sha256))
 
 
 def _facts_read_result(content: str | None = None) -> dict[str, Any]:
@@ -274,14 +273,12 @@ def test_supplemental_evidence_rejects_ambiguous_or_non_finite_tabular_values(
 async def test_analysis_item_workflow_keeps_five_stages_when_supplement_is_skipped() -> None:
     events: list[str] = []
 
-    async def plan(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        assert repair is False
-        events.append("plan")
-        return AnalysisEvidencePlan(
+    async def decide(payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        events.append("decision")
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=False,
             reason="固定事实足够",
             missingFacts=(),
-            script=None,
         )
 
     async def summarize(payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
@@ -291,10 +288,11 @@ async def test_analysis_item_workflow_keeps_five_stages_when_supplement_is_skipp
 
     complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=AsyncMock(),
+        repair_script=AsyncMock(),
         summarize=summarize,
         read_file=AsyncMock(return_value=_facts_read_result()),
-        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=complete,
     )
@@ -310,8 +308,9 @@ async def test_analysis_item_workflow_keeps_five_stages_when_supplement_is_skipp
         ("validate-evidence", "skipped"),
         ("complete-analysis", "completed"),
     )
-    assert events == ["plan", "summarize"]
-    workflow.apply_patch.assert_not_awaited()
+    assert events == ["decision", "summarize"]
+    workflow.generate_script.assert_not_awaited()
+    workflow.repair_script.assert_not_awaited()
     workflow.run_script.assert_not_awaited()
     complete.assert_awaited_once()
     assert complete.await_args.kwargs["evidencePaths"] == []
@@ -330,13 +329,12 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
         }
     )
 
-    async def plan(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        events.append("repair" if repair else "plan")
-        return AnalysisEvidencePlan(
+    async def decide(payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        events.append("decision")
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="缺少收入类型构成",
             missingFacts=("收入类型构成",),
-            script="print('write evidence')",
         )
 
     async def summarize(payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
@@ -344,16 +342,14 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
         assert payload["supplementalEvidence"]["findings"][0]["name"] == "门诊收入"
         return AnalysisSummaryDraft(summary="门诊收入是主要收入来源。", warnings=())
 
-    reads = AsyncMock(
-        side_effect=[
-            _facts_read_result(),
-            _tool_result(content=evidence, sha256="b" * 64),
-        ]
-    )
-    apply_patch = AsyncMock(
-        side_effect=lambda **kwargs: (
-            events.append("create") or _tool_result(artifacts=[_script_identity()])
-        )
+    async def read_file(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["path"].endswith("facts/analysis_001.json"):
+            return _facts_read_result()
+        events.append("validate")
+        return _tool_result(content=evidence, sha256="b" * 64)
+
+    generate_script = AsyncMock(
+        side_effect=lambda **_kwargs: events.append("generate") or _code_result()
     )
     terminal = AsyncMock(
         side_effect=lambda **_kwargs: (
@@ -366,10 +362,11 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
         )
     )
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
         summarize=summarize,
-        read_file=reads,
-        apply_patch=apply_patch,
+        read_file=read_file,
         run_script=terminal,
         complete=complete,
     )
@@ -379,12 +376,98 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
     )
 
     assert [status for _, status in result.stage_statuses] == ["completed"] * 5
-    assert events == ["plan", "create", "execute", "summarize", "complete"]
-    submitted_patch = apply_patch.await_args.kwargs["patch"]
-    assert submitted_patch.endswith("+print('write evidence')\n")
+    assert events == ["decision", "generate", "execute", "validate", "summarize", "complete"]
+    task_facts = generate_script.await_args.kwargs["task_facts"]
+    assert task_facts["evidenceDecision"]["missingFacts"] == ["收入类型构成"]
+    assert "run_python_script" not in task_facts
+    assert "complete_analysis_item" not in task_facts
     assert complete.await_args.kwargs["evidencePaths"] == [
         "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
     ]
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_hydrates_committed_script_without_regeneration() -> None:
+    script_file = FileIdentity(
+        path="报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+        size=20,
+        sha256="a" * 64,
+    )
+    evidence = json.dumps(
+        {
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账", "passed": True}],
+            "warnings": [],
+        }
+    )
+    load_script = AsyncMock(return_value=script_file)
+    generate_script = AsyncMock()
+    run_script = AsyncMock(return_value=_tool_result(exitCode=0, output=""))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少收入构成",
+                missingFacts=("收入构成",),
+            )
+        ),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="补证完成。", warnings=())),
+        read_file=AsyncMock(
+            side_effect=[_facts_read_result(), _tool_result(content=evidence, sha256="b" * 64)]
+        ),
+        run_script=run_script,
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+        load_script=load_script,
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="session-1"))
+
+    load_script.assert_awaited_once_with(script_file.path, ANY)
+    generate_script.assert_not_awaited()
+    run_script.assert_awaited_once_with(script_path=script_file.path, run_context=ANY)
+
+
+@pytest.mark.anyio
+async def test_analysis_item_fresh_generation_retry_receives_previous_diagnostic() -> None:
+    first_error = ReportingError(
+        "report_python_source_shape_invalid",
+        "invalid shape",
+        details={"size": 131073, "lineCount": 1, "maxLineLength": 131072},
+    )
+    generate_script = AsyncMock(side_effect=[first_error, _code_result()])
+    evidence = json.dumps(
+        {
+            "findings": [],
+            "reconciliations": [{"name": "检查", "passed": True}],
+            "warnings": [],
+        }
+    )
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少事实",
+                missingFacts=("事实",),
+            )
+        ),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="完成。", warnings=())),
+        read_file=AsyncMock(
+            side_effect=[_facts_read_result(), _tool_result(content=evidence, sha256="b" * 64)]
+        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+    )
+
+    await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="session-1"))
+
+    assert generate_script.await_args_list[0].kwargs["diagnostic"] is None
+    assert generate_script.await_args_list[1].kwargs["diagnostic"]["code"] == (
+        "report_python_source_shape_invalid"
+    )
 
 
 @pytest.mark.anyio
@@ -423,17 +506,17 @@ async def test_analysis_item_workflow_reads_large_supplemental_evidence_in_chunk
     complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     read_file = AsyncMock(side_effect=[_facts_read_result(), *evidence_reads])
     workflow = AnalysisItemWorkflow(
-        plan_evidence=AsyncMock(
-            return_value=AnalysisEvidencePlan(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
                 requiresSupplementalEvidence=True,
                 reason="需要完整明细",
                 missingFacts=("完整明细",),
-                script="print('evidence')",
             )
         ),
+        generate_script=AsyncMock(return_value=_code_result()),
+        repair_script=AsyncMock(),
         summarize=summarize,
         read_file=read_file,
-        apply_patch=AsyncMock(return_value=_tool_result(artifacts=[_script_identity()])),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
         complete=complete,
     )
@@ -460,46 +543,30 @@ async def test_analysis_item_workflow_reads_large_supplemental_evidence_in_chunk
 
 @pytest.mark.anyio
 async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
-    repairs: list[bool] = []
+    decisions = 0
 
-    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        repairs.append(repair)
-        return AnalysisEvidencePlan(
+    async def decide(_payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        nonlocal decisions
+        decisions += 1
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="缺少收入构成",
             missingFacts=("收入构成",),
-            script=f"print({len(repairs)})",
         )
 
-    script_reads = [
-        _tool_result(
-            content=f"print({index})\n",
-            sha256=sha256 * 64,
-            totalBytes=9,
-            nextOffset=9,
-            hasMore=False,
-        )
-        for index, sha256 in ((1, "b"), (2, "c"))
-    ]
-    read_file = AsyncMock(side_effect=[_facts_read_result(), *script_reads])
+    read_file = AsyncMock(return_value=_facts_read_result())
+    repair_script = AsyncMock(side_effect=[_code_result("c" * 64), _code_result("d" * 64)])
     summarize = AsyncMock(
         return_value=AnalysisSummaryDraft(summary="仅使用确定性事实完成摘要。", warnings=())
     )
     complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=AsyncMock(return_value=_code_result("b" * 64)),
+        repair_script=repair_script,
         summarize=summarize,
         read_file=read_file,
-        apply_patch=AsyncMock(
-            side_effect=[
-                _tool_result(artifacts=[_script_identity("b" * 64)]),
-                _tool_result(artifacts=[_script_identity("c" * 64)]),
-                _tool_result(artifacts=[_script_identity("d" * 64)]),
-            ]
-        ),
-        run_script=AsyncMock(
-            return_value=_tool_result(exitCode=1, output="private-script-output")
-        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=1, output="private-script-output")),
         complete=complete,
     )
 
@@ -513,12 +580,23 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
         logger.remove(sink_id)
 
     assert [status for _, status in result.stage_statuses] == ["completed"] * 5
-    assert repairs == [False, True, True]
+    assert decisions == 1
     assert workflow.run_script.await_count == 3
-    assert workflow.apply_patch.await_count == 3
-    assert [call.kwargs["max_bytes"] for call in read_file.await_args_list[1:]] == [
-        MAX_READ_FILE_BYTES,
-        MAX_READ_FILE_BYTES,
+    assert workflow.generate_script.await_count == 1
+    assert repair_script.await_count == 2
+    assert [
+        list(call.kwargs["decision"].missing_facts) for call in repair_script.await_args_list
+    ] == [
+        ["收入构成"],
+        ["收入构成"],
+    ]
+    assert [call.kwargs["script_file"].path for call in repair_script.await_args_list] == [
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
+    ]
+    assert [call.kwargs["script_file"].sha256 for call in repair_script.await_args_list] == [
+        "b" * 64,
+        "c" * 64,
     ]
     assert summarize.await_args.args[0]["supplementalEvidence"] is None
     assert any(
@@ -541,27 +619,69 @@ async def test_analysis_item_workflow_repairs_script_at_most_twice() -> None:
     assert all("output_bytes=21" in record["message"] for record in failures)
 
 
+@pytest.mark.anyio
+async def test_analysis_item_workflow_preserves_repairs_after_fresh_generation_retries() -> None:
+    generation_error = ReportingError(
+        "report_code_generation_no_patch", "Coding Agent 未提交脚本 patch。"
+    )
+    generate_script = AsyncMock(
+        side_effect=[generation_error, generation_error, _code_result("b" * 64)]
+    )
+    repair_script = AsyncMock(side_effect=[_code_result("c" * 64), _code_result("d" * 64)])
+    complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少收入构成",
+                missingFacts=("收入构成",),
+            )
+        ),
+        generate_script=generate_script,
+        repair_script=repair_script,
+        summarize=AsyncMock(
+            return_value=AnalysisSummaryDraft(summary="仅使用确定性事实完成摘要。", warnings=())
+        ),
+        read_file=AsyncMock(return_value=_facts_read_result()),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=1, output="failed")),
+        complete=complete,
+    )
+
+    result = await workflow.run(
+        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+    )
+
+    assert [status for _, status in result.stage_statuses] == ["completed"] * 5
+    assert generate_script.await_count == 3
+    assert repair_script.await_count == 2
+    assert workflow.run_script.await_count == 3
+    assert complete.await_args.kwargs["evidencePaths"] == []
+    assert any(
+        "report_analysis_supplement_abandoned" in warning
+        for warning in complete.await_args.kwargs["warnings"]
+    )
+
+
 @pytest.mark.parametrize(
-    "artifacts",
+    "generation_result",
     (
-        [{"path": "other.py", "size": 1, "sha256": "c" * 64}],
-        [_script_identity(), _script_identity("d" * 64)],
+        _code_result(path="other.py"),
+        (_code_result(), _code_result("d" * 64)),
     ),
 )
 @pytest.mark.anyio
 async def test_analysis_item_workflow_rejects_non_signed_script_identity(
-    artifacts: list[dict[str, Any]],
+    generation_result: object,
 ) -> None:
-    plans = 0
+    decisions = 0
 
-    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        nonlocal plans
-        plans += 1
-        return AnalysisEvidencePlan(
+    async def decide(_payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        nonlocal decisions
+        decisions += 1
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="缺少收入构成",
             missingFacts=("收入构成",),
-            script=f"print({plans})",
         )
 
     run_script = AsyncMock()
@@ -570,10 +690,11 @@ async def test_analysis_item_workflow_rejects_non_signed_script_identity(
     )
     complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=AsyncMock(return_value=generation_result),
+        repair_script=AsyncMock(),
         summarize=summarize,
         read_file=AsyncMock(return_value=_facts_read_result()),
-        apply_patch=AsyncMock(return_value=_tool_result(artifacts=artifacts)),
         run_script=run_script,
         complete=complete,
     )
@@ -588,6 +709,9 @@ async def test_analysis_item_workflow_rejects_non_signed_script_identity(
         ("complete-analysis", "completed"),
     )
     run_script.assert_not_awaited()
+    assert decisions == 1
+    assert workflow.generate_script.await_count == 3
+    workflow.repair_script.assert_not_awaited()
     assert complete.await_args.kwargs["evidencePaths"] == []
     assert any(
         "report_analysis_supplement_abandoned" in warning
@@ -607,14 +731,15 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
         }
     )
     workflow = AnalysisItemWorkflow(
-        plan_evidence=AsyncMock(
-            return_value=AnalysisEvidencePlan(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
                 requiresSupplementalEvidence=True,
                 reason="缺少收入构成",
                 missingFacts=("收入构成",),
-                script="print('evidence')",
             )
         ),
+        generate_script=AsyncMock(return_value=_code_result()),
+        repair_script=AsyncMock(),
         summarize=AsyncMock(),
         read_file=AsyncMock(
             side_effect=[
@@ -622,7 +747,6 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
                 _tool_result(content=unreconciled, sha256="b" * 64),
             ]
         ),
-        apply_patch=AsyncMock(return_value=_tool_result(artifacts=[_script_identity()])),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
     )
@@ -635,7 +759,7 @@ async def test_analysis_item_workflow_warns_and_completes_unreconciled_evidence(
         ("validate-evidence", "completed"),
         ("complete-analysis", "completed"),
     )
-    workflow.plan_evidence.assert_awaited_once()
+    workflow.decide_evidence.assert_awaited_once()
     workflow.summarize.assert_awaited_once()
     summary_payload = workflow.summarize.await_args.args[0]
     assert summary_payload["supplementalEvidence"]["reconciliations"] == [
@@ -693,19 +817,21 @@ async def test_analysis_item_workflow_repairs_invalid_evidence_once(
             "warnings": [],
         }
     )
-    plans: list[tuple[bool, Mapping[str, Any]]] = []
+    decisions: list[Mapping[str, Any]] = []
 
-    async def plan(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        plans.append((repair, payload))
-        return AnalysisEvidencePlan(
+    async def decide(payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        decisions.append(payload)
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="缺少收入构成",
             missingFacts=("收入构成",),
-            script="print('repair')" if repair else "print('initial')",
         )
 
+    repair_script = AsyncMock(return_value=_code_result("c" * 64))
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=AsyncMock(return_value=_code_result("b" * 64)),
+        repair_script=repair_script,
         summarize=AsyncMock(
             return_value=AnalysisSummaryDraft(summary="补充证据验证完成。", warnings=())
         ),
@@ -713,19 +839,7 @@ async def test_analysis_item_workflow_repairs_invalid_evidence_once(
             side_effect=[
                 _facts_read_result(),
                 _tool_result(content=invalid, sha256="d" * 64),
-                _tool_result(
-                    content="print('initial')\n",
-                    sha256="b" * 64,
-                    totalBytes=len("print('initial')\n"),
-                    nextOffset=len("print('initial')\n"),
-                ),
                 _tool_result(content=valid, sha256="e" * 64),
-            ]
-        ),
-        apply_patch=AsyncMock(
-            side_effect=[
-                _tool_result(artifacts=[_script_identity("b" * 64)]),
-                _tool_result(artifacts=[_script_identity("c" * 64)]),
             ]
         ),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
@@ -734,8 +848,13 @@ async def test_analysis_item_workflow_repairs_invalid_evidence_once(
 
     await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
 
-    assert [repair for repair, _payload in plans] == [False, True]
-    assert plans[1][1]["correction"]["error"]["code"] == expected_code
+    assert len(decisions) == 1
+    diagnostic = repair_script.await_args.kwargs["diagnostic"]
+    assert diagnostic["code"] == expected_code
+    assert repair_script.await_args.kwargs["decision"].missing_facts == ("收入构成",)
+    assert repair_script.await_args.kwargs["script_file"].path == (
+        "报表/智能分析/run-1/evidence/analysis_001/supplement.py"
+    )
     assert workflow.run_script.await_count == 2
     assert workflow.summarize.await_args.args[0]["supplementalEvidence"]["analysisId"] == (
         "analysis_001"
@@ -754,36 +873,40 @@ async def test_analysis_item_workflow_binds_evidence_identity_to_current_analysi
             "warnings": [],
         }
     )
-    plans: list[bool] = []
+    decisions = 0
 
-    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        plans.append(repair)
-        return AnalysisEvidencePlan(
+    async def decide(_payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        nonlocal decisions
+        decisions += 1
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="缺少收入构成",
             missingFacts=("收入构成",),
-            script="print('initial')",
         )
 
     summarize = AsyncMock(
         return_value=AnalysisSummaryDraft(summary="补充证据验证完成。", warnings=())
     )
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=AsyncMock(return_value=_code_result("b" * 64)),
+        repair_script=AsyncMock(),
         summarize=summarize,
         read_file=AsyncMock(
-            side_effect=[_facts_read_result(), _tool_result(content=model_evidence, sha256="d" * 64)]
+            side_effect=[
+                _facts_read_result(),
+                _tool_result(content=model_evidence, sha256="d" * 64),
+            ]
         ),
-        apply_patch=AsyncMock(return_value=_tool_result(artifacts=[_script_identity("b" * 64)])),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
     )
 
     await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
 
-    assert plans == [False]
+    assert decisions == 1
     assert workflow.run_script.await_count == 1
-    workflow.apply_patch.assert_awaited_once()
+    workflow.generate_script.assert_awaited_once()
     evidence = summarize.await_args.args[0]["supplementalEvidence"]
     assert evidence["analysisId"] == "analysis_001"
     assert evidence["datasetIds"] == ["dataset-1"]
@@ -804,16 +927,15 @@ async def test_analysis_item_workflow_abandons_structurally_invalid_evidence_aft
             "warnings": [],
         }
     )
-    plans = 0
+    decisions = 0
 
-    async def plan(_payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        nonlocal plans
-        plans += 1
-        return AnalysisEvidencePlan(
+    async def decide(_payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        nonlocal decisions
+        decisions += 1
+        return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="缺少收入构成",
             missingFacts=("收入构成",),
-            script=f"print({plans})",
         )
 
     summarize = AsyncMock(
@@ -821,33 +943,16 @@ async def test_analysis_item_workflow_abandons_structurally_invalid_evidence_aft
     )
     complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     workflow = AnalysisItemWorkflow(
-        plan_evidence=plan,
+        decide_evidence=decide,
+        generate_script=AsyncMock(return_value=_code_result("b" * 64)),
+        repair_script=AsyncMock(side_effect=[_code_result("c" * 64), _code_result("d" * 64)]),
         summarize=summarize,
         read_file=AsyncMock(
             side_effect=[
                 _facts_read_result(),
                 _tool_result(content=invalid, sha256="d" * 64),
-                _tool_result(
-                    content="print(1)\n",
-                    sha256="b" * 64,
-                    totalBytes=len("print(1)\n"),
-                    nextOffset=len("print(1)\n"),
-                ),
                 _tool_result(content=invalid, sha256="e" * 64),
-                _tool_result(
-                    content="print(2)\n",
-                    sha256="c" * 64,
-                    totalBytes=len("print(2)\n"),
-                    nextOffset=len("print(2)\n"),
-                ),
                 _tool_result(content=invalid, sha256="f" * 64),
-            ]
-        ),
-        apply_patch=AsyncMock(
-            side_effect=[
-                _tool_result(artifacts=[_script_identity("b" * 64)]),
-                _tool_result(artifacts=[_script_identity("c" * 64)]),
-                _tool_result(artifacts=[_script_identity("d" * 64)]),
             ]
         ),
         run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
@@ -859,7 +964,8 @@ async def test_analysis_item_workflow_abandons_structurally_invalid_evidence_aft
     )
 
     assert [status for _, status in result.stage_statuses] == ["completed"] * 5
-    assert plans == 3
+    assert decisions == 1
+    assert workflow.repair_script.await_count == 2
     assert summarize.await_args.args[0]["supplementalEvidence"] is None
     assert complete.await_args.kwargs["evidencePaths"] == []
     assert any(
@@ -884,10 +990,11 @@ async def test_analysis_item_workflow_reuses_durable_completion_payload_exactly(
     }
     complete = AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True))
     workflow = AnalysisItemWorkflow(
-        plan_evidence=AsyncMock(),
+        decide_evidence=AsyncMock(),
+        generate_script=AsyncMock(),
+        repair_script=AsyncMock(),
         summarize=AsyncMock(),
         read_file=AsyncMock(return_value=_facts_read_result()),
-        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=complete,
     )
@@ -901,7 +1008,9 @@ async def test_analysis_item_workflow_reuses_durable_completion_payload_exactly(
         ("execute-script", "skipped"),
         ("validate-evidence", "skipped"),
     )
-    workflow.plan_evidence.assert_not_awaited()
+    workflow.decide_evidence.assert_not_awaited()
+    workflow.generate_script.assert_not_awaited()
+    workflow.repair_script.assert_not_awaited()
     workflow.summarize.assert_not_awaited()
     assert {
         key: value for key, value in complete.await_args.kwargs.items() if key != "run_context"
@@ -913,10 +1022,11 @@ async def test_analysis_item_workflow_preserves_planner_provider_error() -> None
     provider_error = RuntimeError("provider unavailable")
     complete = AsyncMock()
     workflow = AnalysisItemWorkflow(
-        plan_evidence=AsyncMock(side_effect=provider_error),
+        decide_evidence=AsyncMock(side_effect=provider_error),
+        generate_script=AsyncMock(),
+        repair_script=AsyncMock(),
         summarize=AsyncMock(),
         read_file=AsyncMock(return_value=_facts_read_result()),
-        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=complete,
     )
@@ -953,17 +1063,17 @@ async def test_analysis_item_workflow_reads_deterministic_facts_in_chunks() -> N
         ]
     )
     workflow = AnalysisItemWorkflow(
-        plan_evidence=AsyncMock(
-            return_value=AnalysisEvidencePlan(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
                 requiresSupplementalEvidence=False,
                 reason="固定事实足够",
                 missingFacts=(),
-                script=None,
             )
         ),
+        generate_script=AsyncMock(),
+        repair_script=AsyncMock(),
         summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="固定事实摘要", warnings=())),
         read_file=reads,
-        apply_patch=AsyncMock(),
         run_script=AsyncMock(),
         complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
     )
@@ -971,26 +1081,6 @@ async def test_analysis_item_workflow_reads_deterministic_facts_in_chunks() -> N
     await workflow.run(_instruction(), RunContext(run_id="task-run-1", session_id="task-session-1"))
 
     assert [call.kwargs["offset"] for call in reads.await_args_list] == [0, split]
-
-
-def test_evidence_plan_normalizes_omitted_empty_missing_facts() -> None:
-    plan = AnalysisEvidencePlan.model_validate(
-        {
-            "requiresSupplementalEvidence": False,
-            "reason": "固定事实已足够。",
-            "script": None,
-        }
-    )
-
-    assert plan.missing_facts == ()
-
-
-def test_analysis_script_models_do_not_impose_an_artificial_length_limit() -> None:
-    plan_script_schema = AnalysisEvidencePlan.model_json_schema()["properties"]["script"]
-    draft_script_schema = AnalysisScriptDraft.model_json_schema()["properties"]["script"]
-
-    assert "maxLength" not in json.dumps(plan_script_schema)
-    assert "maxLength" not in json.dumps(draft_script_schema)
 
 
 def test_evidence_decision_normalizes_omitted_empty_missing_facts() -> None:
@@ -1002,6 +1092,18 @@ def test_evidence_decision_normalizes_omitted_empty_missing_facts() -> None:
     )
 
     assert decision.missing_facts == ()
+
+
+def test_evidence_decision_rejects_script_source() -> None:
+    with pytest.raises(ValueError):
+        AnalysisEvidenceDecision.model_validate(
+            {
+                "requiresSupplementalEvidence": True,
+                "reason": "缺少收入构成。",
+                "missingFacts": ["收入构成"],
+                "script": "print('not allowed')",
+            }
+        )
 
 
 def test_analysis_item_workflow_preserves_structured_tool_error_for_repair() -> None:

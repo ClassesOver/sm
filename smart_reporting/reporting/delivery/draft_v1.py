@@ -25,6 +25,7 @@ _MODEL_IMAGE = re.compile(
     r"\((?:<[^>\r\n]*>|(?:\\.|[^()\\\r\n]|\([^()\r\n]*\))*)\)"
 )
 _INLINE_CODE_SPAN = re.compile(r"(?P<delimiter>`+).*?(?P=delimiter)")
+REPORT_HEADING_TITLE_MAX_LENGTH = 300
 
 
 def _inline_heading_text(markdown: str) -> str:
@@ -40,7 +41,7 @@ def _inline_heading_text(markdown: str) -> str:
 class HeadingNumber(StrictModel):
     level: int = Field(ge=2, le=4)
     number: str = Field(pattern=r"^[1-9][0-9]*(?:\.[1-9][0-9]*){0,2}$")
-    title: str = Field(min_length=1, max_length=300)
+    title: str = Field(min_length=1, max_length=REPORT_HEADING_TITLE_MAX_LENGTH)
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     anchor: str = Field(pattern=r"^report-(?:section|heading)-[a-z0-9_-]+$")
 
@@ -333,6 +334,8 @@ def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> t
 
 def _validated_block_headings(
     markdown: str,
+    *,
+    issue_path: str = "$.markdown",
 ) -> tuple[tuple[int, int, re.Match[str], str, str], ...]:
     """解析并校验最终装配支持的 CommonMark 标题语法。"""
 
@@ -360,6 +363,20 @@ def _validated_block_headings(
         title = _inline_heading_text(markdown_title)
         if not markdown_title or not title:
             raise ReportingError("report_draft_heading_format_invalid", "章节正文标题不能为空。")
+        if len(title) > REPORT_HEADING_TITLE_MAX_LENGTH:
+            message = f"章节正文标题可见文本不得超过 {REPORT_HEADING_TITLE_MAX_LENGTH} 个字符。"
+            issue = {
+                "path": issue_path,
+                "type": "heading_title_too_long",
+                "message": message,
+                "maxLength": REPORT_HEADING_TITLE_MAX_LENGTH,
+                "actualLength": len(title),
+            }
+            raise ReportingError(
+                "report_draft_heading_title_too_long",
+                message,
+                details={"issues": [issue]},
+            )
         headings.append((level, line_index, match, markdown_title, title))
     return tuple(headings)
 
@@ -386,9 +403,10 @@ def validate_report_draft_blocks(
                 markdown,
                 expected_title=expected_section_title,
             )
-        validate_report_block_markdown(markdown)
+        validate_report_body_markdown(markdown)
         for level, _line_index, _match, _markdown_title, _title in _validated_block_headings(
-            markdown
+            markdown,
+            issue_path=f"$.blocks[{block_index}].markdown",
         ):
             if level == 3:
                 h3_count += 1

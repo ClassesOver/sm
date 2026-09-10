@@ -32,7 +32,6 @@ from smart_reporting.reporting.structured_output.wire_schema import (
     StructuredOutputWireSchemaResolver,
 )
 from smart_reporting.reporting.workflow.execution import ReportingTaskInvocation
-from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import AnalysisScriptDraft
 from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
@@ -40,23 +39,16 @@ from smart_reporting.reporting.workflow.runtime.models import (
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionBlockContent,
     SectionPlanOutput,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 from smart_reporting.task_execution import TaskExecutionScope
-
-
-def _matplotlib_source(path: str = "charts/revenue.png") -> str:
-    return (
-        'import matplotlib\nmatplotlib.use("Agg")\n'
-        f'import matplotlib.pyplot as plt\nplt.savefig("{path}")\n'
-    )
 
 
 @pytest.mark.anyio
 async def test_structured_executor_calls_arun_once_without_continuation() -> None:
     draft = Mock()
-    draft.output_schema = VisualizationScriptDraft
-    draft.arun = AsyncMock(return_value=Mock(content=VisualizationScriptDraft.model_construct()))
+    draft.output_schema = VisualizationPlanDraft
+    draft.arun = AsyncMock(return_value=Mock(content=VisualizationPlanDraft.model_construct()))
     executor = ReportingStructuredOutputExecutor(draft, idle_timeout_seconds=5)
     scope = TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "generator")
 
@@ -64,7 +56,7 @@ async def test_structured_executor_calls_arun_once_without_continuation() -> Non
         "instruction", scope=scope, run_context=RunContext(run_id="r", session_id="s")
     )
 
-    assert isinstance(result, VisualizationScriptDraft)
+    assert isinstance(result, VisualizationPlanDraft)
     draft.arun.assert_awaited_once()
     draft.acontinue_run = AsyncMock()
     draft.acontinue_run.assert_not_awaited()
@@ -94,8 +86,6 @@ async def test_structured_executor_implements_task_coordinator_protocol() -> Non
 @pytest.mark.anyio
 async def test_structured_executor_extracts_complete_json_object_from_model_preamble() -> None:
     payload = {
-        "scriptPath": "charts/revenue.py",
-        "pythonSource": _matplotlib_source(),
         "charts": [
             {
                 "chartId": "chart_revenue",
@@ -114,7 +104,7 @@ async def test_structured_executor_extracts_complete_json_object_from_model_prea
         "warnings": [],
     }
     agent = Mock()
-    agent.output_schema = VisualizationScriptDraft
+    agent.output_schema = VisualizationPlanDraft
     agent.arun = AsyncMock(
         return_value=Mock(
             content=(
@@ -131,35 +121,29 @@ async def test_structured_executor_extracts_complete_json_object_from_model_prea
         "instruction", scope=scope, run_context=RunContext(run_id="r", session_id="s")
     )
 
-    assert isinstance(result, VisualizationScriptDraft)
+    assert isinstance(result, VisualizationPlanDraft)
     assert result.charts[0].chart_id == "chart_revenue"
 
 
 @pytest.mark.anyio
-async def test_structured_executor_does_not_merge_partial_json_objects() -> None:
+async def test_structured_executor_recovers_later_complete_plan_object() -> None:
     agent = Mock()
-    agent.output_schema = VisualizationScriptDraft
+    agent.output_schema = VisualizationPlanDraft
     agent.arun = AsyncMock(
-        return_value=Mock(
-            content=(
-                '{"scriptPath":"charts/revenue.py","pythonSource":"print(1)"}\n'
-                '{"charts":[],"warnings":[]}'
-            )
-        )
+        return_value=Mock(content=('{"charts":"invalid"}\n{"charts":[],"warnings":[]}'))
     )
     executor = ReportingStructuredOutputExecutor(agent, idle_timeout_seconds=5)
     scope = TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "generator")
 
-    with pytest.raises(ReportingError) as caught:
-        await executor.run(
-            "instruction", scope=scope, run_context=RunContext(run_id="r", session_id="s")
-        )
+    result = await executor.run(
+        "instruction", scope=scope, run_context=RunContext(run_id="r", session_id="s")
+    )
 
-    assert caught.value.code == "report_phase_output_invalid"
+    assert result == VisualizationPlanDraft(charts=(), warnings=())
 
 
 def test_structured_correction_includes_small_candidate_once() -> None:
-    candidate = {"scriptPath": "charts/revenue.py", "charts": []}
+    candidate = {"charts": [], "warnings": ["证据有限"]}
 
     messages = _correction_instruction(
         "original instruction",
@@ -170,7 +154,7 @@ def test_structured_correction_includes_small_candidate_once() -> None:
 
     serialized = "".join(str(message.content) for message in messages)
     assert len(messages) == 2
-    assert serialized.count('"scriptPath":"charts/revenue.py"') == 1
+    assert serialized.count('"证据有限"') == 1
     assert messages[0].content == "original instruction"
 
 
@@ -198,7 +182,7 @@ def test_structured_correction_omits_oversized_invalid_candidate() -> None:
     assert messages[0].content == "original instruction"
 
 
-def test_reporting_agno_parser_does_not_merge_partial_alias_objects(
+def test_reporting_agno_parser_recovers_later_complete_plan_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     warnings: list[str] = []
@@ -206,19 +190,17 @@ def test_reporting_agno_parser_does_not_merge_partial_alias_objects(
     model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
     agent = create_reporting_generator_agent(
         model=model,
-        output_schema=VisualizationScriptDraft,
+        output_schema=VisualizationPlanDraft,
         name="reporting-visualization-generator",
     )
-    raw = (
-        '{"scriptPath":"charts/revenue.py","pythonSource":"print(1)"}\n{"charts":[],"warnings":[]}'
-    )
+    raw = '{"charts":"invalid"}\n{"charts":[],"warnings":[]}'
     output = Mock(content=raw)
     run_context = RunContext(run_id="run-1", session_id="session-1")
-    run_context.output_schema = VisualizationScriptDraft
+    run_context.output_schema = VisualizationPlanDraft
 
     agno_response.convert_response_to_structured_format(agent, output, run_context)
 
-    assert output.content == raw
+    assert output.content == VisualizationPlanDraft(charts=(), warnings=())
     assert not any("Validation failed on merged data" in warning for warning in warnings)
 
 
@@ -226,13 +208,11 @@ def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
     model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
     agent = create_reporting_generator_agent(
         model=model,
-        output_schema=VisualizationScriptDraft,
+        output_schema=VisualizationPlanDraft,
         name="reporting-visualization-generator",
     )
     raw = json.dumps(
         {
-            "scriptPath": "charts/revenue.py",
-            "pythonSource": _matplotlib_source(),
             "charts": [
                 {
                     "chartId": "chart_revenue",
@@ -253,12 +233,12 @@ def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
     )
     output = Mock(content=raw)
     run_context = RunContext(run_id="run-1", session_id="session-1")
-    run_context.output_schema = VisualizationScriptDraft
+    run_context.output_schema = VisualizationPlanDraft
 
     agno_response.convert_response_to_structured_format(agent, output, run_context)
 
-    assert isinstance(output.content, VisualizationScriptDraft)
-    assert output.content.script_path == "charts/revenue.py"
+    assert isinstance(output.content, VisualizationPlanDraft)
+    assert output.content.charts[0].source_path == "charts/revenue.png"
 
 
 class _RequiredValue(BaseModel):
@@ -279,7 +259,7 @@ class _BusinessValue(BaseModel):
 def test_reporting_agno_parser_delegates_non_reporting_schema() -> None:
     create_reporting_generator_agent(
         model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
-        output_schema=VisualizationScriptDraft,
+        output_schema=VisualizationPlanDraft,
         name="reporting-visualization-generator",
     )
 
@@ -385,7 +365,6 @@ def test_structured_request_preserves_output_token_budget() -> None:
             '"DataUnderstandingTable":["sourceId","table","role","periodColumn",'
             '"periodGranularity"]',
         ),
-        (AnalysisScriptDraft, '"$":["script"]'),
     ],
 )
 def test_json_object_mode_explicitly_lists_nested_required_fields(
@@ -696,68 +675,29 @@ async def test_section_semantic_error_still_consumes_business_correction() -> No
 
 
 @pytest.mark.anyio
-async def test_syntax_correction_log_contains_location_without_source() -> None:
+async def test_long_section_heading_exposes_markdown_issue_and_is_corrected() -> None:
     executor = ReportingStructuredOutputExecutor(
-        _schema_agent(VisualizationScriptDraft), idle_timeout_seconds=5
-    )
-    invalid = {
-        "scriptPath": "charts/revenue.py",
-        "pythonSource": "if True print('sensitive source')",
-        "charts": [
-            {
-                "chartId": "chart_revenue",
-                "sourcePath": "charts/revenue.png",
-                "title": "收入趋势",
-                "altText": "收入趋势图",
-                "citationIds": ["citation_001"],
-                "metricCodes": ["revenue"],
-                "currentPeriod": "2025",
-                "sourceDatasetId": "dataset_001",
-                "aggregationGrain": "month",
-            }
-        ],
-    }
-    valid = VisualizationScriptDraft.model_validate(
-        {**invalid, "pythonSource": _matplotlib_source()}
+        _schema_agent(SectionBlockContent), idle_timeout_seconds=5
     )
     executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
-            (executor.agent, Mock(content=invalid)),
-            (executor.agent, Mock(content=valid)),
+            (executor.agent, Mock(content={"markdown": f"### {'甲' * 301}\n\n正文"})),
+            (executor.agent, Mock(content={"markdown": "### 精简标题\n\n正文"})),
         ]
     )
-    records = []
-    sink_id = logger.add(lambda message: records.append(message.record))
-    try:
-        await executor.execute(
-            "original instruction",
-            routing_context=None,
-            session_id="session-syntax-correction",
-            user_id="user-1",
-        )
-    finally:
-        logger.remove(sink_id)
 
-    correction = next(
-        record
-        for record in records
-        if record["message"] == "report_structured_output_correction_requested"
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-heading-length-correction",
+        user_id="user-1",
     )
-    assert correction["extra"]["issues"] == [
-        {
-            "path": "$.pythonSource",
-            "type": "value_error",
-            "message": "Value error, pythonSource Python 语法错误：invalid syntax（第 1 行，第 9 列）",
-        }
-    ]
-    assert "sensitive source" not in str(correction["extra"])
-    diagnostic = next(
-        record
-        for record in records
-        if record["message"].startswith("report_structured_output_validation_failed ")
-    )
-    assert "第 1 行，第 9 列" in diagnostic["message"]
-    assert "sensitive source" not in diagnostic["message"]
+
+    correction_messages = executor._execute_mode.await_args_list[1].args[2]
+    serialized_correction = "".join(str(message.content) for message in correction_messages)
+    assert '"path":"$.markdown"' in serialized_correction
+    assert "report_draft_heading_title_too_long" in serialized_correction
+    assert result.content.markdown == "### 精简标题\n\n正文"
 
 
 @pytest.mark.anyio

@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .schema import HospitalOperationSchema
 
 ReportType = Literal["comprehensive", "topic"]
+_AnalysisId = Annotated[str, StringConstraints(pattern=r"^analysis_[0-9]{3,6}$")]
 _SERIALIZED_MEMBER_PATTERN = re.compile(
     r'(?:"?)[A-Za-z_][A-Za-z0-9_.-]*"?\s*:\s*(?:true|false|null|"|\{|\[|-?\d)',
     re.IGNORECASE,
@@ -51,9 +52,6 @@ def normalize_outline_proposal_candidate(candidate: Any) -> Any:
             sections.append(raw_section)
             continue
         section = dict(raw_section)
-        focus = section.get("focus")
-        if isinstance(focus, list):
-            section["focus"] = _deduplicate_values(focus)
         analysis_ids = section.get("analysisIds")
         if not isinstance(analysis_ids, list):
             sections.append(section)
@@ -76,13 +74,8 @@ def normalize_outline_proposal_candidate(candidate: Any) -> Any:
             continue
 
         # 同一 analysisId 只能归属一个章节。模型把同一原子分析复制成多个章节时，
-        # 保留首次归属并合并后续 focus，既不重复执行证据，也不丢失模型声明的关注点。
+        # 保留首次归属，避免重复执行同一份证据。
         if existing_owner_indexes and len(set(existing_owner_indexes)) == 1:
-            owner = sections[existing_owner_indexes[0]]
-            owner_focus = owner.get("focus") if isinstance(owner, dict) else None
-            duplicate_focus = section.get("focus")
-            if isinstance(owner_focus, list) and isinstance(duplicate_focus, list):
-                owner["focus"] = _deduplicate_values([*owner_focus, *duplicate_focus])
             continue
         section["analysisIds"] = unique_ids
         sections.append(section)
@@ -132,11 +125,19 @@ class ReportOutlineSection(HospitalOperationSchema):
 
 
 class OutlineSectionProposal(HospitalOperationSchema):
-    """提纲模型只提交中文展示字段和发现引用，不提交 section code。"""
+    """提纲模型只提交章节标题和分析引用，不提交派生展示字段或 section code。"""
 
-    title: str = Field(min_length=1, max_length=300)
-    focus: tuple[str, ...] = Field(default=(), max_length=20)
-    analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2_000)
+    title: str = Field(
+        min_length=1,
+        max_length=300,
+        description="面向报告读者的中文章节标题，不得包含 analysisId 或 section code。",
+    )
+    analysis_ids: tuple[_AnalysisId, ...] = Field(
+        alias="analysisIds",
+        min_length=1,
+        max_length=2_000,
+        description="逐字复制 outlineContext.analyses 中已注册且归属本章节的 analysisId。",
+    )
 
     @field_validator("title")
     @classmethod
@@ -150,25 +151,10 @@ class OutlineSectionProposal(HospitalOperationSchema):
             raise ValueError("动态章节标题必须是中文自然语言且不得包含机器标识")
         return normalized
 
-    @field_validator("focus")
-    @classmethod
-    def validate_focus(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(item.strip() for item in value)
-        if len(normalized) != len(set(normalized)) or any(
-            not item
-            or not any("\u4e00" <= character <= "\u9fff" for character in item)
-            or _looks_like_serialized_structure(item)
-            for item in normalized
-        ):
-            raise ValueError("动态章节重点必须是不重复的中文自然语言")
-        return normalized
-
     @field_validator("analysis_ids")
     @classmethod
     def validate_analysis_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)) or any(
-            not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value
-        ):
+        if len(value) != len(set(value)):
             raise ValueError("动态章节只能引用不重复的服务端 analysisId")
         return value
 
@@ -251,11 +237,21 @@ def freeze_outline(
         if isinstance(proposal, ReportOutlineProposal)
         else ReportOutlineProposal.model_validate(proposal)
     )
-    analysis_ids = {
-        item.analysis_id if hasattr(item, "analysis_id") else str(item.get("analysisId"))
-        for item in analyses
-        if isinstance(item, Mapping) or hasattr(item, "analysis_id")
-    }
+    analysis_questions: dict[str, str | None] = {}
+    for item in analyses:
+        if isinstance(item, Mapping):
+            analysis_id = item.get("analysisId")
+            management_question = item.get("managementQuestion")
+        else:
+            analysis_id = getattr(item, "analysis_id", None)
+            management_question = getattr(item, "management_question", None)
+        if isinstance(analysis_id, str) and analysis_id:
+            analysis_questions[analysis_id] = (
+                management_question.strip()
+                if isinstance(management_question, str) and management_question.strip()
+                else None
+            )
+    analysis_ids = set(analysis_questions)
     if not analysis_ids:
         raise ValueError("没有可供提纲引用的真实分析")
     sections: list[ReportOutlineSection] = []
@@ -265,12 +261,19 @@ def freeze_outline(
         if unknown:
             raise ValueError(f"提纲引用未知 analysisId: {', '.join(sorted(unknown))}")
         referenced_analysis_ids.update(section.analysis_ids)
+        focus = tuple(
+            dict.fromkeys(
+                question
+                for analysis_id in section.analysis_ids
+                if (question := analysis_questions.get(analysis_id)) is not None
+            )
+        )[:20]
         sections.append(
             ReportOutlineSection(
                 code=f"section_{index:03d}",
                 sectionNumber=str(index),
                 title=section.title,
-                focus=section.focus,
+                focus=focus,
                 analysisIds=section.analysis_ids,
             )
         )

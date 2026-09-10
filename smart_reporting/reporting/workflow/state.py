@@ -187,8 +187,9 @@ _TRANSITIONS: dict[ReportingPhase, frozenset[ReportingPhase]] = {
         {
             ReportingPhase.VISUALIZATION,
             ReportingPhase.ANALYSIS_REWORK,
-            # 逐章 Reporting 工作流在本阶段内完成分析、图表和章节成稿；最终 Markdown
-            # 由服务端确定性装配并已校验全部章节产物后直接完成，不再经过旧全局阶段。
+            ReportingPhase.FINALIZE,
+            # 保留旧 run 的直接完成路径；新 run 由 finalize checkpoint 原子进入
+            # FINALIZE，再由独立汇编步骤推进 COMPLETED。
             ReportingPhase.COMPLETED,
             ReportingPhase.FAILED,
         }
@@ -585,6 +586,13 @@ def apply(
         checkpoint = arguments.get("checkpoint")
         if not isinstance(checkpoint, Mapping):
             raise ReportingStateError("report_checkpoint_invalid", "Workflow checkpoint 无效。")
+        checkpoint_phase = checkpoint.get("phase")
+        if checkpoint_phase not in {"analysis", "sections", "finalize", "completed"}:
+            raise ReportingStateError(
+                "report_checkpoint_invalid", "Workflow checkpoint phase 无效。"
+            )
+        if checkpoint_phase == "finalize":
+            next_phase = ReportingPhase.FINALIZE
         payload["workflowCheckpoint"] = dict(checkpoint)
         mirror = arguments.get("mirrorFile")
         if isinstance(mirror, Mapping):

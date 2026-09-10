@@ -12,7 +12,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionBlockContent,
     SectionDecisionAdapter,
     SectionDecisionOutput,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 
 
@@ -30,125 +30,52 @@ def _chart(path: str = "report/charts/chart-001.png") -> ChartDraft:
     )
 
 
-def test_visualization_script_draft_accepts_bound_chart_paths() -> None:
-    draft = VisualizationScriptDraft(
-        scriptPath="report/charts/charts.py",
-        pythonSource=(
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "plt.plot([1, 2], [3, 4])\n"
-            "plt.savefig('report/charts/chart-001.png')\n"
-        ),
-        charts=(_chart(),),
-    )
-    assert draft.charts[0].chart_id == "chart_001"
+def test_visualization_plan_accepts_bound_chart_metadata_and_warnings() -> None:
+    assert VisualizationPlanDraft.__name__ == "VisualizationPlanDraft"
+    plan = VisualizationPlanDraft(charts=(_chart(),), warnings=("数据仅供参考",))
+
+    assert plan.charts[0].model_dump(mode="json", by_alias=True) == {
+        "chartId": "chart_001",
+        "sourcePath": "report/charts/chart-001.png",
+        "title": "收入趋势",
+        "altText": "收入按月趋势",
+        "citationIds": ["citation_001"],
+        "metricCodes": ["revenue"],
+        "currentPeriod": "2026-08",
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset_001",
+        "aggregationGrain": "month",
+        "comparability": "strict",
+    }
+    assert plan.warnings == ("数据仅供参考",)
 
 
-def test_visualization_script_draft_reports_python_syntax_location() -> None:
-    with pytest.raises(ValidationError) as caught:
-        VisualizationScriptDraft(
-            scriptPath="report/charts/charts.py",
-            pythonSource="if True print('broken')",
-            charts=(_chart(),),
-        )
+def test_visualization_plan_accepts_zero_charts() -> None:
+    assert VisualizationPlanDraft(charts=()).charts == ()
 
-    issue = caught.value.errors(include_url=False, include_input=False)[0]
-    assert issue["loc"] == ("pythonSource",)
-    assert (
-        issue["msg"]
-        == "Value error, pythonSource Python 语法错误：invalid syntax（第 1 行，第 9 列）"
-    )
+
+def test_visualization_plan_requires_charts_field() -> None:
+    with pytest.raises(ValidationError):
+        VisualizationPlanDraft()
 
 
 @pytest.mark.parametrize(
-    "python_source",
+    "extra",
     [
-        "submit_visualization_charts([])",
-        "print(__file__)",
-        "comparison_period = null",
+        {"scriptPath": ""},
+        {"pythonSource": ""},
+        {"unexpected": ""},
     ],
 )
-def test_visualization_script_draft_rejects_workflow_or_runtime_placeholders(
-    python_source: str,
-) -> None:
+def test_visualization_plan_rejects_source_and_unknown_fields(extra: dict[str, str]) -> None:
     with pytest.raises(ValidationError):
-        VisualizationScriptDraft(
-            scriptPath="report/charts/charts.py",
-            pythonSource=python_source,
-            charts=(_chart(),),
-        )
+        VisualizationPlanDraft(charts=(_chart(),), **extra)
 
 
-@pytest.mark.parametrize(
-    "python_source",
-    [
-        "import plotly.express as px\npx.bar(x=[1], y=[2])",
-        (
-            "import matplotlib\n"
-            "import matplotlib.pyplot as plt\n"
-            "matplotlib.use('Agg')\n"
-            "plt.savefig('report/charts/chart-001.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "figure = plt.figure()\n"
-            "figure.write_image('report/charts/chart-001.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "plt.plot([1, 2], [3, 4])\n"
-        ),
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "obj.savefig('report/charts/chart-001.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "def configure_backend():\n"
-            "    matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "plt.savefig('report/charts/chart-001.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "import importlib\n"
-            "importlib.import_module('seaborn')\n"
-            "plt.savefig('report/charts/chart-001.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "__import__('plotly')\n"
-            "plt.savefig('report/charts/chart-001.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "if True:\n"
-            "    import matplotlib.pyplot as early_plt\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "plt.savefig('report/charts/chart-001.png')\n"
-        ),
-    ],
-)
-def test_visualization_script_draft_enforces_matplotlib_rendering_contract(
-    python_source: str,
-) -> None:
+def test_visualization_plan_rejects_duplicate_chart_identity() -> None:
     with pytest.raises(ValidationError):
-        VisualizationScriptDraft(
-            scriptPath="report/charts/charts.py",
-            pythonSource=python_source,
-            charts=(_chart(),),
-        )
+        VisualizationPlanDraft(charts=(_chart(), _chart()))
 
 
 @pytest.mark.parametrize(
@@ -256,6 +183,13 @@ def test_section_decision_normalizes_numeric_comparison_display_value() -> None:
 def test_section_block_content_rejects_disallowed_heading_level() -> None:
     with pytest.raises(ValidationError, match="report_draft_heading_level_invalid"):
         SectionBlockContent(markdown="## 非法章节标题\n\n正文")
+
+
+def test_section_block_content_rejects_heading_with_301_visible_characters() -> None:
+    with pytest.raises(ValidationError, match="report_draft_heading_title_too_long") as raised:
+        SectionBlockContent(markdown=f"### {'甲' * 301}\n\n正文")
+
+    assert raised.value.errors(include_url=False)[0]["loc"] == ("markdown",)
 
 
 def test_section_block_content_allows_h4_parented_by_previous_block() -> None:

@@ -21,6 +21,8 @@ STARROCKS_CHECK_CONCURRENCY = 4
 SANDBOX_CHECK_TIMEOUT_SECONDS = 10
 StarRocksAdapterFactory = Callable[[StarRocksSourceConfig], StarRocksDataSourceAdapter]
 SandboxCheck = Callable[[], Awaitable[None]]
+
+
 class DependencyCheckResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 

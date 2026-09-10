@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from agno.models.openai import OpenAIChat
+from agno.models.openai import OpenAIChat, OpenAIResponses
 
 from ..integrations.model_config import reasoning_transport_fields
 
@@ -101,7 +101,7 @@ class ReportingThinkingProfile:
         )
 
 
-def apply_reporting_thinking_profile[ModelT: OpenAIChat](
+def apply_reporting_thinking_profile[ModelT: OpenAIChat | OpenAIResponses](
     model: ModelT,
     profile: ReportingThinkingProfile,
 ) -> ModelT:
@@ -133,7 +133,9 @@ def apply_reporting_thinking_profile[ModelT: OpenAIChat](
     return model
 
 
-def reporting_thinking_profile_from_model(model: OpenAIChat) -> ReportingThinkingProfile:
+def reporting_thinking_profile_from_model(
+    model: OpenAIChat | OpenAIResponses,
+) -> ReportingThinkingProfile:
     """把共享模型配置冻结为一次请求可复制的完整 profile。"""
 
     temperature = float(model.temperature) if isinstance(model.temperature, int | float) else 0.1

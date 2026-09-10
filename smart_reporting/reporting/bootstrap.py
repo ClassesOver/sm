@@ -7,7 +7,11 @@ from ..quality_warnings.service import QualityWarningService
 from ..runtime.execution import ExecutionContext
 from ..runtime.settings import AgentSettings
 from ..task_execution import TaskExecutionKernel, TaskExecutionRepository
-from .agent import create_reporting_generator_agent, create_reporting_phase_agent
+from .agent import (
+    create_reporting_code_agent,
+    create_reporting_generator_agent,
+    create_reporting_phase_agent,
+)
 from .data_source import load_configured_report_source_registry
 from .delivery.publishing import (
     ReportArtifactPersistenceService,
@@ -19,7 +23,7 @@ from .vision import ReportVisionReviewer
 from .workflow.execution import ReportingEventSink, ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
-from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationScriptDraft
+from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationPlanDraft
 
 
 def create_report_runtime(
@@ -42,13 +46,22 @@ def create_report_runtime(
     )
     visualization_generator = create_reporting_generator_agent(
         model=reporting_agent_template.model,
-        output_schema=VisualizationScriptDraft,
+        output_schema=VisualizationPlanDraft,
         name="reporting-visualization-generator",
     )
-    visualization_recovery = create_reporting_generator_agent(
+    visualization_code_agent = create_reporting_code_agent(
         model=reporting_agent_template.model,
-        output_schema=VisualizationScriptDraft,
-        name="reporting-visualization-recovery",
+        name="reporting-visualization-code-agent",
+        role="只为冻结图表计划签发可视化脚本。",
+        instructions=[
+            "只能修改 visualizationWorkspace.scriptPath 签发的唯一 Python 文件。",
+            "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径；"
+            "不得使用 __file__、cwd 或目录探测重新推导路径。",
+            "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据。",
+            "绘图只能使用 Matplotlib；在导入 matplotlib.pyplot 前调用 "
+            'matplotlib.use("Agg")，并使用 fig.savefig(...) 写入签发路径。',
+            "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
+        ],
     )
     section_generator = create_reporting_generator_agent(
         model=reporting_agent_template.model,
@@ -80,7 +93,7 @@ def create_report_runtime(
         reporting_agent_template=reporting_agent_template,
         task_runner=task_runner,
         visualization_generator=visualization_generator,
-        visualization_recovery=visualization_recovery,
+        visualization_recovery=visualization_code_agent,
         section_generator=section_generator,
         section_recovery=section_recovery,
         vision_reviewer=vision_reviewer,

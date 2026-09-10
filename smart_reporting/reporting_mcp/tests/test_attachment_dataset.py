@@ -17,7 +17,7 @@ class _Workspace:
     async def ahash_file(self, _thread_id: str, _path: str):
         return {"size": len(self.content), "sha256": hashlib.sha256(self.content).hexdigest()}
 
-    def file_bytes(self, _thread_id: str, _path: str):
+    async def afile_bytes(self, _thread_id: str, _path: str):
         return self.content, "text/csv"
 
 

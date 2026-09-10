@@ -19,7 +19,7 @@ class ReportReviewSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    stage: Literal["request", "outline"]
+    stage: Literal["request", "outline", "recovery"]
     title: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=1000)
     preview: dict[str, Any] = Field(default_factory=dict)

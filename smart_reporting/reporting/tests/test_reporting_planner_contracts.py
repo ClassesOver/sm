@@ -46,6 +46,7 @@ from smart_reporting.reporting.hospital_operation.deterministic_analysis import 
 from smart_reporting.reporting.hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
+    freeze_outline,
 )
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
@@ -95,7 +96,6 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.base import (
@@ -965,7 +965,6 @@ def test_outline_section_can_reference_multiple_atomic_analysis_items() -> None:
             "sections": [
                 {
                     "title": "经营结果与资源效率",
-                    "focus": ["比较经营结果与资源投入"],
                     "analysisIds": ["analysis_001", "analysis_002", "analysis_003"],
                 }
             ],
@@ -978,6 +977,54 @@ def test_outline_section_can_reference_multiple_atomic_analysis_items() -> None:
         "analysis_002",
         "analysis_003",
     )
+
+
+def test_outline_proposal_rejects_legacy_focus_field() -> None:
+    with pytest.raises(ValidationError):
+        ReportOutlineProposal.model_validate(
+            {
+                "reportType": "comprehensive",
+                "title": "年度运营分析报告",
+                "sections": [
+                    {
+                        "title": "经营结果与资源效率",
+                        "focus": ["比较经营结果与资源投入"],
+                        "analysisIds": ["analysis_001"],
+                    }
+                ],
+            }
+        )
+
+
+def test_outline_schema_exposes_analysis_id_pattern() -> None:
+    schema = ReportOutlineProposal.model_json_schema()
+
+    analysis_id_items = schema["$defs"]["OutlineSectionProposal"]["properties"]["analysisIds"][
+        "items"
+    ]
+
+    assert analysis_id_items["pattern"] == "^analysis_[0-9]{3,6}$"
+
+
+def test_freeze_outline_derives_focus_from_signed_management_questions() -> None:
+    outline = freeze_outline(
+        {
+            "reportType": "comprehensive",
+            "title": "年度运营分析报告",
+            "sections": [
+                {
+                    "title": "经营结果与资源效率",
+                    "analysisIds": ["analysis_002", "analysis_001"],
+                }
+            ],
+        },
+        analyses=[
+            {"analysisId": "analysis_001", "managementQuestion": "收入趋势如何"},
+            {"analysisId": "analysis_002", "managementQuestion": "成本效率如何"},
+        ],
+    )
+
+    assert outline.sections[0].focus == ("成本效率如何", "收入趋势如何")
 
 
 @pytest.mark.anyio
@@ -1090,40 +1137,13 @@ async def _empty_close() -> None:
     return None
 
 
-def test_analysis_item_instructions_submit_facts_without_model_evidence() -> None:
+def test_analysis_item_instructions_delegate_execution_to_fixed_workflow() -> None:
     instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
 
-    assert "任务 JSON 的 sectionGoal 标识当前分析所属章节" in instructions
-    assert "不得为其他章节生成证据或结论" in instructions
-    assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
-    assert "evidencePaths 传空数组" in instructions
-    assert "deterministicFactFile 直接冻结为 evidence" in instructions
-    assert "完整内联 deterministicFacts 时不得默认调用 query_analysis_facts" in instructions
-    assert "facts 被标记为 truncated" in instructions
-    assert (
-        "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations"
-        in instructions
-    )
-    assert "不得为探索 facts 结构" in instructions
-    assert "固定事实足够时立即调用 complete_analysis_item" in instructions
-    assert "truncated 或当前管理问题缺少必需事实" in instructions
-    assert "不得猜测、补齐或替代缺失事实" in instructions
-    assert "不执行摘要百分比启发式匹配" in instructions
-    assert "<analysisOutputRoot>/supplement.py" in instructions
-    assert "只将该路径原样传给 run_python_script" in instructions
-    assert "不得传入解释器或 workdir" in instructions
-    assert "python3 <analysisOutputRoot>/script.py" not in instructions
-    assert "不得 cd 到 evidence/analysis_*" in instructions
-    assert "不得猜测 /workspace" in instructions
-    assert "不得用 pwd、ls、find 或 wc 探测" in instructions
-    assert "不要给成功的脚本执行附加探测命令" in instructions
-    assert "脚本修改统一使用 apply_analysis_patch" in instructions
-    assert (
-        "成功脚本的 stdout 仅输出 evidencePath、处理行数、固定事实对账值和核心可比指标"
-        in instructions
-    )
-    assert "完整聚合结果只写入 evidence JSON" in instructions
-    assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
+    assert "AnalysisEvidenceDecision" in instructions
+    assert "固定 Workflow" in instructions
+    assert "Python 源码" in instructions
+    assert "expected_sha256" not in instructions
 
 
 def test_section_instructions_match_evidence_file_authorization() -> None:
@@ -1281,25 +1301,18 @@ def test_phase_instructions_prioritize_signed_execution_directive() -> None:
     visualization = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
     section = "\n".join(REPORT_SECTION_AGENT_INSTRUCTIONS)
 
-    for instructions in (analysis, visualization, section):
-        assert "executionDirective 是本任务的首要动作契约" in instructions
-        assert "不得输出解释文字" in instructions
-    assert "不得构造 shell 命令或选择解释器" in analysis
-    assert "不得重复完全相同的 patch 参数" in visualization
+    assert "固定 Workflow" in analysis
+    assert "固定 Workflow" in visualization
+    assert "executionDirective 是本任务的首要动作契约" in section
     assert "不得使用 read_file 读取 factFiles" in section
 
 
-def test_patch_instructions_include_complete_unified_diff_templates() -> None:
+def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
     analysis_instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
     visualization_instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
     for instructions in (analysis_instructions, visualization_instructions):
-        assert "--- a/path/file.py\n+++ b/path/file.py\n@@ -1 +1 @@" in instructions
-        assert "--- /dev/null\n+++ b/path/file.py\n@@ -0,0 +1 @@" in instructions
-        assert "--- a/path/file.py\n+++ /dev/null\n@@ -1 +0,0 @@" in instructions
-        assert "单行文件更新必须使用 @@ -1 +1 @@" in instructions
-        assert "expected_sha256 的值必须是 64 位小写十六进制字符串" in instructions
-        assert "不需要基线时省略 expected_sha256" in instructions
+        assert "expected_sha256" not in instructions
 
 
 @pytest.mark.anyio
@@ -1621,12 +1634,12 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     )
     observed: list[tuple[str, str, int]] = []
     planner_requests: list[dict[str, Any]] = []
+    code_prompts: list[dict[str, Any]] = []
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = SimpleNamespace()
     runtime.task_runner = SimpleNamespace(repository=SimpleNamespace())
     runtime.state_repository = SimpleNamespace()
     runtime._analysis_evidence_agent = SimpleNamespace()
-    runtime._analysis_script_agent = SimpleNamespace()
     runtime._analysis_summary_agent = SimpleNamespace()
 
     async def run_planner(_agent, payload, _parent_context):
@@ -1641,17 +1654,48 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         )
         if payload["analysisBlock"]["blockId"].endswith(":summary"):
             return AnalysisSummaryDraft(summary="完成摘要", warnings=())
-        if payload["analysisBlock"]["blockId"].endswith(":decision"):
-            return AnalysisEvidenceDecision(
-                requiresSupplementalEvidence=True,
-                reason="缺少构成",
-                missingFacts=("构成",),
+        return AnalysisEvidenceDecision(
+            requiresSupplementalEvidence=True,
+            reason="缺少构成",
+            missingFacts=("构成",),
+        )
+
+    class CapturingCodeAgent:
+        def __init__(self):
+            self.tools = []
+            self.tool_choice = None
+
+        async def arun(self, prompt, **_kwargs):
+            request = json.loads(prompt)
+            tool = self.tools[0]
+            if tool.name == "read_file":
+                return await tool.entrypoint(path=request["scriptPath"])
+            binding = task_context.dependencies["AgentOS 任务执行"]
+            facts = request["facts"]
+            observed.append(
+                (
+                    (
+                        "analysis_001:evidence:script:repair"
+                        if "taskFacts" in facts
+                        else "analysis_001:evidence:script:initial"
+                    ),
+                    binding["reportingThinkingEffort"],
+                    binding["reportingThinkingBudget"],
+                )
             )
-        return AnalysisScriptDraft(script="print('evidence')")
+            code_prompts.append(request)
+            source = repaired_content if "taskFacts" in facts else initial_content
+            return await tool.entrypoint(source=source)
+
+    runtime._analysis_script_agent = CapturingCodeAgent()
 
     class FakeAnalysisItemWorkflow:
-        def __init__(self, *, plan_evidence, summarize, **_kwargs):
-            self.plan_evidence = plan_evidence
+        def __init__(
+            self, *, decide_evidence, generate_script, repair_script, summarize, **_kwargs
+        ):
+            self.decide_evidence = decide_evidence
+            self.generate_script = generate_script
+            self.repair_script = repair_script
             self.summarize = summarize
 
         async def run(self, _payload, _run_context):
@@ -1663,35 +1707,65 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
                 "scriptPath": "evidence/analysis_001/supplement.py",
                 "evidencePath": "evidence/analysis_001/supplement.json",
             }
-            initial = await self.plan_evidence(planner_payload, repair=False)
-            await self.plan_evidence(
-                {
+            decision = await self.decide_evidence(planner_payload)
+            script_path = planner_payload["scriptPath"]
+            initial = await self.generate_script(
+                script_path=script_path,
+                task_facts={
                     **planner_payload,
-                    "correction": {
-                        "attempt": 2,
-                        "previousPlan": initial.model_dump(mode="json", by_alias=True),
-                        "error": {
-                            "code": "report_analysis_script_failed",
-                            "message": "脚本执行失败。",
-                        },
-                    },
+                    "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
                 },
-                repair=True,
+                diagnostic=None,
+                run_context=task_context,
+            )
+            await self.repair_script(
+                script_file=initial.script_file,
+                diagnostic={
+                    "code": "report_analysis_script_failed",
+                    "message": "脚本执行失败。",
+                },
+                decision=decision,
+                run_context=task_context,
             )
             await self.summarize({})
             return SimpleNamespace(output=StepOutput(content={"ok": True}))
 
     runtime._run_planner = run_planner
+    script_path = "evidence/analysis_001/supplement.py"
+    initial_content = "value = 1\nprint(value)\n"
+    repaired_content = "value = 2\nprint(value)\n"
+
+    def script_identity(content: str) -> dict[str, Any]:
+        return {
+            "path": script_path,
+            "size": len(content.encode()),
+            "sha256": hashlib.sha256(content.encode()).hexdigest(),
+        }
+
+    toolkit = SimpleNamespace(
+        read_file=AsyncMock(
+            return_value={
+                "ok": True,
+                **script_identity(initial_content),
+                "content": initial_content,
+                "offset": 0,
+                "nextOffset": len(initial_content.encode()),
+                "totalBytes": len(initial_content.encode()),
+            }
+        ),
+        apply_analysis_patch=AsyncMock(
+            side_effect=[
+                {"ok": True, "artifacts": [script_identity(initial_content)]},
+                {"ok": True, "artifacts": [script_identity(repaired_content)]},
+            ]
+        ),
+        run_python_script=AsyncMock(),
+        complete_analysis_item=AsyncMock(),
+        recover_signed_analysis_script=AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.build_reporting_tools",
-        lambda *_args, **_kwargs: [
-            SimpleNamespace(
-                read_file=AsyncMock(),
-                apply_analysis_patch=AsyncMock(),
-                run_python_script=AsyncMock(),
-                complete_analysis_item=AsyncMock(),
-            )
-        ],
+        lambda *_args, **_kwargs: [toolkit],
     )
     monkeypatch.setattr(
         "smart_reporting.reporting.workflow.runtime.analysis.AnalysisItemWorkflow",
@@ -1717,10 +1791,14 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
         "deterministicFacts",
         "analysisBlock",
     }
-    assert "deterministicFacts" not in planner_requests[1]
-    assert planner_requests[1]["evidenceDecision"]["missingFacts"] == ["构成"]
-    assert "deterministicFacts" not in planner_requests[2]
-    assert planner_requests[2]["previousScript"] == "print('evidence')"
+    assert len(planner_requests) == 2
+    assert code_prompts[0]["facts"]["evidenceDecision"]["missingFacts"] == ["构成"]
+    assert code_prompts[1]["scriptPath"] == script_path
+    assert code_prompts[1]["facts"]["taskFacts"] == {"missingFacts": ["构成"]}
+    assert code_prompts[1]["facts"]["diagnostic"] == {
+        "code": "report_analysis_script_failed",
+        "message": "脚本执行失败。",
+    }
     assert task_context.dependencies["AgentOS 任务执行"] == {
         "reportingThinkingEffort": "high",
         "reportingThinkingBudget": 4096,
@@ -1894,21 +1972,17 @@ def test_instruction_component_bytes_reports_sizes_without_content() -> None:
 def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_data() -> None:
     instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
-    assert "未签发文件" in instructions
-    assert "缺失、为空或无法解析" in instructions
-    assert "跳过对应图表" in instructions
-    assert "结构化诊断" in instructions
-    assert "不得让单张图表失败终止整批脚本" in instructions
-    assert "先规范化为可迭代的空行集合" in instructions
-    assert "查询结果为 None 时必须使用空行集合" in instructions
+    assert "VisualizationPlanDraft" in instructions
+    assert "Python 源码" in instructions
+    assert "执行、检查和提交均由固定 Workflow 编排" in instructions
 
 
 def test_visualization_instructions_describe_overridable_noto_cjk_default() -> None:
     instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
-    assert "Noto Sans CJK SC" in instructions
-    assert "可以覆盖字体配置" in instructions
-    assert "缺字警告只作普通 warning，不视为脚本执行失败" in instructions
+    assert "read_file" not in instructions
+    assert "run_python_script" not in instructions
+    assert "submit_visualization_charts" not in instructions
     assert "fallback_to_default=False" not in instructions
 
 
@@ -1976,6 +2050,9 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         "所有后续读取的局部变量" in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
+    assert runtime._analysis_script_agent.output_schema is None
+    assert runtime._analysis_script_agent.tools == []
+    assert runtime._analysis_script_agent.add_history_to_context is False
     assert any(
         "只含 findings、reconciliations、warnings" in instruction
         and "不得输出 analysisId 或 datasetIds" in instruction
@@ -2448,12 +2525,10 @@ def _duplicate_analysis_outline_payload() -> dict[str, Any]:
         "sections": [
             {
                 "title": "收入与成本",
-                "focus": ["比较收入与成本"],
                 "analysisIds": ["analysis_001"],
             },
             {
                 "title": "利润与效率",
-                "focus": ["比较利润与效率"],
                 "analysisIds": ["analysis_001"],
             },
         ],
@@ -2542,7 +2617,6 @@ def _valid_outline_proposal() -> ReportOutlineProposal:
             "sections": [
                 {
                     "title": "经营结果与资源效率",
-                    "focus": ["比较经营结果与资源投入"],
                     "analysisIds": ["analysis_001"],
                 }
             ],
@@ -2675,9 +2749,7 @@ async def test_generate_outline_repairs_missing_analysis_reference_in_same_run()
             return incomplete
         correction = payload["correction"]
         assert correction["allowedPaths"] == ["sections"]
-        assert correction["previousOutput"]["sections"][0]["analysisIds"] == [
-            "analysis_001"
-        ]
+        assert correction["previousOutput"]["sections"][0]["analysisIds"] == ["analysis_001"]
         assert "analysis_002" in correction["validationFeedback"]["issues"][0]["reason"]
         return complete
 

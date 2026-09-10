@@ -112,6 +112,44 @@ def test_assemble_preserves_inline_markdown_but_records_visible_title() -> None:
     assert rendered.heading_numbers[1].title == "经营结论 与 预算"
 
 
+@pytest.mark.parametrize(
+    "markdown_title",
+    [
+        "甲" * 300,
+        f"**{'甲' * 150}**`{'乙' * 150}`",
+    ],
+)
+def test_assemble_allows_heading_with_300_visible_characters(markdown_title: str) -> None:
+    rendered = _render(f"### {markdown_title}\n\n正文")
+
+    assert len(rendered.heading_numbers[1].title) == 300
+
+
+@pytest.mark.parametrize(
+    "markdown_title",
+    [
+        "甲" * 301,
+        f"**{'甲' * 150}**`{'乙' * 151}`",
+    ],
+)
+def test_assemble_rejects_heading_with_301_visible_characters(markdown_title: str) -> None:
+    with pytest.raises(ReportingError) as raised:
+        _render(f"### {markdown_title}\n\n正文")
+
+    assert raised.value.code == "report_draft_heading_title_too_long"
+    assert raised.value.details == {
+        "issues": [
+            {
+                "path": "$.markdown",
+                "type": "heading_title_too_long",
+                "message": "章节正文标题可见文本不得超过 300 个字符。",
+                "maxLength": 300,
+                "actualLength": 301,
+            }
+        ]
+    }
+
+
 def test_assemble_normalizes_open_spaced_chinese_strong_marker() -> None:
     rendered = _render("下滑主要由** 总部院区**、挂号等收入构成。")
 
@@ -320,9 +358,7 @@ def _docx_manifest_with_heading_count(
         sourceMarkdownSha256="b" * 64,
         docx=ArtifactFile(
             path="reports/report.docx",
-            mediaType=(
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ),
+            mediaType=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
             size=1,
             sha256="c" * 64,
         ),
@@ -388,6 +424,29 @@ def test_validate_report_draft_blocks_reports_heading_parent_path() -> None:
                 "path": "$.blocks[1].markdown",
                 "type": "heading_parent_missing",
                 "message": "H4 标题必须位于当前章节的 H3 标题之后。",
+            }
+        ]
+    }
+
+
+def test_validate_report_draft_blocks_reports_long_heading_block_path() -> None:
+    blocks = (
+        ReportDraftBlock(blockId="block_1", markdown="### 正常标题\n\n正文"),
+        ReportDraftBlock(blockId="block_2", markdown=f"### {'甲' * 301}\n\n正文"),
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        validate_report_draft_blocks(blocks, expected_section_title="经营分析")
+
+    assert raised.value.code == "report_draft_heading_title_too_long"
+    assert raised.value.details == {
+        "issues": [
+            {
+                "path": "$.blocks[1].markdown",
+                "type": "heading_title_too_long",
+                "message": "章节正文标题可见文本不得超过 300 个字符。",
+                "maxLength": 300,
+                "actualLength": 301,
             }
         ]
     }

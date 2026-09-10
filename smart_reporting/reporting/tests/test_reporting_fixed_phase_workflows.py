@@ -1,7 +1,8 @@
 import hashlib
+import inspect
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from agno.run import RunContext
@@ -15,6 +16,7 @@ from smart_reporting.reporting.phase import (
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisChart,
     AnalysisEvidence,
+    ChartVisualInspectionIssue,
     ChartVisualInspectionReceipt,
     FileIdentity,
     MetricDefinition,
@@ -25,8 +27,16 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import sections as reporting_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
     RuntimeAnalysisMixin,
-    _has_chartable_visualization_facts,
     _visualization_section_completion_conditions,
+)
+from smart_reporting.reporting.workflow.runtime.base import (
+    REPORT_ARTIFACTS_STATE_KEY,
+    REPORT_DATASET_LINEAGE_STATE_KEY,
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
+)
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    CodeGenerationResult,
+    ReportingCodeGenerationRunner,
 )
 from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
@@ -36,12 +46,13 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionEvidenceBundle,
     SectionEvidenceFile,
     SectionPlanOutput,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import SectionWorkflow
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     VisualizationSectionWorkflow,
 )
+from smart_reporting.reporting.workflow.state import ReportingPhase
 from smart_reporting.task_execution import TaskExecutionScope
 
 
@@ -63,24 +74,203 @@ def _chart() -> ChartDraft:
     )
 
 
-def _visualization_draft() -> VisualizationScriptDraft:
-    return VisualizationScriptDraft(
-        scriptPath="charts/charts.py",
-        pythonSource=(
-            'import matplotlib\nmatplotlib.use("Agg")\n'
-            'import matplotlib.pyplot as plt\nplt.savefig("charts/chart.png")\n'
-        ),
-        charts=(_chart(),),
-    )
+def _visualization_plan(*, charts: tuple[ChartDraft, ...] | None = None) -> VisualizationPlanDraft:
+    return VisualizationPlanDraft(charts=(_chart(),) if charts is None else charts)
 
 
-def test_visualization_requires_structured_facts_before_generating_chart() -> None:
-    assert not _has_chartable_visualization_facts(
-        [{"metrics": [], "derivedMetrics": [], "comparisons": [], "evidenceFiles": [{}]}]
+def _visualization_payload() -> dict[str, object]:
+    return {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}
+
+
+def test_analysis_executor_does_not_assemble_report() -> None:
+    source = inspect.getsource(RuntimeAnalysisMixin.run_reporting_analysis)
+
+    assert "_finalize_reporting_sections" not in source
+
+
+@pytest.mark.anyio
+async def test_analysis_executor_does_not_rerun_after_finalize_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = SimpleNamespace(revision=2, phase="finalize")
+    durable = SimpleNamespace(
+        phase=ReportingPhase.FINALIZE,
+        payload={"workflowCheckpoint": {"phase": "finalize", "revision": 2}},
     )
-    assert _has_chartable_visualization_facts(
-        [{"metrics": [{"metricCodes": ["revenue"], "periodValueCount": 12}]}]
+
+    class Runtime:
+        state_repository = SimpleNamespace(get_or_create=AsyncMock(return_value=durable))
+        report_tools = SimpleNamespace(
+            bind_document_context=AsyncMock(
+                side_effect=AssertionError("FINALIZE 重入不得重新执行分析准备")
+            )
+        )
+
+        @staticmethod
+        def _feedback(_step_input: object) -> None:
+            return None
+
+        @staticmethod
+        def _state(run_context: RunContext) -> dict[str, object]:
+            return run_context.session_state
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {
+                "externalRunId": "external-run",
+                "threadId": "thread",
+                "userId": "user",
+            }
+
+        @staticmethod
+        def _workflow_result(state: dict[str, object]) -> dict[str, object]:
+            return dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCheckpoint.model_validate",
+        lambda _value: checkpoint,
     )
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread",
+        user_id="user",
+        session_state={REPORT_WORKFLOW_RESULT_STATE_KEY: {"jobId": "job-1"}},
+    )
+
+    output = await RuntimeAnalysisMixin.run_reporting_analysis(
+        Runtime(), SimpleNamespace(), context
+    )
+
+    assert output.content == {"status": "ready", "jobId": "job-1"}
+    Runtime.report_tools.bind_document_context.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_assemble_report_retries_only_finalization_and_preserves_frozen_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = SimpleNamespace(revision=2, phase="finalize")
+    manifest = SimpleNamespace(model_dump=lambda **_kwargs: {"version": "1", "artifacts": []})
+    durable = SimpleNamespace(
+        phase=ReportingPhase.FINALIZE,
+        payload={"workflowCheckpoint": {"phase": "finalize", "revision": 2}},
+    )
+    finalization_calls = 0
+
+    class Runtime:
+        state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+
+        @staticmethod
+        def _state(run_context: RunContext) -> dict[str, object]:
+            return run_context.session_state
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {"externalRunId": "external-run", "threadId": "thread"}
+
+        @staticmethod
+        def _workflow_result(state: dict[str, object]) -> dict[str, object]:
+            return dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])  # type: ignore[arg-type]
+
+        async def _finalize_reporting_sections(self, *_args, **_kwargs):
+            nonlocal finalization_calls
+            finalization_calls += 1
+            if finalization_calls == 1:
+                raise ReportingError("report_assembly_failed", "汇编失败")
+            return checkpoint, manifest
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCheckpoint.model_validate",
+        lambda _value: checkpoint,
+    )
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread",
+        session_state={
+            REPORT_WORKFLOW_RESULT_STATE_KEY: {"jobId": "job-1"},
+            REPORT_DATASET_LINEAGE_STATE_KEY: [],
+        },
+    )
+    runtime = Runtime()
+    frozen_state = dict(context.session_state)
+
+    with pytest.raises(ReportingError, match="汇编失败"):
+        await RuntimeAnalysisMixin.assemble_report(runtime, SimpleNamespace(), context)
+
+    assert context.session_state == frozen_state
+    assert durable.phase is ReportingPhase.FINALIZE
+
+    output = await RuntimeAnalysisMixin.assemble_report(runtime, SimpleNamespace(), context)
+
+    assert finalization_calls == 2
+    assert output.content["markdownPath"].endswith("report-revision-2.md")
+    assert context.session_state[REPORT_ARTIFACTS_STATE_KEY]["draft"] == {
+        "version": "1",
+        "artifacts": [],
+    }
+
+
+@pytest.mark.anyio
+async def test_assemble_report_restores_completed_manifest_without_regeneration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_file = FileIdentity(
+        path="报表/智能分析/run-1/report-revision-2.manifest.json",
+        size=1,
+        sha256="a" * 64,
+    )
+    checkpoint = SimpleNamespace(
+        revision=2,
+        phase="completed",
+        files=(manifest_file,),
+    )
+    manifest = SimpleNamespace(
+        model_dump=lambda **_kwargs: {"version": "1", "artifacts": ["existing"]}
+    )
+    durable = SimpleNamespace(
+        phase=ReportingPhase.COMPLETED,
+        payload={"workflowCheckpoint": {"phase": "completed", "revision": 2}},
+    )
+
+    class Runtime:
+        state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+
+        @staticmethod
+        def _state(run_context: RunContext) -> dict[str, object]:
+            return run_context.session_state
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {"externalRunId": "external-run", "threadId": "thread"}
+
+        @staticmethod
+        def _workflow_result(state: dict[str, object]) -> dict[str, object]:
+            return dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])  # type: ignore[arg-type]
+
+        _read_identity_model = AsyncMock(return_value=manifest)
+        _finalize_reporting_sections = AsyncMock(
+            side_effect=AssertionError("completed checkpoint 不得重复汇编")
+        )
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.ReportingCheckpoint.model_validate",
+        lambda _value: checkpoint,
+    )
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread",
+        session_state={
+            REPORT_WORKFLOW_RESULT_STATE_KEY: {"jobId": "job-1"},
+            REPORT_DATASET_LINEAGE_STATE_KEY: [],
+        },
+    )
+
+    output = await RuntimeAnalysisMixin.assemble_report(Runtime(), SimpleNamespace(), context)
+
+    assert output.content["markdownPath"].endswith("report-revision-2.md")
+    Runtime._read_identity_model.assert_awaited_once()
+    Runtime._finalize_reporting_sections.assert_not_awaited()
+    assert context.session_state[REPORT_ARTIFACTS_STATE_KEY]["draft"]["artifacts"] == ["existing"]
 
 
 @pytest.mark.anyio
@@ -154,53 +344,82 @@ def _inspection() -> ChartVisualInspectionReceipt:
 @pytest.mark.anyio
 async def test_visualization_workflow_orders_fixed_steps() -> None:
     events: list[str] = []
+    plan = _visualization_plan()
     file_identity = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
 
-    async def generate(_payload, _context):
-        events.append("generate")
-        return _visualization_draft()
+    async def generate_plan(_payload, _context):
+        events.append("generate_plan")
+        return plan
 
-    async def write(_path, _source, _context):
-        events.append("write")
-        return file_identity
+    async def generate_script(received_plan, _context, *, diagnostic):
+        assert received_plan is plan
+        assert diagnostic is None
+        events.append("generate_script")
+        return CodeGenerationResult(file_identity)
 
-    async def execute(command, _context):
-        events.append(command)
+    async def execute(script_path, _context):
+        events.append(f"execute:{script_path}")
         return {"exitCode": 0}
 
-    async def inspect(_chart, _context):
-        events.append("inspect")
+    async def inspect(chart, _context):
+        assert chart is plan.charts[0]
+        events.append(f"inspect:{chart.source_path}")
         return _inspection()
 
-    async def submit(_draft, _inspections, _context):
+    async def submit(received_plan, _inspections, _context):
+        assert received_plan is plan
         events.append("submit")
         return {"status": "accepted"}
 
     result = await VisualizationSectionWorkflow(
-        generate=generate,
-        recover=None,
-        write_script=write,
+        generate_plan=generate_plan,
+        generate_script=generate_script,
+        repair_script=None,
         execute_script=execute,
         inspect_chart=inspect,
         submit=submit,
-    ).run({}, _context())
+    ).run(_visualization_payload(), _context())
 
     assert result.status == "accepted"
-    assert events == ["generate", "write", "charts/charts.py", "inspect", "submit"]
+    assert result.plan is plan
+    assert events == [
+        "generate_plan",
+        "generate_script",
+        "execute:charts/charts.py",
+        "inspect:charts/chart.png",
+        "submit",
+    ]
 
 
 @pytest.mark.anyio
-async def test_visualization_workflow_recovers_script_failure_once() -> None:
-    recover = AsyncMock(
-        return_value=VisualizationScriptDraft(
-            scriptPath="charts/charts.py",
-            pythonSource=(
-                'import matplotlib\nmatplotlib.use("Agg")\n'
-                'import matplotlib.pyplot as plt\nplt.savefig("charts/chart.png")\n'
-            ),
-            charts=(_chart(),),
-        )
-    )
+async def test_visualization_workflow_submits_zero_charts_without_code_or_checks() -> None:
+    plan = _visualization_plan(charts=())
+    generate_script = AsyncMock()
+    execute = AsyncMock()
+    inspect = AsyncMock()
+    submit = AsyncMock(return_value={"status": "committed"})
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        execute_script=execute,
+        inspect_chart=inspect,
+        submit=submit,
+    ).run(_visualization_payload(), _context())
+
+    assert result.plan is plan
+    assert result.script_file is None
+    assert result.inspections == ()
+    generate_script.assert_not_awaited()
+    execute.assert_not_awaited()
+    inspect.assert_not_awaited()
+    submit.assert_awaited_once_with(plan, (), ANY)
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_repairs_script_failure_once_with_frozen_plan() -> None:
+    plan = _visualization_plan()
     execute = AsyncMock(
         side_effect=[
             {
@@ -212,45 +431,189 @@ async def test_visualization_workflow_recovers_script_failure_once() -> None:
             {"ok": True, "status": "completed", "exitCode": 0, "output": "ok"},
         ]
     )
-    file_identity = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
-    writes: list[str] = []
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    repair = AsyncMock(return_value=CodeGenerationResult(repaired_file))
+    submitted_plans: list[VisualizationPlanDraft] = []
 
-    async def write(path, _source, _context):
-        writes.append(path)
-        return file_identity
+    async def submit(received_plan, _inspections, _context):
+        submitted_plans.append(received_plan)
+        return {"status": "accepted"}
 
     result = await VisualizationSectionWorkflow(
-        generate=AsyncMock(return_value=_visualization_draft()),
-        recover=recover,
-        write_script=write,
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+        repair_script=repair,
         execute_script=execute,
         inspect_chart=AsyncMock(return_value=_inspection()),
-        submit=AsyncMock(return_value={"status": "accepted"}),
-    ).run({}, _context())
+        submit=submit,
+    ).run(_visualization_payload(), _context())
+
     assert result.recovery_used is True
-    assert writes == ["charts/charts.py"]
-    recover.assert_awaited_once()
+    assert result.plan is plan
+    assert result.script_file is repaired_file
+    assert submitted_plans == [plan]
+    repair.assert_awaited_once()
+    repaired_from, diagnostic, task_facts, _ = repair.await_args.args
+    assert repaired_from is initial_file
+    assert diagnostic == {
+        "code": "report_visualization_script_failed",
+        "message": "可视化脚本执行失败。",
+        "details": {
+            "path": "charts/charts.py",
+            "exitCode": 0,
+            "output": "[FAIL] chart.png: image is blank",
+        },
+    }
+    assert task_facts == {}
+    assert execute.await_count == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "failure_code",
+    ["report_code_generation_no_source", "report_python_source_shape_invalid"],
+)
+async def test_visualization_workflow_retries_initial_generation_with_frozen_plan(
+    failure_code: str,
+) -> None:
+    plan = _visualization_plan()
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    generate_plan = AsyncMock(return_value=plan)
+    generate_script = AsyncMock(
+        side_effect=[
+            ReportingError(
+                failure_code,
+                "生成失败",
+                details={"size": 65537, "lineCount": 1, "maxLineLength": 65536},
+            ),
+            ReportingError(
+                failure_code,
+                "生成失败",
+                details={"size": 65537, "lineCount": 1, "maxLineLength": 65536},
+            ),
+            CodeGenerationResult(script_file),
+        ]
+    )
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=generate_plan,
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=None,
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert result.plan is plan
+    generate_plan.assert_awaited_once()
+    assert generate_script.await_count == 3
+    assert [call.args[0] for call in generate_script.await_args_list] == [plan, plan, plan]
+    assert generate_script.await_args_list[0].kwargs["diagnostic"] is None
+    assert [call.kwargs["diagnostic"]["code"] for call in generate_script.await_args_list[1:]] == [
+        failure_code,
+        failure_code,
+    ]
+    assert generate_script.await_args_list[1].kwargs["diagnostic"]["details"] == {
+        "path": "charts/charts.py",
+        "size": 65537,
+        "lineCount": 1,
+        "maxLineLength": 65536,
+    }
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_hydrates_committed_script_without_regeneration() -> None:
+    plan = _visualization_plan()
+    script_file = FileIdentity(path="charts/charts.py", size=20, sha256="a" * 64)
+    load_script = AsyncMock(return_value=script_file)
+    generate_script = AsyncMock()
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=generate_script,
+        repair_script=None,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=AsyncMock(return_value=_inspection()),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+        load_script=load_script,
+    ).run(_visualization_payload(), _context())
+
+    assert result.script_file is script_file
+    load_script.assert_awaited_once_with("charts/charts.py", ANY)
+    generate_script.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_repairs_visual_review_failure_once() -> None:
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    failed_inspection = _inspection().model_copy(
+        update={
+            "visual_review_status": "failed",
+            "requires_revision": True,
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="text_overlap",
+                    severity="critical",
+                    description="图例遮挡横轴标签。",
+                ),
+            ),
+        }
+    )
+    repair = AsyncMock(return_value=CodeGenerationResult(repaired_file))
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+        repair_script=repair,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=AsyncMock(side_effect=[failed_inspection, _inspection()]),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert result.recovery_used is True
+    repair.assert_awaited_once()
+    _, diagnostic, task_facts, _ = repair.await_args.args
+    assert diagnostic == {
+        "code": "report_visualization_review_failed",
+        "message": "图表正式审查未通过。",
+        "details": {"path": "charts/charts.py"},
+    }
+    assert task_facts == {
+        "inspections": [
+            {
+                "sourcePath": "charts/chart.png",
+                "visualReviewStatus": "failed",
+                "requiresRevision": True,
+                "issues": [
+                    {
+                        "category": "text_overlap",
+                        "severity": "critical",
+                        "description": "图例遮挡横轴标签。",
+                    }
+                ],
+                "summary": None,
+                "warnings": [],
+                "suggestions": [],
+            }
+        ]
+    }
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_recovers_missing_chart_file_with_compact_payload() -> None:
-    initial_draft = _visualization_draft().model_copy(
-        update={"python_source": _visualization_draft().python_source + "# initial\n"}
-    )
-    recovered_draft = initial_draft.model_copy(
-        update={"python_source": _visualization_draft().python_source + "# recovered\n"}
-    )
-    recovery_payloads: list[dict[str, object]] = []
+    plan = _visualization_plan()
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    repair_payloads: list[dict[str, object]] = []
     events: list[str] = []
 
-    async def recover(payload, _context):
-        recovery_payloads.append(dict(payload))
-        events.append("recover")
-        return recovered_draft
-
-    async def write(_path, source, _context):
-        events.append(source)
-        return FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    async def repair(script_file, diagnostic, task_facts, _context):
+        assert script_file is initial_file
+        repair_payloads.append({"diagnostic": dict(diagnostic), "taskFacts": dict(task_facts)})
+        events.append("repair")
+        return CodeGenerationResult(repaired_file)
 
     async def execute(_path, _context):
         events.append("execute")
@@ -260,7 +623,8 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
         events.append("inspect")
         return _inspection()
 
-    async def submit(_draft, _inspections, _context):
+    async def submit(received_plan, _inspections, _context):
+        assert received_plan is plan
         events.append("submit")
         if events.count("submit") == 1:
             return {
@@ -273,47 +637,182 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
         return {"ok": True, "status": "accepted"}
 
     result = await VisualizationSectionWorkflow(
-        generate=AsyncMock(return_value=initial_draft),
-        recover=recover,
-        write_script=write,
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+        repair_script=repair,
         execute_script=execute,
         inspect_chart=inspect,
         submit=submit,
-    ).run({}, _context())
+    ).run(_visualization_payload(), _context())
 
     assert result.status == "accepted"
     assert result.recovery_used is True
     assert events == [
-        initial_draft.python_source,
         "execute",
         "inspect",
         "submit",
-        "recover",
-        recovered_draft.python_source,
+        "repair",
         "execute",
         "inspect",
         "submit",
     ]
-    assert recovery_payloads == [
+    assert repair_payloads == [
         {
             "diagnostic": {
                 "code": "report_chart_file_missing",
-                "message": "report_chart_file_missing: 图表源文件不存在;未生成的图表不得提交登记。",
-                "details": {"sourcePath": "charts/chart.png"},
+                "message": "图表源文件不存在;未生成的图表不得提交登记。",
+                "details": {"path": "charts/chart.png"},
             },
+            "taskFacts": {
+                "missingCharts": [
+                    {
+                        "chartId": "chart_001",
+                        "sourcePath": "charts/chart.png",
+                        "title": "收入趋势",
+                    }
+                ]
+            },
+        }
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure_kind", ["missing_chart", "visual_review"])
+async def test_visualization_repair_adapter_preserves_restricted_task_facts_in_runner_prompt(
+    failure_kind: str,
+) -> None:
+    source = "value = 1\nprint(value)\n"
+    script_file = FileIdentity(
+        path="charts/charts.py",
+        size=len(source.encode()),
+        sha256=hashlib.sha256(source.encode()).hexdigest(),
+    )
+    prompts: list[dict[str, object]] = []
+
+    class FakeAgent:
+        def __init__(self) -> None:
+            self.tools: list[object] = []
+            self.tool_choice: object | None = None
+
+        async def arun(self, prompt: str, **_kwargs: object) -> object:
+            tool = self.tools[0]
+            if tool.name == "read_file":
+                return await tool.entrypoint(path=script_file.path)
+            prompts.append(json.loads(prompt))
+            return await tool.entrypoint(source=source)
+
+    async def read_file(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "path": script_file.path,
+            "content": source,
+            "sha256": script_file.sha256,
+            "offset": 0,
+            "nextOffset": script_file.size,
+            "totalBytes": script_file.size,
+        }
+
+    async def apply_patch(**_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "artifacts": [
+                {
+                    "path": script_file.path,
+                    "size": len(source.encode()),
+                    "sha256": script_file.sha256,
+                }
+            ],
+        }
+
+    runner = ReportingCodeGenerationRunner(agent_factory=FakeAgent)
+
+    async def repair(script, diagnostic, task_facts, context):
+        return await runner.repair(
+            script,
+            diagnostic,
+            read_file,
+            apply_patch,
+            context,
+            task_facts=task_facts,
+        )
+
+    failed_inspection = _inspection().model_copy(
+        update={
+            "visual_review_status": "failed",
+            "requires_revision": True,
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="text_overlap",
+                    severity="critical",
+                    description="图例遮挡横轴标签。",
+                ),
+            ),
+        }
+    )
+    missing_receipt = {
+        "status": "rejected",
+        "code": "report_chart_file_missing",
+        "message": "图表源文件不存在。",
+        "details": {"sourcePath": "charts/chart.png"},
+    }
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+        repair_script=repair,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=(
+            None
+            if failure_kind == "missing_chart"
+            else AsyncMock(side_effect=[failed_inspection, _inspection()])
+        ),
+        submit=AsyncMock(
+            side_effect=([missing_receipt, {"status": "accepted"}])
+            if failure_kind == "missing_chart"
+            else [{"status": "accepted"}]
+        ),
+    )
+
+    await workflow.run(_visualization_payload(), _context())
+
+    assert len(prompts) == 1
+    task_facts = prompts[0]["facts"]["taskFacts"]
+    if failure_kind == "missing_chart":
+        assert task_facts == {
             "missingCharts": [
                 {
                     "chartId": "chart_001",
                     "sourcePath": "charts/chart.png",
                     "title": "收入趋势",
                 }
-            ],
+            ]
         }
-    ]
+    else:
+        assert task_facts == {
+            "inspections": [
+                {
+                    "sourcePath": "charts/chart.png",
+                    "visualReviewStatus": "failed",
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "text_overlap",
+                            "severity": "critical",
+                            "description": "图例遮挡横轴标签。",
+                        }
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            ]
+        }
+        assert "modelId" not in json.dumps(task_facts)
+        assert "sha256" not in json.dumps(task_facts)
 
 
 @pytest.mark.anyio
-async def test_visualization_workflow_propagates_second_missing_chart_file_without_retrying() -> None:
+async def test_visualization_workflow_propagates_second_missing_chart_file_without_retrying() -> (
+    None
+):
     missing_chart = {
         "ok": False,
         "status": "rejected",
@@ -321,59 +820,89 @@ async def test_visualization_workflow_propagates_second_missing_chart_file_witho
         "message": "图表源文件不存在;未生成的图表不得提交登记。",
         "details": {"sourcePath": "charts/chart.png"},
     }
-    recover = AsyncMock(return_value=_visualization_draft())
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repair = AsyncMock(return_value=CodeGenerationResult(initial_file))
     execute = AsyncMock(return_value={"exitCode": 0})
     submit = AsyncMock(side_effect=[missing_chart, missing_chart])
 
     with pytest.raises(ReportingError) as caught:
         await VisualizationSectionWorkflow(
-            generate=AsyncMock(return_value=_visualization_draft()),
-            recover=recover,
-            write_script=AsyncMock(
-                return_value=FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
-            ),
+            generate_plan=AsyncMock(return_value=_visualization_plan()),
+            generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
+            repair_script=repair,
             execute_script=execute,
             inspect_chart=None,
             submit=submit,
-        ).run({}, _context())
+        ).run(_visualization_payload(), _context())
 
     assert caught.value.code == "report_chart_file_missing"
-    recover.assert_awaited_once()
+    repair.assert_awaited_once()
     assert execute.await_count == 2
     assert submit.await_count == 2
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_does_not_recover_artifact_change() -> None:
-    recover = AsyncMock()
+    repair = AsyncMock()
     with pytest.raises(ReportingError) as caught:
         await VisualizationSectionWorkflow(
-            generate=AsyncMock(return_value=_visualization_draft()),
-            recover=recover,
-            write_script=AsyncMock(
+            generate_plan=AsyncMock(return_value=_visualization_plan()),
+            generate_script=AsyncMock(
                 side_effect=ReportingError("report_phase_artifact_changed", "SHA changed")
             ),
+            repair_script=repair,
             execute_script=AsyncMock(),
             inspect_chart=AsyncMock(),
             submit=AsyncMock(),
-        ).run({}, _context())
+        ).run(_visualization_payload(), _context())
     assert caught.value.code == "report_phase_artifact_changed"
-    recover.assert_not_awaited()
+    repair.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_does_not_repair_nonretryable_error() -> None:
+    repair = AsyncMock()
+
+    with pytest.raises(ReportingError) as caught:
+        await VisualizationSectionWorkflow(
+            generate_plan=AsyncMock(return_value=_visualization_plan()),
+            generate_script=AsyncMock(
+                return_value=CodeGenerationResult(
+                    FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+                )
+            ),
+            repair_script=repair,
+            execute_script=AsyncMock(return_value={"exitCode": 0}),
+            inspect_chart=None,
+            submit=AsyncMock(
+                return_value={
+                    "status": "rejected",
+                    "code": "report_visualization_submit_rejected",
+                    "message": "提交不可重试。",
+                    "retryable": False,
+                }
+            ),
+        ).run(_visualization_payload(), _context())
+
+    assert caught.value.code == "report_visualization_submit_rejected"
+    repair.assert_not_awaited()
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_allows_deterministic_submission_without_vision() -> None:
     submit = AsyncMock(return_value={"status": "committed"})
     result = await VisualizationSectionWorkflow(
-        generate=AsyncMock(return_value=_visualization_draft()),
-        recover=None,
-        write_script=AsyncMock(
-            return_value=FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(
+            return_value=CodeGenerationResult(
+                FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+            )
         ),
+        repair_script=None,
         execute_script=AsyncMock(return_value={"exitCode": 0}),
         inspect_chart=None,
         submit=submit,
-    ).run({}, _context())
+    ).run(_visualization_payload(), _context())
 
     assert result.status == "accepted"
     assert result.inspections == ()

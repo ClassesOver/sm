@@ -4,21 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-import difflib
 import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import sys
 import time
 from typing import Any, Literal, cast
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[1]
+MAX_PROBE_SCRIPT_PATCH_METRICS = 2
 if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
@@ -35,6 +35,7 @@ from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
 )  # noqa: E402 - 同上
+from smart_reporting.reporting.models import ReportingError  # noqa: E402 - 同上
 from smart_reporting.reporting.instructions import (  # noqa: E402 - 同上
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
     REPORT_SECTION_AGENT_INSTRUCTIONS,
@@ -44,6 +45,7 @@ from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_tools,
     _report_model_tool_name,
+    create_reporting_code_agent,
     create_reporting_generator_agent,
 )
 from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
@@ -67,7 +69,6 @@ from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -77,8 +78,18 @@ from smart_reporting.reporting.phase import (  # noqa: E402 - 同上
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer  # noqa: E402 - 同上
 from smart_reporting.reporting.tools.context import ReportingOutputPolicy  # noqa: E402 - 同上
-from smart_reporting.reporting.tools.mock_workspace import MockReportingToolRuntime  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.analysis_item import (  # noqa: E402 - 同上
+    MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
+    validate_reporting_python_source,
+)
+from smart_reporting.reporting.tools.mock_workspace import (  # noqa: E402 - 同上
+    MockReportingToolRuntime,
+    MockReportingWorkspace,
+)
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit  # noqa: E402 - 同上
+from smart_reporting.reporting.tools.workspace_port import (  # noqa: E402 - 同上
+    ReportingWorkspaceError,
+)
 from smart_reporting.reporting.structured_output import (  # noqa: E402 - 同上
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
     ReportingStructuredOutputExecutor,
@@ -95,14 +106,16 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (  # noqa: E
     RenderSectionDecision,
     SectionDecision,
     SectionDecisionOutput,
-    VisualizationScriptDraft,
+    VisualizationPlanDraft,
 )
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (  # noqa: E402 - 同上
     AnalysisEvidenceDecision,
-    AnalysisEvidencePlan,
     AnalysisItemWorkflow,
-    AnalysisScriptDraft,
     AnalysisSummaryDraft,
+)
+from smart_reporting.reporting.workflow.runtime.code_generation import (  # noqa: E402 - 同上
+    CodeGenerationResult,
+    ReportingCodeGenerationRunner,
 )
 from smart_reporting.reporting.workflow.runtime.section_workflow import (  # noqa: E402 - 同上
     SectionWorkflow,
@@ -114,9 +127,15 @@ from smart_reporting.reporting.workflow.runtime.sections import (  # noqa: E402 
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (  # noqa: E402 - 同上
     VisualizationSectionWorkflow,
 )
+from smart_reporting.reporting.tools.visualization import (  # noqa: E402 - 同上
+    MAX_VISUALIZATION_SCRIPT_BYTES,
+)
 from smart_reporting.runtime.settings import AgentSettings  # noqa: E402 - 同上
-from smart_reporting.workspace import WorkspaceService  # noqa: E402 - 同上
-from smart_reporting.task_execution import TaskExecutionScope  # noqa: E402 - 同上
+from smart_reporting.workspace import WorkspaceError, WorkspaceService  # noqa: E402 - 同上
+from smart_reporting.task_execution import (  # noqa: E402 - 同上
+    TaskExecutionScope,
+    abuild_workspace_changes,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +177,20 @@ class ProbeToolProjection:
         self.batches.append(
             sorted(name for name in (_report_model_tool_name(tool) for tool in tools or ()) if name)
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbePatchWorkspace:
+    """把 probe 内存工作区投影为 patch candidate builder 所需的只读端口。"""
+
+    workspace: MockReportingWorkspace
+
+    @staticmethod
+    def normalize_path(path: str, *, allow_root: bool) -> tuple[str, str]:
+        return WorkspaceService.normalize_path(path, allow_root=allow_root)
+
+    async def aread_text(self, _thread: str, path: str) -> str:
+        return await self.workspace.read_text(path)
 
 
 class ProbeReportingPhaseOpenAIChat(ReportingPhaseOpenAIChat):
@@ -267,6 +300,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
                 "read_file",
                 "apply_analysis_patch",
                 "run_python_script",
+                "read_file",
                 "complete_analysis_item",
             ),
             "complete_analysis_item",
@@ -276,7 +310,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "analysis-truncated-output",
             "analysis",
             "analysis_item",
-            ("read_file", "complete_analysis_item"),
+            ("read_file", "read_file", "complete_analysis_item"),
             "complete_analysis_item",
             "truncated",
         ),
@@ -288,16 +322,22 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
                 "read_file",
                 "apply_analysis_patch",
                 "run_python_script",
+                "read_file",
+                "apply_analysis_patch",
+                "run_python_script",
+                "read_file",
                 "complete_analysis_item",
             ),
             "complete_analysis_item",
-            "script",
+            "recovery",
         ),
         ProbeScenario(
             "visualization-recovery",
             "analysis",
             "visualization_section",
             (
+                "apply_analysis_patch",
+                "run_python_script",
                 "read_file",
                 "apply_analysis_patch",
                 "run_python_script",
@@ -337,7 +377,7 @@ def probe_scenarios() -> tuple[ProbeScenario, ...]:
             "section-render-truncated-evidence",
             "section",
             "section",
-            ("read_file", "render_report_section"),
+            ("read_file", "read_file", "render_report_section"),
             "render_report_section",
             "render",
         ),
@@ -518,7 +558,7 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
                 "冻结 facts 已绑定已确认 Profile，当前管理问题不需要额外事实；规划阶段不得补证，"
                 "随后生成摘要并提交。"
             )
-        elif scenario.branch == "script":
+        elif scenario.branch in {"script", "recovery"}:
             result["executionDirective"] = (
                 "规划阶段必须返回最小补证脚本；由固定 Workflow 写入后通过 run_python_script "
                 "执行 supplement.py、"
@@ -586,8 +626,8 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
         if scenario.branch == "recovery":
             result["visualizationRecovery"] = True
             result["executionDirective"] = (
-                "当前签发脚本来自上次失败尝试。先读取一次 visualizationWorkspace.scriptPath，"
-                "再用回执中的文件 SHA 覆盖修复该脚本；执行签发脚本、正式审查最终图表后提交。"
+                "首次脚本执行会模拟失败；固定 Workflow 随后读取签发脚本，"
+                "交给 fresh Coding Agent 修复，再执行、正式审查最终图表并提交。"
             )
         elif scenario.branch == "preview":
             result["executionDirective"] = (
@@ -720,6 +760,178 @@ def _probe_visible_tool_names(context: RunContext, tools: list[Function]) -> set
         }
 
 
+def _tool_sequence_failure(
+    expected: tuple[str, ...], actual: tuple[str, ...]
+) -> dict[str, Any] | None:
+    if actual == expected:
+        return None
+    return {
+        "code": "probe_tool_sequence_mismatch",
+        "message": "场景工具调用顺序或次数不匹配。",
+        "details": {"expected": list(expected), "actual": list(actual)},
+    }
+
+
+def _script_constant_paths(tree: ast.Module) -> dict[str, str]:
+    values: dict[str, str] = {}
+
+    def resolve(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return values.get(node.id)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Path"
+            and len(node.args) == 1
+        ):
+            return resolve(node.args[0])
+        return None
+
+    for statement in tree.body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ):
+            value = resolve(statement.value)
+            if value is not None:
+                values[statement.targets[0].id] = value
+    return values
+
+
+def _statically_reachable(
+    node: ast.AST, parents: Mapping[ast.AST, ast.AST]
+) -> bool:
+    current = node
+    while current in parents:
+        parent = parents[current]
+        for field_name, value in ast.iter_fields(parent):
+            if not isinstance(value, list) or current not in value:
+                continue
+            preceding = value[: value.index(current)]
+            if any(
+                isinstance(item, (ast.Raise, ast.Return, ast.Break, ast.Continue))
+                for item in preceding
+            ):
+                return False
+            if isinstance(parent, (ast.If, ast.While)) and isinstance(
+                parent.test, ast.Constant
+            ):
+                test_value = bool(parent.test.value)
+                if (field_name == "body" and not test_value) or (
+                    field_name == "orelse" and test_value
+                ):
+                    return False
+        current = parent
+    return True
+
+
+def _top_level_function_owner(
+    node: ast.AST, parents: Mapping[ast.AST, ast.AST]
+) -> str | None:
+    current = node
+    while current in parents:
+        current = parents[current]
+        if isinstance(current, (ast.ClassDef, ast.Lambda)):
+            return ""
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current.name if isinstance(parents.get(current), ast.Module) else ""
+    return None
+
+
+def _reachable_top_level_functions(
+    tree: ast.Module, parents: Mapping[ast.AST, ast.AST]
+) -> frozenset[str]:
+    functions = {
+        statement.name
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    calls: dict[str | None, set[str]] = {}
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Name)
+            or node.func.id not in functions
+            or not _statically_reachable(node, parents)
+        ):
+            continue
+        owner = _top_level_function_owner(node, parents)
+        if owner == "":
+            continue
+        calls.setdefault(owner, set()).add(node.func.id)
+
+    reachable = set(calls.get(None, ()))
+    pending = list(reachable)
+    while pending:
+        owner = pending.pop()
+        for called in calls.get(owner, ()):
+            if called not in reachable:
+                reachable.add(called)
+                pending.append(called)
+    return frozenset(reachable)
+
+
+def _script_writes_expected_artifact(
+    source: str, *, task_kind: ReportingTaskKind, expected_path: str
+) -> bool:
+    tree = ast.parse(source)
+    constant_paths = _script_constant_paths(tree)
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    reachable_functions = _reachable_top_level_functions(tree, parents)
+
+    def resolve(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return constant_paths.get(node.id)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Path"
+            and len(node.args) == 1
+        ):
+            return resolve(node.args[0])
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _statically_reachable(node, parents):
+            continue
+        owner = _top_level_function_owner(node, parents)
+        if owner == "" or (owner is not None and owner not in reachable_functions):
+            continue
+        if task_kind == "visualization_section":
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "savefig"
+                and node.args
+                and resolve(node.args[0]) == expected_path
+            ):
+                return True
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text"
+            and resolve(node.func.value) == expected_path
+        ):
+            return True
+        if isinstance(node.func, ast.Name) and node.func.id == "open" and node.args:
+            mode = resolve(node.args[1]) if len(node.args) > 1 else "r"
+            if resolve(node.args[0]) == expected_path and mode is not None and "w" in mode:
+                return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+            mode = resolve(node.args[0]) if node.args else "r"
+            if resolve(node.func.value) == expected_path and mode is not None and "w" in mode:
+                return True
+    return False
+
+
 @dataclass(slots=True)
 class ProbeRecorder:
     """保留 test agent 的工具调用，不持有任何生产连接。"""
@@ -732,19 +944,15 @@ class ProbeRecorder:
     output_handle: str | None = None
     output_consumed: bool = False
     script_completed: bool = False
+    script_executions: int = 0
     committed_script_path: str | None = None
-    committed_script_sha256: str | None = None
+    accepted_artifact_paths: set[str] = field(default_factory=set)
+    script_patch_metrics: list[dict[str, Any]] = field(default_factory=list)
+    final_script_metrics: dict[str, Any] | None = None
     tools: list[Function] = field(default_factory=list)
 
     async def prepare(self) -> None:
-        if self.scenario is None or self.scenario.branch != "recovery":
-            return
-        identity = await self.runtime.workspace.write_text(
-            "analysis/output/outpatient_chart.py",
-            "raise RuntimeError('previous attempt failed')\n",
-        )
-        self.committed_script_path = identity.path
-        self.committed_script_sha256 = identity.sha256
+        return
 
     def _truncated(self) -> bool:
         return self.scenario is not None and self.scenario.branch in {
@@ -765,8 +973,7 @@ class ProbeRecorder:
             paths = {"analysis/facts/analysis_001.json"}
             if self.committed_script_path is not None:
                 paths.add(self.committed_script_path)
-            if self.script_completed:
-                paths.add("analysis/output/supplement.json")
+            paths.update(self.accepted_artifact_paths)
             return paths
         if self.scenario.task_kind == "visualization_section":
             return {self.committed_script_path} if self.committed_script_path is not None else set()
@@ -785,8 +992,18 @@ class ProbeRecorder:
         if self.scenario.task_kind == "analysis_item" and self.scenario.branch in {
             "profile",
             "script",
+            "recovery",
         }:
             return "analysis/output/supplement.py"
+        return None
+
+    def _expected_artifact_path(self) -> str | None:
+        if self.scenario is None:
+            return None
+        if self.scenario.task_kind == "analysis_item":
+            return "analysis/output/supplement.json"
+        if self.scenario.task_kind == "visualization_section":
+            return "analysis/charts/outpatient_operation/chart.png"
         return None
 
     def _reject(
@@ -837,42 +1054,36 @@ class ProbeRecorder:
                 )
             try:
                 raw_content = await workspace.read_bytes(path)
-            except Exception:
-                # 生产脚本可以在签发输出根目录生成补充 evidence。探针只在脚本已完成后
-                # 接受这类派生文件，避免将任意不存在路径误报为有效输入。
-                if not self.script_completed or not path.startswith("analysis/output/evidence/"):
-                    if not self.script_completed or path != "analysis/output/supplement.json":
-                        raise
-                identity = await workspace.write_text(
-                    path,
-                    json.dumps(
-                        {
-                            "analysisId": "analysis_001",
-                            "datasetIds": ["dataset-001"],
-                            "findings": [
-                                {
-                                    "metricCode": "outpatient_cost_rate",
-                                    "value": 0.594,
-                                    "missingMonth": "2025-04",
-                                }
-                            ],
-                            "reconciliations": [{"name": "outpatient_cost_rate", "passed": True}],
-                            "warnings": ["2025-04 成本缺失，未按零值填充。"],
-                        },
-                        ensure_ascii=True,
-                        separators=(",", ":"),
-                    ),
+            except ReportingWorkspaceError:
+                return self._reject(
+                    "probe_file_not_available",
+                    "文件尚未由受控模拟验收生成。",
+                    details={"path": path},
                 )
-                raw_content = await workspace.read_bytes(identity.path)
-            if self.scenario is not None and self.scenario.task_kind == "analysis_item":
+            if self.scenario is not None and self.scenario.task_kind in {
+                "analysis_item",
+                "visualization_section",
+            }:
                 offset = int(arguments.get("offset", 0))
                 max_bytes = int(arguments.get("max_bytes", len(raw_content)))
                 end = min(len(raw_content), offset + max_bytes)
                 if self.scenario.branch == "truncated" and path.endswith("analysis_001.json"):
                     end = min(end, offset + max(1, len(raw_content) // 2))
+                while end > offset:
+                    try:
+                        content = raw_content[offset:end].decode("utf-8")
+                        break
+                    except UnicodeDecodeError:
+                        end -= 1
+                else:
+                    content = ""
+                if not content and offset < len(raw_content):
+                    raise WorkspaceError("read_file max_bytes 不足以读取下一个 UTF-8 字符。")
                 return {
                     "ok": True,
-                    "content": raw_content[offset:end].decode("ascii"),
+                    "path": path,
+                    "offset": offset,
+                    "content": content,
                     "sha256": hashlib.sha256(raw_content).hexdigest(),
                     "totalBytes": len(raw_content),
                     "nextOffset": end,
@@ -908,13 +1119,7 @@ class ProbeRecorder:
                     "handle": self.output_handle,
                     "nextOffset": 24,
                 }
-            response = {"ok": True, "content": content}
-            if self.scenario is not None and self.scenario.branch == "recovery":
-                # 生产 Reporting 包装会在 recovery 读取成功后追加同一机器可读契约；
-                # probe 绕过 Toolkit 执行包装，因此必须在 mock 边界保持回执同形。
-                response["nextTool"] = "apply_analysis_patch"
-                response["requiredFields"] = ["patch", "expected_sha256"]
-            return response
+            return {"ok": True, "content": content}
         if name == "run_python_script":
             script_path = str(arguments["script_path"])
             issued_script_path = self._issued_script_path()
@@ -927,35 +1132,102 @@ class ProbeRecorder:
                         "仅将 details.scriptPath 原样作为 run_python_script.script_path。"
                     ],
                 )
-            if self.scenario is not None and self.scenario.task_kind == "visualization_section":
-                if self.committed_script_path is None:
-                    return self._reject(
-                        "probe_script_not_committed",
-                        "必须先提交 CLI 签发的可视化脚本。",
-                        required_actions=[
-                            "先用 apply_analysis_patch 提交 visualizationWorkspace.scriptPath。"
-                        ],
-                    )
-            if (
-                self.scenario is not None
-                and self.scenario.branch == "script"
-                and self.committed_script_path is None
-            ):
+            if self.committed_script_path != script_path:
                 return self._reject(
                     "probe_script_not_committed",
-                    "必须先提交核验脚本。",
-                    required_actions=["先用 apply_analysis_patch 提交核验脚本。"],
+                    "必须先提交 CLI 签发的 Python 脚本。",
+                    required_actions=["先用 apply_analysis_patch 提交签发脚本。"],
                 )
-            result = await workspace.execute_script(
-                script_path,
-                timeout=int(arguments.get("timeout", 30)),
+            self.script_executions += 1
+            if (
+                self.scenario is not None
+                and self.scenario.branch == "recovery"
+                and self.script_executions == 1
+            ):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "code": "probe_script_failed",
+                    "message": "首次执行故意失败，以验证受控修复流程。",
+                    "exit_code": 1,
+                    "output": "probe recovery required",
+                    "simulationMode": "mock_contract_simulation",
+                }
+            source = await workspace.read_text(script_path)
+            max_bytes = (
+                MAX_VISUALIZATION_SCRIPT_BYTES
+                if self.scenario is not None
+                and self.scenario.task_kind == "visualization_section"
+                else MAX_ANALYSIS_PYTHON_SOURCE_BYTES
             )
-            response = {"ok": True, **dict(result)}
-            if ".py" in script_path:
-                self.script_completed = True
-                response["stdout"] = (
-                    "script completed; generated evidence and chart artifacts are ready"
+            try:
+                validate_reporting_python_source(
+                    path=script_path,
+                    content=source,
+                    max_bytes=max_bytes,
+                    visualization=(
+                        self.scenario is not None
+                        and self.scenario.task_kind == "visualization_section"
+                    ),
                 )
+            except ReportingError as error:
+                result = self._reject(error.code, error.message, details=error.details)
+                result["simulationMode"] = "mock_contract_simulation"
+                return result
+            expected_artifact = self._expected_artifact_path()
+            if (
+                expected_artifact is None
+                or self.scenario is None
+                or not _script_writes_expected_artifact(
+                    source,
+                    task_kind=self.scenario.task_kind,
+                    expected_path=expected_artifact,
+                )
+            ):
+                result = self._reject(
+                    "probe_artifact_contract_invalid",
+                    "脚本未满足当前场景的确定性产物契约。",
+                    details={"expectedArtifactPath": expected_artifact},
+                )
+                result["simulationMode"] = "mock_contract_simulation"
+                return result
+            artifact_content = (
+                json.dumps(
+                    {
+                        "analysisId": "analysis_001",
+                        "datasetIds": ["dataset-001"],
+                        "findings": [
+                            {
+                                "metricCode": "outpatient_cost_rate",
+                                "value": 0.594,
+                                "missingMonth": "2025-04",
+                            }
+                        ],
+                        "reconciliations": [
+                            {"name": "outpatient_cost_rate", "passed": True}
+                        ],
+                        "warnings": ["2025-04 成本缺失，未按零值填充。"],
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+                if self.scenario.task_kind == "analysis_item"
+                else "mock chart artifact\n"
+            )
+            artifact = await workspace.write_text(expected_artifact, artifact_content)
+            self.accepted_artifact_paths.add(artifact.path)
+            self.script_completed = True
+            response = {
+                "ok": True,
+                "status": "completed",
+                "exitCode": 0,
+                "exit_code": 0,
+                "stdout": "mock contract accepted; deterministic artifacts are ready",
+                "simulationMode": "mock_contract_simulation",
+                "artifacts": [
+                    {"path": artifact.path, "size": artifact.size, "sha256": artifact.sha256}
+                ],
+            }
             if (
                 self.scenario is not None
                 and self.scenario.branch == "truncated"
@@ -966,35 +1238,105 @@ class ProbeRecorder:
                 response.update({"truncated": True, "handle": self.output_handle})
             return response
         if name == "apply_analysis_patch":
-            match = re.search(r"^\+\+\+ b/(.+)$", str(arguments["patch"]), re.MULTILINE)
-            path = match.group(1) if match is not None else "analysis/output/probe.py"
-            if (
-                self.scenario is not None
-                and self.scenario.task_kind == "visualization_section"
-                and path != "analysis/output/outpatient_chart.py"
-            ):
+            patch = arguments.get("patch")
+            if not isinstance(patch, str):
+                return self._reject("probe_patch_invalid", "patch 必须是标准 unified diff 字符串。")
+            if "\r" in patch:
                 return self._reject(
-                    "probe_visualization_write_forbidden",
-                    "visualization 只能写入 CLI 签发的图表脚本。",
-                    details={"scriptPath": "analysis/output/outpatient_chart.py"},
+                    "report_python_source_shape_invalid",
+                    "签发 Python 源码形状无效，已拒绝写入。",
+                    details={
+                        "path": self._issued_script_path(),
+                        "size": len(patch.encode("utf-8")),
+                        "lineCount": len(patch.splitlines()),
+                        "maxLineLength": max(
+                            (len(line.encode("utf-8")) for line in patch.splitlines()),
+                            default=0,
+                        ),
+                    },
+                )
+            try:
+                changes = await abuild_workspace_changes(
+                    _ProbePatchWorkspace(workspace), "probe", patch
+                )
+            except (WorkspaceError, ReportingWorkspaceError) as error:
+                return self._reject("probe_patch_invalid", str(error))
+            if len(changes) != 1:
+                return self._reject("probe_patch_invalid", "Coding Agent 每次只能修改一个脚本文件。")
+            change = changes[0]
+            operation = change.get("operation")
+            path = change.get("path")
+            content = change.get("content")
+            if (
+                operation not in {"create", "update"}
+                or not isinstance(path, str)
+                or not isinstance(content, str)
+            ):
+                return self._reject("probe_patch_invalid", "Coding Agent patch 必须创建或更新一个脚本。")
+            issued_script_path = self._issued_script_path()
+            if issued_script_path is not None and path != issued_script_path:
+                return self._reject(
+                    "probe_script_write_forbidden",
+                    "当前场景只能写入 CLI 签发的脚本。",
+                    details={"scriptPath": issued_script_path},
                     required_actions=["只使用 apply_analysis_patch 写入 details.scriptPath。"],
                 )
-            overwrite = path == self.committed_script_path
-            identity = await workspace.write_text(
-                path,
-                "print('probe')\n",
-                overwrite=overwrite,
-                expected_sha256=self.committed_script_sha256 if overwrite else None,
-            )
+            try:
+                source_metrics = validate_reporting_python_source(
+                    path=path,
+                    content=content,
+                    max_bytes=(
+                        MAX_VISUALIZATION_SCRIPT_BYTES
+                        if self.scenario is not None
+                        and self.scenario.task_kind == "visualization_section"
+                        else MAX_ANALYSIS_PYTHON_SOURCE_BYTES
+                    ),
+                    visualization=(
+                        self.scenario is not None
+                        and self.scenario.task_kind == "visualization_section"
+                    ),
+                )
+            except ReportingError as error:
+                return self._reject(error.code, error.message, details=error.details)
+            if len(self.script_patch_metrics) >= MAX_PROBE_SCRIPT_PATCH_METRICS:
+                return self._reject(
+                    "probe_patch_attempt_limit_exceeded",
+                    "脚本 patch 次数超过受控场景上限。",
+                    details={"limit": MAX_PROBE_SCRIPT_PATCH_METRICS},
+                )
+            overwrite = operation == "update"
+            try:
+                identity = await workspace.write_text(
+                    path,
+                    content,
+                    overwrite=overwrite,
+                    expected_sha256=(
+                        str(change["expected_sha256"])
+                        if overwrite and isinstance(change.get("expected_sha256"), str)
+                        else None
+                    ),
+                )
+            except ReportingWorkspaceError as error:
+                return self._reject("probe_patch_invalid", str(error))
             self.committed_script_path = identity.path
-            self.committed_script_sha256 = identity.sha256
-            state = self.run_context.session_state if self.run_context is not None else None
-            if isinstance(state, dict):
-                state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
+            patch_metrics = {
+                "attempt": len(self.script_patch_metrics) + 1,
+                **source_metrics,
+                "patchPhysicalLineCount": len(patch.splitlines()),
+            }
+            self.script_patch_metrics.append(patch_metrics)
+            self.final_script_metrics = dict(source_metrics)
             return {
                 "ok": True,
                 "status": "committed",
-                "artifacts": [{"path": identity.path, "sha256": identity.sha256}],
+                "scriptMetrics": patch_metrics,
+                "artifacts": [
+                    {
+                        "path": identity.path,
+                        "size": identity.size,
+                        "sha256": identity.sha256,
+                    }
+                ],
             }
         if name == "query_profile":
             return {
@@ -1048,13 +1390,34 @@ class ProbeRecorder:
             self.output_consumed = True
             return {"ok": True, "content": "剩余受信输出。", "truncated": False}
         if name == "view_image":
-            return {"ok": True, "status": "previewed", "path": arguments.get("path")}
+            path = str(arguments.get("path"))
+            if path not in self.accepted_artifact_paths:
+                return self._reject(
+                    "probe_chart_not_accepted",
+                    "图表尚未由受控模拟验收生成。",
+                    details={"path": path},
+                )
+            raw_content = await workspace.read_bytes(path)
+            return {
+                "ok": True,
+                "status": "previewed",
+                "path": path,
+                "sha256": hashlib.sha256(raw_content).hexdigest(),
+            }
         if name == "inspect_chart":
+            path = str(arguments.get("path"))
+            if path not in self.accepted_artifact_paths:
+                return self._reject(
+                    "probe_chart_not_accepted",
+                    "图表尚未由受控模拟验收生成。",
+                    details={"path": path},
+                )
+            raw_content = await workspace.read_bytes(path)
             return {
                 "ok": True,
                 "status": "passed",
-                "path": arguments.get("path"),
-                "sha256": "a" * 64,
+                "path": path,
+                "sha256": hashlib.sha256(raw_content).hexdigest(),
                 "receiptId": "chart-receipt-1",
             }
         if name in {
@@ -1246,7 +1609,7 @@ async def _run_fixed_analysis_scenario(
     """用生产同形的五阶段 AnalysisItemWorkflow 执行 analysis probe。"""
 
     stage_input = _cli_stage_input(scenario)
-    supplemental = scenario.branch == "script"
+    supplemental = scenario.branch in {"script", "recovery"}
     scope = TaskExecutionScope(
         str(run_context.run_id),
         str(run_context.user_id),
@@ -1259,87 +1622,41 @@ async def _run_fixed_analysis_scenario(
         output_schema=AnalysisEvidenceDecision,
         name=f"probe-{scenario.name}-decision",
     )
-    script_agent = create_reporting_generator_agent(
-        model=model,
-        output_schema=AnalysisScriptDraft,
-        name=f"probe-{scenario.name}-script",
-    )
     summarizer = create_reporting_generator_agent(
         model=model,
         output_schema=AnalysisSummaryDraft,
         name=f"probe-{scenario.name}-summarizer",
     )
+    code_runner = ReportingCodeGenerationRunner(
+        agent_factory=lambda: create_reporting_code_agent(
+            model=model,
+            name=f"probe-{scenario.name}-code",
+            instructions=[
+                "脚本必须写入 facts.scriptPath，并将有效 JSON evidence 写入 facts.evidencePath。"
+            ],
+        )
+    )
 
-    async def plan_evidence(payload: Mapping[str, Any], *, repair: bool) -> AnalysisEvidencePlan:
-        previous_plan = None
-        if repair:
-            correction = payload.get("correction")
-            if isinstance(correction, Mapping):
-                previous_plan = AnalysisEvidencePlan.model_validate(correction.get("previousPlan"))
-        decision = (
-            AnalysisEvidenceDecision(
-                requiresSupplementalEvidence=True,
-                reason=previous_plan.reason,
-                missingFacts=previous_plan.missing_facts,
-            )
-            if previous_plan is not None
-            else cast(
-                AnalysisEvidenceDecision,
-                await ReportingStructuredOutputExecutor(decision_agent).run(
-                    json.dumps(
-                        {
-                            "stage": "decide_supplemental_evidence",
-                            "requiredDecision": {
-                                "requiresSupplementalEvidence": supplemental,
-                                "missingFacts": (
-                                    ["2025-04 outpatient cost"] if supplemental else []
-                                ),
-                            },
-                            "task": stage_input,
-                            "input": payload,
+    async def decide_evidence(payload: Mapping[str, Any]) -> AnalysisEvidenceDecision:
+        return cast(
+            AnalysisEvidenceDecision,
+            await ReportingStructuredOutputExecutor(decision_agent).run(
+                json.dumps(
+                    {
+                        "stage": "decide_supplemental_evidence",
+                        "requiredDecision": {
+                            "requiresSupplementalEvidence": supplemental,
+                            "missingFacts": ["2025-04 outpatient cost"] if supplemental else [],
                         },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    scope=scope,
-                    run_context=run_context,
+                        "task": stage_input,
+                        "input": payload,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 ),
-            )
-        )
-        if not decision.requires_supplemental_evidence:
-            return AnalysisEvidencePlan(
-                requiresSupplementalEvidence=False,
-                reason=decision.reason,
-                missingFacts=(),
-                script=None,
-            )
-        instruction = json.dumps(
-            {
-                "stage": "repair_evidence_script" if repair else "write_evidence_script",
-                "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
-                "previousScript": previous_plan.script if previous_plan is not None else None,
-                "scriptRequirement": (
-                    "Return a Python script that writes the signed evidencePath as valid JSON."
-                ),
-                "task": stage_input,
-                "input": payload,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        draft = cast(
-            AnalysisScriptDraft,
-            await ReportingStructuredOutputExecutor(script_agent).run(
-                instruction,
                 scope=scope,
                 run_context=run_context,
             ),
-        )
-        return AnalysisEvidencePlan(
-            requiresSupplementalEvidence=True,
-            reason=decision.reason,
-            missingFacts=decision.missing_facts,
-            script=draft.script,
         )
 
     async def summarize(payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
@@ -1372,6 +1689,39 @@ async def _run_fixed_analysis_scenario(
         arguments.pop("run_context", None)
         return await recorder.invoke("apply_analysis_patch", arguments)
 
+    async def generate_script(
+        *,
+        script_path: str,
+        task_facts: Mapping[str, Any],
+        diagnostic: Mapping[str, Any] | None,
+        run_context: RunContext,
+    ) -> CodeGenerationResult:
+        return await code_runner.generate(
+            script_path,
+            task_facts,
+            apply_patch,
+            run_context,
+            diagnostic=diagnostic,
+            max_source_bytes=128 * 1024,
+        )
+
+    async def repair_script(
+        *,
+        script_file: FileIdentity,
+        diagnostic: Mapping[str, Any],
+        decision: AnalysisEvidenceDecision,
+        run_context: RunContext,
+    ) -> CodeGenerationResult:
+        return await code_runner.repair(
+            script_file,
+            diagnostic,
+            read_file,
+            apply_patch,
+            run_context,
+            task_facts={"missingFacts": list(decision.missing_facts)},
+            max_source_bytes=128 * 1024,
+        )
+
     async def run_script(**arguments: Any) -> dict[str, Any]:
         arguments.pop("run_context", None)
         execution = await recorder.invoke(
@@ -1385,10 +1735,11 @@ async def _run_fixed_analysis_scenario(
         return await recorder.invoke("complete_analysis_item", arguments)
 
     await AnalysisItemWorkflow(
-        plan_evidence=plan_evidence,
+        decide_evidence=decide_evidence,
+        generate_script=generate_script,
+        repair_script=repair_script,
         summarize=summarize,
         read_file=read_file,
-        apply_patch=apply_patch,
         run_script=run_script,
         complete=complete,
     ).run(stage_input, run_context)
@@ -1396,34 +1747,45 @@ async def _run_fixed_analysis_scenario(
 
 async def _run_fixed_visualization_scenario(
     scenario: ProbeScenario,
-    prompt: str,
     model: ReportingPhaseOpenAIChat,
     recorder: ProbeRecorder,
     run_context: RunContext,
 ) -> None:
     """用生产同形的固定 Workflow 执行可视化 probe。"""
 
+    stage_input = _cli_stage_input(scenario)
     signed_script = "analysis/output/outpatient_chart.py"
-    baseline_source: str | None = None
-    if scenario.branch == "recovery":
-        receipt = await recorder.invoke("read_file", {"path": signed_script})
-        if receipt.get("ok") is not True:
-            raise RuntimeError("visualization recovery script read failed")
-        baseline_source = str(receipt.get("content") or "")
-
-    generator = create_reporting_generator_agent(
+    planner = create_reporting_generator_agent(
         model=model,
-        output_schema=VisualizationScriptDraft,
-        name=f"probe-{scenario.name}-generator",
+        output_schema=VisualizationPlanDraft,
+        name=f"probe-{scenario.name}-planner",
+    )
+    code_runner = ReportingCodeGenerationRunner(
+        agent_factory=lambda: create_reporting_code_agent(
+            model=model,
+            name=f"probe-{scenario.name}-code",
+            instructions=[
+                "脚本必须写入 facts.visualizationWorkspace.scriptPath，"
+                "并生成 visualizationPlan 中全部 sourcePath。",
+                "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径；"
+                "不得使用 __file__、cwd 或目录探测重新推导路径。",
+                "绘图只能使用 Matplotlib；在导入 matplotlib.pyplot 前调用 "
+                'matplotlib.use("Agg")，并使用 fig.savefig(...) 写入签发路径。',
+            ],
+        )
     )
 
-    async def generate(
-        _payload: Mapping[str, Any], task_context: RunContext
-    ) -> VisualizationScriptDraft:
+    async def generate_plan(
+        payload: Mapping[str, Any], task_context: RunContext
+    ) -> VisualizationPlanDraft:
         return cast(
-            VisualizationScriptDraft,
-            await ReportingStructuredOutputExecutor(generator).run(
-                prompt,
+            VisualizationPlanDraft,
+            await ReportingStructuredOutputExecutor(planner).run(
+                json.dumps(
+                    {"stage": "plan_visualization", "task": payload},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
                 scope=TaskExecutionScope(
                     str(task_context.run_id),
                     str(task_context.user_id),
@@ -1435,34 +1797,48 @@ async def _run_fixed_visualization_scenario(
             ),
         )
 
-    async def write_script(path: str, source: str, _task_context: RunContext) -> FileIdentity:
-        if path != signed_script:
-            raise RuntimeError("visualization generator changed signed script path")
-        patch = "".join(
-            difflib.unified_diff(
-                [] if baseline_source is None else baseline_source.splitlines(keepends=True),
-                source.splitlines(keepends=True),
-                fromfile="/dev/null" if baseline_source is None else f"a/{path}",
-                tofile=f"b/{path}",
-            )
-        )
-        receipt = await recorder.invoke(
-            "apply_analysis_patch",
+    async def read_file(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("read_file", arguments)
+
+    async def apply_patch(**arguments: Any) -> dict[str, Any]:
+        arguments.pop("run_context", None)
+        return await recorder.invoke("apply_analysis_patch", arguments)
+
+    async def generate_script(
+        plan: VisualizationPlanDraft,
+        task_context: RunContext,
+        *,
+        diagnostic: Mapping[str, Any] | None,
+    ) -> CodeGenerationResult:
+        return await code_runner.generate(
+            signed_script,
             {
-                "patch": patch,
-                **(
-                    {"expected_sha256": {path: recorder.committed_script_sha256}}
-                    if recorder.committed_script_sha256 is not None
-                    else {}
-                ),
+                "visualizationFacts": stage_input["visualizationFacts"],
+                "visualizationWorkspace": stage_input["visualizationWorkspace"],
+                "visualizationPlan": plan.model_dump(mode="json", by_alias=True),
             },
+            apply_patch,
+            task_context,
+            diagnostic=diagnostic,
+            max_source_bytes=64 * 1024,
         )
-        artifacts = receipt.get("artifacts")
-        if receipt.get("ok") is not True or not isinstance(artifacts, list) or len(artifacts) != 1:
-            raise RuntimeError("visualization script write failed")
-        artifact = dict(artifacts[0])
-        artifact.setdefault("size", len(source.encode("utf-8")))
-        return FileIdentity.model_validate(artifact)
+
+    async def repair_script(
+        script_file: FileIdentity,
+        diagnostic: Mapping[str, Any],
+        task_facts: Mapping[str, Any],
+        task_context: RunContext,
+    ) -> CodeGenerationResult:
+        return await code_runner.repair(
+            script_file,
+            diagnostic,
+            read_file,
+            apply_patch,
+            task_context,
+            task_facts=task_facts,
+            max_source_bytes=64 * 1024,
+        )
 
     async def execute_script(script_path: str, _task_context: RunContext) -> Mapping[str, Any]:
         execution = await recorder.invoke(
@@ -1491,7 +1867,7 @@ async def _run_fixed_visualization_scenario(
         )
 
     async def submit(
-        draft: VisualizationScriptDraft,
+        plan: VisualizationPlanDraft,
         _inspections: tuple[ChartVisualInspectionReceipt, ...],
         _task_context: RunContext,
     ) -> Mapping[str, Any]:
@@ -1499,18 +1875,18 @@ async def _run_fixed_visualization_scenario(
             "submit_visualization_charts",
             {
                 "sectionCode": "outpatient_operation",
-                "charts": [chart.model_dump(mode="json", by_alias=True) for chart in draft.charts],
+                "charts": [chart.model_dump(mode="json", by_alias=True) for chart in plan.charts],
             },
         )
 
     await VisualizationSectionWorkflow(
-        generate=generate,
-        recover=None,
-        write_script=write_script,
+        generate_plan=generate_plan,
+        generate_script=generate_script,
+        repair_script=repair_script,
         execute_script=execute_script,
         inspect_chart=inspect_chart,
         submit=submit,
-    ).run(_cli_stage_input(scenario), run_context)
+    ).run(stage_input, run_context)
 
 
 async def _run_fixed_section_scenario(
@@ -1606,7 +1982,6 @@ async def _run_scenario(
     timeout_seconds: int,
 ) -> dict[str, Any]:
     runtime = _runtime()
-    prompt = complex_cli_prompt(scenario)
     projection = ProbeToolProjection()
     model = _build_model(
         settings,
@@ -1633,9 +2008,7 @@ async def _run_scenario(
         if scenario.task_kind == "analysis_item":
             return await _run_fixed_analysis_scenario(scenario, model, recorder, run_context)
         if scenario.task_kind == "visualization_section":
-            return await _run_fixed_visualization_scenario(
-                scenario, prompt, model, recorder, run_context
-            )
+            return await _run_fixed_visualization_scenario(scenario, model, recorder, run_context)
         return await _run_fixed_section_scenario(scenario, model, recorder, run_context)
 
     started = time.perf_counter()
@@ -1660,15 +2033,52 @@ async def _run_scenario(
     actual_completion = set(called_names) & completion_tools
     unexpected_tools = sorted(set(called_names) - set(expected_names))
     task_completed = error is None and called_names[-1:] == [scenario.completion_tool]
+    protocol_failures = list(recorder.failures)
+    sequence_failure = _tool_sequence_failure(
+        tuple(expected_names), tuple(called_names)
+    )
+    if sequence_failure is not None:
+        protocol_failures.append(sequence_failure)
+    if missing_tools:
+        protocol_failures.append(
+            {
+                "code": "probe_required_tools_missing",
+                "message": "场景缺少必要工具调用。",
+                "details": {"missingTools": missing_tools},
+            }
+        )
+    if actual_completion != expected_completion:
+        protocol_failures.append(
+            {
+                "code": "probe_completion_tool_mismatch",
+                "message": "场景终态工具不匹配。",
+                "details": {
+                    "expected": sorted(expected_completion),
+                    "actual": sorted(actual_completion),
+                },
+            }
+        )
+    if unexpected_tools:
+        protocol_failures.append(
+            {
+                "code": "probe_unexpected_tools",
+                "message": "场景调用了未签发工具。",
+                "details": {"unexpectedTools": unexpected_tools},
+            }
+        )
+    if projection.not_visible_calls:
+        protocol_failures.append(
+            {
+                "code": "probe_hidden_tool_called",
+                "message": "模型调用了当前投影不可见的工具。",
+                "details": {"calls": projection.not_visible_calls},
+            }
+        )
     protocol_compliant = (
         task_completed
-        and not missing_tools
-        and actual_completion == expected_completion
-        and not recorder.failures
-        and not unexpected_tools
-        and not projection.not_visible_calls
+        and not protocol_failures
     )
-    valid = task_completed
+    valid = task_completed and protocol_compliant
     if not valid and error is None:
         error = (
             "cli_task_contract_failed: "
@@ -1688,11 +2098,13 @@ async def _run_scenario(
         "unexpected_tools": unexpected_tools,
         "visible_tool_batches": projection.batches,
         "not_visible_calls": projection.not_visible_calls,
-        "protocol_failures": recorder.failures,
+        "protocol_failures": protocol_failures,
         "task_completed": task_completed,
         "protocol_compliant": protocol_compliant,
         "calls": recorder.calls,
         "workspace_calls": runtime.calls,
+        "scriptPatchMetrics": recorder.script_patch_metrics,
+        "finalScriptMetrics": recorder.final_script_metrics,
         "seconds": round(time.perf_counter() - started, 2),
         "valid": valid,
         "error": error,
@@ -1746,7 +2158,11 @@ async def _run(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
-    return 0 if valid_count == len(results) else 1
+    return (
+        0
+        if valid_count == len(results) and protocol_compliant_count == len(results)
+        else 1
+    )
 
 
 def main() -> None:
