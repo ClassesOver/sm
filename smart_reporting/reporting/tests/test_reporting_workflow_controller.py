@@ -370,8 +370,11 @@ async def test_external_background_keeps_preclaimed_owner_without_early_cleanup(
     )
     await asyncio.wait_for(started.wait(), timeout=0.1)
     cleanup_before_cancel = len(cleanup_calls)
+    _, report_run_id = reporting_workflow_ids(
+        user_id="user", thread_id="thread", external_run_id="external-run"
+    )
 
-    await controller.cancel_external(
+    result = await controller.cancel_external(
         external_run_id="external-run",
         thread_id="thread",
         user_id="user",
@@ -379,10 +382,14 @@ async def test_external_background_keeps_preclaimed_owner_without_early_cleanup(
         company_id="11",
     )
 
-    assert cleanup_before_cancel == 0
-    _, report_run_id = reporting_workflow_ids(
-        user_id="user", thread_id="thread", external_run_id="external-run"
-    )
+    assert result == {"ok": True, "status": "running"}
+    assert cleanup_calls[cleanup_before_cancel:] == []
+    assert ownership.owners == {"thread": ("external-run", "user")}
+    assert ownership.status_updates == []
+
+    await controller.aclose()
+
+    assert cleanup_calls == ["external-run"]
     assert ownership.status_updates == [
         (report_run_id, "cancelled", True),
         (report_run_id, "cancelled", False),
@@ -429,7 +436,12 @@ async def test_external_background_cancel_keeps_owner_when_cleanup_is_deferred()
         company_id="11",
     )
 
-    assert result == {"ok": True, "status": "cancelled"}
+    assert result == {"ok": True, "status": "running"}
+    assert ownership.owners == {"thread": ("external-run", "user")}
+    assert ownership.status_updates == []
+
+    await controller.aclose()
+
     assert ownership.owners == {"thread": ("external-run", "user")}
     assert ownership.status_updates[-1][1:] == ("cancelled", True)
 
@@ -513,8 +525,7 @@ async def test_external_background_aclose_keeps_owner_when_cleanup_is_deferred()
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("operation", ["cancel_external", "aclose"])
-async def test_background_release_waits_for_thread_lifecycle_lock(operation: str) -> None:
+async def test_background_release_waits_for_thread_lifecycle_lock() -> None:
     ownership = _ThreadOwnership()
     ownership.owners["thread"] = ("external-run", "user")
     controller = ReportWorkflowController(lambda: None, thread_ownership=ownership)
@@ -525,18 +536,7 @@ async def test_background_release_waits_for_thread_lifecycle_lock(operation: str
 
     try:
         async with ownership.workflow_thread_lifecycle_lock("thread"):
-            call = (
-                controller.cancel_external(
-                    external_run_id="external-run",
-                    thread_id="thread",
-                    user_id="user",
-                    database="odoo",
-                    company_id="11",
-                )
-                if operation == "cancel_external"
-                else controller.aclose()
-            )
-            operation_task = asyncio.create_task(call)
+            operation_task = asyncio.create_task(controller.aclose())
             await asyncio.wait_for(ownership.thread_lifecycle_waiting.wait(), timeout=0.1)
 
             assert not operation_task.done()
@@ -682,13 +682,7 @@ async def test_external_background_active_run_rejects_changed_fingerprint() -> N
     except ReportingError as error:
         conflict = error
     finally:
-        await controller.cancel_external(
-            external_run_id="external-run",
-            thread_id="thread",
-            user_id="user",
-            database="odoo",
-            company_id="11",
-        )
+        await controller.aclose()
 
     assert conflict is not None
     assert conflict.code == "report_mcp_idempotency_conflict"
@@ -779,13 +773,7 @@ async def test_external_reservation_blocks_cross_controller_owner_reclaim() -> N
     assert ownership.owners == {"thread": ("external-run-1", "user")}
     release_prepare.set()
     await first_start
-    await first.cancel_external(
-        external_run_id="external-run-1",
-        thread_id="thread",
-        user_id="user",
-        database="odoo",
-        company_id="11",
-    )
+    await first.aclose()
 
 
 @pytest.mark.anyio
@@ -844,13 +832,7 @@ async def test_external_get_observes_cross_controller_attachment_reservation() -
     assert result == {"ok": True, "status": "running"}
     release_prepare.set()
     await first_start
-    await first.cancel_external(
-        external_run_id=operation_id,
-        thread_id="thread",
-        user_id="user",
-        database="odoo",
-        company_id="11",
-    )
+    await first.aclose()
 
 
 @pytest.mark.anyio
@@ -910,13 +892,7 @@ async def test_external_get_rejects_cross_tenant_attachment_reservation() -> Non
     assert error.value.code == "report_workflow_scope_mismatch"
     release_prepare.set()
     await first_start
-    await first.cancel_external(
-        external_run_id=operation_id,
-        thread_id="thread",
-        user_id="user",
-        database="odoo",
-        company_id="11",
-    )
+    await first.aclose()
 
 
 @pytest.mark.anyio
@@ -1020,7 +996,7 @@ async def test_external_get_rejects_run_without_mcp_metadata() -> None:
 
 
 @pytest.mark.anyio
-async def test_external_cancel_stops_active_background_task() -> None:
+async def test_external_cancel_is_ignored_while_background_task_runs() -> None:
     started = asyncio.Event()
 
     class Workflow:
@@ -1067,19 +1043,23 @@ async def test_external_cancel_stops_active_background_task() -> None:
         company_id="11",
     )
 
-    assert result == {"ok": True, "status": "cancelled"}
-    assert ownership.owners == {}
+    assert result == {"ok": True, "status": "running"}
+    assert ownership.owners == {"thread": ("external-run", "user")}
     assert await controller.get_external(
         external_run_id="external-run",
         thread_id="thread",
         user_id="user",
         database="odoo",
         company_id="11",
-    ) == {"ok": True, "status": "cancelled"}
+    ) == {"ok": True, "status": "running"}
+
+    await controller.aclose()
+
+    assert ownership.owners == {}
 
 
 @pytest.mark.anyio
-async def test_external_cancel_releases_preclaimed_thread_before_task_runs() -> None:
+async def test_external_cancel_is_ignored_for_preclaimed_running_run() -> None:
     class Workflow:
         id = "enterprise-reporting-workflow-v1"
 
@@ -1118,7 +1098,11 @@ async def test_external_cancel_releases_preclaimed_thread_before_task_runs() -> 
         company_id="11",
     )
 
-    assert result == {"ok": True, "status": "cancelled"}
+    assert result == {"ok": True, "status": "running"}
+    assert ownership.owners == {"thread": ("external-run", "user")}
+
+    await controller.aclose()
+
     assert ownership.owners == {}
 
 
@@ -1160,13 +1144,7 @@ async def test_preclaimed_background_start_holds_execution_lock_before_accepting
 
     assert await ownership.is_workflow_run_active("external-run") is True
     assert started.is_set()
-    await controller.cancel_external(
-        external_run_id="external-run",
-        thread_id="thread",
-        user_id="user",
-        database="odoo",
-        company_id="11",
-    )
+    await controller.aclose()
 
 
 @pytest.mark.anyio
@@ -1227,13 +1205,7 @@ async def test_external_background_prepares_request_under_single_execution_lock(
 
     assert result == {"ok": True, "status": "running"}
     assert started.is_set()
-    await controller.cancel_external(
-        external_run_id="external-run",
-        thread_id="thread",
-        user_id="user",
-        database="odoo",
-        company_id="11",
-    )
+    await controller.aclose()
 
 
 @pytest.mark.anyio
@@ -1404,13 +1376,7 @@ async def test_external_background_rejects_when_capacity_is_exhausted(monkeypatc
         )
 
     assert error.value.code == "report_workflow_capacity_exceeded"
-    await controller.cancel_external(
-        external_run_id="external-run-1",
-        thread_id="thread-1",
-        user_id="user",
-        database="odoo",
-        company_id="11",
-    )
+    await controller.aclose()
 
 
 @pytest.mark.anyio
@@ -1459,17 +1425,21 @@ async def test_external_cancel_keeps_owner_when_workspace_quarantine_fails() -> 
     )
     await asyncio.wait_for(started.wait(), timeout=0.1)
 
-    with pytest.raises(ReportingError) as error:
-        await controller.cancel_external(
-            external_run_id="external-run",
-            thread_id="thread",
-            user_id="user",
-            database="odoo",
-            company_id="11",
-        )
+    result = await controller.cancel_external(
+        external_run_id="external-run",
+        thread_id="thread",
+        user_id="user",
+        database="odoo",
+        company_id="11",
+    )
 
-    assert error.value.code == "report_sandbox_quarantine_failed"
+    assert result == {"ok": True, "status": "running"}
     assert ownership.owners == {"thread": ("external-run", "user")}
+
+    await controller.aclose()
+
+    assert ownership.owners == {"thread": ("external-run", "user")}
+    assert "external-run" in controller._background_cleanup_deferred
 
 
 @pytest.mark.anyio

@@ -753,22 +753,17 @@ class ReportWorkflowController:
                 database=database,
                 company_id=company_id,
             )
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError as error:
-                if error.__cause__ is not None:
-                    raise error.__cause__
-            scope = {
-                "external_run_id": external_run_id,
-                "thread_id": thread_id,
-                "user_id": user_id,
-                "database": database,
-                "company_id": company_id,
-            }
-            if await self._parent_pending_control(scope) is None:
-                await self._release_thread(scope)
-            return {"ok": True, "status": "cancelled"}
+            # 运行中的报表工作流不允许取消：取消请求不生效，调用方应轮询等待终态。
+            logger.warning(
+                "report_workflow_cancel_ignored_running external_run_id={} thread_id={} "
+                "user_id={} database={} company_id={}",
+                external_run_id,
+                thread_id,
+                user_id,
+                database,
+                company_id,
+            )
+            return {"ok": True, "status": "running"}
         context = await self.external_context(
             external_run_id=external_run_id,
             thread_id=thread_id,
@@ -1245,10 +1240,23 @@ class ReportWorkflowController:
                         )
                         raise
             elif status == "running":
-                await workflow.acancel_run(control.workflow_run_id)
-                output = await workflow.aget_run(
-                    control.workflow_run_id, session_id=control.workflow_session_id
+                # 运行中的报表工作流不允许取消：取消请求不生效，返回当前运行状态，
+                # 调用方应继续轮询等待终态。
+                logger.warning(
+                    "report_workflow_cancel_ignored_running external_run_id={} thread_id={} "
+                    "user_id={}",
+                    scope["external_run_id"],
+                    scope["thread_id"],
+                    scope["user_id"],
                 )
+                updated = self._control_from_output(
+                    output,
+                    scope,
+                    control.workflow_session_id,
+                    control.workflow_run_id,
+                )
+                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
+                return self._result(updated, output)
             updated = self._control_from_output(
                 output,
                 scope,
@@ -2128,21 +2136,19 @@ class ReportWorkflowToolkit(Toolkit):
     )
     async def report_workflow_review(
         self,
-        action: Literal["approve", "reject", "cancel"],
+        action: Literal["approve", "reject"],
         feedback: str = "",
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """审核当前暂停的报表 Workflow。
 
         Args:
-            action: 审核动作：approve 批准，reject 拒绝，cancel 取消。
+            action: 审核动作：approve 批准，reject 拒绝。
             feedback: 拒绝或补充信息时必填的完整意见。
         """
         if action == "approve":
             return await self.controller.approve(run_context)
-        if action == "reject":
-            return await self.controller.reject(feedback, run_context)
-        return await self.controller.cancel(run_context)
+        return await self.controller.reject(feedback, run_context)
 
     @tool(requires_confirmation=True)
     async def report_workflow_approve(
