@@ -23,6 +23,15 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
     )
 
 
+def test_reporting_runtime_image_includes_git_patch_kernel() -> None:
+    repository_root = Path(__file__).parents[2]
+    dockerfile = (repository_root / "Dockerfile").read_text(encoding="utf-8")
+    runtime_stage = dockerfile.split("FROM base AS runtime", maxsplit=1)[1]
+    system_dependencies = runtime_stage.split("COPY pyproject.toml uv.lock ./", maxsplit=1)[0]
+
+    assert "git" in system_dependencies.split()
+
+
 def test_reporting_compose_only_exposes_daytona_sdk_url():
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(
