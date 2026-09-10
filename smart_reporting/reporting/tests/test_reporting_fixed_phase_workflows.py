@@ -7,6 +7,11 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 from agno.run import RunContext
 
+from smart_reporting.reporting.model_policy import (
+    ThinkingRequest,
+    current_reporting_thinking_decision,
+    select_reporting_thinking,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_MODEL_ID_DEPENDENCY_KEY,
@@ -51,6 +56,8 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
 from smart_reporting.reporting.workflow.runtime.section_workflow import SectionWorkflow
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     VisualizationSectionWorkflow,
+    _code_failure_kind,
+    _visualization_thinking_complexity,
 )
 from smart_reporting.reporting.workflow.state import ReportingPhase
 from smart_reporting.task_execution import TaskExecutionScope
@@ -339,6 +346,105 @@ def _inspection() -> ChartVisualInspectionReceipt:
         reviewed=True,
         requiresRevision=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("analysis_ids", "expected_complexity", "expected_budget"),
+    [
+        (("analysis_001",), "simple", 1024),
+        (("analysis_001", "analysis_002"), "standard", 2048),
+        (("analysis_001", "analysis_002", "analysis_003", "analysis_004"), "complex", 4096),
+    ],
+)
+def test_visualization_plan_thinking_follows_analysis_count(
+    analysis_ids: tuple[str, ...], expected_complexity: str, expected_budget: int
+) -> None:
+    complexity = _visualization_thinking_complexity({"analysisIds": analysis_ids})
+    decision = select_reporting_thinking(
+        ThinkingRequest(operation="visualization_plan", complexity=complexity)
+    )
+
+    assert complexity == expected_complexity
+    assert decision.thinking_budget == expected_budget
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("report_python_source_shape_invalid", "python_compile_failure"),
+        ("report_code_generation_no_source", "python_compile_failure"),
+        ("report_analysis_script_failed", "python_execution_failure"),
+        ("report_visualization_script_failed", "python_execution_failure"),
+        ("report_visualization_review_failed", "visual_review_failure"),
+        ("report_task_timeout", None),
+        ("report_workspace_unavailable", None),
+        ("unknown", None),
+    ],
+)
+def test_code_failure_kind_only_classifies_recoverable_failures(
+    code: str, expected: str | None
+) -> None:
+    assert _code_failure_kind({"code": code}) == expected
+
+
+@pytest.mark.anyio
+async def test_visualization_script_execution_repair_uses_off_then_2k() -> None:
+    observed: list[int] = []
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+
+    async def generate_script(*_args, **_kwargs):
+        decision = current_reporting_thinking_decision()
+        observed.append(decision.thinking_budget if decision is not None else -1)
+        return CodeGenerationResult(initial_file)
+
+    async def repair_script(*_args, **_kwargs):
+        decision = current_reporting_thinking_decision()
+        observed.append(decision.thinking_budget if decision is not None else -1)
+        return CodeGenerationResult(repaired_file)
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=generate_script,
+        repair_script=repair_script,
+        execute_script=AsyncMock(
+            side_effect=[{"exitCode": 1}, {"exitCode": 0}]
+        ),
+        inspect_chart=None,
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert result.recovery_used is True
+    assert observed == [0, 2048]
+
+
+@pytest.mark.anyio
+async def test_visualization_visual_repair_uses_4k() -> None:
+    observed: list[int] = []
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    failed_inspection = _inspection().model_copy(
+        update={"visual_review_status": "failed", "requires_revision": True}
+    )
+
+    async def generate_script(*_args, **_kwargs):
+        return CodeGenerationResult(initial_file)
+
+    async def repair_script(*_args, **_kwargs):
+        decision = current_reporting_thinking_decision()
+        observed.append(decision.thinking_budget if decision is not None else -1)
+        return CodeGenerationResult(repaired_file)
+
+    await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=generate_script,
+        repair_script=repair_script,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=AsyncMock(side_effect=[failed_inspection, _inspection()]),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert observed == [4096]
 
 
 @pytest.mark.anyio

@@ -59,6 +59,7 @@ from smart_reporting.reporting.model_policy import (
     ThinkingRequest,
     apply_reporting_thinking_profile,
     bind_reporting_thinking,
+    current_reporting_thinking_decision,
     reporting_thinking_profile_from_model,
     select_reporting_thinking,
 )
@@ -1871,27 +1872,32 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
 
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason=None) == (
         "high",
-        2048,
+        1024,
         "simple",
     )
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason="schema_validation") == (
         "high",
-        2048,
+        1024,
         "simple",
     )
     assert _analysis_item_thinking_policy(standard, retry=False, retry_reason=None) == (
         "high",
-        4096,
+        2048,
         "standard",
     )
     assert _analysis_item_thinking_policy(complex_plan, retry=False, retry_reason=None) == (
         "high",
-        8192,
+        4096,
         "complex",
     )
     assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
         "max",
-        8192,
+        6144,
+        "simple",
+    )
+    assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="semantic_warning") == (
+        "high",
+        1024,
         "simple",
     )
 
@@ -1899,7 +1905,7 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
 def test_analysis_script_generation_budget_follows_script_complexity() -> None:
     assert (
         _analysis_script_generation_budget({"metrics": ["income"], "datasetIds": ["ds-1"]}, None)
-        == 2048
+        == 0
     )
     assert (
         _analysis_script_generation_budget(
@@ -1911,7 +1917,7 @@ def test_analysis_script_generation_budget_follows_script_complexity() -> None:
             },
             None,
         )
-        == 4096
+        == 0
     )
     assert (
         _analysis_script_generation_budget(
@@ -1924,14 +1930,14 @@ def test_analysis_script_generation_budget_follows_script_complexity() -> None:
             },
             None,
         )
-        == 8192
+        == 0
     )
     assert (
         _analysis_script_generation_budget(
             {"metrics": ["income"], "datasetIds": ["ds-1"]},
             {"code": "report_python_source_shape_invalid"},
         )
-        == 8192
+        == 2048
     )
 
 
@@ -1969,7 +1975,7 @@ def test_analysis_evidence_still_requires_hashed_evidence_files_when_only_paths_
 
 
 @pytest.mark.anyio
-async def test_analysis_script_repair_uses_complex_budget(
+async def test_analysis_script_and_structured_stages_use_layered_request_budgets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task_context = RunContext(
@@ -1982,7 +1988,7 @@ async def test_analysis_script_repair_uses_complex_budget(
             }
         },
     )
-    observed: list[tuple[str, str, int]] = []
+    observed: list[tuple[str, str | None, int]] = []
     planner_requests: list[dict[str, Any]] = []
     code_prompts: list[dict[str, Any]] = []
     runtime: Any = object.__new__(ReportWorkflowRuntime)
@@ -1991,15 +1997,28 @@ async def test_analysis_script_repair_uses_complex_budget(
     runtime.state_repository = SimpleNamespace()
     runtime._analysis_evidence_agent = SimpleNamespace()
     runtime._analysis_summary_agent = SimpleNamespace()
+    runtime._analysis_thinking_enabled = True
+    runtime._analysis_thinking_budget_cap = 8192
 
-    async def run_planner(_agent, payload, _parent_context):
+    async def run_planner(_agent, payload, _parent_context, **kwargs):
         planner_requests.append(payload)
-        binding = task_context.dependencies["AgentOS 任务执行"]
+        operation = (
+            "analysis_summary"
+            if payload["analysisBlock"]["blockId"].endswith(":summary")
+            else "analysis_evidence"
+        )
+        decision = select_reporting_thinking(
+            ThinkingRequest(
+                operation=operation,
+                complexity=kwargs["thinking_complexity"],
+                configured_budget_cap=8192,
+            )
+        )
         observed.append(
             (
                 payload["analysisBlock"]["blockId"],
-                binding["reportingThinkingEffort"],
-                binding["reportingThinkingBudget"],
+                decision.reasoning_effort,
+                decision.thinking_budget,
             )
         )
         if payload["analysisBlock"]["blockId"].endswith(":summary"):
@@ -2020,7 +2039,8 @@ async def test_analysis_script_repair_uses_complex_budget(
             tool = self.tools[0]
             if tool.name == "read_file":
                 return await tool.entrypoint(path=request["scriptPath"])
-            binding = task_context.dependencies["AgentOS 任务执行"]
+            decision = current_reporting_thinking_decision()
+            assert decision is not None
             facts = request["facts"]
             observed.append(
                 (
@@ -2029,8 +2049,8 @@ async def test_analysis_script_repair_uses_complex_budget(
                         if "taskFacts" in facts
                         else "analysis_001:evidence:script:initial"
                     ),
-                    binding["reportingThinkingEffort"],
-                    binding["reportingThinkingBudget"],
+                    decision.reasoning_effort,
+                    decision.thinking_budget,
                 )
             )
             code_prompts.append(request)
@@ -2123,7 +2143,17 @@ async def test_analysis_script_repair_uses_complex_budget(
     )
 
     await runtime._execute_analysis_item_workflow(
-        '{"currentAnalysisId":"analysis_001"}',
+        json.dumps(
+            {
+                "currentAnalysisId": "analysis_001",
+                "currentAnalysis": {
+                    "datasetIds": ["dataset_001"],
+                    "metrics": ["income"],
+                    "comparisonBasis": ["yoy"],
+                    "organizationGrain": ["department"],
+                },
+            }
+        ),
         task_context,
         parent_run_context=RunContext(
             run_id="report-run-1", session_id="report-session-1", session_state={}
@@ -2132,8 +2162,8 @@ async def test_analysis_script_repair_uses_complex_budget(
 
     assert observed == [
         ("analysis_001:evidence:decision", "high", 2048),
-        ("analysis_001:evidence:script:initial", "high", 2048),
-        ("analysis_001:evidence:script:repair", "high", 8192),
+        ("analysis_001:evidence:script:initial", None, 0),
+        ("analysis_001:evidence:script:repair", "high", 2048),
         ("analysis_001:summary", "high", 2048),
     ]
     assert set(planner_requests[0]) == {

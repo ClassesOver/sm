@@ -436,6 +436,7 @@ class _ReportWorkflowRuntimeBase:
         self.db = db
         self.reporting_agent_template = reporting_agent_template
         self._analysis_thinking_enabled = planner_enable_thinking
+        self._analysis_thinking_budget_cap = planner_thinking_budget
         self._vision_enabled = (
             bool(getattr(reporting_agent_template.model, "_report_vision_enabled", True))
             if vision_enabled is None
@@ -478,22 +479,6 @@ class _ReportWorkflowRuntimeBase:
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportService(workspace_service, data_sources=self.datasets)
         planner_off = ReportingThinkingProfile.off()
-        planner_high = (
-            ReportingThinkingProfile.on(
-                reasoning_effort="high",
-                thinking_budget=planner_thinking_budget,
-            )
-            if planner_enable_thinking
-            else planner_off
-        )
-        planner_max = (
-            ReportingThinkingProfile.on(
-                reasoning_effort="max",
-                thinking_budget=planner_thinking_budget,
-            )
-            if planner_enable_thinking
-            else planner_off
-        )
         self._request_normalizer = self._planning_agent(
             reporting_agent_template,
             "report-request-normalizer",
@@ -645,15 +630,12 @@ class _ReportWorkflowRuntimeBase:
         if not isinstance(reporting_agent_template.model, OpenAIChat):
             raise TypeError("Report analysis code agent requires OpenAIChat")
         analysis_code_model = copy(reporting_agent_template.model)
-        apply_reporting_thinking_profile(analysis_code_model, planner_high)
+        apply_reporting_thinking_profile(analysis_code_model, planner_off)
         analysis_code_model.top_p = 1.0
         analysis_code_model.retries = 0
         analysis_code_model.exponential_backoff = False
-        setattr(
-            analysis_code_model,
-            "_report_escalation_thinking_profile",
-            planner_max,
-        )
+        analysis_code_model.__dict__.pop("_report_escalation_thinking_profile", None)
+        analysis_code_model.__dict__.pop("_report_thinking_escalation_fields", None)
         self._analysis_script_agent = create_reporting_code_agent(
             model=analysis_code_model,
             name="report-analysis-script-writer",

@@ -19,7 +19,7 @@ from agno.run import RunContext
 from agno.tools.function import Function
 from loguru import logger
 
-from ...model_policy import current_reporting_thinking_decision
+from ...model_policy import ThinkingFailureKind, current_reporting_thinking_decision
 from ...models import ReportingError
 from ..checkpoint import FileIdentity
 
@@ -42,6 +42,23 @@ MAX_TASK_INSPECTION_TEXTS = 20
 MAX_TASK_INSPECTION_TEXT_LENGTH = 500
 MAX_TASK_INSPECTION_SUMMARY_LENGTH = 2000
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+
+
+def _code_failure_kind(
+    diagnostic: Mapping[str, Any] | None,
+) -> ThinkingFailureKind | None:
+    code = diagnostic.get("code") if isinstance(diagnostic, Mapping) else None
+    if code in {"report_python_source_shape_invalid", "report_code_generation_no_source"}:
+        return "python_compile_failure"
+    if code in {
+        "execution_output_error",
+        "report_analysis_script_failed",
+        "report_visualization_script_failed",
+    }:
+        return "python_execution_failure"
+    if code == "report_visualization_review_failed":
+        return "visual_review_failure"
+    return None
 
 
 @dataclass(frozen=True, slots=True)

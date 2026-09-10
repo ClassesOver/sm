@@ -12,12 +12,15 @@ from ....task_execution import (
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
-from ...model_policy import resolve_reporting_input_token_hard_cap
+from ...model_policy import (
+    ThinkingFailureKind,
+    ThinkingRequest,
+    bind_reporting_thinking,
+    resolve_reporting_input_token_hard_cap,
+    select_reporting_thinking,
+)
 from ...phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
-    REPORTING_TASK_DEPENDENCY,
-    REPORTING_THINKING_BUDGET_DEPENDENCY_KEY,
-    REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     reporting_model_route_from_run_context,
 )
 from ...structured_output import ReportingStructuredOutputExecutor
@@ -105,11 +108,18 @@ from .base import (
     time,
     validate_metric_code_bindings,
 )
-from .code_generation import CodeGenerationResult, ReportingCodeGenerationRunner
+from .code_generation import (
+    CodeGenerationResult,
+    ReportingCodeGenerationRunner,
+    _code_failure_kind,
+)
 from .datasets import _profile_coverage_instruction_projection
 from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
-from .visualization_section_workflow import VisualizationSectionWorkflow
+from .visualization_section_workflow import (
+    VisualizationSectionWorkflow,
+    _visualization_thinking_complexity,
+)
 
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
 
@@ -119,8 +129,7 @@ async def _completed_reporting_step_output() -> StepOutput:
     return StepOutput(content={"status": "ready"})
 
 
-_ANALYSIS_THINKING_BUDGETS = {"simple": 2048, "standard": 4096, "complex": 8192}
-_ANALYSIS_SCRIPT_THINKING_BUDGETS = _ANALYSIS_THINKING_BUDGETS
+_ANALYSIS_THINKING_BUDGETS = {"simple": 1024, "standard": 2048, "complex": 4096}
 _ANALYSIS_SCRIPT_MAX_BYTES = 128 * 1024
 _VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
@@ -317,22 +326,25 @@ def _analysis_item_thinking_policy(
     """返回 thinking 档位、预算和复杂度；固定五阶段不再按请求次数截断。"""
 
     _, tier = _analysis_item_complexity(plan)
-    normalized_reason = (retry_reason or "").lower()
-    evidence_retry = normalized_reason in _ANALYSIS_EVIDENCE_RETRY_REASONS or any(
-        marker in normalized_reason for marker in ("evidence", "fact_incomplete")
-    )
-    if retry and evidence_retry:
-        return "max", _ANALYSIS_THINKING_BUDGETS["complex"], tier
+    if retry and _analysis_evidence_failure_kind(retry_reason) is not None:
+        return "max", 6144, tier
     return "high", _ANALYSIS_THINKING_BUDGETS[tier], tier
+
+
+def _analysis_evidence_failure_kind(reason: str | None) -> ThinkingFailureKind | None:
+    normalized = (reason or "").lower()
+    if "fact_incomplete" in normalized:
+        return "fact_incomplete"
+    if normalized in _ANALYSIS_EVIDENCE_RETRY_REASONS or "evidence_incomplete" in normalized:
+        return "evidence_incomplete"
+    return None
 
 
 def _analysis_script_generation_budget(
     plan: Mapping[str, Any], diagnostic: Mapping[str, Any] | None
 ) -> int:
-    if diagnostic is not None:
-        return _ANALYSIS_SCRIPT_THINKING_BUDGETS["complex"]
-    _, tier = _analysis_item_complexity(plan)
-    return _ANALYSIS_SCRIPT_THINKING_BUDGETS[tier]
+    _ = plan
+    return 2048 if _code_failure_kind(diagnostic) is not None else 0
 
 
 _MODEL_FACT_IDENTITY_KEYS = frozenset(
@@ -654,11 +666,22 @@ class RuntimeAnalysisMixin:
                         request: Mapping[str, Any], task_context: RunContext
                     ) -> VisualizationPlanDraft:
                         payload = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
+                        thinking_request = ThinkingRequest(
+                            operation="visualization_plan",
+                            complexity=_visualization_thinking_complexity(request),
+                            configured_budget_cap=self._analysis_thinking_budget_cap,
+                            thinking_enabled=self._analysis_thinking_enabled,
+                        )
                         return cast(
                             VisualizationPlanDraft,
                             await ReportingStructuredOutputExecutor(
                                 self.visualization_generator
-                            ).run(payload, scope=invocation.scope, run_context=task_context),
+                            ).run(
+                                payload,
+                                scope=invocation.scope,
+                                run_context=task_context,
+                                thinking_request=thinking_request,
+                            ),
                         )
 
                     def code_runner() -> ReportingCodeGenerationRunner:
@@ -770,6 +793,8 @@ class RuntimeAnalysisMixin:
                             ),
                             submit=submit,
                             load_script=load_script,
+                            thinking_enabled=self._analysis_thinking_enabled,
+                            thinking_budget_cap=self._analysis_thinking_budget_cap,
                         ).run(instruction_payload, invocation.run_context)
                     ).plan
 
@@ -1893,6 +1918,18 @@ class RuntimeAnalysisMixin:
             raise ReportingError("report_phase_contract_invalid", "单项分析 Toolkit 装配结果无效。")
         toolkit = toolkits[0]
         analysis_id = str(payload.get("currentAnalysisId") or "")
+        current_analysis = payload.get("currentAnalysis")
+        _, thinking_complexity = _analysis_item_complexity(
+            current_analysis if isinstance(current_analysis, Mapping) else {}
+        )
+        thinking_failure_kind = payload.get("thinkingFailureKind")
+        evidence_failure_kind: ThinkingFailureKind | None = (
+            thinking_failure_kind
+            if thinking_failure_kind in {"evidence_incomplete", "fact_incomplete"}
+            else None
+        )
+        thinking_enabled = self._analysis_thinking_enabled
+        thinking_budget_cap = self._analysis_thinking_budget_cap
         code_runner = ReportingCodeGenerationRunner(agent=self._analysis_script_agent)
 
         async def run_structured_agent(
@@ -1902,7 +1939,14 @@ class RuntimeAnalysisMixin:
         ) -> BaseModel:
             """调用统一结构化执行器；其内部负责最多五次带反馈纠错。"""
 
-            output = await self._run_planner(agent, request, parent_run_context)
+            output = await self._run_planner(
+                agent,
+                request,
+                parent_run_context,
+                thinking_complexity=thinking_complexity,
+                attempt=1 if evidence_failure_kind is not None else 0,
+                failure_kind=evidence_failure_kind,
+            )
             if not isinstance(output, expected_type):
                 raise ReportingError(
                     "report_structured_output_invalid",
@@ -1934,13 +1978,18 @@ class RuntimeAnalysisMixin:
             diagnostic: Mapping[str, Any] | None,
             run_context: RunContext,
         ) -> CodeGenerationResult:
-            dependencies = (
-                task_run_context.dependencies
-                if isinstance(task_run_context.dependencies, dict)
-                else None
+            failure_kind = _code_failure_kind(diagnostic)
+            decision = select_reporting_thinking(
+                ThinkingRequest(
+                    operation="analysis_script",
+                    complexity=thinking_complexity,
+                    attempt=1 if failure_kind is not None else 0,
+                    failure_kind=failure_kind,
+                    configured_budget_cap=thinking_budget_cap,
+                    thinking_enabled=thinking_enabled,
+                )
             )
-            binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
-            if not isinstance(binding, dict):
+            with bind_reporting_thinking(decision):
                 return await code_runner.generate(
                     script_path,
                     task_facts,
@@ -1949,32 +1998,6 @@ class RuntimeAnalysisMixin:
                     diagnostic=diagnostic,
                     max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
-            _missing = object()
-            previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
-            previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
-            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "high"
-            current_analysis = task_facts.get("currentAnalysis")
-            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _analysis_script_generation_budget(
-                current_analysis if isinstance(current_analysis, Mapping) else {}, diagnostic
-            )
-            try:
-                return await code_runner.generate(
-                    script_path,
-                    task_facts,
-                    toolkit.apply_analysis_patch,
-                    run_context,
-                    diagnostic=diagnostic,
-                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
-                )
-            finally:
-                for key, restored_value in (
-                    (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
-                    (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
-                ):
-                    if restored_value is _missing:
-                        binding.pop(key, None)
-                    else:
-                        binding[key] = restored_value
 
         async def repair_script(
             *,
@@ -1983,25 +2006,18 @@ class RuntimeAnalysisMixin:
             decision: AnalysisEvidenceDecision,
             run_context: RunContext,
         ) -> CodeGenerationResult:
-            dependencies = (
-                task_run_context.dependencies
-                if isinstance(task_run_context.dependencies, dict)
-                else None
-            )
-            binding = dependencies.get(REPORTING_TASK_DEPENDENCY) if dependencies else None
-            if not isinstance(binding, dict):
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "脚本修复缺少隔离的 thinking 契约。",
+            failure_kind = _code_failure_kind(diagnostic)
+            repair_decision = select_reporting_thinking(
+                ThinkingRequest(
+                    operation="analysis_script",
+                    complexity=thinking_complexity,
+                    attempt=1 if failure_kind is not None else 0,
+                    failure_kind=failure_kind,
+                    configured_budget_cap=thinking_budget_cap,
+                    thinking_enabled=thinking_enabled,
                 )
-            _missing = object()
-            previous_effort = binding.get(REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, _missing)
-            previous_budget = binding.get(REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, _missing)
-            binding[REPORTING_THINKING_EFFORT_DEPENDENCY_KEY] = "high"
-            binding[REPORTING_THINKING_BUDGET_DEPENDENCY_KEY] = _ANALYSIS_SCRIPT_THINKING_BUDGETS[
-                "complex"
-            ]
-            try:
+            )
+            with bind_reporting_thinking(repair_decision):
                 return await code_runner.repair(
                     script_file,
                     diagnostic,
@@ -2011,15 +2027,6 @@ class RuntimeAnalysisMixin:
                     task_facts={"missingFacts": list(decision.missing_facts)},
                     max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
-            finally:
-                for key, restored_value in (
-                    (REPORTING_THINKING_EFFORT_DEPENDENCY_KEY, previous_effort),
-                    (REPORTING_THINKING_BUDGET_DEPENDENCY_KEY, previous_budget),
-                ):
-                    if restored_value is _missing:
-                        binding.pop(key, None)
-                    else:
-                        binding[key] = restored_value
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             summary_request = _prepare_analysis_summary_request(
@@ -2032,6 +2039,7 @@ class RuntimeAnalysisMixin:
                 self._analysis_summary_agent,
                 summary_request,
                 parent_run_context,
+                thinking_complexity=thinking_complexity,
             )
             return cast(AnalysisSummaryDraft, output)
 
@@ -2165,6 +2173,13 @@ class RuntimeAnalysisMixin:
                 analysis_id=analysis_id,
                 attempt=attempt,
             )
+            retry = any(item.status == "failed" for item in matching_traces)
+            effective_retry_reason = retry_reason or (
+                last_error.code if isinstance(last_error, ReportingError) else None
+            )
+            thinking_failure_kind = (
+                _analysis_evidence_failure_kind(effective_retry_reason) if retry else None
+            )
             durable_before = await self.state_repository.get(report_run_id)
             durable_payload = durable_before.payload if durable_before is not None else {}
             durable_items = durable_payload.get("analysisItems")
@@ -2197,6 +2212,7 @@ class RuntimeAnalysisMixin:
                 "sectionGoal": dict(section_goal),
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
+                "thinkingFailureKind": thinking_failure_kind,
                 "analysisOutputRoot": analysis_output_root,
                 "completionConditions": _analysis_item_completion_conditions(
                     recovery_payload,
@@ -2239,10 +2255,6 @@ class RuntimeAnalysisMixin:
                     "report_analysis_context_too_large",
                     "单项分析投影超过模型输入边界；证据未被静默截断。",
                 )
-            retry = any(item.status == "failed" for item in matching_traces)
-            effective_retry_reason = retry_reason or (
-                last_error.code if isinstance(last_error, ReportingError) else None
-            )
             (
                 policy_effort,
                 thinking_budget,

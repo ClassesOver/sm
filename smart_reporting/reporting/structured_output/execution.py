@@ -111,6 +111,7 @@ class ReportingStructuredOutputExecutor:
         *,
         scope: TaskExecutionScope,
         run_context: RunContext,
+        thinking_request: ThinkingRequest | None = None,
     ) -> Any:
         result = await self.execute(
             instruction,
@@ -118,6 +119,7 @@ class ReportingStructuredOutputExecutor:
             agent_run_context=run_context,
             session_id=f"task-execution:{scope.external_run_id}:attempt:0",
             user_id=scope.owner_user_id,
+            thinking_request=thinking_request,
         )
         return result.content
 

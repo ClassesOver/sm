@@ -442,7 +442,7 @@ git commit -m "feat: apply layered planner thinking budgets"
 - Consumes: Tasks 1–4 的策略、绑定、结构化执行器和 `_run_planner()`。
 - Produces: `_analysis_item_complexity()` 驱动证据/总结预算；`_visualization_thinking_complexity()`；`_code_failure_kind()`；首次 Off 和 2K/4K 修复路径。
 
-- [ ] **Step 1: 写分析阶段预算失败测试**
+- [x] **Step 1: 写分析阶段预算失败测试**
 
 以现有 `test_analysis_script_repair_temporarily_escalates_to_max` 为基础改写预期：
 
@@ -458,7 +458,7 @@ assert observed == [
 另以简单、复杂计划验证 evidence/summary 分别为 1K/4K；`fact_incomplete` 的一次恢复为 6K/`max`；
 业务 warning 不升级。
 
-- [ ] **Step 2: 写可视化生成和修复预算失败测试**
+- [x] **Step 2: 写可视化生成和修复预算失败测试**
 
 在固定 Workflow 测试中记录三类调用：首次脚本生成看到 Off；Python 执行失败后的 repair 看到 2K；
 `report_visualization_review_failed` 后的 repair 看到 4K。第二次失败终止，不能产生第三个更高决策。
@@ -466,7 +466,7 @@ assert observed == [
 定义可视化复杂度：一个 `analysisId` 为 simple，2–3 个为 standard，4 个及以上为 complex。测试分别断言
 可视化计划为 1K、2K、4K；图表数量不参与首次复杂度判断，因为计划生成前尚无受信 charts。
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run:
 
@@ -478,7 +478,7 @@ Run:
 
 Expected: FAIL，当前分析脚本预算沿用分析预算，可视化规划没有独立 ThinkingRequest。
 
-- [ ] **Step 4: 替换分析阶段的共享 dependencies 临时写入**
+- [x] **Step 4: 替换分析阶段的共享 dependencies 临时写入**
 
 删除 `analysis.py` 中手工保存/恢复 `REPORTING_THINKING_*_DEPENDENCY_KEY` 的两个 `try/finally` 块。
 证据决策、总结、脚本生成和修复分别构造 request 并用 `bind_reporting_thinking()` 包裹真实调用：
@@ -502,7 +502,7 @@ with bind_reporting_thinking(decision):
 `python_execution_failure`，视觉审查拒绝映射为 `visual_review_failure`；未知、超时、取消、lease 和
 Workspace 错误不得映射到升级类型。
 
-- [ ] **Step 5: 接入可视化计划和恢复预算**
+- [x] **Step 5: 接入可视化计划和恢复预算**
 
 `generate_plan()` 调用 `ReportingStructuredOutputExecutor.run()` 时传入 `visualization_plan` 请求和由
 analysisIds 数量得到的复杂度。`generate_script()` 首次绑定 Off；携带编译诊断的 fresh generate 绑定
@@ -511,7 +511,7 @@ analysisIds 数量得到的复杂度。`generate_script()` 首次绑定 Off；�
 保持 `VisualizationSectionWorkflow` 的计划只生成一次、脚本生成最多三次、执行/视觉修复一次等现有次数
 边界；thinking 策略只改变每次调用预算，不增加重试。
 
-- [ ] **Step 6: 运行定点测试并提交**
+- [x] **Step 6: 运行定点测试并提交**
 
 Run:
 
