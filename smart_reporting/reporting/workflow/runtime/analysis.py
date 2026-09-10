@@ -119,7 +119,7 @@ async def _completed_reporting_step_output() -> StepOutput:
     return StepOutput(content={"status": "ready"})
 
 
-_ANALYSIS_THINKING_BUDGETS = {"simple": 2048, "standard": 3072, "complex": 4096}
+_ANALYSIS_THINKING_BUDGETS = {"simple": 2048, "standard": 4096, "complex": 8192}
 _ANALYSIS_SCRIPT_THINKING_BUDGETS = _ANALYSIS_THINKING_BUDGETS
 _ANALYSIS_SCRIPT_MAX_BYTES = 128 * 1024
 _VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024

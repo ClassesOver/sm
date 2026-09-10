@@ -1849,6 +1849,14 @@ def test_analysis_item_complexity_uses_structured_plan_fields() -> None:
 
 def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() -> None:
     plan = {"metrics": ["income"], "datasetIds": ["ds-1"]}
+    standard = {**plan, "comparisonBasis": ["yoy"], "organizationGrain": ["area"]}
+    complex_plan = {
+        "metrics": ["income", "volume"],
+        "datasetIds": ["ds-1", "ds-2"],
+        "comparisonBasis": ["yoy"],
+        "organizationGrain": ["area", "department"],
+        "actions": ["compare", "attribute", "recommend"],
+    }
 
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason=None) == (
         "high",
@@ -1860,9 +1868,19 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
         2048,
         "simple",
     )
+    assert _analysis_item_thinking_policy(standard, retry=False, retry_reason=None) == (
+        "high",
+        4096,
+        "standard",
+    )
+    assert _analysis_item_thinking_policy(complex_plan, retry=False, retry_reason=None) == (
+        "high",
+        8192,
+        "complex",
+    )
     assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
         "max",
-        4096,
+        8192,
         "simple",
     )
 
@@ -1882,7 +1900,7 @@ def test_analysis_script_generation_budget_follows_script_complexity() -> None:
             },
             None,
         )
-        == 3072
+        == 4096
     )
     assert (
         _analysis_script_generation_budget(
@@ -1895,14 +1913,14 @@ def test_analysis_script_generation_budget_follows_script_complexity() -> None:
             },
             None,
         )
-        == 4096
+        == 8192
     )
     assert (
         _analysis_script_generation_budget(
             {"metrics": ["income"], "datasetIds": ["ds-1"]},
             {"code": "report_python_source_shape_invalid"},
         )
-        == 4096
+        == 8192
     )
 
 
@@ -1940,7 +1958,7 @@ def test_analysis_evidence_still_requires_hashed_evidence_files_when_only_paths_
 
 
 @pytest.mark.anyio
-async def test_analysis_script_repair_temporarily_escalates_to_max(
+async def test_analysis_script_repair_uses_complex_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task_context = RunContext(
@@ -2104,7 +2122,7 @@ async def test_analysis_script_repair_temporarily_escalates_to_max(
     assert observed == [
         ("analysis_001:evidence:decision", "high", 2048),
         ("analysis_001:evidence:script:initial", "high", 2048),
-        ("analysis_001:evidence:script:repair", "high", 4096),
+        ("analysis_001:evidence:script:repair", "high", 8192),
         ("analysis_001:summary", "high", 2048),
     ]
     assert set(planner_requests[0]) == {
