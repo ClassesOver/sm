@@ -66,7 +66,7 @@ def create_reporting_mcp_tools(adapter: ReportingMcpAdapter) -> list[Any]:
         operationId: Annotated[str, Field(min_length=1, max_length=256)],
         threadId: Annotated[str, Field(min_length=1, max_length=256)],
     ) -> ReportingOperationResult:
-        """取消 Reporting 工作流并执行终态清理。"""
+        """取消 Reporting 工作流并执行终态清理。仅暂停等待审核的工作流可取消；运行中的工作流不可取消，请改用 reporting_get 轮询等待终态。"""
         result = await adapter.cancel(
             operation_id=operationId,
             thread_id=threadId,
