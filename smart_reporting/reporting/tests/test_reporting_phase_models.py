@@ -12,6 +12,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     SectionBlockContent,
     SectionDecisionAdapter,
     SectionDecisionOutput,
+    SectionPlanOutput,
     VisualizationPlanDraft,
 )
 
@@ -178,6 +179,90 @@ def test_section_decision_normalizes_numeric_comparison_display_value() -> None:
     )
 
     assert output.root.claims[0].comparison == "-40000000"
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_section_plan_decodes_object_strings_inside_render(wrapped: bool) -> None:
+    render = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": ['{"blockId":"block_001","objective":"说明收入趋势。","claimIds":["claim_001"]}'],
+        "claims": [
+            '{"claimId":"claim_001","metricCode":"revenue","value":100,'
+            '"managementQuestionRef":"analysis_001",'
+            '"citationIds":["citation_001"]}'
+        ],
+    }
+    value = (
+        {"render": {key: item for key, item in render.items() if key != "kind"}}
+        if wrapped
+        else render
+    )
+
+    output = SectionPlanOutput.model_validate(value)
+
+    assert output.root.kind == "render"
+    assert output.root.blocks[0].block_id == "block_001"
+    assert output.root.claims[0].claim_id == "claim_001"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("blocks", "收入趋势正文。"),
+        ("blocks", '"收入趋势正文。"'),
+        ("blocks", '[{"blockId":"block_001"}]'),
+        ("claims", "not-json"),
+        ("claims", "null"),
+        ("claims", '[{"claimId":"claim_001"}]'),
+    ],
+)
+def test_section_plan_keeps_non_object_strings_for_strict_validation(
+    field: str, value: str
+) -> None:
+    payload = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [
+            {
+                "blockId": "block_001",
+                "objective": "说明收入趋势。",
+                "claimIds": ["claim_001"],
+            }
+        ],
+        "claims": [
+            {
+                "claimId": "claim_001",
+                "metricCode": "revenue",
+                "value": 100,
+                "managementQuestionRef": "analysis_001",
+                "citationIds": ["citation_001"],
+            }
+        ],
+    }
+    payload[field] = [value]
+
+    with pytest.raises(ValidationError) as raised:
+        SectionPlanOutput.model_validate(payload)
+
+    assert raised.value.errors(include_url=False)[0]["input"] == value
+
+
+def test_section_plan_does_not_infer_missing_claims() -> None:
+    with pytest.raises(ValidationError) as raised:
+        SectionPlanOutput.model_validate(
+            {
+                "render": {
+                    "sectionCode": "section_001",
+                    "blocks": [
+                        '{"blockId":"block_001","objective":"说明收入趋势。",'
+                        '"claimIds":["claim_001"]}'
+                    ],
+                }
+            }
+        )
+
+    assert raised.value.errors(include_url=False)[0]["loc"] == ("render", "claims")
 
 
 def test_section_block_content_rejects_disallowed_heading_level() -> None:

@@ -54,9 +54,7 @@ from .base import (
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     AnalysisReworkRequest,
     Any,
-    Awaitable,
     BaseModel,
-    Callable,
     Citation,
     ContextTrace,
     DatasetAnalysisContext,
@@ -90,7 +88,6 @@ from .base import (
     _reporting_observed_data_facts,
     _source_warnings_from_state,
     anyio,
-    asyncio,
     authoritative_citations,
     build_deterministic_analysis_bundle,
     build_report_artifact_validation_context,
@@ -121,12 +118,7 @@ from .visualization_section_workflow import (
     _visualization_thinking_complexity,
 )
 
-__all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
-
-
-async def _completed_reporting_step_output() -> StepOutput:
-    """构造章节计划所需的默认成功回调结果。"""
-    return StepOutput(content={"status": "ready"})
+__all__ = ["RuntimeAnalysisMixin"]
 
 
 _ANALYSIS_THINKING_BUDGETS = {"simple": 1024, "standard": 2048, "complex": 4096}
@@ -338,13 +330,6 @@ def _analysis_evidence_failure_kind(reason: str | None) -> ThinkingFailureKind |
     if normalized in _ANALYSIS_EVIDENCE_RETRY_REASONS or "evidence_incomplete" in normalized:
         return "evidence_incomplete"
     return None
-
-
-def _analysis_script_generation_budget(
-    plan: Mapping[str, Any], diagnostic: Mapping[str, Any] | None
-) -> int:
-    _ = plan
-    return 2048 if _code_failure_kind(diagnostic) is not None else 0
 
 
 _MODEL_FACT_IDENTITY_KEYS = frozenset(
@@ -2672,117 +2657,6 @@ class RuntimeAnalysisMixin:
         return identities
 
 
-async def _run_bounded(
-    items: Sequence[Any],
-    *,
-    concurrency: int,
-    operation: Callable[[Any], Awaitable[Any]],
-) -> list[Any]:
-    """按输入索引返回并发结果；完成顺序不改变最终提纲顺序。"""
-
-    if isinstance(concurrency, bool) or concurrency < 1:
-        raise ValueError("concurrency 必须大于 0")
-    semaphore = asyncio.Semaphore(concurrency)
-    results: list[Any] = [None] * len(items)
-    failures: dict[int, Exception] = {}
-
-    async def run_one(index: int, item: Any) -> None:
-        async with semaphore:
-            try:
-                results[index] = await operation(item)
-            except Exception as error:
-                # 业务失败不能让 TaskGroup 取消已启动的兄弟任务，也不能让 Python 把
-                # 稳定 ReportingError 包成 ExceptionGroup。外部取消仍直接穿透。
-                failures[index] = error
-
-    async with asyncio.TaskGroup() as task_group:
-        for index, item in enumerate(items):
-            task_group.create_task(run_one(index, item))
-    if failures:
-        raise failures[min(failures)]
-    return results
-
-
-async def _run_pending_analysis_items(
-    analysis_ids: Sequence[str],
-    *,
-    completed_analysis_ids: set[str],
-    concurrency: int,
-    executor: Callable[[str], Awaitable[Any]],
-) -> tuple[str, ...]:
-    """并发执行未完成分析项；返回本轮实际调度的稳定计划顺序。"""
-
-    pending = tuple(item for item in analysis_ids if item not in completed_analysis_ids)
-    if pending:
-        failures: dict[str, Exception] = {}
-
-        async def run_one(analysis_id: str) -> None:
-            try:
-                await executor(analysis_id)
-            except Exception as error:
-                # 单项业务失败不能取消已经并发运行的其他 analysis；成功项已通过
-                # durable CAS 冻结，下一轮只重试失败项。外部取消仍由 CancelledError
-                # 直接穿透 TaskGroup，确保用户终止不会被吞掉。
-                failures[analysis_id] = error
-
-        await _run_bounded(pending, concurrency=concurrency, operation=run_one)
-        for analysis_id in pending:
-            if analysis_id in failures:
-                raise failures[analysis_id]
-    return pending
-
-
-async def _run_pending_visualization_sections(
-    section_codes: Sequence[str],
-    *,
-    completed_section_codes: set[str],
-    concurrency: int,
-    executor: Callable[[str], Awaitable[None]],
-) -> tuple[str, ...]:
-    """并发执行未完成图表章节，并在全部兄弟章节收口后汇总失败。"""
-
-    pending = tuple(code for code in section_codes if code not in completed_section_codes)
-    failures: dict[str, Exception] = {}
-
-    async def run_one(section_code: str) -> None:
-        try:
-            await executor(section_code)
-        except Exception as error:
-            # 章节执行器自己先把稳定错误写入 checkpoint 账本。调度层必须等兄弟章节
-            # 全部结束后再失败，确保成功草案可 durable 冻结并在 fresh attempt 中跳过。
-            failures[section_code] = error
-
-    if pending:
-        await _run_bounded(pending, concurrency=concurrency, operation=run_one)
-    if failures:
-        raise ExceptionGroup(
-            "visualization sections failed",
-            [failures[code] for code in pending if code in failures],
-        )
-    return pending
-
-
-def _ensure_visual_inspection_capability(
-    checkpoint: ReportingCheckpoint,
-    current_mode: Literal["vision", "deterministic"],
-) -> None:
-    previous_mode = next(
-        (
-            item.visual_inspection_mode
-            for item in reversed(checkpoint.trace)
-            if item.phase == "analysis"
-            and item.work_kind == "visualization_section"
-            and item.visual_inspection_mode is not None
-        ),
-        None,
-    )
-    if previous_mode is not None and previous_mode != current_mode:
-        raise ReportingError(
-            "report_visualization_capability_changed",
-            "visualization fresh retry 的图表检查能力与已签发 checkpoint 不一致。",
-        )
-
-
 def _visualization_section_retry_error(
     checkpoint: ReportingCheckpoint,
     *,
@@ -3141,20 +3015,6 @@ def _require_dataset_id_sequence(
     return tuple(value)
 
 
-def _visualization_analysis_citation_ids(
-    plan: DetailedAnalysisPlan,
-    citations: tuple[Citation, ...],
-) -> dict[str, list[str]]:
-    return {
-        analysis.analysis_id: [
-            citation.citation_id
-            for citation in citations
-            if citation.dataset_id in analysis.dataset_ids
-        ]
-        for analysis in plan.analyses
-    }
-
-
 def _analysis_item_completion_conditions(
     recovery_payload: dict[str, Any] | None,
     last_error: Exception | None,
@@ -3193,44 +3053,6 @@ def _analysis_item_completion_conditions(
     ]
 
 
-def _visualization_completion_conditions(
-    last_error: Exception | None,
-    charts_registered: bool,
-    retained_chart_ids: tuple[str, ...] = (),
-) -> list[str]:
-    if charts_registered:
-        return [
-            "durable state 已完成整批图表登记；禁止改图、换 chartId、重复登记或继续自检",
-            "不要调用任何读取、写入、执行、Skill 或视觉工具",
-            "立即结束当前章节任务",
-        ]
-    retained_requirement = (
-        "registeredCharts 是已冻结的保留图表；不得重新生成、改写、检查或登记其中 chartId，只补缺失图表"
-        if retained_chart_ids
-        else "当前没有保留图表，按批准提纲生成必要图表"
-    )
-    if _visualization_recovery_required(last_error):
-        return [
-            "上一轮因工具调用或脚本失败达到上限而终止，且已关闭事实探索；禁止重新规划、重复读取事实或重新探索工作区",
-            retained_requirement,
-            "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
-            "只调用一次 submit_visualization_charts 提交当前章节图表",
-        ]
-    return [
-        "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
-        "visualizationFacts 已提供完整字段目录和真实 dataPaths；图表脚本按 factFile.path 一次读取 facts，"
-        "不得调用 query_analysis_facts 或用 read_file 探索 facts/evidence",
-        retained_requirement,
-        "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、run_python_script 或目录探测寻找 citationId",
-        "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 run_python_script 仅可传入该路径；"
-        "不得传解释器、workdir、环境变量、网络选项或 shell 命令",
-        "批量读取事实、生成和执行图表脚本；相同文件不得重复读取、执行或视觉检查",
-        "按批准提纲生成必要图表并整批登记 citation",
-        "最后且只调用一次 submit_visualization_charts 提交当前章节图表",
-        "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
-    ]
-
-
 def _visualization_recovery_required(last_error: Exception | None) -> bool:
     """预算耗尽或 no-progress 终止后只允许复用既有可视化产物。"""
 
@@ -3262,11 +3084,6 @@ def _analysis_fact_retry_usage(last_error: Exception | None) -> int:
     if isinstance(details, Mapping):
         return count(details.get("queryCount"))
     return 0
-
-
-def _visualization_retry_budget(last_error: Exception | None) -> tuple[int, int]:
-    usage = _visualization_retry_usage(last_error)
-    return usage["visualizationToolCalls"], usage["visualizationScriptFailures"]
 
 
 def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:

@@ -96,7 +96,6 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_dataset_inputs,
     _analysis_item_output_root,
     _analysis_item_thinking_policy,
-    _analysis_script_generation_budget,
     _analysis_summary_input_token_budget,
     _model_facing_deterministic_facts,
     _prepare_analysis_summary_request,
@@ -1899,45 +1898,6 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
         "high",
         1024,
         "simple",
-    )
-
-
-def test_analysis_script_generation_budget_follows_script_complexity() -> None:
-    assert (
-        _analysis_script_generation_budget({"metrics": ["income"], "datasetIds": ["ds-1"]}, None)
-        == 0
-    )
-    assert (
-        _analysis_script_generation_budget(
-            {
-                "metrics": ["income"],
-                "datasetIds": ["ds-1"],
-                "comparisonBasis": ["yoy"],
-                "organizationGrain": ["area"],
-            },
-            None,
-        )
-        == 0
-    )
-    assert (
-        _analysis_script_generation_budget(
-            {
-                "metrics": ["income", "volume"],
-                "datasetIds": ["ds-1", "ds-2"],
-                "comparisonBasis": ["yoy"],
-                "organizationGrain": ["area", "department"],
-                "actions": ["compare", "attribute", "recommend"],
-            },
-            None,
-        )
-        == 0
-    )
-    assert (
-        _analysis_script_generation_budget(
-            {"metrics": ["income"], "datasetIds": ["ds-1"]},
-            {"code": "report_python_source_shape_invalid"},
-        )
-        == 2048
     )
 
 

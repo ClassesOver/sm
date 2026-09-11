@@ -1,3 +1,6 @@
+import asyncio
+import json
+
 import pytest
 from agno.agent import Agent
 from agno.models.deepseek import DeepSeek
@@ -10,6 +13,13 @@ from agno.run import RunContext, RunStatus
 from agno.run.agent import RunOutput
 from agno.tools.function import Function
 from loguru import logger
+from openai.types.responses import (
+    Response,
+    ResponseCustomToolCall,
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+)
 
 from smart_reporting.reporting.agent import (
     ReportingCodeOpenAIResponses,
@@ -17,6 +27,7 @@ from smart_reporting.reporting.agent import (
     create_reporting_code_agent,
     create_reporting_generator_agent,
 )
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_MODEL_ID_DEPENDENCY_KEY,
     REPORTING_MODEL_TIER_DEPENDENCY_KEY,
@@ -142,7 +153,7 @@ def test_reporting_code_agent_uses_chat_reasoning_and_non_thinking_responses() -
     }
 
 
-def test_reporting_code_responses_requires_the_only_custom_source_tool() -> None:
+def test_reporting_code_responses_uses_auto_choice_for_custom_source_tool() -> None:
     model = ReportingCodeOpenAIResponses(
         id="test-model",
         api_key="test-key",
@@ -165,10 +176,7 @@ def test_reporting_code_responses_requires_the_only_custom_source_tool() -> None
         tool_choice={"type": "function", "function": {"name": "submit_python_source"}},
     )
 
-    assert params["tool_choice"] == {
-        "type": "custom",
-        "name": "submit_python_source",
-    }
+    assert params["tool_choice"] == "auto"
 
 
 def test_reporting_code_responses_does_not_reuse_custom_choice_without_source_tool() -> None:
@@ -197,12 +205,387 @@ def test_reporting_code_responses_does_not_reuse_custom_choice_without_source_to
         tool_choice="none",
     )
 
-    assert source_params["tool_choice"] == {
-        "type": "custom",
-        "name": "submit_python_source",
-    }
+    assert source_params["tool_choice"] == "auto"
     assert no_tool_params["tool_choice"] == "auto"
     assert explicit_none_params["tool_choice"] == "none"
+
+
+def _custom_source_response(output: list) -> Response:
+    return Response(
+        id="resp_test",
+        created_at=0,
+        model="test-model",
+        object="response",
+        output=output,
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+
+
+def _custom_source_call() -> ResponseCustomToolCall:
+    return ResponseCustomToolCall(
+        id="fc_1",
+        call_id="call_1",
+        name="submit_python_source",
+        input="value = 1\nprint(value)\n",
+        type="custom_tool_call",
+    )
+
+
+def _text_message(text: str) -> ResponseOutputMessage:
+    return ResponseOutputMessage(
+        id="msg_1",
+        role="assistant",
+        status="completed",
+        type="message",
+        content=[ResponseOutputText(text=text, annotations=[], type="output_text")],
+    )
+
+
+def _source_function() -> Function:
+    return Function(
+        name="submit_python_source",
+        description="submit source",
+        parameters={
+            "type": "object",
+            "properties": {"source": {"type": "string"}},
+            "required": ["source"],
+        },
+    )
+
+
+def _code_model() -> ReportingCodeOpenAIResponses:
+    return ReportingCodeOpenAIResponses(
+        id="test-model",
+        api_key="test-key",
+        base_url="http://localhost",
+    )
+
+
+def _arm_custom_source_tool(model: ReportingCodeOpenAIResponses) -> None:
+    """通过真实请求路径激活 custom 源码工具，替代直接篡改模型内部状态。"""
+
+    model.get_request_params(
+        messages=[Message(role="user", content="write source")],
+        tools=[_source_function()],
+    )
+
+
+def test_reporting_code_responses_accepts_text_preamble_before_custom_call() -> None:
+    model = _code_model()
+    _arm_custom_source_tool(model)
+    response = _custom_source_response(
+        [
+            _text_message("I'll create the Python source code for the charts"),
+            _custom_source_call(),
+        ]
+    )
+
+    parsed = model._parse_provider_response(response)
+
+    assert parsed.tool_calls is not None
+    assert len(parsed.tool_calls) == 1
+    call = parsed.tool_calls[0]
+    assert call["function"]["name"] == "submit_python_source"
+    assert json.loads(call["function"]["arguments"]) == {"source": "value = 1\nprint(value)\n"}
+    assert call["id"] == "fc_1"
+    assert call["call_id"] == "call_1"
+    assert parsed.content is None
+    assert parsed.extra is not None
+    assert parsed.extra["tool_call_ids"] == ["call_1"]
+
+
+def test_reporting_code_responses_rejects_text_only_custom_response() -> None:
+    model = _code_model()
+    _arm_custom_source_tool(model)
+    response = _custom_source_response([_text_message("这是解释文本。")])
+
+    with pytest.raises(ReportingError) as error:
+        model._parse_provider_response(response)
+
+    assert error.value.code == "report_code_source_tool_response_invalid"
+    assert "必须只包含一次工具调用" in error.value.message
+    assert error.value.details == {"outputItemTypes": ["message"]}
+
+
+def test_reporting_code_responses_rejects_function_call_output_item() -> None:
+    model = _code_model()
+    _arm_custom_source_tool(model)
+    response = _custom_source_response(
+        [
+            ResponseFunctionToolCall(
+                id="fc_2",
+                call_id="call_2",
+                name="submit_python_source",
+                arguments='{"source": "value = 1\\n"}',
+                type="function_call",
+            )
+        ]
+    )
+
+    with pytest.raises(ReportingError) as error:
+        model._parse_provider_response(response)
+
+    assert error.value.code == "report_code_source_tool_response_invalid"
+    assert "其他工具或未知输出项" in error.value.message
+    assert error.value.details == {"outputItemTypes": ["function_call"]}
+
+
+def test_reporting_code_responses_custom_mode_is_request_scoped() -> None:
+    """custom 工具校验必须由本次请求的 tools 推导，不能依赖跨请求残留状态。"""
+
+    model = _code_model()
+    _arm_custom_source_tool(model)
+    unarmed_params = model.get_request_params(
+        messages=[Message(role="user", content="finish")],
+        tools=None,
+        tool_choice=None,
+    )
+
+    assert unarmed_params["tool_choice"] == "auto"
+    with pytest.raises(ReportingError) as error:
+        model._parse_provider_response(_custom_source_response([_custom_source_call()]))
+
+    assert error.value.code == "report_code_source_tool_response_invalid"
+    assert "当前阶段收到未知 custom 工具调用" in error.value.message
+
+
+def test_reporting_code_responses_consumes_custom_mode_after_parsing() -> None:
+    model = _code_model()
+    response = _custom_source_response([_custom_source_call()])
+    _arm_custom_source_tool(model)
+
+    parsed = model._parse_provider_response(response)
+
+    assert parsed.tool_calls is not None
+    with pytest.raises(ReportingError) as error:
+        model._parse_provider_response(response)
+
+    assert error.value.code == "report_code_source_tool_response_invalid"
+    assert "当前阶段收到未知 custom 工具调用" in error.value.message
+
+
+def test_reporting_code_responses_consumes_custom_mode_after_parse_error() -> None:
+    model = _code_model()
+    _arm_custom_source_tool(model)
+
+    with pytest.raises(ReportingError):
+        model._parse_provider_response(_custom_source_response([_text_message("这是解释文本。")]))
+
+    with pytest.raises(ReportingError) as error:
+        model._parse_provider_response(_custom_source_response([_custom_source_call()]))
+
+    assert error.value.code == "report_code_source_tool_response_invalid"
+    assert "当前阶段收到未知 custom 工具调用" in error.value.message
+
+
+@pytest.mark.anyio
+async def test_reporting_code_responses_custom_mode_isolated_between_tasks() -> None:
+    model = _code_model()
+    armed = asyncio.Event()
+    unarmed = asyncio.Event()
+
+    async def parse_armed_request() -> ModelResponse:
+        _arm_custom_source_tool(model)
+        armed.set()
+        await unarmed.wait()
+        return model._parse_provider_response(_custom_source_response([_custom_source_call()]))
+
+    async def reject_unarmed_request() -> ReportingError:
+        await armed.wait()
+        model.get_request_params(
+            messages=[Message(role="user", content="finish")],
+            tools=None,
+            tool_choice=None,
+        )
+        unarmed.set()
+        with pytest.raises(ReportingError) as error:
+            model._parse_provider_response(_custom_source_response([_custom_source_call()]))
+        return error.value
+
+    parsed, error = await asyncio.gather(parse_armed_request(), reject_unarmed_request())
+
+    assert parsed.tool_calls is not None
+    assert error.code == "report_code_source_tool_response_invalid"
+    assert "当前阶段收到未知 custom 工具调用" in error.message
+
+
+def test_reporting_code_responses_rejects_streaming_when_custom_tool_active() -> None:
+    model = _code_model()
+    messages = [Message(role="user", content="write source")]
+    assistant = Message(role="assistant", content="")
+
+    with pytest.raises(ReportingError) as error:
+        model.invoke_stream(messages, assistant, None, [_source_function()])
+
+    assert error.value.code == "report_code_streaming_unsupported"
+
+    with pytest.raises(ReportingError) as error:
+        model.ainvoke_stream(messages, assistant, None, [_source_function()])
+
+    assert error.value.code == "report_code_streaming_unsupported"
+
+
+def test_reporting_code_responses_streaming_without_custom_tool_not_rejected() -> None:
+    model = _code_model()
+    messages = [Message(role="user", content="write source")]
+    assistant = Message(role="assistant", content="")
+
+    stream = model.invoke_stream(messages, assistant, None, None)
+    assert iter(stream) is stream
+
+    async_stream = model.ainvoke_stream(messages, assistant, None, None)
+    assert hasattr(async_stream, "__aiter__")
+
+
+# 字段形状来自 2026-09-11 DashScope Responses 真实捕获（deepseek-v4-flash-0731，
+# temperature=0 请求）；usage 因 SDK 对 cache_write_tokens 的强校验差异不参与重放。
+# 前导文本为真实捕获内容；text_only / function_call 为同形状的反例构造。
+_DASHSCOPE_CODE_RESPONSE_OUTPUT = {
+    "custom_call_only": [
+        {
+            "call_id": "call_577ce3aa68314dd684a940e1",
+            "input": "value = 1\nprint(value)\n",
+            "name": "submit_python_source",
+            "type": "custom_tool_call",
+            "id": "msg_ca516b65-87be-403d-8a5d-607c8ec589fc",
+        }
+    ],
+    "message_preamble_then_custom_call": [
+        {
+            "id": "msg_9f0d5aa8-6c0a-4f65-a5d9-4c5a38b6e001",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "content": [
+                {
+                    "annotations": [],
+                    "text": "I'll create the Python source code for generating "
+                    "the three charts based on the visualization plan",
+                    "type": "output_text",
+                }
+            ],
+        },
+        {
+            "call_id": "call_7c1e02d4-19ab-4c8f-b2e6-83a4f90d3117",
+            "input": "value = 1\nprint(value)\n",
+            "name": "submit_python_source",
+            "type": "custom_tool_call",
+            "id": "msg_4b8c27af-90d1-4e3a-8f7b-2c6d95e10a22",
+        },
+    ],
+    "text_only": [
+        {
+            "id": "msg_2e7a91cc-5b34-4d20-9a8f-1d3c60f7b445",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "content": [
+                {
+                    "annotations": [],
+                    "text": "我将直接给出源码：\n```python\nvalue = 1\nprint(value)\n```",
+                    "type": "output_text",
+                }
+            ],
+        }
+    ],
+    "function_call_fallback": [
+        {
+            "id": "fc_3d9c1a52-8e47-4b6a-9c2d-5f1e80b7a633",
+            "call_id": "call_a1b2c3d4-1111-2222-3333-444455556666",
+            "name": "submit_python_source",
+            "arguments": '{"source": "value = 1\\nprint(value)\\n"}',
+            "type": "function_call",
+        }
+    ],
+}
+
+
+def _dashscope_response(output: list) -> Response:
+    return Response.model_validate(
+        {
+            "id": "resp_22791810-60a9-42ea-9dfa-c566e4e9fc32",
+            "created_at": 1789093577,
+            "model": "deepseek-v4-flash-0731",
+            "object": "response",
+            "status": "completed",
+            "incomplete_details": None,
+            "output": output,
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": [
+                {
+                    "name": "submit_python_source",
+                    "type": "custom",
+                    "description": "提交完整原始 Python 源码。",
+                    "format": {"type": "text"},
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
+        ("custom_call_only", "parsed"),
+        ("message_preamble_then_custom_call", "parsed"),
+        ("text_only", "rejected"),
+        ("function_call_fallback", "rejected"),
+    ],
+)
+def test_reporting_code_responses_replays_dashscope_response_shapes(
+    fixture_name: str,
+    expected: str,
+) -> None:
+    model = _code_model()
+    _arm_custom_source_tool(model)
+    response = _dashscope_response(_DASHSCOPE_CODE_RESPONSE_OUTPUT[fixture_name])
+
+    if expected == "parsed":
+        parsed = model._parse_provider_response(response)
+        assert parsed.tool_calls is not None
+        assert len(parsed.tool_calls) == 1
+        call = parsed.tool_calls[0]
+        assert call["function"]["name"] == "submit_python_source"
+        assert json.loads(call["function"]["arguments"]) == {"source": "value = 1\nprint(value)\n"}
+        assert parsed.content is None
+    else:
+        with pytest.raises(ReportingError) as error:
+            model._parse_provider_response(response)
+        assert error.value.code == "report_code_source_tool_response_invalid"
+        assert isinstance(error.value.details, dict)
+        assert "outputItemTypes" in error.value.details
+
+
+def test_reporting_code_model_defaults_to_deterministic_temperature() -> None:
+    default_agent = create_reporting_code_agent(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        name="reporting-code-agent",
+    )
+    configured_agent = create_reporting_code_agent(
+        model=OpenAIChat(
+            id="test-model",
+            api_key="test-key",
+            base_url="http://localhost",
+            temperature=0.7,
+        ),
+        name="reporting-code-agent",
+    )
+
+    assert default_agent.model.temperature == 0.0
+    assert configured_agent.model.temperature == 0.7
+
+
+def test_reporting_code_agent_forbids_text_before_tool_call() -> None:
+    agent = create_reporting_code_agent(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        name="reporting-code-agent",
+    )
+
+    instructions = "\n".join(agent.instructions)
+    assert "调用 submit_python_source 之前不要输出任何文本" in instructions
 
 
 @pytest.mark.parametrize(

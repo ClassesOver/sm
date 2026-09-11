@@ -12,6 +12,8 @@ from fastmcp.server.dependencies import get_access_token
 from ..models import ReportingError
 
 REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
+REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY = "Reporting Workflow 入口"
+REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY = "report_workflow_entrypoint"
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,8 @@ def resolve_reporting_workflow_scope(
 
 
 __all__ = [
+    "REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY",
+    "REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY",
     "REPORT_WORKFLOW_SCOPE_DEPENDENCY",
     "ReportingScopeKeys",
     "ReportingWorkflowScope",

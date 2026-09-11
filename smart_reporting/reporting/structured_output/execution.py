@@ -255,7 +255,7 @@ class ReportingStructuredOutputExecutor:
                         if validation_error is not None
                         else None
                     )
-                    issues = _validation_issues(validation_error)
+                    issues = _validation_issues(validation_error, schema=schema)
                     fingerprint = _issues_fingerprint(issues)
                     structural_error = (
                         validation_error is not None
@@ -575,24 +575,176 @@ def _find_validation_error(error: BaseException) -> ValidationError | None:
     return None
 
 
-def _validation_issues(error: ValidationError) -> list[dict[str, str]]:
-    issues: list[dict[str, str]] = []
-    for item in error.errors(
+def _validation_issues(
+    error: ValidationError,
+    *,
+    schema: Any = None,
+) -> list[dict[str, str]]:
+    raw_errors = error.errors(
         include_url=False,
-        include_context=False,
-        include_input=False,
-    ):
-        path = "$"
-        for part in item.get("loc", ()):
-            path += f"[{part}]" if isinstance(part, int) else f".{part}"
-        issues.append(
-            {
-                "path": path,
-                "type": str(item.get("type", "validation_error")),
-                "message": str(item.get("msg", "结构化字段无效。")),
-            }
+        include_context=True,
+        include_input=True,
+    )
+    # 集合内全部元素校验失败后，有效元素归零会派生 too_short；该噪音会诱导
+    # 模型补数组元素而不是修复元素字段，必须在回灌纠错前移除。
+    item_failure_collections = {
+        tuple(item.get("loc", ())[:index])
+        for item in raw_errors
+        for index, part in enumerate(item.get("loc", ()))
+        if index > 0 and isinstance(part, int)
+    }
+    issues: list[dict[str, str]] = []
+    for item in raw_errors:
+        loc = tuple(item.get("loc", ()))
+        context = item.get("ctx")
+        original = item.get("input")
+        derived_too_short = (
+            item.get("type") == "too_short"
+            and loc in item_failure_collections
+            and isinstance(context, dict)
+            and isinstance(context.get("min_length"), int)
+            and isinstance(original, list | tuple)
+            and len(original) >= context["min_length"]
         )
+        if derived_too_short:
+            continue
+        path = "$"
+        for part in loc:
+            path += f"[{part}]" if isinstance(part, int) else f".{part}"
+        issue = {
+            "path": path,
+            "type": str(item.get("type", "validation_error")),
+            "message": str(item.get("msg", "结构化字段无效。")),
+        }
+        constraint = (
+            _missing_field_constraint(schema, loc)
+            if schema is not None and item.get("type") == "missing"
+            else None
+        )
+        if constraint:
+            issue["constraint"] = constraint
+        issues.append(issue)
     return issues
+
+
+def _missing_field_constraint(schema: Any, loc: tuple[Any, ...]) -> str | None:
+    """为 missing 字段附加 schema 声明的 pattern/enum 约束，帮助一次纠错收敛。"""
+
+    json_schema = _domain_json_schema(schema)
+    if json_schema is None or not loc:
+        return None
+    node = _schema_property_node(json_schema, loc)
+    if not isinstance(node, dict):
+        return None
+    patterns, enum_values = _schema_constraints(node, json_schema)
+    constraints = [*(f"格式 {pattern}" for pattern in patterns)]
+    if enum_values:
+        constraints.append("取值 " + "|".join(enum_values))
+    return "；".join(constraints) or None
+
+
+def _schema_constraints(
+    node: Any,
+    root: dict[str, Any],
+    seen_refs: frozenset[str] = frozenset(),
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if not isinstance(node, dict):
+        return (), ()
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        if ref in seen_refs:
+            return (), ()
+        resolved = _resolve_schema_ref(node, root)
+        return _schema_constraints(resolved, root, seen_refs | {ref})
+    patterns = [node["pattern"]] if isinstance(node.get("pattern"), str) else []
+    enum_values = (
+        [str(item) for item in node["enum"]]
+        if isinstance(node.get("enum"), list)
+        else []
+    )
+    for keyword in ("anyOf", "oneOf"):
+        branches = node.get(keyword)
+        if not isinstance(branches, list):
+            continue
+        for branch in branches:
+            branch_patterns, branch_enums = _schema_constraints(branch, root, seen_refs)
+            patterns.extend(branch_patterns)
+            enum_values.extend(branch_enums)
+    return tuple(dict.fromkeys(patterns)), tuple(dict.fromkeys(enum_values))
+
+
+def _domain_json_schema(schema: Any) -> dict[str, Any] | None:
+    try:
+        if isinstance(schema, type) and issubclass(schema, BaseModel):
+            return schema.model_json_schema()
+    except TypeError:
+        return None
+    return schema if isinstance(schema, dict) else None
+
+
+def _resolve_schema_ref(node: Any, root: dict[str, Any]) -> Any:
+    seen: set[str] = set()
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        ref = node["$ref"]
+        if ref in seen or not ref.startswith("#/"):
+            return None
+        seen.add(ref)
+        target: Any = root
+        try:
+            for segment in ref[2:].split("/"):
+                target = target[segment]
+        except (KeyError, TypeError, IndexError):
+            return None
+        node = target
+    return node
+
+
+def _schema_property_node(root: dict[str, Any], loc: tuple[Any, ...]) -> Any:
+    node: Any = root
+    for part in loc:
+        node = _resolve_schema_ref(node, root)
+        if not isinstance(node, dict):
+            return None
+        if isinstance(part, int):
+            items = node.get("items")
+            node = items if isinstance(items, dict) else None
+        else:
+            node = _union_or_property_node(node, part, root)
+        if not isinstance(node, dict):
+            return None
+    return _resolve_schema_ref(node, root)
+
+
+def _union_or_property_node(
+    node: dict[str, Any],
+    part: Any,
+    root: dict[str, Any],
+) -> Any:
+    branches = node.get("oneOf") if isinstance(node.get("oneOf"), list) else node.get("anyOf")
+    if isinstance(branches, list):
+        # 判别联合的 loc 首段是分支标签（如 render），其余是分支内字段；
+        # 两种情况都按“能唯一解析即命中”处理，无法解析时失败关闭返回 None。
+        for branch in branches:
+            resolved = _resolve_schema_ref(branch, root)
+            if not isinstance(resolved, dict):
+                continue
+            properties = resolved.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            if part in properties:
+                return properties[part]
+            for property_schema in properties.values():
+                if not isinstance(property_schema, dict):
+                    continue
+                if property_schema.get("const") == part or (
+                    isinstance(property_schema.get("enum"), list) and part in property_schema["enum"]
+                ):
+                    return resolved
+        return None
+    properties = node.get("properties")
+    if isinstance(properties, dict) and part in properties:
+        return properties[part]
+    return None
 
 
 def _is_structural_validation_error(error: ValidationError) -> bool:

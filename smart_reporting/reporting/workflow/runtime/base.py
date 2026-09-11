@@ -195,7 +195,12 @@ from ..query_pipeline import (
     state_contains_connection_data,
 )
 from ..repository import ReportingStateRepository
-from ..scope import reporting_scope_keys, resolve_reporting_workflow_scope
+from ..scope import (
+    REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY,
+    REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY,
+    reporting_scope_keys,
+    resolve_reporting_workflow_scope,
+)
 from ..state import ReportingCommand, ReportingStateError
 from ..state import ReportingPhase as DurableReportingPhase
 from .analysis_item_workflow import (
@@ -1111,7 +1116,15 @@ class _ReportWorkflowRuntimeBase:
             user_id=user_id,
             dependencies=dependencies,
         )
-        return {REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state()}
+        entrypoint = str(
+            (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
+        )
+        if entrypoint not in {"agentos", "cli"}:
+            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+        return {
+            REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
+            REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
+        }
 
     async def start_run(self, run_id: str, session_state: dict[str, Any]) -> None:
         value = session_state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
@@ -1123,13 +1136,18 @@ class _ReportWorkflowRuntimeBase:
             user_id=str(value.get("userId") or "") or None,
             stored_scope=value,
         )
+        entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
+        if entrypoint not in {"agentos", "cli"}:
+            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
         await self.state_repository.register_run(
             report_run_id=run_id,
             external_run_id=run_id,
-            entrypoint="agentos",
+            entrypoint=entrypoint,
             workflow_id="enterprise-reporting-workflow-v1",
             agno_session_id=scope.session_id,
             agno_run_id=run_id,
+            caller_session_id=scope.session_id if entrypoint == "cli" else None,
+            caller_run_id=run_id if entrypoint == "cli" else None,
             thread_id=scope.session_id,
             owner_user_id=scope.user_id,
             database=scope.database,

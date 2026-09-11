@@ -12,15 +12,12 @@ from smart_reporting.runtime.application import ApplicationContext, create_agent
 from smart_reporting.runtime.settings import AgentSettings
 
 
-class FakeWorkflow:
+class FakeAgent:
     id = "smart-reporting"
-    name = "测试助手"
 
-    def deep_copy(self, *, update=None):
-        copied = FakeWorkflow()
-        for key, value in (update or {}).items():
-            setattr(copied, key, value)
-        return copied
+
+class FakeWorkflow:
+    id = "enterprise-reporting-workflow-v1"
 
 
 class FakeWorkspace:
@@ -67,11 +64,13 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     first_context = ApplicationContext(
         settings,
         object(),
+        FakeAgent(),
         FakeWorkflow(),
     )
     second_context = ApplicationContext(
         settings,
         object(),
+        FakeAgent(),
         FakeWorkflow(),
     )
 
@@ -84,10 +83,9 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert created[0].values["db"] is None
-    assert created[0].values["agents"] == []
+    assert created[0].values["agents"] == [first_context.report_agent]
     assert created[0].values["teams"] == []
-    assert [workflow.id for workflow in created[0].values["workflows"]] == ["smart-reporting"]
-    assert created[0].values["workflows"][0] is first_context.report_workflow
+    assert created[0].values["workflows"] == [first_context.report_workflow]
     assert created[0].values["interfaces"] == []
     assert created[0].values["telemetry"] is False
     assert created[0].values["mcp_server"] is False
@@ -110,6 +108,7 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
     context = ApplicationContext(
         settings,
         object(),
+        FakeAgent(),
         FakeWorkflow(),
         database=database,
     )
@@ -136,6 +135,7 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
     context = ApplicationContext(
         settings,
         workspace,
+        FakeAgent(),
         FakeWorkflow(),
     )
 
@@ -176,6 +176,7 @@ async def test_application_lifespan_stops_optional_sandbox_reconciler(monkeypatc
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
         workspace,
+        FakeAgent(),
         FakeWorkflow(),
     )
 
@@ -221,10 +222,11 @@ def test_default_application_exposes_explicit_context():
     context = app_module.base_app.state.agentos_context
     assert context.settings is app_module.settings
     assert context.workspace_service is app_module.workspace_service
+    assert context.report_agent is app_module.report_agent
     assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db
     assert app_module.reporting_agent_template.id == "smart-reporting"
-    assert app_module.agent_os.agents == []
+    assert [agent.id for agent in app_module.agent_os.agents or []] == ["smart-reporting"]
     assert [workflow.id for workflow in app_module.agent_os.workflows or []] == [
         "enterprise-reporting-workflow-v1"
     ]

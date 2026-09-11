@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -8,7 +9,7 @@ from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.utils import string as agno_string
 from loguru import logger
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
@@ -26,6 +27,7 @@ from smart_reporting.reporting.structured_output import (
 from smart_reporting.reporting.structured_output.execution import (
     _agent_for_mode,
     _correction_instruction,
+    _validation_issues,
 )
 from smart_reporting.reporting.structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -184,6 +186,105 @@ def test_structured_correction_omits_oversized_invalid_candidate() -> None:
     assert "previousOutputOmitted" in serialized
     assert "json_invalid" in serialized
     assert messages[0].content == "original instruction"
+
+
+def _section_plan_with_claims_missing_question_ref() -> dict:
+    return {
+        "kind": "render",
+        "sectionCode": "section_003",
+        "blocks": [
+            {"blockId": "block_001", "objective": "说明收入", "claimIds": ["claim_001", "claim_002"]}
+        ],
+        "claims": [
+            {"claimId": "claim_001", "metricCode": "revenue", "value": 100, "citationIds": ["c1"]},
+            {"claimId": "claim_002", "metricCode": "margin", "value": 10, "citationIds": ["c1"]},
+        ],
+    }
+
+
+def _section_plan_validation_error(candidate: dict) -> ValidationError:
+    with pytest.raises(ValidationError) as raised:
+        SectionPlanOutput.model_validate(candidate)
+    return raised.value
+
+
+def test_validation_issues_drop_derived_too_short_when_all_items_failed() -> None:
+    error = _section_plan_validation_error(_section_plan_with_claims_missing_question_ref())
+
+    issues = _validation_issues(error, schema=SectionPlanOutput)
+
+    assert [item["type"] for item in issues] == ["missing", "missing"]
+    assert {item["path"] for item in issues} == {
+        "$.render.claims[0].managementQuestionRef",
+        "$.render.claims[1].managementQuestionRef",
+    }
+
+
+def test_validation_issues_keep_genuine_too_short_without_item_failures() -> None:
+    error = _section_plan_validation_error(
+        {"kind": "render", "sectionCode": "section_003", "blocks": [], "claims": []}
+    )
+
+    issues = _validation_issues(error, schema=SectionPlanOutput)
+
+    assert {item["path"] for item in issues if item["type"] == "too_short"} == {
+        "$.render.blocks",
+        "$.render.claims",
+    }
+
+
+def test_validation_issues_keep_too_short_when_original_collection_is_short() -> None:
+    class Item(BaseModel):
+        value: int
+
+    class Payload(BaseModel):
+        items: tuple[Item, ...] = Field(min_length=2)
+
+    with pytest.raises(ValidationError) as raised:
+        Payload.model_validate({"items": [{"value": "invalid"}]})
+
+    issues = _validation_issues(raised.value, schema=Payload)
+
+    assert any(item["path"] == "$.items" and item["type"] == "too_short" for item in issues)
+
+
+def test_validation_issues_enrich_missing_field_with_schema_constraint() -> None:
+    error = _section_plan_validation_error(_section_plan_with_claims_missing_question_ref())
+
+    issues = _validation_issues(error, schema=SectionPlanOutput)
+
+    assert [item.get("constraint") for item in issues] == [
+        "格式 ^analysis_[0-9]{3,6}$",
+        "格式 ^analysis_[0-9]{3,6}$",
+    ]
+
+
+def test_validation_issues_find_enum_constraint_inside_nullable_union() -> None:
+    class Payload(BaseModel):
+        status: Literal["ready", "blocked"] | None
+
+    with pytest.raises(ValidationError) as raised:
+        Payload.model_validate({})
+
+    issues = _validation_issues(raised.value, schema=Payload)
+
+    assert issues == [
+        {
+            "path": "$.status",
+            "type": "missing",
+            "message": "Field required",
+            "constraint": "取值 ready|blocked",
+        }
+    ]
+
+
+def test_validation_issues_without_schema_keep_plain_missing_message() -> None:
+    error = _section_plan_validation_error(_section_plan_with_claims_missing_question_ref())
+
+    issues = _validation_issues(error)
+
+    assert all("constraint" not in item for item in issues)
+    assert issues[0]["message"] == "Field required"
 
 
 def test_reporting_agno_parser_recovers_later_complete_plan_object(

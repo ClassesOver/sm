@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from copy import copy
 
 from loguru import logger as loguru_logger
 
@@ -12,7 +14,11 @@ from ....task_execution import (
 )
 from ...delivery.draft_v1 import ReportDraftBlock
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
-from ...model_policy import ThinkingRequest, resolve_reporting_input_token_hard_cap
+from ...model_policy import (
+    ThinkingFailureKind,
+    ThinkingRequest,
+    resolve_reporting_input_token_hard_cap,
+)
 from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
@@ -21,7 +27,6 @@ from ..execution import ReportingTaskInvocation
 from .analysis import (
     _finalize_semantic_catalog,
     _reporting_detailed_analysis_plan,
-    _run_bounded,
 )
 from .base import (
     MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
@@ -35,8 +40,6 @@ from .base import (
     AnalysisEvidenceManifest,
     AnalysisReworkRequest,
     Any,
-    Awaitable,
-    Callable,
     Citation,
     CompletedSection,
     ContextTrace,
@@ -67,10 +70,10 @@ from .base import (
     TaskState,
     ValidationError,
     _frozen_outline,
+    _planner_candidate,
     assemble_report_markdown,
     build_report_phase_acceptance_contract,
     cast,
-    hashlib,
     json,
     payload_sha256,
     reporting_phase_task_key,
@@ -605,27 +608,6 @@ def _project_section_evidence_files(
     return {"files": projected_files, "factSummaries": list(fact_summaries)}
 
 
-async def _run_section_batches_until_rework(
-    items: Sequence[Any],
-    *,
-    concurrency: int,
-    executor: Callable[[Any], Awaitable[Any]],
-) -> list[Any]:
-    """每批只启动 concurrency 个章节；批内返工会阻止下一批启动。"""
-
-    results: list[Any] = []
-    for offset in range(0, len(items), concurrency):
-        batch_results = await _run_bounded(
-            items[offset : offset + concurrency],
-            concurrency=concurrency,
-            operation=executor,
-        )
-        results.extend(batch_results)
-        if any(result[2] is not None for result in batch_results):
-            break
-    return results
-
-
 def _section_retry_context(error: Exception | CheckpointError | None) -> dict[str, Any] | None:
     """把章节上轮失败的稳定字段带入 fresh retry，避免模型重新猜测冲突原因。"""
 
@@ -643,7 +625,12 @@ def _section_retry_context(error: Exception | CheckpointError | None) -> dict[st
     return {"code": "report_section_phase_failed", "message": str(error), "details": {}}
 
 
-def _section_stage_agent(agent: Any, output_schema: type[Any], stage: str) -> Any:
+def _section_stage_agent(
+    agent: Any,
+    output_schema: type[Any],
+    stage: str,
+    response_validator: Callable[[Any], Any] | None = None,
+) -> Any:
     """从现有 Reporting 生成器派生无工具、无历史的短输出阶段 Agent。"""
 
     if stage == "plan":
@@ -676,21 +663,24 @@ def _section_stage_agent(agent: Any, output_schema: type[Any], stage: str) -> An
             ),
         ]
     identifier = str(getattr(agent, "id", None) or "reporting-section-generator")
-    return agent.deep_copy(
-        update={
-            "id": f"{identifier}-{stage}",
-            "name": f"{identifier}-{stage}",
-            "role": f"Reporting 章节{stage}阶段结构化生成器。",
-            "output_schema": output_schema,
-            "instructions": instructions,
-            "tools": [],
-            "tool_choice": None,
-            "add_history_to_context": False,
-            "enable_session_summaries": False,
-            "retries": 0,
-            "exponential_backoff": False,
-        }
-    )
+    update: dict[str, Any] = {
+        "id": f"{identifier}-{stage}",
+        "name": f"{identifier}-{stage}",
+        "role": f"Reporting 章节{stage}阶段结构化生成器。",
+        "output_schema": output_schema,
+        "instructions": instructions,
+        "tools": [],
+        "tool_choice": None,
+        "add_history_to_context": False,
+        "enable_session_summaries": False,
+        "retries": 0,
+        "exponential_backoff": False,
+    }
+    if response_validator is not None and getattr(agent, "model", None) is not None:
+        stage_model = copy(agent.model)
+        setattr(stage_model, "_report_response_validator", response_validator)
+        update["model"] = stage_model
+    return agent.deep_copy(update=update)
 
 
 async def _run_section_stage(
@@ -702,8 +692,17 @@ async def _run_section_stage(
     scope: TaskExecutionScope,
     run_context: RunContext,
     thinking_request: ThinkingRequest,
+    section_code: str,
+    response_validator: Callable[[Any], Any] | None = None,
 ) -> Any:
-    stage_agent = _section_stage_agent(agent, output_schema, stage)
+    loguru_logger.info(
+        "report_section_generation_started section_code={} stage={} attempt={} failure_kind={}",
+        section_code,
+        stage,
+        thinking_request.attempt,
+        thinking_request.failure_kind or "-",
+    )
+    stage_agent = _section_stage_agent(agent, output_schema, stage, response_validator)
     result = await ReportingStructuredOutputExecutor(stage_agent).execute(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         routing_context=run_context,
@@ -713,6 +712,28 @@ async def _run_section_stage(
         thinking_request=thinking_request,
     )
     return result.content
+
+
+def _section_stage_thinking_request(request: ThinkingRequest, stage: str) -> ThinkingRequest:
+    """规划独立推理；正文只在自己的结构纠错中升级。"""
+
+    is_plan = stage == "plan"
+    return ThinkingRequest(
+        operation="section_planning" if is_plan else "section_generation",
+        complexity=request.complexity,
+        attempt=request.attempt if is_plan else 0,
+        failure_kind=request.failure_kind if is_plan else None,
+        configured_budget_cap=request.configured_budget_cap,
+        thinking_enabled=request.thinking_enabled,
+    )
+
+
+def _section_recovery_failure_kind(
+    diagnostic: Mapping[str, Any],
+) -> ThinkingFailureKind | None:
+    """仅把结构化输出耗尽归类为 schema failure。"""
+
+    return "schema_failure" if diagnostic.get("code") == "report_phase_output_invalid" else None
 
 
 def _section_plan_reference_issues(
@@ -766,6 +787,86 @@ def _section_plan_reference_issues(
     return issues
 
 
+def _section_plan_response_validator(
+    work_item: SectionWorkItem,
+) -> Callable[[Any], SectionPlanOutput]:
+    """规划响应先做无歧义 claim 引用回填，再进入领域校验。"""
+
+    def validate_response(content: Any) -> SectionPlanOutput:
+        candidate = _planner_candidate(content)
+        candidate = _backfill_claim_management_question_refs(candidate, work_item)
+        try:
+            return SectionPlanOutput.model_validate(candidate)
+        except ValidationError as error:
+            # 与 planner 校验器同契约：候选回灌纠错，不进日志或公开错误。
+            error._report_candidate = candidate  # type: ignore[attr-defined]
+            raise
+
+    return validate_response
+
+
+def _backfill_claim_management_question_refs(candidate: Any, work_item: SectionWorkItem) -> Any:
+    """仅无歧义时回填模型遗漏的 managementQuestionRef，歧义时保持缺失由严格校验失败关闭。
+
+    managementQuestionRef 是服务端冻结目录的引用抄录（与 periodBasis、
+    managementQuestion 同类），弱模型批量遗漏是高频故障；单一目录或
+    metricCode 唯一归属某个 analysis 时回填是确定性事实，不属于猜测。
+    已提交（即使错误）的引用一律不覆盖，交给引用校验循环纠错。
+    """
+
+    if not isinstance(candidate, Mapping):
+        return candidate
+    render: Any = candidate
+    wrapper_key: str | None = None
+    if candidate.get("kind") != "render":
+        if len(candidate) != 1:
+            return candidate
+        key, inner = next(iter(candidate.items()))
+        if key != "render" or not isinstance(inner, Mapping):
+            return candidate
+        render, wrapper_key = inner, key
+    claims = render.get("claims")
+    if not isinstance(claims, list):
+        return candidate
+    catalog = work_item.management_question_catalog
+    if not catalog:
+        return candidate
+    single_ref = catalog[0].ref if len(catalog) == 1 else None
+    metric_refs: dict[str, set[str]] = {}
+    for evidence_item in work_item.evidence:
+        for metric in evidence_item.metrics:
+            metric_refs.setdefault(metric, set()).add(evidence_item.analysis_id)
+    unique_metric_refs = {
+        metric: next(iter(refs)) for metric, refs in metric_refs.items() if len(refs) == 1
+    }
+    backfilled = 0
+    normalized_claims: list[Any] = []
+    for claim in claims:
+        if (
+            isinstance(claim, Mapping)
+            and "managementQuestionRef" not in claim
+            and "management_question_ref" not in claim
+        ):
+            metric_code = claim.get("metricCode")
+            if not isinstance(metric_code, str):
+                metric_code = claim.get("metric_code")
+            backfill_ref = single_ref
+            if backfill_ref is None and isinstance(metric_code, str):
+                backfill_ref = unique_metric_refs.get(metric_code)
+            if backfill_ref is not None:
+                claim = {**claim, "managementQuestionRef": backfill_ref}
+                backfilled += 1
+        normalized_claims.append(claim)
+    if not backfilled:
+        return candidate
+    loguru_logger.bind(
+        section_code=work_item.section_code,
+        backfilled_count=backfilled,
+    ).warning("report_section_plan_claim_ref_backfilled")
+    normalized_render = {**render, "claims": normalized_claims}
+    return {wrapper_key: normalized_render} if wrapper_key else normalized_render
+
+
 async def _generate_section_in_blocks(
     agent: Any,
     instruction_payload: Mapping[str, Any],
@@ -789,6 +890,27 @@ async def _generate_section_in_blocks(
             "证据充足时返回 1 到 12 个必要 block 的结构规划及完整 claims；"
             "block 只包含 blockId、objective、claimIds，不生成 Markdown 正文。"
         ),
+        "requiredOutputShape": {
+            "kind": "render",
+            "sectionCode": work_item.section_code,
+            "blocks": [
+                {
+                    "blockId": "block_001",
+                    "objective": "当前 block 的写作目标",
+                    "claimIds": ["claim_001"],
+                }
+            ],
+            "claims": [
+                {
+                    "claimId": "claim_001",
+                    "metricCode": "必须来自 allowedMetricCodes",
+                    "value": "必须来自证据",
+                    "managementQuestionRef": "必须来自 managementQuestionRefs",
+                    "citationIds": ["必须来自当前 citations"],
+                    "chartIds": [],
+                }
+            ],
+        },
     }
     if recovery is not None:
         plan_payload["recovery"] = dict(recovery)
@@ -800,7 +922,9 @@ async def _generate_section_in_blocks(
             plan_payload,
             scope=scope,
             run_context=run_context,
-            thinking_request=thinking_request,
+            thinking_request=_section_stage_thinking_request(thinking_request, "plan"),
+            section_code=work_item.section_code,
+            response_validator=_section_plan_response_validator(work_item),
         )
         if not isinstance(planned, SectionPlanOutput):
             raise ReportingError("report_phase_output_invalid", "章节规划 Agent 未返回声明的结果。")
@@ -945,7 +1069,10 @@ async def _generate_section_in_blocks(
                 block_payload,
                 scope=scope,
                 run_context=run_context,
-                thinking_request=thinking_request,
+                thinking_request=_section_stage_thinking_request(
+                    thinking_request, f"block-{index}"
+                ),
+                section_code=work_item.section_code,
             )
             if not isinstance(content, SectionBlockContent):
                 raise ReportingError(
@@ -1013,34 +1140,6 @@ def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, A
     }
 
 
-def _pending_analysis_rework_file(checkpoint: ReportingCheckpoint) -> FileIdentity | None:
-    """返回尚未被后续全局分析冻结覆盖的最新章节返工身份。"""
-
-    if checkpoint.phase != "analysis":
-        return None
-    latest_rework = next(
-        (
-            (index, item.artifact_file)
-            for index, item in reversed(tuple(enumerate(checkpoint.trace)))
-            if item.phase == "section"
-            and item.status == "rework"
-            and item.artifact_file is not None
-        ),
-        None,
-    )
-    if latest_rework is None:
-        return None
-    rework_index, rework_file = latest_rework
-    later_freeze = any(
-        index > rework_index
-        and item.phase == "analysis"
-        and item.work_kind == "visualization_section"
-        and item.status == "completed"
-        for index, item in enumerate(checkpoint.trace)
-    )
-    return None if later_freeze else rework_file
-
-
 class RuntimeSectionsMixin:
     @staticmethod
     def _analysis_rework_constraints(
@@ -1076,103 +1175,6 @@ class RuntimeSectionsMixin:
                 "章节返工约束没有绑定冻结分析计划或完整 Profile Dataset。",
             ) from error
         return constraints
-
-    async def _commit_section_rework_batch(
-        self,
-        run_context: RunContext,
-        *,
-        checkpoint: ReportingCheckpoint,
-        revision: int,
-        rework_results: Sequence[tuple[ReportingCheckpoint, AnalysisReworkRequest]],
-    ) -> tuple[ReportingCheckpoint, AnalysisReworkRequest]:
-        """批内章节执行器全部结束后，一次性提交返工并撤销受影响章节。"""
-
-        requests = tuple(request for _candidate, request in rework_results)
-        affected_analysis_ids = tuple(
-            dict.fromkeys(
-                analysis_id for request in requests for analysis_id in request.analysis_ids
-            )
-        )
-        rework = AnalysisReworkRequest(
-            sectionCode=requests[0].section_code,
-            analysisIds=affected_analysis_ids,
-            reason="；".join(dict.fromkeys(item.reason for item in requests)),
-            missingEvidence=tuple(
-                dict.fromkeys(item for request in requests for item in request.missing_evidence)
-            ),
-        )
-        await self._apply_durable_command(
-            run_context,
-            ReportingCommand(
-                name="request_analysis_rework",
-                commandId=(
-                    f"analysis-rework:{revision}:"
-                    f"{payload_sha256(rework.model_dump(mode='json', by_alias=True))}"
-                ),
-                payload={
-                    "analysisIds": list(rework.analysis_ids),
-                    "missingEvidence": list(rework.missing_evidence),
-                    "reason": rework.reason,
-                    "sectionCode": rework.section_code,
-                },
-            ),
-        )
-        invalid_section_codes = {
-            section.code
-            for section in _frozen_outline(self._state(run_context)).sections
-            if set(section.analysis_ids) & set(affected_analysis_ids)
-        }
-        checkpoint = self._update_reporting_checkpoint(
-            checkpoint,
-            phase="analysis",
-            report_brief=None,
-            evidence_manifest=None,
-            analysis_manifest_file=None,
-            completed_sections=tuple(
-                item
-                for item in checkpoint.completed_sections
-                if item.section_code not in invalid_section_codes
-            ),
-            pending_sections=tuple(
-                dict.fromkeys([*checkpoint.pending_sections, *sorted(invalid_section_codes)])
-            ),
-            last_error={
-                "phase": "section",
-                "code": "report_analysis_evidence_insufficient",
-                "message": rework.reason,
-                "sectionCode": rework.section_code,
-                "retryReason": payload_sha256(rework.model_dump(mode="json", by_alias=True)),
-            },
-        )
-        # 通用并发 merge 会保留 completedSections 的并集；这里是批次收口后的有意撤销，
-        # 必须以已读取的最新 checkpoint 为基线精确替换，否则 sibling 的旧完成态会被回灌。
-        serialized = json.dumps(
-            checkpoint.model_dump(mode="json", by_alias=True),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        digest = hashlib.sha256(serialized).hexdigest()
-        identity = await self._write_immutable_artifact(
-            self._scope(run_context)["threadId"],
-            (
-                f"报表/智能分析/{run_context.run_id}/audit/"
-                f"reporting-checkpoint-{checkpoint.revision}-{digest}.json"
-            ),
-            serialized,
-        )
-        await self._apply_durable_command(
-            run_context,
-            ReportingCommand(
-                name="set_workflow_checkpoint",
-                commandId=f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}",
-                payload={
-                    "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
-                    "mirrorFile": identity.model_dump(mode="json", by_alias=True),
-                },
-            ),
-        )
-        return checkpoint, rework
 
     @staticmethod
     def _build_section_work_item(
@@ -1622,6 +1624,11 @@ class RuntimeSectionsMixin:
                                 "report_section_recovery_missing", "章节恢复生成器未配置。"
                             )
                         diagnostic = repair.get("diagnostic")
+                        recovery_diagnostic = (
+                            dict(diagnostic)
+                            if isinstance(diagnostic, Mapping)
+                            else {"message": "章节重试"}
+                        )
                         # recovery 只允许复用本进程、本次执行已经过 SHA 校验的 bundle。
                         # durable replay 会重新读取并验证证据；若闭包对象不存在必须失败关闭，
                         # 禁止从持久化 repair 中反序列化正文绕过当前文件身份校验。
@@ -1641,15 +1648,11 @@ class RuntimeSectionsMixin:
                                 operation="section_generation",
                                 complexity="standard",
                                 attempt=1,
-                                failure_kind="schema_failure",
+                                failure_kind=_section_recovery_failure_kind(recovery_diagnostic),
                                 configured_budget_cap=self._analysis_thinking_budget_cap,
                                 thinking_enabled=self._analysis_thinking_enabled,
                             ),
-                            recovery=(
-                                diagnostic
-                                if isinstance(diagnostic, Mapping)
-                                else {"message": "章节重试"}
-                            ),
+                            recovery=recovery_diagnostic,
                         )
 
                     async def render(

@@ -115,7 +115,14 @@ class ManagedReportingWorkflow(Workflow):
         if not run_id:
             raise ValueError("继续 Reporting Workflow 必须提供 run_id")
         await self.lifecycle.assert_resumable(run_id)
-        execution = await super().acontinue_run(*args, **kwargs)
+        try:
+            execution = await super().acontinue_run(*args, **kwargs)
+        except asyncio.CancelledError:
+            await self._settle_cancelled(run_id)
+            raise
+        except BaseException:
+            await self._settle_after_error(run_id)
+            raise
         if hasattr(execution, "__aiter__"):
             return self._stream_continued(
                 cast(AsyncIterator[WorkflowRunOutputEvent], execution), run_id

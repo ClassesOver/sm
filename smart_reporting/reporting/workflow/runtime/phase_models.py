@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
@@ -324,15 +325,41 @@ class SectionPlanOutput(RootModel[SectionPlanDecision]):
     @model_validator(mode="before")
     @classmethod
     def normalize_single_decision_wrapper(cls, value: Any) -> Any:
-        if not isinstance(value, Mapping) or len(value) != 1:
+        if not isinstance(value, Mapping):
             return value
-        kind, payload = next(iter(value.items()))
-        if kind not in {"render", "rework"} or not isinstance(payload, Mapping):
+        if len(value) == 1:
+            kind, payload = next(iter(value.items()))
+            if kind in {"render", "rework"} and isinstance(payload, Mapping):
+                declared_kind = payload.get("kind")
+                if declared_kind in {None, kind}:
+                    value = {**payload, "kind": kind}
+        if value.get("kind") != "render":
             return value
-        declared_kind = payload.get("kind")
-        if declared_kind not in {None, kind}:
-            return value
-        return {**payload, "kind": kind}
+
+        normalized = dict(value)
+        for field in ("blocks", "claims"):
+            items = value.get(field)
+            if not isinstance(items, list | tuple):
+                continue
+            decoded_items: list[Any] = []
+            changed = False
+            for item in items:
+                decoded = item
+                if isinstance(item, str):
+                    try:
+                        candidate = json.loads(item)
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        if isinstance(candidate, Mapping):
+                            decoded = candidate
+                            changed = True
+                decoded_items.append(decoded)
+            if changed:
+                normalized[field] = (
+                    tuple(decoded_items) if isinstance(items, tuple) else decoded_items
+                )
+        return normalized
 
 
 class SectionBlockContent(StrictModel):

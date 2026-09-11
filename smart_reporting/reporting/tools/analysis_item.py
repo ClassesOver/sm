@@ -22,10 +22,7 @@ from pydantic import ValidationError
 from ...task_execution import abuild_workspace_changes, parse_unified_diff
 from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
-from ..workflow.checkpoint import (
-    FileIdentity,
-    MetricDefinition,
-)
+from ..workflow.checkpoint import FileIdentity
 from ..workflow.state import ReportingRunState
 from .validation import (
     _jsonschema_error_message,
@@ -239,39 +236,6 @@ def validate_reporting_python_source(
     }
 
 
-def _fact_metric_codes(bundle: Mapping[str, Any]) -> tuple[str, ...]:
-    """从单项确定性事实中提取真实指标代码，避免沿用计划阶段的通用占位符。"""
-
-    codes = {
-        code
-        for metric in bundle.get("metrics", ())
-        if isinstance(metric, Mapping)
-        for code in metric.get("metricCodes", ())
-        if isinstance(code, str) and code
-    }
-    codes.update(
-        metric["code"]
-        for metric in bundle.get("derivedMetrics", ())
-        if isinstance(metric, Mapping) and isinstance(metric.get("code"), str) and metric["code"]
-    )
-    return tuple(sorted(codes))
-
-
-def _missing_metric_definition_codes(
-    *,
-    fact_bundles: tuple[Mapping[str, Any], ...],
-    chart_metric_codes: tuple[str, ...],
-    metric_definitions: tuple[MetricDefinition, ...],
-) -> tuple[str, ...]:
-    """返回冻结事实或图表引用、但没有完整定义的指标 code。"""
-
-    referenced: set[str] = {code for code in chart_metric_codes if isinstance(code, str) and code}
-    for bundle in fact_bundles:
-        referenced.update(_fact_metric_codes(bundle))
-    defined = {item.code for item in metric_definitions}
-    return tuple(sorted(referenced - defined))
-
-
 def _normalize_analysis_summary_comparability(summary: str) -> tuple[str, tuple[str, ...]]:
     """只规范摘要中能确定识别为不等长月份窗口的“同比”表述。"""
 
@@ -290,30 +254,6 @@ def _normalize_analysis_summary_comparability(summary: str) -> tuple[str, tuple[
             changed = True
         normalized.append(sentence)
     return "".join(normalized), ((_INCOMPARABLE_YOY_WARNING,) if changed else ())
-
-
-def _derive_durable_analysis_binding(
-    durable_item: Mapping[str, Any],
-) -> dict[str, Any]:
-    """从单项耐久账本派生 Finalize 绑定，忽略模型的过期精简副本。
-
-    ProfileCoverage 由服务端独立证明完整性；只有单项结论实际读取并提交的 receipt
-    才能绑定 evidence。Dataset 相同不能证明该查询被当前结论使用。
-    """
-
-    dataset_ids = [value for value in durable_item.get("datasetIds", ()) if isinstance(value, str)]
-    explicit_receipt_ids = [
-        value for value in durable_item.get("profileReadReceiptIds", ()) if isinstance(value, str)
-    ]
-    return {
-        **dict(durable_item),
-        "datasetIds": dataset_ids,
-        "citationIds": [
-            value for value in durable_item.get("citationIds", ()) if isinstance(value, str)
-        ],
-        "chartIds": [value for value in durable_item.get("chartIds", ()) if isinstance(value, str)],
-        "profileReadReceiptIds": list(dict.fromkeys(explicit_receipt_ids)),
-    }
 
 
 class RuntimeAnalysisMixin:

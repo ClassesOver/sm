@@ -170,6 +170,14 @@ _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
 _REPORT_CODE_SOURCE_TOOL_NAME = "submit_python_source"
 _REPORT_CODE_SOURCE_TOOL_ERROR = "report_code_source_tool_response_invalid"
+_REPORT_CODE_STREAMING_UNSUPPORTED = "report_code_streaming_unsupported"
+# custom 源码工具是否随本次模型请求下发。必须用 ContextVar 而非模型实例属性：
+# 请求副本共享进程内 ContextVar 的任务内语义，异步并发下各 task 互不串扰，
+# copy(self) 也不会携带上一次请求的残留状态。
+_REPORT_CODE_CUSTOM_TOOL_REQUEST: ContextVar[bool] = ContextVar(
+    "report_code_custom_tool_request",
+    default=False,
+)
 
 
 def _duration_ms(started_at: float) -> int:
@@ -186,7 +194,6 @@ _REPORT_CODE_REASONING_DEGRADED_ERROR = "report_code_reasoning_degraded"
 # 复杂综合报告的单章输入会合并多个分析证据，真实 CLI 已观察到 16K 输出在完整
 # SectionDecision JSON 结束前被截断。章节和可视化统一允许 128K，实际请求仍取该
 # 上限与 AGENT_REPORT_OUTPUT_TOKEN_RESERVE 的较小值。
-_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
@@ -1635,19 +1642,26 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
 
     if not all(is_valid_delivery_url(url) for url in urls):
         return "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
-    parts = ["## 报表已生成"]
-    details: list[str] = []
+    parts = ["## 报表已生成", "报告已完成发布，可下载文件或在线预览。"]
+    detail_headers: list[str] = []
+    detail_values: list[str] = []
     report_id = report.get("reportId")
     revision = report.get("revision")
     if isinstance(report_id, str) and report_id:
-        details.append(f"- 报告编号：`{report_id}`")
+        detail_headers.append("报告编号")
+        detail_values.append(f"`{report_id}`")
     if isinstance(revision, int) and not isinstance(revision, bool):
-        details.append(f"- 修订版本：Revision {revision}")
-    if details:
-        parts.append("\n".join(details))
+        detail_headers.append("修订版本")
+        detail_values.append(f"Revision {revision}")
+    if detail_headers:
+        parts.append(
+            f"| {' | '.join(detail_headers)} |\n"
+            f"| {' | '.join('---' for _ in detail_headers)} |\n"
+            f"| {' | '.join(detail_values)} |"
+        )
     parts.append(
-        f"### 文件下载\n\n- [下载 PDF 报告]({pdf_url})\n"
-        f"- [下载 Word 报告]({word_url})\n- [预览 HTML 报告]({html_url})"
+        f"### 获取报告\n\n[**下载 PDF**]({pdf_url}) · "
+        f"[**下载 Word**]({word_url}) · [**在线预览**]({html_url})"
     )
     return "\n\n".join(parts)
 
@@ -2594,8 +2608,6 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
 class ReportingCodeOpenAIResponses(OpenAIResponses):
     """仅为 Coding Agent 桥接 Responses API custom text tool。"""
 
-    _report_code_custom_tool_active = False
-
     def _format_tool_params(
         self,
         messages: list[Message],
@@ -2612,8 +2624,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 _REPORT_CODE_SOURCE_TOOL_ERROR,
                 "源码提交阶段只能暴露唯一 custom 工具。",
             )
+        _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(bool(custom_tools))
         if not custom_tools:
-            self._report_code_custom_tool_active = False
             return formatted_tools
 
         function = custom_tools[0]
@@ -2622,7 +2634,6 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             if isinstance(function, Mapping) and isinstance(function.get("description"), str)
             else "提交完整原始 Python 源码。"
         )
-        self._report_code_custom_tool_active = True
         return [
             {
                 "type": "custom",
@@ -2633,11 +2644,13 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         ]
 
     def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        self._report_code_custom_tool_active = False
+        # 请求内推导 custom 工具状态：tools 为空时 _format_tool_params 不会被调用，
+        # 必须先复位，避免同 task 内上一次请求的激活状态泄漏到本次解析。
+        _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
         params = super().get_request_params(*args, **kwargs)
         # DashScope Responses 只负责根据 reasoning 结果提交源码，不再开启 thinking。
-        if self._report_code_custom_tool_active:
-            params["tool_choice"] = {"type": "custom", "name": _REPORT_CODE_SOURCE_TOOL_NAME}
+        if _REPORT_CODE_CUSTOM_TOOL_REQUEST.get():
+            params["tool_choice"] = "auto"
         else:
             params.setdefault("tool_choice", "auto")
         params.pop("reasoning", None)
@@ -2727,11 +2740,23 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     def _raw_field(value: Any, field: str) -> Any:
         return value.get(field) if isinstance(value, Mapping) else getattr(value, field, None)
 
-    @staticmethod
-    def _invalid_custom_response(message: str) -> ReportingError:
-        return ReportingError(_REPORT_CODE_SOURCE_TOOL_ERROR, message)
+    @classmethod
+    def _invalid_custom_response(cls, message: str, output: Any = None) -> ReportingError:
+        details = None
+        if isinstance(output, (list, tuple)):
+            item_types = [cls._raw_field(item, "type") for item in output]
+            details = {
+                "outputItemTypes": [
+                    str(item_type) for item_type in item_types if item_type is not None
+                ]
+            }
+        return ReportingError(_REPORT_CODE_SOURCE_TOOL_ERROR, message, details=details)
 
     def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
+        custom_tool_active = _REPORT_CODE_CUSTOM_TOOL_REQUEST.get()
+        # 每次响应只消费一次请求状态；无论 provider/协议校验成功还是抛错，
+        # 都不能污染同 task 的下一轮。
+        _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
         if self._raw_field(response, "error") is not None:
             return super()._parse_provider_response(response, **kwargs)
         output = self._raw_field(response, "output")
@@ -2739,25 +2764,32 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         custom_calls = [
             item for item in output if self._raw_field(item, "type") == "custom_tool_call"
         ]
-        if not self._report_code_custom_tool_active:
+        if not custom_tool_active:
             if custom_calls:
-                raise self._invalid_custom_response("当前阶段收到未知 custom 工具调用。")
+                raise self._invalid_custom_response("当前阶段收到未知 custom 工具调用。", output)
             return super()._parse_provider_response(response, **kwargs)
 
+        # Responses API 允许模型在 custom 工具调用前后输出 assistant 文本；
+        # 真实 DashScope deepseek-v4-flash 会间歇性输出前导文本。文本不是成功结果，
+        # 只要唯一 custom 调用有效就忽略文本，function/未知输出项仍视为协议违规。
         if any(
-            self._raw_field(item, "type") not in {"reasoning", "custom_tool_call"}
+            self._raw_field(item, "type") not in {"reasoning", "custom_tool_call", "message"}
             for item in output
         ):
-            raise self._invalid_custom_response("源码 custom 工具响应包含文本或其他工具输出。")
+            raise self._invalid_custom_response(
+                "源码 custom 工具响应包含其他工具或未知输出项。", output
+            )
         if len(custom_calls) != 1:
-            raise self._invalid_custom_response("源码 custom 工具响应必须只包含一次工具调用。")
+            raise self._invalid_custom_response(
+                "源码 custom 工具响应必须只包含一次工具调用。", output
+            )
         call = custom_calls[0]
         name = self._raw_field(call, "name")
         source = self._raw_field(call, "input")
         call_id = self._raw_field(call, "id")
         provider_call_id = self._raw_field(call, "call_id")
         if name != _REPORT_CODE_SOURCE_TOOL_NAME:
-            raise self._invalid_custom_response("源码 custom 工具响应包含未知工具调用。")
+            raise self._invalid_custom_response("源码 custom 工具响应包含未知工具调用。", output)
         if (
             not isinstance(source, str)
             or not source
@@ -2766,9 +2798,13 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             or not isinstance(provider_call_id, str)
             or not provider_call_id
         ):
-            raise self._invalid_custom_response("源码 custom 工具响应缺少有效 input 或调用身份。")
+            raise self._invalid_custom_response(
+                "源码 custom 工具响应缺少有效 input 或调用身份。", output
+            )
 
         parsed = super()._parse_provider_response(response, **kwargs)
+        # 文本前导永远不是成功结果；解析结果只保留唯一工具调用。
+        parsed.content = None
         parsed.tool_calls = [
             {
                 "id": call_id,
@@ -2874,6 +2910,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         except Exception as error:
             self._raise_stable_custom_error(error)
             raise
+        finally:
+            _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         messages = _phase_filtered_report_messages(messages)
@@ -2884,6 +2922,37 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         except Exception as error:
             self._raise_stable_custom_error(error)
             raise
+        finally:
+            _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
+
+    @staticmethod
+    def _custom_source_tool_requested(tools: Any) -> bool:
+        if not tools:
+            return False
+        return any(_report_model_tool_name(tool) == _REPORT_CODE_SOURCE_TOOL_NAME for tool in tools)
+
+    def _reject_streaming_custom_source_tool(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> None:
+        # Agno 流式增量解析只识别 function_call，custom 工具调用会被静默丢弃，
+        # 最终误报 report_code_generation_no_source；这里把误用变成显式失败。
+        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        if self._custom_source_tool_requested(tools):
+            raise ReportingError(
+                _REPORT_CODE_STREAMING_UNSUPPORTED,
+                "源码提交阶段不支持流式响应；流式解析不识别 custom 工具调用，"
+                "请使用非流式 invoke/ainvoke。",
+            )
+
+    def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
+        self._reject_streaming_custom_source_tool(args, kwargs)
+        return super().invoke_stream(messages, *args, **kwargs)
+
+    def ainvoke_stream(
+        self, messages: list[Message], *args: Any, **kwargs: Any
+    ) -> AsyncIterator[Any]:
+        self._reject_streaming_custom_source_tool(args, kwargs)
+        return super().ainvoke_stream(messages, *args, **kwargs)
 
 
 class ReportFacadeOpenAIChat(ReportingOpenAIChat):
@@ -3185,7 +3254,8 @@ def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
         store=model.store,
         metadata=model.metadata,
         parallel_tool_calls=request_params.get("parallel_tool_calls"),
-        temperature=model.temperature,
+        # 源码签发追求确定性输出以压低文本前导概率；部署显式配置的采样参数优先。
+        temperature=model.temperature if model.temperature is not None else 0.0,
         top_p=model.top_p,
         service_tier=model.service_tier,
         strict_output=model.strict_output,
@@ -3334,6 +3404,7 @@ def create_reporting_code_agent(
 
     base_instructions = [
         "普通文本、Markdown、代码围栏和解释都不算成功。",
+        "调用 submit_python_source 之前不要输出任何文本或解释；直接发起工具调用。",
         "写入阶段只调用一次 submit_python_source；将完整原始 Python 源码直接作为 custom input 提交，收到工具回执后立即结束。",
         "custom input 只能包含 Python 源码本身，不得包含 unified diff、文件头、hunk、JSON 包装或说明文字。",
         "源码必须使用 UTF-8/LF、多物理行并以换行结尾，且遵守 sourceProtocol 的字节与物理行长度上限。",

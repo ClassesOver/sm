@@ -4,21 +4,34 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from agno.workflow import Step
+from agno.workflow.types import StepInput, StepOutput
 
+from smart_reporting.reporting.cli import drive_workflow
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.managed import ManagedReportingWorkflow
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
-from smart_reporting.reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+from smart_reporting.reporting.workflow.scope import (
+    REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY,
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+)
 
 
 class Repository:
     def __init__(self) -> None:
         self.runs: dict[str, dict[str, Any]] = {}
         self.owners: dict[str, dict[str, Any]] = {}
+        self.registrations: list[dict[str, Any]] = []
 
     async def register_run(self, **values: Any) -> dict[str, Any]:
         row = dict(values)
+        self.registrations.append(row)
         self.runs[str(values["external_run_id"])] = row
         return row
+
+    @asynccontextmanager
+    async def workflow_execution_lock(self, _run_id: str):
+        yield
 
     async def claim_workflow_thread(self, **values: str) -> bool:
         key = values["thread_id"]
@@ -80,18 +93,66 @@ def prepared(
     database: str = "db-1",
     company_id: str = "company-1",
     user_id: str = "user-1",
+    entrypoint: str = "agentos",
 ) -> dict[str, Any]:
     return current.prepare_run(
         run_id=run_id,
         session_id=thread_id,
         user_id=user_id,
         dependencies={
+            REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY: entrypoint,
             REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
                 "database": database,
                 "companyId": company_id,
             }
         },
     )
+
+
+@pytest.mark.anyio
+async def test_cli_run_is_registered_once_with_cli_identity() -> None:
+    repository = Repository()
+    current = runtime(repository, [])
+
+    await current.start_run(
+        "run-a",
+        prepared(current, run_id="run-a", entrypoint="cli"),
+    )
+
+    assert repository.runs["run-a"]["entrypoint"] == "cli"
+    assert repository.runs["run-a"]["caller_session_id"] == "thread-1"
+    assert repository.runs["run-a"]["caller_run_id"] == "run-a"
+
+
+@pytest.mark.anyio
+async def test_cli_and_managed_workflow_share_one_run_lifecycle() -> None:
+    repository = Repository()
+    current = runtime(repository, [])
+
+    async def execute(_step_input: StepInput) -> StepOutput:
+        return StepOutput(content={"report": "done"})
+
+    workflow = ManagedReportingWorkflow(
+        id="enterprise-reporting-workflow-v1",
+        steps=[Step(name="execute", executor=execute)],
+        lifecycle=current,
+    )
+
+    result = await drive_workflow(
+        workflow,
+        current,
+        {"version": "1", "prompt": "生成运营报告"},
+        run_id="cli-run-a",
+        session_id="cli-thread-a",
+        user_id="cli",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert result["status"] == "completed"
+    assert len(repository.registrations) == 1
+    assert repository.registrations[0]["entrypoint"] == "cli"
+    assert repository.owners == {}
 
 
 @pytest.fixture

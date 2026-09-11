@@ -89,6 +89,7 @@ async def test_thinking_binding_is_isolated_between_concurrent_tasks() -> None:
         ("visualization_plan", "standard", 2048),
         ("visualization_plan", "complex", 4096),
         ("visualization_script", "complex", 0),
+        ("section_planning", "standard", 2048),
         ("section_generation", "complex", 0),
     ],
 )
@@ -120,6 +121,7 @@ def test_initial_thinking_budget_matrix(operation: str, complexity: str, budget:
         ("visualization_plan", "schema_failure", 4096, "high"),
         ("visualization_script", "python_execution_failure", 2048, "high"),
         ("visualization_script", "visual_review_failure", 4096, "high"),
+        ("section_planning", "schema_failure", 2048, "high"),
         ("section_generation", "schema_failure", 2048, "high"),
     ],
 )

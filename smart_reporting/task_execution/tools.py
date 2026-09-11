@@ -90,38 +90,6 @@ def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
     return tuple(operations)
 
 
-def _apply_unified_hunks(content: str, patched_file: Any) -> str:
-    """保留历史 hunk 应用器以便审计；生产 patch 路径已统一由 Git 执行。"""
-
-    original = content.splitlines(keepends=True)
-    updated: list[str] = []
-    source_index = 0
-    for hunk in patched_file:
-        hunk_start = max(0, hunk.source_start - 1)
-        if hunk_start < source_index:
-            raise WorkspaceError("unified diff hunk 范围重叠或顺序无效。")
-        updated.extend(original[source_index:hunk_start])
-        cursor = hunk_start
-        hunk_lines = list(hunk)
-        for index, line in enumerate(hunk_lines):
-            if line.line_type == "\\":
-                continue
-            value = line.value
-            if index + 1 < len(hunk_lines) and hunk_lines[index + 1].line_type == "\\":
-                value = value.removesuffix("\n")
-            if line.is_context or line.is_removed:
-                if cursor >= len(original) or original[cursor] != value:
-                    raise WorkspaceError("unified diff hunk 与当前文件内容不匹配。")
-                if line.is_context:
-                    updated.append(original[cursor])
-                cursor += 1
-            elif line.is_added:
-                updated.append(value)
-        source_index = cursor
-    updated.extend(original[source_index:])
-    return "".join(updated)
-
-
 def _run_git_apply(root: Path, patch_path: Path, *, check: bool) -> None:
     command = [
         "git",

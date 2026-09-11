@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from agno.agent import Agent
 from agno.os import AgentOS
 from agno.os.config import MCPServerConfig
 from agno.workflow import Workflow
@@ -21,6 +22,7 @@ from .settings import AgentSettings
 class ApplicationContext:
     settings: AgentSettings
     workspace_service: WorkspaceService
+    report_agent: Agent
     report_workflow: Workflow
     database: AgentDatabase | None = None
     quality_warning_service: QualityWarningService | None = None
@@ -53,7 +55,7 @@ def create_agentos_app(
     agent_os = AgentOS(
         name="开发智能体服务",
         # Coding 暂不通过综合服务对外提供。
-        agents=[],
+        agents=[context.report_agent],
         teams=[],
         workflows=[context.report_workflow],
         interfaces=[],

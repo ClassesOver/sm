@@ -27,6 +27,7 @@ ThinkingOperation = Literal[
     "analysis_script",
     "visualization_plan",
     "visualization_script",
+    "section_planning",
     "section_generation",
 ]
 ThinkingFailureKind = Literal[
@@ -56,6 +57,7 @@ _INITIAL_THINKING_BUDGETS: dict[ThinkingOperation, int | dict[TaskComplexity, in
     "analysis_script": 0,
     "visualization_plan": _COMPLEXITY_BUDGETS,
     "visualization_script": 0,
+    "section_planning": 2048,
     "section_generation": 0,
 }
 _RECOVERY_THINKING_BUDGETS: dict[
@@ -91,6 +93,7 @@ _RECOVERY_THINKING_BUDGETS: dict[
         "python_execution_failure": (2048, "high"),
         "visual_review_failure": (4096, "high"),
     },
+    "section_planning": {"schema_failure": (2048, "high")},
     "section_generation": {"schema_failure": (2048, "high")},
 }
 

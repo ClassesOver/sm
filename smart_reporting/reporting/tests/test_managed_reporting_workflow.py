@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.run import RunStatus
 from agno.run.workflow import WorkflowCancelledEvent, WorkflowCompletedEvent
-from agno.workflow import Step
+from agno.workflow import Step, Workflow
 from agno.workflow.types import HumanReview, OnError, StepInput, StepOutput
 
 from smart_reporting.reporting.models import ReportingError
@@ -138,6 +139,27 @@ async def test_managed_workflow_maps_ordinary_exception_to_failed() -> None:
         )
 
     assert lifecycle.events[-1] == ("settle", ("run-a", "failed"))
+
+
+@pytest.mark.anyio
+async def test_managed_workflow_settles_continuation_exception_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle = Lifecycle()
+    workflow = ManagedReportingWorkflow(id="reporting", steps=[], lifecycle=lifecycle)
+    monkeypatch.setattr(
+        Workflow,
+        "acontinue_run",
+        AsyncMock(side_effect=RuntimeError("continue broken")),
+    )
+
+    with pytest.raises(RuntimeError, match="continue broken"):
+        await workflow.acontinue_run(run_id="run-a", stream=False)
+
+    assert lifecycle.events == [
+        ("resume", "run-a"),
+        ("settle", ("run-a", "failed")),
+    ]
 
 
 @pytest.mark.anyio
