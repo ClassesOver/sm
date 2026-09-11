@@ -82,6 +82,10 @@ _REPORTING_RUN_CONTEXT: ContextVar[RunContext | None] = ContextVar(
 )
 
 
+def _nonnegative_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
 @contextmanager
 def bind_reporting_run_context(run_context: RunContext) -> Iterator[None]:
     """让模型投影与工具执行读取同一个 Agno RunContext，不复制业务状态。"""
@@ -319,12 +323,10 @@ def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> boo
 
 def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple[int, int]:
     contract = _visualization_phase_contract(value)
-
-    def count(key: str) -> int:
-        raw = contract.get(key, 0) if contract else 0
-        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
-
-    return count("visualizationToolCalls"), count("visualizationScriptFailures")
+    return (
+        _nonnegative_int(contract.get("visualizationToolCalls", 0) if contract else 0),
+        _nonnegative_int(contract.get("visualizationScriptFailures", 0) if contract else 0),
+    )
 
 
 def reporting_visualization_budget_contract_from_acceptance_contract(value: Any) -> dict[str, int]:
@@ -444,13 +446,10 @@ def reporting_analysis_fact_usage_from_run_context(run_context: RunContext | Non
     stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
     stored = stored if isinstance(stored, Mapping) else {}
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
     return (
-        count(binding.get(REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY))
-        + count(stored.get("queriesUsed"))
-        + count(stored.get("inFlightQueries"))
+        _nonnegative_int(binding.get(REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY))
+        + _nonnegative_int(stored.get("queriesUsed"))
+        + _nonnegative_int(stored.get("inFlightQueries"))
     )
 
 
@@ -581,13 +580,10 @@ def reporting_visualization_exploration_count(
         )
     )
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
     return (
-        count(binding.get(base_key))
-        + count(stored.get(stored_key) if isinstance(stored, Mapping) else 0)
-        + count(stored.get(in_flight_key) if isinstance(stored, Mapping) else 0)
+        _nonnegative_int(binding.get(base_key))
+        + _nonnegative_int(stored.get(stored_key) if isinstance(stored, Mapping) else 0)
+        + _nonnegative_int(stored.get(in_flight_key) if isinstance(stored, Mapping) else 0)
     )
 
 
@@ -636,22 +632,19 @@ def reporting_visualization_budget_from_run_context(
     stored_value = budgets.get(identity) if isinstance(budgets, Mapping) else None
     stored: Mapping[str, Any] = stored_value if isinstance(stored_value, Mapping) else {}
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
     return (
-        count(
+        _nonnegative_int(
             stored.get("baseTotal", binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY))
         )
-        + count(stored.get("attemptedCount"))
-        + count(stored.get("inFlightCount")),
-        count(
+        + _nonnegative_int(stored.get("attemptedCount"))
+        + _nonnegative_int(stored.get("inFlightCount")),
+        _nonnegative_int(
             stored.get(
                 "baseScriptFailures",
                 binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY),
             )
         )
-        + count(stored.get("scriptFailureCount")),
+        + _nonnegative_int(stored.get("scriptFailureCount")),
     )
 
 
@@ -676,24 +669,23 @@ def reporting_visualization_usage_from_run_context(
     stored_value = budgets.get(identity) if isinstance(budgets, Mapping) else None
     stored: Mapping[str, Any] = stored_value if isinstance(stored_value, Mapping) else {}
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-    attempts = count(stored.get("attemptedCount")) + count(stored.get("inFlightCount"))
-    successes = count(stored.get("successfulCount"))
+    attempts = _nonnegative_int(stored.get("attemptedCount")) + _nonnegative_int(
+        stored.get("inFlightCount")
+    )
+    successes = _nonnegative_int(stored.get("successfulCount"))
     return {
-        "visualizationReadUnitsUsed": count(
+        "visualizationReadUnitsUsed": _nonnegative_int(
             stored.get(
                 "baseReadUnits", binding.get(REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY)
             )
         )
-        + count(stored.get("readUnitsUsed")),
-        "visualizationFactQueriesUsed": count(
+        + _nonnegative_int(stored.get("readUnitsUsed")),
+        "visualizationFactQueriesUsed": _nonnegative_int(
             stored.get(
                 "baseFactQueries", binding.get(REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY)
             )
         )
-        + count(stored.get("factQueriesUsed")),
+        + _nonnegative_int(stored.get("factQueriesUsed")),
         "visualizationToolCalls": total,
         "visualizationScriptFailures": failures,
         "visualizationAttemptSuccessfulToolCalls": successes,

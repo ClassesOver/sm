@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -47,6 +50,12 @@ class WorkspaceBinding(_Contract):
     thread_id: str = Field(min_length=1, max_length=256)
     idempotency_key: str = Field(min_length=16, max_length=256)
     profile: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+def binding_digest(binding: WorkspaceBinding, secret: bytes) -> str:
+    payload = binding.model_dump(mode="json", exclude={"idempotency_key"})
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hmac.new(secret, encoded, hashlib.sha256).hexdigest()
 
 
 class SandboxRef(_Contract):

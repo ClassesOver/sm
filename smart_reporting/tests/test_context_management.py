@@ -197,6 +197,18 @@ def test_reporting_context_controller按模型窗口保留最大输出预算():
     assert controller.input_token_budget == 655_360
 
 
+@pytest.mark.anyio
+async def test_context_budget_controller_inherited_async_compression_dispatch() -> None:
+    controller = ContextBudgetController(model=CountingModel(), context_token_budget=32_769)
+
+    should_compress = await controller.ashould_compress(
+        [Message(role="user", content="over budget")]
+    )
+
+    assert should_compress is True
+    assert "ashould_compress" not in ContextBudgetController.__dict__
+
+
 def test_context_budget_check_does_not_emit_routine_debug_logs():
     controller = ContextBudgetController(
         model=CountingModel(),

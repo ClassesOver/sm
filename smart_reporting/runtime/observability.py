@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from time import perf_counter
 
 from agno.db.base import AsyncBaseDb, BaseDb
 
@@ -10,6 +11,10 @@ class TracingConfigurationError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 @contextmanager

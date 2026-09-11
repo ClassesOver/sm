@@ -21,6 +21,7 @@ from ...model_policy import (
 )
 from ...phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
+    _nonnegative_int,
     reporting_model_route_from_run_context,
 )
 from ...structured_output import ReportingStructuredOutputExecutor
@@ -3160,13 +3161,10 @@ def _analysis_fact_retry_usage(last_error: Exception | None) -> int:
     source: Any = getattr(last_error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, None)
     details = last_error.details if isinstance(last_error, ReportingError) else None
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
     if isinstance(source, Mapping):
-        return count(source.get("queryCount"))
+        return _nonnegative_int(source.get("queryCount"))
     if isinstance(details, Mapping):
-        return count(details.get("queryCount"))
+        return _nonnegative_int(details.get("queryCount"))
     return 0
 
 
@@ -3174,17 +3172,18 @@ def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
     source: Any = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
     details = last_error.details if isinstance(last_error, ReportingError) else None
 
-    def count(raw: Any) -> int:
-        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
-
     if isinstance(source, Mapping):
         usage = {
-            "visualizationReadUnitsUsed": count(source.get("visualizationReadUnitsUsed")),
-            "visualizationFactQueriesUsed": count(source.get("visualizationFactQueriesUsed")),
-            "visualizationToolCalls": count(
+            "visualizationReadUnitsUsed": _nonnegative_int(
+                source.get("visualizationReadUnitsUsed")
+            ),
+            "visualizationFactQueriesUsed": _nonnegative_int(
+                source.get("visualizationFactQueriesUsed")
+            ),
+            "visualizationToolCalls": _nonnegative_int(
                 source.get("visualizationToolCalls", source.get("totalToolCalls"))
             ),
-            "visualizationScriptFailures": count(
+            "visualizationScriptFailures": _nonnegative_int(
                 source.get("visualizationScriptFailures", source.get("scriptFailureCount"))
             ),
         }
@@ -3192,23 +3191,25 @@ def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
         # read/fact 则只能来自执行器退出时附加的完整累计快照，两者必须合并。
         if isinstance(details, Mapping):
             if "totalToolCalls" in details:
-                usage["visualizationToolCalls"] = count(details.get("totalToolCalls"))
+                usage["visualizationToolCalls"] = _nonnegative_int(details.get("totalToolCalls"))
             if "scriptFailureCount" in details:
-                usage["visualizationScriptFailures"] = count(details.get("scriptFailureCount"))
+                usage["visualizationScriptFailures"] = _nonnegative_int(
+                    details.get("scriptFailureCount")
+                )
         return usage
     if isinstance(source, Sequence) and not isinstance(source, (str, bytes)) and len(source) == 2:
         return {
             "visualizationReadUnitsUsed": 0,
             "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": count(source[0]),
-            "visualizationScriptFailures": count(source[1]),
+            "visualizationToolCalls": _nonnegative_int(source[0]),
+            "visualizationScriptFailures": _nonnegative_int(source[1]),
         }
     if isinstance(details, Mapping):
         return {
             "visualizationReadUnitsUsed": 0,
             "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": count(details.get("totalToolCalls")),
-            "visualizationScriptFailures": count(details.get("scriptFailureCount")),
+            "visualizationToolCalls": _nonnegative_int(details.get("totalToolCalls")),
+            "visualizationScriptFailures": _nonnegative_int(details.get("scriptFailureCount")),
         }
     return {
         "visualizationReadUnitsUsed": 0,

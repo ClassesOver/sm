@@ -14,6 +14,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlglot import exp, parse
 
+from ..runtime.observability import duration_ms
 from .contract import (
     MetadataAgentResponse,
     MetadataModelResponse,
@@ -32,10 +33,6 @@ MAX_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_METADATA_ATTEMPTS = 3
 METADATA_RETRY_STATUS_CODES = frozenset({502, 503, 504})
 METADATA_RETRY_DELAYS = (0.2, 0.5)
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 class ReportingMetadataClient:
@@ -100,7 +97,7 @@ class ReportingMetadataClient:
             logger.warning(
                 "report_metadata_adaptation_failed agent_id={} duration_ms={} error_code={}",
                 agent_id,
-                _duration_ms(started_at),
+                duration_ms(started_at),
                 error.code,
             )
             raise
@@ -109,7 +106,7 @@ class ReportingMetadataClient:
                 "report_metadata_adaptation_failed agent_id={} duration_ms={} error_code={} "
                 "error_type={}",
                 agent_id,
-                _duration_ms(started_at),
+                duration_ms(started_at),
                 "report_metadata_model_invalid",
                 type(error).__name__,
             )
@@ -119,7 +116,7 @@ class ReportingMetadataClient:
         logger.debug(
             "report_metadata_adaptation_completed agent_id={} duration_ms={} table_count={}",
             agent_id,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             len(adapted.tables),
         )
         return adapted
@@ -160,7 +157,7 @@ class ReportingMetadataClient:
                         self.log_target,
                         path,
                         attempt,
-                        _duration_ms(started_at),
+                        duration_ms(started_at),
                         type(error).__name__,
                         str(attempt < MAX_METADATA_ATTEMPTS).lower(),
                     )
@@ -177,7 +174,7 @@ class ReportingMetadataClient:
                         self.log_target,
                         path,
                         attempt,
-                        _duration_ms(started_at),
+                        duration_ms(started_at),
                         type(error).__name__,
                         str(attempt < MAX_METADATA_ATTEMPTS).lower(),
                     )
@@ -194,7 +191,7 @@ class ReportingMetadataClient:
                         self.log_target,
                         path,
                         attempt,
-                        _duration_ms(started_at),
+                        duration_ms(started_at),
                         type(error).__name__,
                     )
                     raise ReportingError(
@@ -207,7 +204,7 @@ class ReportingMetadataClient:
                     self.log_target,
                     path,
                     attempt,
-                    _duration_ms(started_at),
+                    duration_ms(started_at),
                     response.status_code,
                     len(response_bytes),
                 )
@@ -336,7 +333,7 @@ def _bind_ddl_source(
             "report_metadata_ddl_parse_failed model_id={} duration_ms={} ddl_bytes={} "
             "error_type={}",
             model_id,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             len(ddl.encode()),
             type(error).__name__,
         )
@@ -362,7 +359,7 @@ def _bind_ddl_source(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
             "statement_count={} statement_types={}",
             model_id,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             len(ddl.encode()),
             len(statements),
             statement_types,
@@ -376,7 +373,7 @@ def _bind_ddl_source(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
             "statement_count={} statement_types={} reason=missing_schema",
             model_id,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             len(ddl.encode()),
             len(statements),
             statement_types,
@@ -388,7 +385,7 @@ def _bind_ddl_source(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
             "statement_count={} statement_types={} reason=catalog_qualified",
             model_id,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             len(ddl.encode()),
             len(statements),
             statement_types,
@@ -405,7 +402,7 @@ def _bind_ddl_source(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
             "statement_count={} statement_types={} reason=source_binding match_count={}",
             model_id,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             len(ddl.encode()),
             len(statements),
             statement_types,
@@ -416,7 +413,7 @@ def _bind_ddl_source(
         "report_metadata_ddl_parse_completed model_id={} duration_ms={} ddl_bytes={} "
         "statement_count={} statement_types={}",
         model_id,
-        _duration_ms(started_at),
+        duration_ms(started_at),
         len(ddl.encode()),
         len(statements),
         statement_types,

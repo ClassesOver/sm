@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import inspect
-import json
 import math
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
 from contextlib import aclosing
@@ -41,6 +40,7 @@ from .contracts import (
     SessionRef,
     SessionSummary,
     WorkspaceBinding,
+    binding_digest,
 )
 from .errors import (
     SandboxCapabilityUnsupported,
@@ -95,12 +95,6 @@ async def _daytona_list[T](
         action=action,
         missing_message=missing_message,
     )
-
-
-def _binding_digest(binding: WorkspaceBinding, secret: bytes) -> str:
-    payload = binding.model_dump(mode="json", exclude={"idempotency_key"})
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hmac.new(secret, encoded, hashlib.sha256).hexdigest()
 
 
 def _state(value: Any) -> SandboxState:
@@ -432,7 +426,7 @@ class DaytonaProvider:
             raise SandboxPolicyDenied(
                 "sandbox binding secret 未安全配置。", reason="invalid_binding_secret"
             )
-        return _binding_digest(binding, self._binding_secret)
+        return binding_digest(binding, self._binding_secret)
 
     def _ref(self, sandbox: Any, binding: WorkspaceBinding) -> SandboxRef:
         return SandboxRef(

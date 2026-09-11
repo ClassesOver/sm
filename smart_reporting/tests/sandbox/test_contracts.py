@@ -10,6 +10,7 @@ from smart_reporting.sandbox.contracts import (
     RunPythonScriptRequest,
     SandboxRef,
     WorkspaceBinding,
+    binding_digest,
 )
 from smart_reporting.sandbox.errors import (
     SandboxCapabilityUnsupported,
@@ -28,6 +29,16 @@ def _binding(**updates: object) -> WorkspaceBinding:
     }
     values.update(updates)
     return WorkspaceBinding.model_validate(values)
+
+
+def test_binding_digest_is_stable_and_excludes_idempotency_key() -> None:
+    secret = b"s" * 32
+
+    first = binding_digest(_binding(idempotency_key="request-00000001"), secret)
+    second = binding_digest(_binding(idempotency_key="request-00000002"), secret)
+
+    assert first == "e629f06140f6653988c65f32520add923f07ba6bd8107e9b66c4d42ffb662f68"
+    assert second == first
 
 
 @pytest.mark.parametrize("field", ["tenant_id", "user_id", "company_id", "thread_id"])
