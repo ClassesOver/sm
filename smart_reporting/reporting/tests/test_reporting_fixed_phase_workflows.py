@@ -717,6 +717,39 @@ async def test_visualization_workflow_retries_initial_generation_with_frozen_pla
 
 
 @pytest.mark.anyio
+async def test_visualization_workflow_preserves_unsigned_paths_for_fresh_retry() -> None:
+    plan = _visualization_plan()
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    generate_script = AsyncMock(
+        side_effect=[
+            ReportingError(
+                "report_python_source_path_invalid",
+                "路径无效",
+                details={
+                    "path": "charts/charts.py",
+                    "unsignedPaths": ["../datasets/input.csv", "/tmp/output.png"],
+                },
+            ),
+            CodeGenerationResult(script_file),
+        ]
+    )
+
+    await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=generate_script,
+        repair_script=AsyncMock(),
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=None,
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert generate_script.await_args_list[1].kwargs["diagnostic"]["details"] == {
+        "path": "charts/charts.py",
+        "unsignedPaths": ["../datasets/input.csv", "/tmp/output.png"],
+    }
+
+
+@pytest.mark.anyio
 async def test_visualization_workflow_hydrates_committed_script_without_regeneration() -> None:
     plan = _visualization_plan()
     script_file = FileIdentity(path="charts/charts.py", size=20, sha256="a" * 64)

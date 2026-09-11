@@ -248,6 +248,12 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "message": "m" * 800,
         "details": {
             "path": "analysis/script.py",
+            "unsignedPaths": [
+                None,
+                "",
+                "x" * 1025,
+                *[f"datasets/input-{index}.csv" for index in range(25)],
+            ],
             "line": 284,
             "offset": 62,
             "size": 131073,
@@ -269,6 +275,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "message": "m" * 512,
         "details": {
             "path": "analysis/script.py",
+            "unsignedPaths": [f"datasets/input-{index}.csv" for index in range(20)],
             "line": 284,
             "offset": 62,
             "size": 131073,

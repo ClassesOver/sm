@@ -30,6 +30,7 @@ MAX_CODE_READ_BYTES = 128 * 1024
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
 MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
 MAX_DIAGNOSTIC_PATH_LENGTH = 1024
+MAX_DIAGNOSTIC_UNSIGNED_PATHS = 20
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
 MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_TASK_MISSING_FACTS = 20
@@ -91,6 +92,16 @@ _PATH_ARGUMENT_METHODS = frozenset(
 _PATH_ARGUMENT_KEYWORDS = frozenset(
     {"file", "filename", "filepath_or_buffer", "fname", "path", "path_or_buf"}
 )
+
+
+def _bounded_unsigned_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        path
+        for path in value
+        if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH
+    ][:MAX_DIAGNOSTIC_UNSIGNED_PATHS]
 
 
 def _code_failure_kind(
@@ -563,6 +574,9 @@ class ReportingCodeGenerationRunner:
             path = details.get("path")
             if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH:
                 safe_details["path"] = path
+            unsigned_paths = _bounded_unsigned_paths(details.get("unsignedPaths"))
+            if unsigned_paths:
+                safe_details["unsignedPaths"] = unsigned_paths
             for field in ("line", "offset", "size", "lineCount", "maxLineLength"):
                 value = details.get(field)
                 if (

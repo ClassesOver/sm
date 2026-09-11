@@ -3396,6 +3396,8 @@ def create_reporting_code_agent(
         "并在 json.dump 前核对最终对象的根键。",
         "datasets 中的 format、hasHeader、columns、columnTypes 和 jsonShape 是权威输入契约；"
         "必须按每个 path 自身声明解析，不得用其他 Dataset 的结构或自行猜测替换。",
+        "凡需读写工作区文件，必须从 sourceProtocol.authorizedPaths 逐字复制完整路径并直接赋值为字符串常量；"
+        "禁止使用 __file__、os.path、pathlib、cwd、chdir、路径拼接或 .. 构造或推导工作区路径。",
     ]
     if instructions:
         if isinstance(instructions, str):

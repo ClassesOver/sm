@@ -131,6 +131,11 @@ def test_reporting_code_agent_is_unstructured_and_has_no_history_or_tools() -> N
     assert "additionalRootKeys=false" in prompt
     assert "columnTypes" in prompt
     assert "jsonShape" in prompt
+    assert "sourceProtocol.authorizedPaths" in prompt
+    assert "字符串常量" in prompt
+    assert "__file__" in prompt
+    assert "os.path" in prompt
+    assert "pathlib" in prompt
 
 
 def test_reporting_code_agent_uses_chat_reasoning_and_non_thinking_responses() -> None:

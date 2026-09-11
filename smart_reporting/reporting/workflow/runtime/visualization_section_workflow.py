@@ -14,7 +14,7 @@ from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_rep
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic, reporting_python_script_failed
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
-from .code_generation import CodeGenerationResult, _code_failure_kind
+from .code_generation import CodeGenerationResult, _bounded_unsigned_paths, _code_failure_kind
 from .phase_models import ChartDraft, VisualizationPlanDraft
 
 GenerateVisualizationPlan = Callable[
@@ -108,6 +108,9 @@ def _repair_diagnostic(
         error.message if isinstance(error, ReportingError) else "可视化固定 Workflow 执行失败。"
     )
     details: dict[str, Any] = {"path": path}
+    unsigned_paths = _bounded_unsigned_paths(raw_details.get("unsignedPaths"))
+    if unsigned_paths:
+        details["unsignedPaths"] = unsigned_paths
     for field in ("size", "lineCount", "maxLineLength", "exitCode"):
         value = raw_details.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
