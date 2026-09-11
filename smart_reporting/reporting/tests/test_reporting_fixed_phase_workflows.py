@@ -412,9 +412,7 @@ async def test_visualization_script_execution_repair_uses_off_then_2k() -> None:
         generate_plan=AsyncMock(return_value=_visualization_plan()),
         generate_script=generate_script,
         repair_script=repair_script,
-        execute_script=AsyncMock(
-            side_effect=[{"exitCode": 1}, {"exitCode": 0}]
-        ),
+        execute_script=AsyncMock(side_effect=[{"exitCode": 1}, {"exitCode": 0}]),
         inspect_chart=None,
         submit=AsyncMock(return_value={"status": "accepted"}),
     ).run(_visualization_payload(), _context())
@@ -578,6 +576,58 @@ async def test_visualization_workflow_repairs_script_failure_once_with_frozen_pl
     }
     assert task_facts == {}
     assert execute.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_degrades_after_repaired_script_still_fails() -> None:
+    plan = _visualization_plan()
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    degrade = AsyncMock(return_value={"status": "committed"})
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+        repair_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+        execute_script=AsyncMock(
+            side_effect=[
+                {"exitCode": 1, "execution_id": "execution-1"},
+                {"exitCode": 1, "execution_id": "execution-2"},
+            ]
+        ),
+        inspect_chart=None,
+        submit=AsyncMock(),
+        degrade=degrade,
+    ).run(_visualization_payload(), _context())
+
+    assert result.status == "degraded"
+    assert result.recovery_used is True
+    assert result.inspections == ()
+    error, _ = degrade.await_args.args
+    assert isinstance(error, ReportingError)
+    assert error.code == "report_visualization_script_failed"
+    assert error.details["execution_id"] == "execution-2"
+
+
+@pytest.mark.anyio
+async def test_visualization_workflow_does_not_degrade_nonrecoverable_failure() -> None:
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    degrade = AsyncMock()
+
+    with pytest.raises(ReportingError) as caught:
+        await VisualizationSectionWorkflow(
+            generate_plan=AsyncMock(return_value=_visualization_plan()),
+            generate_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+            repair_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+            execute_script=AsyncMock(
+                side_effect=ReportingError("report_workspace_unavailable", "workspace down")
+            ),
+            inspect_chart=None,
+            submit=AsyncMock(),
+            degrade=degrade,
+        ).run(_visualization_payload(), _context())
+
+    assert caught.value.code == "report_workspace_unavailable"
+    degrade.assert_not_awaited()
 
 
 @pytest.mark.anyio

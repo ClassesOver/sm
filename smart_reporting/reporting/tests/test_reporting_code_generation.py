@@ -392,7 +392,17 @@ async def test_repair_logs_script_base_info_at_info_level():
     try:
         await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
             script,
-            {"code": "report_analysis_script_failed"},
+            {
+                "code": "report_visualization_script_failed",
+                "message": "章节图表脚本执行未被接受。",
+                "details": {
+                    "path": "analysis/script.py",
+                    "exitCode": 1,
+                    "output": "Traceback: chart rendering failed",
+                    "toolCode": "execution_output_error",
+                    "toolMessage": "Python 脚本执行失败。",
+                },
+            },
             lambda **_kwargs: read_receipt(script),
             patch,
         )
@@ -406,7 +416,11 @@ async def test_repair_logs_script_base_info_at_info_level():
         "INFO:report_code_repair_base_info "
         'script={"operation":"repair","path":"analysis/script.py","size":9,'
         '"sha256":"0111afd387e1ad576083c5039aa542faa2ed4a53d3e128bd03de990f9ea4255f",'
-        '"diagnosticCode":"report_analysis_script_failed"}'
+        '"diagnosticCode":"report_visualization_script_failed",'
+        '"diagnostic":{"code":"report_visualization_script_failed",'
+        '"message":"章节图表脚本执行未被接受。","details":{"path":"analysis/script.py",'
+        '"exitCode":1,"output":"Traceback: chart rendering failed",'
+        '"toolCode":"execution_output_error","toolMessage":"Python 脚本执行失败。"}}}'
     ]
 
 

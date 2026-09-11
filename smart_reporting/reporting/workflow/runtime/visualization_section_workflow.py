@@ -48,6 +48,7 @@ SubmitVisualization = Callable[
     [VisualizationPlanDraft, tuple[ChartVisualInspectionReceipt, ...], RunContext],
     Awaitable[Mapping[str, Any]],
 ]
+DegradeVisualization = Callable[[Exception, RunContext], Awaitable[Mapping[str, Any]]]
 LoadScript = Callable[[str, RunContext], Awaitable[FileIdentity | None]]
 
 _NON_RECOVERABLE_CODES = frozenset(
@@ -61,6 +62,13 @@ _NON_RECOVERABLE_CODES = frozenset(
     }
 )
 _MAX_GENERATE_ATTEMPTS = 3
+_DEGRADABLE_CODES = frozenset(
+    {
+        "report_visualization_script_failed",
+        "report_visualization_review_failed",
+        "report_chart_file_missing",
+    }
+)
 
 
 def _visualization_thinking_complexity(payload: Mapping[str, Any]) -> TaskComplexity:
@@ -174,6 +182,10 @@ def _is_nonrecoverable(error: Exception) -> bool:
     )
 
 
+def _is_degradable(error: Exception) -> bool:
+    return isinstance(error, ReportingError) and error.code in _DEGRADABLE_CODES
+
+
 def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> FileIdentity:
     script_file = result.script_file
     if script_file.path != script_path:
@@ -222,6 +234,7 @@ class VisualizationSectionWorkflow:
         execute_script: ExecuteScript,
         inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
+        degrade: DegradeVisualization | None = None,
         load_script: LoadScript | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
@@ -232,6 +245,7 @@ class VisualizationSectionWorkflow:
         self.execute_script = execute_script
         self.inspect_chart = inspect_chart
         self.submit = submit
+        self.degrade = degrade
         self.load_script = load_script
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
@@ -336,7 +350,15 @@ class VisualizationSectionWorkflow:
             except Exception as error:
                 if _is_nonrecoverable(error):
                     raise
-                if attempt == 1 or self.repair_script is None:
+                if attempt == 1:
+                    if self.degrade is not None and _is_degradable(error):
+                        receipt = await self.degrade(error, run_context)
+                        _raise_rejected_submission(receipt)
+                        return VisualizationWorkflowResult(
+                            "degraded", plan, script_file, (), recovery_used
+                        )
+                    raise
+                if self.repair_script is None:
                     raise
                 recovery_used = True
                 diagnostic = _repair_diagnostic(plan, error, script_path)

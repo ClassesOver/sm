@@ -85,20 +85,44 @@ def _provider_kernel():
 
 
 @pytest.mark.anyio
-async def test_python_runner_preserves_deterministic_error_over_provider_success():
-    output = (
-        "Traceback (most recent call last):\n"
-        '  File "analysis.py", line 1, in <module>\n'
-        "NameError: name 'pd' is not defined\n"
-    )
+@pytest.mark.parametrize(
+    ("exit_code", "output", "failure_code", "summary"),
+    [
+        (
+            0,
+            "Traceback (most recent call last):\n"
+            '  File "analysis.py", line 1, in <module>\n'
+            "NameError: name 'pd' is not defined\n",
+            "python_traceback",
+            "NameError: name 'pd' is not defined",
+        ),
+        (
+            0,
+            "[FAIL] chart.png: image is blank",
+            "deterministic_failure",
+            "[FAIL] chart.png: image is blank",
+        ),
+        (2, "render command failed", "nonzero_exit", "render command failed"),
+        (
+            None,
+            "runner stopped",
+            "runner_exception",
+            "Python runner did not return a valid exit code",
+        ),
+    ],
+)
+async def test_python_runner_archives_failures_in_execution_receipt(
+    exit_code: int | None, output: str, failure_code: str, summary: str
+):
     service = SimpleNamespace(
         arun_python_script=AsyncMock(
             return_value={
                 "ok": True,
                 "status": "completed",
-                "exitCode": 0,
+                "exitCode": exit_code,
                 "output": output,
                 "scriptPath": "analysis.py",
+                "scriptSize": 128,
                 "scriptSha256": "a" * 64,
                 "dependencyBundleDigest": "sha256:" + "b" * 64,
             }
@@ -133,6 +157,7 @@ async def test_python_runner_preserves_deterministic_error_over_provider_success
                 terminal_output=values["output"],
                 output_cursor=len(values["output"]),
                 exit_code=values["exit_code"],
+                operation_receipt=values["operation_receipt"],
             )
         ),
         record_execution_mutation=AsyncMock(),
@@ -154,7 +179,88 @@ async def test_python_runner_preserves_deterministic_error_over_provider_success
 
     assert result["ok"] is False
     assert result["code"] == "execution_output_error"
-    assert result["details"]["failureCode"] == "python_traceback"
+    assert result["details"]["failureCode"] == failure_code
+    assert result["status"] == "failed"
+    receipt = repository.update_execution.await_args.kwargs["operation_receipt"]
+    assert receipt == {
+        "version": "1",
+        "runner": "python",
+        "scriptPath": "analysis.py",
+        "script": {"size": 128, "sha256": "a" * 64},
+        "failure": {
+            "code": failure_code,
+            "summary": summary,
+            "outputTruncated": False,
+        },
+    }
+    assert "output" not in receipt
+    assert "exitCode" not in receipt
+
+
+@pytest.mark.anyio
+async def test_python_runner_archives_runner_exception() -> None:
+    service = SimpleNamespace(
+        arun_python_script=AsyncMock(side_effect=RuntimeError("sandbox transport failed"))
+    )
+    execution = TaskExecution(
+        execution_id="execution-1",
+        external_run_id="external-1",
+        internal_run_id="internal-1",
+        owner_user_id="user-1",
+        thread_id="thread-1",
+        sandbox_id="sandbox-1",
+        daytona_session_id="python-execution-1",
+        command_id=None,
+        status="running",
+        output_cursor=0,
+        terminal_output="",
+        exit_code=None,
+        mutation_sequence=1,
+        is_verification=False,
+        retained_service=False,
+        operation_receipt={"runner": "python", "scriptPath": "analysis.py"},
+    )
+    repository = SimpleNamespace(
+        increment_mutation=AsyncMock(return_value=1),
+        reserve_execution=AsyncMock(return_value=execution),
+        update_execution=AsyncMock(
+            side_effect=lambda execution_id, **values: replace(
+                execution,
+                execution_id=execution_id,
+                status=values["status"],
+                terminal_output=values["output"],
+                exit_code=values["exit_code"],
+                operation_receipt=values["operation_receipt"],
+            )
+        ),
+    )
+    kernel = TaskExecutionKernel(service, repository)
+    scope = TaskExecutionRuntime(
+        task=SimpleNamespace(mutation_sequence=0),
+        external_run_id="external-1",
+        internal_run_id="internal-1",
+        owner_user_id="user-1",
+        thread_id="thread-1",
+        sandbox_id="sandbox-1",
+        lease_owner="lease-1",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    result = await kernel.run_python_script("analysis.py", _scope=scope)
+
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert repository.update_execution.await_args.kwargs["operation_receipt"] == {
+        "version": "1",
+        "runner": "python",
+        "scriptPath": "analysis.py",
+        "failure": {
+            "code": "runner_exception",
+            "summary": "sandbox transport failed",
+            "outputTruncated": False,
+        },
+    }
 
 
 @pytest.mark.anyio

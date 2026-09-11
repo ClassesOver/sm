@@ -770,6 +770,47 @@ class RuntimeAnalysisMixin:
                             run_context=task_context,
                         )
 
+                    async def degrade(
+                        error: Exception, task_context: RunContext
+                    ) -> Mapping[str, Any]:
+                        error_code = str(
+                            getattr(error, "code", "report_visualization_section_failed")
+                        )
+                        error_details = getattr(error, "details", None)
+                        details = error_details if isinstance(error_details, Mapping) else {}
+                        nested_details = details.get("details")
+                        if isinstance(nested_details, Mapping):
+                            details = {**details, **nested_details}
+                        execution_id = details.get("execution_id", details.get("executionId"))
+                        warning_details = {"failureCode": error_code}
+                        if isinstance(execution_id, str) and execution_id:
+                            warning_details["executionId"] = execution_id
+                        warning = {
+                            "code": "report_visualization_degraded",
+                            "message": "章节图表修复后仍失败，已按零图继续成稿。",
+                            "sectionCode": section_code,
+                            "details": warning_details,
+                        }
+                        loguru_logger.bind(
+                            section_code=section_code,
+                            failure_code=error_code,
+                            execution_id=execution_id,
+                        ).warning("report_visualization_section_degraded")
+                        await self._apply_durable_command(
+                            run_context,
+                            ReportingCommand(
+                                name="record_warnings",
+                                commandId=(
+                                    f"visualization-degraded:{context['revision']}:"
+                                    f"{section_code}:{payload_sha256(warning)}"
+                                ),
+                                payload={"warnings": [warning]},
+                            ),
+                        )
+                        return await toolkit.submit_visualization_charts(
+                            section_code, [], run_context=task_context
+                        )
+
                     return (
                         await VisualizationSectionWorkflow(
                             generate_plan=generate_plan,
@@ -782,6 +823,7 @@ class RuntimeAnalysisMixin:
                                 inspect_chart if self.vision_reviewer is not None else None
                             ),
                             submit=submit,
+                            degrade=degrade,
                             load_script=load_script,
                             thinking_enabled=self._analysis_thinking_enabled,
                             thinking_budget_cap=self._analysis_thinking_budget_cap,

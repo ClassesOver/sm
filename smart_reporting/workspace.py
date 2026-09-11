@@ -2236,6 +2236,7 @@ class WorkspaceService:
             "exitCode": result.exit_code,
             "output": output,
             "scriptPath": relative,
+            "scriptSize": len(content),
             "scriptSha256": result.script_hash,
             "dependencyBundleDigest": result.dependency_bundle_digest,
         }

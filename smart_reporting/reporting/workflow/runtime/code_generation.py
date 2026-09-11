@@ -790,6 +790,7 @@ class ReportingCodeGenerationRunner:
         """直接读取一次受信脚本回执，再用 fresh Agent 提交完整修复源码。"""
         self._validate_script_path(script_file.path)
         bounded_task_facts = self._repair_task_facts(task_facts, script_file.path)
+        short_diagnostic = self._short_diagnostic(diagnostic)
         try:
             receipt = await _invoke(
                 read_file,
@@ -811,7 +812,7 @@ class ReportingCodeGenerationRunner:
             script_file.path,
             {
                 "readReceipt": read_receipt,
-                "diagnostic": self._short_diagnostic(diagnostic),
+                "diagnostic": short_diagnostic,
                 "taskFacts": bounded_task_facts,
             },
             apply_analysis_patch,
@@ -831,6 +832,7 @@ class ReportingCodeGenerationRunner:
                     "size": result.script_file.size,
                     "sha256": result.script_file.sha256,
                     "diagnosticCode": self._stable_code(diagnostic.get("code"), "unknown"),
+                    "diagnostic": short_diagnostic,
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
