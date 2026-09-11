@@ -593,10 +593,13 @@ async def test_reclaim_inactive_owner_keeps_owner_when_cleanup_is_deferred() -> 
 
 @pytest.mark.anyio
 async def test_mcp_preclaim_attaches_request_and_owner_to_reporting_run() -> None:
+    captured_dependencies: dict[str, object] = {}
+
     class Workflow:
         id = "enterprise-reporting-workflow-v1"
 
-        async def arun(self, *_args, **_kwargs):
+        async def arun(self, *_args, **kwargs):
+            captured_dependencies.update(kwargs["dependencies"])
             return SimpleNamespace(status=RunStatus.completed)
 
         async def aget_run(self, *_args, **_kwargs):
@@ -629,6 +632,14 @@ async def test_mcp_preclaim_attaches_request_and_owner_to_reporting_run() -> Non
     assert registration["entrypoint"] == "mcp"
     assert registration["caller_session_id"] == "thread"
     assert registration["caller_run_id"] == "external-run"
+    assert captured_dependencies["Reporting Workflow 入口"] == "mcp"
+    assert captured_dependencies["AgentOS 报表工作流"] == {
+        "externalRunId": "external-run",
+        "threadId": "thread",
+        "userId": "user",
+        "database": "odoo",
+        "companyId": "11",
+    }
     assert ownership.request_attachments == [("external-run", report_run_id)]
     assert ownership.owner_attachments == [
         {

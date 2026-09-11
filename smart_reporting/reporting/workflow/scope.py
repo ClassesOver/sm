@@ -25,7 +25,9 @@ class ReportingScopeKeys:
 @dataclass(frozen=True)
 class ReportingWorkflowScope:
     run_id: str
+    external_run_id: str
     session_id: str
+    caller_thread_id: str
     user_id: str
     database: str
     company_id: str
@@ -34,9 +36,10 @@ class ReportingWorkflowScope:
 
     def as_state(self) -> dict[str, str]:
         return {
-            "externalRunId": self.run_id,
+            "externalRunId": self.external_run_id,
             "sessionId": self.session_id,
             "threadId": self.workspace_key,
+            "callerThreadId": self.caller_thread_id,
             "userId": self.user_id,
             "database": self.database,
             "companyId": self.company_id,
@@ -86,6 +89,14 @@ def resolve_reporting_workflow_scope(
     company_id = str(stored.get("companyId") or dependency.get("companyId") or "")
     effective_user_id = str(user_id or stored.get("userId") or "")
     effective_session_id = str(session_id or stored.get("sessionId") or "")
+    external_run_id = str(
+        stored.get("externalRunId") or dependency.get("externalRunId") or run_id
+    )
+    caller_thread_id = str(
+        stored.get("callerThreadId")
+        or dependency.get("threadId")
+        or effective_session_id
+    )
 
     token = get_access_token()
     if token is not None:
@@ -107,16 +118,24 @@ def resolve_reporting_workflow_scope(
             raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 公司作用域不一致。")
         if effective_user_id and effective_user_id != token_user:
             raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 用户作用域不一致。")
-        if effective_session_id and effective_session_id != token_thread:
+        if caller_thread_id and caller_thread_id != token_thread:
             raise ReportingError("report_mcp_thread_mismatch", "MCP session_id 与 capability thread 不一致。")
         database = token_database
         company_id = token_company
         effective_user_id = token_user
-        effective_session_id = token_thread
+        caller_thread_id = token_thread
 
     if not database and not company_id:
         database = company_id = "default"
-    values = (run_id, effective_session_id, effective_user_id, database, company_id)
+    values = (
+        run_id,
+        external_run_id,
+        effective_session_id,
+        caller_thread_id,
+        effective_user_id,
+        database,
+        company_id,
+    )
     if any(not value or len(value) > 256 for value in values):
         raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
 
@@ -124,22 +143,30 @@ def resolve_reporting_workflow_scope(
         database=database,
         company_id=company_id,
         user_id=effective_user_id,
-        thread_id=effective_session_id,
+        thread_id=caller_thread_id,
         run_id=run_id,
     )
     scope = ReportingWorkflowScope(
         run_id=run_id,
+        external_run_id=external_run_id,
         session_id=effective_session_id,
+        caller_thread_id=caller_thread_id,
         user_id=effective_user_id,
         database=database,
         company_id=company_id,
         thread_lease_key=keys.thread_lease_key,
         workspace_key=keys.workspace_key,
     )
-    if stored and any(
-        str(stored.get(key) or "") != value for key, value in scope.as_state().items()
-    ):
-        raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 运行作用域不一致。")
+    if stored:
+        expected_state = scope.as_state()
+        if any(
+            str(stored.get(key) or "") != value
+            for key, value in expected_state.items()
+            if key != "callerThreadId" or key in stored
+        ):
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "Reporting Workflow 运行作用域不一致。"
+            )
     return scope
 
 

@@ -27,7 +27,7 @@ from ..models import (
     ReportReviewSnapshot,
     ReportWorkflowControl,
 )
-from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+from .scope import REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY, REPORT_WORKFLOW_SCOPE_DEPENDENCY
 from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
@@ -1112,7 +1112,9 @@ class ReportWorkflowController:
                         REPORT_WORKFLOW_SCOPE_DEPENDENCY
                     ]
                 },
-                dependencies=self._workflow_dependencies(scope),
+                dependencies=self._workflow_dependencies(
+                    scope, entrypoint=self._workflow_entrypoint(run_context)
+                ),
                 metadata=self._workflow_metadata(run_context, scope),
                 stream=False,
             )
@@ -1205,7 +1207,9 @@ class ReportWorkflowController:
                             step_requirements=list(
                                 getattr(output, "step_requirements", None) or []
                             ),
-                            dependencies=self._workflow_dependencies(scope),
+                            dependencies=self._workflow_dependencies(
+                                scope, entrypoint=self._workflow_entrypoint(run_context)
+                            ),
                             stream=False,
                         )
                     except BaseException as run_error:
@@ -1227,7 +1231,9 @@ class ReportWorkflowController:
                             step_requirements=list(
                                 getattr(output, "step_requirements", None) or []
                             ),
-                            dependencies=self._workflow_dependencies(scope),
+                            dependencies=self._workflow_dependencies(
+                                scope, entrypoint=self._workflow_entrypoint(run_context)
+                            ),
                             stream=False,
                         )
                     except BaseException as run_error:
@@ -1315,7 +1321,9 @@ class ReportWorkflowController:
                 output = await workflow.acontinue_run(
                     run_response=output,
                     step_requirements=list(getattr(output, "step_requirements", None) or []),
-                    dependencies=self._workflow_dependencies(scope),
+                    dependencies=self._workflow_dependencies(
+                        scope, entrypoint=self._workflow_entrypoint(run_context)
+                    ),
                     stream=False,
                 )
                 updated = self._control_from_output(
@@ -1674,8 +1682,11 @@ class ReportWorkflowController:
         )
 
     @staticmethod
-    def _workflow_dependencies(scope: dict[str, str]) -> dict[str, dict[str, str]]:
+    def _workflow_dependencies(
+        scope: dict[str, str], *, entrypoint: str = "agentos"
+    ) -> dict[str, Any]:
         return {
+            REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY: entrypoint,
             REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
                 "externalRunId": scope["external_run_id"],
                 "threadId": scope["thread_id"],
@@ -1687,6 +1698,16 @@ class ReportWorkflowController:
                 ),
             }
         }
+
+    @staticmethod
+    def _workflow_entrypoint(run_context: RunContext | None) -> str:
+        dependencies = run_context.dependencies if run_context is not None else None
+        return (
+            "mcp"
+            if isinstance(dependencies, dict)
+            and dependencies.get(REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY)
+            else "agentos"
+        )
 
     @staticmethod
     def _workflow_metadata(

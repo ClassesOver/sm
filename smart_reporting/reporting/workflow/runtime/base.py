@@ -1119,7 +1119,7 @@ class _ReportWorkflowRuntimeBase:
         entrypoint = str(
             (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
         )
-        if entrypoint not in {"agentos", "cli"}:
+        if entrypoint not in {"agentos", "cli", "mcp"}:
             raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
         return {
             REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
@@ -1137,18 +1137,25 @@ class _ReportWorkflowRuntimeBase:
             stored_scope=value,
         )
         entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
-        if entrypoint not in {"agentos", "cli"}:
+        if entrypoint not in {"agentos", "cli", "mcp"}:
             raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+        has_external_caller = (
+            scope.external_run_id != run_id or scope.caller_thread_id != scope.session_id
+        )
         await self.state_repository.register_run(
             report_run_id=run_id,
-            external_run_id=run_id,
+            external_run_id=scope.external_run_id,
             entrypoint=entrypoint,
             workflow_id="enterprise-reporting-workflow-v1",
             agno_session_id=scope.session_id,
             agno_run_id=run_id,
-            caller_session_id=scope.session_id if entrypoint == "cli" else None,
-            caller_run_id=run_id if entrypoint == "cli" else None,
-            thread_id=scope.session_id,
+            caller_session_id=(
+                scope.caller_thread_id if entrypoint == "cli" or has_external_caller else None
+            ),
+            caller_run_id=(
+                scope.external_run_id if entrypoint == "cli" or has_external_caller else None
+            ),
+            thread_id=scope.caller_thread_id,
             owner_user_id=scope.user_id,
             database=scope.database,
             company_id=scope.company_id,
@@ -1156,7 +1163,7 @@ class _ReportWorkflowRuntimeBase:
         )
         claimed = await self.state_repository.claim_workflow_thread(
             thread_id=scope.thread_lease_key,
-            external_run_id=run_id,
+            external_run_id=scope.external_run_id,
             owner_user_id=scope.user_id,
         )
         if not claimed:
@@ -1167,7 +1174,7 @@ class _ReportWorkflowRuntimeBase:
             )
 
     async def assert_resumable(self, run_id: str) -> None:
-        run = await self.state_repository.get_run_by_external(run_id)
+        run = await self.state_repository.get_run(run_id)
         if run is None or str(run.get("status")) != "paused":
             raise ReportingError("report_workflow_not_paused", "Reporting Workflow 不处于暂停状态。")
         keys = reporting_scope_keys(
@@ -1178,7 +1185,7 @@ class _ReportWorkflowRuntimeBase:
             run_id=run_id,
         )
         owner = await self.state_repository.get_workflow_thread_owner(keys.thread_lease_key)
-        if owner is None or owner["external_run_id"] != run_id:
+        if owner is None or owner["external_run_id"] != run["external_run_id"]:
             raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 不再拥有当前 thread。")
 
     async def settle_run(self, run_id: str, status: str) -> None:
@@ -1187,7 +1194,7 @@ class _ReportWorkflowRuntimeBase:
         if status == "paused":
             await self.state_repository.update_run_status(run_id, status="paused")
             return
-        run = await self.state_repository.get_run_by_external(run_id)
+        run = await self.state_repository.get_run(run_id)
         if run is None:
             raise ReportingError("report_run_not_found", "Reporting run 不存在。")
         await self.state_repository.update_run_status(
@@ -1221,7 +1228,7 @@ class _ReportWorkflowRuntimeBase:
                 )
             released = await self.state_repository.release_workflow_thread(
                 thread_id=keys.thread_lease_key,
-                external_run_id=run_id,
+                external_run_id=str(run["external_run_id"]),
                 owner_user_id=str(run["owner_user_id"]),
             )
             if not released:
