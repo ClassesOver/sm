@@ -15,7 +15,8 @@ from time import perf_counter
 from typing import Any, NoReturn
 
 from agno.agent import Agent
-from agno.run import RunContext
+from agno.exceptions import ModelRateLimitError
+from agno.run import RunContext, RunStatus
 from agno.tools.function import Function
 from loguru import logger
 
@@ -176,9 +177,45 @@ def _reject_python_syntax(path: str, source: str, error: SyntaxError) -> NoRetur
     ) from None
 
 
+def _restore_escaped_python_lines(source: str) -> str:
+    """恢复 provider 把整段源码编码为单行时产生的转义换行。"""
+
+    if "\n" in source or "\r" in source or "\\n" not in source:
+        return source
+    restored: list[str] = []
+    index = 0
+    while index < len(source):
+        if source[index] != "\\":
+            restored.append(source[index])
+            index += 1
+            continue
+        run_end = index
+        while run_end < len(source) and source[run_end] == "\\":
+            run_end += 1
+        slash_count = run_end - index
+        if run_end < len(source) and source[run_end] == "n":
+            restored.append("\\" * (slash_count // 2))
+            restored.append("\n" if slash_count % 2 else "n")
+            index = run_end + 1
+            continue
+        restored.append("\\" * slash_count)
+        index = run_end
+    candidate = "".join(restored)
+    return candidate if "\n" in candidate else source
+
+
 def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int) -> str:
     if not isinstance(source, str):
         _reject_python_source(path, source)
+    restored_source = _restore_escaped_python_lines(source)
+    if restored_source != source:
+        logger.info(
+            "report_python_source_escaped_lines_restored path={} encoded_size={} line_count={}",
+            path,
+            len(source.encode("utf-8", errors="replace")),
+            len(restored_source.splitlines()),
+        )
+        source = restored_source
     if source and "\r" not in source and not source.endswith("\n"):
         source += "\n"
     try:
@@ -461,6 +498,27 @@ class ReportingCodeGenerationRunner:
     @staticmethod
     def _error(code: str, message: str, script_path: str) -> ReportingError:
         return ReportingError(code, message, details={"path": script_path})
+
+    @staticmethod
+    def _agent_failure(error: Exception | None = None) -> ReportingError:
+        if isinstance(error, ReportingError):
+            return error
+        if isinstance(error, ModelRateLimitError):
+            return ReportingError(
+                "report_code_generation_rate_limited",
+                "Coding Agent 模型调用受限，请稍后重试。",
+                details={"statusCode": error.status_code},
+            )
+        return ReportingError(
+            "report_code_generation_agent_failed",
+            "Coding Agent 调用失败。",
+        )
+
+    @staticmethod
+    def _recorded_agent_error(agent: Agent) -> Exception | None:
+        report_run_error = getattr(getattr(agent, "model", None), "report_run_error", None)
+        error = report_run_error() if callable(report_run_error) else None
+        return error if isinstance(error, Exception) else None
 
     @staticmethod
     def _stable_code(value: Any, fallback: str) -> str:
@@ -928,6 +986,7 @@ class ReportingCodeGenerationRunner:
                     "authorizedPaths": sorted(authorized_paths),
                     "syntaxRequirements": [
                         "提交前确保完整源码可通过 ast.parse 和 compile",
+                        "source 参数必须包含真实 LF 换行；不得使用两个字符 \\n 代替物理换行",
                         "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
                         "文件读写只可逐字使用 authorizedPaths；不得使用 __file__、cwd、chdir、"
                         "os.path.join 或目录回退推导工作区路径",
@@ -937,16 +996,19 @@ class ReportingCodeGenerationRunner:
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)
             model_started_at = perf_counter()
-            await agent.arun(self._prompt(prompt), run_context=run_context)
+            run_output = await agent.arun(self._prompt(prompt), run_context=run_context)
         except ReportingError:
             raise
         except Exception as error:
-            raise ReportingError(
-                "report_code_generation_agent_failed", "Coding Agent 调用失败。"
-            ) from error
+            raise self._agent_failure(error) from error
         if result is None and patch_error is not None:
             raise patch_error
         if result is None:
+            recorded_error = self._recorded_agent_error(agent)
+            if recorded_error is not None:
+                raise self._agent_failure(recorded_error) from recorded_error
+            if getattr(run_output, "status", None) == RunStatus.error:
+                raise self._agent_failure()
             raise ReportingError(
                 "report_code_generation_no_source",
                 "Coding Agent 未提交完整 Python 源码。",

@@ -4,6 +4,9 @@ import hashlib
 import json
 
 import pytest
+from agno.exceptions import ModelRateLimitError
+from agno.run import RunStatus
+from agno.run.agent import RunOutput
 from loguru import logger
 
 from smart_reporting.reporting.model_policy import ThinkingDecision, bind_reporting_thinking
@@ -99,6 +102,34 @@ async def test_generate_exposes_only_source_and_returns_single_identity():
                 "+print(value)\n"
             )
         }
+    ]
+
+
+@pytest.mark.anyio
+async def test_generate_restores_escaped_physical_lines_without_changing_string_escapes():
+    escaped_source = r'value = "A\\nB"\nprint(value)\n'
+    restored_source = 'value = "A\\nB"\nprint(value)\n'
+    patches: list[str] = []
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=escaped_source)
+
+    async def patch(*, patch: str):
+        patches.append(patch)
+        return {"ok": True, "artifacts": [identity("analysis/script.py", restored_source)]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py", {}, patch
+    )
+
+    assert patches == [
+        (
+            "--- /dev/null\n"
+            "+++ b/analysis/script.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            '+value = "A\\nB"\n'
+            "+print(value)\n"
+        )
     ]
 
 
@@ -229,6 +260,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "authorizedPaths": ["analysis/script.py"],
         "syntaxRequirements": [
             "提交前确保完整源码可通过 ast.parse 和 compile",
+            "source 参数必须包含真实 LF 换行；不得使用两个字符 \\n 代替物理换行",
             "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
             "文件读写只可逐字使用 authorizedPaths；不得使用 __file__、cwd、chdir、"
             "os.path.join 或目录回退推导工作区路径",
@@ -433,6 +465,47 @@ async def test_generate_rejects_zero_tool_calls_without_mutation():
         )
 
     assert raised.value.code == "report_code_generation_no_source"
+
+
+@pytest.mark.anyio
+async def test_generate_preserves_recorded_model_rate_limit_from_agno_error_status():
+    class RateLimitedModel:
+        @staticmethod
+        def report_run_error():
+            return ModelRateLimitError(
+                "insufficient_quota: provider-secret",
+                status_code=429,
+                model_id="test-model",
+            )
+
+    async def action(_agent):
+        return RunOutput(status=RunStatus.error)
+
+    agent = FakeAgent(action)
+    agent.model = RateLimitedModel()
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=agent).generate(
+            "analysis/script.py", {}, lambda **_kwargs: pytest.fail("must not mutate")
+        )
+
+    assert raised.value.code == "report_code_generation_rate_limited"
+    assert raised.value.message == "Coding Agent 模型调用受限，请稍后重试。"
+    assert raised.value.details == {"statusCode": 429}
+    assert "provider-secret" not in str(raised.value)
+
+
+@pytest.mark.anyio
+async def test_generate_does_not_report_agno_error_status_as_no_source():
+    async def action(_agent):
+        return RunOutput(status=RunStatus.error)
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, lambda **_kwargs: pytest.fail("must not mutate")
+        )
+
+    assert raised.value.code == "report_code_generation_agent_failed"
 
 
 @pytest.mark.anyio
