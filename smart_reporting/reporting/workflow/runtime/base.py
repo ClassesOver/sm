@@ -655,6 +655,7 @@ class _ReportWorkflowRuntimeBase:
             instructions=(
                 "只针对 evidenceDecision.missingFacts 生成一个最小 Python 脚本；不得重新判断事实缺口。",
                 "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
+                "必须逐字使用 datasets[].path 和 evidencePath；不得使用 __file__、cwd 或 .. 目录回退重新推导路径。",
                 "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
                 "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得把 currentAnalysis.fields 或其他 Dataset 的字段用于该 CSV。",
                 "evidencePath 必须写为 JSON 对象，且只含 findings、reconciliations、warnings；"

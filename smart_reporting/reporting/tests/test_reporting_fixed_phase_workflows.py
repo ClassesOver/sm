@@ -378,6 +378,7 @@ def test_visualization_plan_thinking_follows_analysis_count(
     [
         ("report_python_source_shape_invalid", "python_compile_failure"),
         ("report_code_generation_no_source", "python_compile_failure"),
+        ("report_python_source_path_invalid", "python_compile_failure"),
         ("report_analysis_script_failed", "python_execution_failure"),
         ("report_visualization_script_failed", "python_execution_failure"),
         ("report_visualization_review_failed", "visual_review_failure"),

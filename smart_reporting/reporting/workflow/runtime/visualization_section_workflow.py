@@ -12,7 +12,7 @@ from loguru import logger
 from ....model_routing import TaskComplexity
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
-from ...phase import reporting_python_script_failed
+from ...phase import bounded_python_script_diagnostic, reporting_python_script_failed
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .code_generation import CodeGenerationResult, _code_failure_kind
 from .phase_models import ChartDraft, VisualizationPlanDraft
@@ -113,10 +113,14 @@ def _repair_diagnostic(
             details[field] = value
     output = raw_details.get("output")
     if isinstance(output, str) and output:
-        details["output"] = output[:2000]
+        details["output"], diagnostic_output_truncated = bounded_python_script_diagnostic(
+            output, 2000
+        )
+    else:
+        diagnostic_output_truncated = False
     output_truncated = raw_details.get("outputTruncated")
-    if isinstance(output_truncated, bool):
-        details["outputTruncated"] = output_truncated
+    if isinstance(output_truncated, bool) or diagnostic_output_truncated:
+        details["outputTruncated"] = bool(output_truncated is True or diagnostic_output_truncated)
     for field in ("toolCode", "toolMessage"):
         value = raw_details.get(field)
         if isinstance(value, str) and value:

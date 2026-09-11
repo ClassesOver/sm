@@ -21,6 +21,7 @@ from loguru import logger
 
 from ...model_policy import ThinkingFailureKind, current_reporting_thinking_decision
 from ...models import ReportingError
+from ...phase import bounded_python_script_diagnostic
 from ..checkpoint import FileIdentity
 
 ToolCallable = Callable[..., Awaitable[Mapping[str, Any]] | Mapping[str, Any]]
@@ -48,7 +49,11 @@ def _code_failure_kind(
     diagnostic: Mapping[str, Any] | None,
 ) -> ThinkingFailureKind | None:
     code = diagnostic.get("code") if isinstance(diagnostic, Mapping) else None
-    if code in {"report_python_source_shape_invalid", "report_code_generation_no_source"}:
+    if code in {
+        "report_python_source_shape_invalid",
+        "report_python_source_path_invalid",
+        "report_code_generation_no_source",
+    }:
         return "python_compile_failure"
     if code in {
         "execution_output_error",
@@ -150,7 +155,32 @@ def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int)
 def _compile_python_source(path: str, source: str) -> None:
     try:
         tree = ast.parse(source, filename=path)
+        if any(
+            (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id == "__file__"
+            )
+            or (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"cwd", "getcwd", "getcwdb"}
+            )
+            or (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and ".." in PurePosixPath(node.value).parts
+            )
+            for node in ast.walk(tree)
+        ):
+            raise ReportingError(
+                "report_python_source_path_invalid",
+                "脚本不得探测当前目录或使用 .. 推导工作区路径；请逐字使用签发路径。",
+                details={"path": path},
+            )
         compile(tree, path, "exec")
+    except ReportingError:
+        raise
     except SyntaxError as error:
         _reject_python_syntax(path, source, error)
     except (TypeError, ValueError):
@@ -320,11 +350,16 @@ class ReportingCodeGenerationRunner:
             ):
                 safe_details["exitCode"] = exit_code
             output = details.get("output")
+            diagnostic_output_truncated = False
             if isinstance(output, str) and output:
-                safe_details["output"] = output[:MAX_DIAGNOSTIC_OUTPUT_LENGTH]
+                safe_details["output"], diagnostic_output_truncated = (
+                    bounded_python_script_diagnostic(output, MAX_DIAGNOSTIC_OUTPUT_LENGTH)
+                )
             output_truncated = details.get("outputTruncated")
-            if isinstance(output_truncated, bool):
-                safe_details["outputTruncated"] = output_truncated
+            if isinstance(output_truncated, bool) or diagnostic_output_truncated:
+                safe_details["outputTruncated"] = bool(
+                    output_truncated is True or diagnostic_output_truncated
+                )
             tool_code = details.get("toolCode")
             if cls._stable_code(tool_code, ""):
                 safe_details["toolCode"] = tool_code
@@ -740,6 +775,7 @@ class ReportingCodeGenerationRunner:
                     "syntaxRequirements": [
                         "提交前确保完整源码可通过 ast.parse 和 compile",
                         "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
+                        "逐字使用 facts 中的签发路径；不得使用 __file__ 或目录回退推导工作区路径",
                     ],
                 },
             }

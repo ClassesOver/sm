@@ -229,6 +229,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "syntaxRequirements": [
             "提交前确保完整源码可通过 ast.parse 和 compile",
             "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
+            "逐字使用 facts 中的签发路径；不得使用 __file__ 或目录回退推导工作区路径",
         ],
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
@@ -270,6 +271,14 @@ async def test_repair_requests_full_analysis_script_from_real_read_callback():
 async def test_repair_preserves_bounded_execution_failure_details():
     script = identity("analysis/script.py", "print(1)\n")
     patch_prompts: list[dict[str, object]] = []
+    embedded_source = "value = 1\\n" * 500
+    failure_output = (
+        "Traceback (most recent call last):\n"
+        '  File "<target_code>", line 72, in <module>\n'
+        f"    exec(compile({embedded_source!r}, '<string>', 'exec'), globals(), globals())\n"
+        '  File "<string>", line 8, in <module>\n'
+        "FileNotFoundError: [Errno 2] No such file or directory: '/报表/数据集/input.csv'\n"
+    )
 
     async def action(agent):
         tool = agent.tools[0]
@@ -287,7 +296,7 @@ async def test_repair_preserves_bounded_execution_failure_details():
             "code": "report_analysis_script_failed",
             "details": {
                 "exitCode": 7,
-                "output": "failure-output-" * 500,
+                "output": failure_output,
                 "outputTruncated": True,
                 "toolCode": "sandbox_process_failed",
                 "toolMessage": "process failed",
@@ -303,7 +312,10 @@ async def test_repair_preserves_bounded_execution_failure_details():
     assert diagnostic["details"]["outputTruncated"] is True
     assert diagnostic["details"]["toolCode"] == "sandbox_process_failed"
     assert diagnostic["details"]["toolMessage"] == "process failed"
-    assert len(diagnostic["details"]["output"]) == 2000
+    assert "<generated source omitted>" in diagnostic["details"]["output"]
+    assert "FileNotFoundError: [Errno 2]" in diagnostic["details"]["output"]
+    assert embedded_source[:100] not in diagnostic["details"]["output"]
+    assert len(diagnostic["details"]["output"]) <= 2000
     assert "SECRET_DETAIL" not in json.dumps(patch_prompts, ensure_ascii=False)
     assert patch_prompts[0]["sourceProtocol"]["path"] == script.path
 
@@ -325,6 +337,37 @@ async def test_generate_rejects_plain_text_without_mutation():
         await runner.generate("analysis/script.py", {}, patch)
 
     assert raised.value.code == "report_code_generation_no_source"
+    assert mutated is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\ndataset_path = os.path.join(os.path.dirname(__file__), '..', 'input.csv')\n",
+        "import os\ndataset_path = os.path.join(os.getcwd(), 'input.csv')\n",
+        "from pathlib import Path\ndataset_path = Path.cwd() / 'input.csv'\n",
+        "import os\ndataset_path = os.path.join('报表', '..', '数据集', 'input.csv')\n",
+    ],
+)
+async def test_generate_rejects_script_relative_workspace_paths_without_mutation(source: str):
+    mutated = False
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    async def patch(**_kwargs):
+        nonlocal mutated
+        mutated = True
+        return {"ok": True, "artifacts": []}
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_python_source_path_invalid"
+    assert "签发路径" in raised.value.message
     assert mutated is False
 
 

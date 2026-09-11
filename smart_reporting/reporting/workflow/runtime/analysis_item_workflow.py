@@ -26,6 +26,7 @@ from pydantic import (
 
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...models import ReportingError
+from ...phase import bounded_python_script_diagnostic
 from ..checkpoint import FileIdentity
 from .code_generation import CodeGenerationResult
 
@@ -723,13 +724,18 @@ class AnalysisItemWorkflow:
             exit_code = execution.get("exitCode", execution.get("exit_code"))
             if execution.get("ok") is False or exit_code != 0:
                 output = str(execution.get("output") or "")
+                diagnostic_output, diagnostic_output_truncated = bounded_python_script_diagnostic(
+                    output, 4000
+                )
                 raise ReportingError(
                     "report_analysis_script_failed",
                     "补充分析脚本执行失败。",
                     details={
                         "exitCode": exit_code,
-                        "output": output[:4000],
-                        "outputTruncated": len(output) > 4000,
+                        "output": diagnostic_output,
+                        "outputTruncated": bool(
+                            execution.get("outputTruncated") is True or diagnostic_output_truncated
+                        ),
                         "toolCode": execution.get("code"),
                         "toolMessage": execution.get("message"),
                     },
