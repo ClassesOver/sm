@@ -139,6 +139,8 @@ dist
 .pnp.*
 
 ### Python template
+.agents
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

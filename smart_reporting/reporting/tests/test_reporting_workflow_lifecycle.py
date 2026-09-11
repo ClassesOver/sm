@@ -24,8 +24,30 @@ class Repository:
         self.registrations: list[dict[str, Any]] = []
 
     async def register_run(self, **values: Any) -> dict[str, Any]:
+        existing = await self.get_run(str(values["report_run_id"]))
+        identity_fields = (
+            "external_run_id",
+            "entrypoint",
+            "workflow_id",
+            "agno_session_id",
+            "agno_run_id",
+            "caller_session_id",
+            "caller_run_id",
+            "thread_id",
+            "owner_user_id",
+            "database",
+            "company_id",
+        )
+        if existing is not None and any(
+            existing.get(field) != values.get(field) for field in identity_fields
+        ):
+            raise ReportingError(
+                "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
+            )
         row = dict(values)
         self.registrations.append(row)
+        if existing is not None:
+            return existing
         self.runs[str(values["external_run_id"])] = row
         return row
 
@@ -50,13 +72,25 @@ class Repository:
         status: str,
         finalization_pending: bool | None = None,
     ) -> None:
-        row = self.runs[report_run_id]
+        row = await self.get_run(report_run_id)
+        if row is None:
+            raise AssertionError(f"unknown report run: {report_run_id}")
         row["status"] = status
         if finalization_pending is not None:
             row["finalization_pending"] = finalization_pending
 
     async def get_run_by_external(self, external_run_id: str) -> dict[str, Any] | None:
         return self.runs.get(external_run_id)
+
+    async def get_run(self, report_run_id: str) -> dict[str, Any] | None:
+        return next(
+            (
+                run
+                for run in self.runs.values()
+                if str(run.get("report_run_id")) == report_run_id
+            ),
+            None,
+        )
 
     async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None:
         return self.owners.get(thread_id)
@@ -122,6 +156,63 @@ async def test_cli_run_is_registered_once_with_cli_identity() -> None:
     assert repository.runs["run-a"]["entrypoint"] == "cli"
     assert repository.runs["run-a"]["caller_session_id"] == "thread-1"
     assert repository.runs["run-a"]["caller_run_id"] == "run-a"
+
+
+@pytest.mark.anyio
+async def test_managed_run_preserves_external_controller_identity() -> None:
+    repository = Repository()
+    current = runtime(repository, [])
+    controller_identity = {
+        "report_run_id": "report-run-internal",
+        "external_run_id": "external-operation",
+        "entrypoint": "mcp",
+        "workflow_id": "enterprise-reporting-workflow-v1",
+        "agno_session_id": "report-session-internal",
+        "agno_run_id": "report-run-internal",
+        "caller_session_id": "caller-thread",
+        "caller_run_id": "external-operation",
+        "thread_id": "caller-thread",
+        "owner_user_id": "user-1",
+        "database": "odoo",
+        "company_id": "11",
+        "status": "running",
+    }
+    await repository.register_run(**controller_identity)
+    session_state = current.prepare_run(
+        run_id="report-run-internal",
+        session_id="report-session-internal",
+        user_id="user-1",
+        dependencies={
+            REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY: "mcp",
+            REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+                "externalRunId": "external-operation",
+                "threadId": "caller-thread",
+                "userId": "user-1",
+                "database": "odoo",
+                "companyId": "11",
+            },
+        },
+    )
+
+    await current.start_run("report-run-internal", session_state)
+
+    assert len(repository.registrations) == 2
+    registration = repository.registrations[-1]
+    assert registration["report_run_id"] == "report-run-internal"
+    assert registration["external_run_id"] == "external-operation"
+    assert registration["entrypoint"] == "mcp"
+    assert registration["agno_session_id"] == "report-session-internal"
+    assert registration["agno_run_id"] == "report-run-internal"
+    assert registration["caller_session_id"] == "caller-thread"
+    assert registration["caller_run_id"] == "external-operation"
+    assert registration["thread_id"] == "caller-thread"
+
+    await current.settle_run("report-run-internal", "paused")
+    await current.assert_resumable("report-run-internal")
+    await current.settle_run("report-run-internal", "completed")
+
+    assert repository.runs["external-operation"]["status"] == "completed"
+    assert repository.owners == {}
 
 
 @pytest.mark.anyio
