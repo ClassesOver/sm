@@ -244,6 +244,21 @@ def test_workflow_runtime_uses_package_boundaries() -> None:
     assert DataUnderstandingPlan.__module__ == ("smart_reporting.reporting.workflow.runtime.models")
 
 
+def test_analysis_item_schema_distinguishes_required_description_and_question() -> None:
+    bundle_schema = AnalysisBundle.model_json_schema()
+    item_schema = bundle_schema["$defs"]["AnalysisItem"]
+
+    assert "根对象" in bundle_schema["description"]
+    assert "完整分析项对象" in bundle_schema["properties"]["analyses"]["description"]
+    assert "完整取数需求对象" in bundle_schema["properties"]["requirements"]["description"]
+    assert "description" in item_schema["required"]
+    assert "managementQuestion" in item_schema["required"]
+    assert "分析动作" in item_schema["properties"]["description"]["description"]
+    assert "不得替代" in item_schema["properties"]["description"]["description"]
+    assert "单一业务问题" in item_schema["properties"]["managementQuestion"]["description"]
+    assert "不得替代" in item_schema["properties"]["managementQuestion"]["description"]
+
+
 def test_reporting_fresh_retry_budget_allows_three_attempts() -> None:
     assert MAX_REPORT_SECTION_PHASE_ATTEMPTS == 3
 
@@ -2459,6 +2474,11 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
         "32000" not in instruction and "240 行" not in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
+    analysis_instructions = "\n".join(runtime._analysis_agent.instructions)
+    assert "根 JSON 必须是对象且只能包含 analyses 和 requirements" in analysis_instructions
+    assert "不得返回单个 analysis、单个 requirement、裸数组或占位值" in analysis_instructions
+    assert "同时显式输出 description 和 managementQuestion" in analysis_instructions
+    assert "即使内容相近也不得省略" in analysis_instructions
     expected_policies = (
         (runtime._request_normalizer, "request_normalization"),
         (runtime._data_understanding_agent, "data_understanding"),

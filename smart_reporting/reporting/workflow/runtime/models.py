@@ -150,8 +150,23 @@ class AnalysisItem(_StrictModel):
     domain: (
         Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"] | None
     ) = None
-    description: str = Field(min_length=1, max_length=2_000)
-    management_question: str = Field(alias="managementQuestion", min_length=1, max_length=2_000)
+    description: str = Field(
+        min_length=1,
+        max_length=2_000,
+        description=(
+            "必填。描述分析动作、比较方式及所引用的 requirement；不是管理问题，"
+            "不得替代或省略 managementQuestion。"
+        ),
+    )
+    management_question: str = Field(
+        alias="managementQuestion",
+        min_length=1,
+        max_length=2_000,
+        description=(
+            "必填。描述报告最终需要回答的单一业务问题；不是分析执行步骤，"
+            "不得替代或省略 description。"
+        ),
+    )
     primary_metric_family: str = Field(alias="primaryMetricFamily", min_length=1, max_length=256)
     requirement_ids: tuple[str, ...] = Field(
         alias="requirementIds",
@@ -178,9 +193,17 @@ class AnalysisItem(_StrictModel):
 
 
 class AnalysisBundle(_StrictModel):
-    analyses: tuple[AnalysisItem, ...] = Field(min_length=1, max_length=100)
+    """分析规划根对象，只包含完整的 analyses 和 requirements 数组。"""
+
+    analyses: tuple[AnalysisItem, ...] = Field(
+        min_length=1,
+        max_length=100,
+        description="根对象必填数组；每个元素必须是完整分析项对象，不得返回单项或占位值。",
+    )
     requirements: tuple[QueryRequirement, ...] = Field(
-        min_length=1, max_length=MAX_ANALYSIS_REQUIREMENTS
+        min_length=1,
+        max_length=MAX_ANALYSIS_REQUIREMENTS,
+        description="根对象必填数组；每个元素必须是完整取数需求对象，不得返回单项或占位值。",
     )
 
 

@@ -594,9 +594,11 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
+                "根 JSON 必须是对象且只能包含 analyses 和 requirements；不得返回单个 analysis、单个 requirement、裸数组或占位值",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
                 "每个 analyses[].domain 必须根据该管理问题的完整业务语义，从请求 domains 中选择唯一值；不得按关键词匹配",
                 "managementQuestion 写可直接回答的单一管理问题，primaryMetricFamily 写该项唯一的主要指标族",
+                "每个 analyses 项必须同时显式输出 description 和 managementQuestion；二者语义不同，即使内容相近也不得省略",
                 "每项 requirement 显式声明维度、指标、期间字段、期间粒度、共同粒度和表关系",
                 "grainColumns 必须全部包含在 dimensionColumns 中",
                 (
