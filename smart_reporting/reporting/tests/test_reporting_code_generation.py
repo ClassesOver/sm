@@ -134,6 +134,34 @@ async def test_generate_restores_escaped_physical_lines_without_changing_string_
 
 
 @pytest.mark.anyio
+async def test_generate_unwraps_json_encoded_source_string():
+    source = 'value = "A\\nB"\nprint(value)\n'
+    wrapped_source = json.dumps(source)
+    patches: list[str] = []
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=wrapped_source)
+
+    async def patch(*, patch: str):
+        patches.append(patch)
+        return {"ok": True, "artifacts": [identity("analysis/script.py", source)]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py", {"fact": 1}, patch
+    )
+
+    assert patches == [
+        (
+            "--- /dev/null\n"
+            "+++ b/analysis/script.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            '+value = "A\\nB"\n'
+            "+print(value)\n"
+        )
+    ]
+
+
+@pytest.mark.anyio
 async def test_generate_logs_script_base_info_at_info_level():
     async def action(agent):
         return await agent.tools[0].entrypoint(source=SOURCE)
@@ -848,15 +876,28 @@ async def test_repair_preserves_bounded_missing_facts_in_patch_prompt():
         {"code": "repair_failed", "message": "brief diagnostic"},
         read_file,
         patch,
-        task_facts={"missingFacts": missing_facts, "pythonSource": "SECRET_SOURCE"},
+        task_facts={
+            "missingFacts": missing_facts,
+            "outputContract": {
+                "format": "json",
+                "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+                "additionalRootKeys": False,
+            },
+            "pythonSource": "SECRET_SOURCE",
+        },
     )
 
     facts = prompts[0]["facts"]
     assert set(facts) == {"readReceipt", "diagnostic", "taskFacts"}
-    assert facts["taskFacts"].keys() == {"missingFacts"}
+    assert facts["taskFacts"].keys() == {"missingFacts", "outputContract"}
     assert len(facts["taskFacts"]["missingFacts"]) == 20
     assert all(len(item) == 512 for item in facts["taskFacts"]["missingFacts"])
     assert facts["taskFacts"]["missingFacts"][0].startswith("fact-0:")
+    assert facts["taskFacts"]["outputContract"] == {
+        "format": "json",
+        "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+        "additionalRootKeys": False,
+    }
     assert "SECRET_SOURCE" not in agent_prompt_text(facts)
 
 
@@ -971,6 +1012,21 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
         {"missingFacts": "not-an-array"},
         {"missingFacts": ["valid", {"source": "SECRET_SOURCE"}]},
         {"missingFacts": ["valid", 3]},
+        {"outputContract": "输出 JSON"},
+        {
+            "outputContract": {
+                "format": "json",
+                "requiredRootKeys": ["findings", "findings"],
+                "additionalRootKeys": False,
+            }
+        },
+        {
+            "outputContract": {
+                "format": "json",
+                "requiredRootKeys": ["findings"],
+                "additionalRootKeys": "false",
+            }
+        },
         {"missingCharts": "not-an-array"},
         {"missingCharts": [{"chartId": "chart", "sourcePath": "charts/x.png"}]},
         {"missingCharts": [{"chartId": "chart", "sourcePath": 1, "title": "标题"}]},

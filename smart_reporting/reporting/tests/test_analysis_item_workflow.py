@@ -1162,6 +1162,32 @@ def test_evidence_decision_rejects_script_source() -> None:
         )
 
 
+def test_analysis_script_task_facts_declare_exact_json_root_contract() -> None:
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        generate_script=AsyncMock(),
+        repair_script=AsyncMock(),
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        run_script=AsyncMock(),
+        complete=AsyncMock(),
+    )
+    state = item_workflow._AnalysisItemState(instruction=_instruction())
+    state.decision = AnalysisEvidenceDecision(
+        requiresSupplementalEvidence=True,
+        reason="缺少收入构成。",
+        missingFacts=("收入构成",),
+    )
+
+    task_facts = workflow._script_task_facts(state)
+
+    assert task_facts["outputContract"] == {
+        "format": "json",
+        "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+        "additionalRootKeys": False,
+    }
+
+
 def test_analysis_item_workflow_preserves_structured_tool_error_for_repair() -> None:
     with pytest.raises(ReportingError) as raised:
         AnalysisItemWorkflow._require_ok(

@@ -126,6 +126,11 @@ def test_reporting_code_agent_is_unstructured_and_has_no_history_or_tools() -> N
     assert "完整原始 Python 源码" in prompt
     assert "read_file" not in prompt
     assert "readReceipt" in prompt
+    assert "outputContract" in prompt
+    assert "根节点" in prompt
+    assert "additionalRootKeys=false" in prompt
+    assert "columnTypes" in prompt
+    assert "jsonShape" in prompt
 
 
 def test_reporting_code_agent_uses_chat_reasoning_and_non_thinking_responses() -> None:

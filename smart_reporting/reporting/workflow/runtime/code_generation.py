@@ -34,6 +34,8 @@ MAX_DIAGNOSTIC_POSITION = 1_000_000_000
 MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_TASK_MISSING_FACTS = 20
 MAX_TASK_MISSING_FACT_LENGTH = 512
+MAX_TASK_OUTPUT_ROOT_KEYS = 20
+MAX_TASK_OUTPUT_ROOT_KEY_LENGTH = 128
 MAX_TASK_MISSING_CHARTS = 100
 MAX_TASK_CHART_ID_LENGTH = 128
 MAX_TASK_CHART_SOURCE_PATH_LENGTH = 1024
@@ -204,9 +206,31 @@ def _restore_escaped_python_lines(source: str) -> str:
     return candidate if "\n" in candidate else source
 
 
+def _unwrap_json_encoded_python_source(source: str) -> str:
+    """还原 provider 额外套用 JSON 字符串编码的完整源码。"""
+
+    if "\n" in source or "\r" in source or not source.startswith('"'):
+        return source
+    try:
+        decoded = json.loads(source)
+    except (json.JSONDecodeError, TypeError):
+        return source
+    if not isinstance(decoded, str) or ("\n" not in decoded and "\\n" not in decoded):
+        return source
+    return decoded
+
+
 def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int) -> str:
     if not isinstance(source, str):
         _reject_python_source(path, source)
+    unwrapped_source = _unwrap_json_encoded_python_source(source)
+    if unwrapped_source != source:
+        logger.info(
+            "report_python_source_json_string_unwrapped path={} encoded_size={}",
+            path,
+            len(source.encode("utf-8", errors="replace")),
+        )
+        source = unwrapped_source
     restored_source = _restore_escaped_python_lines(source)
     if restored_source != source:
         logger.info(
@@ -601,6 +625,11 @@ class ReportingCodeGenerationRunner:
                 item[:MAX_TASK_MISSING_FACT_LENGTH]
                 for item in missing_facts[:MAX_TASK_MISSING_FACTS]
             ]
+        output_contract = task_facts.get("outputContract")
+        if output_contract is not None:
+            result["outputContract"] = cls._repair_output_contract(
+                output_contract, script_path
+            )
         missing_charts = task_facts.get("missingCharts")
         if missing_charts is not None:
             result["missingCharts"] = cls._repair_missing_charts(missing_charts, script_path)
@@ -608,6 +637,40 @@ class ReportingCodeGenerationRunner:
         if inspections is not None:
             result["inspections"] = cls._repair_inspections(inspections, script_path)
         return result
+
+    @classmethod
+    def _repair_output_contract(cls, contract: Any, script_path: str) -> dict[str, Any]:
+        if not isinstance(contract, Mapping):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复输出契约必须是对象。",
+                script_path,
+            )
+        required_root_keys = contract.get("requiredRootKeys")
+        additional_root_keys = contract.get("additionalRootKeys")
+        if (
+            contract.get("format") != "json"
+            or not isinstance(required_root_keys, list)
+            or not 1 <= len(required_root_keys) <= MAX_TASK_OUTPUT_ROOT_KEYS
+            or any(
+                not isinstance(key, str)
+                or not key
+                or len(key) > MAX_TASK_OUTPUT_ROOT_KEY_LENGTH
+                for key in required_root_keys
+            )
+            or len(required_root_keys) != len(set(required_root_keys))
+            or not isinstance(additional_root_keys, bool)
+        ):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复输出契约不是受限的 JSON 根节点契约。",
+                script_path,
+            )
+        return {
+            "format": "json",
+            "requiredRootKeys": list(required_root_keys),
+            "additionalRootKeys": additional_root_keys,
+        }
 
     @classmethod
     def _repair_missing_charts(cls, missing_charts: Any, script_path: str) -> list[dict[str, str]]:

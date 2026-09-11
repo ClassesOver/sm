@@ -33,6 +33,7 @@ from .analysis_item_workflow import (
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
     _project_analysis_summary_payload,
+    supplemental_evidence_output_contract,
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
@@ -281,7 +282,18 @@ def _analysis_item_dataset_inputs(
                 "report_analysis_context_unavailable",
                 "分析数据上下文没有精确绑定当前不可变 Dataset。",
             )
-        inputs.append({**handle.public_dict(), "columns": list(context.fields)})
+        field_types = {item.name: item.inferred_type for item in context.field_stats}
+        dataset_input = {
+            **handle.public_dict(),
+            "format": "csv",
+            "hasHeader": True,
+            "columns": list(context.fields),
+        }
+        if set(field_types) == set(context.fields):
+            dataset_input["columnTypes"] = {
+                field: field_types[field] for field in context.fields
+            }
+        inputs.append(dataset_input)
     return inputs
 
 
@@ -2136,7 +2148,10 @@ class RuntimeAnalysisMixin:
                     toolkit.read_file,
                     toolkit.apply_analysis_patch,
                     run_context,
-                    task_facts={"missingFacts": list(decision.missing_facts)},
+                    task_facts={
+                        "missingFacts": list(decision.missing_facts),
+                        "outputContract": supplemental_evidence_output_contract(),
+                    },
                     max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
 

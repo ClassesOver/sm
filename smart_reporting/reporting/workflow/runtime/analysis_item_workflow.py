@@ -46,6 +46,14 @@ _STAGE_NAMES = (
 )
 
 
+def supplemental_evidence_output_contract() -> dict[str, Any]:
+    return {
+        "format": "json",
+        "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+        "additionalRootKeys": False,
+    }
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -779,6 +787,7 @@ class AnalysisItemWorkflow:
             "analysisOutputRoot": state.instruction.get("analysisOutputRoot"),
             "scriptPath": self._script_path(state),
             "evidencePath": self._evidence_path(state),
+            "outputContract": supplemental_evidence_output_contract(),
         }
 
     @staticmethod

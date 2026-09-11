@@ -38,6 +38,7 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     AnalysisFileIdentity,
     DatasetAnalysisContext,
     DetailedAnalysisPlan,
+    FieldStatistic,
     ProfiledDataset,
 )
 from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
@@ -1801,6 +1802,28 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
         rowCount=first.row_count,
         columnCount=2,
         fields=("income_type", "actual_income"),
+        fieldStats=(
+            FieldStatistic(
+                name="income_type",
+                inferredType="categorical",
+                nonNullCount=1,
+                missingCount=0,
+                missingRate=0,
+                distinctCount=1,
+                cardinalityRate=1,
+                unique=True,
+            ),
+            FieldStatistic(
+                name="actual_income",
+                inferredType="numeric",
+                nonNullCount=1,
+                missingCount=0,
+                missingRate=0,
+                distinctCount=1,
+                cardinalityRate=1,
+                unique=True,
+            ),
+        ),
         numericFields=("actual_income",),
         periodValues=(),
     )
@@ -1811,6 +1834,10 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
             "size": second.size,
             "sha256": second.sha256,
             "fields": ("budget_type", "budget_income"),
+            "field_stats": (
+                context.field_stats[0].model_copy(update={"name": "budget_type"}),
+                context.field_stats[1].model_copy(update={"name": "budget_income"}),
+            ),
             "numeric_fields": ("budget_income",),
         }
     )
@@ -1819,6 +1846,16 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
 
     assert inputs[0]["columns"] == ["income_type", "actual_income"]
     assert inputs[1]["columns"] == ["budget_type", "budget_income"]
+    assert inputs[0]["format"] == "csv"
+    assert inputs[0]["hasHeader"] is True
+    assert inputs[0]["columnTypes"] == {
+        "income_type": "categorical",
+        "actual_income": "numeric",
+    }
+    assert inputs[1]["columnTypes"] == {
+        "budget_type": "categorical",
+        "budget_income": "numeric",
+    }
 
 
 def test_analysis_item_output_root_isolated_by_fresh_attempt() -> None:
@@ -2143,7 +2180,14 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
     assert len(planner_requests) == 2
     assert code_prompts[0]["facts"]["evidenceDecision"]["missingFacts"] == ["构成"]
     assert code_prompts[1]["scriptPath"] == script_path
-    assert code_prompts[1]["facts"]["taskFacts"] == {"missingFacts": ["构成"]}
+    assert code_prompts[1]["facts"]["taskFacts"] == {
+        "missingFacts": ["构成"],
+        "outputContract": {
+            "format": "json",
+            "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+            "additionalRootKeys": False,
+        },
+    }
     assert code_prompts[1]["facts"]["diagnostic"] == {
         "code": "report_analysis_script_failed",
         "message": "脚本执行失败。",
