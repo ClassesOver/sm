@@ -35,6 +35,7 @@ from .analysis_item_workflow import (
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
+    MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
     MAX_REPORT_INSTRUCTION_BYTES,
     MAX_REPORT_SECTION_PHASE_ATTEMPTS,
     REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY,
@@ -520,13 +521,16 @@ class RuntimeAnalysisMixin:
             and item.section_code == section_code
         ]
         next_attempt = max((item.attempt for item in matching), default=-1) + 1
-        if next_attempt >= MAX_REPORT_SECTION_PHASE_ATTEMPTS:
+        max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS * (
+            MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION + 1
+        )
+        if next_attempt >= max_attempts:
             raise ReportingError(
                 "report_visualization_section_attempts_exhausted",
                 "章节图表 fresh attempt 已达到上限，拒绝创建新的 Task。",
             )
         scope = self._scope(run_context)
-        for attempt in range(next_attempt, MAX_REPORT_SECTION_PHASE_ATTEMPTS):
+        for attempt in range(next_attempt, max_attempts):
             root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
             task_id = reporting_phase_task_key(
                 str(run_context.run_id or "report"),
@@ -1195,6 +1199,81 @@ class RuntimeAnalysisMixin:
             checkpoint_state.update(updated.model_dump(mode="python"))
             return StepOutput(content={"sectionCode": section_code, "status": "completed"})
 
+        async def rework_analysis(
+            instruction: Mapping[str, Any], _context: RunContext
+        ) -> StepOutput:
+            section_code = instruction.get("sectionCode")
+            section_goal = instruction.get("sectionGoal")
+            raw_rework = instruction.get("rework")
+            if (
+                not isinstance(section_code, str)
+                or not isinstance(section_goal, Mapping)
+                or not isinstance(raw_rework, Mapping)
+            ):
+                raise ReportingError(
+                    "report_analysis_rework_invalid", "章节补证请求缺少有效上下文。"
+                )
+            try:
+                rework = AnalysisReworkRequest.model_validate(
+                    {"sectionCode": section_code, **dict(raw_rework)}
+                )
+            except ValidationError as error:
+                raise ReportingError(
+                    "report_analysis_rework_invalid", "章节补证请求结构无效。"
+                ) from error
+            rework_payload = rework.model_dump(mode="json", by_alias=True)
+            rework_digest = payload_sha256(rework_payload)
+            # request_analysis_rework 是补证失效边界：先由 reducer 原子撤销目标
+            # analysis、当前章节及其图表，再启动定向补证。否则后续可视化会误复用
+            # 补证前的 durable 完成标记，形成新分析配旧图表的混合产物。
+            await self._apply_durable_command(
+                run_context,
+                ReportingCommand(
+                    name="request_analysis_rework",
+                    commandId=f"analysis-rework-request:{revision}:{rework_digest}",
+                    payload=rework_payload,
+                ),
+            )
+            await self._apply_durable_command(
+                run_context,
+                ReportingCommand(
+                    name="start_analysis",
+                    commandId=f"analysis-rework-start:{revision}:{rework_digest}",
+                ),
+            )
+            checkpoint = await self._current_reporting_checkpoint(
+                run_context, ReportingCheckpoint.model_validate(checkpoint_state)
+            )
+            retry_reason = f"analysis_rework:{rework_digest}"
+            for analysis_id in rework.analysis_ids:
+                checkpoint = await self._run_analysis_item_task(
+                    run_context,
+                    checkpoint=checkpoint,
+                    revision=revision,
+                    sandbox_id=sandbox_id,
+                    validation_context_file=validation_context_file,
+                    detailed_plan=detailed_plan,
+                    dataset_handles=dataset_handles,
+                    lineage=lineage,
+                    citation_bindings=citation_bindings,
+                    analysis_context_file=analysis_context_file,
+                    fact_files=fact_files,
+                    analysis_id=analysis_id,
+                    section_goal=section_goal,
+                    retry_reason=retry_reason,
+                    feedback=feedback,
+                    rework_request=rework,
+                )
+            checkpoint_state.clear()
+            checkpoint_state.update(checkpoint.model_dump(mode="python"))
+            return StepOutput(
+                content={
+                    "sectionCode": section_code,
+                    "status": "completed",
+                    "analysisIds": list(rework.analysis_ids),
+                }
+            )
+
         async def draft_section(instruction: Mapping[str, Any], _context: RunContext) -> StepOutput:
             section_code = instruction.get("sectionCode")
             if not isinstance(section_code, str):
@@ -1230,12 +1309,16 @@ class RuntimeAnalysisMixin:
                     analysis_ids=work_item.analysis_ids,
                 ),
             )
-            if rework is not None:
-                raise ReportingError(
-                    "report_analysis_rework_required", "章节请求补证；请重新运行该报告。"
-                )
             checkpoint_state.clear()
             checkpoint_state.update(updated.model_dump(mode="python"))
+            if rework is not None:
+                return StepOutput(
+                    content={
+                        "sectionCode": section_code,
+                        "status": "rework",
+                        "rework": rework.model_dump(mode="json", by_alias=True),
+                    }
+                )
             return StepOutput(content={"sectionCode": section_code, "status": "completed"})
 
         reporting_workflow = ReportingAnalysisAndDraftWorkflow(
@@ -1252,6 +1335,7 @@ class RuntimeAnalysisMixin:
             run_analysis=run_analysis_item,
             submit_visualization=submit_visualization,
             draft_section=draft_section,
+            rework_analysis=rework_analysis,
             execution_mode=getattr(self, "reporting_execution_mode", "sequential"),
             section_concurrency=getattr(self, "section_concurrency", 1),
             analysis_concurrency=getattr(self, "analysis_concurrency", 1),

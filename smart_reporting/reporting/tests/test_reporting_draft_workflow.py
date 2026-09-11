@@ -223,6 +223,140 @@ async def test_reporting_draft_workflow_arun_uses_agno_public_entrypoint() -> No
     }
 
 
+@pytest.mark.anyio
+async def test_rework_output_reruns_analysis_visualization_and_draft_in_same_workflow() -> None:
+    events: list[str] = []
+
+    async def analysis(_instruction, _context):
+        events.append("analysis")
+        return _ok("analysis")
+
+    async def visualization(_instruction, _context):
+        events.append("visualization")
+        return _ok("visualization")
+
+    async def rework(instruction, _context):
+        events.append("rework")
+        assert instruction["rework"] == {
+            "analysisIds": ["a1"],
+            "missingEvidence": ["同比"],
+        }
+        return _ok("rework")
+
+    async def draft(_instruction, _context):
+        events.append("draft")
+        if events.count("draft") == 1:
+            return StepOutput(
+                content={
+                    "sectionCode": "section_001",
+                    "status": "rework",
+                    "rework": {"analysisIds": ["a1"], "missingEvidence": ["同比"]},
+                }
+            )
+        return _ok("draft")
+
+    workflow = ReportingAnalysisAndDraftWorkflow(
+        report_goal="目标",
+        sections=[{"sectionCode": "section_001", "analysisIds": ["a1"]}],
+        run_analysis=analysis,
+        submit_visualization=visualization,
+        draft_section=draft,
+        rework_analysis=rework,
+    )
+
+    output = await workflow.arun(
+        input={"reportGoal": "目标"}, run_id="run-1", session_id="session-1"
+    )
+
+    assert output.content == {
+        "sections": [
+            {
+                "sectionCode": "section_001",
+                "analysisCount": 1,
+                "visualizationSubmitted": True,
+                "draftCompleted": True,
+            }
+        ],
+    }
+    assert events == [
+        "analysis",
+        "visualization",
+        "draft",
+        "rework",
+        "visualization",
+        "draft",
+    ]
+
+
+@pytest.mark.anyio
+async def test_second_rework_request_fails_with_explicit_exhaustion_error() -> None:
+    rework_output = StepOutput(
+        content={
+            "sectionCode": "section_001",
+            "status": "rework",
+            "rework": {"analysisIds": ["a1"], "missingEvidence": ["同比"]},
+        }
+    )
+    workflow = ReportingDraftWorkflow(
+        report_goal="目标",
+        section_goal={"sectionCode": "section_001"},
+        analysis_ids=["a1"],
+        run_analysis=AsyncMock(return_value=_ok("analysis")),
+        submit_visualization=AsyncMock(return_value=_ok("visualization")),
+        draft_section=AsyncMock(return_value=rework_output),
+        rework_analysis=AsyncMock(return_value=_ok("rework")),
+    )
+
+    with pytest.raises(RuntimeError, match="章节补证次数已达到上限"):
+        await workflow.execute_section(RunContext(run_id="run-1", session_id="session-1"))
+
+
+@pytest.mark.anyio
+async def test_parallel_rework_analysis_uses_shared_analysis_limiter() -> None:
+    active = 0
+    maximum = 0
+    draft_attempts: dict[str, int] = {}
+
+    async def rework(_instruction, _context):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return _ok("rework")
+
+    async def draft(instruction, _context):
+        section_code = instruction["sectionCode"]
+        draft_attempts[section_code] = draft_attempts.get(section_code, 0) + 1
+        if draft_attempts[section_code] == 1:
+            return StepOutput(
+                content={
+                    "status": "rework",
+                    "rework": {"analysisIds": instruction["analysisIds"]},
+                }
+            )
+        return _ok("draft")
+
+    workflow = ReportingAnalysisAndDraftWorkflow(
+        report_goal="目标",
+        sections=[
+            {"sectionCode": "section_001", "analysisIds": ["a1"]},
+            {"sectionCode": "section_002", "analysisIds": ["a2"]},
+        ],
+        run_analysis=AsyncMock(return_value=_ok("analysis")),
+        submit_visualization=AsyncMock(return_value=_ok("visualization")),
+        draft_section=draft,
+        rework_analysis=rework,
+        execution_mode="parallel",
+        section_concurrency=2,
+        analysis_concurrency=1,
+    )
+
+    await workflow._run_sections(RunContext(run_id="run-1", session_id="session-1"))
+
+    assert maximum == 1
+
+
 def test_parallel_plan_uses_agno_parallel_container() -> None:
     workflow = ReportingDraftWorkflow(
         report_goal="目标",
