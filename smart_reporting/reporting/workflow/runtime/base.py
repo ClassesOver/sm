@@ -1052,7 +1052,7 @@ class _ReportWorkflowRuntimeBase:
             durable = await self.state_repository.get_or_create(
                 report_run_id=report_run_id,
                 external_run_id=scope["externalRunId"],
-                thread_id=scope["sessionId"],
+                thread_id=scope["callerThreadId"],
                 owner_user_id=scope["userId"],
             )
         # 多个章节 child task 可以同时完成；CAS 冲突只重读当前版本并重放同一
@@ -1064,7 +1064,7 @@ class _ReportWorkflowRuntimeBase:
                     durable = await self.state_repository.get_or_create(
                         report_run_id=report_run_id,
                         external_run_id=scope["externalRunId"],
-                        thread_id=scope["sessionId"],
+                        thread_id=scope["callerThreadId"],
                         owner_user_id=scope["userId"],
                     )
                 try:

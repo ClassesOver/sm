@@ -19,6 +19,7 @@ from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
+from smart_reporting.reporting.workflow.state import ReportingCommand
 from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.workspace import WorkspaceError
@@ -95,6 +96,38 @@ def test_publication_artifact_identity_checks_html_size_and_hash() -> None:
         _ReportWorkflowRuntimeBase._require_artifact_identity(
             expected, {"size": 4, "sha256": "x" * 64}, artifact="html"
         )
+
+
+@pytest.mark.anyio
+async def test_durable_command_uses_caller_thread_identity() -> None:
+    durable = SimpleNamespace(report_run_id="report-run", state_version=0)
+    repository = SimpleNamespace(
+        get_by_external_run_id=AsyncMock(side_effect=[None, durable]),
+        get_or_create=AsyncMock(return_value=durable),
+        apply=AsyncMock(return_value=SimpleNamespace(idempotent=False)),
+    )
+
+    class Runtime:
+        state_repository = repository
+        _durable_command_lock = asyncio.Lock()
+
+        @staticmethod
+        def _scope(_run_context: RunContext) -> dict[str, str]:
+            return {
+                "externalRunId": "external-run",
+                "sessionId": "report-session-internal",
+                "callerThreadId": "caller-thread",
+                "threadId": "reporting-run-workspace",
+                "userId": "user",
+            }
+
+    await _ReportWorkflowRuntimeBase._apply_durable_command(
+        Runtime(),
+        RunContext(run_id="report-run", session_id="report-session-internal"),
+        ReportingCommand(name="start_analysis", commandId="command-1"),
+    )
+
+    assert repository.get_or_create.await_args.kwargs["thread_id"] == "caller-thread"
 
 
 class _ReportPairProcess:

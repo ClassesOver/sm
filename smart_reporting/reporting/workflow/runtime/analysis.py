@@ -945,7 +945,7 @@ class RuntimeAnalysisMixin:
         durable = await self.state_repository.get_or_create(
             report_run_id=str(run_context.run_id or scope["externalRunId"]),
             external_run_id=scope["externalRunId"],
-            thread_id=scope["sessionId"],
+            thread_id=scope["callerThreadId"],
             owner_user_id=scope["userId"],
             revision=int(state.get(REPORT_OUTLINE_STATE_KEY, {}).get("revision", 1))
             if isinstance(state.get(REPORT_OUTLINE_STATE_KEY), Mapping)
