@@ -27,6 +27,9 @@ class _StrictModel(BaseModel):
 class NormalizedReportPrompt(_StrictModel):
     period: ReportPeriod | None = None
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    domains: tuple[
+        Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"], ...
+    ] = Field(default=(), max_length=6)
     clarification_question: str | None = Field(
         default=None, alias="clarificationQuestion", min_length=1, max_length=1000
     )

@@ -5,8 +5,17 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock
 
 import pytest
+from agno.agent import Agent
 from agno.run import RunContext
+from loguru import logger
+from pydantic import ValidationError
 
+from smart_reporting.reporting.agent import ReportingPhaseOpenAIChat
+from smart_reporting.reporting.model_policy import (
+    ThinkingRequest,
+    current_reporting_thinking_decision,
+    select_reporting_thinking,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_MODEL_ID_DEPENDENCY_KEY,
@@ -51,6 +60,8 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
 from smart_reporting.reporting.workflow.runtime.section_workflow import SectionWorkflow
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     VisualizationSectionWorkflow,
+    _code_failure_kind,
+    _visualization_thinking_complexity,
 )
 from smart_reporting.reporting.workflow.state import ReportingPhase
 from smart_reporting.task_execution import TaskExecutionScope
@@ -339,6 +350,105 @@ def _inspection() -> ChartVisualInspectionReceipt:
         reviewed=True,
         requiresRevision=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("analysis_ids", "expected_complexity", "expected_budget"),
+    [
+        (("analysis_001",), "simple", 1024),
+        (("analysis_001", "analysis_002"), "standard", 2048),
+        (("analysis_001", "analysis_002", "analysis_003", "analysis_004"), "complex", 4096),
+    ],
+)
+def test_visualization_plan_thinking_follows_analysis_count(
+    analysis_ids: tuple[str, ...], expected_complexity: str, expected_budget: int
+) -> None:
+    complexity = _visualization_thinking_complexity({"analysisIds": analysis_ids})
+    decision = select_reporting_thinking(
+        ThinkingRequest(operation="visualization_plan", complexity=complexity)
+    )
+
+    assert complexity == expected_complexity
+    assert decision.thinking_budget == expected_budget
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("report_python_source_shape_invalid", "python_compile_failure"),
+        ("report_code_generation_no_source", "python_compile_failure"),
+        ("report_analysis_script_failed", "python_execution_failure"),
+        ("report_visualization_script_failed", "python_execution_failure"),
+        ("report_visualization_review_failed", "visual_review_failure"),
+        ("report_task_timeout", None),
+        ("report_workspace_unavailable", None),
+        ("unknown", None),
+    ],
+)
+def test_code_failure_kind_only_classifies_recoverable_failures(
+    code: str, expected: str | None
+) -> None:
+    assert _code_failure_kind({"code": code}) == expected
+
+
+@pytest.mark.anyio
+async def test_visualization_script_execution_repair_uses_off_then_2k() -> None:
+    observed: list[int] = []
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+
+    async def generate_script(*_args, **_kwargs):
+        decision = current_reporting_thinking_decision()
+        observed.append(decision.thinking_budget if decision is not None else -1)
+        return CodeGenerationResult(initial_file)
+
+    async def repair_script(*_args, **_kwargs):
+        decision = current_reporting_thinking_decision()
+        observed.append(decision.thinking_budget if decision is not None else -1)
+        return CodeGenerationResult(repaired_file)
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=generate_script,
+        repair_script=repair_script,
+        execute_script=AsyncMock(
+            side_effect=[{"exitCode": 1}, {"exitCode": 0}]
+        ),
+        inspect_chart=None,
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert result.recovery_used is True
+    assert observed == [0, 2048]
+
+
+@pytest.mark.anyio
+async def test_visualization_visual_repair_uses_4k() -> None:
+    observed: list[int] = []
+    initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
+    failed_inspection = _inspection().model_copy(
+        update={"visual_review_status": "failed", "requires_revision": True}
+    )
+
+    async def generate_script(*_args, **_kwargs):
+        return CodeGenerationResult(initial_file)
+
+    async def repair_script(*_args, **_kwargs):
+        decision = current_reporting_thinking_decision()
+        observed.append(decision.thinking_budget if decision is not None else -1)
+        return CodeGenerationResult(repaired_file)
+
+    await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=generate_script,
+        repair_script=repair_script,
+        execute_script=AsyncMock(return_value={"exitCode": 0}),
+        inspect_chart=AsyncMock(side_effect=[failed_inspection, _inspection()]),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(_visualization_payload(), _context())
+
+    assert observed == [4096]
 
 
 @pytest.mark.anyio
@@ -978,6 +1088,209 @@ def test_section_block_input_budget_uses_final_routed_model() -> None:
     assert reporting_sections._section_block_input_token_budget(agent, context) == 224 * 1024
 
 
+def _plan_stage_validator(work_item: SectionWorkItem) -> object:
+    stage = reporting_sections._section_stage_agent(
+        Agent(model=ReportingPhaseOpenAIChat(id="test", api_key="test")),
+        SectionPlanOutput,
+        "plan",
+        response_validator=reporting_sections._section_plan_response_validator(work_item),
+    )
+    return getattr(stage.model, "_report_response_validator")
+
+
+def _render_plan_payload(metric_code: str = "revenue") -> dict:
+    return {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [{"blockId": "block_001", "objective": "说明收入", "claimIds": ["claim_001"]}],
+        "claims": [
+            {
+                "claimId": "claim_001",
+                "metricCode": metric_code,
+                "value": 100,
+                "citationIds": ["citation_001"],
+            }
+        ],
+    }
+
+
+def _dual_analysis_work_item(*, shared_metric: bool) -> SectionWorkItem:
+    identity = FileIdentity(
+        path="evidence/a.json",
+        size=len(_SECTION_EVIDENCE_BYTES),
+        sha256=_SECTION_EVIDENCE_SHA256,
+    )
+    second_metric = "revenue" if shared_metric else "margin"
+    return _section_work_item().model_copy(
+        update={
+            "analysisIds": ("analysis_001", "analysis_002"),
+            "evidence": (
+                AnalysisEvidence(
+                    analysisId="analysis_001",
+                    summary="summary",
+                    datasetIds=("dataset_001",),
+                    evidenceFiles=(identity,),
+                    citationIds=("citation_001",),
+                    metrics=("revenue",),
+                ),
+                AnalysisEvidence(
+                    analysisId="analysis_002",
+                    summary="summary",
+                    datasetIds=("dataset_001",),
+                    evidenceFiles=(identity,),
+                    citationIds=("citation_001",),
+                    metrics=(second_metric,),
+                ),
+            ),
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+                SectionManagementQuestion(ref="analysis_002", question="利润表现如何？"),
+            ),
+        }
+    )
+
+
+def test_section_plan_validator_backfills_single_catalog_ref() -> None:
+    work_item = _section_work_item().model_copy(
+        update={
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+            ),
+        }
+    )
+    validator = _plan_stage_validator(work_item)
+
+    result = validator(json.dumps(_render_plan_payload(), ensure_ascii=False))
+
+    assert result.root.claims[0].management_question_ref == "analysis_001"
+
+
+def test_section_plan_validator_backfills_unique_metric_mapping() -> None:
+    work_item = _dual_analysis_work_item(shared_metric=False)
+    validator = _plan_stage_validator(work_item)
+
+    result = validator(json.dumps(_render_plan_payload("margin"), ensure_ascii=False))
+
+    assert result.root.claims[0].management_question_ref == "analysis_002"
+
+
+def test_section_plan_validator_keeps_ambiguous_missing_ref_failing() -> None:
+    work_item = _dual_analysis_work_item(shared_metric=True)
+    validator = _plan_stage_validator(work_item)
+
+    with pytest.raises(ValidationError) as raised:
+        validator(json.dumps(_render_plan_payload(), ensure_ascii=False))
+
+    assert raised.value._report_candidate["claims"][0]["claimId"] == "claim_001"
+
+
+def test_section_plan_validator_never_overrides_present_ref() -> None:
+    work_item = _dual_analysis_work_item(shared_metric=False)
+    validator = _plan_stage_validator(work_item)
+    payload = _render_plan_payload("margin")
+    payload["claims"][0]["managementQuestionRef"] = "analysis_999"
+
+    result = validator(json.dumps(payload, ensure_ascii=False))
+
+    assert result.root.claims[0].management_question_ref == "analysis_999"
+
+
+def test_section_plan_validator_never_overrides_explicit_null_ref() -> None:
+    work_item = _dual_analysis_work_item(shared_metric=False)
+    validator = _plan_stage_validator(work_item)
+    payload = _render_plan_payload("margin")
+    payload["claims"][0]["managementQuestionRef"] = None
+
+    with pytest.raises(ValidationError) as raised:
+        validator(json.dumps(payload, ensure_ascii=False))
+
+    assert raised.value._report_candidate["claims"][0]["managementQuestionRef"] is None
+
+
+@pytest.mark.anyio
+async def test_section_generation_attaches_response_validator_to_plan_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _section_work_item().model_copy(
+        update={
+            "metric_definitions": (
+                MetricDefinition(
+                    code="revenue",
+                    name="收入",
+                    definition="收入合计",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+            ),
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+            ),
+        }
+    )
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_run_stage(_agent, _schema, stage, payload, **kwargs):
+        captured[stage] = kwargs.get("response_validator")
+        if stage == "plan":
+            return SectionPlanOutput.model_validate(
+                {
+                    "kind": "render",
+                    "sectionCode": "section_001",
+                    "blocks": [
+                        {"blockId": "block_001", "objective": "说明收入", "claimIds": ["claim_001"]}
+                    ],
+                    "claims": [
+                        {
+                            "claimId": "claim_001",
+                            "metricCode": "revenue",
+                            "value": 100,
+                            "managementQuestionRef": "analysis_001",
+                            "currentPeriod": "2025年",
+                            "citationIds": ["citation_001"],
+                        }
+                    ],
+                }
+            )
+        return SectionBlockContent(
+            markdown=f"### {payload['blockPlan']['objective']}\n\n收入为100元。"
+        )
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+
+    await reporting_sections._generate_section_in_blocks(
+        object(),
+        {
+            "reportGoal": "分析2025年收入",
+            "sectionGoal": {"sectionCode": "section_001"},
+            "sectionWorkItem": work_item.model_dump(mode="json", by_alias=True),
+        },
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+            attempt=0,
+            configured_budget_cap=8192,
+            thinking_enabled=True,
+        ),
+    )
+
+    assert callable(captured["plan"])
+    assert captured["block-1"] is None
+
+
 @pytest.mark.anyio
 async def test_section_generation_plans_then_renders_each_block_serially(
     monkeypatch: pytest.MonkeyPatch,
@@ -1009,11 +1322,34 @@ async def test_section_generation_plans_then_renders_each_block_serially(
         factSummaries=("收入为100元",),
     )
     stages: list[str] = []
+    decisions = []
 
-    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+    async def fake_run_stage(_agent, _schema, stage, payload, **kwargs):
         stages.append(stage)
+        decisions.append(select_reporting_thinking(kwargs["thinking_request"]))
         if stage == "plan":
             assert "evidence" not in payload
+            assert payload["requiredOutputShape"] == {
+                "kind": "render",
+                "sectionCode": "section_001",
+                "blocks": [
+                    {
+                        "blockId": "block_001",
+                        "objective": "当前 block 的写作目标",
+                        "claimIds": ["claim_001"],
+                    }
+                ],
+                "claims": [
+                    {
+                        "claimId": "claim_001",
+                        "metricCode": "必须来自 allowedMetricCodes",
+                        "value": "必须来自证据",
+                        "managementQuestionRef": "必须来自 managementQuestionRefs",
+                        "citationIds": ["必须来自当前 citations"],
+                        "chartIds": [],
+                    }
+                ],
+            }
             return SectionPlanOutput.model_validate(
                 {
                     "kind": "render",
@@ -1060,12 +1396,117 @@ async def test_section_generation_plans_then_renders_each_block_serially(
         work_item,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+            attempt=0,
+            configured_budget_cap=8192,
+            thinking_enabled=True,
+        ),
     )
 
     assert stages == ["plan", "block-1", "block-2"]
+    assert [(item.operation, item.enabled, item.thinking_budget, item.attempt) for item in decisions] == [
+        ("section_planning", True, 2048, 0),
+        ("section_generation", False, 0, 0),
+        ("section_generation", False, 0, 0),
+    ]
     assert isinstance(result, RenderSectionDecision)
     assert tuple(block.block_id for block in result.blocks) == ("block_001", "block_002")
     assert all(block.claim_ids == ("claim_001",) for block in result.blocks)
+
+
+@pytest.mark.anyio
+async def test_section_recovery_uses_one_bounded_thinking_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _section_work_item()
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+    decisions = []
+
+    async def fake_run_stage(_agent, _schema, _stage, _payload, **kwargs):
+        request = kwargs["thinking_request"]
+        decisions.append(select_reporting_thinking(request))
+        return SectionPlanOutput.model_validate(
+            {
+                "kind": "rework",
+                "sectionCode": "section_001",
+                "analysisIds": ["analysis_001"],
+                "reason": "缺少月度收入事实",
+                "missingEvidence": ["月度收入事实"],
+            }
+        )
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {
+            "reportGoal": "分析2025年收入",
+            "sectionGoal": {"sectionCode": "section_001"},
+            "sectionWorkItem": work_item.model_dump(mode="json", by_alias=True),
+        },
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        recovery={"code": "report_phase_output_invalid"},
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+            attempt=1,
+            failure_kind="schema_failure",
+            configured_budget_cap=8192,
+            thinking_enabled=True,
+        ),
+    )
+
+    assert isinstance(result, AnalysisReworkDecision)
+    assert [(item.operation, item.thinking_budget, item.attempt) for item in decisions] == [
+        ("section_planning", 2048, 1)
+    ]
+
+
+def test_section_block_does_not_inherit_outer_plan_recovery() -> None:
+    recovery_request = ThinkingRequest(
+        operation="section_generation",
+        complexity="standard",
+        attempt=1,
+        failure_kind="schema_failure",
+    )
+
+    plan_request = reporting_sections._section_stage_thinking_request(recovery_request, "plan")
+    block_request = reporting_sections._section_stage_thinking_request(recovery_request, "block-1")
+
+    assert select_reporting_thinking(plan_request).thinking_budget == 2048
+    assert select_reporting_thinking(block_request).thinking_budget == 0
+    assert block_request.operation == "section_generation"
+    assert block_request.attempt == 0
+    assert block_request.failure_kind is None
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "expected"),
+    [
+        ({"code": "report_phase_output_invalid"}, "schema_failure"),
+        ({"code": "report_draft_heading_parent_missing"}, None),
+        ({"code": "report_section_submit_rejected"}, None),
+        ({"message": "章节重试"}, None),
+    ],
+)
+def test_section_recovery_only_classifies_structured_output_as_schema_failure(
+    diagnostic: dict[str, str], expected: str | None
+) -> None:
+    assert reporting_sections._section_recovery_failure_kind(diagnostic) == expected
 
 
 @pytest.mark.anyio
@@ -1170,6 +1611,10 @@ async def test_section_generation_locally_regenerates_block_with_missing_heading
         work_item,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+        ),
     )
 
     assert stages == ["plan", "block-1", "block-1", "block-2"]
@@ -1262,6 +1707,10 @@ async def test_section_generation_corrects_plan_references_before_rendering_bloc
         work_item,
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+        ),
     )
 
     assert stages == ["plan", "plan", "block-1"]
@@ -1398,6 +1847,10 @@ async def test_section_generation_projects_relevant_json_and_text_evidence_per_b
             work_item,
             scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
             run_context=_context(),
+            thinking_request=ThinkingRequest(
+                operation="section_generation",
+                complexity="standard",
+            ),
         )
 
     assert len(block_payloads) == 2
@@ -1636,23 +2089,35 @@ async def test_section_workflow_preserves_rejection_details_for_recovery() -> No
             section_code="section_001", blocks=(), claims=()
         )
 
-    result = await SectionWorkflow(
-        read_evidence=AsyncMock(return_value=_section_evidence_receipt()),
-        generate=AsyncMock(
-            return_value=AnalysisReworkDecision(
-                sectionCode="section_001",
-                analysisIds=("analysis_001",),
-                reason="缺少月度收入事实",
-                missingEvidence=("月度收入事实",),
-            )
-        ),
-        recover=recover,
-        render=AsyncMock(return_value={"status": "accepted"}),
-        rework=AsyncMock(return_value=rejected),
-    ).run(_section_work_item(), _context())
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        result = await SectionWorkflow(
+            read_evidence=AsyncMock(return_value=_section_evidence_receipt()),
+            generate=AsyncMock(
+                return_value=AnalysisReworkDecision(
+                    sectionCode="section_001",
+                    analysisIds=("analysis_001",),
+                    reason="缺少月度收入事实",
+                    missingEvidence=("月度收入事实",),
+                )
+            ),
+            recover=recover,
+            render=AsyncMock(return_value={"status": "accepted"}),
+            rework=AsyncMock(return_value=rejected),
+        ).run(_section_work_item(), _context())
+    finally:
+        logger.remove(sink_id)
 
     assert result.status == "accepted"
     assert result.recovery_used is True
+    assert any(
+        "report_section_submission_rejected"
+        " section_code=section_001"
+        " rejection_code=report_analysis_rework_unresolvable"
+        " recovery_scope=section" in message
+        for message in messages
+    )
 
 
 @pytest.mark.anyio

@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -8,11 +9,15 @@ from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.utils import string as agno_string
 from loguru import logger
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     create_reporting_generator_agent,
+)
+from smart_reporting.reporting.model_policy import (
+    ThinkingRequest,
+    current_reporting_thinking_decision,
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.structured_output import (
@@ -22,6 +27,7 @@ from smart_reporting.reporting.structured_output import (
 from smart_reporting.reporting.structured_output.execution import (
     _agent_for_mode,
     _correction_instruction,
+    _validation_issues,
 )
 from smart_reporting.reporting.structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -182,6 +188,105 @@ def test_structured_correction_omits_oversized_invalid_candidate() -> None:
     assert messages[0].content == "original instruction"
 
 
+def _section_plan_with_claims_missing_question_ref() -> dict:
+    return {
+        "kind": "render",
+        "sectionCode": "section_003",
+        "blocks": [
+            {"blockId": "block_001", "objective": "说明收入", "claimIds": ["claim_001", "claim_002"]}
+        ],
+        "claims": [
+            {"claimId": "claim_001", "metricCode": "revenue", "value": 100, "citationIds": ["c1"]},
+            {"claimId": "claim_002", "metricCode": "margin", "value": 10, "citationIds": ["c1"]},
+        ],
+    }
+
+
+def _section_plan_validation_error(candidate: dict) -> ValidationError:
+    with pytest.raises(ValidationError) as raised:
+        SectionPlanOutput.model_validate(candidate)
+    return raised.value
+
+
+def test_validation_issues_drop_derived_too_short_when_all_items_failed() -> None:
+    error = _section_plan_validation_error(_section_plan_with_claims_missing_question_ref())
+
+    issues = _validation_issues(error, schema=SectionPlanOutput)
+
+    assert [item["type"] for item in issues] == ["missing", "missing"]
+    assert {item["path"] for item in issues} == {
+        "$.render.claims[0].managementQuestionRef",
+        "$.render.claims[1].managementQuestionRef",
+    }
+
+
+def test_validation_issues_keep_genuine_too_short_without_item_failures() -> None:
+    error = _section_plan_validation_error(
+        {"kind": "render", "sectionCode": "section_003", "blocks": [], "claims": []}
+    )
+
+    issues = _validation_issues(error, schema=SectionPlanOutput)
+
+    assert {item["path"] for item in issues if item["type"] == "too_short"} == {
+        "$.render.blocks",
+        "$.render.claims",
+    }
+
+
+def test_validation_issues_keep_too_short_when_original_collection_is_short() -> None:
+    class Item(BaseModel):
+        value: int
+
+    class Payload(BaseModel):
+        items: tuple[Item, ...] = Field(min_length=2)
+
+    with pytest.raises(ValidationError) as raised:
+        Payload.model_validate({"items": [{"value": "invalid"}]})
+
+    issues = _validation_issues(raised.value, schema=Payload)
+
+    assert any(item["path"] == "$.items" and item["type"] == "too_short" for item in issues)
+
+
+def test_validation_issues_enrich_missing_field_with_schema_constraint() -> None:
+    error = _section_plan_validation_error(_section_plan_with_claims_missing_question_ref())
+
+    issues = _validation_issues(error, schema=SectionPlanOutput)
+
+    assert [item.get("constraint") for item in issues] == [
+        "格式 ^analysis_[0-9]{3,6}$",
+        "格式 ^analysis_[0-9]{3,6}$",
+    ]
+
+
+def test_validation_issues_find_enum_constraint_inside_nullable_union() -> None:
+    class Payload(BaseModel):
+        status: Literal["ready", "blocked"] | None
+
+    with pytest.raises(ValidationError) as raised:
+        Payload.model_validate({})
+
+    issues = _validation_issues(raised.value, schema=Payload)
+
+    assert issues == [
+        {
+            "path": "$.status",
+            "type": "missing",
+            "message": "Field required",
+            "constraint": "取值 ready|blocked",
+        }
+    ]
+
+
+def test_validation_issues_without_schema_keep_plain_missing_message() -> None:
+    error = _section_plan_validation_error(_section_plan_with_claims_missing_question_ref())
+
+    issues = _validation_issues(error)
+
+    assert all("constraint" not in item for item in issues)
+    assert issues[0]["message"] == "Field required"
+
+
 def test_reporting_agno_parser_recovers_later_complete_plan_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -282,6 +387,16 @@ def _schema_agent(schema: type[BaseModel] = _RequiredValue) -> Agent:
         {"standard": StructuredOutputMode.JSON_SCHEMA.value},
     )
     return Agent(model=model, output_schema=schema, retries=0)
+
+
+def _json_object_agent(schema: type[BaseModel] = _RequiredValue) -> Agent:
+    agent = _schema_agent(schema)
+    setattr(
+        agent.model,
+        REPORTING_STRUCTURED_MODES_MODEL_ATTR,
+        {"standard": StructuredOutputMode.JSON_OBJECT.value},
+    )
+    return agent
 
 
 def test_qwen_structured_mode_follows_dashscope_supported_model_matrix() -> None:
@@ -470,6 +585,72 @@ async def test_schema_transport_rejection_falls_back_with_original_instruction()
 
 
 @pytest.mark.anyio
+async def test_schema_correction_upgrades_data_understanding_thinking_budget() -> None:
+    executor = ReportingStructuredOutputExecutor(_json_object_agent(), idle_timeout_seconds=5)
+    responses = iter([{}, {"value": 7}])
+    observed_budgets: list[int | None] = []
+
+    async def execute_mode(*_args: object, **_kwargs: object) -> tuple[Agent, Mock]:
+        decision = current_reporting_thinking_decision()
+        observed_budgets.append(decision.thinking_budget if decision is not None else None)
+        return executor.agent, Mock(content=next(responses))
+
+    executor._execute_mode = execute_mode  # type: ignore[method-assign]
+
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-thinking-schema",
+        user_id="user-1",
+        thinking_request=ThinkingRequest(
+            operation="data_understanding",
+            complexity="standard",
+            configured_budget_cap=8192,
+        ),
+    )
+
+    assert observed_budgets == [2048, 4096]
+    assert result.content.value == 7
+
+
+@pytest.mark.anyio
+async def test_schema_transport_fallback_keeps_initial_thinking_budget() -> None:
+    executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
+    responses = iter(
+        [
+            RuntimeError("invalid response_format: json_schema is not supported"),
+            (executor.agent, Mock(content={"value": 7})),
+        ]
+    )
+    observed_budgets: list[int | None] = []
+
+    async def execute_mode(*_args: object, **_kwargs: object) -> tuple[Agent, Mock]:
+        decision = current_reporting_thinking_decision()
+        observed_budgets.append(decision.thinking_budget if decision is not None else None)
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    executor._execute_mode = execute_mode  # type: ignore[method-assign]
+
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-thinking-transport",
+        user_id="user-1",
+        thinking_request=ThinkingRequest(
+            operation="data_understanding",
+            complexity="standard",
+            configured_budget_cap=8192,
+        ),
+    )
+
+    assert observed_budgets == [2048, 2048]
+    assert result.content.value == 7
+
+
+@pytest.mark.anyio
 async def test_schema_transport_rejection_does_not_consume_business_corrections() -> None:
     executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
     invalid_outputs = [(executor.agent, Mock(content={"wrong": attempt})) for attempt in range(5)]
@@ -575,6 +756,36 @@ async def test_shared_call_budget_caps_nested_business_attempts() -> None:
         )
 
     repeated._execute_mode.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_exhausted_call_budget_does_not_select_thinking() -> None:
+    executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
+    executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
+        return_value=(executor.agent, Mock(content={"value": 22}))
+    )
+    budget = StructuredOutputCallBudget(max_model_calls=1, model_calls=1)
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record))
+    try:
+        with pytest.raises(ReportingError, match="业务调用已达到上限"):
+            await executor.execute(
+                "original instruction",
+                routing_context=None,
+                session_id="session-thinking-exhausted",
+                user_id="user-1",
+                call_budget=budget,
+                thinking_request=ThinkingRequest(
+                    operation="data_understanding",
+                    complexity="standard",
+                    configured_budget_cap=8192,
+                ),
+            )
+    finally:
+        logger.remove(sink_id)
+
+    assert not any(record["message"] == "report_thinking_selected" for record in records)
+    executor._execute_mode.assert_not_awaited()
 
 
 @pytest.mark.anyio

@@ -9,10 +9,12 @@ from typing import Any, Protocol
 from agno.run import RunContext
 from loguru import logger
 
+from ....model_routing import TaskComplexity
+from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
 from ...phase import reporting_python_script_failed
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
-from .code_generation import CodeGenerationResult
+from .code_generation import CodeGenerationResult, _code_failure_kind
 from .phase_models import ChartDraft, VisualizationPlanDraft
 
 GenerateVisualizationPlan = Callable[
@@ -59,6 +61,16 @@ _NON_RECOVERABLE_CODES = frozenset(
     }
 )
 _MAX_GENERATE_ATTEMPTS = 3
+
+
+def _visualization_thinking_complexity(payload: Mapping[str, Any]) -> TaskComplexity:
+    analysis_ids = payload.get("analysisIds")
+    count = len(analysis_ids) if isinstance(analysis_ids, (list, tuple)) else 0
+    if count <= 1:
+        return "simple"
+    if count <= 3:
+        return "standard"
+    return "complex"
 
 
 def _signed_script_path(payload: Mapping[str, Any]) -> str:
@@ -211,6 +223,8 @@ class VisualizationSectionWorkflow:
         inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
         load_script: LoadScript | None = None,
+        thinking_enabled: bool = True,
+        thinking_budget_cap: int = 8192,
     ) -> None:
         self.generate_plan = generate_plan
         self.generate_script = generate_script
@@ -219,11 +233,14 @@ class VisualizationSectionWorkflow:
         self.inspect_chart = inspect_chart
         self.submit = submit
         self.load_script = load_script
+        self.thinking_enabled = thinking_enabled
+        self.thinking_budget_cap = thinking_budget_cap
 
     async def run(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         plan = await self.generate_plan(payload, run_context)
+        thinking_complexity = _visualization_thinking_complexity(payload)
         if not plan.charts:
             receipt = await self.submit(plan, (), run_context)
             _raise_rejected_submission(receipt)
@@ -239,15 +256,28 @@ class VisualizationSectionWorkflow:
         if script_file is None:
             for generate_attempt in range(_MAX_GENERATE_ATTEMPTS):
                 try:
-                    generated = await self.generate_script(
-                        plan,
-                        run_context,
-                        diagnostic=(
-                            _repair_diagnostic(plan, generation_failure, script_path)
-                            if generation_failure is not None
-                            else None
-                        ),
+                    diagnostic = (
+                        _repair_diagnostic(plan, generation_failure, script_path)
+                        if generation_failure is not None
+                        else None
                     )
+                    failure_kind = _code_failure_kind(diagnostic)
+                    decision = select_reporting_thinking(
+                        ThinkingRequest(
+                            operation="visualization_script",
+                            complexity=thinking_complexity,
+                            attempt=1 if failure_kind is not None else 0,
+                            failure_kind=failure_kind,
+                            configured_budget_cap=self.thinking_budget_cap,
+                            thinking_enabled=self.thinking_enabled,
+                        )
+                    )
+                    with bind_reporting_thinking(decision):
+                        generated = await self.generate_script(
+                            plan,
+                            run_context,
+                            diagnostic=diagnostic,
+                        )
                     script_file = _ensure_script_identity(generated, script_path)
                     break
                 except Exception as error:
@@ -309,12 +339,25 @@ class VisualizationSectionWorkflow:
                 if attempt == 1 or self.repair_script is None:
                     raise
                 recovery_used = True
-                repaired = await self.repair_script(
-                    script_file,
-                    _repair_diagnostic(plan, error, script_path),
-                    _repair_task_facts(plan, error, script_path),
-                    run_context,
+                diagnostic = _repair_diagnostic(plan, error, script_path)
+                failure_kind = _code_failure_kind(diagnostic)
+                repair_decision = select_reporting_thinking(
+                    ThinkingRequest(
+                        operation="visualization_script",
+                        complexity=thinking_complexity,
+                        attempt=1 if failure_kind is not None else 0,
+                        failure_kind=failure_kind,
+                        configured_budget_cap=self.thinking_budget_cap,
+                        thinking_enabled=self.thinking_enabled,
+                    )
                 )
+                with bind_reporting_thinking(repair_decision):
+                    repaired = await self.repair_script(
+                        script_file,
+                        diagnostic,
+                        _repair_task_facts(plan, error, script_path),
+                        run_context,
+                    )
                 script_file = _ensure_script_identity(repaired, script_path)
 
         raise RuntimeError("可视化固定 Workflow 状态不可达")

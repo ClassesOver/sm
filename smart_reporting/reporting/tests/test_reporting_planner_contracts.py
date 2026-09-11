@@ -55,8 +55,13 @@ from smart_reporting.reporting.instructions import (
 )
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
+    ThinkingPolicyConfig,
+    ThinkingRequest,
     apply_reporting_thinking_profile,
+    bind_reporting_thinking,
+    current_reporting_thinking_decision,
     reporting_thinking_profile_from_model,
+    select_reporting_thinking,
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
@@ -64,6 +69,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_MODEL_TIER_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
 )
+from smart_reporting.reporting.structured_output import ReportingStructuredOutputExecutor
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
@@ -90,7 +96,6 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_dataset_inputs,
     _analysis_item_output_root,
     _analysis_item_thinking_policy,
-    _analysis_script_generation_budget,
     _analysis_summary_input_token_budget,
     _model_facing_deterministic_facts,
     _prepare_analysis_summary_request,
@@ -168,10 +173,16 @@ async def test_run_planner_maps_typed_context_hard_limit_without_message_matchin
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._scope = lambda _run_context: {"userId": "user-1"}
     run_context = SimpleNamespace(run_id="run-1")
+    agent = SimpleNamespace(id="report-test-planner")
+    agent._reporting_thinking = ThinkingPolicyConfig(
+        operation="data_understanding",
+        thinking_enabled=True,
+        configured_budget_cap=8192,
+    )
 
     with pytest.raises(ReportingError) as raised:
         await runtime._run_planner(
-            SimpleNamespace(id="report-test-planner"),
+            agent,
             {"request": "complex"},
             run_context,
         )
@@ -1860,67 +1871,33 @@ def test_analysis_item_thinking_policy_escalates_only_for_evidence_failures() ->
 
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason=None) == (
         "high",
-        2048,
+        1024,
         "simple",
     )
     assert _analysis_item_thinking_policy(plan, retry=False, retry_reason="schema_validation") == (
         "high",
-        2048,
+        1024,
         "simple",
     )
     assert _analysis_item_thinking_policy(standard, retry=False, retry_reason=None) == (
         "high",
-        4096,
+        2048,
         "standard",
     )
     assert _analysis_item_thinking_policy(complex_plan, retry=False, retry_reason=None) == (
         "high",
-        8192,
+        4096,
         "complex",
     )
     assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="evidence_incomplete") == (
         "max",
-        8192,
+        6144,
         "simple",
     )
-
-
-def test_analysis_script_generation_budget_follows_script_complexity() -> None:
-    assert (
-        _analysis_script_generation_budget({"metrics": ["income"], "datasetIds": ["ds-1"]}, None)
-        == 2048
-    )
-    assert (
-        _analysis_script_generation_budget(
-            {
-                "metrics": ["income"],
-                "datasetIds": ["ds-1"],
-                "comparisonBasis": ["yoy"],
-                "organizationGrain": ["area"],
-            },
-            None,
-        )
-        == 4096
-    )
-    assert (
-        _analysis_script_generation_budget(
-            {
-                "metrics": ["income", "volume"],
-                "datasetIds": ["ds-1", "ds-2"],
-                "comparisonBasis": ["yoy"],
-                "organizationGrain": ["area", "department"],
-                "actions": ["compare", "attribute", "recommend"],
-            },
-            None,
-        )
-        == 8192
-    )
-    assert (
-        _analysis_script_generation_budget(
-            {"metrics": ["income"], "datasetIds": ["ds-1"]},
-            {"code": "report_python_source_shape_invalid"},
-        )
-        == 8192
+    assert _analysis_item_thinking_policy(plan, retry=True, retry_reason="semantic_warning") == (
+        "high",
+        1024,
+        "simple",
     )
 
 
@@ -1958,7 +1935,7 @@ def test_analysis_evidence_still_requires_hashed_evidence_files_when_only_paths_
 
 
 @pytest.mark.anyio
-async def test_analysis_script_repair_uses_complex_budget(
+async def test_analysis_script_and_structured_stages_use_layered_request_budgets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task_context = RunContext(
@@ -1971,7 +1948,7 @@ async def test_analysis_script_repair_uses_complex_budget(
             }
         },
     )
-    observed: list[tuple[str, str, int]] = []
+    observed: list[tuple[str, str | None, int]] = []
     planner_requests: list[dict[str, Any]] = []
     code_prompts: list[dict[str, Any]] = []
     runtime: Any = object.__new__(ReportWorkflowRuntime)
@@ -1980,15 +1957,28 @@ async def test_analysis_script_repair_uses_complex_budget(
     runtime.state_repository = SimpleNamespace()
     runtime._analysis_evidence_agent = SimpleNamespace()
     runtime._analysis_summary_agent = SimpleNamespace()
+    runtime._analysis_thinking_enabled = True
+    runtime._analysis_thinking_budget_cap = 8192
 
-    async def run_planner(_agent, payload, _parent_context):
+    async def run_planner(_agent, payload, _parent_context, **kwargs):
         planner_requests.append(payload)
-        binding = task_context.dependencies["AgentOS 任务执行"]
+        operation = (
+            "analysis_summary"
+            if payload["analysisBlock"]["blockId"].endswith(":summary")
+            else "analysis_evidence"
+        )
+        decision = select_reporting_thinking(
+            ThinkingRequest(
+                operation=operation,
+                complexity=kwargs["thinking_complexity"],
+                configured_budget_cap=8192,
+            )
+        )
         observed.append(
             (
                 payload["analysisBlock"]["blockId"],
-                binding["reportingThinkingEffort"],
-                binding["reportingThinkingBudget"],
+                decision.reasoning_effort,
+                decision.thinking_budget,
             )
         )
         if payload["analysisBlock"]["blockId"].endswith(":summary"):
@@ -2009,7 +1999,8 @@ async def test_analysis_script_repair_uses_complex_budget(
             tool = self.tools[0]
             if tool.name == "read_file":
                 return await tool.entrypoint(path=request["scriptPath"])
-            binding = task_context.dependencies["AgentOS 任务执行"]
+            decision = current_reporting_thinking_decision()
+            assert decision is not None
             facts = request["facts"]
             observed.append(
                 (
@@ -2018,8 +2009,8 @@ async def test_analysis_script_repair_uses_complex_budget(
                         if "taskFacts" in facts
                         else "analysis_001:evidence:script:initial"
                     ),
-                    binding["reportingThinkingEffort"],
-                    binding["reportingThinkingBudget"],
+                    decision.reasoning_effort,
+                    decision.thinking_budget,
                 )
             )
             code_prompts.append(request)
@@ -2112,7 +2103,17 @@ async def test_analysis_script_repair_uses_complex_budget(
     )
 
     await runtime._execute_analysis_item_workflow(
-        '{"currentAnalysisId":"analysis_001"}',
+        json.dumps(
+            {
+                "currentAnalysisId": "analysis_001",
+                "currentAnalysis": {
+                    "datasetIds": ["dataset_001"],
+                    "metrics": ["income"],
+                    "comparisonBasis": ["yoy"],
+                    "organizationGrain": ["department"],
+                },
+            }
+        ),
         task_context,
         parent_run_context=RunContext(
             run_id="report-run-1", session_id="report-session-1", session_state={}
@@ -2121,8 +2122,8 @@ async def test_analysis_script_repair_uses_complex_budget(
 
     assert observed == [
         ("analysis_001:evidence:decision", "high", 2048),
-        ("analysis_001:evidence:script:initial", "high", 2048),
-        ("analysis_001:evidence:script:repair", "high", 8192),
+        ("analysis_001:evidence:script:initial", None, 0),
+        ("analysis_001:evidence:script:repair", "high", 2048),
         ("analysis_001:summary", "high", 2048),
     ]
     assert set(planner_requests[0]) == {
@@ -2325,7 +2326,7 @@ def test_visualization_instructions_describe_overridable_noto_cjk_default() -> N
     assert "fallback_to_default=False" not in instructions
 
 
-def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
+def test_planner_validation_is_exposed_to_structured_executor() -> None:
     planner = Agent(
         model=ReportingPhaseOpenAIChat(
             id="deepseek-v4-flash-0731",
@@ -2343,11 +2344,15 @@ def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
         planner,
         "report-data-understanding-planner",
         DataUnderstandingPlan,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="data_understanding",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
 
-    assert stage.retries == 2
-    assert stage.exponential_backoff is True
+    assert stage.retries == 0
+    assert stage.exponential_backoff is False
     assert stage.telemetry is False
     assert stage.model.retries == 0
     assert stage.model.extra_body == {"enable_thinking": False}
@@ -2357,7 +2362,7 @@ def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
         validator("{}")
 
 
-def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
+def test_runtime_planners_use_operation_thinking_policies() -> None:
     agent_template = Agent(
         model=ReportingPhaseOpenAIChat(
             id="deepseek-v4-flash-0731",
@@ -2401,34 +2406,164 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         "32000" not in instruction and "240 行" not in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
-    expected_profiles = (
-        (runtime._data_understanding_agent, False, None, None, "high"),
-        (runtime._measure_semantic_agent, False, None, None, "max"),
-        (runtime._analysis_agent, True, "high", 4096, "max"),
-        (runtime._analysis_evidence_agent, True, "high", 8192, "max"),
-        (runtime._analysis_script_agent, True, "high", 8192, "max"),
-        (runtime._sql_agent, False, None, None, "max"),
+    expected_policies = (
+        (runtime._request_normalizer, "request_normalization"),
+        (runtime._data_understanding_agent, "data_understanding"),
+        (runtime._measure_semantic_agent, "measure_semantics"),
+        (runtime._outline_agent, "outline_planning"),
+        (runtime._analysis_agent, "analysis_planning"),
+        (runtime._analysis_evidence_agent, "analysis_evidence"),
+        (runtime._analysis_summary_agent, "analysis_summary"),
+        (runtime._sql_agent, "sql_planning"),
     )
-    for stage, enabled, initial_effort, initial_budget, escalation_effort in expected_profiles:
-        profile = reporting_thinking_profile_from_model(stage.model)
-        assert profile.enabled is enabled
-        if enabled:
-            assert profile.reasoning_effort == initial_effort
-            assert profile.thinking_budget == initial_budget
-        escalation = getattr(stage.model, "_report_escalation_thinking_profile")
-        assert escalation.enabled is True
-        assert escalation.reasoning_effort == escalation_effort
-        assert escalation.thinking_budget == 8192
+    for stage, operation in expected_policies:
+        assert getattr(stage, "_reporting_thinking") == ThinkingPolicyConfig(
+            operation=operation,
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        )
+        assert not hasattr(stage.model, "_report_escalation_thinking_profile")
+        assert not hasattr(stage.model, "_report_thinking_escalation_fields")
 
-    summary_profile = reporting_thinking_profile_from_model(runtime._analysis_summary_agent.model)
-    assert summary_profile.enabled is False
-    assert (
-        getattr(runtime._analysis_summary_agent.model, "_report_escalation_thinking_profile")
-        is None
+
+def test_runtime_planner_policies_honor_disabled_thinking() -> None:
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(),
+        reporting_agent_template=Agent(
+            model=ReportingPhaseOpenAIChat(
+                id="deepseek-v4-flash-0731",
+                api_key="test",
+                reasoning_effort="high",
+                extra_body={"enable_thinking": True, "thinking_budget": 8192},
+            )
+        ),
+        task_runner=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_enable_thinking=False,
+        planner_thinking_budget=8192,
+        state_repository=SimpleNamespace(),
     )
 
+    stages = (
+        runtime._request_normalizer,
+        runtime._data_understanding_agent,
+        runtime._measure_semantic_agent,
+        runtime._outline_agent,
+        runtime._analysis_agent,
+        runtime._analysis_evidence_agent,
+        runtime._analysis_summary_agent,
+        runtime._sql_agent,
+    )
+    for stage in stages:
+        policy = getattr(stage, "_reporting_thinking")
+        assert select_reporting_thinking(
+            ThinkingRequest(
+                operation=policy.operation,
+                complexity="complex",
+                attempt=1,
+                failure_kind="schema_failure",
+                configured_budget_cap=policy.configured_budget_cap,
+                thinking_enabled=policy.thinking_enabled,
+            )
+        ).thinking_budget == 0
 
-def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
+
+@pytest.mark.parametrize(
+    ("operation", "failure_kind", "expected_budgets"),
+    [
+        ("data_understanding", "capability_mapping_failure", [2048, 4096]),
+        ("sql_planning", "sql_validation_failure", [2048, 4096]),
+    ],
+)
+@pytest.mark.anyio
+async def test_run_planner_passes_layered_thinking_request(
+    monkeypatch,
+    operation: str,
+    failure_kind: str,
+    expected_budgets: list[int],
+) -> None:
+    observed = []
+    content = DataUnderstandingPlan.model_construct()
+
+    class RecordingExecutor:
+        def __init__(self, _agent) -> None:
+            pass
+
+        async def execute(self, *_args, **kwargs):
+            request = kwargs["thinking_request"]
+            observed.append(request)
+            return SimpleNamespace(content=content, run_output=SimpleNamespace(metrics=None))
+
+    monkeypatch.setattr(reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor)
+    agent = Agent(
+        id=f"report-{operation}-planner",
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        output_schema=DataUnderstandingPlan,
+    )
+    setattr(
+        agent,
+        "_reporting_thinking",
+        ThinkingPolicyConfig(
+            operation=operation,
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
+    )
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _run_context: {"userId": "user-1"}
+    run_context = SimpleNamespace(run_id="run-1")
+
+    await runtime._run_planner(agent, {}, run_context)
+    await runtime._run_planner(
+        agent,
+        {"correction": {}},
+        run_context,
+        attempt=1,
+        failure_kind=failure_kind,
+    )
+
+    assert [select_reporting_thinking(request).thinking_budget for request in observed] == expected_budgets
+
+
+@pytest.mark.anyio
+async def test_run_planner_honors_disabled_thinking_policy(monkeypatch) -> None:
+    observed = []
+    content = DataUnderstandingPlan.model_construct()
+
+    class RecordingExecutor:
+        def __init__(self, _agent) -> None:
+            pass
+
+        async def execute(self, *_args, **kwargs):
+            observed.append(kwargs["thinking_request"])
+            return SimpleNamespace(content=content, run_output=SimpleNamespace(metrics=None))
+
+    monkeypatch.setattr(reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor)
+    agent = Agent(
+        id="report-data-understanding-planner",
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        output_schema=DataUnderstandingPlan,
+    )
+    setattr(
+        agent,
+        "_reporting_thinking",
+        ThinkingPolicyConfig(
+            operation="data_understanding",
+            thinking_enabled=False,
+            configured_budget_cap=8192,
+        ),
+    )
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _run_context: {"userId": "user-1"}
+
+    await runtime._run_planner(agent, {}, SimpleNamespace(run_id="run-1"))
+
+    assert select_reporting_thinking(observed[0]).thinking_budget == 0
+
+
+def test_runtime_planners_project_request_decision_to_vllm_chat_template() -> None:
     agent_template = Agent(
         model=ReportingPhaseOpenAIChat(
             id="deepseek-v4-flash-0731",
@@ -2454,12 +2589,17 @@ def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
         state_repository=SimpleNamespace(),
     )
 
-    request_params = runtime._analysis_agent.model.get_request_params()
+    decision = select_reporting_thinking(
+        ThinkingRequest(operation="analysis_planning", configured_budget_cap=8192)
+    )
+    with bind_reporting_thinking(decision):
+        request_model = runtime._analysis_agent.model._phase_request_model([])
+    request_params = request_model.get_request_params()
 
     assert "reasoning_effort" not in request_params
     assert request_params["extra_body"] == {
         "enable_thinking": True,
-        "thinking_budget": 4096,
+        "thinking_budget": 2048,
         "chat_template_kwargs": {
             "enable_thinking": True,
             "thinking": True,
@@ -2544,7 +2684,11 @@ def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_valida
         planner,
         "report-analysis-planner",
         AnalysisBundle,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
     payload = analysis_bundle(
         table="rj.dwd_hdc_income_summary_view",
@@ -2566,7 +2710,11 @@ def test_analysis_planner_normalizes_grain_into_dimensions_before_schema_validat
         planner,
         "report-analysis-planner",
         AnalysisBundle,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
     payload = analysis_bundle(
         table="rj.dwd_hdc_income_summary_view",
@@ -2586,7 +2734,11 @@ def test_analysis_planner_disables_blind_agno_retries() -> None:
         Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
         "report-analysis-planner",
         AnalysisBundle,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
 
     assert stage.retries == 0
@@ -2668,7 +2820,11 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
         Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
         "report-analysis-planner",
         AnalysisBundle,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
     planner_calls = 0
 
@@ -2731,7 +2887,11 @@ def test_analysis_planner_rejects_three_part_table_with_unrelated_source_prefix(
         planner,
         "report-analysis-planner",
         AnalysisBundle,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="analysis_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
     payload = analysis_bundle(
         table="rj.dwd_hdc_income_summary_view",
@@ -2810,7 +2970,7 @@ def test_measure_semantics_follow_cte_projection_alias() -> None:
 
 
 @pytest.mark.anyio
-async def test_planner_schema_validation_uses_agno_agent_retries(monkeypatch) -> None:
+async def test_structured_executor_retries_planner_schema_with_layered_budget(monkeypatch) -> None:
     attempts = 0
     request_profiles: list[ReportingThinkingProfile] = []
 
@@ -2838,20 +2998,27 @@ async def test_planner_schema_validation_uses_agno_agent_retries(monkeypatch) ->
         planner,
         "report-data-understanding-planner",
         DataUnderstandingPlan,
-        thinking_profile=ReportingThinkingProfile.off(),
-        escalation_thinking_profile=ReportingThinkingProfile.on(
-            reasoning_effort="high",
-            thinking_budget=8192,
+        thinking_policy=ThinkingPolicyConfig(
+            operation="data_understanding",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
         ),
     )
-    stage.delay_between_retries = 0
-
-    output = await stage.arun("plan")
+    output = await ReportingStructuredOutputExecutor(stage, idle_timeout_seconds=5).execute(
+        "plan",
+        routing_context=None,
+        session_id="planner-schema-thinking",
+        user_id="user-1",
+        thinking_request=ThinkingRequest(
+            operation="data_understanding",
+            configured_budget_cap=8192,
+        ),
+    )
 
     assert attempts == 2
     assert request_profiles == [
-        ReportingThinkingProfile.off(),
-        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=8192),
+        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=2048),
+        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=4096),
     ]
     assert isinstance(output.content, DataUnderstandingPlan)
 
@@ -2890,7 +3057,11 @@ def test_outline_validator_attaches_candidate_on_validation_error() -> None:
         planner,
         "report-outline-planner",
         ReportOutlineProposal,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="outline_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
     validator = getattr(stage.model, "_report_response_validator")
 
@@ -2975,7 +3146,11 @@ def _outline_planner_stage() -> Agent:
         Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
         "report-outline-planner",
         ReportOutlineProposal,
-        thinking_profile=ReportingThinkingProfile.off(),
+        thinking_policy=ThinkingPolicyConfig(
+            operation="outline_planning",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
     )
 
 

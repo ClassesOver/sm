@@ -51,7 +51,6 @@ from ..phase import (
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -67,7 +66,6 @@ from ..phase import (
     reporting_visualization_budget_contract_from_acceptance_contract,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_recovery_from_acceptance_contract,
-    reporting_visualization_registered_from_acceptance_contract,
     reporting_visualization_usage_from_run_context,
 )
 from .orchestration import record_step_model_metrics
@@ -305,9 +303,6 @@ class ReportingTaskCoordinator:
                 visual_inspection_mode = reporting_visual_inspection_mode_from_acceptance_contract(
                     acceptance_contract
                 )
-                visualization_registered = (
-                    reporting_visualization_registered_from_acceptance_contract(acceptance_contract)
-                )
                 visualization_tool_calls, visualization_script_failures = (
                     reporting_visualization_budget_from_acceptance_contract(acceptance_contract)
                 )
@@ -384,11 +379,6 @@ class ReportingTaskCoordinator:
                                 REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY: visualization_budget[
                                     "visualizationFactQueriesUsed"
                                 ],
-                                **(
-                                    {REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True}
-                                    if visualization_registered
-                                    else {}
-                                ),
                                 **(
                                     {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
                                     if visualization_recovery

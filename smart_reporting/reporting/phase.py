@@ -34,7 +34,6 @@ REPORTING_MODEL_TIER_DEPENDENCY_KEY = "reportingModelTier"
 REPORTING_MODEL_ID_DEPENDENCY_KEY = "reportingModelId"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
 REPORTING_THINKING_BUDGET_DEPENDENCY_KEY = "reportingThinkingBudget"
-REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY = "reportingVisualizationToolCalls"
 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY = "reportingVisualizationScriptFailures"
 REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY = "visualizationBudgetVersion"
@@ -164,30 +163,6 @@ def record_reporting_projection_metrics(
         current["inputTokenHardCap"] = (
             input_token_hard_cap if current_cap == 0 else min(current_cap, input_token_hard_cap)
         )
-
-
-def record_reporting_tool_event(event: Any) -> None:
-    """记录与 CLI 一致的工具完成/失败事件，只用于性能观测。"""
-
-    current = _REPORTING_PROJECTION_METRICS.get()
-    if current is None:
-        return
-    raw_event = getattr(event, "event", None) or getattr(event, "type", None)
-    event_type = str(getattr(raw_event, "value", raw_event) or "").replace("_", "").lower()
-    if event_type in {"toolcallcompleted", "toolcallerror"}:
-        current["toolEventCount"] += 1
-    if event_type == "modelrequestcompleted":
-        for field, alias in (
-            ("input_tokens", "modelInputTokens"),
-            ("output_tokens", "modelOutputTokens"),
-            ("total_tokens", "modelTotalTokens"),
-            ("reasoning_tokens", "modelReasoningTokens"),
-            ("cache_read_tokens", "modelCacheReadTokens"),
-            ("cache_write_tokens", "modelCacheWriteTokens"),
-        ):
-            value = getattr(event, field, None)
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                current[alias] += value
 
 
 def reporting_python_script_failed(result: Any) -> bool:
@@ -335,12 +310,6 @@ def _visualization_phase_contract(value: Any) -> Mapping[str, Any] | None:
         and contract.get("taskKind") in REPORTING_VISUALIZATION_TASK_KINDS
         else None
     )
-
-
-def reporting_visualization_registered_from_acceptance_contract(value: Any) -> bool:
-    # 图表提交已按章节完成，不存在全局登记状态。
-    _ = value
-    return False
 
 
 def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> bool:
@@ -573,11 +542,6 @@ def reporting_thinking_budget_from_run_context(run_context: RunContext | None) -
     return (
         budget if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0 else None
     )
-
-
-def reporting_visualization_registered_from_run_context(run_context: RunContext | None) -> bool:
-    _ = run_context
-    return False
 
 
 def reporting_visualization_recovery_from_run_context(run_context: RunContext | None) -> bool:

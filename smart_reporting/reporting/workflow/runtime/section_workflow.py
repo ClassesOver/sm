@@ -162,10 +162,12 @@ class SectionWorkflow:
                 )
                 if receipt.get("status") != "accepted":
                     rejection_code = str(receipt.get("code", "report_section_submit_rejected"))
-                    logger.bind(
-                        section_code=work_item.section_code,
-                        rejection_code=rejection_code,
-                    ).warning("report_section_submission_rejected")
+                    logger.warning(
+                        "report_section_submission_rejected section_code={} "
+                        "rejection_code={} recovery_scope=section",
+                        work_item.section_code,
+                        rejection_code,
+                    )
                     raise ReportingError(
                         rejection_code,
                         str(receipt.get("message", "章节终态提交未被接受。")),

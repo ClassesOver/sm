@@ -85,7 +85,7 @@ class CapabilityTokenVerifier(TokenVerifier):
             token=token,
             client_id=f"{database}:{user}",
             subject=str(user),
-            scopes=["reporting"],
+            scopes=["workflows:enterprise-reporting-workflow-v1:run"],
             expires_at=expires_at,
             claims={
                 "sub": str(user),

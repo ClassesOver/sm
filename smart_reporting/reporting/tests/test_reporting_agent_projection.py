@@ -16,7 +16,11 @@ from smart_reporting.reporting.agent import (
 )
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
 from smart_reporting.reporting.instructions import build_report_agent_instructions
-from smart_reporting.reporting.model_policy import resolve_reporting_input_token_hard_cap
+from smart_reporting.reporting.model_policy import (
+    ThinkingDecision,
+    bind_reporting_thinking,
+    resolve_reporting_input_token_hard_cap,
+)
 from smart_reporting.reporting.phase import (
     REPORTING_MODEL_ID_DEPENDENCY_KEY,
     REPORTING_MODEL_TIER_DEPENDENCY_KEY,
@@ -28,6 +32,8 @@ from smart_reporting.reporting.phase import (
     bind_reporting_run_context,
     reporting_task_kind_from_acceptance_contract,
     reporting_task_kind_from_run_context,
+    reporting_thinking_budget_from_acceptance_contract,
+    reporting_thinking_effort_from_acceptance_contract,
 )
 from smart_reporting.reporting.tools.capabilities import tools_for_task
 from smart_reporting.reporting.workflow.runtime.code_generation import (
@@ -141,6 +147,59 @@ def test_phase_agent_request_uses_model_id_selected_by_trusted_route() -> None:
 
     assert phase_model.id == "deepseek-v4-flash-0731"
     assert request_model.id == "qwen3.6-35b-a3b"
+
+
+def test_phase_agent_request_uses_bound_budget_without_mutating_shared_model() -> None:
+    context = _context("analysis", "analysis_item")
+    context.dependencies[REPORTING_TASK_DEPENDENCY].update(
+        {
+            REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: "off",
+            REPORTING_THINKING_BUDGET_DEPENDENCY_KEY: 8192,
+        }
+    )
+    phase_model = ReportingPhaseOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test-key",
+        reasoning_effort="max",
+        extra_body={"enable_thinking": True, "thinking_budget": 8192},
+    )
+    decision = ThinkingDecision(
+        operation="data_understanding",
+        complexity="standard",
+        enabled=True,
+        reasoning_effort="high",
+        thinking_budget=2048,
+        attempt=0,
+        reason="initial_policy",
+    )
+
+    with bind_reporting_run_context(context), bind_reporting_thinking(decision):
+        request_model = phase_model._phase_request_model([Message(role="user", content="test")])
+
+    assert request_model.extra_body == {"enable_thinking": True, "thinking_budget": 2048}
+    assert request_model.reasoning_effort == "high"
+    assert phase_model.extra_body == {"enable_thinking": True, "thinking_budget": 8192}
+    assert phase_model.reasoning_effort == "max"
+
+
+def test_acceptance_contract_thinking_fields_remain_parseable() -> None:
+    contract = {
+        "requirements": [
+            {
+                "parameters": {
+                    "phase": "section",
+                    "phaseContract": {
+                        "taskKind": "section",
+                        "thinkingEffort": "high",
+                        "thinkingBudget": 4096,
+                    },
+                }
+            }
+        ]
+    }
+
+    assert reporting_thinking_effort_from_acceptance_contract(contract) == "high"
+    assert reporting_thinking_budget_from_acceptance_contract(contract) == 4096
 
 
 def test_visualization_section_request_keeps_full_script_output_budget() -> None:

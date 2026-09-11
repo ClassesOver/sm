@@ -177,7 +177,7 @@ async def test_reporting_tools_work_over_authenticated_streamable_http() -> None
         workflows=[],
         mcp_server=MCPServerConfig(
             tools=create_reporting_mcp_tools(adapter),
-            enable_builtin_tools=False,
+            default_tools=False,
         ),
         mcp_auth=CapabilityTokenVerifier(secret),
         telemetry=False,

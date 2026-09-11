@@ -6,6 +6,7 @@ import json
 import pytest
 from loguru import logger
 
+from smart_reporting.reporting.model_policy import ThinkingDecision, bind_reporting_thinking
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.reporting.workflow.runtime.code_generation import (
@@ -26,6 +27,30 @@ class FakeAgent:
     async def arun(self, _prompt, **_kwargs):
         self.prompt = _prompt
         return await self.action(self)
+
+
+def test_fresh_code_agent_drops_reasoning_only_for_bound_off_decision() -> None:
+    template = FakeAgent(lambda _agent: None)
+    template.reasoning_model = object()
+    template.reasoning_agent = object()
+    runner = ReportingCodeGenerationRunner(agent=template)
+    off = ThinkingDecision(
+        operation="visualization_script",
+        complexity="complex",
+        enabled=False,
+        reasoning_effort=None,
+        thinking_budget=0,
+        attempt=0,
+        reason="initial_off",
+    )
+
+    with bind_reporting_thinking(off):
+        fresh = runner._fresh_agent()
+
+    assert fresh.reasoning_model is None
+    assert fresh.reasoning_agent is None
+    assert template.reasoning_model is not None
+    assert template.reasoning_agent is not None
 
 
 def identity(path: str, content: str) -> FileIdentity:
@@ -320,7 +345,7 @@ async def test_generate_rejects_zero_tool_calls_without_mutation():
 
 
 @pytest.mark.anyio
-async def test_repair_reads_once_then_uses_fresh_patch_agent():
+async def test_repair_reads_once_then_uses_source_generation_agent():
     script = identity("analysis/script.py", "print(1)\n")
     seen_tools = []
     agents = []
@@ -345,8 +370,8 @@ async def test_repair_reads_once_then_uses_fresh_patch_agent():
     result = await runner.repair(script, {"code": "bad"}, read_file, patch)
 
     assert result.script_file.sha256 == hashlib.sha256(b"print(2)\n").hexdigest()
-    assert seen_tools == ["read_file", "submit_python_source"]
-    assert agents[0] is not agents[1]
+    assert seen_tools == ["submit_python_source"]
+    assert len(agents) == 1
 
 
 @pytest.mark.anyio
@@ -386,77 +411,6 @@ async def test_repair_logs_script_base_info_at_info_level():
 
 
 @pytest.mark.anyio
-async def test_repair_rejects_reading_a_path_other_than_issued_script():
-    script = identity("analysis/script.py", "print(1)\n")
-
-    async def action(agent):
-        return await agent.tools[0].entrypoint(path="analysis/other.py")
-
-    async def read_file(**_kwargs):
-        pytest.fail("wrong read path must not reach callback")
-
-    async def patch(**_kwargs):
-        pytest.fail("wrong read path must not mutate")
-
-    with pytest.raises(ReportingError) as raised:
-        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
-            script, {}, read_file, patch
-        )
-
-    assert raised.value.code == "report_code_generation_read_invalid"
-    assert raised.value.details == {"path": script.path}
-
-
-@pytest.mark.anyio
-async def test_repair_rejects_a_second_read_before_write_stage():
-    script = identity("analysis/script.py", "print(1)\n")
-    reads = 0
-
-    async def action(agent):
-        await agent.tools[0].entrypoint(path=script.path)
-        await agent.tools[0].entrypoint(path=script.path)
-
-    async def read_file(**_kwargs):
-        nonlocal reads
-        reads += 1
-        return read_receipt(script)
-
-    async def patch(**_kwargs):
-        pytest.fail("second read must not reach write stage")
-
-    with pytest.raises(ReportingError) as raised:
-        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
-            script, {}, read_file, patch
-        )
-
-    assert raised.value.code == "report_code_generation_read_invalid"
-    assert reads == 1
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("output", [None, "print('direct source')"])
-async def test_repair_rejects_read_stage_without_a_read_tool_call(output):
-    script = identity("analysis/script.py", "print(1)\n")
-
-    async def action(_agent):
-        return output
-
-    async def read_file(**_kwargs):
-        pytest.fail("zero read tool calls must not reach callback")
-
-    async def patch(**_kwargs):
-        pytest.fail("zero read tool calls must not mutate")
-
-    with pytest.raises(ReportingError) as raised:
-        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
-            script, {}, read_file, patch
-        )
-
-    assert raised.value.code == "report_code_generation_read_invalid"
-    assert raised.value.details == {"path": script.path}
-
-
-@pytest.mark.anyio
 @pytest.mark.parametrize("output", [None, "print('direct source')"])
 async def test_repair_rejects_write_stage_without_a_patch(output):
     script = identity("analysis/script.py", "print(1)\n")
@@ -480,44 +434,35 @@ async def test_repair_rejects_write_stage_without_a_patch(output):
         )
 
     assert raised.value.code == "report_code_generation_no_source"
-    assert [agent.tools[0].name for agent in agents] == ["read_file", "submit_python_source"]
+    assert [agent.tools[0].name for agent in agents] == ["submit_python_source"]
 
 
 @pytest.mark.anyio
-async def test_repair_malformed_read_call_fails_before_a_fresh_retry_succeeds():
+async def test_repair_reads_directly_and_invokes_only_source_generation_agent():
     script = identity("analysis/script.py", "print(1)\n")
-    patch_calls = 0
+    reasoning_model = object()
+    reasoning_agent = object()
+    observed = []
 
-    async def malformed(agent):
-        await agent.tools[0].entrypoint()
-
-    async def read(agent):
-        return await agent.tools[0].entrypoint(path=script.path)
-
-    async def write(agent):
+    async def action(agent):
+        observed.append((agent.tools[0].name, agent.reasoning_model, agent.reasoning_agent))
+        if agent.tools[0].name == "read_file":
+            return await agent.tools[0].entrypoint(path=script.path)
         return await agent.tools[0].entrypoint(source=UPDATED_SOURCE)
 
-    actions = iter([malformed, read, write])
-    runner = ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(next(actions)))
+    template = FakeAgent(action)
+    template.reasoning_model = reasoning_model
+    template.reasoning_agent = reasoning_agent
 
     async def read_file(**_kwargs):
         return read_receipt(script)
 
     async def patch(**_kwargs):
-        nonlocal patch_calls
-        patch_calls += 1
-        return {"ok": True, "artifacts": [identity(script.path, "print(2)\n")]}
+        return {"ok": True, "artifacts": [identity(script.path, UPDATED_SOURCE)]}
 
-    with pytest.raises(ReportingError) as raised:
-        await runner.repair(script, {}, read_file, patch)
+    await ReportingCodeGenerationRunner(agent=template).repair(script, {}, read_file, patch)
 
-    assert raised.value.code == "report_code_generation_read_invalid"
-    assert patch_calls == 0
-
-    result = await runner.repair(script, {}, read_file, patch)
-
-    assert result.script_file.path == script.path
-    assert patch_calls == 1
+    assert observed == [("submit_python_source", reasoning_model, reasoning_agent)]
 
 
 @pytest.mark.anyio
@@ -660,7 +605,7 @@ async def test_repair_rejects_oversized_read_receipt_before_patch_prompt():
 
     assert raised.value.code == "report_code_generation_read_too_large"
     assert raised.value.details == {"path": script.path}
-    assert len(prompts) == 1
+    assert prompts == []
 
 
 @pytest.mark.anyio

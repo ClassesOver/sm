@@ -35,6 +35,7 @@ from pydantic import (
 
 from ....async_utils import complete_cleanup
 from ....context_management import TaskExecutionContextHardLimitError
+from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
@@ -130,8 +131,10 @@ from ...instructions import (
 from ...metadata import ReportingMetadataClient
 from ...model_policy import (
     ReportingThinkingProfile,
+    ThinkingFailureKind,
+    ThinkingPolicyConfig,
+    ThinkingRequest,
     apply_reporting_thinking_profile,
-    reporting_thinking_profile_from_model,
 )
 from ...models import ReportingError
 from ...phase import (
@@ -192,6 +195,12 @@ from ..query_pipeline import (
     state_contains_connection_data,
 )
 from ..repository import ReportingStateRepository
+from ..scope import (
+    REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY,
+    REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY,
+    reporting_scope_keys,
+    resolve_reporting_workflow_scope,
+)
 from ..state import ReportingCommand, ReportingStateError
 from ..state import ReportingPhase as DurableReportingPhase
 from .analysis_item_workflow import (
@@ -433,6 +442,7 @@ class _ReportWorkflowRuntimeBase:
         self.db = db
         self.reporting_agent_template = reporting_agent_template
         self._analysis_thinking_enabled = planner_enable_thinking
+        self._analysis_thinking_budget_cap = planner_thinking_budget
         self._vision_enabled = (
             bool(getattr(reporting_agent_template.model, "_report_vision_enabled", True))
             if vision_enabled is None
@@ -475,46 +485,20 @@ class _ReportWorkflowRuntimeBase:
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportService(workspace_service, data_sources=self.datasets)
         planner_off = ReportingThinkingProfile.off()
-        planner_high = (
-            ReportingThinkingProfile.on(
-                reasoning_effort="high",
-                thinking_budget=planner_thinking_budget,
-            )
-            if planner_enable_thinking
-            else planner_off
-        )
-        planner_max = (
-            ReportingThinkingProfile.on(
-                reasoning_effort="max",
-                thinking_budget=planner_thinking_budget,
-            )
-            if planner_enable_thinking
-            else planner_off
-        )
-        # 分析计划首次请求只需要整理已冻结的 Schema、画像能力和管理问题；将
-        # 首次推理预算减半可以避免每次正常请求都支付 max 档成本。结构化校验
-        # 或服务端 correction 仍通过 planner_max 使用完整预算，不能削弱失败修复能力。
-        planner_analysis_initial = (
-            ReportingThinkingProfile.on(
-                reasoning_effort="high",
-                thinking_budget=max(4096, planner_thinking_budget // 2),
-            )
-            if planner_enable_thinking
-            else planner_off
-        )
-        # DeepSeek V4 只有 off/high/max 三个真实档位。数据理解和指标语义 Planner
-        # 首次请求关闭 thinking，只有 Schema 校验失败或服务端签发 correction 时才升级；
-        # 分析计划首次使用 high，只有 Schema 校验失败或服务端签发 correction 时才升级 max，
-        # 因为正常请求只需整理已批准能力，失败修复才需要完整推理预算。
-        # SQL 在首次请求关闭 thinking，失败后升到 max；归一化和提纲始终 off。
         self._request_normalizer = self._planning_agent(
             reporting_agent_template,
             "report-request-normalizer",
             NormalizedReportPrompt,
-            thinking_profile=planner_off,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="request_normalization",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
-                "只归一化分析期间；领域优先由服务端别名规则识别，领域歧义状态返回澄清内容",
+                "根据用户整句语义归一化分析领域和分析期间；domains 只能使用输入指引中的领域代码",
+                "可返回多个 domains；topic 表示非全域专题，不表示只能包含一个领域",
+                "明确别名和整句语义可以共同确定领域；仅有‘成本’等仍无法区分具体领域的短词时返回澄清内容",
                 "不得推断或返回数据源、Agent、医院或系统标识",
                 "单个明确日历年份转换为该年1月1日至12月31日",
                 "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短且陈述式的 clarificationQuestion",
@@ -525,8 +509,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-data-understanding-planner",
             DataUnderstandingPlan,
-            thinking_profile=planner_off,
-            escalation_thinking_profile=planner_high,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="data_understanding",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "只选择完成报告目标所需的数据表",
                 "sourceId 必须与输入 Schema 完全一致",
@@ -549,8 +536,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-measure-semantic-proposer",
             MeasureSemanticProposal,
-            thinking_profile=planner_off,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="measure_semantics",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "这是待用户审核的候选，不是已确认业务事实；只依据输入 Schema、术语和受限数据画像分类",
                 "candidateFieldRefs 中每个字段必须且只能在 decisions 中出现一次，不得增加、遗漏或替换字段",
@@ -574,7 +564,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-outline-planner",
             ReportOutlineProposal,
-            thinking_profile=planner_off,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="outline_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
                 "只返回 reportType、中文报告标题、sections 和 assumptions；sections 每项只能包含 title 和 analysisIds",
@@ -588,8 +582,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-planner",
             AnalysisBundle,
-            thinking_profile=planner_analysis_initial,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="analysis_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
@@ -623,8 +620,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-evidence-planner",
             AnalysisEvidenceDecision,
-            thinking_profile=planner_high,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="analysis_evidence",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
                 "只返回 requiresSupplementalEvidence、reason、missingFacts，不得生成 script 或任何代码。",
@@ -636,15 +636,12 @@ class _ReportWorkflowRuntimeBase:
         if not isinstance(reporting_agent_template.model, OpenAIChat):
             raise TypeError("Report analysis code agent requires OpenAIChat")
         analysis_code_model = copy(reporting_agent_template.model)
-        apply_reporting_thinking_profile(analysis_code_model, planner_high)
+        apply_reporting_thinking_profile(analysis_code_model, planner_off)
         analysis_code_model.top_p = 1.0
         analysis_code_model.retries = 0
         analysis_code_model.exponential_backoff = False
-        setattr(
-            analysis_code_model,
-            "_report_escalation_thinking_profile",
-            planner_max,
-        )
+        analysis_code_model.__dict__.pop("_report_escalation_thinking_profile", None)
+        analysis_code_model.__dict__.pop("_report_thinking_escalation_fields", None)
         self._analysis_script_agent = create_reporting_code_agent(
             model=analysis_code_model,
             name="report-analysis-script-writer",
@@ -669,7 +666,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-analysis-summary-writer",
             AnalysisSummaryDraft,
-            thinking_profile=planner_off,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="analysis_summary",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
                 "优先给出结论、关键数值、构成或变化驱动，再说明可比性和数据限制；不得输出分析过程或虚构因果。",
@@ -684,8 +685,11 @@ class _ReportWorkflowRuntimeBase:
             reporting_agent_template,
             "report-sql-planner",
             GeneratedQueryBatch,
-            thinking_profile=planner_off,
-            escalation_thinking_profile=planner_max,
+            thinking_policy=ThinkingPolicyConfig(
+                operation="sql_planning",
+                thinking_enabled=planner_enable_thinking,
+                configured_budget_cap=planner_thinking_budget,
+            ),
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
                 "每项只生成一条 SELECT 或只读 CTE",
@@ -707,24 +711,18 @@ class _ReportWorkflowRuntimeBase:
         agent_id: str,
         output_schema: type[BaseModel],
         *,
-        thinking_profile: ReportingThinkingProfile,
-        escalation_thinking_profile: ReportingThinkingProfile | None = None,
-        thinking_escalation_fields: tuple[str, ...] = ("correction",),
+        thinking_policy: ThinkingPolicyConfig,
         stage_instructions: tuple[str, ...] = (),
     ) -> Agent:
         if not isinstance(planner.model, OpenAIChat):
             raise TypeError("Report planner requires OpenAIChat")
         planner_model = copy(planner.model)
-        apply_reporting_thinking_profile(planner_model, thinking_profile)
+        apply_reporting_thinking_profile(planner_model, ReportingThinkingProfile.off())
         planner_model.top_p = 1.0
         planner_model.retries = 0
         planner_model.exponential_backoff = False
-        setattr(
-            planner_model,
-            "_report_escalation_thinking_profile",
-            escalation_thinking_profile,
-        )
-        setattr(planner_model, "_report_thinking_escalation_fields", thinking_escalation_fields)
+        planner_model.__dict__.pop("_report_escalation_thinking_profile", None)
+        planner_model.__dict__.pop("_report_thinking_escalation_fields", None)
 
         def validate_response(content: Any) -> BaseModel:
             candidate = _planner_candidate(content)
@@ -741,7 +739,6 @@ class _ReportWorkflowRuntimeBase:
                 raise
 
         setattr(planner_model, "_report_response_validator", validate_response)
-        agent_retries = 0 if output_schema in {AnalysisBundle, AnalysisEvidenceDecision} else 2
         agent = planner.deep_copy(
             update={
                 "id": agent_id,
@@ -749,10 +746,9 @@ class _ReportWorkflowRuntimeBase:
                 "name": _PLANNER_DISPLAY_NAMES.get(agent_id, agent_id),
                 "role": "只根据已批准的结构、术语和画像生成结构化报表规划。",
                 "model": planner_model,
-                # 结构化执行器会显式回灌 ValidationError；这些阶段关闭 Agno 对同一
-                # 输入的盲重试，其他 planner 继续沿用既有 Agno retry 边界。
-                "retries": agent_retries,
-                "exponential_backoff": agent_retries > 0,
+                # 结构化执行器负责携带校验事实的有界重试，Agent 不再对相同输入盲重试。
+                "retries": 0,
+                "exponential_backoff": False,
                 "instructions": [
                     "只返回与 output_schema 匹配的 JSON。",
                     "不得输出分析过程、解释、Markdown 或 schema 之外的字段。",
@@ -780,6 +776,7 @@ class _ReportWorkflowRuntimeBase:
             }
         )
         agent.num_history_runs = None
+        setattr(agent, "_reporting_thinking", thinking_policy)
         return agent
 
     def workflow(self):
@@ -856,6 +853,7 @@ class _ReportWorkflowRuntimeBase:
 
         return create_reporting_workflow(
             db=self.db,
+            lifecycle=self,
             normalize_report_request=self.normalize_report_request,
             confirm_source=self.confirm_source,
             prepare_data_profile=self.prepare_data_profile,
@@ -880,7 +878,24 @@ class _ReportWorkflowRuntimeBase:
         run_context: RunContext,
         *,
         call_budget: StructuredOutputCallBudget | None = None,
+        thinking_complexity: TaskComplexity = "standard",
+        failure_kind: ThinkingFailureKind | None = None,
+        attempt: int = 0,
     ) -> BaseModel:
+        thinking_policy = getattr(agent, "_reporting_thinking", None)
+        if not isinstance(thinking_policy, ThinkingPolicyConfig):
+            raise ReportingError(
+                "report_thinking_policy_missing",
+                f"报表规划器缺少调用级 thinking 策略（{agent.id}）。",
+            )
+        thinking_request = ThinkingRequest(
+            operation=thinking_policy.operation,
+            complexity=thinking_complexity,
+            attempt=min(attempt, 1),
+            failure_kind=failure_kind,
+            configured_budget_cap=thinking_policy.configured_budget_cap,
+            thinking_enabled=thinking_policy.thinking_enabled,
+        )
         scope = self._scope(run_context)
         block_identity = payload.get("analysisBlock")
         if isinstance(block_identity, Mapping):
@@ -903,6 +918,7 @@ class _ReportWorkflowRuntimeBase:
                 # routing_context 读取，不把任务工具上下文传入无工具规划器。
                 agent_run_context=None,
                 call_budget=call_budget,
+                thinking_request=thinking_request,
             )
         except TaskExecutionContextHardLimitError as error:
             hard_limit_metrics = error.metrics
@@ -1036,7 +1052,7 @@ class _ReportWorkflowRuntimeBase:
             durable = await self.state_repository.get_or_create(
                 report_run_id=report_run_id,
                 external_run_id=scope["externalRunId"],
-                thread_id=scope["threadId"],
+                thread_id=scope["sessionId"],
                 owner_user_id=scope["userId"],
             )
         # 多个章节 child task 可以同时完成；CAS 冲突只重读当前版本并重放同一
@@ -1048,7 +1064,7 @@ class _ReportWorkflowRuntimeBase:
                     durable = await self.state_repository.get_or_create(
                         report_run_id=report_run_id,
                         external_run_id=scope["externalRunId"],
-                        thread_id=scope["threadId"],
+                        thread_id=scope["sessionId"],
                         owner_user_id=scope["userId"],
                     )
                 try:
@@ -1071,40 +1087,153 @@ class _ReportWorkflowRuntimeBase:
     @staticmethod
     def _scope(run_context: RunContext) -> dict[str, str]:
         state = _ReportWorkflowRuntimeBase._state(run_context)
-        value = (run_context.dependencies or {}).get("AgentOS 报表工作流")
-        if isinstance(value, dict):
-            scope = {
-                key: str(value.get(key) or "")
-                for key in ("externalRunId", "threadId", "userId", "database", "companyId")
-            }
-        else:
-            value = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
-            scope = (
-                {
-                    key: str(value.get(key) or "")
-                    for key in ("externalRunId", "threadId", "userId", "database", "companyId")
-                }
-                if isinstance(value, dict)
-                else {
-                    "externalRunId": str(run_context.run_id or ""),
-                    "threadId": str(run_context.session_id or ""),
-                    "userId": str(run_context.user_id or ""),
-                    "database": "",
-                    "companyId": "",
-                }
-            )
-        if not scope["database"] and not scope["companyId"]:
-            scope["database"] = "default"
-            scope["companyId"] = "default"
-        elif not scope["database"] or not scope["companyId"]:
-            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
-        if (
-            any(not item for key, item in scope.items() if key not in {"database", "companyId"})
-            or str(run_context.user_id or "") != scope["userId"]
-        ):
-            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
-        state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = dict(scope)
+        stored = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
+        scope = resolve_reporting_workflow_scope(
+            run_id=str(run_context.run_id or ""),
+            session_id=str(run_context.session_id or ""),
+            user_id=str(run_context.user_id or "") or None,
+            dependencies=(
+                dict(run_context.dependencies)
+                if isinstance(run_context.dependencies, Mapping)
+                else None
+            ),
+            stored_scope=stored if isinstance(stored, dict) and "sessionId" in stored else None,
+        ).as_state()
+        state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
+
+    def prepare_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        user_id: str | None,
+        dependencies: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        scope = resolve_reporting_workflow_scope(
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            dependencies=dependencies,
+        )
+        entrypoint = str(
+            (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
+        )
+        if entrypoint not in {"agentos", "cli"}:
+            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+        return {
+            REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
+            REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
+        }
+
+    async def start_run(self, run_id: str, session_state: dict[str, Any]) -> None:
+        value = session_state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
+        if not isinstance(value, dict):
+            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
+        scope = resolve_reporting_workflow_scope(
+            run_id=run_id,
+            session_id=str(value.get("sessionId") or ""),
+            user_id=str(value.get("userId") or "") or None,
+            stored_scope=value,
+        )
+        entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
+        if entrypoint not in {"agentos", "cli"}:
+            raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+        await self.state_repository.register_run(
+            report_run_id=run_id,
+            external_run_id=run_id,
+            entrypoint=entrypoint,
+            workflow_id="enterprise-reporting-workflow-v1",
+            agno_session_id=scope.session_id,
+            agno_run_id=run_id,
+            caller_session_id=scope.session_id if entrypoint == "cli" else None,
+            caller_run_id=run_id if entrypoint == "cli" else None,
+            thread_id=scope.session_id,
+            owner_user_id=scope.user_id,
+            database=scope.database,
+            company_id=scope.company_id,
+            status="running",
+        )
+        claimed = await self.state_repository.claim_workflow_thread(
+            thread_id=scope.thread_lease_key,
+            external_run_id=run_id,
+            owner_user_id=scope.user_id,
+        )
+        if not claimed:
+            await self.state_repository.update_run_status(run_id, status="failed")
+            raise ReportingError(
+                "report_workflow_thread_busy",
+                "当前 thread 已有进行中的报表工作流，请等待其结束。",
+            )
+
+    async def assert_resumable(self, run_id: str) -> None:
+        run = await self.state_repository.get_run_by_external(run_id)
+        if run is None or str(run.get("status")) != "paused":
+            raise ReportingError("report_workflow_not_paused", "Reporting Workflow 不处于暂停状态。")
+        keys = reporting_scope_keys(
+            database=str(run["database"]),
+            company_id=str(run["company_id"]),
+            user_id=str(run["owner_user_id"]),
+            thread_id=str(run["thread_id"]),
+            run_id=run_id,
+        )
+        owner = await self.state_repository.get_workflow_thread_owner(keys.thread_lease_key)
+        if owner is None or owner["external_run_id"] != run_id:
+            raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 不再拥有当前 thread。")
+
+    async def settle_run(self, run_id: str, status: str) -> None:
+        if status not in {"completed", "cancelled", "failed", "paused"}:
+            raise ValueError(f"未知 Reporting Workflow 状态：{status}")
+        if status == "paused":
+            await self.state_repository.update_run_status(run_id, status="paused")
+            return
+        run = await self.state_repository.get_run_by_external(run_id)
+        if run is None:
+            raise ReportingError("report_run_not_found", "Reporting run 不存在。")
+        await self.state_repository.update_run_status(
+            run_id,
+            status=status,
+            finalization_pending=True,
+        )
+        keys = reporting_scope_keys(
+            database=str(run["database"]),
+            company_id=str(run["company_id"]),
+            user_id=str(run["owner_user_id"]),
+            thread_id=str(run["thread_id"]),
+            run_id=run_id,
+        )
+        async with self.state_repository.workflow_thread_lifecycle_lock(
+            keys.thread_lease_key
+        ):
+            try:
+                await self.cleanup_terminal(
+                    {"thread_id": keys.workspace_key},
+                    str(run["agno_session_id"]),
+                    run_id,
+                )
+            except ReportingError as error:
+                if error.code != "report_sandbox_cleanup_failed":
+                    raise
+                loguru_logger.warning(
+                    "report_workflow_workspace_cleanup_deferred run_id={} workspace_key={}",
+                    run_id,
+                    keys.workspace_key,
+                )
+            released = await self.state_repository.release_workflow_thread(
+                thread_id=keys.thread_lease_key,
+                external_run_id=run_id,
+                owner_user_id=str(run["owner_user_id"]),
+            )
+            if not released:
+                raise ReportingError(
+                    "report_workflow_scope_mismatch",
+                    "Reporting Workflow thread owner 释放失败。",
+                )
+        await self.state_repository.update_run_status(
+            run_id,
+            status=status,
+            finalization_pending=False,
+        )
 
     @staticmethod
     def _workflow_result(state: dict[str, Any]) -> dict[str, Any]:

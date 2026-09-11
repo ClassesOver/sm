@@ -205,25 +205,6 @@ def _normalize_function_call_arguments(
     state[state_key] = items[-50:]
 
 
-def create_files_patch(files: list[dict[str, str]]) -> str:
-    lines: list[str] = []
-    for item in files:
-        content = item["content"].replace("\r\n", "\n").replace("\r", "\n")
-        content_lines = content.splitlines(keepends=True)
-        patch_lines = [line if line.endswith("\n") else f"{line}\n" for line in content_lines]
-        lines.extend(
-            [
-                "--- /dev/null\n",
-                f"+++ b/{item['path']}\n",
-                f"@@ -0,0 +1,{len(content_lines)} @@\n",
-                *(f"+{line}" for line in patch_lines),
-            ]
-        )
-        if content and not content.endswith("\n"):
-            lines.append("\\ No newline at end of file\n")
-    return "".join(lines)
-
-
 @dataclass(frozen=True)
 class ToolSpec:
     effect: str

@@ -27,10 +27,10 @@ from ..models import (
     ReportReviewSnapshot,
     ReportWorkflowControl,
 )
+from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
-REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
 REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY = "Reporting MCP 请求指纹"
 REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY = "Reporting MCP 已占用 thread"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
@@ -2041,7 +2041,7 @@ class ReportWorkflowController:
             content = content.model_dump(mode="json", by_alias=True)
         if "规范化报表请求" in name:
             stage = "request"
-            title = "补充分析期间"
+            title = "补充报表信息"
             allowed = {"clarificationQuestion"}
         elif "提纲" in name:
             stage = "outline"
