@@ -1609,7 +1609,14 @@ def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
 
 
 @pytest.mark.anyio
-async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps() -> None:
+@pytest.mark.parametrize(
+    ("requested_domain", "expected_domain"),
+    (("income", "income"), ("full_cost", "full_cost")),
+)
+async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv_for_fact_gaps(
+    requested_domain: str,
+    expected_domain: str,
+) -> None:
     context = DatasetAnalysisContext(
         profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
         profileModelView={},
@@ -1698,6 +1705,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
         REPORT_ANALYSIS_PLAN_STATE_KEY: [
             {
                 "code": "income",
+                "domain": requested_domain,
                 "description": "收入规模分析",
                 "managementQuestion": "收入规模如何？",
                 "primaryMetricFamily": "收入",
@@ -1711,7 +1719,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
     runtime._state = lambda _run_context: state
     runtime._envelope = lambda _run_context: SimpleNamespace(
-        domains=("income",), report_goal="分析收入规模"
+        domains=(requested_domain,), report_goal="分析医院经营主题"
     )
     runtime._profile = lambda _run_context: SimpleNamespace(metrics=())
     runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
@@ -1727,6 +1735,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
     )
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert analysis.domain == expected_domain
     assert analysis.dataset_ids == ("dataset-1", "attachment-dataset")
     assert (
         "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"

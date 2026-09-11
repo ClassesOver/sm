@@ -147,6 +147,9 @@ class MeasureSemanticProposal(_StrictModel):
 
 class AnalysisItem(_StrictModel):
     code: str = Field(min_length=1, max_length=128)
+    domain: (
+        Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"] | None
+    ) = None
     description: str = Field(min_length=1, max_length=2_000)
     management_question: str = Field(alias="managementQuestion", min_length=1, max_length=2_000)
     primary_metric_family: str = Field(alias="primaryMetricFamily", min_length=1, max_length=256)

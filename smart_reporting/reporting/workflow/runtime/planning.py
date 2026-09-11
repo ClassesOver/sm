@@ -88,7 +88,6 @@ from .base import (
     publication_result,
     re,
     require_sources,
-    resolve_domain_mentions,
     resolve_profile_capabilities,
     resolve_schema_snapshot,
 )
@@ -140,30 +139,6 @@ class RuntimePlanningMixin:
         request = workflow_input.request()
         feedback = self._feedback(step_input)
         if isinstance(request, ReportRequestEnvelope):
-            explicit_type = request.report_type
-            resolution = resolve_domain_mentions(f"{request.report_goal}\n{feedback or ''}")
-            if (
-                request.domains is None
-                and resolution.is_ambiguous
-                and explicit_type != "comprehensive"
-            ):
-                return StepOutput(
-                    content={"clarificationQuestion": "请明确主分析领域：全成本或费控。"}
-                )
-            domains = request.domains or (
-                DOMAIN_CODES
-                if explicit_type == "comprehensive" and resolution.is_ambiguous
-                else resolution.selected or None
-            )
-            report_type = _resolved_report_type(explicit_type, domains)
-            if report_type == "comprehensive" and domains is None:
-                domains = DOMAIN_CODES
-            request = request.model_copy(
-                update={
-                    "domains": domains,
-                    "report_type": report_type,
-                }
-            )
             self._record_request_context(state, request.report_goal, feedback)
             self._record_normalized_request(state, request)
             return StepOutput(
@@ -172,8 +147,6 @@ class RuntimePlanningMixin:
 
         assert isinstance(request, ReportPromptInput)
         self._record_request_context(state, request.prompt, feedback)
-        explicit_type = _explicit_report_type(request.prompt, feedback)
-        resolution = resolve_domain_mentions(f"{request.prompt}\n{feedback or ''}")
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
         if feedback:
             prompt_payload["supplement"] = feedback
@@ -184,32 +157,16 @@ class RuntimePlanningMixin:
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
         semantic_domains = tuple(dict.fromkeys(normalized.domains))
-        normalized_type = explicit_type or normalized.report_type
-        if normalized_type != "comprehensive" and not resolution.selected and not semantic_domains:
+        report_type = normalized.report_type
+        if report_type is None:
+            missing.append(normalized.clarification_question or "请明确报告是整体运营分析还是专题分析。")
+        if report_type == "topic" and not semantic_domains:
             missing.append(normalized.clarification_question or "请明确需要分析的业务主题。")
-        cost_ambiguity_resolved = bool({"full_cost", "cost_control"}.intersection(semantic_domains))
-        if (
-            resolution.is_ambiguous
-            and not cost_ambiguity_resolved
-            and normalized_type != "comprehensive"
-        ):
-            missing.append(normalized.clarification_question or "请明确主分析领域：全成本或费控。")
         if missing:
             return StepOutput(content={"clarificationQuestion": " ".join(dict.fromkeys(missing))})
         assert period is not None
-        domains = (
-            DOMAIN_CODES
-            if normalized_type == "comprehensive"
-            else tuple(
-                code
-                for code in DOMAIN_CODES
-                if code in resolution.selected or code in semantic_domains
-            )
-            or None
-        )
-        report_type = _resolved_report_type(normalized_type, domains)
-        if report_type == "comprehensive" and domains is None:
-            domains = DOMAIN_CODES
+        assert report_type is not None
+        domains = semantic_domains or DOMAIN_CODES
         envelope = ReportRequestEnvelope.from_untrusted(
             {
                 "version": "1",
@@ -1554,32 +1511,6 @@ def _period_bound_expressions(
         exp.Literal.string(period.start.isoformat()),
         exp.Literal.string(period.end.isoformat()),
     )
-
-
-def _explicit_report_type(*values: str | None) -> Literal["comprehensive", "topic"] | None:
-    text = "\n".join(value for value in values if isinstance(value, str))
-    found: set[Literal["comprehensive", "topic"]] = set()
-    if re.search(
-        r"(?:reportType\s*[:=]\s*comprehensive|(?:综合|整体)(?:运营|经营)?(?:分析)?(?:报告|情况)?)",
-        text,
-        re.I,
-    ):
-        found.add("comprehensive")
-    if re.search(r"(?:reportType\s*[:=]\s*topic|专题(?:分析)?报告|\S+专题)", text, re.I):
-        found.add("topic")
-    return next(iter(found)) if len(found) == 1 else None
-
-
-def _resolved_report_type(
-    explicit: Literal["comprehensive", "topic"] | None,
-    domains: tuple[str, ...] | None,
-) -> Literal["comprehensive", "topic"]:
-    """保留显式兼容值；否则由规范化领域范围确定报告类型。"""
-    if explicit is not None:
-        return explicit
-    if domains and len(domains) < len(DOMAIN_CODES):
-        return "topic"
-    return "comprehensive"
 
 
 def _model_table(table: Any) -> ModelTable:

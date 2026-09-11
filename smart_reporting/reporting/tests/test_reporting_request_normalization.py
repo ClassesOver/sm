@@ -65,14 +65,58 @@ async def test_normalize_uses_sentence_semantics_for_domains_not_covered_by_alia
 
 
 @pytest.mark.anyio
-async def test_normalize_keeps_clarification_when_semantics_do_not_resolve_cost() -> None:
+async def test_normalize_comprehensive_report_preserves_semantically_selected_domains() -> None:
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(
+        return_value=NormalizedReportPrompt(
+            reportType="comprehensive",
+            domains=("income", "budget", "full_cost"),
+        )
+    )
+    run_context = SimpleNamespace(session_state={})
+
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(
+            input="综合分析2025年医院收入、预算和成本",
+            additional_data=None,
+        ),
+        run_context,
+    )
+
+    assert output.content["reportType"] == "comprehensive"
+    assert output.content["domains"] == ["income", "budget", "full_cost"]
+
+
+@pytest.mark.anyio
+async def test_normalize_hospital_cost_analysis_selects_full_cost() -> None:
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._request_normalizer = object()
     runtime._run_planner = AsyncMock(
         return_value=NormalizedReportPrompt(
             reportType="topic",
-            domains=("income",),
-            clarificationQuestion="请明确成本指全成本还是费控。",
+            domains=("full_cost",),
+        )
+    )
+    run_context = SimpleNamespace(session_state={})
+
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(input="分析2025年医院成本", additional_data=None),
+        run_context,
+    )
+
+    assert output.content["reportType"] == "topic"
+    assert output.content["domains"] == ["full_cost"]
+
+
+@pytest.mark.anyio
+async def test_normalize_uses_semantic_decision_for_cost_without_keyword_clarification() -> None:
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(
+        return_value=NormalizedReportPrompt(
+            reportType="topic",
+            domains=("income", "full_cost"),
         )
     )
     run_context = SimpleNamespace(session_state={})
@@ -82,7 +126,33 @@ async def test_normalize_keeps_clarification_when_semantics_do_not_resolve_cost(
         run_context,
     )
 
-    assert output.content == {"clarificationQuestion": "请明确成本指全成本还是费控。"}
+    assert output.content["reportType"] == "topic"
+    assert output.content["domains"] == ["income", "full_cost"]
+
+
+@pytest.mark.anyio
+async def test_normalize_overall_operation_defaults_comprehensive_to_all_domains() -> None:
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(
+        return_value=NormalizedReportPrompt(reportType="comprehensive")
+    )
+    run_context = SimpleNamespace(session_state={})
+
+    output = await runtime.normalize_report_request(
+        SimpleNamespace(input="分析下2025年医院整体运营情况", additional_data=None),
+        run_context,
+    )
+
+    assert output.content["reportType"] == "comprehensive"
+    assert output.content["domains"] == [
+        "income",
+        "workload",
+        "budget",
+        "full_cost",
+        "cost_control",
+        "funds",
+    ]
 
 
 @pytest.mark.anyio
