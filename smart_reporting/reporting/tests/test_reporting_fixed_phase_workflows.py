@@ -129,6 +129,7 @@ async def test_analysis_executor_does_not_rerun_after_finalize_checkpoint(
         def _scope(_run_context: RunContext) -> dict[str, str]:
             return {
                 "externalRunId": "external-run",
+                "callerThreadId": "thread",
                 "threadId": "thread",
                 "userId": "user",
             }
