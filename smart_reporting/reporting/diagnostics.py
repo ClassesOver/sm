@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..runtime.observability import duration_ms
 from .data_source.starrocks import StarRocksDataSourceAdapter, StarRocksSourceConfig
 from .metadata import ReportingMetadataClient
 from .models import ReportingError
@@ -91,7 +92,7 @@ class ReportingDependencyDiagnostics:
             "report_dependency_diagnostics_completed status={} duration_ms={} "
             "starrocks_code={} metadata_code={} sandbox_code={}",
             response.status,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             starrocks.code,
             metadata.code,
             sandbox.code,
@@ -104,7 +105,7 @@ class ReportingDependencyDiagnostics:
             return StarRocksCheckResult(
                 ok=False,
                 code="starrocks_not_configured",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
         # 诊断路由可被重复调用，数据源数量又由部署配置决定；固定并发和单源时限
         # 共同约束数据库连接占用，不能让一个失联数据源无限阻塞整个 HTTP 请求。
@@ -120,7 +121,7 @@ class ReportingDependencyDiagnostics:
         return StarRocksCheckResult(
             ok=all(result.ok for result in results),
             code="ok" if all(result.ok for result in results) else "starrocks_connection_failed",
-            durationMs=_duration_ms(started_at),
+            durationMs=duration_ms(started_at),
             sources=results,
         )
 
@@ -139,13 +140,13 @@ class ReportingDependencyDiagnostics:
                 "report_dependency_check_failed dependency=starrocks source_id={} "
                 "code=starrocks_timeout duration_ms={}",
                 source.id,
-                _duration_ms(started_at),
+                duration_ms(started_at),
             )
             return StarRocksSourceCheckResult(
                 sourceId=source.id,
                 ok=False,
                 code="starrocks_timeout",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
 
     async def _check_starrocks_source(
@@ -203,13 +204,13 @@ class ReportingDependencyDiagnostics:
                 "report_dependency_check_completed dependency=starrocks source_id={} "
                 "code=ok duration_ms={}",
                 source.id,
-                _duration_ms(started_at),
+                duration_ms(started_at),
             )
         return StarRocksSourceCheckResult(
             sourceId=source.id,
             ok=ok,
             code=code,
-            durationMs=_duration_ms(started_at),
+            durationMs=duration_ms(started_at),
         )
 
     async def _check_metadata(self) -> DependencyCheckResult:
@@ -218,7 +219,7 @@ class ReportingDependencyDiagnostics:
             return DependencyCheckResult(
                 ok=False,
                 code="report_metadata_not_configured",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
         try:
             await self.metadata_client.query_agent()
@@ -241,7 +242,7 @@ class ReportingDependencyDiagnostics:
             return DependencyCheckResult(
                 ok=False,
                 code=error.code,
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
                 httpStatus=safe_http_status,
             )
         except Exception as error:
@@ -255,13 +256,13 @@ class ReportingDependencyDiagnostics:
             return DependencyCheckResult(
                 ok=False,
                 code="report_metadata_check_failed",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
         logger.debug(
             "report_dependency_check_completed dependency=metadata code=ok duration_ms={}",
-            _duration_ms(started_at),
+            duration_ms(started_at),
         )
-        return DependencyCheckResult(ok=True, code="ok", durationMs=_duration_ms(started_at))
+        return DependencyCheckResult(ok=True, code="ok", durationMs=duration_ms(started_at))
 
     async def _check_sandbox(self) -> DependencyCheckResult:
         started_at = perf_counter()
@@ -269,7 +270,7 @@ class ReportingDependencyDiagnostics:
             return DependencyCheckResult(
                 ok=False,
                 code="sandbox_not_configured",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
         try:
             await asyncio.wait_for(
@@ -280,12 +281,12 @@ class ReportingDependencyDiagnostics:
             logger.warning(
                 "report_dependency_check_failed dependency=sandbox code=sandbox_timeout "
                 "duration_ms={}",
-                _duration_ms(started_at),
+                duration_ms(started_at),
             )
             return DependencyCheckResult(
                 ok=False,
                 code="sandbox_timeout",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
         except Exception as error:
             _log_dependency_failure(
@@ -298,13 +299,13 @@ class ReportingDependencyDiagnostics:
             return DependencyCheckResult(
                 ok=False,
                 code="sandbox_unavailable",
-                durationMs=_duration_ms(started_at),
+                durationMs=duration_ms(started_at),
             )
         logger.debug(
             "report_dependency_check_completed dependency=sandbox code=ok duration_ms={}",
-            _duration_ms(started_at),
+            duration_ms(started_at),
         )
-        return DependencyCheckResult(ok=True, code="ok", durationMs=_duration_ms(started_at))
+        return DependencyCheckResult(ok=True, code="ok", durationMs=duration_ms(started_at))
 
 
 def create_reporting_dependency_diagnostics_router(
@@ -322,10 +323,6 @@ def create_reporting_dependency_diagnostics_router(
         )
 
     return router
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 def _log_dependency_failure(
@@ -347,7 +344,7 @@ def _log_dependency_failure(
         operation,
         source_id or "-",
         code,
-        _duration_ms(started_at),
+        duration_ms(started_at),
         http_status if http_status is not None else "-",
         ",".join(error_types) or "-",
         ",".join(str(value) for value in error_numbers) or "-",

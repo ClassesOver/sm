@@ -14,14 +14,11 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from ..context_management import clear_terminal_session_reasoning
+from .observability import duration_ms
 from .settings import DEFAULT_AGENT_DB_URL as SETTINGS_DEFAULT_AGENT_DB_URL
 from .settings import database_url_from_environment
 
 DEFAULT_AGENT_DB_URL = SETTINGS_DEFAULT_AGENT_DB_URL
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 def _session_type_name(value: Any) -> str:
@@ -106,7 +103,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
                 "agent_session_read_failed backend=postgresql session_type={} duration_ms={} "
                 "error_type={}",
                 _session_type_name(session_type),
-                _duration_ms(started_at),
+                duration_ms(started_at),
                 type(error).__name__,
             )
             raise
@@ -114,7 +111,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
             "agent_session_read_completed backend=postgresql session_type={} duration_ms={} "
             "found={}",
             _session_type_name(session_type),
-            _duration_ms(started_at),
+            duration_ms(started_at),
             str(result is not None).lower(),
         )
         return result
@@ -130,7 +127,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
                 "agent_session_write_failed backend=postgresql session_type={} duration_ms={} "
                 "error_type={}",
                 session_type,
-                _duration_ms(started_at),
+                duration_ms(started_at),
                 type(error).__name__,
             )
             raise
@@ -138,7 +135,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
             "agent_session_write_completed backend=postgresql session_type={} duration_ms={} "
             "stored={}",
             session_type,
-            _duration_ms(started_at),
+            duration_ms(started_at),
             str(result is not None).lower(),
         )
         return result

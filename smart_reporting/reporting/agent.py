@@ -48,6 +48,7 @@ from ..integrations.model_config import (
     uses_dashscope_qwen_thinking_protocol,
 )
 from ..model_routing import build_model_profiles
+from ..runtime.observability import duration_ms as elapsed_ms
 from ..runtime.settings import AgentSettings
 from ..skills import (
     create_skill_script_hook,
@@ -91,6 +92,7 @@ from .phase import (
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     ReportingPhase,
+    _nonnegative_int,
     current_reporting_run_context,
     record_reporting_projection_metrics,
     reporting_analysis_fact_usage_from_run_context,
@@ -178,10 +180,6 @@ _REPORT_CODE_CUSTOM_TOOL_REQUEST: ContextVar[bool] = ContextVar(
     "report_code_custom_tool_request",
     default=False,
 )
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
@@ -412,12 +410,9 @@ def _reserve_analysis_fact_query(
     stored = budgets.get(identity)
     stored = stored if isinstance(stored, dict) else {}
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
     budgets[identity] = {
-        "queriesUsed": count(stored.get("queriesUsed")),
-        "inFlightQueries": count(stored.get("inFlightQueries")) + 1,
+        "queriesUsed": _nonnegative_int(stored.get("queriesUsed")),
+        "inFlightQueries": _nonnegative_int(stored.get("inFlightQueries")) + 1,
     }
     state[REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY] = budgets
     return state, identity
@@ -433,12 +428,9 @@ def _finish_analysis_fact_query(
     if not isinstance(budgets, dict) or not isinstance((stored := budgets.get(identity)), dict):
         return
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
     budgets[identity] = {
-        "queriesUsed": count(stored.get("queriesUsed")) + 1,
-        "inFlightQueries": max(count(stored.get("inFlightQueries")) - 1, 0),
+        "queriesUsed": _nonnegative_int(stored.get("queriesUsed")) + 1,
+        "inFlightQueries": max(_nonnegative_int(stored.get("inFlightQueries")) - 1, 0),
     }
 
 
@@ -604,23 +596,23 @@ def _reporting_visualization_tool_budget(
     stored = budgets.get(identity)
     stored = stored if isinstance(stored, dict) else {}
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-    base_total = count(binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY))
-    base_script_failures = count(
+    base_total = _nonnegative_int(binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY))
+    base_script_failures = _nonnegative_int(
         binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY)
     )
-    attempt_limit = count(binding.get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)) or (
-        _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
+    attempt_limit = (
+        _nonnegative_int(binding.get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY))
+        or _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
     )
-    total_limit = count(binding.get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)) or (
+    total_limit = _nonnegative_int(
+        binding.get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)
+    ) or (
         _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
     )
-    attempted_count = count(stored.get("attemptedCount"))
-    successful_count = count(stored.get("successfulCount"))
-    script_failure_count = count(stored.get("scriptFailureCount"))
-    in_flight_count = count(stored.get("inFlightCount"))
+    attempted_count = _nonnegative_int(stored.get("attemptedCount"))
+    successful_count = _nonnegative_int(stored.get("successfulCount"))
+    script_failure_count = _nonnegative_int(stored.get("scriptFailureCount"))
+    in_flight_count = _nonnegative_int(stored.get("inFlightCount"))
     in_flight_tools = (
         dict(stored.get("inFlightToolCounts", {}))
         if isinstance(stored.get("inFlightToolCounts"), dict)
@@ -658,8 +650,8 @@ def _reporting_visualization_tool_budget(
             total_limit=total_limit,
         )
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
-    in_flight_read_units = count(stored.get("inFlightReadUnits"))
-    in_flight_fact_queries = count(stored.get("inFlightFactQueries"))
+    in_flight_read_units = _nonnegative_int(stored.get("inFlightReadUnits"))
+    in_flight_fact_queries = _nonnegative_int(stored.get("inFlightFactQueries"))
     budgets[identity] = {
         **stored,
         "baseTotal": base_total,
@@ -673,7 +665,7 @@ def _reporting_visualization_tool_budget(
         + int(counted_tool_name == "query_analysis_facts"),
         "inFlightToolCounts": {
             **in_flight_tools,
-            counted_tool_name: count(in_flight_tools.get(counted_tool_name)) + 1,
+            counted_tool_name: _nonnegative_int(in_flight_tools.get(counted_tool_name)) + 1,
         },
     }
     state[REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY] = budgets
@@ -724,25 +716,24 @@ def _finish_visualization_tool_budget(
     if not isinstance(stored, dict):
         return
 
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-    attempted_count = count(stored.get("attemptedCount")) + 1
-    successful_count = count(stored.get("successfulCount")) + int(succeeded)
-    script_failure_count = count(stored.get("scriptFailureCount"))
-    read_units_used = count(stored.get("readUnitsUsed"))
-    fact_queries_used = count(stored.get("factQueriesUsed"))
+    attempted_count = _nonnegative_int(stored.get("attemptedCount")) + 1
+    successful_count = _nonnegative_int(stored.get("successfulCount")) + int(succeeded)
+    script_failure_count = _nonnegative_int(stored.get("scriptFailureCount"))
+    read_units_used = _nonnegative_int(stored.get("readUnitsUsed"))
+    fact_queries_used = _nonnegative_int(stored.get("factQueriesUsed"))
     tool_counts = (
         dict(stored.get("toolCounts", {})) if isinstance(stored.get("toolCounts"), dict) else {}
     )
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
-    tool_counts[counted_tool_name] = count(tool_counts.get(counted_tool_name)) + 1
+    tool_counts[counted_tool_name] = _nonnegative_int(tool_counts.get(counted_tool_name)) + 1
     in_flight_tools = (
         dict(stored.get("inFlightToolCounts", {}))
         if isinstance(stored.get("inFlightToolCounts"), dict)
         else {}
     )
-    in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
+    in_flight_tools[counted_tool_name] = max(
+        _nonnegative_int(in_flight_tools.get(counted_tool_name)) - 1, 0
+    )
     script_failed = function_name == "run_python_script" and reporting_python_script_failed(result)
     script_failure_count += int(script_failed)
     if function_name == "run_python_script" and isinstance(result, Mapping):
@@ -785,7 +776,7 @@ def _finish_visualization_tool_budget(
     if count_exploration:
         read_units_used += int(read_segment_confirmed)
         fact_queries_used += int(counted_tool_name == "query_analysis_facts")
-    in_flight_count = max(count(stored.get("inFlightCount")) - 1, 0)
+    in_flight_count = max(_nonnegative_int(stored.get("inFlightCount")) - 1, 0)
     budgets[identity] = {
         **stored,
         "attemptedCount": attempted_count,
@@ -795,18 +786,22 @@ def _finish_visualization_tool_budget(
         "factQueriesUsed": fact_queries_used,
         "inFlightCount": in_flight_count,
         "inFlightReadUnits": max(
-            count(stored.get("inFlightReadUnits")) - int(counted_tool_name == "read_file"), 0
+            _nonnegative_int(stored.get("inFlightReadUnits"))
+            - int(counted_tool_name == "read_file"),
+            0,
         ),
         "inFlightFactQueries": max(
-            count(stored.get("inFlightFactQueries"))
+            _nonnegative_int(stored.get("inFlightFactQueries"))
             - int(counted_tool_name == "query_analysis_facts"),
             0,
         ),
         "toolCounts": tool_counts,
         "inFlightToolCounts": in_flight_tools,
     }
-    cumulative_total = count(stored.get("baseTotal")) + attempted_count
-    cumulative_script_failures = count(stored.get("baseScriptFailures")) + script_failure_count
+    cumulative_total = _nonnegative_int(stored.get("baseTotal")) + attempted_count
+    cumulative_script_failures = (
+        _nonnegative_int(stored.get("baseScriptFailures")) + script_failure_count
+    )
     if script_failed and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT:
         _stop_exhausted_visualization_budget(
             run_context,
@@ -817,7 +812,7 @@ def _finish_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
-            attempt_limit=count(
+            attempt_limit=_nonnegative_int(
                 (
                     run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
                     if isinstance(run_context.dependencies, Mapping)
@@ -825,7 +820,7 @@ def _finish_visualization_tool_budget(
                 ).get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)
             )
             or _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
-            total_limit=count(
+            total_limit=_nonnegative_int(
                 (
                     run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
                     if isinstance(run_context.dependencies, Mapping)
@@ -1642,26 +1637,13 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
 
     if not all(is_valid_delivery_url(url) for url in urls):
         return "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
-    parts = ["## 报表已生成", "报告已完成发布，可下载文件或在线预览。"]
-    detail_headers: list[str] = []
-    detail_values: list[str] = []
-    report_id = report.get("reportId")
-    revision = report.get("revision")
-    if isinstance(report_id, str) and report_id:
-        detail_headers.append("报告编号")
-        detail_values.append(f"`{report_id}`")
-    if isinstance(revision, int) and not isinstance(revision, bool):
-        detail_headers.append("修订版本")
-        detail_values.append(f"Revision {revision}")
-    if detail_headers:
-        parts.append(
-            f"| {' | '.join(detail_headers)} |\n"
-            f"| {' | '.join('---' for _ in detail_headers)} |\n"
-            f"| {' | '.join(detail_values)} |"
-        )
+    report_title = report.get("reportTitle")
+    if not isinstance(report_title, str) or not report_title.strip():
+        return "## 报告发布未完成\n\n未获取到有效的报表名称，请重试报表发布。"
+    parts = ["## 报表已生成", f"### {report_title.strip()}", "报告已完成发布。"]
     parts.append(
-        f"### 获取报告\n\n[**下载 PDF**]({pdf_url}) · "
-        f"[**下载 Word**]({word_url}) · [**在线预览**]({html_url})"
+        f"[**在线预览**]({html_url}) · [下载 PDF]({pdf_url}) · "
+        f"[下载 Word]({word_url})"
     )
     return "\n\n".join(parts)
 
@@ -2867,7 +2849,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         try:
             response = await OpenAIResponses.aresponse(request_model, messages, *args, **kwargs)
             self._clear_report_run_error()
-            duration_ms = _duration_ms(started_at)
+            duration_ms = elapsed_ms(started_at)
             logger.bind(
                 model_id=request_model.id,
                 duration_ms=duration_ms,
@@ -2883,7 +2865,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return response
         except Exception as error:
             self._record_report_run_error(error)
-            duration_ms = _duration_ms(started_at)
+            duration_ms = elapsed_ms(started_at)
             error_type = type(error).__name__
             logger.bind(
                 model_id=request_model.id,
@@ -2980,7 +2962,7 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         responses = list(super().invoke_stream(messages, *args, **kwargs))
         logger.debug(
             "report_facade_stream_buffer_completed mode=sync duration_ms={} chunk_count={}",
-            _duration_ms(started_at),
+            elapsed_ms(started_at),
             len(responses),
         )
         yield from _without_streamed_facade_tool_preamble(responses)
@@ -2999,7 +2981,7 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         ]
         logger.debug(
             "report_facade_stream_buffer_completed mode=async duration_ms={} chunk_count={}",
-            _duration_ms(started_at),
+            elapsed_ms(started_at),
             len(responses),
         )
         for response in _without_streamed_facade_tool_preamble(responses):
@@ -3307,7 +3289,7 @@ class ReportingCodeReasoningAgent(Agent):
         try:
             response = await super().arun(*args, **kwargs)
         except Exception as error:
-            duration_ms = _duration_ms(started_at)
+            duration_ms = elapsed_ms(started_at)
             error_type = type(error).__name__
             logger.bind(
                 model_id=model_id,
@@ -3336,7 +3318,7 @@ class ReportingCodeReasoningAgent(Agent):
                 if isinstance(run_status, RunStatus) and run_status != RunStatus.completed
                 else "missing_reasoning_content"
             )
-            duration_ms = _duration_ms(started_at)
+            duration_ms = elapsed_ms(started_at)
             logger.bind(
                 model_id=model_id,
                 duration_ms=duration_ms,
@@ -3352,7 +3334,7 @@ class ReportingCodeReasoningAgent(Agent):
             )
             raise RuntimeError(_REPORT_CODE_REASONING_DEGRADED_ERROR) from None
 
-        duration_ms = _duration_ms(started_at)
+        duration_ms = elapsed_ms(started_at)
         logger.bind(
             model_id=model_id,
             duration_ms=duration_ms,
@@ -3492,7 +3474,7 @@ def create_report_agent(
             "report_facade_tools_completed run_id={} duration_ms={} toolkit_count={} "
             "function_count={}",
             getattr(run_context, "run_id", None) or "-",
-            _duration_ms(started_at),
+            elapsed_ms(started_at),
             len(tools),
             sum(len(tool.async_functions) for tool in tools),
         )

@@ -3,11 +3,20 @@ from types import SimpleNamespace
 import pytest
 
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.phase import _nonnegative_int
 from smart_reporting.reporting.workflow import scope as scope_module
 from smart_reporting.reporting.workflow.scope import (
     reporting_scope_keys,
     resolve_reporting_workflow_scope,
 )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 0), (7, 7), (-1, 0), (True, 0), ("7", 0), (None, 0)],
+)
+def test_nonnegative_int_accepts_only_nonnegative_integers(value: object, expected: int) -> None:
+    assert _nonnegative_int(value) == expected
 
 
 def test_scope_keys_isolate_tenants_users_threads_and_runs() -> None:

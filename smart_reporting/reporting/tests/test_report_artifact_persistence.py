@@ -989,6 +989,7 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
             ],
         },
         "reportId": "report-1",
+        "reportTitle": "年度运营分析报告",
         "revision": 1,
         "pdfPath": "reports/report.pdf",
         "pdfSize": len(pdf),
@@ -1029,6 +1030,7 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
 
     result = await finalize(SimpleNamespace(), context)
 
+    assert result.content["reportTitle"] == "年度运营分析报告"
     assert result.content["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
     assert result.content["publicationGate"] == output["publicationGate"]
     runtime.issue_http_publication.assert_awaited_once_with(

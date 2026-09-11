@@ -23,6 +23,8 @@ from agno.session.team import TeamSession
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .runtime.observability import duration_ms
+
 SKILL_CONTENT_WINDOW = 10
 SKILL_PRUNE_MIN_CHARS = 5000
 SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "get_skill_script"})
@@ -119,10 +121,6 @@ _FORBIDDEN_SUMMARY_CONTENT = re.compile(
     r"[\"']?token[\"']?\s*[:=]",
     re.IGNORECASE,
 )
-
-
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 def _download_tiktoken_cache(cache_path: Path) -> None:
@@ -895,14 +893,11 @@ class ContextBudgetController(ProtectedCompressionManager):
             logger.warning(
                 "context_budget_token_count_failed model_id={} duration_ms={} error_type={}",
                 model_id,
-                _duration_ms(started_at),
+                duration_ms(started_at),
                 type(error).__name__,
             )
             token_count = _fallback_context_token_count(messages, tools, response_format)
         return token_count > self.input_token_budget
-
-    async def ashould_compress(self, messages, tools=None, model=None, response_format=None):
-        return self.should_compress(messages, tools, model, response_format)
 
     def compress(self, messages, run_metrics=None):
         # Canonical Agno messages must remain untouched. Projection happens in the model wrapper.
@@ -1056,7 +1051,7 @@ class TaskExecutionContextProjector:
             logger.warning(
                 "context_projection_token_count_failed model_id={} duration_ms={} error_type={}",
                 model_id,
-                _duration_ms(started_at),
+                duration_ms(started_at),
                 type(error).__name__,
             )
             return _fallback_context_token_count(messages, tools, response_format)
@@ -1527,7 +1522,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 "error_type={}",
                 model_id,
                 host,
-                _duration_ms(provider_started_at),
+                duration_ms(provider_started_at),
                 type(error).__name__,
             )
             raise
@@ -1538,7 +1533,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     "failed={}",
                     model_id,
                     host,
-                    _duration_ms(provider_started_at),
+                    duration_ms(provider_started_at),
                     str(failed).lower(),
                 )
             _TASK_EXECUTION_REQUEST_METRICS.reset(token)
@@ -1562,7 +1557,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 "error_type={}",
                 model_id,
                 host,
-                _duration_ms(provider_started_at),
+                duration_ms(provider_started_at),
                 type(error).__name__,
             )
             raise
@@ -1573,7 +1568,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     "failed={}",
                     model_id,
                     host,
-                    _duration_ms(provider_started_at),
+                    duration_ms(provider_started_at),
                     str(failed).lower(),
                 )
             _TASK_EXECUTION_REQUEST_METRICS.reset(token)
@@ -1592,7 +1587,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             for response in super().invoke_stream(projected, *args, **kwargs):
                 chunk_count += 1
                 if first_chunk_ms is None:
-                    first_chunk_ms = _duration_ms(provider_started_at)
+                    first_chunk_ms = duration_ms(provider_started_at)
                 _update_stream_tool_calls(response, tool_calls)
                 if tool_calls:
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
@@ -1607,7 +1602,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 "chunk_count={} error_type={}",
                 model_id,
                 host,
-                _duration_ms(provider_started_at),
+                duration_ms(provider_started_at),
                 chunk_count,
                 type(error).__name__,
             )
@@ -1619,7 +1614,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     "first_chunk_ms={} chunk_count={} failed={}",
                     model_id,
                     host,
-                    _duration_ms(provider_started_at),
+                    duration_ms(provider_started_at),
                     first_chunk_ms if first_chunk_ms is not None else "-",
                     chunk_count,
                     str(failed).lower(),
@@ -1642,7 +1637,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             async for response in super().ainvoke_stream(projected, *args, **kwargs):
                 chunk_count += 1
                 if first_chunk_ms is None:
-                    first_chunk_ms = _duration_ms(provider_started_at)
+                    first_chunk_ms = duration_ms(provider_started_at)
                 _update_stream_tool_calls(response, tool_calls)
                 if tool_calls:
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
@@ -1657,7 +1652,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                 "chunk_count={} error_type={}",
                 model_id,
                 host,
-                _duration_ms(provider_started_at),
+                duration_ms(provider_started_at),
                 chunk_count,
                 type(error).__name__,
             )
@@ -1669,7 +1664,7 @@ class ProjectedOpenAIChat(OpenAIChat):
                     "first_chunk_ms={} chunk_count={} failed={}",
                     model_id,
                     host,
-                    _duration_ms(provider_started_at),
+                    duration_ms(provider_started_at),
                     first_chunk_ms if first_chunk_ms is not None else "-",
                     chunk_count,
                     str(failed).lower(),

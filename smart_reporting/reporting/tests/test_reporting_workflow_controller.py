@@ -312,6 +312,7 @@ def test_completed_external_result_preserves_html_preview() -> None:
     output = SimpleNamespace(
         content={
             "reportId": "report-1",
+            "reportTitle": "年度运营分析报告",
             "revision": 1,
             "pdf": {"downloadUrl": "https://reports.example.com/report.pdf"},
             "word": {"downloadUrl": "https://reports.example.com/report.docx"},
@@ -332,6 +333,7 @@ def test_completed_external_result_preserves_html_preview() -> None:
     result = ReportWorkflowController._result(control, output)
 
     assert result["report"]["html"] == {"previewUrl": "https://reports.example.com/report.html"}
+    assert result["report"]["reportTitle"] == "年度运营分析报告"
 
 
 @pytest.mark.anyio

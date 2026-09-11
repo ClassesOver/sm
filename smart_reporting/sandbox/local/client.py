@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +27,7 @@ from ..contracts import (
     SessionRef,
     SessionSummary,
     WorkspaceBinding,
+    binding_digest,
 )
 from ..errors import (
     DependencyUnavailable,
@@ -53,12 +52,6 @@ _ERROR_TYPES = {
         SandboxPreflightFailed,
     )
 }
-
-
-def _binding_digest(binding: WorkspaceBinding, secret: bytes) -> str:
-    payload = binding.model_dump(mode="json", exclude={"idempotency_key"})
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hmac.new(secret, encoded, hashlib.sha256).hexdigest()
 
 
 class _LocalApi:
@@ -312,7 +305,7 @@ class LocalProvider:
             raise SandboxPolicyDenied(
                 "sandbox binding secret 未安全配置。", reason="invalid_binding_secret"
             )
-        return _binding_digest(binding, self._binding_secret)
+        return binding_digest(binding, self._binding_secret)
 
     def _handle(self, value: dict[str, Any]) -> LocalSandboxHandle:
         ref = SandboxRef.model_validate(value["ref"])

@@ -848,6 +848,7 @@ class _ReportWorkflowRuntimeBase:
                     thread_id=scope["threadId"],
                     output=content,
                 )
+            published["reportTitle"] = content["reportTitle"]
             published["publicationGate"] = content.get("publicationGate")
             return StepOutput(content=published)
 

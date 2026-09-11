@@ -2094,6 +2094,7 @@ class ReportWorkflowController:
             if isinstance(content, dict):
                 allowed = {
                     "reportId",
+                    "reportTitle",
                     "revision",
                     "pdf",
                     "word",
