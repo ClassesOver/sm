@@ -673,6 +673,7 @@ class RuntimePublicationMixin:
                 "auditSummary": gate.get("auditSummary", {}),
                 "jobId": result["jobId"],
                 "reportId": str(run_context.run_id),
+                "reportTitle": _frozen_outline(state).title,
                 "revision": int(result.get("revision", 0)) + 1,
                 "markdownPath": result["markdownPath"],
                 "pdfPath": result["pdfPath"],

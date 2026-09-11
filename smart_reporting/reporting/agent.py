@@ -1637,26 +1637,13 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
 
     if not all(is_valid_delivery_url(url) for url in urls):
         return "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
-    parts = ["## 报表已生成", "报告已完成发布，可下载文件或在线预览。"]
-    detail_headers: list[str] = []
-    detail_values: list[str] = []
-    report_id = report.get("reportId")
-    revision = report.get("revision")
-    if isinstance(report_id, str) and report_id:
-        detail_headers.append("报告编号")
-        detail_values.append(f"`{report_id}`")
-    if isinstance(revision, int) and not isinstance(revision, bool):
-        detail_headers.append("修订版本")
-        detail_values.append(f"Revision {revision}")
-    if detail_headers:
-        parts.append(
-            f"| {' | '.join(detail_headers)} |\n"
-            f"| {' | '.join('---' for _ in detail_headers)} |\n"
-            f"| {' | '.join(detail_values)} |"
-        )
+    report_title = report.get("reportTitle")
+    if not isinstance(report_title, str) or not report_title.strip():
+        return "## 报告发布未完成\n\n未获取到有效的报表名称，请重试报表发布。"
+    parts = ["## 报表已生成", f"### {report_title.strip()}", "报告已完成发布。"]
     parts.append(
-        f"### 获取报告\n\n[**下载 PDF**]({pdf_url}) · "
-        f"[**下载 Word**]({word_url}) · [**在线预览**]({html_url})"
+        f"[**在线预览**]({html_url}) · [下载 PDF]({pdf_url}) · "
+        f"[下载 Word]({word_url})"
     )
     return "\n\n".join(parts)
 
