@@ -381,9 +381,45 @@ async def test_daytona_python_runner_executes_from_workspace_root() -> None:
     assert "TTCollection" in executed
     assert "fontManager.addfont" in executed
     assert "replace(_reporting_matplotlibrc_temporary, _reporting_matplotlibrc)" in executed
-    assert executed.index("setdefault('MATPLOTLIBRC'") < executed.index("exec(compile(")
+    assert executed.index("setdefault('MATPLOTLIBRC'") < executed.index("_reporting_source =")
+    execution_line = next(
+        line for line in executed.splitlines() if line.startswith("exec(compile(")
+    )
+    assert execution_line == (
+        "exec(compile(_reporting_source, '<target_code>', 'exec'), globals(), globals())"
+    )
+    assert script not in execution_line
     assert repr(script) in executed
     assert result.script_hash == hashlib.sha256(script.encode()).hexdigest()
+
+
+@pytest.mark.anyio
+async def test_daytona_python_runner_preserves_error_tail_when_output_is_truncated() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    tail = "ValueError: final diagnostic"
+
+    async def code_run(_code: str, params: Any = None, timeout: int | None = None) -> Any:
+        del params, timeout
+        return SimpleNamespace(exit_code=1, result="x" * 1024 + "\n" + tail)
+
+    client.sandboxes[handle.ref.resource_id].process.code_run = code_run
+
+    result = await handle.execution.run_python_script(
+        RunPythonScriptRequest(
+            script="raise ValueError('final diagnostic')", output_limit_bytes=128
+        )
+    )
+
+    assert result.output_truncated is True
+    assert tail in result.stdout
+    assert len(result.stdout.encode("utf-8")) <= 128
 
 
 @pytest.mark.anyio

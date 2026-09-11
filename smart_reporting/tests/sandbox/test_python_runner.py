@@ -6,8 +6,19 @@ from smart_reporting.sandbox import (
     ExecutionStatus,
     RunPythonScriptRequest,
     RunPythonScriptResult,
+    python_runner,
 )
 from smart_reporting.sandbox.python_runner import PythonScriptRunner
+
+
+def test_bounded_python_output_preserves_exception_tail() -> None:
+    tail = b"ValueError: final diagnostic"
+
+    output, truncated = python_runner.bounded_python_output(b"x" * 1024 + b"\n" + tail, 128)
+
+    assert truncated is True
+    assert tail.decode() in output
+    assert len(output.encode("utf-8")) <= 128
 
 
 class RecordingExecution:

@@ -43,6 +43,51 @@ MAX_TASK_INSPECTION_TEXTS = 20
 MAX_TASK_INSPECTION_TEXT_LENGTH = 500
 MAX_TASK_INSPECTION_SUMMARY_LENGTH = 2000
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_FORBIDDEN_PATH_CALLS = frozenset(
+    {
+        "os.chdir",
+        "os.fchdir",
+        "os.getcwd",
+        "os.getcwdb",
+        "os.path.abspath",
+        "os.path.dirname",
+        "os.path.join",
+        "os.path.normpath",
+        "os.path.realpath",
+        "os.path.relpath",
+        "pathlib.Path.cwd",
+    }
+)
+_PATH_ARGUMENT_CALLS = frozenset(
+    {
+        "open",
+        "io.open",
+        "os.makedirs",
+        "os.mkdir",
+        "pathlib.Path",
+    }
+)
+_PATH_ARGUMENT_METHODS = frozenset(
+    {
+        "imread",
+        "imsave",
+        "read_csv",
+        "read_excel",
+        "read_feather",
+        "read_json",
+        "read_parquet",
+        "read_pickle",
+        "savefig",
+        "to_csv",
+        "to_excel",
+        "to_json",
+        "to_parquet",
+        "to_pickle",
+    }
+)
+_PATH_ARGUMENT_KEYWORDS = frozenset(
+    {"file", "filename", "filepath_or_buffer", "fname", "path", "path_or_buf"}
+)
 
 
 def _code_failure_kind(
@@ -152,31 +197,133 @@ def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int)
     return source
 
 
-def _compile_python_source(path: str, source: str) -> None:
+def _import_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                bound_name = item.asname or item.name.split(".", 1)[0]
+                aliases[bound_name] = item.name if item.asname else bound_name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for item in node.names:
+                if item.name != "*":
+                    aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+    return aliases
+
+
+def _qualified_name(node: ast.AST, aliases: Mapping[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        owner = _qualified_name(node.value, aliases)
+        return f"{owner}.{node.attr}" if owner else node.attr
+    return None
+
+
+def _literal_bindings(tree: ast.AST) -> dict[str, ast.AST]:
+    values: dict[str, ast.AST] = {}
+    ambiguous: set[str] = set()
+    for node in ast.walk(tree):
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(node, (ast.Assign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if len(targets) == 1:
+                target, value = targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        if isinstance(target, ast.Name) and value is not None:
+            if target.id in values:
+                ambiguous.add(target.id)
+            else:
+                values[target.id] = value
+    for name in ambiguous:
+        values.pop(name, None)
+    return values
+
+
+def _literal_string(
+    node: ast.AST, bindings: Mapping[str, ast.AST], seen: frozenset[str] = frozenset()
+) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
+        return _literal_string(bindings[node.id], bindings, seen | {node.id})
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _literal_string(node.left, bindings, seen)
+        right = _literal_string(node.right, bindings, seen)
+        return left + right if left is not None and right is not None else None
+    return None
+
+
+def _signed_paths(value: Any, *, field_name: str = "") -> set[str]:
+    paths: set[str] = set()
+    normalized_field = field_name.lower().replace("_", "")
+    if isinstance(value, str) and normalized_field.endswith(("path", "paths", "root")):
+        paths.add(value)
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            paths.update(_signed_paths(child, field_name=str(key)))
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            paths.update(_signed_paths(child, field_name=field_name))
+    return paths
+
+
+def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
+    method_name = qualified_name.rsplit(".", 1)[-1]
+    if qualified_name not in _PATH_ARGUMENT_CALLS and method_name not in _PATH_ARGUMENT_METHODS:
+        return ()
+    arguments: list[ast.AST] = []
+    if call.args:
+        arguments.append(call.args[0])
+    arguments.extend(
+        keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
+    )
+    return tuple(arguments)
+
+
+def _referenced_literal_paths(tree: ast.AST) -> set[str]:
+    aliases = _import_aliases(tree)
+    bindings = _literal_bindings(tree)
+    paths: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        qualified_name = _qualified_name(node.func, aliases)
+        if qualified_name is None:
+            continue
+        for argument in _path_arguments(node, qualified_name):
+            literal = _literal_string(argument, bindings)
+            if literal is not None:
+                paths.add(literal)
+    return paths
+
+
+def _compile_python_source(path: str, source: str, authorized_paths: frozenset[str]) -> None:
     try:
         tree = ast.parse(source, filename=path)
-        if any(
-            (
+        aliases = _import_aliases(tree)
+        forbidden_call = any(
+            isinstance(node, ast.Call)
+            and _qualified_name(node.func, aliases) in _FORBIDDEN_PATH_CALLS
+            for node in ast.walk(tree)
+        )
+        unsigned_paths = _referenced_literal_paths(tree) - set(authorized_paths)
+        if (
+            any(
                 isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
                 and node.id == "__file__"
+                for node in ast.walk(tree)
             )
-            or (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"cwd", "getcwd", "getcwdb"}
-            )
-            or (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and ".." in PurePosixPath(node.value).parts
-            )
-            for node in ast.walk(tree)
+            or forbidden_call
+            or unsigned_paths
         ):
             raise ReportingError(
                 "report_python_source_path_invalid",
                 "脚本不得探测当前目录或使用 .. 推导工作区路径；请逐字使用签发路径。",
-                details={"path": path},
+                details={"path": path, "unsignedPaths": sorted(unsigned_paths)[:20]},
             )
         compile(tree, path, "exec")
     except ReportingError:
@@ -635,6 +782,12 @@ class ReportingCodeGenerationRunner:
         patch_error: ReportingError | None = None
         generation_started_at = perf_counter()
         model_started_at: float | None = None
+        authorized_paths = _signed_paths(task_facts) | {script_path}
+        if _previous_source is not None:
+            try:
+                authorized_paths.update(_referenced_literal_paths(ast.parse(_previous_source)))
+            except (SyntaxError, TypeError, ValueError):
+                pass
 
         def log_step(step: int, step_name: str, started_at: float) -> None:
             completed_at = perf_counter()
@@ -662,7 +815,7 @@ class ReportingCodeGenerationRunner:
                 )
                 log_step(2, "source_shape_validate", step_started_at)
                 step_started_at = perf_counter()
-                _compile_python_source(script_path, source)
+                _compile_python_source(script_path, source, frozenset(authorized_paths))
                 log_step(3, "python_compile", step_started_at)
                 step_started_at = perf_counter()
                 patch = _python_source_patch(
@@ -772,10 +925,12 @@ class ReportingCodeGenerationRunner:
                     "trailingNewline": True,
                     "pythonVersion": "3.12",
                     "compilationRequired": True,
+                    "authorizedPaths": sorted(authorized_paths),
                     "syntaxRequirements": [
                         "提交前确保完整源码可通过 ast.parse 和 compile",
                         "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
-                        "逐字使用 facts 中的签发路径；不得使用 __file__ 或目录回退推导工作区路径",
+                        "文件读写只可逐字使用 authorizedPaths；不得使用 __file__、cwd、chdir、"
+                        "os.path.join 或目录回退推导工作区路径",
                     ],
                 },
             }

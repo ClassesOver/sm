@@ -6,7 +6,13 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from smart_reporting.sandbox import ProviderKind, SandboxNotFound, WorkspaceBinding
+from smart_reporting.sandbox import (
+    CodeRunRequest,
+    ExecutionStatus,
+    ProviderKind,
+    SandboxNotFound,
+    WorkspaceBinding,
+)
 from smart_reporting.sandbox.local.client import LocalProvider
 from smart_reporting.sandbox.local.config import LocalProviderConfig
 
@@ -121,3 +127,53 @@ async def test_local_client_maps_stable_error_response() -> None:
 
     with pytest.raises(SandboxNotFound, match="workspace 不存在"):
         await provider.ensure_workspace(_binding())
+
+
+@pytest.mark.anyio
+async def test_local_code_run_discards_python_only_truncation_metadata() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/workspaces":
+            return httpx.Response(
+                200,
+                json={
+                    "ref": {
+                        "provider": "local",
+                        "isolation": "linux_process",
+                        "node": "node-a",
+                        "resource_id": "local-1",
+                        "generation": 1,
+                        "binding_digest": request.headers["x-sandbox-binding"],
+                        "dependency_bundle_digest": "sha256:" + "b" * 64,
+                    },
+                    "state": "started",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "succeeded",
+                "exit_code": 0,
+                "stdout": "ok",
+                "stderr": "",
+                "output_truncated": True,
+                "script_hash": "a" * 64,
+                "dependency_bundle_digest": "sha256:" + "b" * 64,
+            },
+        )
+
+    provider = LocalProvider(
+        LocalProviderConfig(
+            profile="ubuntu",
+            endpoint="unix:///run/local-sandboxd.sock",
+            rootfs_digest="sha256:" + "a" * 64,
+        ),
+        registry=MemoryRegistry(),
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+        transport=httpx.MockTransport(respond),
+    )
+    handle = await provider.ensure_workspace(_binding())
+
+    result = await handle.process.code_run(CodeRunRequest(code="print('ok')"))
+
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert result.stdout == "ok"

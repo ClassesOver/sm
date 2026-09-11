@@ -18,6 +18,7 @@ from smart_reporting.sandbox import (
     ExecutionStatus,
     IsolationKind,
     ProviderKind,
+    RunPythonScriptResult,
     SandboxRef,
 )
 from smart_reporting.sandbox.registry import SandboxBindingRecord
@@ -121,6 +122,30 @@ def _provider_workspace_service(monkeypatch) -> tuple[WorkspaceService, AsyncFak
         ),
         provider.sandbox,
     )
+
+
+@pytest.mark.anyio
+async def test_python_runner_propagates_provider_output_truncation(monkeypatch) -> None:
+    current, sandbox = _provider_workspace_service(monkeypatch)
+    source = b"print('ok')\n"
+    await sandbox.fs.create_folder(f"{WORKSPACE_ROOT}/analysis", "700")
+    await sandbox.fs.upload_file(source, f"{WORKSPACE_ROOT}/analysis/model.py")
+
+    class Execution:
+        async def run_python_script(self, request):
+            return RunPythonScriptResult(
+                status=ExecutionStatus.FAILED,
+                exit_code=1,
+                stderr="ValueError: final diagnostic",
+                output_truncated=True,
+                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+            )
+
+    sandbox.execution = Execution()
+
+    result = await current.arun_python_script("thread", "analysis/model.py")
+
+    assert result["outputTruncated"] is True
 
 
 @pytest.mark.anyio

@@ -64,6 +64,7 @@ _NON_RECOVERABLE_CODES = frozenset(
 _MAX_GENERATE_ATTEMPTS = 3
 _DEGRADABLE_CODES = frozenset(
     {
+        "execution_output_error",
         "report_visualization_script_failed",
         "report_visualization_review_failed",
         "report_chart_file_missing",

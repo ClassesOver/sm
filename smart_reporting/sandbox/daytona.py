@@ -49,6 +49,7 @@ from .errors import (
     SandboxProviderError,
 )
 from .matplotlib_defaults import matplotlib_bootstrap
+from .python_runner import bounded_python_output
 from .registry import SandboxBindingRecord
 
 DAYTONA_WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -116,13 +117,6 @@ def _execution_status(exit_code: int | None) -> ExecutionStatus:
 
 def _workspace_cwd(value: str) -> str:
     return DAYTONA_WORKSPACE_ROOT + (f"/{value}" if value else "")
-
-
-def _bounded_text(value: Any, limit: int) -> str:
-    encoded = str(value or "").encode("utf-8", errors="replace")
-    if len(encoded) <= limit:
-        return encoded.decode("utf-8", errors="replace")
-    return encoded[:limit].decode("utf-8", errors="ignore")
 
 
 class DaytonaFileSystemApi:
@@ -361,17 +355,25 @@ class DaytonaExecutionApi:
         script = (
             matplotlib_bootstrap("/tmp/reporting-matplotlib")
             + f"_reporting_os.chdir({workspace_cwd!r})\n"
-            f"exec(compile({request.script!r}, '<stdin>', 'exec'), globals(), globals())\n"
+            f"_reporting_source = {request.script!r}\n"
+            "exec(compile(_reporting_source, '<target_code>', 'exec'), globals(), globals())\n"
         )
         result = await self._process._run_code(
             script,
             timeout=max(1, math.ceil(request.timeout_ms / 1000)),
         )
+        stdout, stdout_truncated = bounded_python_output(
+            result.stdout, request.output_limit_bytes
+        )
+        stderr, stderr_truncated = bounded_python_output(
+            result.stderr, request.output_limit_bytes
+        )
         return RunPythonScriptResult(
             status=result.status,
             exit_code=result.exit_code,
-            stdout=_bounded_text(result.stdout, request.output_limit_bytes),
-            stderr=_bounded_text(result.stderr, request.output_limit_bytes),
+            stdout=stdout,
+            stderr=stderr,
+            output_truncated=stdout_truncated or stderr_truncated,
             script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
         )
 

@@ -193,7 +193,9 @@ class LocalProcessApi:
             )
         )
         return ExecResult.model_validate(
-            result.model_dump(exclude={"script_hash", "dependency_bundle_digest"})
+            result.model_dump(
+                exclude={"script_hash", "dependency_bundle_digest", "output_truncated"}
+            )
         )
 
     async def run_python_script(self, request: RunPythonScriptRequest) -> RunPythonScriptResult:

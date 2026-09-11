@@ -2254,6 +2254,7 @@ class WorkspaceService:
             "status": "completed",
             "exitCode": result.exit_code,
             "output": output,
+            "outputTruncated": result.output_truncated,
             "scriptPath": relative,
             "scriptSize": len(content),
             "scriptSha256": result.script_hash,

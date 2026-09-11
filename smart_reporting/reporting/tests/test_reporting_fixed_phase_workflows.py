@@ -610,6 +610,38 @@ async def test_visualization_workflow_degrades_after_repaired_script_still_fails
 
 
 @pytest.mark.anyio
+async def test_visualization_workflow_degrades_real_runner_errors_after_repair() -> None:
+    plan = _visualization_plan()
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
+    degrade = AsyncMock(return_value={"status": "committed"})
+    runner_error = ReportingError(
+        "execution_output_error",
+        "Python 脚本执行失败。",
+        details={
+            "exitCode": 1,
+            "output": "ValueError: invalid chart data",
+            "executionId": "execution-2",
+        },
+    )
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+        repair_script=AsyncMock(return_value=CodeGenerationResult(script_file)),
+        execute_script=AsyncMock(side_effect=[runner_error, runner_error]),
+        inspect_chart=None,
+        submit=AsyncMock(),
+        degrade=degrade,
+    ).run(_visualization_payload(), _context())
+
+    assert result.status == "degraded"
+    error, _ = degrade.await_args.args
+    assert isinstance(error, ReportingError)
+    assert error.code == "execution_output_error"
+    assert error.details["executionId"] == "execution-2"
+
+
+@pytest.mark.anyio
 async def test_visualization_workflow_does_not_degrade_nonrecoverable_failure() -> None:
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     degrade = AsyncMock()
@@ -1458,7 +1490,9 @@ async def test_section_generation_plans_then_renders_each_block_serially(
     )
 
     assert stages == ["plan", "block-1", "block-2"]
-    assert [(item.operation, item.enabled, item.thinking_budget, item.attempt) for item in decisions] == [
+    assert [
+        (item.operation, item.enabled, item.thinking_budget, item.attempt) for item in decisions
+    ] == [
         ("section_planning", True, 2048, 0),
         ("section_generation", False, 0, 0),
         ("section_generation", False, 0, 0),

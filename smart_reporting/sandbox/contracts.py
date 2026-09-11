@@ -183,6 +183,7 @@ class RunPythonScriptResult(_Contract):
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    output_truncated: bool = False
     script_hash: str = Field(pattern=_HEX_DIGEST_PATTERN)
     dependency_bundle_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
 

@@ -226,10 +226,12 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "trailingNewline": True,
         "pythonVersion": "3.12",
         "compilationRequired": True,
+        "authorizedPaths": ["analysis/script.py"],
         "syntaxRequirements": [
             "提交前确保完整源码可通过 ast.parse 和 compile",
             "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
-            "逐字使用 facts 中的签发路径；不得使用 __file__ 或目录回退推导工作区路径",
+            "文件读写只可逐字使用 authorizedPaths；不得使用 __file__、cwd、chdir、"
+            "os.path.join 或目录回退推导工作区路径",
         ],
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
@@ -348,6 +350,9 @@ async def test_generate_rejects_plain_text_without_mutation():
         "import os\ndataset_path = os.path.join(os.getcwd(), 'input.csv')\n",
         "from pathlib import Path\ndataset_path = Path.cwd() / 'input.csv'\n",
         "import os\ndataset_path = os.path.join('报表', '..', '数据集', 'input.csv')\n",
+        "import os.path\ndataset_path = os.path.join('报表', '数据集', 'input.csv')\n",
+        "from os import getcwd\ndataset_path = getcwd() + '/datasets/income.csv'\n",
+        "from os import chdir\nchdir('报表')\nopen('datasets/income.csv')\n",
     ],
 )
 async def test_generate_rejects_script_relative_workspace_paths_without_mutation(source: str):
@@ -368,6 +373,49 @@ async def test_generate_rejects_script_relative_workspace_paths_without_mutation
 
     assert raised.value.code == "report_python_source_path_invalid"
     assert "签发路径" in raised.value.message
+    assert mutated is False
+
+
+@pytest.mark.anyio
+async def test_generate_accepts_parent_marker_as_non_path_data() -> None:
+    source = "import pandas as pd\ndf = pd.read_csv('datasets/income.csv', na_values=['..'])\n"
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", source)]}
+
+    result = await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py",
+        {"datasets": [{"path": "datasets/income.csv"}]},
+        patch,
+    )
+
+    assert result.script_file.path == "analysis/script.py"
+
+
+@pytest.mark.anyio
+async def test_generate_rejects_unsigned_workspace_path_without_mutation() -> None:
+    source = "import pandas as pd\ndf = pd.read_csv('datasets/guessed.csv')\n"
+    mutated = False
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    async def patch(**_kwargs):
+        nonlocal mutated
+        mutated = True
+        return {"ok": True, "artifacts": []}
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py",
+            {"datasets": [{"path": "datasets/income.csv"}]},
+            patch,
+        )
+
+    assert raised.value.code == "report_python_source_path_invalid"
     assert mutated is False
 
 
