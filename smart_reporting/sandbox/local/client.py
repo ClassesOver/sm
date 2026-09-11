@@ -18,6 +18,7 @@ from ..contracts import (
     FileInfo,
     ProviderCapabilities,
     ProviderHealth,
+    ProviderKind,
     RunPythonScriptRequest,
     RunPythonScriptResult,
     SandboxRef,
@@ -374,8 +375,13 @@ class LocalProvider:
         digest = self._digest(binding)
         if ref.binding_digest != digest:
             raise SandboxPolicyDenied("sandbox 资源不属于当前请求范围。", reason="binding_mismatch")
+        return await self.destroy_workspace_ref(ref)
+
+    async def destroy_workspace_ref(self, ref: SandboxRef) -> DestroyResult:
+        if ref.provider != ProviderKind.LOCAL:
+            raise SandboxPolicyDenied("sandbox provider 不匹配。", reason="provider_mismatch")
         response = await self._api.request(
-            "DELETE", f"/v1/workspaces/{ref.resource_id}", binding_digest=digest
+            "DELETE", f"/v1/workspaces/{ref.resource_id}", binding_digest=ref.binding_digest
         )
         return DestroyResult.model_validate(response.json())
 

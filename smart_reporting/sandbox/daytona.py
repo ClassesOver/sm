@@ -570,6 +570,16 @@ class DaytonaProvider:
 
     async def destroy_workspace(self, ref: SandboxRef, binding: WorkspaceBinding) -> DestroyResult:
         self._require_binding(ref, binding)
+        result = await self.destroy_workspace_ref(ref)
+        digest = self._digest(binding)
+        async with self._registry.locked(digest) as registry:
+            if await registry.get(digest) == ref.resource_id:
+                await registry.delete(digest)
+        return result
+
+    async def destroy_workspace_ref(self, ref: SandboxRef) -> DestroyResult:
+        if ref.provider != ProviderKind.DAYTONA:
+            raise SandboxPolicyDenied("sandbox provider 不匹配。", reason="provider_mismatch")
         try:
             sandbox = await _daytona_call(
                 self._client.get(ref.resource_id),
@@ -583,10 +593,6 @@ class DaytonaProvider:
             action="workspace 删除",
             missing_message="Daytona workspace 不存在。",
         )
-        digest = self._digest(binding)
-        async with self._registry.locked(digest) as registry:
-            if await registry.get(digest) == ref.resource_id:
-                await registry.delete(digest)
         return DestroyResult(deleted=True)
 
     async def health_check(self) -> ProviderHealth:
