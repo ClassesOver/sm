@@ -18,6 +18,7 @@ ReportingExecutionMode = Literal["sequential", "parallel"]
 AnalysisRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
 VisualizationRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
 DraftRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
+ReworkRunner = Callable[[Mapping[str, Any], RunContext], Awaitable[StepOutput]]
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class ReportingDraftWorkflow(Workflow):
         run_analysis: AnalysisRunner,
         submit_visualization: VisualizationRunner,
         draft_section: DraftRunner,
+        rework_analysis: ReworkRunner | None = None,
         execution_mode: ReportingExecutionMode = "sequential",
         analysis_limiter: asyncio.Semaphore | None = None,
     ) -> None:
@@ -60,6 +62,7 @@ class ReportingDraftWorkflow(Workflow):
         self.run_analysis = run_analysis
         self.submit_visualization = submit_visualization
         self.draft_section = draft_section
+        self.rework_analysis = rework_analysis
         self.execution_mode = execution_mode
         self.analysis_limiter = analysis_limiter
         self._analysis_outputs: dict[str, StepOutput] | None = None
@@ -94,6 +97,15 @@ class ReportingDraftWorkflow(Workflow):
         if self._analysis_outputs is not None:
             self._analysis_outputs[analysis_id] = output
         return output
+
+    async def _run_rework_analysis(
+        self, instruction: Mapping[str, Any], context: RunContext
+    ) -> StepOutput:
+        assert self.rework_analysis is not None
+        if self.analysis_limiter is None:
+            return await self.rework_analysis(instruction, context)
+        async with self.analysis_limiter:
+            return await self.rework_analysis(instruction, context)
 
     async def execute_section(self, run_context: RunContext) -> ReportingDraftWorkflowResult:
         started_at = perf_counter()
@@ -146,6 +158,30 @@ class ReportingDraftWorkflow(Workflow):
         draft_output = await self.draft_section(draft_input, run_context)
         if draft_output.success is False:
             raise RuntimeError("章节成稿失败")
+        rework_count = 0
+        while (
+            isinstance(draft_output.content, Mapping)
+            and draft_output.content.get("status") == "rework"
+        ):
+            if self.rework_analysis is None:
+                raise RuntimeError("章节补证执行器未配置")
+            if rework_count >= 1:
+                raise RuntimeError("章节补证次数已达到上限")
+            rework = draft_output.content.get("rework")
+            if not isinstance(rework, Mapping):
+                raise RuntimeError("章节补证请求无效")
+            rework_input = self._instruction()
+            rework_input["rework"] = dict(rework)
+            rework_output = await self._run_rework_analysis(rework_input, run_context)
+            if rework_output.success is False:
+                raise RuntimeError("章节补证分析失败")
+            visualization_output = await self.submit_visualization(visualization_input, run_context)
+            if visualization_output.success is False:
+                raise RuntimeError("章节补证后的可视化提交失败")
+            draft_output = await self.draft_section(draft_input, run_context)
+            if draft_output.success is False:
+                raise RuntimeError("章节补证后的成稿失败")
+            rework_count += 1
         result = ReportingDraftWorkflowResult(
             section_code=section_code,
             analysis_outputs=tuple(output for output in analysis_outputs if output is not None),
@@ -171,6 +207,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         run_analysis: AnalysisRunner,
         submit_visualization: VisualizationRunner,
         draft_section: DraftRunner,
+        rework_analysis: ReworkRunner | None = None,
         execution_mode: ReportingExecutionMode = "sequential",
         section_concurrency: int = 1,
         analysis_concurrency: int = 1,
@@ -197,6 +234,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
                     run_analysis=run_analysis,
                     submit_visualization=submit_visualization,
                     draft_section=draft_section,
+                    rework_analysis=rework_analysis,
                     execution_mode=execution_mode,
                     analysis_limiter=limiter,
                 )

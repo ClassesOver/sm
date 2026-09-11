@@ -1209,6 +1209,47 @@ def test_section_start_is_idempotent_and_rejects_other_work_item() -> None:
     assert raised.value.code == "report_section_start_conflict"
 
 
+def test_targeted_rework_invalidates_current_section_before_it_has_an_artifact():
+    state = initial_state().model_copy(
+        update={
+            "phase": ReportingPhase.SECTIONS,
+            "payload": {
+                **initial_state().payload,
+                "analysisIds": ["analysis_001"],
+                "completedAnalysisIds": ["analysis_001"],
+                "analysisItems": {"analysis_001": {"analysisId": "analysis_001"}},
+                "runningSections": {"income": "income-old-hash"},
+                "visualizationSections": {
+                    "income": {
+                        "charts": [make_chart_registration("income")],
+                        "files": [make_file_identity("analysis/charts/income.png")],
+                    }
+                },
+                "completedVisualizationSections": ["income"],
+            },
+        }
+    )
+
+    rework = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "request_analysis_rework",
+            "commandId": "rework-current-income",
+            "payload": {
+                "sectionCode": "income",
+                "analysisIds": ["analysis_001"],
+                "missingEvidence": ["缺少收入同比明细"],
+            },
+        },
+        state.state_version,
+    ).state
+
+    assert rework.payload["runningSections"] == {}
+    assert rework.payload["pendingSections"] == ["income"]
+    assert rework.payload["visualizationSections"] == {}
+    assert rework.payload["completedVisualizationSections"] == []
+
+
 def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sections():
     state = initial_state().model_copy(
         update={
@@ -1254,6 +1295,11 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
                     "phase": "sections",
                     "reportBrief": {"objective": "旧目标"},
                     "evidenceManifest": {"version": "1"},
+                    "completedSections": [
+                        {"sectionCode": "overview"},
+                        {"sectionCode": "income"},
+                    ],
+                    "pendingSections": [],
                     "analysisManifestFile": {
                         "path": "analysis/old.json",
                         "size": 1,
@@ -1274,6 +1320,7 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
             "name": "request_analysis_rework",
             "commandId": "rework-income",
             "payload": {
+                "sectionCode": "income",
                 "analysisIds": ["analysis_001"],
                 "missingEvidence": ["缺少收入同比明细"],
             },
@@ -1298,6 +1345,10 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     assert rework.payload["workflowCheckpoint"]["reportBrief"] is None
     assert rework.payload["workflowCheckpoint"]["evidenceManifest"] is None
     assert rework.payload["workflowCheckpoint"]["analysisManifestFile"] is None
+    assert rework.payload["workflowCheckpoint"]["completedSections"] == [
+        {"sectionCode": "overview"}
+    ]
+    assert rework.payload["workflowCheckpoint"]["pendingSections"] == ["income"]
     assert rework.payload["checkpointMirrorFile"] is None
 
     restarted_income = ReportingStateReducer.apply(

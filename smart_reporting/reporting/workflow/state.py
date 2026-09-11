@@ -324,14 +324,18 @@ def apply(
                 None,
             )
             section_artifacts = payload.get("sectionArtifacts")
-            invalid_sections: list[str] = []
+            requested_section = arguments.get("sectionCode")
+            invalid_sections: list[str] = (
+                [requested_section] if isinstance(requested_section, str) else []
+            )
             if isinstance(section_artifacts, dict):
                 for section_code, artifact in list(section_artifacts.items()):
                     bound_ids = (
                         artifact.get("analysisIds") if isinstance(artifact, Mapping) else None
                     )
                     if isinstance(bound_ids, (list, tuple)) and set(bound_ids) & set(analysis_ids):
-                        invalid_sections.append(section_code)
+                        if section_code not in invalid_sections:
+                            invalid_sections.append(section_code)
                         section_artifacts.pop(section_code, None)
             payload["completedSections"] = [
                 item
@@ -366,12 +370,21 @@ def apply(
             if isinstance(workflow_checkpoint, dict):
                 # Durable reducer 与 Workflow checkpoint 必须在同一个 CAS 中撤销旧冻结身份；
                 # 否则返工后的新 Brief/Manifest 会与旧 checkpoint 合并并被误判为并发冲突。
+                checkpoint_completed = workflow_checkpoint.get("completedSections", [])
+                checkpoint_pending = workflow_checkpoint.get("pendingSections", [])
                 payload["workflowCheckpoint"] = {
                     **workflow_checkpoint,
                     "phase": "analysis",
                     "reportBrief": None,
                     "evidenceManifest": None,
                     "analysisManifestFile": None,
+                    "completedSections": [
+                        item
+                        for item in checkpoint_completed
+                        if not isinstance(item, Mapping)
+                        or item.get("sectionCode") not in invalid_sections
+                    ],
+                    "pendingSections": _tuple_unique([*checkpoint_pending, *invalid_sections]),
                 }
                 payload["checkpointMirrorFile"] = None
             effects.append(ReportingEffect("analysis_rework_requested", dict(payload["rework"])))
