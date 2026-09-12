@@ -46,6 +46,17 @@ _STAGE_NAMES = (
 )
 
 
+def _validation_issue_summary(error: ValidationError) -> str:
+    """保留结构校验的字段路径和原因，避免失败只能看到笼统错误码。"""
+
+    parts: list[str] = []
+    for issue in error.errors(include_url=False, include_context=False, include_input=False)[:8]:
+        location = ".".join(str(item) for item in issue.get("loc", ())) or "root"
+        message = str(issue.get("msg") or issue.get("type") or "invalid")
+        parts.append(f"{location}: {message}")
+    return "; ".join(parts)
+
+
 def supplemental_evidence_output_contract() -> dict[str, Any]:
     return {
         "format": "json",
@@ -688,6 +699,7 @@ class AnalysisItemWorkflow:
                 "report_analysis_evidence_decision_invalid", "补充 evidence 决策无效。"
             )
         script_path = self._script_path(state)
+        previous_sha256 = state.script_file.sha256 if state.script_file is not None else None
         try:
             if state.script_file is None and self.load_script is not None:
                 loaded = await self.load_script(script_path, run_context)
@@ -719,6 +731,17 @@ class AnalysisItemWorkflow:
             if generated is not None:
                 state.script_file = self._signed_script_file(generated, script_path)
                 state.failure = None
+                if previous_sha256 is not None and state.script_file.sha256 == previous_sha256:
+                    logger.warning(
+                        "report_analysis_script_repair_unchanged analysis_id={} sha256={}",
+                        state.instruction.get("currentAnalysisId"),
+                        previous_sha256,
+                    )
+                    raise ReportingError(
+                        "report_analysis_script_repair_unchanged",
+                        "补充分析脚本修复后内容未发生变化。",
+                        details={"path": script_path, "sha256": previous_sha256},
+                    )
             script_file = state.script_file
             if script_file is None:
                 raise ReportingError(
@@ -850,13 +873,16 @@ class AnalysisItemWorkflow:
                     ),
                 },
             )
+            issue_summary = _validation_issue_summary(error)
+            rejection.details["issueSummary"] = issue_summary
             state.evidence = None
             state.evidence_file = None
             state.failure = rejection
             logger.warning(
-                "report_analysis_evidence_validation_rejected analysis_id={} code={}",
+                "report_analysis_evidence_validation_rejected analysis_id={} code={} issues={}",
                 state.instruction.get("currentAnalysisId"),
                 rejection.code,
+                issue_summary,
             )
             if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
                 state.statuses["validate-evidence"] = "completed"
@@ -977,9 +1003,14 @@ class AnalysisItemWorkflow:
         error = state.failure
         code = error.code if isinstance(error, ReportingError) else type(error).__name__
         message = error.message if isinstance(error, ReportingError) else str(error)
+        detail = message
+        if isinstance(error, ReportingError) and isinstance(error.details, Mapping):
+            issue_summary = error.details.get("issueSummary")
+            if isinstance(issue_summary, str) and issue_summary:
+                detail = f"{detail} [{issue_summary}]"
         state.warnings.append(
             f"report_analysis_supplement_abandoned: 补证脚本修复耗尽，"
-            f"仅使用确定性事实完成分析（{code}: {message}）。"
+            f"仅使用确定性事实完成分析（{code}: {detail}）。"
         )
         state.failure = None
         state.evidence = None

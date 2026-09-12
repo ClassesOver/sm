@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -23,6 +25,7 @@ from smart_reporting.sandbox import (
     SessionCommandRequest,
     WorkspaceBinding,
 )
+from smart_reporting.sandbox.daytona import DaytonaExecutionApi
 from smart_reporting.task_execution.execution import TaskExecutionKernel, TaskExecutionRuntime
 from smart_reporting.workspace import WorkspaceService
 
@@ -383,14 +386,51 @@ async def test_daytona_python_runner_executes_from_workspace_root() -> None:
     assert "replace(_reporting_matplotlibrc_temporary, _reporting_matplotlibrc)" in executed
     assert executed.index("setdefault('MATPLOTLIBRC'") < executed.index("_reporting_source =")
     execution_line = next(
-        line for line in executed.splitlines() if line.startswith("exec(compile(")
+        line.strip() for line in executed.splitlines() if line.strip().startswith("exec(compile(")
     )
     assert execution_line == (
-        "exec(compile(_reporting_source, '<target_code>', 'exec'), globals(), globals())"
+        "exec(compile(_reporting_source, _reporting_filename, 'exec'), globals(), globals())"
     )
     assert script not in execution_line
     assert repr(script) in executed
     assert result.script_hash == hashlib.sha256(script.encode()).hexdigest()
+
+
+@pytest.mark.anyio
+async def test_daytona_python_runner_reports_target_source_line(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("smart_reporting.sandbox.daytona.DAYTONA_WORKSPACE_ROOT", str(tmp_path))
+
+    class LocalProcess:
+        async def _run_code(self, code: str, *, timeout: int) -> Any:
+            completed = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return SimpleNamespace(
+                status=(
+                    ExecutionStatus.SUCCEEDED
+                    if completed.returncode == 0
+                    else ExecutionStatus.FAILED
+                ),
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+    source = "\n" * 38 + "row = ['2025-01']\nprint(row['month'])\n"
+    result = await DaytonaExecutionApi(cast(Any, LocalProcess())).run_python_script(
+        RunPythonScriptRequest(script=source)
+    )
+
+    assert result.exit_code == 1
+    assert 'File "<target_code>", line 40' in result.stderr
+    assert "print(row['month'])" in result.stderr
+    assert "_reporting_fallbacks" not in result.stderr
 
 
 @pytest.mark.anyio

@@ -27,6 +27,7 @@ from smart_reporting.reporting.agent import (
     create_reporting_code_agent,
     create_reporting_generator_agent,
 )
+from smart_reporting.reporting.bootstrap import _VISUALIZATION_CODE_INSTRUCTIONS
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_MODEL_ID_DEPENDENCY_KEY,
@@ -136,6 +137,18 @@ def test_reporting_code_agent_is_unstructured_and_has_no_history_or_tools() -> N
     assert "__file__" in prompt
     assert "os.path" in prompt
     assert "pathlib" in prompt
+
+
+def test_visualization_code_instructions_defend_structured_rows_without_masking_errors() -> None:
+    instructions = "\n".join(_VISUALIZATION_CODE_INSTRUCTIONS)
+
+    assert "rowEncoding=columns_rows" in instructions
+    assert "dict(zip(columns, row))" in instructions
+    assert 'row["字段名"]' in instructions
+    assert ".get(..., 0)" in instructions
+    assert "真实数据全零" in instructions
+    assert "明确标注" in instructions
+    assert "解析失败" in instructions
 
 
 def test_reporting_code_agent_uses_chat_reasoning_and_non_thinking_responses() -> None:

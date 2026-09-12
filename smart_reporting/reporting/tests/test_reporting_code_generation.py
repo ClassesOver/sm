@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 
 import pytest
 from agno.exceptions import ModelRateLimitError
+from agno.models.message import Message
 from agno.run import RunStatus
 from agno.run.agent import RunOutput
 from loguru import logger
 
+from smart_reporting.reporting.agent import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.model_policy import ThinkingDecision, bind_reporting_thinking
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
@@ -294,7 +297,8 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "compilationRequired": True,
         "authorizedPaths": ["analysis/script.py"],
         "factUsageRequirements": [
-            "facts 仅是源码生成上下文，脚本执行时不存在 facts、taskFacts 或 visualizationFacts 变量",
+            "facts 仅是源码生成上下文，脚本执行时不存在 facts、taskFacts 或 "
+            "visualizationFacts 变量",
             "读取 authorizedPaths 中的 JSON 文件后，必须按该文件自身根结构访问；"
             "不得添加 facts、taskFacts 或 visualizationFacts 包装层",
         ],
@@ -339,6 +343,70 @@ async def test_repair_requests_full_analysis_script_from_real_read_callback():
     )
 
     assert observed_max_bytes == [128 * 1024]
+
+
+@pytest.mark.anyio
+async def test_repair_agent_reads_only_signed_script_before_submitting_source():
+    source = "print(1)\n"
+    script = identity("analysis/script.py", source)
+    read_paths: list[str] = []
+
+    agents = []
+
+    async def action(agent):
+        agents.append(agent)
+        ReportingCodeOpenAIResponses(
+            id="test-model",
+            api_key="test-key",
+            base_url="http://localhost",
+        ).get_request_params(
+            messages=[Message(role="user", content=agent.prompt)],
+            tools=agent.tools,
+            tool_choice=agent.tool_choice,
+        )
+        assert len(agent.tools) == 1
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            assert agent.tool_choice["function"]["name"] == "read_file"
+            assert agent.tool_call_limit == 1
+            pytest.fail("repair Agent must not receive a read_file phase")
+
+        assert tool.name == "submit_python_source"
+        assert agent.tool_choice["function"]["name"] == "submit_python_source"
+        assert agent.tool_call_limit == 1
+        prompt = json.loads(agent.prompt)
+        assert "readableFiles" not in prompt["facts"]
+        assert "readReceipts" not in prompt["facts"]
+        assert "readToolRequirements" not in prompt["sourceProtocol"]
+        return await tool.entrypoint(source=UPDATED_SOURCE)
+
+    async def read_file(*, path: str, max_bytes: int):
+        assert max_bytes == 128 * 1024
+        read_paths.append(path)
+        if path == script.path:
+            return read_receipt(script, source)
+        pytest.fail(f"repair must not read JSON input: {path}")
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, UPDATED_SOURCE)]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+        script,
+        {"code": "execution_output_error"},
+        read_file,
+        patch,
+    )
+
+    assert read_paths == [script.path]
+    assert [[tool.name for tool in agent.tools] for agent in agents] == [
+        ["submit_python_source"],
+    ]
+
+
+def test_repair_does_not_expose_signed_json_read_inputs():
+    assert "readable_files" not in inspect.signature(
+        ReportingCodeGenerationRunner.repair
+    ).parameters
 
 
 @pytest.mark.anyio
@@ -446,6 +514,35 @@ async def test_generate_rejects_script_relative_workspace_paths_without_mutation
     assert raised.value.code == "report_python_source_path_invalid"
     assert "签发路径" in raised.value.message
     assert mutated is False
+
+
+@pytest.mark.anyio
+async def test_generate_reports_exact_forbidden_path_operations_for_retry() -> None:
+    source = (
+        "import os\n"
+        "base_dir = os.path.dirname(os.path.abspath(__file__))\n"
+        "input_path = os.path.join(base_dir, '..', 'datasets', 'income.csv')\n"
+    )
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, lambda **_kwargs: pytest.fail("must not mutate")
+        )
+
+    assert raised.value.code == "report_python_source_path_invalid"
+    assert raised.value.details == {
+        "path": "analysis/script.py",
+        "unsignedPaths": [],
+        "forbiddenPathOperations": [
+            "__file__",
+            "os.path.abspath",
+            "os.path.dirname",
+            "os.path.join",
+        ],
+    }
 
 
 @pytest.mark.anyio

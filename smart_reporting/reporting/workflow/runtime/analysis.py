@@ -32,6 +32,7 @@ from .analysis_item_workflow import (
     AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
+    SupplementalEvidence,
     _project_analysis_summary_payload,
     supplemental_evidence_output_contract,
 )
@@ -794,9 +795,17 @@ class RuntimeAnalysisMixin:
                         if isinstance(nested_details, Mapping):
                             details = {**details, **nested_details}
                         execution_id = details.get("execution_id", details.get("executionId"))
-                        warning_details = {"failureCode": error_code}
+                        warning_details: dict[str, Any] = {"failureCode": error_code}
                         if isinstance(execution_id, str) and execution_id:
                             warning_details["executionId"] = execution_id
+                        for field in ("executionRepairCount", "visualReviewRepairCount"):
+                            count = details.get(field)
+                            if (
+                                isinstance(count, int)
+                                and not isinstance(count, bool)
+                                and count >= 0
+                            ):
+                                warning_details[field] = count
                         warning = {
                             "code": "report_visualization_degraded",
                             "message": "章节图表修复后仍失败，已按零图继续成稿。",
@@ -905,9 +914,72 @@ class RuntimeAnalysisMixin:
             DeterministicAnalysisBundle,
         )
         payload = fact_model.model_dump(mode="json", by_alias=True)
+        supplemental_sources: list[dict[str, Any]] = []
+        if isinstance(durable_item, Mapping):
+            for raw_identity in durable_item.get("evidenceFiles", ()):
+                try:
+                    identity = FileIdentity.model_validate(raw_identity)
+                except ValidationError as error:
+                    raise ReportingError(
+                        "report_phase_artifact_invalid", "补充 evidence 文件身份无效。"
+                    ) from error
+                if identity.path == fact_file.path or not identity.path.endswith(
+                    "/supplement.json"
+                ):
+                    continue
+                content = await self._read_identity_bytes(
+                    thread_id or self._visualization_context["thread_id"], identity
+                )
+                try:
+                    raw_evidence = json.loads(content)
+                    if not isinstance(raw_evidence, dict):
+                        raise TypeError("supplement root must be an object")
+                    raw_evidence.pop("analysisId", None)
+                    raw_evidence.pop("analysis_id", None)
+                    raw_evidence.pop("datasetIds", None)
+                    raw_evidence.pop("dataset_ids", None)
+                    evidence = SupplementalEvidence.model_validate(
+                        {
+                            **raw_evidence,
+                            "analysisId": analysis_id,
+                            "datasetIds": durable_item.get("datasetIds"),
+                        }
+                    )
+                except (TypeError, ValueError, ValidationError) as error:
+                    raise ReportingError(
+                        "report_phase_artifact_invalid", "补充 evidence 结构无效。"
+                    ) from error
+                findings: list[dict[str, Any]] = []
+                for index, finding in enumerate(evidence.findings):
+                    descriptor: dict[str, Any] = {
+                        "findingIndex": index,
+                        "name": finding.get("name"),
+                        "dataPath": f"findings[{index}]",
+                        "fields": sorted(finding),
+                    }
+                    columns = finding.get("columns")
+                    rows = finding.get("rows")
+                    if isinstance(columns, list) and isinstance(rows, list):
+                        descriptor.update(
+                            {
+                                "columns": columns,
+                                "rowsDataPath": f"findings[{index}].rows",
+                                "rowEncoding": "columns_rows",
+                                "rowCount": len(rows),
+                            }
+                        )
+                    findings.append(descriptor)
+                supplemental_sources.append(
+                    {
+                        "sourceFile": identity.model_dump(mode="json", by_alias=True),
+                        "dataPathBase": "fileRoot",
+                        "findings": findings,
+                    }
+                )
         return {
             "analysisId": analysis_id,
             "factFile": fact_file.model_dump(mode="json", by_alias=True),
+            "dataPathBase": "fileRoot",
             "summary": durable_item.get("summary") if isinstance(durable_item, Mapping) else None,
             "metrics": [
                 {
@@ -993,6 +1065,7 @@ class RuntimeAnalysisMixin:
             "citationIds": durable_item.get("citationIds", [])
             if isinstance(durable_item, Mapping)
             else [],
+            "supplementalEvidenceSources": supplemental_sources,
         }
 
     async def run_reporting_analysis(

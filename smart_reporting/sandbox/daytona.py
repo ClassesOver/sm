@@ -64,6 +64,28 @@ _STARTING_STATES = {
 }
 
 
+def _target_code_execution(source: str) -> str:
+    """执行动态源码，并确保 traceback 使用目标源码而非外层包装。"""
+
+    return (
+        "import linecache as _reporting_linecache\n"
+        "import traceback as _reporting_traceback\n"
+        f"_reporting_source = {source!r}\n"
+        "_reporting_filename = '<target_code>'\n"
+        "_reporting_linecache.cache[_reporting_filename] = (\n"
+        "    len(_reporting_source),\n"
+        "    None,\n"
+        "    _reporting_source.splitlines(keepends=True),\n"
+        "    _reporting_filename,\n"
+        ")\n"
+        "try:\n"
+        "    exec(compile(_reporting_source, _reporting_filename, 'exec'), globals(), globals())\n"
+        "except Exception as _reporting_error:\n"
+        "    _reporting_traceback.print_exception(_reporting_error)\n"
+        "    raise SystemExit(1) from None\n"
+    )
+
+
 async def _daytona_call[T](
     operation: Awaitable[T],
     *,
@@ -355,8 +377,7 @@ class DaytonaExecutionApi:
         script = (
             matplotlib_bootstrap("/tmp/reporting-matplotlib")
             + f"_reporting_os.chdir({workspace_cwd!r})\n"
-            f"_reporting_source = {request.script!r}\n"
-            "exec(compile(_reporting_source, '<target_code>', 'exec'), globals(), globals())\n"
+            + _target_code_execution(request.script)
         )
         result = await self._process._run_code(
             script,

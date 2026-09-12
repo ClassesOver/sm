@@ -104,6 +104,13 @@ def _bounded_unsigned_paths(value: Any) -> list[str]:
     ][:MAX_DIAGNOSTIC_UNSIGNED_PATHS]
 
 
+def _bounded_forbidden_path_operations(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    allowed = _FORBIDDEN_PATH_CALLS | {"__file__"}
+    return sorted({item for item in value if isinstance(item, str) and item in allowed})
+
+
 def _code_failure_kind(
     diagnostic: Mapping[str, Any] | None,
 ) -> ThinkingFailureKind | None:
@@ -376,26 +383,30 @@ def _compile_python_source(path: str, source: str, authorized_paths: frozenset[s
     try:
         tree = ast.parse(source, filename=path)
         aliases = _import_aliases(tree)
-        forbidden_call = any(
-            isinstance(node, ast.Call)
-            and _qualified_name(node.func, aliases) in _FORBIDDEN_PATH_CALLS
+        forbidden_operations = {
+            qualified_name
             for node in ast.walk(tree)
-        )
-        unsigned_paths = _referenced_literal_paths(tree) - set(authorized_paths)
-        if (
-            any(
-                isinstance(node, ast.Name)
-                and isinstance(node.ctx, ast.Load)
-                and node.id == "__file__"
-                for node in ast.walk(tree)
-            )
-            or forbidden_call
-            or unsigned_paths
+            if isinstance(node, ast.Call)
+            and (qualified_name := _qualified_name(node.func, aliases))
+            in _FORBIDDEN_PATH_CALLS
+        }
+        if any(
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "__file__"
+            for node in ast.walk(tree)
         ):
+            forbidden_operations.add("__file__")
+        unsigned_paths = _referenced_literal_paths(tree) - set(authorized_paths)
+        if forbidden_operations or unsigned_paths:
             raise ReportingError(
                 "report_python_source_path_invalid",
                 "脚本不得探测当前目录或使用 .. 推导工作区路径；请逐字使用签发路径。",
-                details={"path": path, "unsignedPaths": sorted(unsigned_paths)[:20]},
+                details={
+                    "path": path,
+                    "unsignedPaths": sorted(unsigned_paths)[:20],
+                    "forbiddenPathOperations": sorted(forbidden_operations),
+                },
             )
         compile(tree, path, "exec")
     except ReportingError:
@@ -577,6 +588,11 @@ class ReportingCodeGenerationRunner:
             unsigned_paths = _bounded_unsigned_paths(details.get("unsignedPaths"))
             if unsigned_paths:
                 safe_details["unsignedPaths"] = unsigned_paths
+            forbidden_operations = _bounded_forbidden_path_operations(
+                details.get("forbiddenPathOperations")
+            )
+            if forbidden_operations:
+                safe_details["forbiddenPathOperations"] = forbidden_operations
             for field in ("line", "offset", "size", "lineCount", "maxLineLength"):
                 value = details.get(field)
                 if (
@@ -886,6 +902,32 @@ class ReportingCodeGenerationRunner:
             "totalBytes": positions["totalBytes"],
         }
 
+    async def _read_signed_script(
+        self,
+        script_file: FileIdentity,
+        read_file: ToolCallable,
+        run_context: RunContext | None,
+        max_source_bytes: int,
+    ) -> dict[str, Any]:
+        """由服务端按已签发身份读取脚本；不作为模型工具暴露。"""
+        try:
+            receipt = await _invoke(
+                read_file,
+                {"path": script_file.path, "max_bytes": max_source_bytes},
+                run_context,
+            )
+        except ReportingError as error:
+            raise self._error(
+                self._stable_code(error.code, "report_code_generation_read_failed"),
+                "脚本读取失败。",
+                script_file.path,
+            ) from error
+        except Exception as error:
+            raise self._error(
+                "report_code_generation_read_failed", "脚本读取失败。", script_file.path
+            ) from error
+        return self._trusted_read_receipt(receipt, script_file)
+
     async def generate(
         self,
         script_path: str,
@@ -1035,18 +1077,15 @@ class ReportingCodeGenerationRunner:
                 raise
 
         agent = self._fresh_agent()
-        self._configure(
-            agent,
-            Function(
-                name="submit_python_source",
-                description="提交签发路径的完整 Python 源码；不要提交 diff 或 Markdown 围栏。",
-                parameters=_tool_parameters("submit_python_source"),
-                strict=True,
-                entrypoint=wrapped_source,
-                stop_after_tool_call=True,
-            ),
-            "submit_python_source",
+        submit_source = Function(
+            name="submit_python_source",
+            description="提交签发路径的完整 Python 源码；不要提交 diff 或 Markdown 围栏。",
+            parameters=_tool_parameters("submit_python_source"),
+            strict=True,
+            entrypoint=wrapped_source,
+            stop_after_tool_call=True,
         )
+        self._configure(agent, submit_source, "submit_python_source")
         try:
             prompt = {
                 "scriptPath": script_path,
@@ -1127,23 +1166,9 @@ class ReportingCodeGenerationRunner:
         self._validate_script_path(script_file.path)
         bounded_task_facts = self._repair_task_facts(task_facts, script_file.path)
         short_diagnostic = self._short_diagnostic(diagnostic)
-        try:
-            receipt = await _invoke(
-                read_file,
-                {"path": script_file.path, "max_bytes": max_source_bytes},
-                run_context,
-            )
-        except ReportingError as error:
-            raise self._error(
-                self._stable_code(error.code, "report_code_generation_read_failed"),
-                "脚本读取失败。",
-                script_file.path,
-            ) from error
-        except Exception as error:
-            raise self._error(
-                "report_code_generation_read_failed", "脚本读取失败。", script_file.path
-            ) from error
-        read_receipt = self._trusted_read_receipt(receipt, script_file)
+        read_receipt = await self._read_signed_script(
+            script_file, read_file, run_context, max_source_bytes
+        )
         result = await self.generate(
             script_file.path,
             {

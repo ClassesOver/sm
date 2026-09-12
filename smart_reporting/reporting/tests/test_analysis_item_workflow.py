@@ -1027,8 +1027,63 @@ async def test_analysis_item_workflow_abandons_structurally_invalid_evidence_aft
     assert any(
         "report_analysis_supplement_abandoned" in warning
         and "report_analysis_evidence_schema_invalid" in warning
+        and "reconciliations" in warning
+        and "布尔 passed" in warning
         for warning in complete.await_args.kwargs["warnings"]
     )
+
+
+@pytest.mark.anyio
+async def test_analysis_item_workflow_does_not_execute_unchanged_repair_script() -> None:
+    invalid = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账"}],
+            "warnings": [],
+        }
+    )
+    valid = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "datasetIds": ["dataset-1"],
+            "findings": [{"name": "收入构成", "value": 80}],
+            "reconciliations": [{"name": "收入构成对账", "passed": True}],
+            "warnings": [],
+        }
+    )
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(
+            return_value=AnalysisEvidenceDecision(
+                requiresSupplementalEvidence=True,
+                reason="缺少收入构成",
+                missingFacts=("收入构成",),
+            )
+        ),
+        generate_script=AsyncMock(return_value=_code_result("b" * 64)),
+        repair_script=AsyncMock(
+            side_effect=[_code_result("b" * 64), _code_result("c" * 64)]
+        ),
+        summarize=AsyncMock(return_value=AnalysisSummaryDraft(summary="补充证据验证完成。")),
+        read_file=AsyncMock(
+            side_effect=[
+                _facts_read_result(),
+                _tool_result(content=invalid, sha256="d" * 64),
+                _tool_result(content=valid, sha256="e" * 64),
+            ]
+        ),
+        run_script=AsyncMock(return_value=_tool_result(exitCode=0, output="")),
+        complete=AsyncMock(return_value=_tool_result(status="accepted", taskFinished=True)),
+    )
+
+    result = await workflow.run(
+        _instruction(), RunContext(run_id="task-run-1", session_id="task-session-1")
+    )
+
+    assert [status for _, status in result.stage_statuses] == ["completed"] * 5
+    assert workflow.repair_script.await_count == 2
+    assert workflow.run_script.await_count == 2
 
 
 @pytest.mark.anyio
