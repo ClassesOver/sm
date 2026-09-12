@@ -33,6 +33,7 @@ from .state import ReportingStateError
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
 REPORT_MCP_REQUEST_FINGERPRINT_DEPENDENCY = "Reporting MCP 请求指纹"
 REPORT_MCP_THREAD_PRECLAIMED_DEPENDENCY = "Reporting MCP 已占用 thread"
+REPORT_PROCESS_LIFECYCLE_DEPENDENCY = "Reporting Process Lifecycle"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 _THREAD_CLAIM_WAIT_SECONDS = 2.0
@@ -44,6 +45,13 @@ _MAX_ACTIVE_BACKGROUND_TASKS = 4
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
 ReviewStage = Literal["request", "outline", "recovery"]
 _RECOVERY_STEP_IDS = frozenset({"assemble-report", "validate-report"})
+
+
+class ProcessLifecyclePort(Protocol):
+    async def start_operation(self, **kwargs: Any) -> None: ...
+    async def update_operation(self, **kwargs: Any) -> None: ...
+    async def start_activity(self, **kwargs: Any) -> str | None: ...
+    async def finish_activity(self, **kwargs: Any) -> None: ...
 
 
 def reporting_workflow_ids(
@@ -160,10 +168,12 @@ class ReportWorkflowController:
         *,
         thread_ownership: WorkflowThreadOwnership,
         terminal_cleanup: TerminalCleanup | None = None,
+        process_lifecycle: ProcessLifecyclePort | None = None,
     ):
         self._workflow_factory = workflow_factory
         self._thread_ownership = thread_ownership
         self._terminal_cleanup = terminal_cleanup
+        self._process_lifecycle = process_lifecycle
         self._external_request_lock = asyncio.Lock()
         self._external_request_fingerprints: dict[str, str] = {}
         self._background_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -1101,6 +1111,14 @@ class ReportWorkflowController:
             return self._result(control, owned_output)
         if on_workflow_start is not None:
             on_workflow_start()
+        await self._process_notify(
+            "start_operation",
+            operation_id=scope["external_run_id"],
+            session_id=scope["thread_id"],
+            run_id=workflow_run_id,
+            title="生成报告",
+            execution="background" if self._workflow_entrypoint(run_context) == "mcp" else "foreground",
+        )
         try:
             output = await workflow.arun(
                 payload,
@@ -1120,6 +1138,13 @@ class ReportWorkflowController:
             )
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
         except BaseException as run_error:
+            await self._process_notify(
+                "update_operation",
+                operation_id=scope["external_run_id"],
+                session_id=scope["thread_id"],
+                status="cancelled" if isinstance(run_error, asyncio.CancelledError) else "failed",
+                summary="报表生成已取消" if isinstance(run_error, asyncio.CancelledError) else "报表生成失败",
+            )
             await self._finalize_run_error(
                 run_error,
                 scope,
@@ -1129,8 +1154,31 @@ class ReportWorkflowController:
             )
             raise
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
+        await self._process_notify(
+            "update_operation",
+            operation_id=scope["external_run_id"],
+            session_id=scope["thread_id"],
+            status=control.status,
+            summary=None,
+        )
         await self._finalize_control(control, scope, state=state)
         return self._result(control, output)
+
+    async def _process_notify(self, method: str, **kwargs: Any) -> None:
+        port = self._process_lifecycle
+        if port is None:
+            return
+        try:
+            callback = getattr(port, method)
+            await callback(**kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(
+                "report_process_lifecycle_failed method={} error_type={}",
+                method,
+                type(error).__name__,
+            )
 
     async def _register_reporting_run(
         self,
@@ -1681,11 +1729,10 @@ class ReportWorkflowController:
             external_run_id=scope["external_run_id"],
         )
 
-    @staticmethod
     def _workflow_dependencies(
-        scope: dict[str, str], *, entrypoint: str = "agentos"
+        self, scope: dict[str, str], *, entrypoint: str = "agentos"
     ) -> dict[str, Any]:
-        return {
+        dependencies: dict[str, Any] = {
             REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY: entrypoint,
             REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
                 "externalRunId": scope["external_run_id"],
@@ -1696,8 +1743,11 @@ class ReportWorkflowController:
                     if "database" in scope
                     else {}
                 ),
-            }
+            },
         }
+        if self._process_lifecycle is not None:
+            dependencies[REPORT_PROCESS_LIFECYCLE_DEPENDENCY] = self._process_lifecycle
+        return dependencies
 
     @staticmethod
     def _workflow_entrypoint(run_context: RunContext | None) -> str:

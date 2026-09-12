@@ -26,6 +26,7 @@ from .http.request_limits import (
 )
 from .http.security import CapabilityError, verify_capability
 from .integrations.agno_function_arguments import install_agno_function_argument_decoder
+from .integrations.dingyi_process import DingyiProcessAdapter
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
@@ -408,10 +409,12 @@ reporting_agent_template, report_runtime = create_report_runtime(
     quality_warning_service=quality_warning_service,
 )
 report_workflow = report_runtime.workflow()
+dingyi_process = DingyiProcessAdapter(agent_database.sync_engine)
 report_workflow_controller = ReportWorkflowController(
     report_runtime.workflow,
     thread_ownership=report_runtime.state_repository,
     terminal_cleanup=report_runtime.cleanup_terminal,
+    process_lifecycle=dingyi_process,
 )
 report_agent = create_report_agent(reporting_agent_template, report_workflow_controller)
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
@@ -435,6 +438,21 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
     application.include_router(create_quality_warning_router())
+    try:
+        # ProcessJournal 建表会触碰数据库；健康数据库可在路由构建阶段直接挂载，
+        # 保证 FastAPI 在 startup 前完成路由编译。
+        application.include_router(dingyi_process.router)
+    except Exception as error:
+        loguru_logger.warning("dingyi_process_router_deferred error_type={}", type(error).__name__)
+
+    async def _mount_dingyi_process() -> None:
+        if not any(
+            str(getattr(route, "path", "")).startswith("/extensions/dingyi/process/v1")
+            for route in application.routes
+        ):
+            application.include_router(dingyi_process.router)
+
+    application.router.add_event_handler("startup", _mount_dingyi_process)
     application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)

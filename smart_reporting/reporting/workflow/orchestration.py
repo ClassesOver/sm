@@ -94,6 +94,38 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
     @wraps(executor)
     async def execute(*args: Any, **kwargs: Any) -> Any:
         started_at = perf_counter()
+        lifecycle = None
+        run_context = kwargs.get("run_context")
+        if run_context is None and args:
+            run_context = next((arg for arg in args if hasattr(arg, "dependencies")), None)
+        dependencies = getattr(run_context, "dependencies", None)
+        if isinstance(dependencies, dict):
+            lifecycle = dependencies.get("Reporting Process Lifecycle")
+        scope = dependencies.get("Reporting Workflow Scope") if isinstance(dependencies, dict) else None
+        operation_id = str(scope.get("externalRunId") or getattr(run_context, "run_id", "")) if isinstance(scope, dict) else str(getattr(run_context, "run_id", ""))
+        activity_id = None
+        async def finish_activity(status: str, summary: str | None = None) -> None:
+            if lifecycle is None or not activity_id:
+                return
+            try:
+                await lifecycle.finish_activity(
+                    operation_id=operation_id,
+                    session_id=str(getattr(run_context, "session_id", "")),
+                    activity_id=activity_id, step_id=step_id,
+                    status=status, summary=summary,
+                )
+            except Exception:
+                logger.warning("report_process_activity_finish_failed step_id={}", step_id)
+        if lifecycle is not None and isinstance(scope, dict):
+            try:
+                activity_id = await lifecycle.start_activity(
+                    operation_id=operation_id,
+                    session_id=str(getattr(run_context, "session_id", "")),
+                    run_id=str(getattr(run_context, "run_id", "")),
+                    step_id=step_id,
+                )
+            except Exception:
+                logger.warning("report_process_activity_start_failed step_id={}", step_id)
         accumulator = _StepModelMetricsAccumulator()
         metrics_token = _STEP_MODEL_METRICS.set(accumulator)
         logger.info("report_workflow_step_started step_id={}", step_id)
@@ -125,6 +157,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 failed_additional.get("time_to_first_token_seconds"),
             )
             _STEP_MODEL_METRICS.reset(metrics_token)
+            await finish_activity("failed", "步骤执行失败")
             raise
         duration = perf_counter() - started_at
         collected_metrics = accumulator.snapshot()
@@ -150,6 +183,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             (metrics.additional_metrics or {}).get("request_count", 0),
             (metrics.additional_metrics or {}).get("time_to_first_token_seconds"),
         )
+        await finish_activity("completed")
         return result
 
     return execute
