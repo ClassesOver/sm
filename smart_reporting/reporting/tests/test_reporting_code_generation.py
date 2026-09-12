@@ -293,6 +293,11 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "pythonVersion": "3.12",
         "compilationRequired": True,
         "authorizedPaths": ["analysis/script.py"],
+        "factUsageRequirements": [
+            "facts 仅是源码生成上下文，脚本执行时不存在 facts、taskFacts 或 visualizationFacts 变量",
+            "读取 authorizedPaths 中的 JSON 文件后，必须按该文件自身根结构访问；"
+            "不得添加 facts、taskFacts 或 visualizationFacts 包装层",
+        ],
         "syntaxRequirements": [
             "提交前确保完整源码可通过 ast.parse 和 compile",
             "source 参数必须包含真实 LF 换行；不得使用两个字符 \\n 代替物理换行",
