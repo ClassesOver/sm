@@ -191,6 +191,31 @@ def reporting_python_script_failed(result: Any) -> bool:
     )
 
 
+def bounded_python_script_diagnostic(output: str, max_length: int) -> tuple[str, bool]:
+    """压缩 runner traceback，避免包装器内嵌源码淹没末尾异常。"""
+
+    if max_length < 1:
+        raise ValueError("Python 诊断长度上限必须为正整数。")
+    source_omitted = False
+    lines: list[str] = []
+    for line in output.splitlines():
+        if line.strip().startswith("exec(compile("):
+            indentation = line[: len(line) - len(line.lstrip())]
+            lines.append(f"{indentation}<generated source omitted>")
+            source_omitted = True
+        else:
+            lines.append(line)
+    compact = "\n".join(lines)
+    if len(compact) <= max_length:
+        return compact, source_omitted
+    marker = "\n...[diagnostic output truncated]...\n"
+    if max_length <= len(marker):
+        return compact[-max_length:], True
+    head_length = (max_length - len(marker)) // 4
+    tail_length = max_length - len(marker) - head_length
+    return f"{compact[:head_length]}{marker}{compact[-tail_length:]}", True
+
+
 def reporting_phase_from_acceptance_contract(value: Any) -> ReportingPhase | None:
     if not isinstance(value, Mapping):
         return None

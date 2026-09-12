@@ -209,3 +209,9 @@ async def test_runtime_bootstraps_default_chinese_matplotlib_font(tmp_path: Path
     assert "TTCollection" in observed_script
     assert "fontManager.addfont" in observed_script
     assert observed_script.index("fontManager.addfont") < observed_script.index("print('ok')")
+    execution_line = next(
+        line for line in observed_script.splitlines() if line.startswith("exec(compile(")
+    )
+    assert execution_line == (
+        "exec(compile(_reporting_source, '<target_code>', 'exec'), globals(), globals())"
+    )

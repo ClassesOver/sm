@@ -27,11 +27,60 @@ _REPORT_VISION_PROMPT = """
 只审查图表的呈现质量，不判断数据真实性、业务口径或 citation 是否正确。
 
 逐项检查 blank、cropping、text_overlap、legend_occlusion、missing_units 和 misleading。
-每个发现必须用 issues 返回对应 category、severity 和 description。仅当图片必须重新生成或
-修正后才能用于报告时设置 requiresRevision=true，并把对应 issue 标为 critical。warnings
-记录不阻断使用的问题，suggestions 提供可选改进。不要要求固定图表类型、数量、配色或风格，
-也不要因为图表未采用某种常见形式而判定失败。
+每个发现必须用 issues 返回对应 category、severity 和 description。只有整张图片或绘图区空白、
+严重裁剪、关键文字完全重叠或关键图例完全遮挡，才标为 critical 并设置 requiresRevision=true。
+blank 仅表示整张图片、画布或绘图区没有有效图表内容；某个数据系列因数值为零而不可见不属于
+blank。missing_units 和 misleading 一律只作为 warning，不得阻断。数据全零、恒定值、折线水平、
+系列重合、数值或坐标范围疑似异常均属于数据语义，不得据此要求重新生成。轻微文字重叠、图例
+遮挡、字体或布局不理想也放入 warnings。suggestions 提供可选改进。不要要求固定图表类型、数量、
+配色或风格，也不要因为图表未采用某种常见形式而判定失败。
 """.strip()
+
+_NON_BLOCKING_ISSUE_CATEGORIES = frozenset({"missing_units", "misleading"})
+_WHOLE_CHART_BLANK_MARKERS = (
+    "整张",
+    "整个图表",
+    "整幅",
+    "全图",
+    "图表主体",
+    "绘图区",
+    "画布",
+    "entire chart",
+    "whole chart",
+    "plot area",
+    "canvas",
+)
+
+
+def _is_non_blocking_issue(issue: dict[str, Any]) -> bool:
+    category = issue.get("category")
+    if category in _NON_BLOCKING_ISSUE_CATEGORIES:
+        return True
+    if category != "blank":
+        return False
+    description = str(issue.get("description", "")).lower()
+    return not any(marker in description for marker in _WHOLE_CHART_BLANK_MARKERS)
+
+
+def _normalize_visual_assessment(result: dict[str, Any]) -> dict[str, Any]:
+    """将轻微呈现问题统一降为告警，避免视觉模型过度阻断章节。"""
+    warnings = list(result.get("warnings", ()))
+    normalized_issues: list[dict[str, Any]] = []
+    for raw_issue in result.get("issues", ()):
+        issue = dict(raw_issue)
+        if _is_non_blocking_issue(issue):
+            issue["severity"] = "warning"
+        if issue.get("severity") == "warning":
+            description = issue.get("description")
+            if isinstance(description, str) and description and description not in warnings:
+                warnings.append(description)
+        normalized_issues.append(issue)
+    result["issues"] = normalized_issues
+    result["warnings"] = warnings[:20]
+    result["requiresRevision"] = any(
+        issue.get("severity") == "critical" for issue in normalized_issues
+    )
+    return result
 
 
 class ReportVisionAssessment(BaseModel):
@@ -141,10 +190,8 @@ class ReportVisionReviewer:
             # 也不能把原始异常或供应商响应带回模型上下文。
             raise WorkspaceError("图表视觉审查暂不可用，请稍后重试。") from error
 
-        result = assessment.model_dump(mode="json", by_alias=True)
-        result["requiresRevision"] = bool(
-            result["requiresRevision"]
-            or any(item["severity"] == "critical" for item in result["issues"])
+        result = _normalize_visual_assessment(
+            assessment.model_dump(mode="json", by_alias=True)
         )
         return ChartVisualInspectionReceipt.model_validate(
             {

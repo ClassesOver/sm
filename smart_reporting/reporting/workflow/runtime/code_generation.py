@@ -15,12 +15,14 @@ from time import perf_counter
 from typing import Any, NoReturn
 
 from agno.agent import Agent
-from agno.run import RunContext
+from agno.exceptions import ModelRateLimitError
+from agno.run import RunContext, RunStatus
 from agno.tools.function import Function
 from loguru import logger
 
 from ...model_policy import ThinkingFailureKind, current_reporting_thinking_decision
 from ...models import ReportingError
+from ...phase import bounded_python_script_diagnostic
 from ..checkpoint import FileIdentity
 
 ToolCallable = Callable[..., Awaitable[Mapping[str, Any]] | Mapping[str, Any]]
@@ -28,10 +30,13 @@ MAX_CODE_READ_BYTES = 128 * 1024
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
 MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
 MAX_DIAGNOSTIC_PATH_LENGTH = 1024
+MAX_DIAGNOSTIC_UNSIGNED_PATHS = 20
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
 MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_TASK_MISSING_FACTS = 20
 MAX_TASK_MISSING_FACT_LENGTH = 512
+MAX_TASK_OUTPUT_ROOT_KEYS = 20
+MAX_TASK_OUTPUT_ROOT_KEY_LENGTH = 128
 MAX_TASK_MISSING_CHARTS = 100
 MAX_TASK_CHART_ID_LENGTH = 128
 MAX_TASK_CHART_SOURCE_PATH_LENGTH = 1024
@@ -42,13 +47,79 @@ MAX_TASK_INSPECTION_TEXTS = 20
 MAX_TASK_INSPECTION_TEXT_LENGTH = 500
 MAX_TASK_INSPECTION_SUMMARY_LENGTH = 2000
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_FORBIDDEN_PATH_CALLS = frozenset(
+    {
+        "os.chdir",
+        "os.fchdir",
+        "os.getcwd",
+        "os.getcwdb",
+        "os.path.abspath",
+        "os.path.dirname",
+        "os.path.join",
+        "os.path.normpath",
+        "os.path.realpath",
+        "os.path.relpath",
+        "pathlib.Path.cwd",
+    }
+)
+_PATH_ARGUMENT_CALLS = frozenset(
+    {
+        "open",
+        "io.open",
+        "os.makedirs",
+        "os.mkdir",
+        "pathlib.Path",
+    }
+)
+_PATH_ARGUMENT_METHODS = frozenset(
+    {
+        "imread",
+        "imsave",
+        "read_csv",
+        "read_excel",
+        "read_feather",
+        "read_json",
+        "read_parquet",
+        "read_pickle",
+        "savefig",
+        "to_csv",
+        "to_excel",
+        "to_json",
+        "to_parquet",
+        "to_pickle",
+    }
+)
+_PATH_ARGUMENT_KEYWORDS = frozenset(
+    {"file", "filename", "filepath_or_buffer", "fname", "path", "path_or_buf"}
+)
+
+
+def _bounded_unsigned_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        path
+        for path in value
+        if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH
+    ][:MAX_DIAGNOSTIC_UNSIGNED_PATHS]
+
+
+def _bounded_forbidden_path_operations(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    allowed = _FORBIDDEN_PATH_CALLS | {"__file__"}
+    return sorted({item for item in value if isinstance(item, str) and item in allowed})
 
 
 def _code_failure_kind(
     diagnostic: Mapping[str, Any] | None,
 ) -> ThinkingFailureKind | None:
     code = diagnostic.get("code") if isinstance(diagnostic, Mapping) else None
-    if code in {"report_python_source_shape_invalid", "report_code_generation_no_source"}:
+    if code in {
+        "report_python_source_shape_invalid",
+        "report_python_source_path_invalid",
+        "report_code_generation_no_source",
+    }:
         return "python_compile_failure"
     if code in {
         "execution_output_error",
@@ -126,9 +197,67 @@ def _reject_python_syntax(path: str, source: str, error: SyntaxError) -> NoRetur
     ) from None
 
 
+def _restore_escaped_python_lines(source: str) -> str:
+    """恢复 provider 把整段源码编码为单行时产生的转义换行。"""
+
+    if "\n" in source or "\r" in source or "\\n" not in source:
+        return source
+    restored: list[str] = []
+    index = 0
+    while index < len(source):
+        if source[index] != "\\":
+            restored.append(source[index])
+            index += 1
+            continue
+        run_end = index
+        while run_end < len(source) and source[run_end] == "\\":
+            run_end += 1
+        slash_count = run_end - index
+        if run_end < len(source) and source[run_end] == "n":
+            restored.append("\\" * (slash_count // 2))
+            restored.append("\n" if slash_count % 2 else "n")
+            index = run_end + 1
+            continue
+        restored.append("\\" * slash_count)
+        index = run_end
+    candidate = "".join(restored)
+    return candidate if "\n" in candidate else source
+
+
+def _unwrap_json_encoded_python_source(source: str) -> str:
+    """还原 provider 额外套用 JSON 字符串编码的完整源码。"""
+
+    if "\n" in source or "\r" in source or not source.startswith('"'):
+        return source
+    try:
+        decoded = json.loads(source)
+    except (json.JSONDecodeError, TypeError):
+        return source
+    if not isinstance(decoded, str) or ("\n" not in decoded and "\\n" not in decoded):
+        return source
+    return decoded
+
+
 def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int) -> str:
     if not isinstance(source, str):
         _reject_python_source(path, source)
+    unwrapped_source = _unwrap_json_encoded_python_source(source)
+    if unwrapped_source != source:
+        logger.info(
+            "report_python_source_json_string_unwrapped path={} encoded_size={}",
+            path,
+            len(source.encode("utf-8", errors="replace")),
+        )
+        source = unwrapped_source
+    restored_source = _restore_escaped_python_lines(source)
+    if restored_source != source:
+        logger.info(
+            "report_python_source_escaped_lines_restored path={} encoded_size={} line_count={}",
+            path,
+            len(source.encode("utf-8", errors="replace")),
+            len(restored_source.splitlines()),
+        )
+        source = restored_source
     if source and "\r" not in source and not source.endswith("\n"):
         source += "\n"
     try:
@@ -147,10 +276,141 @@ def _validate_python_source_shape(path: str, source: Any, max_source_bytes: int)
     return source
 
 
-def _compile_python_source(path: str, source: str) -> None:
+def _import_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                bound_name = item.asname or item.name.split(".", 1)[0]
+                aliases[bound_name] = item.name if item.asname else bound_name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for item in node.names:
+                if item.name != "*":
+                    aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+    return aliases
+
+
+def _qualified_name(node: ast.AST, aliases: Mapping[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        owner = _qualified_name(node.value, aliases)
+        return f"{owner}.{node.attr}" if owner else node.attr
+    return None
+
+
+def _literal_bindings(tree: ast.AST) -> dict[str, ast.AST]:
+    values: dict[str, ast.AST] = {}
+    ambiguous: set[str] = set()
+    for node in ast.walk(tree):
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(node, (ast.Assign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if len(targets) == 1:
+                target, value = targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        if isinstance(target, ast.Name) and value is not None:
+            if target.id in values:
+                ambiguous.add(target.id)
+            else:
+                values[target.id] = value
+    for name in ambiguous:
+        values.pop(name, None)
+    return values
+
+
+def _literal_string(
+    node: ast.AST, bindings: Mapping[str, ast.AST], seen: frozenset[str] = frozenset()
+) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
+        return _literal_string(bindings[node.id], bindings, seen | {node.id})
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _literal_string(node.left, bindings, seen)
+        right = _literal_string(node.right, bindings, seen)
+        return left + right if left is not None and right is not None else None
+    return None
+
+
+def _signed_paths(value: Any, *, field_name: str = "") -> set[str]:
+    paths: set[str] = set()
+    normalized_field = field_name.lower().replace("_", "")
+    if isinstance(value, str) and normalized_field.endswith(("path", "paths", "root")):
+        paths.add(value)
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            paths.update(_signed_paths(child, field_name=str(key)))
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            paths.update(_signed_paths(child, field_name=field_name))
+    return paths
+
+
+def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
+    method_name = qualified_name.rsplit(".", 1)[-1]
+    if qualified_name not in _PATH_ARGUMENT_CALLS and method_name not in _PATH_ARGUMENT_METHODS:
+        return ()
+    arguments: list[ast.AST] = []
+    if call.args:
+        arguments.append(call.args[0])
+    arguments.extend(
+        keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
+    )
+    return tuple(arguments)
+
+
+def _referenced_literal_paths(tree: ast.AST) -> set[str]:
+    aliases = _import_aliases(tree)
+    bindings = _literal_bindings(tree)
+    paths: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        qualified_name = _qualified_name(node.func, aliases)
+        if qualified_name is None:
+            continue
+        for argument in _path_arguments(node, qualified_name):
+            literal = _literal_string(argument, bindings)
+            if literal is not None:
+                paths.add(literal)
+    return paths
+
+
+def _compile_python_source(path: str, source: str, authorized_paths: frozenset[str]) -> None:
     try:
         tree = ast.parse(source, filename=path)
+        aliases = _import_aliases(tree)
+        forbidden_operations = {
+            qualified_name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (qualified_name := _qualified_name(node.func, aliases))
+            in _FORBIDDEN_PATH_CALLS
+        }
+        if any(
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "__file__"
+            for node in ast.walk(tree)
+        ):
+            forbidden_operations.add("__file__")
+        unsigned_paths = _referenced_literal_paths(tree) - set(authorized_paths)
+        if forbidden_operations or unsigned_paths:
+            raise ReportingError(
+                "report_python_source_path_invalid",
+                "脚本不得探测当前目录或使用 .. 推导工作区路径；请逐字使用签发路径。",
+                details={
+                    "path": path,
+                    "unsignedPaths": sorted(unsigned_paths)[:20],
+                    "forbiddenPathOperations": sorted(forbidden_operations),
+                },
+            )
         compile(tree, path, "exec")
+    except ReportingError:
+        raise
     except SyntaxError as error:
         _reject_python_syntax(path, source, error)
     except (TypeError, ValueError):
@@ -286,6 +546,27 @@ class ReportingCodeGenerationRunner:
         return ReportingError(code, message, details={"path": script_path})
 
     @staticmethod
+    def _agent_failure(error: Exception | None = None) -> ReportingError:
+        if isinstance(error, ReportingError):
+            return error
+        if isinstance(error, ModelRateLimitError):
+            return ReportingError(
+                "report_code_generation_rate_limited",
+                "Coding Agent 模型调用受限，请稍后重试。",
+                details={"statusCode": error.status_code},
+            )
+        return ReportingError(
+            "report_code_generation_agent_failed",
+            "Coding Agent 调用失败。",
+        )
+
+    @staticmethod
+    def _recorded_agent_error(agent: Agent) -> Exception | None:
+        report_run_error = getattr(getattr(agent, "model", None), "report_run_error", None)
+        error = report_run_error() if callable(report_run_error) else None
+        return error if isinstance(error, Exception) else None
+
+    @staticmethod
     def _stable_code(value: Any, fallback: str) -> str:
         return value if isinstance(value, str) and _STABLE_CODE_RE.fullmatch(value) else fallback
 
@@ -304,6 +585,14 @@ class ReportingCodeGenerationRunner:
             path = details.get("path")
             if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH:
                 safe_details["path"] = path
+            unsigned_paths = _bounded_unsigned_paths(details.get("unsignedPaths"))
+            if unsigned_paths:
+                safe_details["unsignedPaths"] = unsigned_paths
+            forbidden_operations = _bounded_forbidden_path_operations(
+                details.get("forbiddenPathOperations")
+            )
+            if forbidden_operations:
+                safe_details["forbiddenPathOperations"] = forbidden_operations
             for field in ("line", "offset", "size", "lineCount", "maxLineLength"):
                 value = details.get(field)
                 if (
@@ -320,11 +609,16 @@ class ReportingCodeGenerationRunner:
             ):
                 safe_details["exitCode"] = exit_code
             output = details.get("output")
+            diagnostic_output_truncated = False
             if isinstance(output, str) and output:
-                safe_details["output"] = output[:MAX_DIAGNOSTIC_OUTPUT_LENGTH]
+                safe_details["output"], diagnostic_output_truncated = (
+                    bounded_python_script_diagnostic(output, MAX_DIAGNOSTIC_OUTPUT_LENGTH)
+                )
             output_truncated = details.get("outputTruncated")
-            if isinstance(output_truncated, bool):
-                safe_details["outputTruncated"] = output_truncated
+            if isinstance(output_truncated, bool) or diagnostic_output_truncated:
+                safe_details["outputTruncated"] = bool(
+                    output_truncated is True or diagnostic_output_truncated
+                )
             tool_code = details.get("toolCode")
             if cls._stable_code(tool_code, ""):
                 safe_details["toolCode"] = tool_code
@@ -361,6 +655,11 @@ class ReportingCodeGenerationRunner:
                 item[:MAX_TASK_MISSING_FACT_LENGTH]
                 for item in missing_facts[:MAX_TASK_MISSING_FACTS]
             ]
+        output_contract = task_facts.get("outputContract")
+        if output_contract is not None:
+            result["outputContract"] = cls._repair_output_contract(
+                output_contract, script_path
+            )
         missing_charts = task_facts.get("missingCharts")
         if missing_charts is not None:
             result["missingCharts"] = cls._repair_missing_charts(missing_charts, script_path)
@@ -368,6 +667,40 @@ class ReportingCodeGenerationRunner:
         if inspections is not None:
             result["inspections"] = cls._repair_inspections(inspections, script_path)
         return result
+
+    @classmethod
+    def _repair_output_contract(cls, contract: Any, script_path: str) -> dict[str, Any]:
+        if not isinstance(contract, Mapping):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复输出契约必须是对象。",
+                script_path,
+            )
+        required_root_keys = contract.get("requiredRootKeys")
+        additional_root_keys = contract.get("additionalRootKeys")
+        if (
+            contract.get("format") != "json"
+            or not isinstance(required_root_keys, list)
+            or not 1 <= len(required_root_keys) <= MAX_TASK_OUTPUT_ROOT_KEYS
+            or any(
+                not isinstance(key, str)
+                or not key
+                or len(key) > MAX_TASK_OUTPUT_ROOT_KEY_LENGTH
+                for key in required_root_keys
+            )
+            or len(required_root_keys) != len(set(required_root_keys))
+            or not isinstance(additional_root_keys, bool)
+        ):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "修复输出契约不是受限的 JSON 根节点契约。",
+                script_path,
+            )
+        return {
+            "format": "json",
+            "requiredRootKeys": list(required_root_keys),
+            "additionalRootKeys": additional_root_keys,
+        }
 
     @classmethod
     def _repair_missing_charts(cls, missing_charts: Any, script_path: str) -> list[dict[str, str]]:
@@ -569,6 +902,32 @@ class ReportingCodeGenerationRunner:
             "totalBytes": positions["totalBytes"],
         }
 
+    async def _read_signed_script(
+        self,
+        script_file: FileIdentity,
+        read_file: ToolCallable,
+        run_context: RunContext | None,
+        max_source_bytes: int,
+    ) -> dict[str, Any]:
+        """由服务端按已签发身份读取脚本；不作为模型工具暴露。"""
+        try:
+            receipt = await _invoke(
+                read_file,
+                {"path": script_file.path, "max_bytes": max_source_bytes},
+                run_context,
+            )
+        except ReportingError as error:
+            raise self._error(
+                self._stable_code(error.code, "report_code_generation_read_failed"),
+                "脚本读取失败。",
+                script_file.path,
+            ) from error
+        except Exception as error:
+            raise self._error(
+                "report_code_generation_read_failed", "脚本读取失败。", script_file.path
+            ) from error
+        return self._trusted_read_receipt(receipt, script_file)
+
     async def generate(
         self,
         script_path: str,
@@ -600,6 +959,12 @@ class ReportingCodeGenerationRunner:
         patch_error: ReportingError | None = None
         generation_started_at = perf_counter()
         model_started_at: float | None = None
+        authorized_paths = _signed_paths(task_facts) | {script_path}
+        if _previous_source is not None:
+            try:
+                authorized_paths.update(_referenced_literal_paths(ast.parse(_previous_source)))
+            except (SyntaxError, TypeError, ValueError):
+                pass
 
         def log_step(step: int, step_name: str, started_at: float) -> None:
             completed_at = perf_counter()
@@ -627,7 +992,7 @@ class ReportingCodeGenerationRunner:
                 )
                 log_step(2, "source_shape_validate", step_started_at)
                 step_started_at = perf_counter()
-                _compile_python_source(script_path, source)
+                _compile_python_source(script_path, source, frozenset(authorized_paths))
                 log_step(3, "python_compile", step_started_at)
                 step_started_at = perf_counter()
                 patch = _python_source_patch(
@@ -712,18 +1077,15 @@ class ReportingCodeGenerationRunner:
                 raise
 
         agent = self._fresh_agent()
-        self._configure(
-            agent,
-            Function(
-                name="submit_python_source",
-                description="提交签发路径的完整 Python 源码；不要提交 diff 或 Markdown 围栏。",
-                parameters=_tool_parameters("submit_python_source"),
-                strict=True,
-                entrypoint=wrapped_source,
-                stop_after_tool_call=True,
-            ),
-            "submit_python_source",
+        submit_source = Function(
+            name="submit_python_source",
+            description="提交签发路径的完整 Python 源码；不要提交 diff 或 Markdown 围栏。",
+            parameters=_tool_parameters("submit_python_source"),
+            strict=True,
+            entrypoint=wrapped_source,
+            stop_after_tool_call=True,
         )
+        self._configure(agent, submit_source, "submit_python_source")
         try:
             prompt = {
                 "scriptPath": script_path,
@@ -737,25 +1099,38 @@ class ReportingCodeGenerationRunner:
                     "trailingNewline": True,
                     "pythonVersion": "3.12",
                     "compilationRequired": True,
+                    "authorizedPaths": sorted(authorized_paths),
+                    "factUsageRequirements": [
+                        "facts 仅是源码生成上下文，脚本执行时不存在 facts、taskFacts 或 "
+                        "visualizationFacts 变量",
+                        "读取 authorizedPaths 中的 JSON 文件后，必须按该文件自身根结构访问；"
+                        "不得添加 facts、taskFacts 或 visualizationFacts 包装层",
+                    ],
                     "syntaxRequirements": [
                         "提交前确保完整源码可通过 ast.parse 和 compile",
+                        "source 参数必须包含真实 LF 换行；不得使用两个字符 \\n 代替物理换行",
                         "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
+                        "文件读写只可逐字使用 authorizedPaths；不得使用 __file__、cwd、chdir、"
+                        "os.path.join 或目录回退推导工作区路径",
                     ],
                 },
             }
             if diagnostic is not None:
                 prompt["diagnostic"] = self._short_diagnostic(diagnostic)
             model_started_at = perf_counter()
-            await agent.arun(self._prompt(prompt), run_context=run_context)
+            run_output = await agent.arun(self._prompt(prompt), run_context=run_context)
         except ReportingError:
             raise
         except Exception as error:
-            raise ReportingError(
-                "report_code_generation_agent_failed", "Coding Agent 调用失败。"
-            ) from error
+            raise self._agent_failure(error) from error
         if result is None and patch_error is not None:
             raise patch_error
         if result is None:
+            recorded_error = self._recorded_agent_error(agent)
+            if recorded_error is not None:
+                raise self._agent_failure(recorded_error) from recorded_error
+            if getattr(run_output, "status", None) == RunStatus.error:
+                raise self._agent_failure()
             raise ReportingError(
                 "report_code_generation_no_source",
                 "Coding Agent 未提交完整 Python 源码。",
@@ -790,28 +1165,15 @@ class ReportingCodeGenerationRunner:
         """直接读取一次受信脚本回执，再用 fresh Agent 提交完整修复源码。"""
         self._validate_script_path(script_file.path)
         bounded_task_facts = self._repair_task_facts(task_facts, script_file.path)
-        try:
-            receipt = await _invoke(
-                read_file,
-                {"path": script_file.path, "max_bytes": max_source_bytes},
-                run_context,
-            )
-        except ReportingError as error:
-            raise self._error(
-                self._stable_code(error.code, "report_code_generation_read_failed"),
-                "脚本读取失败。",
-                script_file.path,
-            ) from error
-        except Exception as error:
-            raise self._error(
-                "report_code_generation_read_failed", "脚本读取失败。", script_file.path
-            ) from error
-        read_receipt = self._trusted_read_receipt(receipt, script_file)
+        short_diagnostic = self._short_diagnostic(diagnostic)
+        read_receipt = await self._read_signed_script(
+            script_file, read_file, run_context, max_source_bytes
+        )
         result = await self.generate(
             script_file.path,
             {
                 "readReceipt": read_receipt,
-                "diagnostic": self._short_diagnostic(diagnostic),
+                "diagnostic": short_diagnostic,
                 "taskFacts": bounded_task_facts,
             },
             apply_analysis_patch,
@@ -831,6 +1193,7 @@ class ReportingCodeGenerationRunner:
                     "size": result.script_file.size,
                     "sha256": result.script_file.sha256,
                     "diagnosticCode": self._stable_code(diagnostic.get("code"), "unknown"),
+                    "diagnostic": short_diagnostic,
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),

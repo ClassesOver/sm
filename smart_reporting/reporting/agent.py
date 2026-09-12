@@ -3391,6 +3391,13 @@ def create_reporting_code_agent(
         "custom input 只能包含 Python 源码本身，不得包含 unified diff、文件头、hunk、JSON 包装或说明文字。",
         "源码必须使用 UTF-8/LF、多物理行并以换行结尾，且遵守 sourceProtocol 的字节与物理行长度上限。",
         "修复时逐字使用输入中的受信 readReceipt，并直接提交完整修复源码。",
+        "facts.outputContract 或 facts.taskFacts.outputContract 存在时，必须严格构造其 requiredRootKeys 指定的 JSON 根节点；"
+        "不得展平或遗漏根节点包装；additionalRootKeys=false 时根键必须与 requiredRootKeys 完全相同，"
+        "并在 json.dump 前核对最终对象的根键。",
+        "datasets 中的 format、hasHeader、columns、columnTypes 和 jsonShape 是权威输入契约；"
+        "必须按每个 path 自身声明解析，不得用其他 Dataset 的结构或自行猜测替换。",
+        "凡需读写工作区文件，必须从 sourceProtocol.authorizedPaths 逐字复制完整路径并直接赋值为字符串常量；"
+        "禁止使用 __file__、os.path、pathlib、cwd、chdir、路径拼接或 .. 构造或推导工作区路径。",
     ]
     if instructions:
         if isinstance(instructions, str):

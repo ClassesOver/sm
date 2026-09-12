@@ -32,7 +32,9 @@ from .analysis_item_workflow import (
     AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
+    SupplementalEvidence,
     _project_analysis_summary_payload,
+    supplemental_evidence_output_contract,
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
@@ -281,7 +283,18 @@ def _analysis_item_dataset_inputs(
                 "report_analysis_context_unavailable",
                 "分析数据上下文没有精确绑定当前不可变 Dataset。",
             )
-        inputs.append({**handle.public_dict(), "columns": list(context.fields)})
+        field_types = {item.name: item.inferred_type for item in context.field_stats}
+        dataset_input = {
+            **handle.public_dict(),
+            "format": "csv",
+            "hasHeader": True,
+            "columns": list(context.fields),
+        }
+        if set(field_types) == set(context.fields):
+            dataset_input["columnTypes"] = {
+                field: field_types[field] for field in context.fields
+            }
+        inputs.append(dataset_input)
     return inputs
 
 
@@ -770,6 +783,55 @@ class RuntimeAnalysisMixin:
                             run_context=task_context,
                         )
 
+                    async def degrade(
+                        error: Exception, task_context: RunContext
+                    ) -> Mapping[str, Any]:
+                        error_code = str(
+                            getattr(error, "code", "report_visualization_section_failed")
+                        )
+                        error_details = getattr(error, "details", None)
+                        details = error_details if isinstance(error_details, Mapping) else {}
+                        nested_details = details.get("details")
+                        if isinstance(nested_details, Mapping):
+                            details = {**details, **nested_details}
+                        execution_id = details.get("execution_id", details.get("executionId"))
+                        warning_details: dict[str, Any] = {"failureCode": error_code}
+                        if isinstance(execution_id, str) and execution_id:
+                            warning_details["executionId"] = execution_id
+                        for field in ("executionRepairCount", "visualReviewRepairCount"):
+                            count = details.get(field)
+                            if (
+                                isinstance(count, int)
+                                and not isinstance(count, bool)
+                                and count >= 0
+                            ):
+                                warning_details[field] = count
+                        warning = {
+                            "code": "report_visualization_degraded",
+                            "message": "章节图表修复后仍失败，已按零图继续成稿。",
+                            "sectionCode": section_code,
+                            "details": warning_details,
+                        }
+                        loguru_logger.bind(
+                            section_code=section_code,
+                            failure_code=error_code,
+                            execution_id=execution_id,
+                        ).warning("report_visualization_section_degraded")
+                        await self._apply_durable_command(
+                            run_context,
+                            ReportingCommand(
+                                name="record_warnings",
+                                commandId=(
+                                    f"visualization-degraded:{context['revision']}:"
+                                    f"{section_code}:{payload_sha256(warning)}"
+                                ),
+                                payload={"warnings": [warning]},
+                            ),
+                        )
+                        return await toolkit.submit_visualization_charts(
+                            section_code, [], run_context=task_context
+                        )
+
                     return (
                         await VisualizationSectionWorkflow(
                             generate_plan=generate_plan,
@@ -782,6 +844,7 @@ class RuntimeAnalysisMixin:
                                 inspect_chart if self.vision_reviewer is not None else None
                             ),
                             submit=submit,
+                            degrade=degrade,
                             load_script=load_script,
                             thinking_enabled=self._analysis_thinking_enabled,
                             thinking_budget_cap=self._analysis_thinking_budget_cap,
@@ -851,9 +914,72 @@ class RuntimeAnalysisMixin:
             DeterministicAnalysisBundle,
         )
         payload = fact_model.model_dump(mode="json", by_alias=True)
+        supplemental_sources: list[dict[str, Any]] = []
+        if isinstance(durable_item, Mapping):
+            for raw_identity in durable_item.get("evidenceFiles", ()):
+                try:
+                    identity = FileIdentity.model_validate(raw_identity)
+                except ValidationError as error:
+                    raise ReportingError(
+                        "report_phase_artifact_invalid", "补充 evidence 文件身份无效。"
+                    ) from error
+                if identity.path == fact_file.path or not identity.path.endswith(
+                    "/supplement.json"
+                ):
+                    continue
+                content = await self._read_identity_bytes(
+                    thread_id or self._visualization_context["thread_id"], identity
+                )
+                try:
+                    raw_evidence = json.loads(content)
+                    if not isinstance(raw_evidence, dict):
+                        raise TypeError("supplement root must be an object")
+                    raw_evidence.pop("analysisId", None)
+                    raw_evidence.pop("analysis_id", None)
+                    raw_evidence.pop("datasetIds", None)
+                    raw_evidence.pop("dataset_ids", None)
+                    evidence = SupplementalEvidence.model_validate(
+                        {
+                            **raw_evidence,
+                            "analysisId": analysis_id,
+                            "datasetIds": durable_item.get("datasetIds"),
+                        }
+                    )
+                except (TypeError, ValueError, ValidationError) as error:
+                    raise ReportingError(
+                        "report_phase_artifact_invalid", "补充 evidence 结构无效。"
+                    ) from error
+                findings: list[dict[str, Any]] = []
+                for index, finding in enumerate(evidence.findings):
+                    descriptor: dict[str, Any] = {
+                        "findingIndex": index,
+                        "name": finding.get("name"),
+                        "dataPath": f"findings[{index}]",
+                        "fields": sorted(finding),
+                    }
+                    columns = finding.get("columns")
+                    rows = finding.get("rows")
+                    if isinstance(columns, list) and isinstance(rows, list):
+                        descriptor.update(
+                            {
+                                "columns": columns,
+                                "rowsDataPath": f"findings[{index}].rows",
+                                "rowEncoding": "columns_rows",
+                                "rowCount": len(rows),
+                            }
+                        )
+                    findings.append(descriptor)
+                supplemental_sources.append(
+                    {
+                        "sourceFile": identity.model_dump(mode="json", by_alias=True),
+                        "dataPathBase": "fileRoot",
+                        "findings": findings,
+                    }
+                )
         return {
             "analysisId": analysis_id,
             "factFile": fact_file.model_dump(mode="json", by_alias=True),
+            "dataPathBase": "fileRoot",
             "summary": durable_item.get("summary") if isinstance(durable_item, Mapping) else None,
             "metrics": [
                 {
@@ -939,6 +1065,7 @@ class RuntimeAnalysisMixin:
             "citationIds": durable_item.get("citationIds", [])
             if isinstance(durable_item, Mapping)
             else [],
+            "supplementalEvidenceSources": supplemental_sources,
         }
 
     async def run_reporting_analysis(
@@ -2094,7 +2221,10 @@ class RuntimeAnalysisMixin:
                     toolkit.read_file,
                     toolkit.apply_analysis_patch,
                     run_context,
-                    task_facts={"missingFacts": list(decision.missing_facts)},
+                    task_facts={
+                        "missingFacts": list(decision.missing_facts),
+                        "outputContract": supplemental_evidence_output_contract(),
+                    },
                     max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
 

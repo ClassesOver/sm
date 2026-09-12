@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
+import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
@@ -22,6 +25,7 @@ from smart_reporting.sandbox import (
     SessionCommandRequest,
     WorkspaceBinding,
 )
+from smart_reporting.sandbox.daytona import DaytonaExecutionApi
 from smart_reporting.task_execution.execution import TaskExecutionKernel, TaskExecutionRuntime
 from smart_reporting.workspace import WorkspaceService
 
@@ -49,10 +53,32 @@ class MemoryRegistry:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.bindings: dict[str, Any] = {}
+        self.generations: dict[str, str] = {}
+        self.cleanup_bindings: dict[str, Any] = {}
 
     @asynccontextmanager
     async def locked(self, key: str):
         yield MemoryRegistryTransaction(self.values, self.bindings)
+
+    async def workspace_label(self, base_label: str) -> str:
+        generation = self.generations.get(base_label)
+        if generation is None:
+            return base_label
+        return hashlib.sha256(f"{base_label}:{generation}".encode()).hexdigest()
+
+    async def quarantine_workspace(self, base_label: str, binding_digest: str) -> str:
+        record = self.bindings.pop(binding_digest, None)
+        self.values.pop(binding_digest, None)
+        if record is not None:
+            self.cleanup_bindings[binding_digest] = record
+        self.generations[base_label] = uuid.uuid4().hex
+        return binding_digest
+
+    async def pending_cleanup_bindings(self, limit: int = 20) -> tuple[Any, ...]:
+        return tuple(self.cleanup_bindings.values())[:limit]
+
+    async def complete_cleanup(self, binding_digest: str) -> None:
+        self.cleanup_bindings.pop(binding_digest, None)
 
 
 class FakeFileSystem:
@@ -227,6 +253,64 @@ async def test_daytona_provider_ensures_one_workspace_per_binding() -> None:
 
 
 @pytest.mark.anyio
+async def test_workspace_quarantine_rotates_provider_binding_and_cleans_old_workspace() -> None:
+    client = FakeDaytonaClient()
+    registry = MemoryRegistry()
+    provider = DaytonaProvider(
+        client=client,
+        registry=registry,
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    workspace = WorkspaceService(
+        "0123456789abcdef0123456789abcdef",
+        async_registry=registry,
+        provider=provider,
+    )
+
+    first = await workspace._asandbox_for(None, "thread-1")
+    await workspace.aquarantine("thread-1")
+    second = await workspace._asandbox_for(None, "thread-1")
+
+    assert second.ref.resource_id != first.ref.resource_id
+    assert set(client.sandboxes) == {first.ref.resource_id, second.ref.resource_id}
+    assert await workspace.acleanup_quarantined() == 1
+    assert set(client.sandboxes) == {second.ref.resource_id}
+    assert registry.cleanup_bindings == {}
+
+
+@pytest.mark.anyio
+async def test_workspace_quarantine_cleanup_retries_provider_failure() -> None:
+    client = FakeDaytonaClient()
+    registry = MemoryRegistry()
+    provider = DaytonaProvider(
+        client=client,
+        registry=registry,
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    workspace = WorkspaceService(
+        "0123456789abcdef0123456789abcdef",
+        async_registry=registry,
+        provider=provider,
+    )
+
+    first = await workspace._asandbox_for(None, "thread-1")
+    await workspace.aquarantine("thread-1")
+    client.failure_operation = "delete"
+    client.failure = DaytonaError("temporary backend failure")
+
+    assert await workspace.acleanup_quarantined() == 0
+    assert first.ref.resource_id in client.sandboxes
+    assert tuple(registry.cleanup_bindings) == (first.ref.binding_digest,)
+
+    client.failure_operation = None
+    assert await workspace.acleanup_quarantined() == 1
+    assert first.ref.resource_id not in client.sandboxes
+    assert registry.cleanup_bindings == {}
+
+
+@pytest.mark.anyio
 async def test_daytona_provider_starts_and_stops_workspace() -> None:
     provider = DaytonaProvider(
         client=FakeDaytonaClient(),
@@ -300,9 +384,82 @@ async def test_daytona_python_runner_executes_from_workspace_root() -> None:
     assert "TTCollection" in executed
     assert "fontManager.addfont" in executed
     assert "replace(_reporting_matplotlibrc_temporary, _reporting_matplotlibrc)" in executed
-    assert executed.index("setdefault('MATPLOTLIBRC'") < executed.index("exec(compile(")
+    assert executed.index("setdefault('MATPLOTLIBRC'") < executed.index("_reporting_source =")
+    execution_line = next(
+        line.strip() for line in executed.splitlines() if line.strip().startswith("exec(compile(")
+    )
+    assert execution_line == (
+        "exec(compile(_reporting_source, _reporting_filename, 'exec'), globals(), globals())"
+    )
+    assert script not in execution_line
     assert repr(script) in executed
     assert result.script_hash == hashlib.sha256(script.encode()).hexdigest()
+
+
+@pytest.mark.anyio
+async def test_daytona_python_runner_reports_target_source_line(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("smart_reporting.sandbox.daytona.DAYTONA_WORKSPACE_ROOT", str(tmp_path))
+
+    class LocalProcess:
+        async def _run_code(self, code: str, *, timeout: int) -> Any:
+            completed = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return SimpleNamespace(
+                status=(
+                    ExecutionStatus.SUCCEEDED
+                    if completed.returncode == 0
+                    else ExecutionStatus.FAILED
+                ),
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+    source = "\n" * 38 + "row = ['2025-01']\nprint(row['month'])\n"
+    result = await DaytonaExecutionApi(cast(Any, LocalProcess())).run_python_script(
+        RunPythonScriptRequest(script=source)
+    )
+
+    assert result.exit_code == 1
+    assert 'File "<target_code>", line 40' in result.stderr
+    assert "print(row['month'])" in result.stderr
+    assert "_reporting_fallbacks" not in result.stderr
+
+
+@pytest.mark.anyio
+async def test_daytona_python_runner_preserves_error_tail_when_output_is_truncated() -> None:
+    client = FakeDaytonaClient()
+    provider = DaytonaProvider(
+        client=client,
+        registry=MemoryRegistry(),
+        snapshot="sandbox-tools",
+        binding_secret=b"0123456789abcdef0123456789abcdef",
+    )
+    handle = await provider.ensure_workspace(binding())
+    tail = "ValueError: final diagnostic"
+
+    async def code_run(_code: str, params: Any = None, timeout: int | None = None) -> Any:
+        del params, timeout
+        return SimpleNamespace(exit_code=1, result="x" * 1024 + "\n" + tail)
+
+    client.sandboxes[handle.ref.resource_id].process.code_run = code_run
+
+    result = await handle.execution.run_python_script(
+        RunPythonScriptRequest(
+            script="raise ValueError('final diagnostic')", output_limit_bytes=128
+        )
+    )
+
+    assert result.output_truncated is True
+    assert tail in result.stdout
+    assert len(result.stdout.encode("utf-8")) <= 128
 
 
 @pytest.mark.anyio
@@ -339,7 +496,7 @@ async def test_task_execution_accepts_provider_resource_id() -> None:
         async_registry=registry,
         provider=provider,
     )
-    handle = await provider.ensure_workspace(workspace._provider_binding("thread-1"))
+    handle = await provider.ensure_workspace(await workspace._provider_binding("thread-1"))
     scope = TaskExecutionRuntime(
         task=cast(Any, SimpleNamespace()),
         external_run_id="external-run",
@@ -374,7 +531,7 @@ async def test_task_execution_stores_retained_output_with_provider_process_contr
         async_registry=registry,
         provider=provider,
     )
-    handle = await provider.ensure_workspace(workspace._provider_binding("thread-1"))
+    handle = await provider.ensure_workspace(await workspace._provider_binding("thread-1"))
     scope = TaskExecutionRuntime(
         task=cast(Any, SimpleNamespace()),
         external_run_id="report-coding-analysis-1",

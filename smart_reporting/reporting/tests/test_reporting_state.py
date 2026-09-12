@@ -731,6 +731,29 @@ def test_submit_visualization_charts_allows_empty_charts() -> None:
     assert "section_002" in payload["completedVisualizationSections"]
 
 
+def test_record_warnings_appends_structured_warning() -> None:
+    warning = {
+        "code": "report_visualization_degraded",
+        "message": "图表脚本修复后仍执行失败，章节已按零图继续。",
+        "sectionCode": "section_002",
+        "details": {
+            "failureCode": "report_visualization_script_failed",
+            "executionId": "execution-2",
+        },
+    }
+
+    result = ReportingStateReducer.apply(
+        make_visualization_state(),
+        {
+            "name": "record_warnings",
+            "commandId": "visualization-degraded:section_002:execution-2",
+            "payload": {"warnings": [warning]},
+        },
+    )
+
+    assert result.state.payload["warnings"] == [warning]
+
+
 def test_submit_visualization_charts_rejects_cross_section_duplicate() -> None:
     state = state_with_chart("chart_a", "section_001")
     with pytest.raises(ReportingStateError) as exc_info:

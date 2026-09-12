@@ -595,6 +595,13 @@ def apply(
             payload["warnings"] = _tuple_unique(
                 [*payload.get("warnings", []), *arguments["warnings"]]
             )
+    elif name == "record_warnings":
+        warnings = arguments.get("warnings")
+        if not isinstance(warnings, list) or not all(
+            isinstance(warning, Mapping) for warning in warnings
+        ):
+            raise ReportingStateError("report_warning_invalid", "Reporting 告警必须是对象列表。")
+        payload["warnings"] = _tuple_unique([*payload.get("warnings", []), *warnings])
     elif name == "set_workflow_checkpoint":
         checkpoint = arguments.get("checkpoint")
         if not isinstance(checkpoint, Mapping):

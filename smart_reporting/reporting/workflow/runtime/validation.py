@@ -91,6 +91,16 @@ def _analysis_bundle_semantic_issues(
         issues.extend(_multi_table_requirement_issues(requirement, index, snapshots))
     requirement_ids = {item.requirement_id for item in bundle.requirements}
     for index, analysis in enumerate(bundle.analyses):
+        if envelope is not None and analysis.domain not in set(envelope.domains or ()):
+            issues.append(
+                {
+                    "path": f"analyses[{index}].domain",
+                    "rejectedValue": analysis.domain,
+                    "reason": "分析项领域必须来自请求语义确定的 domains",
+                    "allowedValues": list(envelope.domains or ()),
+                    "requiredAction": "根据完整管理问题语义从 allowedValues 选择唯一领域",
+                }
+            )
         unknown = sorted(set(analysis.requirement_ids) - requirement_ids)
         if unknown:
             allowed_values = sorted(requirement_ids)

@@ -200,6 +200,27 @@ class RuntimeVisualizationMixin:
             if reviewer is None:
                 raise WorkspaceError("当前 Reporting Agent 未启用图片视觉审查。")
             identity = await self._inspect_chart_file(thread_id=scope.thread_id, path=source_path)
+            durable = await self._durable_state(scope)
+            durable_payload = getattr(durable, "payload", {})
+            raw_receipts = (
+                durable_payload.get("chartInspectionReceipts", [])
+                if isinstance(durable_payload, Mapping)
+                else []
+            )
+            if not isinstance(raw_receipts, list):
+                raise ReportingError("report_state_invalid", "chartInspectionReceipts 状态损坏。")
+            for raw_receipt in raw_receipts:
+                if (
+                    isinstance(raw_receipt, Mapping)
+                    and raw_receipt.get("sourcePath") == source_path
+                    and raw_receipt.get("sha256") == identity["sha256"]
+                ):
+                    receipt = ChartVisualInspectionReceipt.model_validate(raw_receipt)
+                    return {
+                        "ok": True,
+                        "status": "reviewed",
+                        "receipt": receipt.model_dump(mode="json", by_alias=True),
+                    }
             receipt = ChartVisualInspectionReceipt.model_validate(
                 await reviewer.review(scope.thread_id, source_path, detail=detail)
             )

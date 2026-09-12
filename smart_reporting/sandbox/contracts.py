@@ -183,6 +183,7 @@ class RunPythonScriptResult(_Contract):
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    output_truncated: bool = False
     script_hash: str = Field(pattern=_HEX_DIGEST_PATTERN)
     dependency_bundle_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
 
@@ -261,6 +262,8 @@ class SandboxProvider(Protocol):
     async def destroy_workspace(
         self, ref: SandboxRef, binding: WorkspaceBinding
     ) -> DestroyResult: ...
+
+    async def destroy_workspace_ref(self, ref: SandboxRef) -> DestroyResult: ...
 
     async def health_check(self) -> ProviderHealth: ...
 

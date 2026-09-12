@@ -38,6 +38,7 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     AnalysisFileIdentity,
     DatasetAnalysisContext,
     DetailedAnalysisPlan,
+    FieldStatistic,
     ProfiledDataset,
 )
 from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
@@ -241,6 +242,21 @@ def test_workflow_runtime_uses_package_boundaries() -> None:
     assert ReportWorkflowRuntime.__module__ == ("smart_reporting.reporting.workflow.runtime.facade")
     assert AnalysisBundle.__module__ == "smart_reporting.reporting.workflow.runtime.models"
     assert DataUnderstandingPlan.__module__ == ("smart_reporting.reporting.workflow.runtime.models")
+
+
+def test_analysis_item_schema_distinguishes_required_description_and_question() -> None:
+    bundle_schema = AnalysisBundle.model_json_schema()
+    item_schema = bundle_schema["$defs"]["AnalysisItem"]
+
+    assert "根对象" in bundle_schema["description"]
+    assert "完整分析项对象" in bundle_schema["properties"]["analyses"]["description"]
+    assert "完整取数需求对象" in bundle_schema["properties"]["requirements"]["description"]
+    assert "description" in item_schema["required"]
+    assert "managementQuestion" in item_schema["required"]
+    assert "分析动作" in item_schema["properties"]["description"]["description"]
+    assert "不得替代" in item_schema["properties"]["description"]["description"]
+    assert "单一业务问题" in item_schema["properties"]["managementQuestion"]["description"]
+    assert "不得替代" in item_schema["properties"]["managementQuestion"]["description"]
 
 
 def test_reporting_fresh_retry_budget_allows_three_attempts() -> None:
@@ -1609,7 +1625,14 @@ def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
 
 
 @pytest.mark.anyio
-async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps() -> None:
+@pytest.mark.parametrize(
+    ("requested_domain", "expected_domain"),
+    (("income", "income"), ("full_cost", "full_cost")),
+)
+async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv_for_fact_gaps(
+    requested_domain: str,
+    expected_domain: str,
+) -> None:
     context = DatasetAnalysisContext(
         profileFile=AnalysisFileIdentity(path="profiles/dataset-1.json", size=1, sha256="a" * 64),
         profileModelView={},
@@ -1698,6 +1721,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
         REPORT_ANALYSIS_PLAN_STATE_KEY: [
             {
                 "code": "income",
+                "domain": requested_domain,
                 "description": "收入规模分析",
                 "managementQuestion": "收入规模如何？",
                 "primaryMetricFamily": "收入",
@@ -1711,7 +1735,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
     runtime: Any = object.__new__(RuntimeDatasetsMixin)
     runtime._state = lambda _run_context: state
     runtime._envelope = lambda _run_context: SimpleNamespace(
-        domains=("income",), report_goal="分析收入规模"
+        domains=(requested_domain,), report_goal="分析医院经营主题"
     )
     runtime._profile = lambda _run_context: SimpleNamespace(metrics=())
     runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
@@ -1727,6 +1751,7 @@ async def test_detailed_analysis_plan_only_requires_csv_evidence_for_fact_gaps()
     )
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert analysis.domain == expected_domain
     assert analysis.dataset_ids == ("dataset-1", "attachment-dataset")
     assert (
         "仅当 deterministicFacts 未覆盖当前管理问题的必需事实时，从不可变 CSV 复算并保存补充 evidence"
@@ -1792,6 +1817,28 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
         rowCount=first.row_count,
         columnCount=2,
         fields=("income_type", "actual_income"),
+        fieldStats=(
+            FieldStatistic(
+                name="income_type",
+                inferredType="categorical",
+                nonNullCount=1,
+                missingCount=0,
+                missingRate=0,
+                distinctCount=1,
+                cardinalityRate=1,
+                unique=True,
+            ),
+            FieldStatistic(
+                name="actual_income",
+                inferredType="numeric",
+                nonNullCount=1,
+                missingCount=0,
+                missingRate=0,
+                distinctCount=1,
+                cardinalityRate=1,
+                unique=True,
+            ),
+        ),
         numericFields=("actual_income",),
         periodValues=(),
     )
@@ -1802,6 +1849,10 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
             "size": second.size,
             "sha256": second.sha256,
             "fields": ("budget_type", "budget_income"),
+            "field_stats": (
+                context.field_stats[0].model_copy(update={"name": "budget_type"}),
+                context.field_stats[1].model_copy(update={"name": "budget_income"}),
+            ),
             "numeric_fields": ("budget_income",),
         }
     )
@@ -1810,6 +1861,16 @@ def test_analysis_item_dataset_inputs_bind_columns_to_each_signed_path() -> None
 
     assert inputs[0]["columns"] == ["income_type", "actual_income"]
     assert inputs[1]["columns"] == ["budget_type", "budget_income"]
+    assert inputs[0]["format"] == "csv"
+    assert inputs[0]["hasHeader"] is True
+    assert inputs[0]["columnTypes"] == {
+        "income_type": "categorical",
+        "actual_income": "numeric",
+    }
+    assert inputs[1]["columnTypes"] == {
+        "budget_type": "categorical",
+        "budget_income": "numeric",
+    }
 
 
 def test_analysis_item_output_root_isolated_by_fresh_attempt() -> None:
@@ -2134,7 +2195,14 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
     assert len(planner_requests) == 2
     assert code_prompts[0]["facts"]["evidenceDecision"]["missingFacts"] == ["构成"]
     assert code_prompts[1]["scriptPath"] == script_path
-    assert code_prompts[1]["facts"]["taskFacts"] == {"missingFacts": ["构成"]}
+    assert code_prompts[1]["facts"]["taskFacts"] == {
+        "missingFacts": ["构成"],
+        "outputContract": {
+            "format": "json",
+            "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+            "additionalRootKeys": False,
+        },
+    }
     assert code_prompts[1]["facts"]["diagnostic"] == {
         "code": "report_analysis_script_failed",
         "message": "脚本执行失败。",
@@ -2406,6 +2474,11 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
         "32000" not in instruction and "240 行" not in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
+    analysis_instructions = "\n".join(runtime._analysis_agent.instructions)
+    assert "根 JSON 必须是对象且只能包含 analyses 和 requirements" in analysis_instructions
+    assert "不得返回单个 analysis、单个 requirement、裸数组或占位值" in analysis_instructions
+    assert "同时显式输出 description 和 managementQuestion" in analysis_instructions
+    assert "即使内容相近也不得省略" in analysis_instructions
     expected_policies = (
         (runtime._request_normalizer, "request_normalization"),
         (runtime._data_understanding_agent, "data_understanding"),

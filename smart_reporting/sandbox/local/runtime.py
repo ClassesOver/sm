@@ -34,6 +34,7 @@ from ..matplotlib_defaults import (
     LOCAL_MATPLOTLIBRC_PATH,
     matplotlib_bootstrap,
 )
+from ..python_runner import bounded_python_output
 from .preflight import inspect_host, run_preflight
 
 
@@ -162,22 +163,21 @@ class PythonRuntime:
         missing = re.search(rb"No module named ['\"]([^'\"]+)['\"]", stderr)
         if missing is not None:
             raise DependencyUnavailable(missing.group(1).decode("utf-8", errors="replace"))
-        limit = request.output_limit_bytes
-
-        def bounded(value: bytes) -> str:
-            marker = b"\n[output truncated]"
-            selected = (
-                value if len(value) <= limit else value[: max(0, limit - len(marker))] + marker
-            )
-            return selected.decode("utf-8", errors="replace")
+        stdout_text, stdout_truncated = bounded_python_output(
+            stdout, request.output_limit_bytes
+        )
+        stderr_text, stderr_truncated = bounded_python_output(
+            stderr, request.output_limit_bytes
+        )
 
         return RunPythonScriptResult(
             status=(
                 ExecutionStatus.SUCCEEDED if process.returncode == 0 else ExecutionStatus.FAILED
             ),
             exit_code=process.returncode,
-            stdout=bounded(stdout),
-            stderr=bounded(stderr),
+            stdout=stdout_text,
+            stderr=stderr_text,
+            output_truncated=stdout_truncated or stderr_truncated,
             script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
         )
 
@@ -458,7 +458,8 @@ class LocalSandboxRuntime:
                     output.write(matplotlib_bootstrap(LOCAL_MATPLOTLIB_ROOT).encode())
                     output.write(
                         (
-                            f"exec(compile({request.script!r}, '<stdin>', 'exec'), "
+                            f"_reporting_source = {request.script!r}\n"
+                            "exec(compile(_reporting_source, '<target_code>', 'exec'), "
                             "globals(), globals())\n"
                         ).encode()
                     )

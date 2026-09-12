@@ -45,3 +45,201 @@ async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None
 
     assert result["reviewed"] is True
     assert result["sha256"]
+
+
+@pytest.mark.anyio
+async def test_vision_reviewer_demotes_minor_presentation_issues_to_warnings() -> None:
+    content = b"image"
+
+    class Workspace:
+        async def aview_image(self, *_args: object) -> ToolResult:
+            return ToolResult(
+                content="loaded",
+                images=[Image(content=content, mime_type="image/png", format="png")],
+            )
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            return SimpleNamespace(
+                content={
+                    "summary": "有轻微排版问题。",
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "text_overlap",
+                            "severity": "warning",
+                            "description": "标签有轻微重叠。",
+                        },
+                        {
+                            "category": "legend_occlusion",
+                            "severity": "warning",
+                            "description": "图例有轻微遮挡。",
+                        },
+                        {
+                            "category": "missing_units",
+                            "severity": "critical",
+                            "description": "坐标轴缺少单位。",
+                        },
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            )
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),  # type: ignore[arg-type]
+        Workspace(),  # type: ignore[arg-type]
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.review("thread-1", "charts/revenue.png")
+
+    assert result["requiresRevision"] is False
+    assert [issue["severity"] for issue in result["issues"]] == [
+        "warning",
+        "warning",
+        "warning",
+    ]
+    assert result["warnings"] == ["标签有轻微重叠。", "图例有轻微遮挡。", "坐标轴缺少单位。"]
+
+
+@pytest.mark.anyio
+async def test_vision_reviewer_demotes_data_semantic_findings_to_warnings() -> None:
+    content = b"image"
+
+    class Workspace:
+        async def aview_image(self, *_args: object) -> ToolResult:
+            return ToolResult(
+                content="loaded",
+                images=[Image(content=content, mime_type="image/png", format="png")],
+            )
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            return SimpleNamespace(
+                content={
+                    "summary": "数据序列缺少变化。",
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "misleading",
+                            "severity": "critical",
+                            "description": "所有数据点均为0，两条折线完全重合。",
+                        },
+                        {
+                            "category": "blank",
+                            "severity": "critical",
+                            "description": "收入柱状系列不可见，可能是因为数据全为0。",
+                        },
+                        {
+                            "category": "misleading",
+                            "severity": "critical",
+                            "description": "次均收入在所有月份均为1.00，呈水平直线。",
+                        },
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            )
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),  # type: ignore[arg-type]
+        Workspace(),  # type: ignore[arg-type]
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.review("thread-1", "charts/revenue.png")
+
+    assert result["requiresRevision"] is False
+    assert [issue["severity"] for issue in result["issues"]] == [
+        "warning",
+        "warning",
+        "warning",
+    ]
+    assert result["warnings"] == [
+        "所有数据点均为0，两条折线完全重合。",
+        "收入柱状系列不可见，可能是因为数据全为0。",
+        "次均收入在所有月份均为1.00，呈水平直线。",
+    ]
+
+
+@pytest.mark.anyio
+async def test_vision_reviewer_keeps_severe_text_overlap_as_blocking() -> None:
+    content = b"image"
+
+    class Workspace:
+        async def aview_image(self, *_args: object) -> ToolResult:
+            return ToolResult(
+                content="loaded",
+                images=[Image(content=content, mime_type="image/png", format="png")],
+            )
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            return SimpleNamespace(
+                content={
+                    "summary": "关键标签无法阅读。",
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "text_overlap",
+                            "severity": "critical",
+                            "description": "关键数据标签完全重叠。",
+                        }
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            )
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),  # type: ignore[arg-type]
+        Workspace(),  # type: ignore[arg-type]
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.review("thread-1", "charts/revenue.png")
+
+    assert result["requiresRevision"] is True
+    assert result["issues"][0]["severity"] == "critical"
+
+
+@pytest.mark.anyio
+async def test_vision_reviewer_keeps_blank_chart_as_blocking() -> None:
+    content = b"image"
+
+    class Workspace:
+        async def aview_image(self, *_args: object) -> ToolResult:
+            return ToolResult(
+                content="loaded",
+                images=[Image(content=content, mime_type="image/png", format="png")],
+            )
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            return SimpleNamespace(
+                content={
+                    "summary": "图表为空白。",
+                    "requiresRevision": False,
+                    "issues": [
+                        {
+                            "category": "blank",
+                            "severity": "critical",
+                            "description": "图表主体为空白。",
+                        }
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            )
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),  # type: ignore[arg-type]
+        Workspace(),  # type: ignore[arg-type]
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.review("thread-1", "charts/revenue.png")
+
+    assert result["requiresRevision"] is True
+    assert result["issues"][0]["severity"] == "critical"

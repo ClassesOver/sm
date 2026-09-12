@@ -115,7 +115,7 @@ from ...hospital_operation.deterministic_analysis import (
     build_deterministic_analysis_bundle,
     validate_metric_code_bindings,
 )
-from ...hospital_operation.domains import DOMAIN_CODES, resolve_domain_mentions
+from ...hospital_operation.domains import DOMAIN_CODES
 from ...hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
@@ -496,9 +496,14 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
-                "根据用户整句语义归一化分析领域和分析期间；domains 只能使用输入指引中的领域代码",
-                "可返回多个 domains；topic 表示非全域专题，不表示只能包含一个领域",
-                "明确别名和整句语义可以共同确定领域；仅有‘成本’等仍无法区分具体领域的短词时返回澄清内容",
+                "只根据用户完整目标及补充说明的业务语义，同时决策 reportType、domains 和分析期间；不得按关键词机械匹配",
+                "reportType 表示分析的组织意图，与 domains 数量相互独立；不得根据领域多少反推报告类型",
+                "topic 表示围绕一个聚焦的管理问题、变化机制或专项主题深入分析，即使问题横跨多个领域也仍可返回多个相关 domains",
+                "comprehensive 表示从综合经营视角统筹评价多个管理维度，即使用户明确限定了若干领域也仍是 comprehensive；不得因范围有限降级为 topic",
+                "comprehensive 未限定范围时 domains 返回全部六域，明确限定范围时只返回语义涉及的领域",
+                "医院成本、总成本、科室成本、成本结构或成本趋势优先归入 full_cost；次均费用、药耗、耗材或费用管控归入 cost_control",
+                "只有完整语义仍无法判断 reportType、业务领域或唯一期间时才返回 clarificationQuestion",
+                "domains 只能使用输入指引中的领域代码，并按语义相关性排序",
                 "不得推断或返回数据源、Agent、医院或系统标识",
                 "单个明确日历年份转换为该年1月1日至12月31日",
                 "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短且陈述式的 clarificationQuestion",
@@ -589,8 +594,11 @@ class _ReportWorkflowRuntimeBase:
             ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
+                "根 JSON 必须是对象且只能包含 analyses 和 requirements；不得返回单个 analysis、单个 requirement、裸数组或占位值",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
+                "每个 analyses[].domain 必须根据该管理问题的完整业务语义，从请求 domains 中选择唯一值；不得按关键词匹配",
                 "managementQuestion 写可直接回答的单一管理问题，primaryMetricFamily 写该项唯一的主要指标族",
+                "每个 analyses 项必须同时显式输出 description 和 managementQuestion；二者语义不同，即使内容相近也不得省略",
                 "每项 requirement 显式声明维度、指标、期间字段、期间粒度、共同粒度和表关系",
                 "grainColumns 必须全部包含在 dimensionColumns 中",
                 (
@@ -649,6 +657,7 @@ class _ReportWorkflowRuntimeBase:
             instructions=(
                 "只针对 evidenceDecision.missingFacts 生成一个最小 Python 脚本；不得重新判断事实缺口。",
                 "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
+                "必须逐字使用 datasets[].path 和 evidencePath；不得使用 __file__、cwd 或 .. 目录回退重新推导路径。",
                 "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
                 "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得把 currentAnalysis.fields 或其他 Dataset 的字段用于该 CSV。",
                 "evidencePath 必须写为 JSON 对象，且只含 findings、reconciliations、warnings；"

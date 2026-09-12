@@ -42,7 +42,6 @@ from .base import (
     hashlib,
     profile_csv_dataset,
     project_measure_semantics_to_query_outputs,
-    resolve_domain_mentions,
     time_series_diagnostics_requested,
 )
 from .validation import (
@@ -391,44 +390,7 @@ class RuntimeDatasetsMixin:
         if not initial:
             raise ReportingError("report_analysis_plan_invalid", "已批准分析计划缺失。")
 
-        covered_domains: set[str] = set()
-        for item in initial:
-            if item.code in DOMAIN_CODES:
-                covered_domains.add(item.code)
-            covered_domains.update(
-                resolve_domain_mentions(f"{item.code} {item.description}").selected
-            )
-        # 领域范围先服从步骤 9 的已批准计划；只有步骤 9 没有给出稳定领域时，
-        # 才依据 Profile 的真实指标字段收敛。步骤 13 只做计划编排，不重新解释
-        # 用户范围，也不在此阶段读取 CSV 或生成经营数字。
-        profile_domains: set[str] = set()
-        profile = self._profile(run_context)
-        for context in contexts:
-            fields = {field.rsplit(".", 1)[-1].casefold() for field in context.fields}
-            semantic_fields = {
-                str(item.get("fieldRef", "")).rsplit(".", 1)[-1].casefold()
-                for item in context.metric_semantics
-                if isinstance(item, Mapping)
-            }
-            observed_fields = fields | semantic_fields
-            for metric in profile.metrics:
-                if metric.field_ref is None:
-                    continue
-                if metric.field_ref.rsplit(".", 1)[-1].casefold() not in observed_fields:
-                    continue
-                profile_domains.update(
-                    resolve_domain_mentions(
-                        f"{metric.code} {metric.kind} {metric.description}"
-                    ).selected
-                )
-        candidate_domains = covered_domains or profile_domains
-        domains = tuple(
-            code
-            for code in DOMAIN_CODES
-            if code in requested_domains and (not candidate_domains or code in candidate_domains)
-        )
-        if not domains:
-            raise ReportingError("report_analysis_plan_invalid", "授权 CSV 没有形成可分析领域。")
+        domains = tuple(code for code in DOMAIN_CODES if code in requested_domains)
 
         result = self._workflow_result(state)
         handles = tuple(DatasetHandle.from_state(item) for item in result.get("datasets", ()))
@@ -489,14 +451,16 @@ class RuntimeDatasetsMixin:
             )
             covered_dataset_ids.update(handle.dataset_id for handle in referenced_handles)
 
-            resolved = resolve_domain_mentions(
-                f"{initial_item.code} {initial_item.description}"
-            ).selected
-            domain = (
-                initial_item.code
-                if initial_item.code in domains
-                else next((item for item in resolved if item in domains), domains[0])
-            )
+            if initial_item.domain in domains:
+                domain = initial_item.domain
+            elif len(domains) == 1:
+                # 兼容已持久化的单领域旧计划；多领域计划禁止重新猜测归属。
+                domain = domains[0]
+            else:
+                raise ReportingError(
+                    "report_analysis_plan_invalid",
+                    "多领域分析项缺少语义确定的 domain。",
+                )
 
             field_candidates: list[str] = []
             metric_candidates: list[str] = []

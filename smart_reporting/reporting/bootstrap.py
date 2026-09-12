@@ -25,6 +25,26 @@ from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
 from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationPlanDraft
 
+_VISUALIZATION_CODE_INSTRUCTIONS = (
+    "只能修改 visualizationWorkspace.scriptPath 签发的唯一 Python 文件。",
+    "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径；"
+    "不得使用 __file__、cwd 或目录探测重新推导路径。",
+    "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据。",
+    "source descriptor 声明 rowEncoding=columns_rows 时，每个 row 都是与 columns 按位置对应的列表；"
+    "必须先校验行列长度一致，再用 dict(zip(columns, row)) 解码，禁止把 row 当作字典使用"
+    '或写 row["字段名"]。',
+    "字段缺失、行列不一致、类型不符或数值转换失败时必须显式抛出异常；"
+    "禁止使用 .get(..., 0)、or 0、except 后赋 0 等默认值掩盖解析失败。",
+    "只有冻结 facts 中的真实数据全零时才允许绘制全零系列；真实全零或恒定序列必须保留"
+    "真实刻度并明确标注数据为零或无变化，不得隐藏系列。不得把缺失、解析失败或空输入"
+    "替换成零值、常数值或占位数据来规避脚本执行与可视化审查。",
+    "修复 execution_output_error 时必须修正原始数据读取或解码错误，不得仅删除失败代码、"
+    "吞掉异常或补默认数据。",
+    "绘图只能使用 Matplotlib；在导入 matplotlib.pyplot 前调用 "
+    'matplotlib.use("Agg")，并使用 fig.savefig(...) 写入签发路径。',
+    "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
+)
+
 
 def create_report_runtime(
     context: ExecutionContext,
@@ -53,15 +73,7 @@ def create_report_runtime(
         model=reporting_agent_template.model,
         name="reporting-visualization-code-agent",
         role="只为冻结图表计划签发可视化脚本。",
-        instructions=[
-            "只能修改 visualizationWorkspace.scriptPath 签发的唯一 Python 文件。",
-            "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径；"
-            "不得使用 __file__、cwd 或目录探测重新推导路径。",
-            "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据。",
-            "绘图只能使用 Matplotlib；在导入 matplotlib.pyplot 前调用 "
-            'matplotlib.use("Agg")，并使用 fig.savefig(...) 写入签发路径。',
-            "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
-        ],
+        instructions=_VISUALIZATION_CODE_INSTRUCTIONS,
     )
     section_generator = create_reporting_generator_agent(
         model=reporting_agent_template.model,

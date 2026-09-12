@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -12,9 +13,14 @@ from loguru import logger
 from ....model_routing import TaskComplexity
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
-from ...phase import reporting_python_script_failed
+from ...phase import bounded_python_script_diagnostic, reporting_python_script_failed
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
-from .code_generation import CodeGenerationResult, _code_failure_kind
+from .code_generation import (
+    CodeGenerationResult,
+    _bounded_forbidden_path_operations,
+    _bounded_unsigned_paths,
+    _code_failure_kind,
+)
 from .phase_models import ChartDraft, VisualizationPlanDraft
 
 GenerateVisualizationPlan = Callable[
@@ -48,6 +54,7 @@ SubmitVisualization = Callable[
     [VisualizationPlanDraft, tuple[ChartVisualInspectionReceipt, ...], RunContext],
     Awaitable[Mapping[str, Any]],
 ]
+DegradeVisualization = Callable[[Exception, RunContext], Awaitable[Mapping[str, Any]]]
 LoadScript = Callable[[str, RunContext], Awaitable[FileIdentity | None]]
 
 _NON_RECOVERABLE_CODES = frozenset(
@@ -61,6 +68,16 @@ _NON_RECOVERABLE_CODES = frozenset(
     }
 )
 _MAX_GENERATE_ATTEMPTS = 3
+MAX_VISUALIZATION_EXECUTION_REPAIRS = 3
+MAX_VISUALIZATION_REVIEW_REPAIRS = 3
+_DEGRADABLE_CODES = frozenset(
+    {
+        "execution_output_error",
+        "report_visualization_script_failed",
+        "report_visualization_review_failed",
+        "report_chart_file_missing",
+    }
+)
 
 
 def _visualization_thinking_complexity(payload: Mapping[str, Any]) -> TaskComplexity:
@@ -99,20 +116,37 @@ def _repair_diagnostic(
         error.message if isinstance(error, ReportingError) else "可视化固定 Workflow 执行失败。"
     )
     details: dict[str, Any] = {"path": path}
+    unsigned_paths = _bounded_unsigned_paths(raw_details.get("unsignedPaths"))
+    if unsigned_paths:
+        details["unsignedPaths"] = unsigned_paths
+    forbidden_operations = _bounded_forbidden_path_operations(
+        raw_details.get("forbiddenPathOperations")
+    )
+    if forbidden_operations:
+        details["forbiddenPathOperations"] = forbidden_operations
     for field in ("size", "lineCount", "maxLineLength", "exitCode"):
         value = raw_details.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
             details[field] = value
     output = raw_details.get("output")
     if isinstance(output, str) and output:
-        details["output"] = output[:2000]
+        details["output"], diagnostic_output_truncated = bounded_python_script_diagnostic(
+            output, 2000
+        )
+    else:
+        diagnostic_output_truncated = False
     output_truncated = raw_details.get("outputTruncated")
-    if isinstance(output_truncated, bool):
-        details["outputTruncated"] = output_truncated
+    if isinstance(output_truncated, bool) or diagnostic_output_truncated:
+        details["outputTruncated"] = bool(output_truncated is True or diagnostic_output_truncated)
     for field in ("toolCode", "toolMessage"):
         value = raw_details.get(field)
         if isinstance(value, str) and value:
             details[field] = value[:512]
+    if raw_details.get("repairUnchanged") is True:
+        details["repairUnchanged"] = True
+    sha256 = raw_details.get("sha256")
+    if isinstance(sha256, str) and sha256:
+        details["sha256"] = sha256[:64]
     return {"code": code, "message": message[:512], "details": details}
 
 
@@ -174,6 +208,73 @@ def _is_nonrecoverable(error: Exception) -> bool:
     )
 
 
+def _is_degradable(error: Exception) -> bool:
+    return isinstance(error, ReportingError) and error.code in _DEGRADABLE_CODES
+
+
+def _with_repair_counts(
+    error: Exception, *, execution_repairs: int, visual_review_repairs: int
+) -> Exception:
+    if not isinstance(error, ReportingError):
+        return error
+    details = dict(error.details) if isinstance(error.details, Mapping) else {}
+    details.update(
+        {
+            "executionRepairCount": execution_repairs,
+            "visualReviewRepairCount": visual_review_repairs,
+        }
+    )
+    return ReportingError(error.code, error.message, details=details)
+
+
+def _with_unchanged_repair(error: Exception, *, script_file: FileIdentity) -> ReportingError:
+    """保留原始失败分类，只追加本次修复没有改变源码的诊断。"""
+
+    code = error.code if isinstance(error, ReportingError) else "report_visualization_failed"
+    message = error.message if isinstance(error, ReportingError) else str(error)
+    details = dict(error.details) if isinstance(error, ReportingError) and isinstance(
+        error.details, Mapping
+    ) else {}
+    details.update(
+        {
+            "path": script_file.path,
+            "repairUnchanged": True,
+            "sha256": script_file.sha256,
+        }
+    )
+    return ReportingError(code, message, details=details)
+
+
+def _visual_review_issue_summary(
+    inspections: tuple[ChartVisualInspectionReceipt, ...],
+) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for inspection in inspections:
+        if not inspection.requires_revision and inspection.visual_review_status == "passed":
+            continue
+        if not inspection.issues:
+            summary.append(
+                {
+                    "sourcePath": inspection.source_path,
+                    "category": "unknown",
+                    "severity": "critical",
+                    "description": (inspection.summary or "视觉审查状态未通过。")[:500],
+                }
+            )
+        for issue in inspection.issues:
+            summary.append(
+                {
+                    "sourcePath": inspection.source_path,
+                    "category": issue.category,
+                    "severity": issue.severity,
+                    "description": issue.description[:500],
+                }
+            )
+            if len(summary) >= 20:
+                return summary
+    return summary
+
+
 def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> FileIdentity:
     script_file = result.script_file
     if script_file.path != script_path:
@@ -211,7 +312,7 @@ class VisualizationWorkflowResult:
 
 
 class VisualizationSectionWorkflow:
-    """计划只生成一次；固定 Workflow 执行、审查并在必要时修复脚本一次。"""
+    """计划只生成一次；固定 Workflow 独立限制执行修复与视觉审查修复。"""
 
     def __init__(
         self,
@@ -222,6 +323,7 @@ class VisualizationSectionWorkflow:
         execute_script: ExecuteScript,
         inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
+        degrade: DegradeVisualization | None = None,
         load_script: LoadScript | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
@@ -232,6 +334,7 @@ class VisualizationSectionWorkflow:
         self.execute_script = execute_script
         self.inspect_chart = inspect_chart
         self.submit = submit
+        self.degrade = degrade
         self.load_script = load_script
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
@@ -289,9 +392,16 @@ class VisualizationSectionWorkflow:
         if script_file is None:
             raise RuntimeError("可视化脚本生成状态不可达")
         recovery_used = False
+        execution_repairs = 0
+        visual_review_repairs = 0
+        pending_repair_error: Exception | None = None
 
-        for attempt in range(2):
+        while True:
             try:
+                if pending_repair_error is not None:
+                    error = pending_repair_error
+                    pending_repair_error = None
+                    raise error
                 execution = await self.execute_script(script_path, run_context)
                 if reporting_python_script_failed(execution):
                     raise ReportingError(
@@ -317,6 +427,14 @@ class VisualizationSectionWorkflow:
                         item.requires_revision or item.visual_review_status != "passed"
                         for item in inspections
                     ):
+                        logger.warning(
+                            "report_visualization_review_failed issues={}",
+                            json.dumps(
+                                _visual_review_issue_summary(inspections),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        )
                         raise ReportingError(
                             "report_visualization_review_failed",
                             "图表正式审查未通过。",
@@ -336,8 +454,37 @@ class VisualizationSectionWorkflow:
             except Exception as error:
                 if _is_nonrecoverable(error):
                     raise
-                if attempt == 1 or self.repair_script is None:
+                if not _is_degradable(error) or self.repair_script is None:
                     raise
+                is_visual_review_failure = (
+                    isinstance(error, ReportingError)
+                    and error.code == "report_visualization_review_failed"
+                )
+                repair_count = (
+                    visual_review_repairs if is_visual_review_failure else execution_repairs
+                )
+                repair_limit = (
+                    MAX_VISUALIZATION_REVIEW_REPAIRS
+                    if is_visual_review_failure
+                    else MAX_VISUALIZATION_EXECUTION_REPAIRS
+                )
+                if repair_count >= repair_limit:
+                    exhausted_error = _with_repair_counts(
+                        error,
+                        execution_repairs=execution_repairs,
+                        visual_review_repairs=visual_review_repairs,
+                    )
+                    if self.degrade is not None and _is_degradable(error):
+                        receipt = await self.degrade(exhausted_error, run_context)
+                        _raise_rejected_submission(receipt)
+                        return VisualizationWorkflowResult(
+                            "degraded", plan, script_file, (), recovery_used
+                        )
+                    raise exhausted_error
+                if is_visual_review_failure:
+                    visual_review_repairs += 1
+                else:
+                    execution_repairs += 1
                 recovery_used = True
                 diagnostic = _repair_diagnostic(plan, error, script_path)
                 failure_kind = _code_failure_kind(diagnostic)
@@ -358,9 +505,28 @@ class VisualizationSectionWorkflow:
                         _repair_task_facts(plan, error, script_path),
                         run_context,
                     )
-                script_file = _ensure_script_identity(repaired, script_path)
+                repaired_file = _ensure_script_identity(repaired, script_path)
+                if repaired_file.sha256 == script_file.sha256:
+                    pending_repair_error = _with_unchanged_repair(
+                        error, script_file=script_file
+                    )
+                    logger.warning(
+                        "report_visualization_script_repair_unchanged path={} sha256={} "
+                        "execution_repairs={} visual_review_repairs={}",
+                        script_path,
+                        script_file.sha256,
+                        execution_repairs,
+                        visual_review_repairs,
+                    )
+                else:
+                    script_file = repaired_file
 
         raise RuntimeError("可视化固定 Workflow 状态不可达")
 
 
-__all__ = ["VisualizationSectionWorkflow", "VisualizationWorkflowResult"]
+__all__ = [
+    "MAX_VISUALIZATION_EXECUTION_REPAIRS",
+    "MAX_VISUALIZATION_REVIEW_REPAIRS",
+    "VisualizationSectionWorkflow",
+    "VisualizationWorkflowResult",
+]

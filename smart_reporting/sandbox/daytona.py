@@ -49,6 +49,7 @@ from .errors import (
     SandboxProviderError,
 )
 from .matplotlib_defaults import matplotlib_bootstrap
+from .python_runner import bounded_python_output
 from .registry import SandboxBindingRecord
 
 DAYTONA_WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -61,6 +62,28 @@ _STARTING_STATES = {
     "pulling_snapshot",
     "resuming",
 }
+
+
+def _target_code_execution(source: str) -> str:
+    """执行动态源码，并确保 traceback 使用目标源码而非外层包装。"""
+
+    return (
+        "import linecache as _reporting_linecache\n"
+        "import traceback as _reporting_traceback\n"
+        f"_reporting_source = {source!r}\n"
+        "_reporting_filename = '<target_code>'\n"
+        "_reporting_linecache.cache[_reporting_filename] = (\n"
+        "    len(_reporting_source),\n"
+        "    None,\n"
+        "    _reporting_source.splitlines(keepends=True),\n"
+        "    _reporting_filename,\n"
+        ")\n"
+        "try:\n"
+        "    exec(compile(_reporting_source, _reporting_filename, 'exec'), globals(), globals())\n"
+        "except Exception as _reporting_error:\n"
+        "    _reporting_traceback.print_exception(_reporting_error)\n"
+        "    raise SystemExit(1) from None\n"
+    )
 
 
 async def _daytona_call[T](
@@ -116,13 +139,6 @@ def _execution_status(exit_code: int | None) -> ExecutionStatus:
 
 def _workspace_cwd(value: str) -> str:
     return DAYTONA_WORKSPACE_ROOT + (f"/{value}" if value else "")
-
-
-def _bounded_text(value: Any, limit: int) -> str:
-    encoded = str(value or "").encode("utf-8", errors="replace")
-    if len(encoded) <= limit:
-        return encoded.decode("utf-8", errors="replace")
-    return encoded[:limit].decode("utf-8", errors="ignore")
 
 
 class DaytonaFileSystemApi:
@@ -361,17 +377,24 @@ class DaytonaExecutionApi:
         script = (
             matplotlib_bootstrap("/tmp/reporting-matplotlib")
             + f"_reporting_os.chdir({workspace_cwd!r})\n"
-            f"exec(compile({request.script!r}, '<stdin>', 'exec'), globals(), globals())\n"
+            + _target_code_execution(request.script)
         )
         result = await self._process._run_code(
             script,
             timeout=max(1, math.ceil(request.timeout_ms / 1000)),
         )
+        stdout, stdout_truncated = bounded_python_output(
+            result.stdout, request.output_limit_bytes
+        )
+        stderr, stderr_truncated = bounded_python_output(
+            result.stderr, request.output_limit_bytes
+        )
         return RunPythonScriptResult(
             status=result.status,
             exit_code=result.exit_code,
-            stdout=_bounded_text(result.stdout, request.output_limit_bytes),
-            stderr=_bounded_text(result.stderr, request.output_limit_bytes),
+            stdout=stdout,
+            stderr=stderr,
+            output_truncated=stdout_truncated or stderr_truncated,
             script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
         )
 
@@ -570,6 +593,16 @@ class DaytonaProvider:
 
     async def destroy_workspace(self, ref: SandboxRef, binding: WorkspaceBinding) -> DestroyResult:
         self._require_binding(ref, binding)
+        result = await self.destroy_workspace_ref(ref)
+        digest = self._digest(binding)
+        async with self._registry.locked(digest) as registry:
+            if await registry.get(digest) == ref.resource_id:
+                await registry.delete(digest)
+        return result
+
+    async def destroy_workspace_ref(self, ref: SandboxRef) -> DestroyResult:
+        if ref.provider != ProviderKind.DAYTONA:
+            raise SandboxPolicyDenied("sandbox provider 不匹配。", reason="provider_mismatch")
         try:
             sandbox = await _daytona_call(
                 self._client.get(ref.resource_id),
@@ -583,10 +616,6 @@ class DaytonaProvider:
             action="workspace 删除",
             missing_message="Daytona workspace 不存在。",
         )
-        digest = self._digest(binding)
-        async with self._registry.locked(digest) as registry:
-            if await registry.get(digest) == ref.resource_id:
-                await registry.delete(digest)
         return DestroyResult(deleted=True)
 
     async def health_check(self) -> ProviderHealth:

@@ -330,6 +330,31 @@ def _deterministic_output_error(output: str) -> tuple[str, str] | None:
     return "python_traceback", last_line[:500]
 
 
+def _python_execution_failure(exit_code: Any, output: str) -> tuple[str, str] | None:
+    output_error = _deterministic_output_error(output)
+    if output_error is not None and output_error[0] == "python_traceback":
+        return output_error
+    protocol_error = next(
+        (
+            line.strip()
+            for line in output.splitlines()
+            if line.strip().startswith("[FAIL]") or ": ERROR " in line.strip()
+        ),
+        None,
+    )
+    if protocol_error is not None:
+        return "deterministic_failure", protocol_error[:500]
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        return "runner_exception", "Python runner did not return a valid exit code"
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+        summary = next(
+            (line.strip() for line in reversed(output.splitlines()) if line.strip()),
+            f"Python process exited with code {exit_code}",
+        )
+        return "nonzero_exit", summary[:500]
+    return None
+
+
 def failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]:
     if not isinstance(result, dict):
         return []
@@ -1614,29 +1639,23 @@ class TaskExecutionKernel:
             result = await self.service.arun_python_script(
                 scope.thread_id, script_path, timeout=timeout
             )
-            exit_code = result.get("exitCode")
-            execution = await self.repository.update_execution(
-                execution_id,
-                status="completed" if exit_code == 0 else "failed",
-                output=str(result.get("output", "")),
-                exit_code=exit_code if isinstance(exit_code, int) else 1,
-            )
-            await self.repository.record_execution_mutation(
-                scope.external_run_id,
-                execution.execution_id,
-                execution.mutation_sequence,
-                lease=scope.lease,
-                internal_run_id=scope.internal_run_id,
-            )
-            # provider 回执补充脚本身份等字段；执行账本负责状态与确定性错误判定，
-            # 其公共字段必须最后合并，防止下层 ok=true 覆盖 traceback 等失败事实。
-            return {**result, **self._public_execution(execution)}
         except Exception as error:
+            operation_receipt = {
+                "version": "1",
+                "runner": "python",
+                "scriptPath": script_path,
+                "failure": {
+                    "code": "runner_exception",
+                    "summary": str(error)[:500],
+                    "outputTruncated": len(str(error)) > 500,
+                },
+            }
             execution = await self.repository.update_execution(
                 execution_id,
                 status="failed",
                 output=str(error)[:1000],
                 exit_code=1,
+                operation_receipt=operation_receipt,
             )
             return {
                 **self._public_execution(execution),
@@ -1644,6 +1663,65 @@ class TaskExecutionKernel:
                 "code": getattr(error, "code", "execution_failed"),
                 "message": str(error)[:1000],
             }
+
+        exit_code = result.get("exitCode")
+        output = str(result.get("output", ""))
+        failure = _python_execution_failure(exit_code, output)
+        operation_receipt = {
+            "version": "1",
+            "runner": "python",
+            "scriptPath": script_path,
+        }
+        script_size = result.get("scriptSize")
+        script_sha256 = result.get("scriptSha256")
+        if (
+            isinstance(script_size, int)
+            and not isinstance(script_size, bool)
+            and script_size >= 0
+            and isinstance(script_sha256, str)
+        ):
+            operation_receipt["script"] = {
+                "size": script_size,
+                "sha256": script_sha256,
+            }
+        if failure is not None:
+            failure_code, summary = failure
+            operation_receipt["failure"] = {
+                "code": failure_code,
+                "summary": summary,
+                "outputTruncated": bool(
+                    result.get("outputTruncated") is True or "[output truncated]" in output
+                ),
+            }
+        execution = await self.repository.update_execution(
+            execution_id,
+            status="failed" if failure is not None else "completed",
+            output=output,
+            exit_code=exit_code if isinstance(exit_code, int) else 1,
+            operation_receipt=operation_receipt,
+        )
+        await self.repository.record_execution_mutation(
+            scope.external_run_id,
+            execution.execution_id,
+            execution.mutation_sequence,
+            lease=scope.lease,
+            internal_run_id=scope.internal_run_id,
+        )
+        public = {**result, **self._public_execution(execution)}
+        if failure is not None:
+            public.update(
+                {
+                    "ok": False,
+                    "code": "execution_output_error",
+                    "message": "Python 脚本执行失败。",
+                    "details": {
+                        "failureCode": failure_code,
+                        "diagnostics": summary,
+                    },
+                    "retryable": True,
+                }
+            )
+        return public
 
     async def _record_terminal_mutation(
         self,

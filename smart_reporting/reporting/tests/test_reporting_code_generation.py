@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 
 import pytest
+from agno.exceptions import ModelRateLimitError
+from agno.models.message import Message
+from agno.run import RunStatus
+from agno.run.agent import RunOutput
 from loguru import logger
 
+from smart_reporting.reporting.agent import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.model_policy import ThinkingDecision, bind_reporting_thinking
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
@@ -103,6 +109,62 @@ async def test_generate_exposes_only_source_and_returns_single_identity():
 
 
 @pytest.mark.anyio
+async def test_generate_restores_escaped_physical_lines_without_changing_string_escapes():
+    escaped_source = r'value = "A\\nB"\nprint(value)\n'
+    restored_source = 'value = "A\\nB"\nprint(value)\n'
+    patches: list[str] = []
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=escaped_source)
+
+    async def patch(*, patch: str):
+        patches.append(patch)
+        return {"ok": True, "artifacts": [identity("analysis/script.py", restored_source)]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py", {}, patch
+    )
+
+    assert patches == [
+        (
+            "--- /dev/null\n"
+            "+++ b/analysis/script.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            '+value = "A\\nB"\n'
+            "+print(value)\n"
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_generate_unwraps_json_encoded_source_string():
+    source = 'value = "A\\nB"\nprint(value)\n'
+    wrapped_source = json.dumps(source)
+    patches: list[str] = []
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=wrapped_source)
+
+    async def patch(*, patch: str):
+        patches.append(patch)
+        return {"ok": True, "artifacts": [identity("analysis/script.py", source)]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py", {"fact": 1}, patch
+    )
+
+    assert patches == [
+        (
+            "--- /dev/null\n"
+            "+++ b/analysis/script.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            '+value = "A\\nB"\n'
+            "+print(value)\n"
+        )
+    ]
+
+
+@pytest.mark.anyio
 async def test_generate_logs_script_base_info_at_info_level():
     async def action(agent):
         return await agent.tools[0].entrypoint(source=SOURCE)
@@ -189,6 +251,12 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "message": "m" * 800,
         "details": {
             "path": "analysis/script.py",
+            "unsignedPaths": [
+                None,
+                "",
+                "x" * 1025,
+                *[f"datasets/input-{index}.csv" for index in range(25)],
+            ],
             "line": 284,
             "offset": 62,
             "size": 131073,
@@ -210,6 +278,7 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "message": "m" * 512,
         "details": {
             "path": "analysis/script.py",
+            "unsignedPaths": [f"datasets/input-{index}.csv" for index in range(20)],
             "line": 284,
             "offset": 62,
             "size": 131073,
@@ -226,9 +295,19 @@ async def test_generate_passes_bounded_previous_failure_to_fresh_retry():
         "trailingNewline": True,
         "pythonVersion": "3.12",
         "compilationRequired": True,
+        "authorizedPaths": ["analysis/script.py"],
+        "factUsageRequirements": [
+            "facts 仅是源码生成上下文，脚本执行时不存在 facts、taskFacts 或 "
+            "visualizationFacts 变量",
+            "读取 authorizedPaths 中的 JSON 文件后，必须按该文件自身根结构访问；"
+            "不得添加 facts、taskFacts 或 visualizationFacts 包装层",
+        ],
         "syntaxRequirements": [
             "提交前确保完整源码可通过 ast.parse 和 compile",
+            "source 参数必须包含真实 LF 换行；不得使用两个字符 \\n 代替物理换行",
             "使用普通赋值和显式 if；不得使用 := 赋值表达式或 if False/if True 死代码分支",
+            "文件读写只可逐字使用 authorizedPaths；不得使用 __file__、cwd、chdir、"
+            "os.path.join 或目录回退推导工作区路径",
         ],
     }
     assert "SECRET_SOURCE" not in json.dumps(prompts, ensure_ascii=False)
@@ -267,9 +346,81 @@ async def test_repair_requests_full_analysis_script_from_real_read_callback():
 
 
 @pytest.mark.anyio
+async def test_repair_agent_reads_only_signed_script_before_submitting_source():
+    source = "print(1)\n"
+    script = identity("analysis/script.py", source)
+    read_paths: list[str] = []
+
+    agents = []
+
+    async def action(agent):
+        agents.append(agent)
+        ReportingCodeOpenAIResponses(
+            id="test-model",
+            api_key="test-key",
+            base_url="http://localhost",
+        ).get_request_params(
+            messages=[Message(role="user", content=agent.prompt)],
+            tools=agent.tools,
+            tool_choice=agent.tool_choice,
+        )
+        assert len(agent.tools) == 1
+        tool = agent.tools[0]
+        if tool.name == "read_file":
+            assert agent.tool_choice["function"]["name"] == "read_file"
+            assert agent.tool_call_limit == 1
+            pytest.fail("repair Agent must not receive a read_file phase")
+
+        assert tool.name == "submit_python_source"
+        assert agent.tool_choice["function"]["name"] == "submit_python_source"
+        assert agent.tool_call_limit == 1
+        prompt = json.loads(agent.prompt)
+        assert "readableFiles" not in prompt["facts"]
+        assert "readReceipts" not in prompt["facts"]
+        assert "readToolRequirements" not in prompt["sourceProtocol"]
+        return await tool.entrypoint(source=UPDATED_SOURCE)
+
+    async def read_file(*, path: str, max_bytes: int):
+        assert max_bytes == 128 * 1024
+        read_paths.append(path)
+        if path == script.path:
+            return read_receipt(script, source)
+        pytest.fail(f"repair must not read JSON input: {path}")
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity(script.path, UPDATED_SOURCE)]}
+
+    await ReportingCodeGenerationRunner(agent=FakeAgent(action)).repair(
+        script,
+        {"code": "execution_output_error"},
+        read_file,
+        patch,
+    )
+
+    assert read_paths == [script.path]
+    assert [[tool.name for tool in agent.tools] for agent in agents] == [
+        ["submit_python_source"],
+    ]
+
+
+def test_repair_does_not_expose_signed_json_read_inputs():
+    assert "readable_files" not in inspect.signature(
+        ReportingCodeGenerationRunner.repair
+    ).parameters
+
+
+@pytest.mark.anyio
 async def test_repair_preserves_bounded_execution_failure_details():
     script = identity("analysis/script.py", "print(1)\n")
     patch_prompts: list[dict[str, object]] = []
+    embedded_source = "value = 1\\n" * 500
+    failure_output = (
+        "Traceback (most recent call last):\n"
+        '  File "<target_code>", line 72, in <module>\n'
+        f"    exec(compile({embedded_source!r}, '<string>', 'exec'), globals(), globals())\n"
+        '  File "<string>", line 8, in <module>\n'
+        "FileNotFoundError: [Errno 2] No such file or directory: '/报表/数据集/input.csv'\n"
+    )
 
     async def action(agent):
         tool = agent.tools[0]
@@ -287,7 +438,7 @@ async def test_repair_preserves_bounded_execution_failure_details():
             "code": "report_analysis_script_failed",
             "details": {
                 "exitCode": 7,
-                "output": "failure-output-" * 500,
+                "output": failure_output,
                 "outputTruncated": True,
                 "toolCode": "sandbox_process_failed",
                 "toolMessage": "process failed",
@@ -303,7 +454,10 @@ async def test_repair_preserves_bounded_execution_failure_details():
     assert diagnostic["details"]["outputTruncated"] is True
     assert diagnostic["details"]["toolCode"] == "sandbox_process_failed"
     assert diagnostic["details"]["toolMessage"] == "process failed"
-    assert len(diagnostic["details"]["output"]) == 2000
+    assert "<generated source omitted>" in diagnostic["details"]["output"]
+    assert "FileNotFoundError: [Errno 2]" in diagnostic["details"]["output"]
+    assert embedded_source[:100] not in diagnostic["details"]["output"]
+    assert len(diagnostic["details"]["output"]) <= 2000
     assert "SECRET_DETAIL" not in json.dumps(patch_prompts, ensure_ascii=False)
     assert patch_prompts[0]["sourceProtocol"]["path"] == script.path
 
@@ -329,6 +483,112 @@ async def test_generate_rejects_plain_text_without_mutation():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\ndataset_path = os.path.join(os.path.dirname(__file__), '..', 'input.csv')\n",
+        "import os\ndataset_path = os.path.join(os.getcwd(), 'input.csv')\n",
+        "from pathlib import Path\ndataset_path = Path.cwd() / 'input.csv'\n",
+        "import os\ndataset_path = os.path.join('报表', '..', '数据集', 'input.csv')\n",
+        "import os.path\ndataset_path = os.path.join('报表', '数据集', 'input.csv')\n",
+        "from os import getcwd\ndataset_path = getcwd() + '/datasets/income.csv'\n",
+        "from os import chdir\nchdir('报表')\nopen('datasets/income.csv')\n",
+    ],
+)
+async def test_generate_rejects_script_relative_workspace_paths_without_mutation(source: str):
+    mutated = False
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    async def patch(**_kwargs):
+        nonlocal mutated
+        mutated = True
+        return {"ok": True, "artifacts": []}
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, patch
+        )
+
+    assert raised.value.code == "report_python_source_path_invalid"
+    assert "签发路径" in raised.value.message
+    assert mutated is False
+
+
+@pytest.mark.anyio
+async def test_generate_reports_exact_forbidden_path_operations_for_retry() -> None:
+    source = (
+        "import os\n"
+        "base_dir = os.path.dirname(os.path.abspath(__file__))\n"
+        "input_path = os.path.join(base_dir, '..', 'datasets', 'income.csv')\n"
+    )
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, lambda **_kwargs: pytest.fail("must not mutate")
+        )
+
+    assert raised.value.code == "report_python_source_path_invalid"
+    assert raised.value.details == {
+        "path": "analysis/script.py",
+        "unsignedPaths": [],
+        "forbiddenPathOperations": [
+            "__file__",
+            "os.path.abspath",
+            "os.path.dirname",
+            "os.path.join",
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_generate_accepts_parent_marker_as_non_path_data() -> None:
+    source = "import pandas as pd\ndf = pd.read_csv('datasets/income.csv', na_values=['..'])\n"
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    async def patch(**_kwargs):
+        return {"ok": True, "artifacts": [identity("analysis/script.py", source)]}
+
+    result = await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+        "analysis/script.py",
+        {"datasets": [{"path": "datasets/income.csv"}]},
+        patch,
+    )
+
+    assert result.script_file.path == "analysis/script.py"
+
+
+@pytest.mark.anyio
+async def test_generate_rejects_unsigned_workspace_path_without_mutation() -> None:
+    source = "import pandas as pd\ndf = pd.read_csv('datasets/guessed.csv')\n"
+    mutated = False
+
+    async def action(agent):
+        return await agent.tools[0].entrypoint(source=source)
+
+    async def patch(**_kwargs):
+        nonlocal mutated
+        mutated = True
+        return {"ok": True, "artifacts": []}
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py",
+            {"datasets": [{"path": "datasets/income.csv"}]},
+            patch,
+        )
+
+    assert raised.value.code == "report_python_source_path_invalid"
+    assert mutated is False
+
+
+@pytest.mark.anyio
 async def test_generate_rejects_zero_tool_calls_without_mutation():
     async def action(_agent):
         return None
@@ -342,6 +602,47 @@ async def test_generate_rejects_zero_tool_calls_without_mutation():
         )
 
     assert raised.value.code == "report_code_generation_no_source"
+
+
+@pytest.mark.anyio
+async def test_generate_preserves_recorded_model_rate_limit_from_agno_error_status():
+    class RateLimitedModel:
+        @staticmethod
+        def report_run_error():
+            return ModelRateLimitError(
+                "insufficient_quota: provider-secret",
+                status_code=429,
+                model_id="test-model",
+            )
+
+    async def action(_agent):
+        return RunOutput(status=RunStatus.error)
+
+    agent = FakeAgent(action)
+    agent.model = RateLimitedModel()
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=agent).generate(
+            "analysis/script.py", {}, lambda **_kwargs: pytest.fail("must not mutate")
+        )
+
+    assert raised.value.code == "report_code_generation_rate_limited"
+    assert raised.value.message == "Coding Agent 模型调用受限，请稍后重试。"
+    assert raised.value.details == {"statusCode": 429}
+    assert "provider-secret" not in str(raised.value)
+
+
+@pytest.mark.anyio
+async def test_generate_does_not_report_agno_error_status_as_no_source():
+    async def action(_agent):
+        return RunOutput(status=RunStatus.error)
+
+    with pytest.raises(ReportingError) as raised:
+        await ReportingCodeGenerationRunner(agent=FakeAgent(action)).generate(
+            "analysis/script.py", {}, lambda **_kwargs: pytest.fail("must not mutate")
+        )
+
+    assert raised.value.code == "report_code_generation_agent_failed"
 
 
 @pytest.mark.anyio
@@ -392,7 +693,17 @@ async def test_repair_logs_script_base_info_at_info_level():
     try:
         await ReportingCodeGenerationRunner(agent_factory=lambda: FakeAgent(action)).repair(
             script,
-            {"code": "report_analysis_script_failed"},
+            {
+                "code": "report_visualization_script_failed",
+                "message": "章节图表脚本执行未被接受。",
+                "details": {
+                    "path": "analysis/script.py",
+                    "exitCode": 1,
+                    "output": "Traceback: chart rendering failed",
+                    "toolCode": "execution_output_error",
+                    "toolMessage": "Python 脚本执行失败。",
+                },
+            },
             lambda **_kwargs: read_receipt(script),
             patch,
         )
@@ -406,7 +717,11 @@ async def test_repair_logs_script_base_info_at_info_level():
         "INFO:report_code_repair_base_info "
         'script={"operation":"repair","path":"analysis/script.py","size":9,'
         '"sha256":"0111afd387e1ad576083c5039aa542faa2ed4a53d3e128bd03de990f9ea4255f",'
-        '"diagnosticCode":"report_analysis_script_failed"}'
+        '"diagnosticCode":"report_visualization_script_failed",'
+        '"diagnostic":{"code":"report_visualization_script_failed",'
+        '"message":"章节图表脚本执行未被接受。","details":{"path":"analysis/script.py",'
+        '"exitCode":1,"output":"Traceback: chart rendering failed",'
+        '"toolCode":"execution_output_error","toolMessage":"Python 脚本执行失败。"}}}'
     ]
 
 
@@ -670,15 +985,28 @@ async def test_repair_preserves_bounded_missing_facts_in_patch_prompt():
         {"code": "repair_failed", "message": "brief diagnostic"},
         read_file,
         patch,
-        task_facts={"missingFacts": missing_facts, "pythonSource": "SECRET_SOURCE"},
+        task_facts={
+            "missingFacts": missing_facts,
+            "outputContract": {
+                "format": "json",
+                "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+                "additionalRootKeys": False,
+            },
+            "pythonSource": "SECRET_SOURCE",
+        },
     )
 
     facts = prompts[0]["facts"]
     assert set(facts) == {"readReceipt", "diagnostic", "taskFacts"}
-    assert facts["taskFacts"].keys() == {"missingFacts"}
+    assert facts["taskFacts"].keys() == {"missingFacts", "outputContract"}
     assert len(facts["taskFacts"]["missingFacts"]) == 20
     assert all(len(item) == 512 for item in facts["taskFacts"]["missingFacts"])
     assert facts["taskFacts"]["missingFacts"][0].startswith("fact-0:")
+    assert facts["taskFacts"]["outputContract"] == {
+        "format": "json",
+        "requiredRootKeys": ["findings", "reconciliations", "warnings"],
+        "additionalRootKeys": False,
+    }
     assert "SECRET_SOURCE" not in agent_prompt_text(facts)
 
 
@@ -793,6 +1121,21 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
         {"missingFacts": "not-an-array"},
         {"missingFacts": ["valid", {"source": "SECRET_SOURCE"}]},
         {"missingFacts": ["valid", 3]},
+        {"outputContract": "输出 JSON"},
+        {
+            "outputContract": {
+                "format": "json",
+                "requiredRootKeys": ["findings", "findings"],
+                "additionalRootKeys": False,
+            }
+        },
+        {
+            "outputContract": {
+                "format": "json",
+                "requiredRootKeys": ["findings"],
+                "additionalRootKeys": "false",
+            }
+        },
         {"missingCharts": "not-an-array"},
         {"missingCharts": [{"chartId": "chart", "sourcePath": "charts/x.png"}]},
         {"missingCharts": [{"chartId": "chart", "sourcePath": 1, "title": "标题"}]},

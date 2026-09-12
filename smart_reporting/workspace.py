@@ -33,7 +33,13 @@ from .async_utils import complete_cleanup
 from .http.security import thread_label
 from .runtime.database import AgentDatabase, create_agent_database
 from .runtime.observability import suppress_expected_probe_tracing
-from .sandbox.contracts import ExecRequest, RunPythonScriptRequest, WorkspaceBinding
+from .sandbox.contracts import (
+    ExecRequest,
+    RunPythonScriptRequest,
+    SandboxRef,
+    WorkspaceBinding,
+    binding_digest,
+)
 from .sandbox.errors import SandboxNotFound, SandboxProviderError, SandboxTimeout
 from .sandbox.python_runner import PythonScriptRunner
 from .sandbox.registry import SandboxBindingRecord
@@ -111,9 +117,15 @@ def _workspace_generation_table(metadata: MetaData) -> Table:
 
 def _workspace_cleanup_table(metadata: MetaData) -> Table:
     return Table(
-        "agent_workspace_cleanup",
+        "agent_workspace_provider_cleanup",
         metadata,
-        Column("workspace_label", String(64), primary_key=True),
+        Column("binding_digest", String(64), primary_key=True),
+        Column("provider", String(32), nullable=False),
+        Column("isolation", String(32), nullable=False),
+        Column("node", String(256), nullable=True),
+        Column("resource_id", String(256), nullable=False),
+        Column("generation", Integer, nullable=False),
+        Column("dependency_bundle_digest", String(71), nullable=True),
         Column(
             "created_at",
             DateTime(timezone=True),
@@ -413,7 +425,7 @@ class AsyncSandboxRegistry:
             ).scalar_one_or_none()
         return _workspace_generation_label(base_label, generation)
 
-    async def quarantine_workspace(self, base_label: str) -> str:
+    async def quarantine_workspace(self, base_label: str, binding_digest: str) -> str:
         await self.ensure_initialized()
         async with self._connect() as connection:
             async with connection.begin():
@@ -421,24 +433,31 @@ class AsyncSandboxRegistry:
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                     (f"agent-workspace-generation:{base_label}",),
                 )
-                generation = (
+                binding = (
                     await connection.execute(
-                        select(self.generation_table.c.generation).where(
-                            self.generation_table.c.thread_hash == base_label
-                        )
+                        select(
+                            self.table.c.provider,
+                            self.table.c.isolation,
+                            self.table.c.node,
+                            self.table.c.resource_id,
+                            self.table.c.generation,
+                            self.table.c.dependency_bundle_digest,
+                        ).where(self.table.c.thread_hash == binding_digest)
                     )
-                ).scalar_one_or_none()
-                old_label = _workspace_generation_label(base_label, generation)
+                ).first()
                 cleanup_exists = (
                     await connection.execute(
-                        select(self.cleanup_table.c.workspace_label).where(
-                            self.cleanup_table.c.workspace_label == old_label
+                        select(self.cleanup_table.c.binding_digest).where(
+                            self.cleanup_table.c.binding_digest == binding_digest
                         )
                     )
                 ).first()
-                if cleanup_exists is None:
+                if binding is not None and cleanup_exists is None:
                     await connection.execute(
-                        insert(self.cleanup_table).values(workspace_label=old_label)
+                        insert(self.cleanup_table).values(
+                            binding_digest=binding_digest,
+                            **binding._mapping,
+                        )
                     )
                 next_generation = uuid.uuid4().hex
                 generation_exists = (
@@ -463,31 +482,39 @@ class AsyncSandboxRegistry:
                 )
                 await connection.execute(statement)
                 await connection.execute(
-                    self.table.delete().where(self.table.c.thread_hash == old_label)
+                    self.table.delete().where(self.table.c.thread_hash == binding_digest)
                 )
-        return old_label
+        return binding_digest
 
-    async def pending_cleanup_labels(
+    async def pending_cleanup_bindings(
         self, limit: int = WORKSPACE_CLEANUP_BATCH_SIZE
-    ) -> tuple[str, ...]:
+    ) -> tuple[SandboxBindingRecord, ...]:
         await self.ensure_initialized()
         async with self._connect() as connection:
             rows = (
                 await connection.execute(
-                    select(self.cleanup_table.c.workspace_label)
+                    select(
+                        self.cleanup_table.c.binding_digest,
+                        self.cleanup_table.c.provider,
+                        self.cleanup_table.c.isolation,
+                        self.cleanup_table.c.node,
+                        self.cleanup_table.c.resource_id,
+                        self.cleanup_table.c.generation,
+                        self.cleanup_table.c.dependency_bundle_digest,
+                    )
                     .order_by(self.cleanup_table.c.created_at)
                     .limit(limit)
                 )
             ).all()
-        return tuple(str(row[0]) for row in rows)
+        return tuple(SandboxBindingRecord.model_validate(row._mapping) for row in rows)
 
-    async def complete_cleanup(self, workspace_label: str) -> None:
+    async def complete_cleanup(self, binding_digest: str) -> None:
         await self.ensure_initialized()
         async with self._connect() as connection:
             async with connection.begin():
                 await connection.execute(
                     self.cleanup_table.delete().where(
-                        self.cleanup_table.c.workspace_label == workspace_label
+                        self.cleanup_table.c.binding_digest == binding_digest
                     )
                 )
 
@@ -891,7 +918,7 @@ class WorkspaceService:
     async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
         if self._provider is not None:
             if not create:
-                binding = self._provider_binding(thread)
+                binding = await self._provider_binding(thread)
                 matches = await self._provider.list_workspaces(binding)
                 if not matches:
                     return None
@@ -899,7 +926,7 @@ class WorkspaceService:
                     raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
                 return await self._provider.get_workspace(matches[0].ref, binding)
             try:
-                return await self._provider.ensure_workspace(self._provider_binding(thread))
+                return await self._provider.ensure_workspace(await self._provider_binding(thread))
             except SandboxTimeout as error:
                 raise WorkspaceError("工作区服务超时，请稍后重试。") from error
             except SandboxProviderError as error:
@@ -992,7 +1019,7 @@ class WorkspaceService:
 
     async def adestroy(self, thread: str) -> bool:
         if self._provider is not None:
-            binding = self._provider_binding(thread)
+            binding = await self._provider_binding(thread)
             matches = await self._provider.list_workspaces(binding)
             deleted = False
             for summary in matches:
@@ -1002,11 +1029,11 @@ class WorkspaceService:
         async with self._async_client() as client:
             return await self._adestroy(client, thread)
 
-    def _provider_binding(self, thread: str) -> WorkspaceBinding:
+    async def _provider_binding(self, thread: str) -> WorkspaceBinding:
         # WorkspaceService 的调用方已经在 HTTP/Workflow 边界完成用户、公司和 thread
         # 所有权校验；此处只把不含明文身份的 thread scope 固化为 Provider 绑定。
         # 三个 scope 字段使用不同域分隔摘要，避免它们被误当成可互换标识。
-        base = self._base_hash(thread)
+        base = await self._ahash(thread)
 
         def scoped(name: str) -> str:
             return hashlib.sha256(f"{name}:{base}".encode()).hexdigest()
@@ -1027,46 +1054,38 @@ class WorkspaceService:
         quarantine = getattr(self.async_registry, "quarantine_workspace", None)
         if not callable(quarantine):
             raise WorkspaceError("工作区注册表不支持隔离失败运行环境。")
-        old_label = str(await quarantine(base_label))
-        self._invalidate_sandbox_id(old_label)
-        logger.warning("workspace_sandbox_quarantined workspace_label={}", old_label)
-        return old_label
+        binding = await self._provider_binding(thread)
+        digest = binding_digest(binding, self.secret.encode("utf-8"))
+        quarantined_digest = str(await quarantine(base_label, digest))
+        logger.warning("workspace_sandbox_quarantined binding_digest={}", quarantined_digest)
+        return quarantined_digest
 
     async def acleanup_quarantined(self, *, limit: int = WORKSPACE_CLEANUP_BATCH_SIZE) -> int:
-        pending = getattr(self.async_registry, "pending_cleanup_labels", None)
+        pending = getattr(self.async_registry, "pending_cleanup_bindings", None)
         complete = getattr(self.async_registry, "complete_cleanup", None)
-        if not callable(pending) or not callable(complete):
+        if self._provider is None or not callable(pending) or not callable(complete):
             return 0
-        labels = await pending(limit)
+        bindings = await pending(limit)
         completed = 0
-        async with self._async_client() as client:
-            for workspace_label in labels:
-                try:
-                    sandboxes = [
-                        sandbox
-                        async for sandbox in client.list(
-                            ListSandboxesQuery(labels={"agent-thread": workspace_label})
-                        )
-                    ]
-                    for sandbox in sandboxes:
-                        try:
-                            await client.delete(sandbox)
-                        except DaytonaNotFoundError:
-                            pass
-                except Exception as error:
-                    logger.warning(
-                        "workspace_quarantine_cleanup_failed workspace_label={} error_type={}",
-                        workspace_label,
-                        type(error).__name__,
-                    )
-                    continue
-                await complete(workspace_label)
-                completed += 1
-                logger.debug(
-                    "workspace_quarantine_cleanup_completed workspace_label={} sandbox_count={}",
-                    workspace_label,
-                    len(sandboxes),
+        for binding in bindings:
+            ref = SandboxRef.model_validate(binding.model_dump())
+            try:
+                await self._provider.destroy_workspace_ref(ref)
+            except SandboxNotFound:
+                pass
+            except Exception as error:
+                logger.warning(
+                    "workspace_quarantine_cleanup_failed binding_digest={} error_type={}",
+                    binding.binding_digest,
+                    type(error).__name__,
                 )
+                continue
+            await complete(binding.binding_digest)
+            completed += 1
+            logger.debug(
+                "workspace_quarantine_cleanup_completed binding_digest={}",
+                binding.binding_digest,
+            )
         return completed
 
     async def run_quarantine_cleanup_loop(self) -> None:
@@ -2235,7 +2254,9 @@ class WorkspaceService:
             "status": "completed",
             "exitCode": result.exit_code,
             "output": output,
+            "outputTruncated": result.output_truncated,
             "scriptPath": relative,
+            "scriptSize": len(content),
             "scriptSha256": result.script_hash,
             "dependencyBundleDigest": result.dependency_bundle_digest,
         }
