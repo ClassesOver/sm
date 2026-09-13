@@ -226,6 +226,7 @@ def create_report_runtime(
         report_public_base_url=(
             settings.report_public_base_url if download_grants is not None else None
         ),
+        report_completion_template=settings.report_completion_template,
         state_repository=state_repository,
         analysis_concurrency=settings.report_analysis_concurrency,
         section_concurrency=settings.report_section_concurrency,

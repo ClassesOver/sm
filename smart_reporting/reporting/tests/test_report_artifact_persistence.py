@@ -1190,11 +1190,13 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
     runtime.publish_report = AsyncMock(return_value=StepOutput(content=output))
     runtime.download_grants = object()
     runtime.artifact_persistence = object()
+    runtime.report_completion_template = "# {report_title}\n\n{actions}"
     runtime.issue_workspace_publication = AsyncMock()
     runtime.issue_http_publication = AsyncMock(
         return_value={
-            "pdf": {"downloadUrl": "/reports/v1/download/raw"},
-            "word": {"downloadUrl": "/reports/v1/download/raw/word"},
+            "pdf": {"downloadUrl": "https://reports.example/report.pdf"},
+            "word": {"downloadUrl": "https://reports.example/report.docx"},
+            "html": {"previewUrl": "https://reports.example/report.html"},
         }
     )
     runtime.workflow()
@@ -1209,7 +1211,14 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
     result = await finalize(SimpleNamespace(), context)
 
     assert result.content["reportTitle"] == "年度运营分析报告"
-    assert result.content["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
+    assert result.content["pdf"]["downloadUrl"] == "https://reports.example/report.pdf"
+    from smart_reporting.reporting.agent import _completed_report_content
+
+    assert result.content["content"] == _completed_report_content(
+        {"status": "completed", "report": result.content},
+        template=runtime.report_completion_template,
+    )
+    assert result.content["content"].startswith("# 年度运营分析报告\n\n")
     assert result.content["publicationGate"] == output["publicationGate"]
     runtime.issue_http_publication.assert_awaited_once_with(
         thread_id=reporting_scope_keys(
@@ -1330,6 +1339,7 @@ async def test_workflow_publication_keeps_workspace_paths_without_http_services(
     )
 
     assert result.content["path"] == "reports/report.pdf"
+    assert "content" not in result.content  # Workspace-only delivery keeps its native receipt.
     runtime.issue_workspace_publication.assert_awaited_once_with(
         thread_id=reporting_scope_keys(
             database="default",

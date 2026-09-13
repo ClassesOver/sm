@@ -40,6 +40,7 @@ from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
 from ...code_agent.context import ReportingCodingTaskRegistry
+from ...presentation import completed_report_content
 from ...contract import (
     FIELD_REF_PATTERN,
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
@@ -508,6 +509,7 @@ class _ReportWorkflowRuntimeBase:
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         quality_warning_service: QualityWarningService | None = None,
         report_public_base_url: str | None = None,
+        report_completion_template: str | None = None,
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 1,
         section_concurrency: int = 1,
@@ -549,6 +551,7 @@ class _ReportWorkflowRuntimeBase:
         self.artifact_persistence = artifact_persistence
         self.quality_warning_service = quality_warning_service
         self.report_public_base_url = report_public_base_url
+        self.report_completion_template = report_completion_template
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
@@ -972,6 +975,14 @@ class _ReportWorkflowRuntimeBase:
                 )
             published["reportTitle"] = content["reportTitle"]
             published["publicationGate"] = content.get("publicationGate")
+            # Persist the same reply returned by the facade. Native history and
+            # direct Workflow streams read content through the chat protocol;
+            # the structured publication receipt remains available for tools.
+            if self.download_grants is not None:
+                published["content"] = completed_report_content(
+                    {"status": "completed", "report": published},
+                    template=getattr(self, "report_completion_template", None),
+                )
             return StepOutput(content=published)
 
         return create_reporting_workflow(
