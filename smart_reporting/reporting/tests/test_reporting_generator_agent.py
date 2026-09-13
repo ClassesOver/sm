@@ -151,6 +151,10 @@ def test_visualization_code_instructions_defend_structured_rows_without_masking_
     assert "真实数据全零" in instructions
     assert "明确标注" in instructions
     assert "解析失败" in instructions
+    assert "不同 metricIndex" in instructions
+    assert "独立子图" in instructions
+    assert "NaN" in instructions
+    assert "禁止跨指标" in instructions
 
 
 def test_reporting_code_agent_uses_chat_reasoning_and_non_thinking_responses() -> None:

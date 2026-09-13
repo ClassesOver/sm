@@ -469,6 +469,111 @@ async def test_visualization_script_execution_repair_uses_off_then_4k() -> None:
 
 
 @pytest.mark.anyio
+async def test_visualization_execution_repair_receives_metric_local_contract_and_attempt() -> None:
+    script_files = [
+        FileIdentity(path="charts/charts.py", size=index, sha256=str(index) * 64)
+        for index in range(1, 4)
+    ]
+    repair_facts: list[dict[str, object]] = []
+
+    async def repair_script(_script, _diagnostic, task_facts, _context):
+        repair_facts.append(dict(task_facts))
+        return CodeGenerationResult(script_files[len(repair_facts)])
+
+    payload = {
+        **_visualization_payload(),
+        "visualizationFacts": [
+            {
+                "analysisId": "analysis_001",
+                "metrics": [
+                    {
+                        "metricIndex": 0,
+                        "field": "门诊收入",
+                        "periodValueCount": 12,
+                        "topGroupCount": 10,
+                        "bottomGroupCount": 10,
+                        "dataPaths": {
+                            "metric": "metrics[0]",
+                            "periodValues": "metrics[0].periodValues",
+                            "topGroups": "metrics[0].topGroups",
+                            "bottomGroups": "metrics[0].bottomGroups",
+                        },
+                    },
+                    {
+                        "metricIndex": 2,
+                        "field": "门诊工作量",
+                        "periodValueCount": 12,
+                        "topGroupCount": 8,
+                        "bottomGroupCount": 8,
+                        "dataPaths": {
+                            "metric": "metrics[2]",
+                            "periodValues": "metrics[2].periodValues",
+                            "topGroups": "metrics[2].topGroups",
+                            "bottomGroups": "metrics[2].bottomGroups",
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        generate_script=AsyncMock(return_value=CodeGenerationResult(script_files[0])),
+        repair_script=repair_script,
+        execute_script=AsyncMock(
+            side_effect=[
+                ReportingError("execution_output_error", "group not found"),
+                ReportingError("execution_output_error", "group not found"),
+                {"exitCode": 0},
+            ]
+        ),
+        inspect_chart=AsyncMock(return_value=_inspection()),
+        submit=AsyncMock(return_value={"status": "accepted"}),
+    ).run(payload, _context())
+
+    assert result.status == "accepted"
+    assert [facts["repairAttempt"] for facts in repair_facts] == [1, 2]
+    expected_contract = {
+        "groupAlignmentPolicy": "metric_local_only",
+        "metrics": [
+            {
+                "analysisId": "analysis_001",
+                "metricIndex": 0,
+                "field": "门诊收入",
+                "periodValueCount": 12,
+                "topGroupCount": 10,
+                "bottomGroupCount": 10,
+                "dataPaths": {
+                    "metric": "metrics[0]",
+                    "periodValues": "metrics[0].periodValues",
+                    "topGroups": "metrics[0].topGroups",
+                    "bottomGroups": "metrics[0].bottomGroups",
+                },
+            },
+            {
+                "analysisId": "analysis_001",
+                "metricIndex": 2,
+                "field": "门诊工作量",
+                "periodValueCount": 12,
+                "topGroupCount": 8,
+                "bottomGroupCount": 8,
+                "dataPaths": {
+                    "metric": "metrics[2]",
+                    "periodValues": "metrics[2].periodValues",
+                    "topGroups": "metrics[2].topGroups",
+                    "bottomGroups": "metrics[2].bottomGroups",
+                },
+            },
+        ],
+    }
+    assert [facts["visualizationDataContract"] for facts in repair_facts] == [
+        expected_contract,
+        expected_contract,
+    ]
+
+
+@pytest.mark.anyio
 async def test_visualization_visual_repair_uses_8k() -> None:
     observed: list[int] = []
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -621,7 +726,7 @@ async def test_visualization_workflow_repairs_script_failure_once_with_frozen_pl
             "output": "[FAIL] chart.png: image is blank",
         },
     }
-    assert task_facts == {}
+    assert task_facts == {"repairAttempt": 1}
     assert execute.await_count == 2
 
 
@@ -875,6 +980,7 @@ async def test_visualization_workflow_repairs_visual_review_failure_once() -> No
         "details": {"path": "charts/charts.py"},
     }
     assert task_facts == {
+        "repairAttempt": 1,
         "inspections": [
             {
                 "sourcePath": "charts/chart.png",
@@ -1049,6 +1155,7 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
                 "details": {"path": "charts/chart.png"},
             },
             "taskFacts": {
+                "repairAttempt": 1,
                 "missingCharts": [
                     {
                         "chartId": "chart_001",
@@ -1164,6 +1271,7 @@ async def test_visualization_repair_adapter_preserves_restricted_task_facts_in_r
     task_facts = prompts[0]["facts"]["taskFacts"]
     if failure_kind == "missing_chart":
         assert task_facts == {
+            "repairAttempt": 1,
             "missingCharts": [
                 {
                     "chartId": "chart_001",
@@ -1174,6 +1282,7 @@ async def test_visualization_repair_adapter_preserves_restricted_task_facts_in_r
         }
     else:
         assert task_facts == {
+            "repairAttempt": 1,
             "inspections": [
                 {
                     "sourcePath": "charts/chart.png",

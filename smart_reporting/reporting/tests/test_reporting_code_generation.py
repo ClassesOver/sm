@@ -1066,6 +1066,30 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
         read_file,
         patch,
         task_facts={
+            "repairAttempt": 2,
+            "visualizationDataContract": {
+                "groupAlignmentPolicy": "metric_local_only",
+                "metrics": [
+                    {
+                        "analysisId": f"analysis-{index}" + "x" * 300,
+                        "metricIndex": index,
+                        "field": f"field-{index}" + "x" * 200,
+                        "periodValueCount": 12,
+                        "topGroupCount": 10,
+                        "bottomGroupCount": 10,
+                        "dataPaths": {
+                            "metric": f"metrics[{index}]" + "x" * 1_100,
+                            "periodValues": f"metrics[{index}].periodValues",
+                            "topGroups": f"metrics[{index}].topGroups",
+                            "bottomGroups": f"metrics[{index}].bottomGroups",
+                            "secret": "SECRET_DATA_PATH",
+                        },
+                        "secret": "SECRET_METRIC_CONTEXT",
+                    }
+                    for index in range(201)
+                ],
+                "secret": "SECRET_VISUALIZATION_CONTEXT",
+            },
             "missingFacts": ["缺少的数值"],
             "missingCharts": missing_charts,
             "inspections": inspections,
@@ -1074,7 +1098,35 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
     )
 
     task_facts = prompts[0]["facts"]["taskFacts"]
-    assert task_facts.keys() == {"missingFacts", "missingCharts", "inspections"}
+    assert task_facts.keys() == {
+        "repairAttempt",
+        "visualizationDataContract",
+        "missingFacts",
+        "missingCharts",
+        "inspections",
+    }
+    assert task_facts["repairAttempt"] == 2
+    data_contract = task_facts["visualizationDataContract"]
+    assert data_contract["groupAlignmentPolicy"] == "metric_local_only"
+    assert len(data_contract["metrics"]) == 200
+    assert data_contract["metrics"][0].keys() == {
+        "analysisId",
+        "metricIndex",
+        "field",
+        "periodValueCount",
+        "topGroupCount",
+        "bottomGroupCount",
+        "dataPaths",
+    }
+    assert len(data_contract["metrics"][0]["analysisId"]) == 256
+    assert len(data_contract["metrics"][0]["field"]) == 128
+    assert len(data_contract["metrics"][0]["dataPaths"]["metric"]) == 1024
+    assert data_contract["metrics"][0]["dataPaths"].keys() == {
+        "metric",
+        "periodValues",
+        "topGroups",
+        "bottomGroups",
+    }
     assert task_facts["missingFacts"] == ["缺少的数值"]
     assert len(task_facts["missingCharts"]) == 100
     assert task_facts["missingCharts"][0].keys() == {"chartId", "sourcePath", "title"}
@@ -1112,6 +1164,9 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
     assert "SECRET_MODEL_ID" not in prompt_text
     assert "SECRET_RAW_RESPONSE" not in prompt_text
     assert "SECRET_SOURCE" not in prompt_text
+    assert "SECRET_DATA_PATH" not in prompt_text
+    assert "SECRET_METRIC_CONTEXT" not in prompt_text
+    assert "SECRET_VISUALIZATION_CONTEXT" not in prompt_text
 
 
 @pytest.mark.anyio
@@ -1140,6 +1195,22 @@ async def test_repair_preserves_bounded_visual_facts_without_receipt_metadata():
         {"missingCharts": [{"chartId": "chart", "sourcePath": "charts/x.png"}]},
         {"missingCharts": [{"chartId": "chart", "sourcePath": 1, "title": "标题"}]},
         {"inspections": "not-an-array"},
+        {"repairAttempt": 0},
+        {"repairAttempt": True},
+        {"repairAttempt": 4},
+        {"visualizationDataContract": "not-an-object"},
+        {
+            "visualizationDataContract": {
+                "groupAlignmentPolicy": "outer_join_and_fill_zero",
+                "metrics": [],
+            }
+        },
+        {
+            "visualizationDataContract": {
+                "groupAlignmentPolicy": "metric_local_only",
+                "metrics": [{"analysisId": "analysis", "metricIndex": True}],
+            }
+        },
         {
             "inspections": [
                 {

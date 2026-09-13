@@ -150,10 +150,59 @@ def _repair_diagnostic(
     return {"code": code, "message": message[:512], "details": details}
 
 
+def _visualization_data_contract(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    projected_metrics: list[dict[str, Any]] = []
+    visualization_facts = payload.get("visualizationFacts")
+    if not isinstance(visualization_facts, (list, tuple)):
+        return None
+    for analysis in visualization_facts:
+        if not isinstance(analysis, Mapping):
+            continue
+        analysis_id = analysis.get("analysisId")
+        metrics = analysis.get("metrics")
+        if not isinstance(analysis_id, str) or not analysis_id or not isinstance(metrics, list):
+            continue
+        for metric in metrics:
+            if not isinstance(metric, Mapping):
+                continue
+            data_paths = metric.get("dataPaths")
+            required_values = (
+                metric.get("metricIndex"),
+                metric.get("field"),
+                metric.get("periodValueCount"),
+                metric.get("topGroupCount"),
+                metric.get("bottomGroupCount"),
+            )
+            if not isinstance(data_paths, Mapping) or any(value is None for value in required_values):
+                continue
+            projected_metrics.append(
+                {
+                    "analysisId": analysis_id,
+                    "metricIndex": metric.get("metricIndex"),
+                    "field": metric.get("field"),
+                    "periodValueCount": metric.get("periodValueCount"),
+                    "topGroupCount": metric.get("topGroupCount"),
+                    "bottomGroupCount": metric.get("bottomGroupCount"),
+                    "dataPaths": dict(data_paths),
+                }
+            )
+    if not projected_metrics:
+        return None
+    return {
+        "groupAlignmentPolicy": "metric_local_only",
+        "metrics": projected_metrics,
+    }
+
+
 def _repair_task_facts(
-    plan: VisualizationPlanDraft, error: Exception, script_path: str
+    plan: VisualizationPlanDraft,
+    error: Exception,
+    script_path: str,
+    *,
+    payload: Mapping[str, Any],
+    repair_attempt: int,
 ) -> dict[str, Any]:
-    facts: dict[str, Any] = {}
+    facts: dict[str, Any] = {"repairAttempt": repair_attempt}
     code = error.code if isinstance(error, ReportingError) else "report_visualization_failed"
     path = script_path
     details = (
@@ -198,6 +247,10 @@ def _repair_task_facts(
                     or inspection.get("visualReviewStatus") != "passed"
                 )
             ]
+    elif code in {"execution_output_error", "report_visualization_script_failed"}:
+        data_contract = _visualization_data_contract(payload)
+        if data_contract is not None:
+            facts["visualizationDataContract"] = data_contract
     return facts
 
 
@@ -502,7 +555,17 @@ class VisualizationSectionWorkflow:
                     repaired = await self.repair_script(
                         script_file,
                         diagnostic,
-                        _repair_task_facts(plan, error, script_path),
+                        _repair_task_facts(
+                            plan,
+                            error,
+                            script_path,
+                            payload=payload,
+                            repair_attempt=(
+                                visual_review_repairs
+                                if is_visual_review_failure
+                                else execution_repairs
+                            ),
+                        ),
                         run_context,
                     )
                 repaired_file = _ensure_script_identity(repaired, script_path)

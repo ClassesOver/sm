@@ -46,6 +46,10 @@ MAX_TASK_INSPECTION_ISSUES = 20
 MAX_TASK_INSPECTION_TEXTS = 20
 MAX_TASK_INSPECTION_TEXT_LENGTH = 500
 MAX_TASK_INSPECTION_SUMMARY_LENGTH = 2000
+MAX_TASK_VISUALIZATION_METRICS = 200
+MAX_TASK_REPAIR_ATTEMPT = 3
+MAX_TASK_ANALYSIS_ID_LENGTH = 256
+MAX_TASK_METRIC_FIELD_LENGTH = 128
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _FORBIDDEN_PATH_CALLS = frozenset(
     {
@@ -650,6 +654,24 @@ class ReportingCodeGenerationRunner:
                 script_path,
             )
         result: dict[str, Any] = {}
+        repair_attempt = task_facts.get("repairAttempt")
+        if repair_attempt is not None:
+            if (
+                isinstance(repair_attempt, bool)
+                or not isinstance(repair_attempt, int)
+                or not 1 <= repair_attempt <= MAX_TASK_REPAIR_ATTEMPT
+            ):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "修复轮次必须是有效的正整数。",
+                    script_path,
+                )
+            result["repairAttempt"] = repair_attempt
+        visualization_data_contract = task_facts.get("visualizationDataContract")
+        if visualization_data_contract is not None:
+            result["visualizationDataContract"] = cls._repair_visualization_data_contract(
+                visualization_data_contract, script_path
+            )
         if missing_facts is not None:
             result["missingFacts"] = [
                 item[:MAX_TASK_MISSING_FACT_LENGTH]
@@ -667,6 +689,100 @@ class ReportingCodeGenerationRunner:
         if inspections is not None:
             result["inspections"] = cls._repair_inspections(inspections, script_path)
         return result
+
+    @classmethod
+    def _repair_visualization_data_contract(
+        cls, contract: Any, script_path: str
+    ) -> dict[str, Any]:
+        if not isinstance(contract, Mapping):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "可视化修复数据契约必须是对象。",
+                script_path,
+            )
+        metrics = contract.get("metrics")
+        if (
+            contract.get("groupAlignmentPolicy") != "metric_local_only"
+            or not isinstance(metrics, list)
+            or not metrics
+        ):
+            raise cls._error(
+                "report_code_generation_task_facts_invalid",
+                "可视化修复数据契约无效。",
+                script_path,
+            )
+        bounded_metrics: list[dict[str, Any]] = []
+        for metric in metrics[:MAX_TASK_VISUALIZATION_METRICS]:
+            if not isinstance(metric, Mapping):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "可视化指标契约必须是对象。",
+                    script_path,
+                )
+            analysis_id = metric.get("analysisId")
+            field = metric.get("field")
+            if (
+                not isinstance(analysis_id, str)
+                or not analysis_id
+                or not isinstance(field, str)
+                or not field
+            ):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "可视化指标身份字段无效。",
+                    script_path,
+                )
+            numeric_values: dict[str, int] = {}
+            for name in (
+                "metricIndex",
+                "periodValueCount",
+                "topGroupCount",
+                "bottomGroupCount",
+            ):
+                value = metric.get(name)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 0 <= value <= MAX_DIAGNOSTIC_POSITION
+                ):
+                    raise cls._error(
+                        "report_code_generation_task_facts_invalid",
+                        "可视化指标计数或索引无效。",
+                        script_path,
+                    )
+                numeric_values[name] = value
+            data_paths = metric.get("dataPaths")
+            if not isinstance(data_paths, Mapping):
+                raise cls._error(
+                    "report_code_generation_task_facts_invalid",
+                    "可视化指标数据路径无效。",
+                    script_path,
+                )
+            bounded_paths: dict[str, str] = {}
+            for name in ("metric", "periodValues", "topGroups", "bottomGroups"):
+                value = data_paths.get(name)
+                if not isinstance(value, str) or not value:
+                    raise cls._error(
+                        "report_code_generation_task_facts_invalid",
+                        "可视化指标数据路径无效。",
+                        script_path,
+                    )
+                bounded_paths[name] = value[:MAX_TASK_CHART_SOURCE_PATH_LENGTH]
+            bounded_metrics.append(
+                {
+                    "analysisId": analysis_id[:MAX_TASK_ANALYSIS_ID_LENGTH],
+                    "metricIndex": numeric_values["metricIndex"],
+                    "field": field[:MAX_TASK_METRIC_FIELD_LENGTH],
+                    "periodValueCount": numeric_values["periodValueCount"],
+                    "topGroupCount": numeric_values["topGroupCount"],
+                    "bottomGroupCount": numeric_values["bottomGroupCount"],
+                    "dataPaths": bounded_paths,
+                }
+            )
+        return {
+            "groupAlignmentPolicy": "metric_local_only",
+            "metrics": bounded_metrics,
+        }
 
     @classmethod
     def _repair_output_contract(cls, contract: Any, script_path: str) -> dict[str, Any]:
@@ -1184,17 +1300,21 @@ class ReportingCodeGenerationRunner:
             _previous_source=read_receipt["content"],
             _log_base_info=False,
         )
+        repair_attempt = bounded_task_facts.get("repairAttempt")
+        log_payload = {
+            "operation": "repair",
+            "path": result.script_file.path,
+            "size": result.script_file.size,
+            "sha256": result.script_file.sha256,
+            "diagnosticCode": self._stable_code(diagnostic.get("code"), "unknown"),
+            "diagnostic": short_diagnostic,
+        }
+        if isinstance(repair_attempt, int):
+            log_payload["repairAttempt"] = repair_attempt
         logger.info(
             "report_code_repair_base_info script={}",
             json.dumps(
-                {
-                    "operation": "repair",
-                    "path": result.script_file.path,
-                    "size": result.script_file.size,
-                    "sha256": result.script_file.sha256,
-                    "diagnosticCode": self._stable_code(diagnostic.get("code"), "unknown"),
-                    "diagnostic": short_diagnostic,
-                },
+                log_payload,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
