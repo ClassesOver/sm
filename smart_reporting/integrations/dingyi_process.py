@@ -7,9 +7,10 @@ from uuid import uuid4
 
 from dingyi_agno.process import ProcessJournal, ProcessPublisher, create_process_router
 from dingyi_agno.process.core import now
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import Mount
 
 OWNER = "smart-reporting"
 COMPONENT = {"type": "agent", "id": "smart-reporting"}
@@ -123,8 +124,9 @@ class DingyiProcessAdapter:
             snapshot = await self._snapshot(target)
             if snapshot is None or str(snapshot["operation"]["status"]) in _OPERATION_TERMINAL:
                 return
-            if status in _OPERATION_TERMINAL:
-                await self._close_activities(snapshot, status)
+            protocol_status = "waiting" if status == "paused" else status
+            if protocol_status in _OPERATION_TERMINAL:
+                await self._close_activities(snapshot, protocol_status)
             publisher = ProcessPublisher(
                 self._ensure_journal(),
                 owner=OWNER,
@@ -135,13 +137,13 @@ class DingyiProcessAdapter:
                 operation_id=target,
                 execution=str(snapshot["operation"]["execution"]),
             )
-            await publisher.aupdate(status=status, summary=_bounded(summary, _MAX_SUMMARY_LENGTH))
-            if status in _OPERATION_TERMINAL:
+            await publisher.aupdate(status=protocol_status, summary=_bounded(summary, _MAX_SUMMARY_LENGTH))
+            if protocol_status in _OPERATION_TERMINAL:
                 self._operation_ids.pop(operation_id, None)
 
     async def _close_activities(self, snapshot: dict[str, Any], terminal_status: str) -> None:
         operation = snapshot["operation"]
-        activity_status = "completed" if terminal_status == "completed" else "failed"
+        activity_status = "completed" if terminal_status == "completed" else terminal_status
         for activity in snapshot.get("activities", []):
             if str(activity.get("status")) in _ACTIVITY_TERMINAL:
                 continue
@@ -155,6 +157,7 @@ class DingyiProcessAdapter:
                 operation_id=str(operation["operationId"]),
                 execution=str(operation["execution"]),
             )
+            fields = {key: activity[key] for key in ("startedAt", "parentId", "retryOfActivityId", "source", "display", "category") if key in activity}
             await publisher.aactivity(
                 id=str(activity["id"]),
                 title=str(activity.get("title") or "步骤"),
@@ -162,6 +165,7 @@ class DingyiProcessAdapter:
                 status=activity_status,
                 endedAt=now(),
                 summary="已随任务完成" if activity_status == "completed" else "步骤执行失败",
+                **fields,
             )
 
     async def start_activity(
@@ -209,7 +213,9 @@ class DingyiProcessAdapter:
             if operation is None:
                 return
             data = operation["operation"]
+            current = next((item for item in operation.get("activities", []) if item.get("id") == activity_id), None)
             title, default = _STEP_TITLES.get(step_id, (step_id, "步骤执行完成"))
+            fields = {key: current[key] for key in ("startedAt", "parentId", "retryOfActivityId", "source", "display", "category") if isinstance(current, dict) and key in current}
             publisher = ProcessPublisher(
                 self._ensure_journal(),
                 owner=OWNER,
@@ -228,4 +234,36 @@ class DingyiProcessAdapter:
                 summary=_bounded(
                     summary or (default if status == "completed" else None), _MAX_SUMMARY_LENGTH
                 ),
+                **fields,
             )
+
+
+def mount_process_routes(application: FastAPI, adapter: DingyiProcessAdapter) -> None:
+    mounted = False
+    try:
+        # ProcessJournal 建表会触碰数据库；健康数据库可在路由构建阶段直接挂载，
+        # 保证 FastAPI 在 startup 前完成路由编译。
+        application.include_router(adapter.router)
+        mounted = True
+    except Exception as error:
+        logger.warning("dingyi_process_router_deferred error_type={}", type(error).__name__)
+
+    async def _mount_dingyi_process() -> None:
+        nonlocal mounted
+        # FastAPI may wrap included routers lazily without exposing .path.
+        # Track our successful registration instead of inspecting internals.
+        if not mounted:
+            routes = application.router.routes
+            before = len(routes)
+            application.include_router(adapter.router)
+            # AgentOS may already have appended its root MCP mount. Only
+            # the newly deferred routes must precede that catch-all route.
+            root = next((i for i, route in enumerate(routes[:before])
+                         if isinstance(route, Mount) and route.path in {"", "/"}), None)
+            if root is not None:
+                added = routes[before:]
+                del routes[before:]
+                routes[root:root] = added
+            mounted = True
+
+    application.router.add_event_handler("startup", _mount_dingyi_process)

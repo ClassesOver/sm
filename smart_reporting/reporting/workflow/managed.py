@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Mapping
+from contextvars import ContextVar
 from copy import copy, deepcopy
 from inspect import isawaitable
 from typing import Any, Protocol, cast
@@ -37,6 +38,11 @@ class ReportingWorkflowLifecycle(Protocol):
     async def assert_resumable(self, run_id: str) -> None: ...
 
     async def settle_run(self, run_id: str, status: str) -> None: ...
+
+
+_CONTINUATION_DEPENDENCIES: ContextVar[dict[str, Any] | None] = ContextVar(
+    "reporting_continuation_dependencies", default=None
+)
 
 
 def _terminal_status(status: RunStatus | str | None) -> str:
@@ -111,6 +117,10 @@ class ManagedReportingWorkflow(Workflow):
         if not run_id:
             raise ValueError("继续 Reporting Workflow 必须提供 run_id")
         await self.lifecycle.assert_resumable(run_id)
+        continuation_dependencies = kwargs.get("dependencies")
+        dependency_token = _CONTINUATION_DEPENDENCIES.set(
+            dict(continuation_dependencies) if isinstance(continuation_dependencies, Mapping) else None
+        )
         try:
             execution = await super().acontinue_run(*args, **kwargs)
         except asyncio.CancelledError:
@@ -119,6 +129,8 @@ class ManagedReportingWorkflow(Workflow):
         except BaseException:
             await self._settle_after_error(run_id)
             raise
+        finally:
+            _CONTINUATION_DEPENDENCIES.reset(dependency_token)
         if hasattr(execution, "__aiter__"):
             return self._stream_continued(
                 cast(AsyncIterator[WorkflowRunOutputEvent], execution), run_id
@@ -126,6 +138,40 @@ class ManagedReportingWorkflow(Workflow):
         output = cast(WorkflowRunOutput, execution)
         await self.lifecycle.settle_run(run_id, _terminal_status(output.status))
         return output
+
+    def _resume_dependencies(self, run_context: Any, dependencies: Any) -> None:
+        """Restore per-call dependencies at Agno's continuation adapter boundary.
+
+        Agno rebuilds ``RunContext`` during ``acontinue_run`` but currently does
+        not copy the dependencies passed to that method.  Reporting step
+        executors use those dependencies for the process lifecycle and scope.
+        Merge them into the context only for this execution; never mutate the
+        workflow defaults or share state between runs.
+        """
+        merged = dict(self.dependencies or {})
+        if isinstance(getattr(run_context, "dependencies", None), Mapping):
+            merged.update(run_context.dependencies)
+        if isinstance(dependencies, Mapping):
+            merged.update(dependencies)
+        run_context.dependencies = merged or None
+
+    async def _acontinue_execute(self, *args: Any, **kwargs: Any) -> Any:
+        run_context = kwargs.get("run_context")
+        self._resume_dependencies(run_context, _CONTINUATION_DEPENDENCIES.get())
+        return await super()._acontinue_execute(*args, **kwargs)
+
+    def _acontinue_execute_stream(self, *args: Any, **kwargs: Any) -> Any:
+        run_context = kwargs.get("run_context")
+        dependencies = _CONTINUATION_DEPENDENCIES.get()
+
+        async def stream() -> AsyncIterator[WorkflowRunOutputEvent]:
+            self._resume_dependencies(run_context, dependencies)
+            async for event in super(ManagedReportingWorkflow, self)._acontinue_execute_stream(
+                *args, **kwargs
+            ):
+                yield event
+
+        return stream()
 
     async def _run_initial(
         self,

@@ -27,7 +27,7 @@ from .http.request_limits import (
 )
 from .http.security import CapabilityError, verify_capability
 from .integrations.agno_function_arguments import install_agno_function_argument_decoder
-from .integrations.dingyi_process import DingyiProcessAdapter
+from .integrations.dingyi_process import DingyiProcessAdapter, mount_process_routes
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
@@ -500,21 +500,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
         )
     )
     application.include_router(create_quality_warning_router())
-    try:
-        # ProcessJournal 建表会触碰数据库；健康数据库可在路由构建阶段直接挂载，
-        # 保证 FastAPI 在 startup 前完成路由编译。
-        application.include_router(dingyi_process.router)
-    except Exception as error:
-        loguru_logger.warning("dingyi_process_router_deferred error_type={}", type(error).__name__)
-
-    async def _mount_dingyi_process() -> None:
-        if not any(
-            str(getattr(route, "path", "")).startswith("/extensions/dingyi/process/v1")
-            for route in application.routes
-        ):
-            application.include_router(dingyi_process.router)
-
-    application.router.add_event_handler("startup", _mount_dingyi_process)
+    mount_process_routes(application, dingyi_process)
     application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)

@@ -1130,7 +1130,11 @@ class ReportWorkflowController:
             "start_operation",
             operation_id=scope["external_run_id"],
             session_id=scope["thread_id"],
-            run_id=workflow_run_id,
+            # The process operation is consumed by the chat UI, whose message
+            # identity is the outer gateway run. Keep the native workflow run
+            # in activity/source metadata, but associate the operation with
+            # that public run so progress attaches to the answer.
+            run_id=scope["external_run_id"],
             title="生成报告",
             execution="background"
             if self._workflow_entrypoint(run_context) == "mcp"
@@ -1155,15 +1159,6 @@ class ReportWorkflowController:
             )
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
         except BaseException as run_error:
-            await self._process_notify(
-                "update_operation",
-                operation_id=scope["external_run_id"],
-                session_id=scope["thread_id"],
-                status="cancelled" if isinstance(run_error, asyncio.CancelledError) else "failed",
-                summary="报表生成已取消"
-                if isinstance(run_error, asyncio.CancelledError)
-                else "报表生成失败",
-            )
             await self._finalize_run_error(
                 run_error,
                 scope,
@@ -1173,13 +1168,6 @@ class ReportWorkflowController:
             )
             raise
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
-        await self._process_notify(
-            "update_operation",
-            operation_id=scope["external_run_id"],
-            session_id=scope["thread_id"],
-            status=control.status,
-            summary=None,
-        )
         await self._finalize_control(control, scope, state=state)
         return self._result(control, output)
 
@@ -1384,6 +1372,10 @@ class ReportWorkflowController:
             else:
                 requirement.reject(feedback=feedback)
             workflow = self._workflow()
+            await self._process_notify(
+                "update_operation", operation_id=scope["external_run_id"],
+                session_id=scope["thread_id"], status="running", summary=None,
+            )
             try:
                 output = await workflow.acontinue_run(
                     run_response=output,
@@ -1437,6 +1429,10 @@ class ReportWorkflowController:
         *,
         state: dict[str, Any] | None = None,
     ) -> None:
+        await self._process_notify(
+            "update_operation", operation_id=scope["external_run_id"],
+            session_id=scope["thread_id"], status=control.status, summary=None,
+        )
         if control.status in _ACTIVE_STATUSES:
             await self._update_reporting_run_status(
                 control.workflow_run_id,
@@ -1539,6 +1535,11 @@ class ReportWorkflowController:
     ) -> None:
         terminal_status: ReportWorkflowStatus = (
             "cancelled" if isinstance(run_error, asyncio.CancelledError) else "failed"
+        )
+        await self._process_notify(
+            "update_operation", operation_id=scope["external_run_id"],
+            session_id=scope["thread_id"], status=terminal_status,
+            summary="报表生成已取消" if terminal_status == "cancelled" else "报表生成失败",
         )
         terminal = ReportWorkflowControl(
             workflowId=_WORKFLOW_ID,

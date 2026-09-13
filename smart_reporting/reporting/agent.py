@@ -20,6 +20,7 @@ from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
 from agno.run.team import TeamRunOutputEvent
+from dingyi_agno import PlatformModel
 from loguru import logger
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
@@ -2645,10 +2646,7 @@ def _report_model(
     # Agent 的初始模型对应 standard 档位；复杂度和修复升级由独立 Router 决定，
     # 不在共享 Agent 实例上动态修改 model_id，避免并发任务互相覆盖。
     standard_profile = profiles["standard"]
-    model = OpenAIChat(
-        id=standard_profile.model_id,
-        base_url=settings.openai_base_url,
-        api_key=settings.openai_api_key,
+    model_options = dict(
         timeout=(settings.model_timeout_seconds if timeout_seconds is None else timeout_seconds),
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
@@ -2665,6 +2663,20 @@ def _report_model(
         retries=retries,
         exponential_backoff=retries > 0,
     )
+    if settings.platform_settings is not None:
+        model = PlatformModel.for_agent(
+            "smart-reporting",
+            settings=settings.platform_settings,
+            model_profile_key=standard_profile.model_id,
+            **model_options,
+        )
+    else:
+        model = OpenAIChat(
+            id=standard_profile.model_id,
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key,
+            **model_options,
+        )
     setattr(
         model,
         REPORTING_STRUCTURED_MODES_MODEL_ATTR,

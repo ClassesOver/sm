@@ -7,6 +7,7 @@ from typing import Literal, cast
 from urllib.parse import quote, urlsplit
 
 from dotenv import dotenv_values
+from dingyi_agno.platform.settings import PlatformSettings
 
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_FAST_ID = "qwen3.6-35b-a3b"
@@ -317,6 +318,7 @@ class AgentSettings:
     report_completion_template: str | None = None
     # 编辑器前端静态目录；镜像把构建产物放在源码 bind mount 之外，避免被宿主目录覆盖。
     report_editor_static_dir: str | None = None
+    platform_settings: PlatformSettings | None = None
 
     @classmethod
     def from_environment(
@@ -381,19 +383,25 @@ class AgentSettings:
         )
         sandbox = _sandbox_configuration(values)
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
+        platform_settings = (
+            PlatformSettings.from_env(values)
+            if values.get("DINGYI_PLATFORM_URL", "").strip()
+            else None
+        )
+        default_fast = "platform-managed" if platform_settings else DEFAULT_MODEL_FAST_ID
+        default_standard = "platform-managed" if platform_settings else DEFAULT_MODEL_STANDARD_ID
+        default_strong = "platform-managed" if platform_settings else DEFAULT_MODEL_STRONG_ID
         return cls(
+            platform_settings=platform_settings,
             env_file=env_file,
             model_fast_id=(
-                values.get("AGENT_MODEL_FAST", DEFAULT_MODEL_FAST_ID).strip()
-                or DEFAULT_MODEL_FAST_ID
+                values.get("AGENT_MODEL_FAST", default_fast).strip() or default_fast
             ),
             model_standard_id=(
-                values.get("AGENT_MODEL_STANDARD", DEFAULT_MODEL_STANDARD_ID).strip()
-                or DEFAULT_MODEL_STANDARD_ID
+                values.get("AGENT_MODEL_STANDARD", default_standard).strip() or default_standard
             ),
             model_strong_id=(
-                values.get("AGENT_MODEL_STRONG", DEFAULT_MODEL_STRONG_ID).strip()
-                or DEFAULT_MODEL_STRONG_ID
+                values.get("AGENT_MODEL_STRONG", default_strong).strip() or default_strong
             ),
             model_timeout_seconds=_positive_int(
                 values,

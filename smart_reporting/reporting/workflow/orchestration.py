@@ -17,6 +17,8 @@ from agno.workflow.workflow import Workflow
 from loguru import logger
 
 from .managed import ManagedReportingWorkflow, ReportingWorkflowLifecycle
+from .controller import REPORT_PROCESS_LIFECYCLE_DEPENDENCY
+from .scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 
 StepExecutor = Any
 
@@ -299,9 +301,11 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             run_context = next((arg for arg in args if hasattr(arg, "dependencies")), None)
         dependencies = getattr(run_context, "dependencies", None)
         if isinstance(dependencies, dict):
-            lifecycle = dependencies.get("Reporting Process Lifecycle")
+            lifecycle = dependencies.get(REPORT_PROCESS_LIFECYCLE_DEPENDENCY)
         scope = (
-            dependencies.get("Reporting Workflow Scope") if isinstance(dependencies, dict) else None
+            dependencies.get(REPORT_WORKFLOW_SCOPE_DEPENDENCY)
+            if isinstance(dependencies, dict)
+            else None
         )
         operation_id = (
             str(scope.get("externalRunId") or getattr(run_context, "run_id", ""))
