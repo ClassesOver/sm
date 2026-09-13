@@ -3140,6 +3140,9 @@ def create_reporting_phase_agent(
         db=database,
         checkpoint="tool-batch",
         add_history_to_context=False,
+        add_datetime_to_context=True,
+        timezone_identifier="Asia/Shanghai",
+        datetime_format="%Y-%m-%d",
         # 每个 Reporting Task 使用独立 session，恢复事实来自 durable state 和
         # Agno checkpoint；摘要既不加入上下文，也没有后续消费者。若沿用全局开关，
         # Agno 会在工具完成后再次把整份分析/图表上下文提交给摘要模型，单次超时还会

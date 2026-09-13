@@ -8,11 +8,12 @@ import os
 import textwrap
 import threading
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import anyio
 import pytest
@@ -20,6 +21,7 @@ from agno.agent import Agent
 from agno.models.message import Message
 from agno.models.response import ModelResponse
 from agno.run import RunContext
+from agno.session import AgentSession
 from agno.workflow.step import StepOutput
 from loguru import logger
 from pydantic import ValidationError
@@ -30,7 +32,10 @@ from smart_reporting.context_management import (
     TaskExecutionContextHardLimitError,
 )
 from smart_reporting.reporting import contract as reporting_contract
-from smart_reporting.reporting.agent import ReportingPhaseOpenAIChat
+from smart_reporting.reporting.agent import (
+    ReportingPhaseOpenAIChat,
+    create_reporting_phase_agent,
+)
 from smart_reporting.reporting.contract import ReportPeriod
 from smart_reporting.reporting.data_source import DataShape
 from smart_reporting.reporting.data_sources import DatasetHandle
@@ -141,6 +146,7 @@ from smart_reporting.reporting.workflow.runtime.validation import (
     _measure_semantic_issues,
     _normalize_requirement_periods,
 )
+from smart_reporting.runtime.settings import AgentSettings
 
 
 @pytest.mark.anyio
@@ -2430,6 +2436,36 @@ def test_planner_validation_is_exposed_to_structured_executor() -> None:
         validator("{}")
 
 
+def test_reporting_phase_agent_injects_current_shanghai_date_into_planner_context() -> None:
+    template = create_reporting_phase_agent(
+        AgentSettings.from_environment({}, load_env_file=False),
+        object(),
+        object(),
+        object(),
+        state_repository=object(),
+    )
+
+    stage = ReportWorkflowRuntime._planning_agent(
+        template,
+        "report-data-understanding-planner",
+        DataUnderstandingPlan,
+        thinking_policy=ThinkingPolicyConfig(
+            operation="data_understanding",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
+    )
+    dates = {datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()}
+    system_message = stage.get_system_message(AgentSession(session_id="test-current-date"))
+    dates.add(datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat())
+
+    assert stage.add_datetime_to_context is True
+    assert stage.timezone_identifier == "Asia/Shanghai"
+    assert stage.datetime_format == "%Y-%m-%d"
+    assert system_message is not None
+    assert any(f"The current time is {current_date}." in system_message.content for current_date in dates)
+
+
 def test_runtime_planners_use_operation_thinking_policies() -> None:
     agent_template = Agent(
         model=ReportingPhaseOpenAIChat(
@@ -2479,6 +2515,9 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
     assert "不得返回单个 analysis、单个 requirement、裸数组或占位值" in analysis_instructions
     assert "同时显式输出 description 和 managementQuestion" in analysis_instructions
     assert "即使内容相近也不得省略" in analysis_instructions
+    request_instructions = "\n".join(runtime._request_normalizer.instructions)
+    assert "相对日期必须以系统上下文中的当前日期为基准" in request_instructions
+    assert "“去年”表示当前年份减一对应的完整日历年" in request_instructions
     expected_policies = (
         (runtime._request_normalizer, "request_normalization"),
         (runtime._data_understanding_agent, "data_understanding"),
