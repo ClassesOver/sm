@@ -89,9 +89,9 @@ _RECOVERY_THINKING_BUDGETS: dict[
     },
     "visualization_plan": {"schema_failure": (4096, "high")},
     "visualization_script": {
-        "python_compile_failure": (2048, "high"),
-        "python_execution_failure": (2048, "high"),
-        "visual_review_failure": (4096, "high"),
+        "python_compile_failure": (4096, "high"),
+        "python_execution_failure": (4096, "high"),
+        "visual_review_failure": (8192, "high"),
     },
     "section_planning": {"schema_failure": (2048, "high")},
     "section_generation": {"schema_failure": (2048, "high")},

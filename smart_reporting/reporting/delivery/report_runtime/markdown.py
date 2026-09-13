@@ -66,6 +66,7 @@ _IMAGE_WITH_CAPTION = re.compile(
     re.DOTALL,
 )
 _IMAGE_PARAGRAPH = re.compile(r"(?P<image><p>\s*<img\b[^>]*?/?>\s*</p>)")
+_HTML_TABLE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 
 
 def _figure_image_html(image_paragraph: str) -> str:
@@ -99,6 +100,12 @@ def _prepare_figure_layout(body: str) -> str:
         return f'<figure class="report-figure">{_figure_image_html(match["image"])}</figure>'
 
     return _IMAGE_PARAGRAPH.sub(without_caption, prepared)
+
+
+def _prepare_html_table_layout(body: str) -> str:
+    """为浏览器预览中的表格增加独立横向滚动容器。"""
+
+    return _HTML_TABLE.sub(lambda match: f'<div class="report-table-scroll">{match[0]}</div>', body)
 
 
 def _trim_strong_marker_spacing(match: re.Match[str]) -> str:
@@ -466,6 +473,7 @@ def _html_document(
 ) -> str:
     """构造浏览器预览文档；调用方必须先将图片替换为 data URL。"""
 
+    body = _prepare_html_table_layout(body)
     pdf_document, _ = _semantic_documents(body, context=context, layout=layout)
     theme = REPORT_VISUAL_THEME
     preview_css = (
@@ -502,8 +510,9 @@ def _html_document(
         ".report-body h3{margin:32px 0 14px;font-size:19px;line-height:1.45}"
         ".report-body h4{margin:24px 0 10px;font-size:17px;line-height:1.5}"
         ".report-body p{margin:12px 0}.report-body li{margin:5px 0}"
-        ".report-body table{display:block;max-width:100%;overflow-x:auto;margin:24px 0;"
-        f"border:1px solid {theme['grid']};border-radius:4px;overscroll-behavior-inline:contain}}"
+        ".report-table-scroll{max-width:100%;overflow-x:auto;margin:24px 0;border-radius:4px;"
+        "overscroll-behavior-inline:contain}"
+        ".report-table-scroll table{margin:0}"
         ".report-body th,.report-body td{min-width:8rem;padding:10px 12px;vertical-align:top}"
         ".report-body tbody tr:hover{background:#F3F7FA}"
         ".report-body blockquote{margin:20px 0;padding:12px 18px;border-radius:0 4px 4px 0}"

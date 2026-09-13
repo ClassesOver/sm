@@ -131,6 +131,38 @@ def test_html_document_is_static_and_self_contained() -> None:
     assert "data:image/png;base64,AAAA" in document
 
 
+def test_html_document_keeps_table_layout_inside_scroll_container() -> None:
+    document = _html_document(
+        "<table><thead><tr><th>科室</th></tr></thead>"
+        "<tbody><tr><td>内科</td></tr></tbody></table>",
+        context={
+            "title": "测试报告",
+            "periodLabel": "2026 年",
+            "organizationName": "测试机构",
+            "generatedByLabel": "Reporting Agent",
+            "watermarkText": "内部资料",
+            "generatedDate": "2026-08-17",
+            "sections": [{"code": "overview", "title": "经营概览", "sectionNumber": "1"}],
+            "sectionNumbers": ["1"],
+            "headingNumbers": [
+                {
+                    "level": 2,
+                    "number": "1",
+                    "title": "经营概览",
+                    "sectionCode": "overview",
+                    "anchor": "report-heading-overview",
+                }
+            ],
+        },
+        layout=DEFAULT_PAGE_LAYOUT,
+    )
+
+    assert '<div class="report-table-scroll"><table>' in document
+    assert "</table></div>" in document
+    assert ".report-table-scroll{max-width:100%;overflow-x:auto" in document
+    assert ".report-body table{display:block" not in document
+
+
 @pytest.mark.parametrize(
     "href", ["https://example.com", "//example.com", "report.md", "mailto:a@example.com"]
 )

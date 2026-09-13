@@ -440,7 +440,7 @@ def test_code_failure_kind_only_classifies_recoverable_failures(
 
 
 @pytest.mark.anyio
-async def test_visualization_script_execution_repair_uses_off_then_2k() -> None:
+async def test_visualization_script_execution_repair_uses_off_then_4k() -> None:
     observed: list[int] = []
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
@@ -465,11 +465,11 @@ async def test_visualization_script_execution_repair_uses_off_then_2k() -> None:
     ).run(_visualization_payload(), _context())
 
     assert result.recovery_used is True
-    assert observed == [0, 2048]
+    assert observed == [0, 4096]
 
 
 @pytest.mark.anyio
-async def test_visualization_visual_repair_uses_4k() -> None:
+async def test_visualization_visual_repair_uses_8k() -> None:
     observed: list[int] = []
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
@@ -494,7 +494,7 @@ async def test_visualization_visual_repair_uses_4k() -> None:
         submit=AsyncMock(return_value={"status": "accepted"}),
     ).run(_visualization_payload(), _context())
 
-    assert observed == [4096]
+    assert observed == [8192]
 
 
 @pytest.mark.anyio

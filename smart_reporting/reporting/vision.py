@@ -28,15 +28,17 @@ _REPORT_VISION_PROMPT = """
 
 逐项检查 blank、cropping、text_overlap、legend_occlusion、missing_units 和 misleading。
 每个发现必须用 issues 返回对应 category、severity 和 description。只有整张图片或绘图区空白、
-严重裁剪、关键文字完全重叠或关键图例完全遮挡，才标为 critical 并设置 requiresRevision=true。
+严重裁剪或关键文字完全重叠，才标为 critical 并设置 requiresRevision=true。
 blank 仅表示整张图片、画布或绘图区没有有效图表内容；某个数据系列因数值为零而不可见不属于
-blank。missing_units 和 misleading 一律只作为 warning，不得阻断。数据全零、恒定值、折线水平、
-系列重合、数值或坐标范围疑似异常均属于数据语义，不得据此要求重新生成。轻微文字重叠、图例
-遮挡、字体或布局不理想也放入 warnings。suggestions 提供可选改进。不要要求固定图表类型、数量、
-配色或风格，也不要因为图表未采用某种常见形式而判定失败。
+blank。legend_occlusion、missing_units 和 misleading 一律只作为 warning，不得阻断。数据全零、
+恒定值、折线水平、系列重合、数值或坐标范围疑似异常均属于数据语义，不得据此要求重新生成。
+轻微文字重叠、字体或布局不理想也放入 warnings。suggestions 提供可选改进。不要要求固定图表
+类型、数量、配色或风格，也不要因为图表未采用某种常见形式而判定失败。
 """.strip()
 
-_NON_BLOCKING_ISSUE_CATEGORIES = frozenset({"missing_units", "misleading"})
+_NON_BLOCKING_ISSUE_CATEGORIES = frozenset(
+    {"legend_occlusion", "missing_units", "misleading"}
+)
 _WHOLE_CHART_BLANK_MARKERS = (
     "整张",
     "整个图表",

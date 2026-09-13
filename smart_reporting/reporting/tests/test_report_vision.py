@@ -104,6 +104,48 @@ async def test_vision_reviewer_demotes_minor_presentation_issues_to_warnings() -
 
 
 @pytest.mark.anyio
+async def test_vision_reviewer_demotes_legend_occlusion_to_warning() -> None:
+    content = b"image"
+
+    class Workspace:
+        async def aview_image(self, *_args: object) -> ToolResult:
+            return ToolResult(
+                content="loaded",
+                images=[Image(content=content, mime_type="image/png", format="png")],
+            )
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            return SimpleNamespace(
+                content={
+                    "summary": "关键图例被完全遮挡。",
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "legend_occlusion",
+                            "severity": "critical",
+                            "description": "关键图例被完全遮挡。",
+                        }
+                    ],
+                    "warnings": [],
+                    "suggestions": [],
+                }
+            )
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),  # type: ignore[arg-type]
+        Workspace(),  # type: ignore[arg-type]
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.review("thread-1", "charts/revenue.png")
+
+    assert result["requiresRevision"] is False
+    assert result["issues"][0]["severity"] == "warning"
+    assert result["warnings"] == ["关键图例被完全遮挡。"]
+
+
+@pytest.mark.anyio
 async def test_vision_reviewer_demotes_data_semantic_findings_to_warnings() -> None:
     content = b"image"
 
