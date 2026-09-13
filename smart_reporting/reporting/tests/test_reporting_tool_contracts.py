@@ -31,6 +31,7 @@ def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
         {},
         {
             "sectionCode": "section_001",
+            "allowedDatasetIds": ["dataset-1"],
             "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
         },
     )
@@ -174,6 +175,103 @@ async def test_section_visualization_allows_zero_chart_submission() -> None:
         "charts": [],
         "files": [],
     }
+
+
+@pytest.mark.anyio
+async def test_section_visualization_warns_and_keeps_unfrozen_dataset_chart() -> None:
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-2",
+        "aggregationGrain": "month",
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "comparability": "strict",
+    }
+    toolkit = _toolkit()
+    toolkit.runtime.workspace = SimpleNamespace(
+        inspect_chart_file=AsyncMock(
+            return_value={
+                "sourcePath": chart["sourcePath"],
+                "size": 10,
+                "sha256": "a" * 64,
+            }
+        )
+    )
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    assert result["chartCount"] == 1
+    assert result["warnings"] == [
+        {
+            "code": "report_chart_dataset_unfrozen",
+            "message": "图表引用了当前章节未冻结的 Dataset，已保留图表并降级为质量告警。",
+            "sectionCode": "section_001",
+            "details": {
+                "chartId": "income",
+                "datasetId": "dataset-2",
+                "allowedDatasetIds": ["dataset-1"],
+            },
+        }
+    ]
+    calls = toolkit._apply_durable_command.await_args_list
+    assert calls[0].kwargs["name"] == "submit_visualization_charts"
+    assert calls[0].kwargs["payload"]["charts"] == [chart]
+    assert calls[1].kwargs["name"] == "record_warnings"
+    assert calls[1].kwargs["payload"] == {"warnings": result["warnings"]}
+
+
+@pytest.mark.anyio
+async def test_section_visualization_warning_persistence_failure_does_not_fail_submission() -> None:
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-2",
+        "aggregationGrain": "month",
+    }
+    toolkit = _toolkit()
+    toolkit.runtime.workspace = SimpleNamespace(
+        inspect_chart_file=AsyncMock(
+            return_value={
+                "sourcePath": chart["sourcePath"],
+                "size": 10,
+                "sha256": "a" * 64,
+            }
+        )
+    )
+    toolkit._apply_durable_command = AsyncMock(
+        side_effect=(
+            SimpleNamespace(idempotent=False),
+            ReportingError("report_state_conflict", "告警状态暂时无法写入。"),
+        )
+    )
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "committed"
+    assert result["chartCount"] == 1
+    assert result["warnings"][0]["code"] == "report_chart_dataset_unfrozen"
+    toolkit.runtime.finish_task.assert_awaited_once()
 
 
 @pytest.mark.anyio

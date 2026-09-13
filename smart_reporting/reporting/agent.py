@@ -3188,6 +3188,10 @@ def create_reporting_generator_agent(
             "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
             ".png、.jpg 或 .jpeg 后缀的具体文件。"
         )
+        instructions.append(
+            "每个 charts[].sourceDatasetId 必须逐字复制 allowedDatasetIds 中的一个值，不得使用"
+            "数据集名称、文件名或自行生成的标识。"
+        )
     elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
         instructions[1] = (
             "根 JSON 必须直接包含 kind（render 或 rework）及该分支字段；不得输出 render/rework 单键包装对象。"

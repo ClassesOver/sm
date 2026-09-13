@@ -524,6 +524,14 @@ class RuntimeAnalysisMixin:
         # 同构但互不共享;TaskRunner 解析(visualizationBudgetVersion 等 10 个标量)
         # 缺一即拒绝,因此必须整组注入 acceptance contract。
         section_budget = _visualization_dynamic_budget(section_analysis_items, section_fact_files)
+        allowed_dataset_ids = tuple(
+            dict.fromkeys(
+                dataset_id
+                for item in section_analysis_items.values()
+                for dataset_id in item.get("datasetIds", ())
+                if isinstance(dataset_id, str) and dataset_id
+            )
+        )
         last_error: Exception | None = _visualization_section_retry_error(
             checkpoint, section_code=section_code
         )
@@ -572,6 +580,7 @@ class RuntimeAnalysisMixin:
                     "analysisIds": list(section.analysis_ids),
                 },
                 "analysisIds": list(section.analysis_ids),
+                "allowedDatasetIds": list(allowed_dataset_ids),
                 "warnings": section_warnings,
                 "visualInspectionMode": context["visual_inspection_mode"],
                 "reportVisualTheme": _visualization_instruction_theme(),
@@ -597,6 +606,7 @@ class RuntimeAnalysisMixin:
                     "taskKind": "visualization_section",
                     "sectionCode": section_code,
                     "analysisIds": list(section.analysis_ids),
+                    "allowedDatasetIds": list(allowed_dataset_ids),
                     "visualInspectionMode": context["visual_inspection_mode"],
                     "visualizationRecovery": _visualization_recovery_required(last_error),
                     **section_budget,

@@ -1265,6 +1265,7 @@ def test_probe_stage_inputs_match_production_phase_projections() -> None:
 
     visualization = _cli_stage_input(scenarios["visualization-recovery"])
     visualization_fact = visualization["visualizationFacts"][0]
+    assert visualization["allowedDatasetIds"] == ["dataset-001"]
     assert visualization_fact["factFile"]["path"] == "analysis/facts/analysis_001.json"
     assert visualization_fact["metrics"][0]["metricIndex"] == 0
     assert visualization_fact["metrics"][0]["dataPaths"]["periodValues"] == (

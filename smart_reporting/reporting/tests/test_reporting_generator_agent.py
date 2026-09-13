@@ -63,6 +63,8 @@ def test_reporting_generator_agent_is_structured_and_has_no_tools() -> None:
         "长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
         "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
         ".png、.jpg 或 .jpeg 后缀的具体文件。",
+        "每个 charts[].sourceDatasetId 必须逐字复制 allowedDatasetIds 中的一个值，不得使用"
+        "数据集名称、文件名或自行生成的标识。",
     ]
 
 

@@ -357,9 +357,7 @@ class AnalysisEvidenceManifest(StrictModel):
             raise ValueError("AnalysisEvidenceManifest 必须冻结 Dataset 语义")
         if any(item.visual_inspection_receipt is None for item in self.charts):
             raise ValueError("AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
-        # 未冻结指标属于可修复语义质量问题，由发布检查记录告警。
-        if any(item.source_dataset_id not in known_datasets for item in self.charts):
-            raise ValueError("AnalysisChart 引用了未冻结 Dataset")
+        # 图表指标和 Dataset 引用属于可修复语义质量问题，由发布检查记录告警。
         if self.dataset_semantics and set(semantic_dataset_ids) != known_datasets:
             raise ValueError("AnalysisDatasetSemantics 必须精确覆盖 evidence Dataset")
         return self

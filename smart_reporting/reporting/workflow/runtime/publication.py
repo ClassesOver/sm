@@ -73,6 +73,17 @@ def evaluate_publication_semantics(
     dataset_semantics = {item.dataset_id: item for item in evidence_manifest.dataset_semantics}
 
     for chart in evidence_manifest.charts:
+        if chart.source_dataset_id not in dataset_semantics:
+            warnings.append(
+                {
+                    "code": "report_chart_dataset_unfrozen",
+                    "message": "图表引用了尚未冻结语义的 Dataset。",
+                    "details": {
+                        "chartId": chart.chart_id,
+                        "datasetId": chart.source_dataset_id,
+                    },
+                }
+            )
         for metric_code in sorted(set(chart.metric_codes) - set(metrics)):
             warnings.append(
                 {

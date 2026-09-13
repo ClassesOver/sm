@@ -316,6 +316,71 @@ def test_manifest_warns_chart_metric_without_definition() -> None:
     assert any(item["code"] == "report_chart_metric_unfrozen" for item in gate["warnings"])
 
 
+def test_manifest_warns_chart_dataset_without_frozen_evidence() -> None:
+    manifest = AnalysisEvidenceManifest(
+        evidence=(
+            AnalysisEvidence(
+                analysisId="analysis_001",
+                summary="冻结证据",
+                datasetIds=("dataset-1",),
+                evidenceFiles=(_identity("analysis/evidence.json"),),
+                citationIds=("c1",),
+                chartIds=("chart-1",),
+            ),
+        ),
+        metricDefinitions=(),
+        charts=(
+            AnalysisChart(
+                chartId="chart-1",
+                sourceFile={"path": "analysis/charts/x.png", "size": 1, "sha256": "0" * 64},
+                title="收入",
+                altText="收入",
+                citationIds=("c1",),
+                metricCodes=("income_total",),
+                currentPeriod="2026-01",
+                comparisonType="none",
+                sourceDatasetId="dataset-2",
+                aggregationGrain="month",
+                visualInspectionReceipt=ChartVisualInspectionReceipt(
+                    sourcePath="analysis/charts/x.png",
+                    sha256="0" * 64,
+                    inspectionMode="deterministic",
+                    visualReviewStatus="not_run",
+                    inspectorId="deterministic-raster-inspector-v1",
+                    modelId=None,
+                    reviewed=True,
+                    requiresRevision=False,
+                ),
+            ),
+        ),
+        datasetSemantics=(
+            AnalysisDatasetSemantics(
+                datasetId="dataset-1",
+                rowGrain="record",
+                duplicateResolution="not_applicable",
+            ),
+        ),
+    )
+
+    gate = evaluate_publication_semantics(
+        evidence_manifest=manifest,
+        section_artifacts=(),
+        citations=(
+            SectionCitation(
+                citationId="c1", datasetId="dataset-1", requirementId="r1", snapshotHash="0" * 64
+            ),
+        ),
+    )
+
+    assert gate["formalReleaseAllowed"] is True
+    assert gate["issues"] == []
+    assert {
+        (item["code"], item["details"]["chartId"], item["details"]["datasetId"])
+        for item in gate["warnings"]
+        if item["code"] == "report_chart_dataset_unfrozen"
+    } == {("report_chart_dataset_unfrozen", "chart-1", "dataset-2")}
+
+
 def test_semantic_catalog_registers_metric_field_alias() -> None:
     _dataset_semantics, metric_definitions, findings = _finalize_semantic_catalog(
         analysis_plans={

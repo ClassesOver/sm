@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agno.run import RunContext
+from loguru import logger as loguru_logger
 from pydantic import ValidationError
 
 from ...workspace import WorkspaceError, WorkspaceService
@@ -296,6 +297,30 @@ class RuntimeVisualizationMixin:
                         },
                     )
             warnings = []
+            raw_allowed_dataset_ids = phase_contract.get("allowedDatasetIds")
+            allowed_dataset_ids = (
+                tuple(dict.fromkeys(raw_allowed_dataset_ids))
+                if isinstance(raw_allowed_dataset_ids, list)
+                and all(isinstance(item, str) and item for item in raw_allowed_dataset_ids)
+                else ()
+            )
+            for registration in parsed:
+                if allowed_dataset_ids and registration.source_dataset_id not in allowed_dataset_ids:
+                    warnings.append(
+                        {
+                            "code": "report_chart_dataset_unfrozen",
+                            "message": (
+                                "图表引用了当前章节未冻结的 Dataset，"
+                                "已保留图表并降级为质量告警。"
+                            ),
+                            "sectionCode": sectionCode,
+                            "details": {
+                                "chartId": registration.chart_id,
+                                "datasetId": registration.source_dataset_id,
+                                "allowedDatasetIds": list(allowed_dataset_ids),
+                            },
+                        }
+                    )
             for registration in parsed:
                 if registration.comparability != "reference_only":
                     continue
@@ -367,6 +392,27 @@ class RuntimeVisualizationMixin:
                     command_id=f"viz-section:{durable.revision}:{sectionCode}:{digest}",
                 )
                 status = "already_committed" if durable_result.idempotent else "committed"
+            if warnings:
+                loguru_logger.bind(
+                    section_code=sectionCode,
+                    warning_count=len(warnings),
+                    warning_codes=[warning["code"] for warning in warnings],
+                ).warning("report_visualization_semantic_warning")
+                warning_digest = _stable_digest({"sectionCode": sectionCode, "warnings": warnings})
+                try:
+                    await self._apply_durable_command(
+                        scope,
+                        name="record_warnings",
+                        payload={"warnings": warnings},
+                        command_id=f"visualization-warning:{sectionCode}:{warning_digest}",
+                    )
+                except ReportingError as error:
+                    # 图表事实已经成功提交；告警写入失败不能把可恢复的质量问题升级为
+                    # 工作流失败，发布阶段会基于 Manifest 再次执行同一语义检查。
+                    loguru_logger.bind(
+                        section_code=sectionCode,
+                        error_code=error.code,
+                    ).warning("report_visualization_warning_persist_failed")
             self._complete_phase_plan(self._session_state(run_context))
             finish_result = await self.runtime.finish_task(
                 f"图表章节 {sectionCode} 已提交 {len(inspected)} 张图表。",

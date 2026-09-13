@@ -574,6 +574,7 @@ def _cli_stage_input(scenario: ProbeScenario) -> dict[str, Any]:
     if scenario.task_kind == "visualization_section":
         result = {
             **common,
+            "allowedDatasetIds": ["dataset-001"],
             "reportVisualTheme": {
                 "name": "enterprise-tech-blue",
                 "primary": "#0B4F8A",
