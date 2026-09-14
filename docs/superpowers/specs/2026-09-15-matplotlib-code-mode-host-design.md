@@ -64,9 +64,9 @@ Reporting workflow session 启动时，由会话 Workspace 注册表按可信 `w
   tasks/<task-id>/
 ```
 
-现有 durable state、冻结事实身份、图表计划和公开回执中的逻辑路径继续使用 `/home/daytona/workspace/<relative>`，避免修改持久化路径协议。宿主机适配只接受该前缀下的规范化路径，并映射到当前会话目录；绝对宿主机路径不进入模型业务载荷。
+现有 durable state、冻结事实身份、图表计划和公开回执实际使用 `报表/...`、`analysis/...` 等工作区相对路径；`/home/daytona/workspace` 只是旧 `WorkspaceService` 的远端物理根，不属于 durable path 协议。本方案保持这些相对业务路径原样不变，并把它们映射到当前会话宿主机根；绝对宿主机路径不进入模型业务载荷。
 
-Agno 原生 `Workspace` 只接受相对路径。进入 Agent 指令和 Workspace 工具前，服务端把已签发逻辑路径投影为相对于会话根的 `workspacePath`；脚本也逐字使用这些签发的相对路径。Workspace 回执和文件身份在进入现有 Workflow 校验前映射回原逻辑路径。模型不负责删除前缀、拼接目录或推导映射，逻辑路径与相对路径的一一对应由服务端持有。
+Agno 原生 `Workspace` 同样只接受相对路径，因此 Agent 指令、Workspace 工具、签发脚本和现有 Workflow 文件身份可以直接复用同一个相对 `workspacePath`，不需要模型或服务端增删 `/home/daytona/workspace` 前缀。服务端只负责规范化相对路径并将其解析到当前会话根，模型不得拼接宿主机绝对路径或自行推导目录。
 
 不同会话的 `Workspace` 均以各自的 `<session-hmac-sha256>` 目录为根，文件工具不能用相对路径访问其他会话。整个 Workflow 的数据集导入、上下文文件、冻结事实、补充证据、脚本、图表、章节草稿和最终报告都使用当前会话内的逻辑路径。CodeMode 创建 task session 后，Workflow 首个 bootstrap cell 将 cwd 切换到当前会话目录；可视化任务同时设置 Matplotlib `Agg` 后端。Workspace、薄适配和 CodeMode 访问同一批物理文件，不做上传、下载或跨运行时复制。
 
@@ -74,9 +74,9 @@ Agno 原生 `Workspace` 只接受相对路径。进入 Agent 指令和 Workspace
 
 ## 会话 Workspace 装配
 
-`ReportingWorkspaceRegistry` 按现有 `workflow_session_id` 管理 Agno `Workspace`。物理目录只由服务端根据 tenant、user、company、thread 和 workflow session 绑定解析，不接受模型提供路径。同一进程内，同一 session 的暂停、恢复和重放取得同一个实例；进程重启后重建指向同一目录的等价实例；不同 session 永不返回同一个实例或目录。
+`ReportingWorkspaceRegistry` 按现有单次报表 run 的 `workspace_key` 管理 Agno `Workspace`，并校验其绑定的 `workflow_session_id`。这是因为现有 `workflow_session_id` 对同一 user/thread 稳定，而 `workspace_key` 才包含 report run 身份；使用后者可避免同一 thread 的后续报表复用旧文件。物理目录只由服务端根据 tenant、user、company、thread、workflow session 和 workspace key 解析，不接受模型提供路径。同一进程内，同一报表 run 的暂停、恢复和重放取得同一个实例；进程重启后重建指向同一目录的等价实例；不同 workspace key 永不返回同一个实例或目录。
 
-所有需要文件工具的 Reporting Agent 使用 Agno 原生 callable tools factory。工厂从可信 `RunContext.dependencies` 取得 `workflow_session_id`，再从注册表取得会话 Workspace；补充分析和可视化 Coding 任务额外获得共享的 CodeMode：
+所有需要文件工具的 Reporting Agent 使用 Agno 原生 callable tools factory。工厂从可信 `RunContext.dependencies` 取得 `workflow_session_id` 和 `workspace_key`，再从注册表取得会话 Workspace；补充分析和可视化 Coding 任务额外获得共享的 CodeMode：
 
 ```python
 def reporting_tools(run_context):
@@ -91,7 +91,7 @@ def reporting_tools(run_context):
 
 领域 Toolkit 不再注册与原生 Workspace 重名的 `read_file`、`write_file`、`list_files`、`search_content`、`move_file` 和 `delete_file`；保留查询业务事实、提交、完成和其他 Workflow 领域命令。Agno 对重名工具采用先注册者生效并忽略后续工具，装配测试必须证明最终工具表不存在重复名称。
 
-Agent 设置 `tools=reporting_tools` 和 `cache_callables=False`。不能使用 Agno 默认 callable cache：其默认 cache key 优先使用 `user_id`，会使同一用户的不同 Reporting 会话复用第一次解析出的任务工具。Workspace 实例的复用只由 `ReportingWorkspaceRegistry` 按 `workflow_session_id` 管理，Agent 本身保持复用，不在任务循环中重新创建。
+Agent 设置 `tools=reporting_tools` 和 `cache_callables=False`。不能使用 Agno 默认 callable cache：其默认 cache key 优先使用 `user_id`，会使同一用户的不同 Reporting 会话复用第一次解析出的任务工具。Workspace 实例的复用只由 `ReportingWorkspaceRegistry` 按 `workspace_key` 管理并校验 `workflow_session_id` 绑定，Agent 本身保持复用，不在任务循环中重新创建。
 
 `code_mode` 是 Reporting 运行时共享的单例，配置 `cwd=REPORTING_HOST_WORKSPACE_ROOT`、`allow_shell=True`、`allow_restart=True`、`snapshot=False`、明确的 timeout/输出/图片上限，以及覆盖补充分析与可视化 Coding 任务总并发上限的 `max_kernels`。它自身按 task-scoped `RunContext.session_id` 分配 Kernel。
 
@@ -166,10 +166,10 @@ Reporting 会话目录与 CodeMode Kernel 使用两级身份：同一 workflow s
 
 - 设置只接受绝对、非符号链接的宿主机根目录；
 - 相同会话身份稳定映射到同一目录，不同 tenant/user/thread/session 身份映射到不同目录，进程内实例可复用且模拟重启后目录可恢复；
-- 逻辑路径稳定映射到正确会话目录并拒绝相对路径逃逸；
-- Agent 只接收签发的相对 `workspacePath`，Workspace 回执可无损映射回 durable 逻辑路径；
+- 相对业务路径稳定映射到正确会话目录并拒绝路径逃逸；
+- Agent、Workspace 回执和 durable state 对同一路径使用完全相同的相对 `workspacePath`；
 - 整个 Workflow 的文件访问解析到同一个会话 Workspace，不同会话得到不同实例和 root；
-- callable tools factory 关闭 Agno 默认 cache，并由注册表按 `workflow_session_id` 复用 Workspace；
+- callable tools factory 关闭 Agno 默认 cache，并由注册表按 `workspace_key` 复用 Workspace、按 `workflow_session_id` 校验绑定；
 - 原生 Workspace 与领域 Toolkit 的最终工具名称不重复；
 - 补充分析和可视化 Agent 同时取得会话 Workspace 与 CodeMode，Workspace 无确认暂停，CodeMode 保持 `allow_shell=True`、`snapshot=False`；
 - 同一会话的并发分析项和可视化章节使用不同 CodeMode task session，任务结束后 Kernel 被关闭；
