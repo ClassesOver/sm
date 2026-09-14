@@ -263,6 +263,7 @@ class AgentSettings:
     report_metadata_token: str | None
     report_public_base_url: str | None
     workspace_hmac_secret: str
+    reporting_host_workspace_root: str
     workspace_snapshot: str
     daytona_network_allow_list: str | None
     sandbox_provider: str
@@ -359,6 +360,11 @@ class AgentSettings:
         )
         if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
+        from ..reporting.host_workspace import validate_host_workspace_root
+
+        reporting_host_workspace_root = str(
+            validate_host_workspace_root(values.get("REPORTING_HOST_WORKSPACE_ROOT", ""))
+        )
         sandbox = _sandbox_configuration(values)
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         return cls(
@@ -408,6 +414,7 @@ class AgentSettings:
             report_metadata_token=(values.get("AGENT_REPORT_METADATA_TOKEN", "").strip() or None),
             report_public_base_url=_report_public_base_url(values),
             workspace_hmac_secret=values.get("AGENT_WORKSPACE_HMAC_SECRET", ""),
+            reporting_host_workspace_root=reporting_host_workspace_root,
             workspace_snapshot=(
                 values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT
             ).strip()

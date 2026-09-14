@@ -12,6 +12,7 @@ from smart_reporting.runtime.settings import (
 
 def settings(values=None, **overrides):
     environ = {} if values is None else values
+    environ.setdefault("REPORTING_HOST_WORKSPACE_ROOT", "/tmp/smart-reporting-test-workspaces")
     environ.update(overrides)
     return AgentSettings.from_environment(environ, load_env_file=False)
 
@@ -383,6 +384,39 @@ def test_report_public_base_url_rejects_unsafe_values(value: str) -> None:
         settings(AGENT_REPORT_PUBLIC_BASE_URL=value)
 
 
+def test_reporting_host_workspace_root_is_normalized(tmp_path: Path) -> None:
+    root = tmp_path / "reporting-workspaces"
+
+    current = settings(REPORTING_HOST_WORKSPACE_ROOT=str(root))
+
+    assert current.reporting_host_workspace_root == str(root)
+    assert root.is_dir()
+
+
+@pytest.mark.parametrize("value", ["", "relative/path"])
+def test_reporting_host_workspace_root_rejects_non_absolute_values(value: str) -> None:
+    with pytest.raises(ValueError, match="REPORTING_HOST_WORKSPACE_ROOT"):
+        settings(REPORTING_HOST_WORKSPACE_ROOT=value)
+
+
+def test_reporting_host_workspace_root_rejects_file(tmp_path: Path) -> None:
+    target = tmp_path / "workspace-file"
+    target.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="REPORTING_HOST_WORKSPACE_ROOT"):
+        settings(REPORTING_HOST_WORKSPACE_ROOT=str(target))
+
+
+def test_reporting_host_workspace_root_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "workspace-target"
+    target.mkdir()
+    link = tmp_path / "workspace-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="REPORTING_HOST_WORKSPACE_ROOT"):
+        settings(REPORTING_HOST_WORKSPACE_ROOT=str(link))
+
+
 def test_context_budget_rejects_invalid_reserve():
     with pytest.raises(ValueError, match="AGENT_OUTPUT_TOKEN_RESERVE"):
         settings(
@@ -401,6 +435,7 @@ def test_model_tiers_ignore_obsolete_model_variable_and_prefer_process_environme
         "AGENT_ENV_FILE": str(env_file),
         "MODEL": "obsolete-process-model",
         "AGENT_MODEL_STANDARD": "process-standard",
+        "REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path / "reporting-workspaces"),
     }
 
     current = AgentSettings.from_environment(environ)
