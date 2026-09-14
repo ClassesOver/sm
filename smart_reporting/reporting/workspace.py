@@ -56,32 +56,42 @@ def _report_runtime_digest() -> str:
 
 
 async def inspect_report_chart_file(
-    service: WorkspaceService,
+    service: Any,
     *,
     thread_id: str,
     path: str,
 ) -> dict[str, Any]:
     """对报表图表文件执行确定性身份和图片内容检查。"""
-    source_path, remote = service.normalize_path(path, allow_root=False)
-    async with service._async_client() as client:
-        sandbox = await service._asandbox_for(client, thread_id)
-        try:
-            await service._avalidate_existing_path(sandbox, source_path)
-        except WorkspaceError as error:
-            raise ReportingError(
-                "report_chart_file_missing",
-                "图表源文件不存在;未生成的图表不得提交登记。",
-                details={"sourcePath": source_path},
-            ) from error
-        info = await service._ainfo(sandbox, remote)
-        if not service._is_regular_file(info):
-            raise ReportingError("report_chart_source_invalid", "图表源路径必须指向普通文件。")
-        size = int(getattr(info, "size", 0) or 0)
-        if not 0 < size <= MAX_REPORT_CHART_BYTES:
-            raise ReportingError(
-                "report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。"
-            )
-        content = await service._adownload_file(sandbox, remote, MAX_REPORT_CHART_BYTES)
+    source_path = service.normalize_path(path, allow_root=False)[0]
+    try:
+        reader = getattr(service, "read_limited_regular_file", None)
+        if callable(reader):
+            content = await reader(thread_id, source_path, max_bytes=MAX_REPORT_CHART_BYTES)
+        else:
+            async with service._async_client() as client:
+                sandbox = await service._asandbox_for(client, thread_id)
+                await service._avalidate_existing_path(sandbox, source_path)
+                info = await service._ainfo(
+                    sandbox,
+                    service.normalize_path(source_path, allow_root=False)[1],
+                )
+                if not service._is_regular_file(info):
+                    raise WorkspaceError("图表源路径必须指向普通文件。")
+                content = await service._adownload_file(
+                    sandbox,
+                    service.normalize_path(source_path, allow_root=False)[1],
+                    MAX_REPORT_CHART_BYTES,
+                )
+    except WorkspaceError as error:
+        raise ReportingError(
+            "report_chart_file_missing",
+            "图表源文件不存在;未生成的图表不得提交登记。",
+            details={"sourcePath": source_path},
+        ) from error
+    if not 0 < len(content) <= MAX_REPORT_CHART_BYTES:
+        raise ReportingError(
+            "report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。"
+        )
     digest = hashlib.sha256(content).hexdigest()
     try:
         with Image.open(io.BytesIO(content)) as image:
