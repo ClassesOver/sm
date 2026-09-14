@@ -1416,6 +1416,33 @@ class RuntimeAnalysisMixin:
             section_code = instruction.get("sectionCode")
             if not isinstance(section_code, str):
                 raise ReportingError("report_section_invalid", "章节缺少有效 sectionCode。")
+            analysis_rework_allowed = instruction.get("analysisReworkAllowed") is not False
+            raw_rework = instruction.get("rework")
+            degraded_rework = dict(raw_rework) if isinstance(raw_rework, Mapping) else None
+            if not analysis_rework_allowed and degraded_rework is not None:
+                warning = {
+                    "code": "report_analysis_rework_exhausted",
+                    "message": "章节补证次数已达到上限，已基于现有冻结证据降级成稿。",
+                    "sectionCode": section_code,
+                    "details": degraded_rework,
+                }
+                try:
+                    await self._apply_durable_command(
+                        run_context,
+                        ReportingCommand(
+                            name="record_warnings",
+                            commandId=(
+                                f"section-rework-exhausted:{revision}:{section_code}:"
+                                f"{payload_sha256(warning)}"
+                            ),
+                            payload={"warnings": [warning]},
+                        ),
+                    )
+                except ReportingError as error:
+                    loguru_logger.bind(
+                        section_code=section_code,
+                        error_code=error.code,
+                    ).warning("report_analysis_rework_warning_persist_failed")
             section = next(item for item in outline.sections if item.code == section_code)
             checkpoint = await self._current_reporting_checkpoint(
                 run_context, ReportingCheckpoint.model_validate(checkpoint_state)
@@ -1446,6 +1473,8 @@ class RuntimeAnalysisMixin:
                     profile_coverage=profile_coverage,
                     analysis_ids=work_item.analysis_ids,
                 ),
+                analysis_rework_allowed=analysis_rework_allowed,
+                degraded_rework=degraded_rework,
             )
             checkpoint_state.clear()
             checkpoint_state.update(updated.model_dump(mode="python"))

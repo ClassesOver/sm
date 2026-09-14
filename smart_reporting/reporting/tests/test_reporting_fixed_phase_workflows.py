@@ -51,6 +51,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     AnalysisReworkDecision,
     ChartDraft,
     RenderSectionDecision,
+    RenderSectionPlan,
     SectionBlockContent,
     SectionEvidenceBundle,
     SectionEvidenceFile,
@@ -1483,6 +1484,18 @@ def _plan_stage_validator(work_item: SectionWorkItem) -> object:
     return getattr(stage.model, "_report_response_validator")
 
 
+def test_degraded_plan_stage_instructions_forbid_further_rework() -> None:
+    stage = reporting_sections._section_stage_agent(
+        Agent(model=ReportingPhaseOpenAIChat(id="test", api_key="test")),
+        RenderSectionPlan,
+        "plan",
+    )
+
+    instructions = "\n".join(stage.instructions)
+    assert "不得再请求补证" in instructions
+    assert "不足时返回 rework" not in instructions
+
+
 def _render_plan_payload(metric_code: str = "revenue") -> dict:
     return {
         "kind": "render",
@@ -1801,6 +1814,89 @@ async def test_section_generation_plans_then_renders_each_block_serially(
     assert isinstance(result, RenderSectionDecision)
     assert tuple(block.block_id for block in result.blocks) == ("block_001", "block_002")
     assert all(block.claim_ids == ("claim_001",) for block in result.blocks)
+
+
+@pytest.mark.anyio
+async def test_degraded_section_generation_only_accepts_render_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _section_work_item().model_copy(
+        update={
+            "metric_definitions": (
+                MetricDefinition(
+                    code="revenue",
+                    name="收入",
+                    definition="收入合计",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+            ),
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+            ),
+        }
+    )
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+
+    async def fake_run_stage(_agent, schema, stage, payload, **_kwargs):
+        if stage == "plan":
+            assert schema is RenderSectionPlan
+            assert payload["analysisReworkAllowed"] is False
+            assert "不得再次请求补证" in payload["requiredAction"]
+            return RenderSectionPlan.model_validate(
+                {
+                    "kind": "render",
+                    "sectionCode": "section_001",
+                    "blocks": [
+                        {"blockId": "block_001", "objective": "说明收入", "claimIds": ["claim_001"]}
+                    ],
+                    "claims": [
+                        {
+                            "claimId": "claim_001",
+                            "metricCode": "revenue",
+                            "value": 100,
+                            "managementQuestionRef": "analysis_001",
+                            "currentPeriod": "2025年",
+                            "citationIds": ["citation_001"],
+                        }
+                    ],
+                }
+            )
+        return SectionBlockContent(markdown="### 收入\n\n收入为100元。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {
+            "reportGoal": "分析2025年收入",
+            "sectionGoal": {"sectionCode": "section_001"},
+            "sectionWorkItem": work_item.model_dump(mode="json", by_alias=True),
+            "analysisReworkAllowed": False,
+        },
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            complexity="standard",
+            attempt=0,
+            configured_budget_cap=8192,
+            thinking_enabled=True,
+        ),
+    )
+
+    assert isinstance(result, RenderSectionDecision)
 
 
 @pytest.mark.anyio

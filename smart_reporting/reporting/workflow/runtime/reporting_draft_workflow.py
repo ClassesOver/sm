@@ -155,18 +155,16 @@ class ReportingDraftWorkflow(Workflow):
         draft_input = self._instruction()
         draft_input["analysisIds"] = list(self.analysis_ids)
         draft_input["visualizationSubmitted"] = True
+        draft_input["analysisReworkAllowed"] = True
         draft_output = await self.draft_section(draft_input, run_context)
         if draft_output.success is False:
             raise RuntimeError("章节成稿失败")
-        rework_count = 0
-        while (
+        if (
             isinstance(draft_output.content, Mapping)
             and draft_output.content.get("status") == "rework"
         ):
             if self.rework_analysis is None:
                 raise RuntimeError("章节补证执行器未配置")
-            if rework_count >= 1:
-                raise RuntimeError("章节补证次数已达到上限")
             rework = draft_output.content.get("rework")
             if not isinstance(rework, Mapping):
                 raise RuntimeError("章节补证请求无效")
@@ -178,10 +176,27 @@ class ReportingDraftWorkflow(Workflow):
             visualization_output = await self.submit_visualization(visualization_input, run_context)
             if visualization_output.success is False:
                 raise RuntimeError("章节补证后的可视化提交失败")
+            draft_input["analysisReworkAllowed"] = False
+            draft_input["rework"] = dict(rework)
             draft_output = await self.draft_section(draft_input, run_context)
             if draft_output.success is False:
                 raise RuntimeError("章节补证后的成稿失败")
-            rework_count += 1
+            if (
+                isinstance(draft_output.content, Mapping)
+                and draft_output.content.get("status") == "rework"
+            ):
+                logger.warning(
+                    "report_section_degraded_draft_retry section_code={}", section_code
+                )
+                draft_input["forceDegradedDraft"] = True
+                draft_output = await self.draft_section(draft_input, run_context)
+                if draft_output.success is False:
+                    raise RuntimeError("章节强制降级成稿失败")
+            if not (
+                isinstance(draft_output.content, Mapping)
+                and draft_output.content.get("status") == "completed"
+            ):
+                raise RuntimeError("章节强制降级成稿未完成")
         result = ReportingDraftWorkflowResult(
             section_code=section_code,
             analysis_outputs=tuple(output for output in analysis_outputs if output is not None),

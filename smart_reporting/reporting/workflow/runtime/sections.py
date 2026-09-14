@@ -635,12 +635,22 @@ def _section_stage_agent(
 
     if stage == "plan":
         instructions = [
-            "只返回满足 output_schema 的 JSON 对象，不得返回解释、Markdown 或代码围栏。",
-            "先判断证据是否足够；足够时返回 render 规划，不足时返回 rework。",
-            "render 只规划必要的正文 block 和结构化 claims，不在 objective 中撰写正文。",
-            "每个 claim 必须由至少一个 block 引用；只使用输入中的 metric、管理问题、citation 和 chart ID。",
-            "存在 correction 时逐项修正 issues，只能使用 allowedValues，并返回完整规划。",
+            "只返回满足 output_schema 的 JSON 对象，不得返回解释、Markdown 或代码围栏。"
         ]
+        if output_schema is RenderSectionPlan:
+            instructions.append(
+                "补证次数已达到上限，不得再请求补证；仅使用现有冻结证据规划 render，"
+                "省略没有证据支持的结论。"
+            )
+        else:
+            instructions.append("先判断证据是否足够；足够时返回 render 规划，不足时返回 rework。")
+        instructions.extend(
+            [
+                "render 只规划必要的正文 block 和结构化 claims，不在 objective 中撰写正文。",
+                "每个 claim 必须由至少一个 block 引用；只使用输入中的 metric、管理问题、citation 和 chart ID。",
+                "存在 correction 时逐项修正 issues，只能使用 allowedValues，并返回完整规划。",
+            ]
+        )
     else:
         instructions = [
             "只返回满足 output_schema 的 JSON 对象，不得把整个响应写成 Markdown 或代码围栏。",
@@ -789,14 +799,22 @@ def _section_plan_reference_issues(
 
 def _section_plan_response_validator(
     work_item: SectionWorkItem,
-) -> Callable[[Any], SectionPlanOutput]:
+    output_schema: type[SectionPlanOutput] | type[RenderSectionPlan] = SectionPlanOutput,
+) -> Callable[[Any], SectionPlanOutput | RenderSectionPlan]:
     """规划响应先做无歧义 claim 引用回填，再进入领域校验。"""
 
-    def validate_response(content: Any) -> SectionPlanOutput:
+    def validate_response(content: Any) -> SectionPlanOutput | RenderSectionPlan:
         candidate = _planner_candidate(content)
+        if (
+            output_schema is RenderSectionPlan
+            and isinstance(candidate, Mapping)
+            and len(candidate) == 1
+            and isinstance(candidate.get("render"), Mapping)
+        ):
+            candidate = {**candidate["render"], "kind": "render"}
         candidate = _backfill_claim_management_question_refs(candidate, work_item)
         try:
-            return SectionPlanOutput.model_validate(candidate)
+            return output_schema.model_validate(candidate)
         except ValidationError as error:
             # 与 planner 校验器同契约：候选回灌纠错，不进日志或公开错误。
             error._report_candidate = candidate  # type: ignore[attr-defined]
@@ -912,23 +930,40 @@ async def _generate_section_in_blocks(
             ],
         },
     }
+    analysis_rework_allowed = instruction_payload.get("analysisReworkAllowed") is not False
+    plan_schema = SectionPlanOutput if analysis_rework_allowed else RenderSectionPlan
+    plan_payload["analysisReworkAllowed"] = analysis_rework_allowed
+    if not analysis_rework_allowed:
+        plan_payload["requiredAction"] = (
+            "补证次数已达到上限，不得再次请求补证；只使用当前冻结证据返回 1 到 12 个必要 "
+            "block 的结构规划及完整 claims，省略没有证据支持的结论；block 不生成 Markdown 正文。"
+        )
     if recovery is not None:
         plan_payload["recovery"] = dict(recovery)
     for plan_call in range(1, 7):
         planned = await _run_section_stage(
             agent,
-            SectionPlanOutput,
+            plan_schema,
             "plan",
             plan_payload,
             scope=scope,
             run_context=run_context,
             thinking_request=_section_stage_thinking_request(thinking_request, "plan"),
             section_code=work_item.section_code,
-            response_validator=_section_plan_response_validator(work_item),
+            response_validator=_section_plan_response_validator(work_item, plan_schema),
         )
-        if not isinstance(planned, SectionPlanOutput):
-            raise ReportingError("report_phase_output_invalid", "章节规划 Agent 未返回声明的结果。")
-        decision = planned.root
+        if analysis_rework_allowed:
+            if not isinstance(planned, SectionPlanOutput):
+                raise ReportingError(
+                    "report_phase_output_invalid", "章节规划 Agent 未返回声明的结果。"
+                )
+            decision = planned.root
+        else:
+            if not isinstance(planned, RenderSectionPlan):
+                raise ReportingError(
+                    "report_phase_output_invalid", "降级章节规划 Agent 未返回 render 结果。"
+                )
+            decision = planned
         if isinstance(decision, AnalysisReworkDecision):
             return decision
         if not isinstance(decision, RenderSectionPlan):
@@ -1354,6 +1389,8 @@ class RuntimeSectionsMixin:
         validation_context_file: FileIdentity,
         work_item: SectionWorkItem,
         analysis_rework_constraints: Mapping[str, Any],
+        analysis_rework_allowed: bool,
+        degraded_rework: Mapping[str, Any] | None,
     ) -> tuple[
         ReportingCheckpoint,
         SectionArtifact | None,
@@ -1497,7 +1534,10 @@ class RuntimeSectionsMixin:
                 "claimAuthoringContract": _section_claim_authoring_contract(work_item),
                 "sectionOutputPath": section_output_path,
                 "reworkRequestPath": rework_request_path,
+                "analysisReworkAllowed": analysis_rework_allowed,
             }
+            if degraded_rework is not None:
+                instruction_payload["degradedDraftContext"] = dict(degraded_rework)
             retry_context = _section_retry_context(last_error)
             if retry_context is not None:
                 instruction_payload["retryContext"] = retry_context

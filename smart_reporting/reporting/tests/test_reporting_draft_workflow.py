@@ -253,7 +253,7 @@ async def test_rework_output_reruns_analysis_visualization_and_draft_in_same_wor
                     "rework": {"analysisIds": ["a1"], "missingEvidence": ["同比"]},
                 }
             )
-        return _ok("draft")
+        return StepOutput(content={"sectionCode": "section_001", "status": "completed"})
 
     workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal="目标",
@@ -289,7 +289,46 @@ async def test_rework_output_reruns_analysis_visualization_and_draft_in_same_wor
 
 
 @pytest.mark.anyio
-async def test_second_rework_request_fails_with_explicit_exhaustion_error() -> None:
+async def test_rework_exhaustion_forces_degraded_draft_without_stopping_workflow() -> None:
+    rework_output = StepOutput(
+        content={
+            "sectionCode": "section_001",
+            "status": "rework",
+            "rework": {"analysisIds": ["a1"], "missingEvidence": ["同比"]},
+        }
+    )
+
+    draft_attempts = 0
+
+    async def draft(instruction, _context):
+        nonlocal draft_attempts
+        draft_attempts += 1
+        if instruction.get("forceDegradedDraft") is True:
+            assert instruction["rework"] == rework_output.content["rework"]
+            return StepOutput(content={"sectionCode": "section_001", "status": "completed"})
+        return rework_output
+
+    workflow = ReportingDraftWorkflow(
+        report_goal="目标",
+        section_goal={"sectionCode": "section_001"},
+        analysis_ids=["a1"],
+        run_analysis=AsyncMock(return_value=_ok("analysis")),
+        submit_visualization=AsyncMock(return_value=_ok("visualization")),
+        draft_section=draft,
+        rework_analysis=AsyncMock(return_value=_ok("rework")),
+    )
+
+    result = await workflow.execute_section(RunContext(run_id="run-1", session_id="session-1"))
+
+    assert result.draft_output.content == {
+        "sectionCode": "section_001",
+        "status": "completed",
+    }
+    assert draft_attempts == 3
+
+
+@pytest.mark.anyio
+async def test_forced_degraded_draft_rework_is_not_reported_completed() -> None:
     rework_output = StepOutput(
         content={
             "sectionCode": "section_001",
@@ -307,7 +346,7 @@ async def test_second_rework_request_fails_with_explicit_exhaustion_error() -> N
         rework_analysis=AsyncMock(return_value=_ok("rework")),
     )
 
-    with pytest.raises(RuntimeError, match="章节补证次数已达到上限"):
+    with pytest.raises(RuntimeError, match="章节强制降级成稿未完成"):
         await workflow.execute_section(RunContext(run_id="run-1", session_id="session-1"))
 
 
@@ -335,7 +374,7 @@ async def test_parallel_rework_analysis_uses_shared_analysis_limiter() -> None:
                     "rework": {"analysisIds": instruction["analysisIds"]},
                 }
             )
-        return _ok("draft")
+        return StepOutput(content={"sectionCode": section_code, "status": "completed"})
 
     workflow = ReportingAnalysisAndDraftWorkflow(
         report_goal="目标",
