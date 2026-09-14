@@ -2501,6 +2501,8 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
     assert runtime._analysis_script_agent.output_schema is None
     assert runtime._analysis_script_agent.tools == []
     assert runtime._analysis_script_agent.add_history_to_context is False
+    assert runtime._analysis_script_agent.reasoning_model is not None
+    assert runtime._analysis_script_agent.reasoning_agent is not None
     assert any(
         "只含 findings、reconciliations、warnings" in instruction
         and "不得输出 analysisId 或 datasetIds" in instruction
@@ -2580,6 +2582,8 @@ def test_runtime_planner_policies_honor_disabled_thinking() -> None:
                 thinking_enabled=policy.thinking_enabled,
             )
         ).thinking_budget == 0
+    assert runtime._analysis_script_agent.reasoning_model is None
+    assert runtime._analysis_script_agent.reasoning_agent is None
 
 
 @pytest.mark.parametrize(

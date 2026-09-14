@@ -54,9 +54,9 @@ _INITIAL_THINKING_BUDGETS: dict[ThinkingOperation, int | dict[TaskComplexity, in
     "analysis_planning": 2048,
     "analysis_evidence": _COMPLEXITY_BUDGETS,
     "analysis_summary": _COMPLEXITY_BUDGETS,
-    "analysis_script": 0,
+    "analysis_script": _COMPLEXITY_BUDGETS,
     "visualization_plan": _COMPLEXITY_BUDGETS,
-    "visualization_script": 0,
+    "visualization_script": _COMPLEXITY_BUDGETS,
     "section_planning": 2048,
     "section_generation": 0,
 }

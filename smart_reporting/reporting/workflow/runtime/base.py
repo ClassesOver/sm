@@ -645,7 +645,8 @@ class _ReportWorkflowRuntimeBase:
         if not isinstance(reporting_agent_template.model, OpenAIChat):
             raise TypeError("Report analysis code agent requires OpenAIChat")
         analysis_code_model = copy(reporting_agent_template.model)
-        apply_reporting_thinking_profile(analysis_code_model, planner_off)
+        if not planner_enable_thinking:
+            apply_reporting_thinking_profile(analysis_code_model, planner_off)
         analysis_code_model.top_p = 1.0
         analysis_code_model.retries = 0
         analysis_code_model.exponential_backoff = False
