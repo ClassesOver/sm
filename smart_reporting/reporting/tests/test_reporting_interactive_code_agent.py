@@ -528,6 +528,14 @@ def test_code_agent_factory_creates_task_exclusive_mutable_objects() -> None:
     assert first.tools[0] is not second.tools[0]
 
 
+def test_interactive_runner_exposes_only_run_public_entrypoint() -> None:
+    runner = ReportingCodeGenerationRunner(lambda _tools: object(), object())
+
+    assert callable(runner.run)
+    assert not hasattr(runner, "generate")
+    assert not hasattr(runner, "repair")
+
+
 @pytest.mark.anyio
 async def test_interactive_v1_write_fail_fix_run_submit(
     workspace: HostReportingWorkspace,
