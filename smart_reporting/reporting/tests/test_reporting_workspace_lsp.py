@@ -9,6 +9,7 @@ from smart_reporting.reporting.code_agent.context import (
     ReportingCodingTaskContext,
 )
 from smart_reporting.reporting.code_agent.lsp import ReportingWorkspaceLsp
+from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingWorkspaceRegistry,
@@ -153,3 +154,66 @@ async def test_definition_does_not_expose_paths_outside_workspace(
 async def test_lsp_rejects_paths_outside_the_workspace(binding: ReportingCodingTaskBinding) -> None:
     with pytest.raises(ReportingError, match="report_lsp_invalid_request"):
         await ReportingWorkspaceLsp(binding).document_symbols("../outside.py")
+
+
+async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
+    binding: ReportingCodingTaskBinding,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class RecordingLsp:
+        def __init__(self, received_binding: ReportingCodingTaskBinding) -> None:
+            assert received_binding is binding
+
+        async def diagnostics(self, path: str | None) -> dict[str, str | None]:
+            calls.append(("diagnostics", path))
+            return {"tool": "diagnostics", "path": path}
+
+        async def hover(self, path: str, *, line: int, character: int) -> dict[str, object]:
+            calls.append(("hover", (path, line, character)))
+            return {"tool": "hover"}
+
+        async def definition(self, path: str, *, line: int, character: int) -> dict[str, object]:
+            calls.append(("definition", (path, line, character)))
+            return {"tool": "definition"}
+
+        async def references(self, path: str, *, line: int, character: int) -> dict[str, object]:
+            calls.append(("references", (path, line, character)))
+            return {"tool": "references"}
+
+        async def document_symbols(self, path: str) -> dict[str, object]:
+            calls.append(("document_symbols", path))
+            return {"tool": "document_symbols"}
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.code_agent.toolkit.ReportingWorkspaceLsp",
+        RecordingLsp,
+    )
+    toolkit = ReportingCodeModeToolkit(binding, object())
+
+    assert {
+        "lsp_diagnostics",
+        "lsp_hover",
+        "lsp_definition",
+        "lsp_references",
+        "lsp_document_symbols",
+    }.issubset({function.name for function in toolkit.tool_functions})
+    assert await toolkit.lsp_diagnostics() == {"tool": "diagnostics", "path": None}
+    assert await toolkit.lsp_hover("analysis/script.py", line=1, character=2) == {"tool": "hover"}
+    assert await toolkit.lsp_definition("analysis/script.py", line=1, character=2) == {
+        "tool": "definition"
+    }
+    assert await toolkit.lsp_references("analysis/script.py", line=1, character=2) == {
+        "tool": "references"
+    }
+    assert await toolkit.lsp_document_symbols("analysis/script.py") == {
+        "tool": "document_symbols"
+    }
+    assert calls == [
+        ("diagnostics", None),
+        ("hover", ("analysis/script.py", 1, 2)),
+        ("definition", ("analysis/script.py", 1, 2)),
+        ("references", ("analysis/script.py", 1, 2)),
+        ("document_symbols", "analysis/script.py"),
+    ]

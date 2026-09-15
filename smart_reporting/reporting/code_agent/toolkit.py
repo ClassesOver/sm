@@ -20,6 +20,7 @@ from .context import (
     ReportingCodingTaskBinding,
     ReportingCodingTaskContext,
 )
+from .lsp import ReportingWorkspaceLsp
 
 MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_DIAGNOSTIC_BYTES = 8 * 1024
@@ -244,7 +245,7 @@ def _stop_after_success(fc: Any) -> None:
 
 
 class ReportingCodeModeToolkit(Toolkit):
-    """把固定 task binding 暴露为六个 Agno 工具。"""
+    """把固定 task binding 暴露为执行与只读代码理解工具。"""
 
     def __init__(
         self,
@@ -253,6 +254,7 @@ class ReportingCodeModeToolkit(Toolkit):
     ) -> None:
         self.binding = binding
         self.runtime = runtime
+        self.lsp = ReportingWorkspaceLsp(binding)
         self.submitted_receipt: ExecutionReceipt | None = None
         tools = [
             Function(
@@ -282,6 +284,11 @@ class ReportingCodeModeToolkit(Toolkit):
             ),
             Function(name="restart_code_mode", entrypoint=self.restart_code_mode),
             Function(name="run_script", entrypoint=self.run_script),
+            Function(name="lsp_diagnostics", entrypoint=self.lsp_diagnostics),
+            Function(name="lsp_hover", entrypoint=self.lsp_hover),
+            Function(name="lsp_definition", entrypoint=self.lsp_definition),
+            Function(name="lsp_references", entrypoint=self.lsp_references),
+            Function(name="lsp_document_symbols", entrypoint=self.lsp_document_symbols),
             Function(
                 name="submit_script",
                 entrypoint=self.submit_script,
@@ -372,6 +379,52 @@ class ReportingCodeModeToolkit(Toolkit):
         del run_context
         await self.runtime.shutdown(self.context.code_mode_session_id)
         return {"ok": True}
+
+    async def lsp_diagnostics(
+        self,
+        path: str | None = None,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        del run_context
+        return await self.lsp.diagnostics(path)
+
+    async def lsp_hover(
+        self,
+        path: str,
+        line: int,
+        character: int,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        del run_context
+        return await self.lsp.hover(path, line=line, character=character)
+
+    async def lsp_definition(
+        self,
+        path: str,
+        line: int,
+        character: int,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        del run_context
+        return await self.lsp.definition(path, line=line, character=character)
+
+    async def lsp_references(
+        self,
+        path: str,
+        line: int,
+        character: int,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        del run_context
+        return await self.lsp.references(path, line=line, character=character)
+
+    async def lsp_document_symbols(
+        self,
+        path: str,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        del run_context
+        return await self.lsp.document_symbols(path)
 
     async def _validated_source_identity(self) -> FileIdentity:
         raw = await self.workspace.read_limited_regular_file(
