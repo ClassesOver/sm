@@ -2298,6 +2298,38 @@ class RuntimeAnalysisMixin:
                     max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
                 )
 
+        async def run_script(
+            script_path: str,
+            task_context: RunContext,
+        ) -> Mapping[str, Any]:
+            if self.code_mode_runtime is not None:
+                binding = (
+                    task_context.dependencies.get("AgentOS 任务执行")
+                    if isinstance(task_context.dependencies, Mapping)
+                    else None
+                )
+                task_id = (
+                    binding.get("externalRunId") if isinstance(binding, Mapping) else None
+                ) or analysis_id
+                task_workspace = self.workspace_for(
+                    run_id=str(task_context.run_id or ""),
+                    session_id=str(task_context.session_id or ""),
+                    user_id=str(task_context.user_id or "") or None,
+                    dependencies=(
+                        dict(task_context.dependencies)
+                        if isinstance(task_context.dependencies, Mapping)
+                        else None
+                    ),
+                )
+                return await self.code_mode_runtime.execute_script(
+                    f"analysis:{task_id}",
+                    task_workspace,
+                    script_path,
+                    timeout=DEFAULT_TERMINAL_TIMEOUT,
+                    matplotlib_agg=False,
+                )
+            return await toolkit.run_python_script(script_path, run_context=task_context)
+
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             summary_request = _prepare_analysis_summary_request(
                 summary_payload,
@@ -2319,7 +2351,7 @@ class RuntimeAnalysisMixin:
             repair_script=repair_script,
             summarize=summarize,
             read_file=toolkit.read_file,
-            run_script=toolkit.run_python_script,
+            run_script=run_script,
             complete=toolkit.complete_analysis_item,
             load_script=toolkit.recover_signed_analysis_script,
         )
