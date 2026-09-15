@@ -3,8 +3,10 @@ import io
 from pathlib import Path
 
 import pytest
+from agno.run import RunContext
 from PIL import Image
 
+from smart_reporting.reporting.agent import create_reporting_phase_agent
 from smart_reporting.reporting.contract import REPORT_WORKFLOW_SCOPE_STATE_KEY
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
@@ -100,6 +102,67 @@ def test_registry_release_drops_instance_without_deleting_directory(tmp_path: Pa
     assert registry.release("workspace-1") is True
     assert registry.get("workspace-1") is None
     assert identity.root.is_dir()
+
+
+def test_reporting_agent_tools_are_session_scoped_without_duplicate_names(
+    tmp_path: Path,
+) -> None:
+    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    first = registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
+    second = registry.resolve(_scope(run_id="run-2", workspace_key="workspace-2"))
+    router = ReportingWorkspaceRouter(registry)
+    settings = AgentSettings.from_environment(
+        {"REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path)},
+        load_env_file=False,
+    )
+    agent = create_reporting_phase_agent(
+        settings,
+        object(),
+        router,
+        object(),
+        state_repository=object(),
+        workspace_registry=registry,
+    )
+
+    def tools_for(workspace_key: str):
+        context = RunContext(
+            run_id=f"task-{workspace_key}",
+            session_id=f"task-{workspace_key}",
+            user_id="user-1",
+            session_state={},
+            dependencies={
+                "AgentOS 任务执行": {
+                    "externalRunId": f"task-{workspace_key}",
+                    "threadId": workspace_key,
+                    "reportingPhase": "analysis",
+                    "reportingTaskKind": "analysis_item",
+                }
+            },
+        )
+        return agent.tools(context)
+
+    first_tools = tools_for(first.workspace_key)
+    second_tools = tools_for(second.workspace_key)
+    expected_native_names = {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_files",
+        "search_content",
+        "move_file",
+        "delete_file",
+        "run_command",
+    }
+    for tools, expected_workspace in (
+        (first_tools, first.workspace),
+        (second_tools, second.workspace),
+    ):
+        assert tools[0] is expected_workspace
+        names = [name for toolkit in tools for name in toolkit.functions]
+        assert len(names) == len(set(names))
+        assert expected_native_names <= set(names)
+        assert "run_python_script" not in names
+    assert agent.cache_callables is False
 
 
 def _host_workspace(tmp_path: Path) -> HostReportingWorkspace:

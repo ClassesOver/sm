@@ -76,9 +76,10 @@ def create_report_runtime(
     reporting_agent_template = create_reporting_phase_agent(
         settings,
         context.database,
-        context.workspace_service,
+        reporting_workspace,
         task_repository,
         state_repository=state_repository,
+        workspace_registry=workspace_registry,
     )
     visualization_generator = create_reporting_generator_agent(
         model=reporting_agent_template.model,

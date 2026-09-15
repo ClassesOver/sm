@@ -116,6 +116,7 @@ def test_fixed_workflows_keep_their_internal_tool_capabilities(phase: str, task_
 
     assert tools
     assert "apply_analysis_patch" in tools
+    assert "run_command" in tools
     assert "run_python_script" in tools
 
 
@@ -388,12 +389,19 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
     assert visualization_tools is not None
     assert visualization_tools == frozenset(
         {
+            "delete_file",
+            "edit_file",
             "inspect_chart",
+            "list_files",
+            "move_file",
             "read_file",
             "read_tool_output",
-            "submit_visualization_charts",
+            "run_command",
             "run_python_script",
+            "search_content",
+            "submit_visualization_charts",
             "view_image",
+            "write_file",
             "apply_analysis_patch",
         }
     )

@@ -13,6 +13,18 @@ from ..vision import ReportVisionReviewer
 from ..workflow.repository import ReportingStateRepository
 from .toolkit import REPORTING_TOOLKIT_INSTRUCTIONS, ReportingToolkit
 
+FILE_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_files",
+        "search_content",
+        "move_file",
+        "delete_file",
+    }
+)
+
 
 def build_reporting_tools(
     workspace_service: WorkspaceService,
@@ -23,6 +35,7 @@ def build_reporting_tools(
     run_context: RunContext | None = None,
     agent: Any | None = None,
     vision_reviewer: ReportVisionReviewer | None = None,
+    exclude_file_tools: bool = False,
 ) -> list[Toolkit]:
     """按当前 Reporting 阶段装配最小工具集，不持有数据库或 SQL 工具。"""
     toolkit = ReportingToolkit(
@@ -38,6 +51,10 @@ def build_reporting_tools(
         for functions in (toolkit.functions, toolkit.async_functions):
             functions.pop("view_image", None)
             functions.pop("inspect_chart", None)
+    if exclude_file_tools:
+        for functions in (toolkit.functions, toolkit.async_functions):
+            for name in (*FILE_TOOL_NAMES, "run_python_script"):
+                functions.pop(name, None)
     phase = reporting_phase_from_run_context(run_context)
     if phase is not None:
         # Agent callable-tools 缓存键已包含 phase/taskKind，因此这里可以让实际

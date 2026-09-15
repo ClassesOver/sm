@@ -6,7 +6,6 @@ from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import fields
-from functools import partial
 from time import perf_counter
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -62,6 +61,7 @@ from ..task_execution import (
     is_task_tool_scheduler_hook,
 )
 from ..workspace import WorkspaceService
+from .host_workspace import ReportingWorkspaceRegistry
 from .instructions import build_report_agent_instructions
 from .model_policy import (
     ReportingReasoningEffort,
@@ -3070,6 +3070,7 @@ def create_reporting_phase_agent(
     task_repository: TaskExecutionRepository,
     *,
     state_repository: ReportingStateRepository,
+    workspace_registry: ReportingWorkspaceRegistry | None = None,
 ) -> Agent:
     # settings 是 Report Agent 的唯一配置事实源。直接构造与 AgentOS 装配必须使用
     # 同一组 Reporting 预算，不能静默退回普通 Reporting Agent 的 256K/32K 默认值。
@@ -3121,6 +3122,38 @@ def create_reporting_phase_agent(
         if settings.enable_tool_result_compression
         else None
     )
+    def reporting_tools(run_context: RunContext) -> list[Any]:
+        if workspace_registry is None:
+            return build_reporting_tools(
+                workspace_service,
+                task_repository,
+                state_repository=state_repository,
+                run_context=run_context,
+                vision_reviewer=vision_reviewer,
+            )
+        dependencies = (
+            run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+        )
+        binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+        workspace_key = binding.get("threadId") if isinstance(binding, Mapping) else None
+        identity = workspace_registry.get(workspace_key) if isinstance(workspace_key, str) else None
+        if identity is None:
+            raise ReportingError(
+                "report_host_workspace_unavailable",
+                "当前 Reporting Task 未绑定会话 Workspace。",
+            )
+        return [
+            identity.workspace,
+            *build_reporting_tools(
+                workspace_service,
+                task_repository,
+                state_repository=state_repository,
+                run_context=run_context,
+                vision_reviewer=vision_reviewer,
+                exclude_file_tools=True,
+            ),
+        ]
+
     agent = Agent(
         id="smart-reporting",
         name="智能报表 Agent",
@@ -3129,13 +3162,8 @@ def create_reporting_phase_agent(
         instructions=build_report_agent_instructions,
         use_instruction_tags=True,
         skills=phase_skills,
-        tools=partial(
-            build_reporting_tools,
-            workspace_service,
-            task_repository,
-            state_repository=state_repository,
-            vision_reviewer=vision_reviewer,
-        ),
+        tools=reporting_tools,
+        cache_callables=False,
         callable_tools_cache_key=_reporting_tools_cache_key,
         db=database,
         checkpoint="tool-batch",
