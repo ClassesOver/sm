@@ -115,6 +115,20 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
     ]
 
 
+def test_custom_replay_rejects_result_with_wrong_call_id_and_no_tool_name() -> None:
+    model = _code_responses_model()
+    parsed = model._parse_provider_response(_custom_response("execute_code", "print('ok')"))
+    assert parsed.tool_calls is not None
+    messages = _assistant_and_result_messages(parsed.tool_calls[0], {"ok": True})
+    messages[1].tool_call_id = "wrong-id"
+    messages[1].tool_name = None
+
+    with pytest.raises(ReportingError) as caught:
+        model._format_messages(messages)
+
+    assert caught.value.code == "report_code_custom_tool_protocol_error"
+
+
 @pytest.mark.parametrize(
     ("name", "provider_data"),
     [

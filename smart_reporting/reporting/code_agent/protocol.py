@@ -417,16 +417,30 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 _CUSTOM_TOOL_PROTOCOL_ERROR, "Coding Agent 工具重放调用数量不一致。"
             )
         custom_calls: dict[str, dict[str, Any]] = {}
+        custom_replays: list[dict[str, Any]] = []
+        known_call_ids: set[str] = set()
         for original, normalized in zip(original_calls, normalized_calls, strict=True):
+            identities = tuple(
+                identity
+                for identity in (_field(normalized, "id"), _field(normalized, "call_id"))
+                if isinstance(identity, str) and identity
+            )
+            known_call_ids.update(identities)
             custom = _validated_custom_replay_call(original)
             if custom is None:
                 continue
-            for identity in (_field(normalized, "id"), _field(normalized, "call_id")):
-                if isinstance(identity, str) and identity:
-                    custom_calls[identity] = custom
+            custom_replays.append(custom)
+            for identity in identities:
+                custom_calls[identity] = custom
+        custom_result_counts: dict[str, int] = {}
         for message in normalized_messages:
-            if message.role != "tool" or not isinstance(message.tool_call_id, str):
+            if message.role != "tool":
                 continue
+            if message.tool_call_id not in known_call_ids:
+                raise ReportingError(
+                    _CUSTOM_TOOL_PROTOCOL_ERROR,
+                    "Coding Agent 工具结果缺少对应调用。",
+                )
             custom = custom_calls.get(message.tool_call_id)
             if custom is not None:
                 if message.tool_name not in {None, custom["name"]}:
@@ -434,11 +448,23 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         _CUSTOM_TOOL_PROTOCOL_ERROR,
                         "Coding Agent custom 工具结果与调用不匹配。",
                     )
+                call_id = custom["call_id"]
+                custom_result_counts[call_id] = custom_result_counts.get(call_id, 0) + 1
+                if custom_result_counts[call_id] > 1:
+                    raise ReportingError(
+                        _CUSTOM_TOOL_PROTOCOL_ERROR,
+                        "Coding Agent custom 工具调用存在重复结果。",
+                    )
             elif message.tool_name in FREEFORM_TOOL_ARGUMENTS:
                 raise ReportingError(
                     _CUSTOM_TOOL_PROTOCOL_ERROR,
                     "Coding Agent custom 工具结果缺少对应调用。",
                 )
+        if any(custom_result_counts.get(custom["call_id"], 0) != 1 for custom in custom_replays):
+            raise ReportingError(
+                _CUSTOM_TOOL_PROTOCOL_ERROR,
+                "Coding Agent custom 工具调用缺少对应结果。",
+            )
         formatted = super()._format_messages(messages, compress_tool_results, tools)
         for index, item in enumerate(formatted):
             if not isinstance(item, dict) or item.get("type") not in {
