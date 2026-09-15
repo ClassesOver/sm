@@ -12,7 +12,6 @@ import pytest
 from agno.run import RunContext
 from agno.run.base import RunStatus
 from agno.workflow import Step, Workflow
-from daytona.common.errors import DaytonaNotFoundError
 
 from smart_reporting.reporting.contract import ReportingWorkflowInput
 from smart_reporting.reporting.models import ReportingError
@@ -33,14 +32,13 @@ def _integration_database_url() -> str:
 
 
 @pytest.mark.anyio
-async def test_report_job_status_tracks_html_artifact_identity() -> None:
+async def test_report_job_status_tracks_only_pdf_and_word_artifact_identity() -> None:
     class FakeWorkspace:
         async def ahash_file(self, _thread_id: str, path: str) -> dict[str, object]:
             identities = {
                 "reports/report.md": {"size": 1, "sha256": "m"},
                 "reports/report.pdf": {"size": 2, "sha256": "p"},
                 "reports/report.docx": {"size": 3, "sha256": "w"},
-                "reports/report.html": {"size": 4, "sha256": "h-current"},
             }
             return dict(identities[path])
 
@@ -53,17 +51,16 @@ async def test_report_job_status_tracks_html_artifact_identity() -> None:
             "markdown": {"path": "reports/report.md", "size": 1, "sha256": "m"},
             "pdf": {"path": "reports/report.pdf", "size": 2, "sha256": "p"},
             "word": {"path": "reports/report.docx", "size": 3, "sha256": "w"},
-            "html": {"path": "reports/report.html", "size": 4, "sha256": "h-old"},
             "images": [],
         },
     }
     result = await service._job_status(job, context)
 
-    assert result["artifacts"]["html"]["size"] == 4
-    assert result["status"] == "artifact_changed"
+    assert set(result["artifacts"]) == {"markdown", "pdf", "word", "images"}
+    assert result["status"] == "rendered"
 
 
-def test_publication_content_requires_html_identity() -> None:
+def test_publication_content_accepts_pdf_and_word_identity() -> None:
     payload = {
         "reportId": "report",
         "revision": 1,
@@ -77,24 +74,23 @@ def test_publication_content_requires_html_identity() -> None:
         "codingReceipts": [],
     }
 
-    with pytest.raises(ReportingError, match="报表发布产物无效"):
-        _ReportWorkflowRuntimeBase._publication_content(payload)
+    assert _ReportWorkflowRuntimeBase._publication_content(payload) == payload
 
 
-def test_publication_artifact_identity_checks_html_size_and_hash() -> None:
+def test_publication_artifact_identity_checks_pdf_size_and_hash() -> None:
     expected = {
-        "htmlSize": 4,
-        "htmlSha256": "h" * 64,
+        "pdfSize": 4,
+        "pdfSha256": "h" * 64,
     }
 
-    with pytest.raises(ReportingError, match="PDF、Word 或 HTML"):
+    with pytest.raises(ReportingError, match="PDF 或 Word"):
         _ReportWorkflowRuntimeBase._require_artifact_identity(
-            expected, {"size": 5, "sha256": expected["htmlSha256"]}, artifact="html"
+            expected, {"size": 5, "sha256": expected["pdfSha256"]}, artifact="pdf"
         )
 
-    with pytest.raises(ReportingError, match="PDF、Word 或 HTML"):
+    with pytest.raises(ReportingError, match="PDF 或 Word"):
         _ReportWorkflowRuntimeBase._require_artifact_identity(
-            expected, {"size": 4, "sha256": "x" * 64}, artifact="html"
+            expected, {"size": 4, "sha256": "x" * 64}, artifact="pdf"
         )
 
 
@@ -163,32 +159,35 @@ class _ReportPairService:
     async def _asandbox_for(self, _client: object, _thread_id: str) -> SimpleNamespace:
         return SimpleNamespace(process=self.process, fs=self.fs)
 
-    async def _aensure_directory(self, _sandbox: object, _path: str) -> None:
+    async def aensure_directory(self, _thread_id: str, _path: str) -> None:
         return None
 
-    async def _ainfo(self, _sandbox: object, _path: str) -> None:
-        raise DaytonaNotFoundError("missing")
+    async def apath_exists(self, _thread_id: str, _path: str) -> bool:
+        return False
+
+    async def amove_files(self, _thread_id: str, source: str, destination: str) -> None:
+        self.fs.moves.append(
+            (f"/home/daytona/workspace/{source}", f"/home/daytona/workspace/{destination}")
+        )
 
     async def ahash_file(self, _thread_id: str, path: str) -> dict[str, object]:
         return dict(self.identities[path])
 
 
-def _report_pair_identities(*, staged_html_sha256: str = "html") -> dict[str, dict[str, object]]:
+def _report_pair_identities(*, staged_word_sha256: str = "word") -> dict[str, dict[str, object]]:
     return {
         "reports/.revision-1.test.tmp/report.pdf": {"size": 1, "sha256": "pdf"},
-        "reports/.revision-1.test.tmp/report.docx": {"size": 2, "sha256": "word"},
-        "reports/.revision-1.test.tmp/report.html": {
-            "size": 3,
-            "sha256": staged_html_sha256,
+        "reports/.revision-1.test.tmp/report.docx": {
+            "size": 2,
+            "sha256": staged_word_sha256,
         },
         "reports/revision-1/report.pdf": {"size": 1, "sha256": "pdf"},
         "reports/revision-1/report.docx": {"size": 2, "sha256": "word"},
-        "reports/revision-1/report.html": {"size": 3, "sha256": "html"},
     }
 
 
 @pytest.mark.anyio
-async def test_render_report_pair_validates_and_atomically_publishes_html(
+async def test_render_report_pair_validates_and_atomically_publishes_pdf_and_word(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _ReportPairService(_report_pair_identities())
@@ -225,11 +224,6 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
                         "size": 2,
                         "sha256": "word",
                     },
-                    "html": {
-                        "path": "reports/.revision-1.test.tmp/report.html",
-                        "size": 3,
-                        "sha256": "html",
-                    },
                     "images": [],
                     "pageLayout": {"size": "A4"},
                     "documentContext": {"sections": ["section-1"] * 100},
@@ -243,8 +237,6 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
             "ok": True,
             "pdfSha256": "pdf",
             "wordSha256": "word",
-            "htmlSha256": "html",
-            "htmlSize": 3,
             "pages": [
                 {
                     "page": index,
@@ -273,28 +265,26 @@ async def test_render_report_pair_validates_and_atomically_publishes_html(
         run_context=context,
     )
 
-    assert calls[0][1]["html_output_path"] == "reports/.revision-1.test.tmp/report.html"
-    assert calls[1][1]["html_path"] == "reports/.revision-1.test.tmp/report.html"
+    assert "html_output_path" not in calls[0][1]
+    assert "html_path" not in calls[1][1]
     assert service.fs.moves == [
         (
             "/home/daytona/workspace/reports/.revision-1.test.tmp",
             "/home/daytona/workspace/reports/revision-1",
         )
     ]
-    assert result["htmlPath"] == "reports/revision-1/report.html"
-    assert result["htmlSize"] == 3
-    assert result["htmlSha256"] == "html"
+    assert "htmlPath" not in result
     assert len(result["validation"]["pages"]) == 200
     stored_job = context.session_state[REPORT_JOBS_STATE_KEY][job["jobId"]]
     assert stored_job["validation"] == {"ok": True}
-    assert set(stored_job["render"]) == {"markdown", "pdf", "word", "html", "images"}
+    assert set(stored_job["render"]) == {"markdown", "pdf", "word", "images"}
 
 
 @pytest.mark.anyio
-async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
+async def test_render_report_pair_word_hash_mismatch_does_not_publish_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = _ReportPairService(_report_pair_identities(staged_html_sha256="changed"))
+    service = _ReportPairService(_report_pair_identities(staged_word_sha256="changed"))
     report_service = WorkspaceReportService(service)  # type: ignore[arg-type]
     context = RunContext(run_id="run", session_id="thread", session_state={})
     job = {"jobId": str(uuid4()), "sources": [{"path": "source.csv"}]}
@@ -322,17 +312,12 @@ async def test_render_report_pair_html_hash_mismatch_does_not_publish_revision(
                         "size": 2,
                         "sha256": "word",
                     },
-                    "html": {
-                        "path": "reports/.revision-1.test.tmp/report.html",
-                        "size": 3,
-                        "sha256": "html",
-                    },
                 },
             }
         ),
     )
 
-    with pytest.raises(WorkspaceError, match="三格式报告暂存身份校验失败"):
+    with pytest.raises(WorkspaceError, match="双格式报告暂存身份校验失败"):
         await report_service._render_report_pair(
             job["jobId"],
             "report.md",

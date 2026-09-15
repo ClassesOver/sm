@@ -2148,7 +2148,7 @@ class ReportWorkflowController:
                     "revision",
                     "pdf",
                     "word",
-                    "html",
+                    "editor",
                 }
                 report = {key: content[key] for key in allowed if key in content}
                 if report:

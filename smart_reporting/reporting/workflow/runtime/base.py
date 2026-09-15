@@ -1326,9 +1326,6 @@ class _ReportWorkflowRuntimeBase:
             "wordPath": content.get("wordPath"),
             "wordSize": content.get("wordSize"),
             "wordSha256": content.get("wordSha256"),
-            "htmlPath": content.get("htmlPath"),
-            "htmlSize": content.get("htmlSize"),
-            "htmlSha256": content.get("htmlSha256"),
             "sourceWarnings": content.get("sourceWarnings", []),
             "codingReceipts": content.get("codingReceipts", []),
         }
@@ -1345,11 +1342,6 @@ class _ReportWorkflowRuntimeBase:
             or values["wordSize"] <= 0
             or not isinstance(values["wordSha256"], str)
             or re.fullmatch(r"[0-9a-f]{64}", values["wordSha256"]) is None
-            or not isinstance(values["htmlPath"], str)
-            or not isinstance(values["htmlSize"], int)
-            or values["htmlSize"] <= 0
-            or not isinstance(values["htmlSha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", values["htmlSha256"]) is None
             or not isinstance(values["sourceWarnings"], list)
             or not isinstance(values["codingReceipts"], list)
         ):
@@ -1375,7 +1367,7 @@ class _ReportWorkflowRuntimeBase:
         expected: dict[str, Any],
         current: dict[str, Any],
         *,
-        artifact: Literal["pdf", "word", "html"],
+        artifact: Literal["pdf", "word"],
     ) -> None:
         prefix = artifact
         if (
@@ -1384,7 +1376,7 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ReportingError(
                 "report_artifact_changed",
-                "PDF、Word 或 HTML 在验收或审核后发生变化，必须重新验收。",
+                "PDF 或 Word 在验收或审核后发生变化，必须重新验收。",
             )
 
     def _tool_context(self, run_context: RunContext) -> RunContext:

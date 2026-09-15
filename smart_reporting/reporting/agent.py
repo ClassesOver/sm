@@ -1608,11 +1608,11 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
         return None
     pdf = report.get("pdf")
     word = report.get("word")
-    html = report.get("html")
+    editor = report.get("editor")
     pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
     word_url = word.get("downloadUrl") if isinstance(word, dict) else None
-    html_url = html.get("previewUrl") if isinstance(html, dict) else None
-    urls = (pdf_url, word_url, html_url)
+    editor_url = editor.get("openUrl") if isinstance(editor, dict) else None
+    urls = (pdf_url, word_url, editor_url)
 
     def is_valid_delivery_url(url: object) -> bool:
         if (
@@ -1636,13 +1636,13 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
         )
 
     if not all(is_valid_delivery_url(url) for url in urls):
-        return "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
+        return "## 报告发布未完成\n\n未生成有效的编辑、PDF 和 Word 交付链接，请重试报表发布。"
     report_title = report.get("reportTitle")
     if not isinstance(report_title, str) or not report_title.strip():
         return "## 报告发布未完成\n\n未获取到有效的报表名称，请重试报表发布。"
     parts = ["## 报表已生成", f"### {report_title.strip()}", "报告已完成发布。"]
     parts.append(
-        f"[**在线预览**]({html_url}) · [下载 PDF]({pdf_url}) · "
+        f"[**编辑报告**]({editor_url}) · [下载 PDF]({pdf_url}) · "
         f"[下载 Word]({word_url})"
     )
     return "\n\n".join(parts)
@@ -3548,8 +3548,8 @@ def create_report_agent(
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
                 "描述为完成。若发布契约返回 `pdf.downloadUrl` 和 `word.downloadUrl`，必须逐字保留并分别"
-                "展示为 PDF、Word Markdown 下载链接；若返回 `html.previewUrl`，必须逐字保留并展示为"
-                "HTML Markdown 预览链接。调用任何报表工具的轮次不得输出前言或解释文字；"
+                "展示为 PDF、Word Markdown 下载链接；若返回 `editor.openUrl`，必须逐字保留并展示为"
+                "报告编辑链接。调用任何报表工具的轮次不得输出前言或解释文字；"
                 "CLI 契约返回 Workspace 路径时，PDF 使用 `path`，Word 使用 "
                 "`word.path`。不得补充域名、协议或改写为示例地址，也不得虚构返回中不存在的字段。",
             ],

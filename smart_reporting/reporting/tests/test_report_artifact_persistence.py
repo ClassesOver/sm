@@ -224,11 +224,9 @@ async def test_sql_artifact_repository_streams_chunks_and_rolls_back_invalid_rep
 async def test_persisted_report_download_survives_sandbox_deletion() -> None:
     pdf = b"pdf-content"
     word = b"word-content"
-    html = b"<html>report</html>"
     files = {
         "/home/daytona/workspace/reports/report.pdf": pdf,
         "/home/daytona/workspace/reports/report.docx": word,
-        "/home/daytona/workspace/reports/report.html": html,
     }
     workspace = _Workspace(files)
     artifacts = InMemoryReportArtifactRepository()
@@ -246,12 +244,6 @@ async def test_persisted_report_download_survives_sandbox_deletion() -> None:
             path="reports/report.docx",
             size=len(word),
             sha256=hashlib.sha256(word).hexdigest(),
-        ),
-        ReportArtifactSpec(
-            artifact="html",
-            path="reports/report.html",
-            size=len(html),
-            sha256=hashlib.sha256(html).hexdigest(),
         ),
     )
     await persistence.persist(scope=scope, report_id="report-1", revision=1, artifacts=specs)
@@ -272,12 +264,10 @@ async def test_persisted_report_download_survives_sandbox_deletion() -> None:
     downloads = ReportDownloadHttpService(grants, artifacts)
     _pdf_grant, pdf_stream = await downloads.stream(raw_grant)
     _word_grant, word_stream = await downloads.stream(raw_grant, artifact="word")
-    _html_grant, html_stream = await downloads.stream(raw_grant, artifact="html")
 
     assert workspace.sandbox is None
     assert await _content(pdf_stream) == pdf
     assert await _content(word_stream) == word
-    assert await _content(html_stream) == html
 
 
 @pytest.mark.anyio
@@ -305,9 +295,8 @@ async def test_artifact_persistence_reads_host_workspace_without_private_sandbox
     contents = {
         "pdf": b"pdf-content",
         "word": b"word-content",
-        "html": b"<html>report</html>",
     }
-    suffixes = {"pdf": "pdf", "word": "docx", "html": "html"}
+    suffixes = {"pdf": "pdf", "word": "docx"}
     specs = []
     for artifact, content in contents.items():
         path = f"reports/report.{suffixes[artifact]}"
@@ -350,7 +339,7 @@ async def test_artifact_persistence_reads_host_workspace_without_private_sandbox
 
 
 @pytest.mark.anyio
-async def test_persistence_requires_pdf_word_and_html() -> None:
+async def test_persistence_requires_pdf_and_word() -> None:
     content = b"report"
     workspace = _Workspace(
         {
@@ -369,12 +358,6 @@ async def test_persistence_requires_pdf_word_and_html() -> None:
             size=len(content),
             sha256=hashlib.sha256(content).hexdigest(),
         ),
-        ReportArtifactSpec(
-            artifact="word",
-            path="reports/report.docx",
-            size=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-        ),
     )
 
     with pytest.raises(ReportingError) as raised:
@@ -384,28 +367,9 @@ async def test_persistence_requires_pdf_word_and_html() -> None:
 
 
 @pytest.mark.anyio
-async def test_html_preview_uses_static_security_headers() -> None:
-    html = b"<!doctype html><html lang='zh-CN'><body>report</body></html>"
+async def test_html_download_route_is_not_registered() -> None:
     scope = _scope()
     artifacts = InMemoryReportArtifactRepository()
-    spec = ReportArtifactSpec(
-        artifact="html",
-        path="reports/report.html",
-        size=len(html),
-        sha256=hashlib.sha256(html).hexdigest(),
-    )
-    stored = StoredReportArtifact(
-        artifact_key=_artifact_key(scope, "report-1", 1, spec),
-        scope=scope,
-        report_id="report-1",
-        revision=1,
-        artifact="html",
-        path=spec.path,
-        size=spec.size,
-        sha256=spec.sha256,
-        created_at=datetime.now(UTC),
-    )
-    await artifacts.put(stored, _chunks(html))
     grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
     raw_grant, _grant = await grants.issue(
         scope=scope,
@@ -424,111 +388,7 @@ async def test_html_preview_uses_static_security_headers() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(f"/reports/v1/download/{raw_grant}/html")
 
-    assert response.status_code == 200
-    assert response.content == html
-    assert response.headers["content-type"] == "text/html; charset=utf-8"
-    assert response.headers["content-disposition"].startswith("inline;")
-    assert response.headers["content-length"] == str(len(html))
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["content-security-policy"] == (
-        "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-        "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
-    )
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["x-accel-buffering"] == "no"
-
-
-@pytest.mark.anyio
-async def test_html_preview_rejects_missing_or_scope_mismatched_artifact() -> None:
-    scope = _scope()
-    grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
-    raw_grant, _grant = await grants.issue(
-        scope=scope,
-        report_id="report-1",
-        revision=1,
-        pdf_path="reports/report.pdf",
-        pdf_size=3,
-        pdf_sha256="a" * 64,
-        word_path="reports/report.docx",
-        word_size=4,
-        word_sha256="b" * 64,
-    )
-    artifacts = InMemoryReportArtifactRepository()
-    html = b"<html>report</html>"
-    mismatched_scope = _scope("other-database")
-    spec = ReportArtifactSpec(
-        artifact="html",
-        path="reports/report.html",
-        size=len(html),
-        sha256=hashlib.sha256(html).hexdigest(),
-    )
-    stored = StoredReportArtifact(
-        artifact_key=_artifact_key(mismatched_scope, "report-1", 1, spec),
-        scope=mismatched_scope,
-        report_id="report-1",
-        revision=1,
-        artifact="html",
-        path=spec.path,
-        size=spec.size,
-        sha256=spec.sha256,
-        created_at=datetime.now(UTC),
-    )
-    await artifacts.put(stored, _chunks(html))
-
-    with pytest.raises(ReportingError) as raised:
-        await ReportDownloadHttpService(grants, artifacts).stream(raw_grant, artifact="html")
-
-    assert raised.value.code == "report_download_file_changed"
-
-
-@pytest.mark.anyio
-async def test_html_preview_rejects_tampered_content_and_expired_grant() -> None:
-    html = b"<html>report</html>"
-    scope = _scope()
-    artifacts = InMemoryReportArtifactRepository()
-    spec = ReportArtifactSpec(
-        artifact="html",
-        path="reports/report.html",
-        size=len(html),
-        sha256=hashlib.sha256(html).hexdigest(),
-    )
-    stored = StoredReportArtifact(
-        artifact_key=_artifact_key(scope, "report-1", 1, spec),
-        scope=scope,
-        report_id="report-1",
-        revision=1,
-        artifact="html",
-        path=spec.path,
-        size=spec.size,
-        sha256=spec.sha256,
-        created_at=datetime.now(UTC),
-    )
-    await artifacts.put(stored, _chunks(html))
-    artifacts.chunks[stored.artifact_key] = (b"<html>changed</html>",)
-    grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
-    issued_at = datetime.now(UTC)
-    raw_grant, _grant = await grants.issue(
-        scope=scope,
-        report_id="report-1",
-        revision=1,
-        pdf_path="reports/report.pdf",
-        pdf_size=3,
-        pdf_sha256="a" * 64,
-        word_path="reports/report.docx",
-        word_size=4,
-        word_sha256="b" * 64,
-        now=issued_at,
-    )
-    downloads = ReportDownloadHttpService(grants, artifacts)
-    _grant, stream = await downloads.stream(raw_grant, artifact="html")
-
-    with pytest.raises(ReportingError) as raised:
-        await _content(stream)
-    assert raised.value.code == "report_download_file_changed"
-
-    with pytest.raises(ReportingError) as raised:
-        await grants.lookup(raw_grant, now=issued_at + DOWNLOAD_GRANT_TTL)
-    assert raised.value.code == "report_download_grant_expired"
+    assert response.status_code == 404
 
 
 @pytest.mark.anyio
@@ -626,10 +486,9 @@ async def test_sql_cleanup_removes_expired_grant_and_unreferenced_artifacts(
     specs = (
         ReportArtifactSpec("pdf", "reports/report.pdf", 3, hashlib.sha256(b"pdf").hexdigest()),
         ReportArtifactSpec("word", "reports/report.docx", 4, hashlib.sha256(b"word").hexdigest()),
-        ReportArtifactSpec("html", "reports/report.html", 4, hashlib.sha256(b"html").hexdigest()),
     )
     await grants_repository.create_schema()
-    for spec, content in zip(specs, (b"pdf", b"word", b"html"), strict=True):
+    for spec, content in zip(specs, (b"pdf", b"word"), strict=True):
         artifact = StoredReportArtifact(
             artifact_key=_artifact_key(scope, "report-1", 1, spec),
             scope=scope,
@@ -715,7 +574,6 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     persisted_artifacts: tuple[object, ...] = ()
     pdf = b"pdf"
     word = b"word"
-    html = b"html"
     content = {
         "reportId": "report-1",
         "revision": 1,
@@ -725,9 +583,6 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
         "wordPath": "reports/report.docx",
         "wordSize": len(word),
         "wordSha256": hashlib.sha256(word).hexdigest(),
-        "htmlPath": "reports/report.html",
-        "htmlSize": len(html),
-        "htmlSha256": hashlib.sha256(html).hexdigest(),
         "sourceWarnings": [],
         "codingReceipts": [],
     }
@@ -775,14 +630,12 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     )
 
     assert events == ["persist", "destroy", "grant"]
-    assert {item.artifact for item in persisted_artifacts} == {"pdf", "word", "html"}
+    assert {item.artifact for item in persisted_artifacts} == {"pdf", "word"}
     assert result["pdf"]["downloadUrl"] == ("http://10.233.32.64:27018/reports/v1/download/raw")
     assert result["word"]["downloadUrl"] == (
         "http://10.233.32.64:27018/reports/v1/download/raw/word"
     )
-    assert result["html"]["previewUrl"] == (
-        "http://10.233.32.64:27018/reports/v1/download/raw/html"
-    )
+    assert "html" not in result
 
 
 @pytest.mark.anyio
@@ -979,9 +832,6 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
         "wordPath": "reports/report.docx",
         "wordSize": len(content),
         "wordSha256": hashlib.sha256(content).hexdigest(),
-        "htmlPath": "reports/report.html",
-        "htmlSize": len(content),
-        "htmlSha256": hashlib.sha256(content).hexdigest(),
         "sourceWarnings": [],
         "codingReceipts": [],
     }
@@ -1035,9 +885,6 @@ async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails(
         "wordPath": "reports/report.docx",
         "wordSize": len(content),
         "wordSha256": hashlib.sha256(content).hexdigest(),
-        "htmlPath": "reports/report.html",
-        "htmlSize": len(content),
-        "htmlSha256": hashlib.sha256(content).hexdigest(),
         "sourceWarnings": [],
         "codingReceipts": [],
     }
@@ -1148,9 +995,6 @@ async def test_http_workflow_does_not_expose_workspace_paths_when_publication_is
         "wordPath": "reports/report.docx",
         "wordSize": 4,
         "wordSha256": "b" * 64,
-        "htmlPath": "reports/report.html",
-        "htmlSize": 4,
-        "htmlSha256": "c" * 64,
         "publicationGate": {
             "formalReleaseAllowed": False,
             "issues": [{"code": "artifact_changed", "message": "报告文件已变化。"}],
@@ -1198,6 +1042,7 @@ async def test_workflow_publication_keeps_workspace_paths_without_http_services(
 ) -> None:
     output = {
         "reportId": "report-1",
+        "reportTitle": "年度运营分析报告",
         "revision": 1,
         "pdfPath": "reports/report.pdf",
         "pdfSize": 3,
@@ -1205,9 +1050,6 @@ async def test_workflow_publication_keeps_workspace_paths_without_http_services(
         "wordPath": "reports/report.docx",
         "wordSize": 4,
         "wordSha256": "b" * 64,
-        "htmlPath": "reports/report.html",
-        "htmlSize": 4,
-        "htmlSha256": "c" * 64,
         "sourceWarnings": [],
         "codingReceipts": [],
     }
