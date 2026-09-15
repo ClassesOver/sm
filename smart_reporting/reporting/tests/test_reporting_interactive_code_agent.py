@@ -91,6 +91,55 @@ def test_custom_call_round_trip_uses_custom_output() -> None:
     ]
 
 
+def test_custom_output_stays_custom_with_previous_response_id() -> None:
+    model = ReportingCodeOpenAIResponses(
+        id="gpt-5-test",
+        api_key="test-key",
+        base_url="http://localhost",
+        store=True,
+        parallel_tool_calls=False,
+    )
+    parsed = model._parse_provider_response(_custom_response("execute_code", "print('ok')"))
+    assert parsed.tool_calls is not None
+    messages = _assistant_and_result_messages(parsed.tool_calls[0], {"ok": True})
+    messages[0].provider_data = {"response_id": "resp-previous"}
+
+    replay = model._format_messages(messages)
+
+    assert replay == [
+        {
+            "type": "custom_tool_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true}',
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "provider_data"),
+    [
+        ("read_script", {"reporting_wire_type": "custom", "raw_input": "x"}),
+        ("execute_code", {"reporting_wire_type": "custom"}),
+        ("execute_code", {"reporting_wire_type": "custom", "raw_input": 1}),
+    ],
+)
+def test_custom_replay_rejects_forged_or_incomplete_metadata(
+    name: str, provider_data: dict[str, Any]
+) -> None:
+    call = {
+        "id": "item-1",
+        "call_id": "call-1",
+        "type": "function",
+        "function": {"name": name, "arguments": "{}"},
+        "provider_data": provider_data,
+    }
+
+    with pytest.raises(ReportingError) as caught:
+        _code_responses_model()._format_messages(_assistant_and_result_messages(call, {"ok": True}))
+
+    assert caught.value.code == "report_code_custom_tool_protocol_error"
+
+
 def test_function_call_round_trip_stays_function_protocol() -> None:
     model = _code_responses_model()
     response = Response.model_validate(
@@ -123,6 +172,24 @@ def test_function_call_round_trip_stays_function_protocol() -> None:
         "function_call",
         "function_call_output",
     ]
+
+
+def test_code_requests_force_serial_auto_tool_calls() -> None:
+    model = ReportingCodeOpenAIResponses(
+        id="test-model",
+        api_key="test-key",
+        base_url="http://localhost",
+        parallel_tool_calls=True,
+    )
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="write")],
+        tools=[_function("write_script"), _function("run_script")],
+        tool_choice={"type": "custom", "name": "write_script"},
+    )
+
+    assert params["parallel_tool_calls"] is False
+    assert params["tool_choice"] == "auto"
 
 
 def test_custom_protocol_rejects_streaming_and_unknown_names() -> None:

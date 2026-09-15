@@ -13,6 +13,7 @@ from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
 from agno.models.response import ModelResponse
+from agno.utils.message import normalize_tool_messages, reformat_tool_call_ids
 from loguru import logger
 
 from ...context_management import (
@@ -192,7 +193,7 @@ def phase_filtered_model_call(
         if len(visible_names) == 1:
             tool_name = visible_names[0]
             updated_kwargs["tool_choice"] = (
-                {"type": "custom", "custom": {"name": tool_name}}
+                {"type": "custom", "name": tool_name}
                 if tool_name in FREEFORM_TOOL_ARGUMENTS
                 else {"type": "function", "function": {"name": tool_name}}
             )
@@ -233,6 +234,39 @@ def _synthetic_custom_call(item: Any) -> dict[str, Any]:
     }
 
 
+def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
+    provider_data = _field(call, "provider_data")
+    if (
+        not isinstance(provider_data, Mapping)
+        or provider_data.get("reporting_wire_type") != "custom"
+    ):
+        return None
+    function = _field(call, "function")
+    name = _field(function, "name")
+    raw_input = provider_data.get("raw_input")
+    if name not in FREEFORM_TOOL_ARGUMENTS or not isinstance(raw_input, str) or not raw_input:
+        raise ReportingError(_CUSTOM_TOOL_PROTOCOL_ERROR, "Coding Agent custom 工具重放数据无效。")
+    item_id = _required_id(call, "id")
+    call_id = _required_id(call, "call_id")
+    arguments = _field(function, "arguments")
+    try:
+        decoded_arguments = json.loads(arguments) if isinstance(arguments, str) else None
+    except (TypeError, ValueError) as error:
+        raise ReportingError(
+            _CUSTOM_TOOL_PROTOCOL_ERROR, "Coding Agent custom 工具重放参数无效。"
+        ) from error
+    if decoded_arguments != {FREEFORM_TOOL_ARGUMENTS[name]: raw_input}:
+        raise ReportingError(
+            _CUSTOM_TOOL_PROTOCOL_ERROR, "Coding Agent custom 工具重放参数不匹配。"
+        )
+    return {
+        "id": item_id,
+        "call_id": call_id,
+        "name": name,
+        "raw_input": raw_input,
+    }
+
+
 class ReportingCodeOpenAIResponses(OpenAIResponses):
     """为 Coding Agent 桥接 Responses API function/custom 混合协议。"""
 
@@ -255,6 +289,26 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 }
             )
         return result
+
+    def get_request_params(
+        self,
+        messages: list[Message] | None = None,
+        response_format: Any = None,
+        tools: Any = None,
+        tool_choice: Any = None,
+        run_response: Any = None,
+    ) -> dict[str, Any]:
+        params = super().get_request_params(
+            messages=messages,
+            response_format=response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            run_response=run_response,
+        )
+        params["parallel_tool_calls"] = False
+        if tools:
+            params["tool_choice"] = "auto"
+        return params
 
     def count_tokens(
         self, messages: list[Message], tools: Any = None, output_schema: Any = None
@@ -351,13 +405,41 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         compress_tool_results: bool = False,
         tools: Any = None,
     ) -> list[Any]:
-        assistant_calls: list[dict[str, Any]] = []
-        for message in messages:
-            for call in message.tool_calls or ():
-                assistant_calls.append(call)
+        normalized_messages = reformat_tool_call_ids(
+            normalize_tool_messages(messages), provider="openai_responses"
+        )
+        original_calls = [call for message in messages for call in message.tool_calls or ()]
+        normalized_calls = [
+            call for message in normalized_messages for call in message.tool_calls or ()
+        ]
+        if len(original_calls) != len(normalized_calls):
+            raise ReportingError(
+                _CUSTOM_TOOL_PROTOCOL_ERROR, "Coding Agent 工具重放调用数量不一致。"
+            )
+        custom_calls: dict[str, dict[str, Any]] = {}
+        for original, normalized in zip(original_calls, normalized_calls, strict=True):
+            custom = _validated_custom_replay_call(original)
+            if custom is None:
+                continue
+            for identity in (_field(normalized, "id"), _field(normalized, "call_id")):
+                if isinstance(identity, str) and identity:
+                    custom_calls[identity] = custom
+        for message in normalized_messages:
+            if message.role != "tool" or not isinstance(message.tool_call_id, str):
+                continue
+            custom = custom_calls.get(message.tool_call_id)
+            if custom is not None:
+                if message.tool_name not in {None, custom["name"]}:
+                    raise ReportingError(
+                        _CUSTOM_TOOL_PROTOCOL_ERROR,
+                        "Coding Agent custom 工具结果与调用不匹配。",
+                    )
+            elif message.tool_name in FREEFORM_TOOL_ARGUMENTS:
+                raise ReportingError(
+                    _CUSTOM_TOOL_PROTOCOL_ERROR,
+                    "Coding Agent custom 工具结果缺少对应调用。",
+                )
         formatted = super()._format_messages(messages, compress_tool_results, tools)
-        call_index = 0
-        normalized_custom_calls: dict[str, dict[str, Any]] = {}
         for index, item in enumerate(formatted):
             if not isinstance(item, dict) or item.get("type") not in {
                 "function_call",
@@ -365,34 +447,26 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             }:
                 continue
             if item["type"] == "function_call":
-                if call_index >= len(assistant_calls):
+                custom = custom_calls.get(str(item.get("call_id") or "")) or custom_calls.get(
+                    str(item.get("id") or "")
+                )
+                if custom is None:
                     continue
-                call = assistant_calls[call_index]
-                call_index += 1
-                provider_data = call.get("provider_data")
-                if (
-                    not isinstance(provider_data, Mapping)
-                    or provider_data.get("reporting_wire_type") != "custom"
-                ):
-                    continue
-                normalized_call_id = item.get("call_id")
-                if isinstance(normalized_call_id, str):
-                    normalized_custom_calls[normalized_call_id] = call
                 formatted[index] = {
                     "type": "custom_tool_call",
-                    "id": call["id"],
-                    "call_id": call["call_id"],
-                    "name": call["function"]["name"],
-                    "input": provider_data["raw_input"],
+                    "id": custom["id"],
+                    "call_id": custom["call_id"],
+                    "name": custom["name"],
+                    "input": custom["raw_input"],
                     "status": "completed",
                 }
             else:
-                call = normalized_custom_calls.get(str(item.get("call_id") or ""))
-                if call is None:
+                custom = custom_calls.get(str(item.get("call_id") or ""))
+                if custom is None:
                     continue
                 formatted[index] = {
                     "type": "custom_tool_call_output",
-                    "call_id": call["call_id"],
+                    "call_id": custom["call_id"],
                     "output": item["output"],
                 }
         return formatted

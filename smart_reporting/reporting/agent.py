@@ -2734,7 +2734,6 @@ def create_reporting_generator_agent(
 def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
     if not isinstance(model, OpenAIChat):
         raise TypeError("Reporting code agent requires OpenAIChat")
-    request_params = model.request_params if isinstance(model.request_params, Mapping) else {}
     code_model = ReportingCodeOpenAIResponses(
         id=model.id,
         api_key=model.api_key,
@@ -2749,7 +2748,7 @@ def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
         role_map=dict(model.role_map or OPENAI_COMPATIBLE_ROLE_MAP),
         store=model.store,
         metadata=model.metadata,
-        parallel_tool_calls=request_params.get("parallel_tool_calls"),
+        parallel_tool_calls=False,
         # 源码签发追求确定性输出以压低文本前导概率；部署显式配置的采样参数优先。
         temperature=model.temperature if model.temperature is not None else 0.0,
         top_p=model.top_p,
