@@ -10,6 +10,7 @@ from smart_reporting.reporting.code_agent.context import (
     ReportingCodingTaskContext,
 )
 from smart_reporting.reporting.code_agent.lsp import ReportingWorkspaceLsp
+from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
@@ -65,7 +66,7 @@ async def test_diagnostics_reads_current_bound_script_and_reports_syntax_error(
 ) -> None:
     await _write_script(binding, "def broken(:\n    pass\n")
 
-    lsp = ReportingWorkspaceLsp(binding)
+    lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
     result = await lsp.diagnostics()
 
     assert result["ok"] is True
@@ -85,7 +86,7 @@ async def test_hover_definition_references_and_symbols_stay_inside_bound_workspa
         "\n"
         "answer = helper(2)\n",
     )
-    lsp = ReportingWorkspaceLsp(binding)
+    lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
     source_sha256 = hashlib.sha256(
         b"def helper(value: int) -> int:\n"
         b"    return value + 1\n"
@@ -149,7 +150,7 @@ async def test_definition_does_not_expose_paths_outside_workspace(
 ) -> None:
     await _write_script(binding, "value = len([])\n")
 
-    lsp = ReportingWorkspaceLsp(binding)
+    lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
     result = await lsp.definition(
         "analysis/script.py", line=0, character=9
     )
@@ -164,7 +165,7 @@ async def test_definition_does_not_expose_paths_outside_workspace(
 
 async def test_lsp_rejects_paths_outside_the_workspace(binding: ReportingCodingTaskBinding) -> None:
     with pytest.raises(ReportingError, match="report_lsp_invalid_request"):
-        await ReportingWorkspaceLsp(binding).document_symbols("../outside.py")
+        await ReportingWorkspaceLsp(binding, ReportingLspProcessManager()).document_symbols("../outside.py")
 
 
 async def test_lsp_versions_every_snapshot_response_and_rejects_stale_request(
@@ -173,7 +174,7 @@ async def test_lsp_versions_every_snapshot_response_and_rejects_stale_request(
 ) -> None:
     source = "value = 1\n\n"
     await _write_script(binding, source)
-    lsp = ReportingWorkspaceLsp(binding)
+    lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
     source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
 
     results = [
@@ -225,7 +226,7 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
     calls: list[tuple[str, object]] = []
 
     class RecordingLsp:
-        def __init__(self, received_binding: ReportingCodingTaskBinding) -> None:
+        def __init__(self, received_binding: ReportingCodingTaskBinding, _manager: object) -> None:
             assert received_binding is binding
 
         async def diagnostics(

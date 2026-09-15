@@ -277,10 +277,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self.binding = binding
         self.runtime = runtime
         self.knowledge_index = knowledge_index
-        self.lsp = (
-            ReportingWorkspaceLsp(binding, lsp_manager)
-            if lsp_manager is not None
-            else ReportingWorkspaceLsp(binding)
+        self.lsp = ReportingWorkspaceLsp(
+            binding, lsp_manager or ReportingLspProcessManager()
         )
         self.submitted_receipt: ExecutionReceipt | None = None
         tools = [

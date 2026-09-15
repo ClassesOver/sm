@@ -20,10 +20,10 @@ class ReportingWorkspaceLsp:
     def __init__(
         self,
         binding: ReportingCodingTaskBinding,
-        manager: ReportingLspProcessManager | None = None,
+        manager: ReportingLspProcessManager,
     ) -> None:
         # Manager 在构造阶段固定，避免请求期间懒创建和并发竞态。
-        self.binding, self.manager = binding, manager or ReportingLspProcessManager()
+        self.binding, self.manager = binding, manager
 
     async def diagnostics(
         self, path: str | None = None, *, expected_source_sha256: str | None = None
