@@ -204,7 +204,7 @@ class ReportingWorkspaceLsp:
                 .relative_to(self.binding.context.workspace_root.resolve())
                 .as_posix()
             )
-        except ValueError:
+        except (OSError, ValueError, WorkspaceError):
             return {"outsideWorkspace": True}
         path = self.binding.workspace.paths.normalize(path)
         return {
