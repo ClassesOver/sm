@@ -2948,65 +2948,6 @@ def create_reporting_code_agent_factory(
     return create
 
 
-def create_reporting_code_agent(
-    *, model: Any, name: str, role: str | None = None, instructions: Any = None
-) -> Agent:
-    """创建只通过 custom text tool 签发 Python 源码的 Coding Agent。
-
-    原始源码只在 provider custom.input 与进程内 Function 参数之间流转；普通文本
-    永远不是成功结果，其他 Reporting Agent 继续使用原有 function-call 协议。
-    """
-
-    base_instructions = [
-        "普通文本、Markdown、代码围栏和解释都不算成功。",
-        "调用 submit_python_source 之前不要输出任何文本或解释；直接发起工具调用。",
-        "写入阶段只调用一次 submit_python_source；将完整原始 Python 源码直接作为 custom input 提交，收到工具回执后立即结束。",
-        "custom input 只能包含 Python 源码本身，不得包含 unified diff、文件头、hunk、JSON 包装或说明文字。",
-        "源码必须使用 UTF-8/LF、多物理行并以换行结尾，且遵守 sourceProtocol 的字节与物理行长度上限。",
-        "修复时逐字使用输入中的受信 readReceipt，并直接提交完整修复源码。",
-        "facts.outputContract 或 facts.taskFacts.outputContract 存在时，必须严格构造其 requiredRootKeys 指定的 JSON 根节点；"
-        "不得展平或遗漏根节点包装；additionalRootKeys=false 时根键必须与 requiredRootKeys 完全相同，"
-        "并在 json.dump 前核对最终对象的根键。",
-        "datasets 中的 format、hasHeader、columns、columnTypes 和 jsonShape 是权威输入契约；"
-        "必须按每个 path 自身声明解析，不得用其他 Dataset 的结构或自行猜测替换。",
-        "凡需读写工作区文件，必须从 sourceProtocol.authorizedPaths 逐字复制完整路径并直接赋值为字符串常量；"
-        "禁止使用 __file__、os.path、pathlib、cwd、chdir、路径拼接或 .. 构造或推导工作区路径。",
-    ]
-    if instructions:
-        if isinstance(instructions, str):
-            base_instructions.append(instructions)
-        else:
-            base_instructions.extend(str(item) for item in instructions)
-    if not isinstance(model, OpenAIChat):
-        raise TypeError("Reporting code agent requires OpenAIChat")
-    reasoning_model, reasoning_agent = _reporting_code_reasoning(model)
-    return Agent(
-        id=name,
-        name=name,
-        role=role or "通过 custom text tool 签发完整 Reporting Python 源码。",
-        model=_reporting_code_model(model),
-        reasoning_model=reasoning_model,
-        reasoning_agent=reasoning_agent,
-        instructions=base_instructions,
-        output_schema=None,
-        parse_response=False,
-        structured_outputs=False,
-        use_json_mode=False,
-        tools=[],
-        add_history_to_context=False,
-        num_history_runs=0,
-        store_history_messages=False,
-        read_chat_history=False,
-        read_tool_call_history=False,
-        enable_session_summaries=False,
-        add_session_summary_to_context=False,
-        retries=0,
-        exponential_backoff=False,
-        markdown=False,
-        telemetry=False,
-    )
-
-
 def create_report_agent(
     reporting_agent_template: Agent,
     controller: ReportWorkflowController,
