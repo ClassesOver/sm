@@ -186,6 +186,10 @@ async def test_lsp_versions_every_snapshot_response_and_rejects_stale_request(
 
     assert results[1]["found"] is False
     assert all(result["sourceSha256"] == source_sha256 for result in results)
+    manager = lsp.manager
+    assert manager is not None
+    await manager.aclose()
+
     class UnavailableManager:
         async def synchronize_document(self, *_args: object) -> int:
             from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessError
