@@ -79,6 +79,30 @@ def _custom_response(name: str, raw_input: str) -> Response:
     )
 
 
+def _function_response(index: int, name: str, arguments: dict[str, Any]) -> Response:
+    return Response.model_validate(
+        {
+            "id": f"resp-{index}",
+            "created_at": 0,
+            "model": "test-model",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "id": f"item-{index}",
+                    "call_id": f"call-{index}",
+                    "name": name,
+                    "arguments": json.dumps(arguments, separators=(",", ":")),
+                    "type": "function_call",
+                }
+            ],
+            "parallel_tool_calls": False,
+            "tool_choice": "auto",
+            "tools": [],
+        }
+    )
+
+
 def _assistant_and_result_messages(call: dict[str, Any], result: dict[str, Any]) -> list[Message]:
     return [
         Message(role="assistant", content="", tool_calls=[call]),
@@ -596,6 +620,120 @@ async def test_interactive_v1_write_fail_fix_run_submit(
     receipt = ExecutionReceipt.model_validate(submitted["executionReceipt"])
     assert receipt.source_file == binding.execution_receipt.source_file
     assert receipt.output_files == binding.execution_receipt.output_files
+
+
+@pytest.mark.anyio
+async def test_interactive_v1_end_to_end_responses_loop(
+    workspace: HostReportingWorkspace,
+) -> None:
+    responses = [
+        _custom_response("write_script", "if True print('broken')\n"),
+        _function_response(2, "run_script", {}),
+        Response.model_validate(
+            {
+                **_custom_response("write_script", SOURCE).model_dump(),
+                "id": "resp-3",
+                "output": [
+                    {
+                        "id": "item-3",
+                        "call_id": "call-3",
+                        "name": "write_script",
+                        "input": SOURCE,
+                        "type": "custom_tool_call",
+                    }
+                ],
+            }
+        ),
+        _function_response(4, "lsp_diagnostics", {}),
+        _function_response(5, "search_knowledge", {"query": "脚本规范"}),
+        _function_response(6, "run_script", {}),
+        _function_response(7, "submit_script", {}),
+    ]
+
+    class FakeResponsesClient:
+        def __init__(self) -> None:
+            self.responses = self
+            self.requests: list[dict[str, Any]] = []
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def create(self, **kwargs: Any) -> Response:
+            self.requests.append(kwargs)
+            return responses.pop(0)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            source = await received.aread_text("task-1", "analysis/a.py")
+            if "broken" in source:
+                return _failed_cell("SyntaxError: invalid syntax")
+            await received.awrite_text("task-1", "analysis/out.json", "{}")
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    class KnowledgeIndex:
+        async def search(self, query: str, *, workspace_key: str) -> list[SimpleNamespace]:
+            assert query == "脚本规范"
+            assert workspace_key == workspace.identity.workspace_key
+            return [
+                SimpleNamespace(
+                    identity="static:test",
+                    kind="static",
+                    snippet="脚本规范",
+                    score=1.0,
+                    content_sha256="a" * 64,
+                )
+            ]
+
+    class LspManager:
+        async def diagnostics(self, root: Path, uri: str, text: str):
+            assert root == workspace.identity.root
+            assert uri.endswith("/analysis/a.py")
+            assert text == SOURCE
+            return 1, []
+
+    client = FakeResponsesClient()
+    base_factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        name="reporting-code-agent-e2e",
+    )
+
+    def agent_factory(tools: Sequence[Function]):
+        agent = base_factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    runtime = Runtime()
+    result = await ReportingCodeGenerationRunner(
+        agent_factory,
+        runtime,
+        knowledge_index=KnowledgeIndex(),
+        lsp_manager=LspManager(),
+    ).run(
+        _task_context(workspace),
+        workspace,
+        {"fact": 1},
+        run_context=_run_context(),
+    )
+
+    assert result.script_file == result.execution_receipt.source_file
+    assert result.execution_receipt.output_files[0].path == "analysis/out.json"
+    assert runtime.shutdowns == ["code-task-1"]
+    assert len(client.requests) == 7
+    assert responses == []
+    replay_types = [
+        item.get("type")
+        for request in client.requests[1:]
+        for item in request["input"]
+        if isinstance(item, dict)
+    ]
+    assert "custom_tool_call_output" in replay_types
+    assert "function_call_output" in replay_types
 
 
 @pytest.mark.anyio

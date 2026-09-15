@@ -2929,7 +2929,7 @@ def create_reporting_code_agent_factory(
             parse_response=False,
             structured_outputs=False,
             use_json_mode=False,
-            tools=[deepcopy(tool) for tool in tools],
+            tools=list(tools),
             tool_choice="auto",
             tool_call_limit=20,
             add_history_to_context=False,
