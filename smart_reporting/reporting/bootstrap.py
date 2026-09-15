@@ -17,6 +17,7 @@ from .delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
 )
+from .host_workspace import ReportingWorkspaceRegistry
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
 from .vision import ReportVisionReviewer
@@ -60,6 +61,10 @@ def create_report_runtime(
     quality_warning_service: QualityWarningService | None = None,
     reporting_event_sink: ReportingEventSink | None = None,
 ) -> tuple[Agent, ReportWorkflowRuntime]:
+    workspace_registry = context.reporting_workspace_registry or ReportingWorkspaceRegistry(
+        settings.reporting_host_workspace_root,
+        secret=settings.workspace_hmac_secret,
+    )
     task_repository = TaskExecutionRepository(context.database)
     state_repository = ReportingStateRepository(context.database)
     reporting_agent_template = create_reporting_phase_agent(
@@ -116,6 +121,7 @@ def create_report_runtime(
         vision_reviewer=vision_reviewer,
         vision_enabled=settings.report_enable_vision,
         workspace_service=context.workspace_service,
+        workspace_registry=workspace_registry,
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,

@@ -5,13 +5,20 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from smart_reporting.reporting.contract import REPORT_WORKFLOW_SCOPE_STATE_KEY
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingPathMapper,
     ReportingWorkspaceRegistry,
 )
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
+from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
+from smart_reporting.reporting.workflow.scope import (
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+    ReportingWorkflowScope,
+)
+from smart_reporting.runtime.execution import create_execution_context
+from smart_reporting.runtime.settings import AgentSettings
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
 
 SECRET = "0123456789abcdef0123456789abcdef"
@@ -228,3 +235,97 @@ async def test_host_workspace_rejects_blank_png(tmp_path: Path) -> None:
         await workspace.inspect_chart_file("workspace-1", "charts/chart.png")
 
     assert raised.value.code == "report_chart_blank"
+
+
+def test_execution_context_builds_reporting_workspace_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path),
+            "AGENT_WORKSPACE_HMAC_SECRET": SECRET,
+        },
+        load_env_file=False,
+    )
+    database = type(
+        "Database",
+        (),
+        {"async_db": object(), "sync_db": object()},
+    )()
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.AsyncSandboxRegistry",
+        lambda _database: object(),
+    )
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.create_sandbox_provider",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    context = create_execution_context(
+        settings,
+        database_factory=lambda _url: database,
+        tracing_configurer=lambda *_args, **_kwargs: None,
+        workspace_factory=lambda **_kwargs: object(),
+    )
+
+    assert isinstance(context.reporting_workspace_registry, ReportingWorkspaceRegistry)
+    assert context.reporting_workspace_registry.root == tmp_path
+
+
+def test_runtime_prepare_run_binds_host_workspace(tmp_path: Path) -> None:
+    runtime = object.__new__(_ReportWorkflowRuntimeBase)
+    runtime.workspace_registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    dependencies = {
+        REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+            "externalRunId": "external-run-1",
+            "threadId": "caller-thread-1",
+            "userId": "user-1",
+            "database": "database-1",
+            "companyId": "company-1",
+        }
+    }
+
+    state = runtime.prepare_run(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies=dependencies,
+    )
+
+    workspace_key = state[REPORT_WORKFLOW_SCOPE_STATE_KEY]["threadId"]
+    assert runtime.workspace_registry.get(workspace_key) is not None
+
+
+def test_runtime_resolves_same_host_workspace_after_prepare_run(tmp_path: Path) -> None:
+    runtime = object.__new__(_ReportWorkflowRuntimeBase)
+    runtime.workspace_registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    dependencies = {
+        REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+            "externalRunId": "external-run-1",
+            "threadId": "caller-thread-1",
+            "userId": "user-1",
+            "database": "database-1",
+            "companyId": "company-1",
+        }
+    }
+    runtime.prepare_run(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies=dependencies,
+    )
+
+    first = runtime.workspace_for(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies=dependencies,
+    )
+    second = runtime.workspace_for(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies=dependencies,
+    )
+
+    assert first is second

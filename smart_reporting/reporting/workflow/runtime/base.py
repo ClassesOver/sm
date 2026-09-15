@@ -122,6 +122,7 @@ from ...hospital_operation.outline import (
     freeze_outline,
     normalize_outline_proposal_candidate,
 )
+from ...host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
 from ...instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
@@ -198,6 +199,7 @@ from ..repository import ReportingStateRepository
 from ..scope import (
     REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY,
     REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY,
+    ReportingWorkflowScope,
     reporting_scope_keys,
     resolve_reporting_workflow_scope,
 )
@@ -420,6 +422,7 @@ class _ReportWorkflowRuntimeBase:
         vision_reviewer: ReportVisionReviewer | None = None,
         vision_enabled: bool | None = None,
         workspace_service: WorkspaceService,
+        workspace_registry: ReportingWorkspaceRegistry,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
@@ -455,6 +458,8 @@ class _ReportWorkflowRuntimeBase:
         self.section_recovery = section_recovery
         self.vision_reviewer = vision_reviewer
         self.workspace_service = workspace_service
+        self.workspace_registry = workspace_registry
+        self._host_workspaces: dict[str, HostReportingWorkspace] = {}
         self.registry = registry
         self.profiles = profiles
         self.metadata_client = metadata_client
@@ -1114,6 +1119,37 @@ class _ReportWorkflowRuntimeBase:
         state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
 
+    def _workspace_for_scope(
+        self, scope: ReportingWorkflowScope
+    ) -> HostReportingWorkspace:
+        workspaces = getattr(self, "_host_workspaces", None)
+        if workspaces is None:
+            workspaces = {}
+            self._host_workspaces = workspaces
+        workspace = workspaces.get(scope.workspace_key)
+        if workspace is None:
+            workspace = HostReportingWorkspace(self.workspace_registry.resolve(scope))
+            workspaces[scope.workspace_key] = workspace
+        return workspace
+
+    def workspace_for(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        user_id: str | None,
+        dependencies: dict[str, Any] | None,
+        stored_scope: dict[str, Any] | None = None,
+    ) -> HostReportingWorkspace:
+        scope = resolve_reporting_workflow_scope(
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            dependencies=dependencies,
+            stored_scope=stored_scope,
+        )
+        return self._workspace_for_scope(scope)
+
     def prepare_run(
         self,
         *,
@@ -1133,6 +1169,7 @@ class _ReportWorkflowRuntimeBase:
         )
         if entrypoint not in {"agentos", "cli", "mcp"}:
             raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+        self._workspace_for_scope(scope)
         return {
             REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
             REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
@@ -1151,6 +1188,7 @@ class _ReportWorkflowRuntimeBase:
         entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
         if entrypoint not in {"agentos", "cli", "mcp"}:
             raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
+        self._workspace_for_scope(scope)
         has_external_caller = (
             scope.external_run_id != run_id or scope.caller_thread_id != scope.session_id
         )

@@ -8,6 +8,7 @@ from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
 
 from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
+from ..reporting.host_workspace import ReportingWorkspaceRegistry
 from ..sandbox.factory import create_sandbox_provider
 from ..workspace import AsyncSandboxRegistry, WorkspaceService
 from .database import AgentDatabase, create_agent_database
@@ -21,6 +22,7 @@ class ExecutionContext:
     database: AsyncBaseDb
     workspace_service: WorkspaceService
     trace_database: BaseDb | None = None
+    reporting_workspace_registry: ReportingWorkspaceRegistry | None = None
 
 
 def configure_execution_tracing(
@@ -61,11 +63,16 @@ def create_execution_context(
         async_registry=async_registry,
         provider=provider,
     )
+    reporting_workspace_registry = ReportingWorkspaceRegistry(
+        current_settings.reporting_host_workspace_root,
+        secret=current_settings.workspace_hmac_secret,
+    )
     return ExecutionContext(
         settings=current_settings,
         database=database.async_db,
         workspace_service=workspace_service,
         trace_database=database.sync_db,
+        reporting_workspace_registry=reporting_workspace_registry,
     )
 
 
