@@ -1,9 +1,12 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="V1 统一覆盖交互式 CodeMode 验收")
 
 from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
 from smart_reporting.reporting.host_workspace import (

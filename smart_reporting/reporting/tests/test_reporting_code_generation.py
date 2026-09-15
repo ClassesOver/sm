@@ -20,6 +20,8 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
     ReportingCodeGenerationRunner,
 )
 
+pytestmark = pytest.mark.skip(reason="V1 已移除旧 generate/repair Coding Agent 契约")
+
 SOURCE = "value = 1\nprint(value)\n"
 UPDATED_SOURCE = "value = 2\nprint(value)\n"
 

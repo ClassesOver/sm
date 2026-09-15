@@ -1,7 +1,10 @@
+# ruff: noqa: E402
 import asyncio
 import json
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="V1 已移除旧 submit_python_source 契约")
 from agno.agent import Agent
 from agno.models.deepseek import DeepSeek
 from agno.models.message import Message

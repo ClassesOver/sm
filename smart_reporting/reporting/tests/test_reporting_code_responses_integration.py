@@ -1,8 +1,11 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
 import os
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="旧 submit_python_source smoke 已移除")
 from agno.agent import Agent
 from agno.tools.function import Function
 
