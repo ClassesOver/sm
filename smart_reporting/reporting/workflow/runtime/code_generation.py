@@ -74,12 +74,12 @@ class ReportingCodeGenerationRunner:
     async def run(self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace, task_facts: Mapping[str, Any], *, run_context: RunContext, diagnostic: Mapping[str, Any] | None = None) -> CodeGenerationResult:
         async with self.registry.bind(task_context, workspace) as binding:
             toolkit = ReportingCodeModeToolkit(binding, self.code_mode_runtime)
-            agent = self.agent_factory(toolkit.tool_functions)
             task_payload = asdict(task_context)
             task_payload["workspace_root"] = str(task_context.workspace_root)
             payload = {"task": task_payload, "facts": dict(task_facts), "diagnostic": self._short_diagnostic(diagnostic) if diagnostic else None}
             started_at = perf_counter()
             try:
+                agent = self.agent_factory(toolkit.tool_functions)
                 await agent.arun(self._prompt(payload), run_context=run_context)
                 receipt = toolkit.submitted_receipt
                 if receipt is None:

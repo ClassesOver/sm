@@ -516,6 +516,31 @@ async def test_runner_shuts_down_kernel_on_no_submission(
     assert runtime.shutdowns == ["code-task-1"]
 
 
+@pytest.mark.anyio
+async def test_runner_shuts_down_kernel_when_agent_factory_fails(
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    runtime = Runtime()
+
+    def factory(_tools: Sequence[Function]) -> object:
+        raise RuntimeError("factory failed")
+
+    with pytest.raises(ReportingError) as caught:
+        await ReportingCodeGenerationRunner(factory, runtime).run(
+            _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
+        )
+
+    assert caught.value.code == "report_code_generation_agent_failed"
+    assert runtime.shutdowns == ["code-task-1"]
+
+
 def test_code_agent_factory_creates_task_exclusive_mutable_objects() -> None:
     factory = create_reporting_code_agent_factory(
         model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
