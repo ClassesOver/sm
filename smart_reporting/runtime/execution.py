@@ -6,10 +6,12 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
+from agno.tools.code import CodeMode
 
 from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
 from ..reporting.host_workspace import ReportingWorkspaceRegistry
 from ..sandbox.factory import create_sandbox_provider
+from ..task_execution import DEFAULT_TERMINAL_TIMEOUT
 from ..workspace import AsyncSandboxRegistry, WorkspaceService
 from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
@@ -23,6 +25,7 @@ class ExecutionContext:
     workspace_service: WorkspaceService
     trace_database: BaseDb | None = None
     reporting_workspace_registry: ReportingWorkspaceRegistry | None = None
+    reporting_code_mode_runtime: Any | None = None
 
 
 def configure_execution_tracing(
@@ -67,12 +70,28 @@ def create_execution_context(
         current_settings.reporting_host_workspace_root,
         secret=current_settings.workspace_hmac_secret,
     )
+    from ..reporting.code_mode import ReportingCodeModeRuntime
+
+    reporting_code_mode_runtime = ReportingCodeModeRuntime(
+        CodeMode(
+            allow_shell=True,
+            allow_restart=True,
+            snapshot=False,
+            cwd=str(reporting_workspace_registry.root),
+            timeout=DEFAULT_TERMINAL_TIMEOUT,
+            max_kernels=max(
+                current_settings.report_analysis_concurrency,
+                current_settings.report_section_concurrency,
+            ),
+        )
+    )
     return ExecutionContext(
         settings=current_settings,
         database=database.async_db,
         workspace_service=workspace_service,
         trace_database=database.sync_db,
         reporting_workspace_registry=reporting_workspace_registry,
+        reporting_code_mode_runtime=reporting_code_mode_runtime,
     )
 
 
@@ -94,9 +113,15 @@ async def close_execution_resources(
                 seen.add(id(client))
                 clients.append(client)
     clients.extend((context.workspace_service, context.database))
+    reporting_registry = getattr(context, "reporting_workspace_registry", None)
+    code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
     trace_database = getattr(context, "trace_database", None)
     if trace_database is not None:
         clients.append(trace_database)
+    if code_mode_runtime is not None:
+        clients.append(code_mode_runtime)
+    if reporting_registry is not None:
+        clients.append(reporting_registry)
 
     first_error: BaseException | None = None
     try:

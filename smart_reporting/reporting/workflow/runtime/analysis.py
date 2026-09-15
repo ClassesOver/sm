@@ -9,6 +9,7 @@ from agno.models.message import Message
 from agno.session.agent import AgentSession
 
 from ....task_execution import (
+    DEFAULT_TERMINAL_TIMEOUT,
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
@@ -758,6 +759,33 @@ class RuntimeAnalysisMixin:
                     async def execute_script(
                         script_path: str, task_context: RunContext
                     ) -> Mapping[str, Any]:
+                        if self.code_mode_runtime is not None:
+                            binding = (
+                                task_context.dependencies.get("AgentOS 任务执行")
+                                if isinstance(task_context.dependencies, Mapping)
+                                else None
+                            )
+                            task_id = (
+                                binding.get("externalRunId")
+                                if isinstance(binding, Mapping)
+                                else None
+                            ) or section_code
+                            task_workspace = self.workspace_for(
+                                run_id=str(task_context.run_id or ""),
+                                session_id=str(task_context.session_id or ""),
+                                user_id=str(task_context.user_id or "") or None,
+                                dependencies=(
+                                    dict(task_context.dependencies)
+                                    if isinstance(task_context.dependencies, Mapping)
+                                    else None
+                                ),
+                            )
+                            return await self.code_mode_runtime.execute_script(
+                                f"visualization:{task_id}",
+                                task_workspace,
+                                script_path,
+                                timeout=DEFAULT_TERMINAL_TIMEOUT,
+                            )
                         receipt = await toolkit.run_python_script(
                             script_path, run_context=task_context
                         )
@@ -842,8 +870,8 @@ class RuntimeAnalysisMixin:
                             section_code, [], run_context=task_context
                         )
 
-                    return (
-                        await VisualizationSectionWorkflow(
+                    try:
+                        result = await VisualizationSectionWorkflow(
                             generate_plan=generate_plan,
                             generate_script=generate_script,
                             repair_script=(
@@ -859,7 +887,20 @@ class RuntimeAnalysisMixin:
                             thinking_enabled=self._analysis_thinking_enabled,
                             thinking_budget_cap=self._analysis_thinking_budget_cap,
                         ).run(instruction_payload, invocation.run_context)
-                    ).plan
+                        return result.plan
+                    finally:
+                        if self.code_mode_runtime is not None:
+                            binding = (
+                                invocation.run_context.dependencies.get("AgentOS 任务执行")
+                                if isinstance(invocation.run_context.dependencies, Mapping)
+                                else None
+                            )
+                            task_id = (
+                                binding.get("externalRunId")
+                                if isinstance(binding, Mapping)
+                                else None
+                            ) or section_code
+                            await self.code_mode_runtime.shutdown(f"visualization:{task_id}")
 
                 await self.task_runner.run(
                     task_scope,
@@ -2282,8 +2323,20 @@ class RuntimeAnalysisMixin:
             complete=toolkit.complete_analysis_item,
             load_script=toolkit.recover_signed_analysis_script,
         )
-        result = await workflow.run(payload, task_run_context)
-        return result.output
+        try:
+            result = await workflow.run(payload, task_run_context)
+            return result.output
+        finally:
+            if self.code_mode_runtime is not None:
+                binding = (
+                    task_run_context.dependencies.get("AgentOS 任务执行")
+                    if isinstance(task_run_context.dependencies, Mapping)
+                    else None
+                )
+                task_id = (
+                    binding.get("externalRunId") if isinstance(binding, Mapping) else None
+                ) or analysis_id
+                await self.code_mode_runtime.shutdown(f"analysis:{task_id}")
 
     async def _run_analysis_item_task(
         self,

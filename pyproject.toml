@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "agno==3.0.9",
+    "dill>=0.3.9,<0.4.0",
     "fastmcp>=3.4.3,<4",
     "daytona==0.189.0",
     "cryptography>=45,<51",
@@ -12,6 +13,8 @@ dependencies = [
     "markdown-it-py==4.2.0",
     "openai>=1.0",
     "openinference-instrumentation-agno>=0.1.38,<0.2.0",
+    "ipykernel>=6.29,<7.0",
+    "jupyter-client>=8.6,<9.0",
     "openpyxl>=3.1,<4.0",
     "pandas>=2.2,<2.4",
     "fg-data-profiling>=4.19,<4.20",
