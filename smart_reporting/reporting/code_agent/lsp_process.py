@@ -29,6 +29,7 @@ class _LspState:
     reader_task: asyncio.Task[None] | None = None
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = field(default_factory=monotonic)
+    active_requests: int = 0
     closed: bool = False
 
 
@@ -54,39 +55,46 @@ class ReportingLspProcessManager:
 
     async def request(self, root: Path, method: str, params: dict[str, Any]) -> Any:
         state = await self._state(root)
-        return await self._request(state, method, params)
+        state.active_requests += 1
+        try:
+            return await self._request(state, method, params)
+        finally:
+            state.active_requests = max(state.active_requests - 1, 0)
 
     async def diagnostics(
         self, root: Path, uri: str, text: str
     ) -> tuple[int, list[dict[str, Any]]]:
         state = await self._state(root)
-        version = state.document_versions.get(uri, 0) + 1
-        state.document_versions[uri] = version
-        loop = asyncio.get_running_loop()
-        waiter: asyncio.Future[list[dict[str, Any]]] = loop.create_future()
-        state.diagnostics[(uri, version)] = waiter
-        document = {"uri": uri, "version": version, "text": text}
-        if version == 1:
-            await self._notify(
-                state,
-                "textDocument/didOpen",
-                {"textDocument": {**document, "languageId": "python"}},
-            )
-        else:
-            await self._notify(
-                state,
-                "textDocument/didChange",
-                {
-                    "textDocument": {"uri": uri, "version": version},
-                    "contentChanges": [{"text": text}],
-                },
-            )
+        state.active_requests += 1
         try:
-            diagnostics = await asyncio.wait_for(waiter, timeout=self.request_timeout_seconds)
-        except (TimeoutError, ReportingLspProcessError) as error:
-            raise ReportingLspProcessError("pylsp diagnostics 未响应。") from error
+            version = state.document_versions.get(uri, 0) + 1
+            state.document_versions[uri] = version
+            loop = asyncio.get_running_loop()
+            waiter: asyncio.Future[list[dict[str, Any]]] = loop.create_future()
+            state.diagnostics[(uri, version)] = waiter
+            document = {"uri": uri, "version": version, "text": text}
+            if version == 1:
+                await self._notify(
+                    state,
+                    "textDocument/didOpen",
+                    {"textDocument": {**document, "languageId": "python"}},
+                )
+            else:
+                await self._notify(
+                    state,
+                    "textDocument/didChange",
+                    {
+                        "textDocument": {"uri": uri, "version": version},
+                        "contentChanges": [{"text": text}],
+                    },
+                )
+            try:
+                diagnostics = await asyncio.wait_for(waiter, timeout=self.request_timeout_seconds)
+            except (TimeoutError, ReportingLspProcessError) as error:
+                raise ReportingLspProcessError("pylsp diagnostics 未响应。") from error
         finally:
             state.diagnostics.pop((uri, version), None)
+            state.active_requests = max(state.active_requests - 1, 0)
         return version, diagnostics
 
     async def synchronize_document(self, root: Path, uri: str, text: str) -> int:
@@ -99,7 +107,8 @@ class ReportingLspProcessManager:
             expired = [
                 state
                 for state in self._states.values()
-                if now - state.last_used >= self.idle_ttl_seconds
+                if state.active_requests == 0
+                and now - state.last_used >= self.idle_ttl_seconds
             ]
             for state in expired:
                 self._states.pop(state.root, None)
