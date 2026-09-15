@@ -430,6 +430,7 @@ class _ReportWorkflowRuntimeBase:
         workspace_registry: ReportingWorkspaceRegistry | None = None,
         code_mode_runtime: Any | None = None,
         knowledge_index: ReportingKnowledgeIndex | None = None,
+        lsp_manager: Any | None = None,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
@@ -468,6 +469,7 @@ class _ReportWorkflowRuntimeBase:
         self.workspace_registry = workspace_registry
         self.code_mode_runtime = code_mode_runtime
         self.knowledge_index = knowledge_index
+        self.lsp_manager = lsp_manager
         self._host_workspaces: dict[str, HostReportingWorkspace] = {}
         self.registry = registry
         self.profiles = profiles

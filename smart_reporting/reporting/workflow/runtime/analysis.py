@@ -751,6 +751,7 @@ class RuntimeAnalysisMixin:
                             self.visualization_code_agent_factory,
                             self.code_mode_runtime,
                             knowledge_index=knowledge_index,
+                            lsp_manager=getattr(self, "lsp_manager", None),
                         )
 
                     async def run_code(
@@ -2221,6 +2222,7 @@ class RuntimeAnalysisMixin:
             self._analysis_script_agent_factory,
             self.code_mode_runtime,
             knowledge_index=getattr(self, "knowledge_index", None),
+            lsp_manager=getattr(self, "lsp_manager", None),
         )
         repair_workspace_key: str | None = None
         knowledge_index = getattr(self, "knowledge_index", None)

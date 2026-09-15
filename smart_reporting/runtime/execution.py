@@ -9,6 +9,7 @@ from agno.db.base import AsyncBaseDb, BaseDb
 from agno.tools.code import CodeMode
 
 from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
+from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
 from ..reporting.host_workspace import ReportingWorkspaceRegistry
 from ..reporting.knowledge import ReportingKnowledgeIndex
 from ..sandbox.factory import create_sandbox_provider
@@ -28,6 +29,7 @@ class ExecutionContext:
     reporting_workspace_registry: ReportingWorkspaceRegistry | None = None
     reporting_code_mode_runtime: Any | None = None
     reporting_knowledge_index: ReportingKnowledgeIndex | None = None
+    reporting_lsp_process_manager: ReportingLspProcessManager | None = None
 
 
 def configure_execution_tracing(
@@ -88,6 +90,7 @@ def create_execution_context(
         )
     )
     reporting_knowledge_index = ReportingKnowledgeIndex(reporting_workspace_registry.root)
+    reporting_lsp_process_manager = ReportingLspProcessManager()
     return ExecutionContext(
         settings=current_settings,
         database=database.async_db,
@@ -96,6 +99,7 @@ def create_execution_context(
         reporting_workspace_registry=reporting_workspace_registry,
         reporting_code_mode_runtime=reporting_code_mode_runtime,
         reporting_knowledge_index=reporting_knowledge_index,
+        reporting_lsp_process_manager=reporting_lsp_process_manager,
     )
 
 
@@ -120,6 +124,7 @@ async def close_execution_resources(
     reporting_registry = getattr(context, "reporting_workspace_registry", None)
     code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
     knowledge_index = getattr(context, "reporting_knowledge_index", None)
+    lsp_process_manager = getattr(context, "reporting_lsp_process_manager", None)
     trace_database = getattr(context, "trace_database", None)
     if trace_database is not None:
         clients.append(trace_database)
@@ -129,6 +134,8 @@ async def close_execution_resources(
         clients.append(reporting_registry)
     if knowledge_index is not None:
         clients.append(knowledge_index)
+    if lsp_process_manager is not None:
+        clients.append(lsp_process_manager)
 
     first_error: BaseException | None = None
     try:

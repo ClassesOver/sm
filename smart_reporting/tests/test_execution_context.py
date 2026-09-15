@@ -20,7 +20,7 @@ class _Client:
 
 def test_configure_execution_tracing使用同步数据库和批处理():
     settings = AgentSettings.from_environment(
-        {"AGENT_TRACING_ENABLED": "true"},
+        {"AGENT_TRACING_ENABLED": "true", "REPORTING_HOST_WORKSPACE_ROOT": "/tmp/reporting-test"},
         load_env_file=False,
     )
     sync_db = object()
@@ -56,7 +56,9 @@ async def test_close_execution_resources关闭session_summary_model且按client�
         session_summary_manager=SimpleNamespace(model=model),
     )
     context = ExecutionContext(
-        settings=AgentSettings.from_environment({}, load_env_file=False),
+        settings=AgentSettings.from_environment(
+            {"REPORTING_HOST_WORKSPACE_ROOT": "/tmp/reporting-test"}, load_env_file=False
+        ),
         database=database,
         workspace_service=workspace,
     )
@@ -66,3 +68,18 @@ async def test_close_execution_resources关闭session_summary_model且按client�
     assert shared.closed == 1
     assert workspace.closed == 1
     assert database.closed == 1
+
+
+@pytest.mark.anyio
+async def test_close_execution_resources_closes_reporting_lsp_manager() -> None:
+    manager = _Client()
+    context = ExecutionContext(
+        settings=AgentSettings.from_environment(
+            {"REPORTING_HOST_WORKSPACE_ROOT": "/tmp/reporting-test"}, load_env_file=False
+        ),
+        database=_Client(),
+        workspace_service=_Client(),
+        reporting_lsp_process_manager=manager,
+    )
+    await close_execution_resources(context, tracing_flusher=lambda: True)
+    assert manager.closed == 1

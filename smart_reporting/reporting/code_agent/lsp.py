@@ -1,326 +1,228 @@
-"""正式 Reporting Workspace 的只读 Python 代码理解能力。"""
+"""正式 Workspace 的只读 python-lsp-server 适配。"""
 
 from __future__ import annotations
 
-import ast
 import hashlib
-from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-import anyio
 from loguru import logger
 
 from ...workspace import WorkspaceError
 from ..models import ReportingError
 from .context import ReportingCodingTaskBinding
+from .lsp_process import ReportingLspProcessError, ReportingLspProcessManager
 
-try:
-    import jedi
-except ImportError:  # pragma: no cover - 覆盖由部署环境决定。
-    jedi = None
-
-
-MAX_HOVER_BYTES = 2 * 1024
-MAX_LOCATIONS = 100
-MAX_SYMBOLS = 200
-
-
-def _failure(code: str, message: str) -> dict[str, Any]:
-    return {"ok": False, "code": code, "message": message}
-
-
-def _bounded_text(value: str, maximum: int) -> str:
-    return value.encode("utf-8")[:maximum].decode("utf-8", errors="ignore")
+MAX_HOVER_BYTES = 2048
 
 
 class ReportingWorkspaceLsp:
-    """以 task binding 限定读取范围的 Jedi 适配器。
-
-    该最小实现不拥有 LSP 子进程，也不会写入或同步 Workspace；每次请求使用
-    当前磁盘快照创建 Jedi Script，因而不会返回陈旧草稿的分析结果。
-    """
-
-    def __init__(self, binding: ReportingCodingTaskBinding) -> None:
-        self.binding = binding
-
-    @property
-    def _workspace_root(self) -> Path:
-        return self.binding.context.workspace_root
+    def __init__(
+        self, binding: ReportingCodingTaskBinding, manager: ReportingLspProcessManager | None = None
+    ) -> None:
+        self.binding, self.manager = binding, manager
 
     async def diagnostics(
-        self,
-        path: str | None = None,
-        *,
-        expected_source_sha256: str | None = None,
+        self, path: str | None = None, *, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
-        relative, source, source_sha256 = await self._source(path)
-        if rejected := self._expected_source_version(expected_source_sha256, source_sha256):
-            return rejected
+        path, source, sha = await self._source(path)
+        if failure := self._expected(expected_source_sha256, sha):
+            return failure
         try:
-            ast.parse(source, filename=relative)
-        except SyntaxError as error:
-            return {
-                "ok": True,
-                "path": relative,
-                "sourceSha256": source_sha256,
-                "diagnostics": [
-                    {
-                        "code": "syntax-error",
-                        "severity": "error",
-                        "line": max(0, (error.lineno or 1) - 1),
-                        "character": max(0, (error.offset or 1) - 1),
-                        "message": error.msg,
-                    }
-                ],
-            }
-        return {
-            "ok": True,
-            "path": relative,
-            "sourceSha256": source_sha256,
-            "diagnostics": [],
-        }
+            _, diagnostics = await self._manager().diagnostics(
+                self.binding.context.workspace_root, self._uri(path), source
+            )
+        except ReportingLspProcessError:
+            return self._unavailable(path, sha)
+        return {"ok": True, "path": path, "diagnostics": diagnostics, "sourceSha256": sha}
 
     async def hover(
-        self,
-        path: str,
-        *,
-        line: int,
-        character: int,
-        expected_source_sha256: str | None = None,
+        self, path: str, *, line: int, character: int, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
-        relative, source, source_sha256 = await self._source(path)
-        if rejected := self._expected_source_version(expected_source_sha256, source_sha256):
-            return rejected
-        request = self._position(source, line, character)
-        result = await self._jedi_call(
-            source,
-            relative,
-            lambda script: script.infer(*request),
-        )
-        if isinstance(result, dict):
-            return self._with_source_version(result, source_sha256)
-        definitions = tuple(result)
-        if not definitions:
-            return self._with_source_version({"ok": True, "found": False}, source_sha256)
-        first = definitions[0]
-        location = self._location(first)
-        if location.get("outsideWorkspace"):
-            return self._with_source_version(
-                {"ok": True, "found": True, "outsideWorkspace": True}, source_sha256
-            )
-        parts = [str(getattr(first, "description", "") or "")]
-        docstring = str(getattr(first, "docstring", lambda: "")() or "")
-        if docstring and docstring not in parts:
-            parts.append(docstring)
-        contents = _bounded_text("\n\n".join(part for part in parts if part), MAX_HOVER_BYTES)
-        return self._with_source_version(
-            {"ok": True, "found": True, "contents": contents, "location": location},
-            source_sha256,
-        )
+        path, source, sha = await self._source(path)
+        if failure := self._expected(expected_source_sha256, sha):
+            return failure
+        value = await self._request(path, source, "textDocument/hover", line, character, sha)
+        if isinstance(value, dict) and value.get("ok") is False:
+            return value
+        text = self._contents(value.get("contents") if isinstance(value, dict) else None)
+        if not text:
+            return {"ok": True, "found": False, "sourceSha256": sha}
+        return {"ok": True, "found": True, "contents": text, "sourceSha256": sha}
 
     async def definition(
-        self,
-        path: str,
-        *,
-        line: int,
-        character: int,
-        expected_source_sha256: str | None = None,
+        self, path: str, *, line: int, character: int, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
         return await self._locations(
-            path,
-            line,
-            character,
-            expected_source_sha256,
-            lambda script, request: script.goto(*request),
+            path, line, character, expected_source_sha256, "textDocument/definition"
         )
 
     async def references(
-        self,
-        path: str,
-        *,
-        line: int,
-        character: int,
-        expected_source_sha256: str | None = None,
+        self, path: str, *, line: int, character: int, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
         return await self._locations(
-            path,
-            line,
-            character,
-            expected_source_sha256,
-            lambda script, request: script.get_references(*request),
+            path, line, character, expected_source_sha256, "textDocument/references"
         )
 
     async def document_symbols(
         self, path: str, *, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
-        relative, source, source_sha256 = await self._source(path)
-        if rejected := self._expected_source_version(expected_source_sha256, source_sha256):
-            return rejected
-        result = await self._jedi_call(
-            source,
-            relative,
-            lambda script: script.get_names(all_scopes=True, definitions=True, references=False),
-        )
-        if isinstance(result, dict):
-            return self._with_source_version(result, source_sha256)
-        symbols = [
-            {
-                "name": str(item.name),
-                "kind": str(item.type),
-                "line": max(0, int(item.line) - 1),
-                "character": max(0, int(item.column)),
-            }
-            for item in result
-            if self._location(item).get("path") == relative
-        ]
-        symbols.sort(key=lambda item: (item["line"], item["character"], item["name"], item["kind"]))
-        return self._with_source_version(
-            {"ok": True, "path": relative, "symbols": symbols[:MAX_SYMBOLS]}, source_sha256
-        )
+        path, source, sha = await self._source(path)
+        if failure := self._expected(expected_source_sha256, sha):
+            return failure
+        value = await self._request(path, source, "textDocument/documentSymbol", None, None, sha)
+        if isinstance(value, dict) and value.get("ok") is False:
+            return value
+        symbols = []
+        for item in value or []:
+            if isinstance(item, dict):
+                location = item.get("location") or {}
+                position = (
+                    item.get("range") or item.get("selectionRange") or location.get("range") or {}
+                ).get("start", {})
+                line = position.get("line", 0)
+                character = position.get("character", 0)
+                name = str(item.get("name", ""))
+                if isinstance(line, int) and 0 <= line < len(source.splitlines()):
+                    source_line = source.splitlines()[line]
+                    found = source_line.find(name)
+                    if found >= 0:
+                        character = found
+                symbols.append(
+                    {
+                        "name": name,
+                        "kind": item.get("kind", "symbol"),
+                        "line": line,
+                        "character": character,
+                    }
+                )
+        return {"ok": True, "path": path, "symbols": symbols, "sourceSha256": sha}
 
     async def _locations(
-        self,
-        path: str,
-        line: int,
-        character: int,
-        expected_source_sha256: str | None,
-        operation: Callable[[Any, tuple[int, int]], Iterable[Any]],
+        self, path: str, line: int, character: int, expected: str | None, method: str
     ) -> dict[str, Any]:
-        relative, source, source_sha256 = await self._source(path)
-        if rejected := self._expected_source_version(expected_source_sha256, source_sha256):
-            return rejected
-        request = self._position(source, line, character)
-        result = await self._jedi_call(source, relative, lambda script: operation(script, request))
-        if isinstance(result, dict):
-            return self._with_source_version(result, source_sha256)
-        locations = self._unique_locations(result)
-        return self._with_source_version({"ok": True, "locations": locations}, source_sha256)
+        path, source, sha = await self._source(path)
+        if failure := self._expected(expected, sha):
+            return failure
+        value = await self._request(path, source, method, line, character, sha)
+        if isinstance(value, dict) and value.get("ok") is False:
+            return value
+        raw = value if isinstance(value, list) else [value] if value else []
+        locations = [self._location(item) for item in raw if isinstance(item, dict)]
+        return {"ok": True, "locations": locations, "sourceSha256": sha}
+
+    async def _request(
+        self, path: str, source: str, method: str, line: int | None, character: int | None, sha: str
+    ) -> Any:
+        try:
+            manager = self._manager()
+            root = self.binding.context.workspace_root
+            uri = self._uri(path)
+            await manager.synchronize_document(root, uri, source)
+            params: dict[str, Any] = {"textDocument": {"uri": uri}}
+            if line is not None:
+                params["position"] = {"line": line, "character": character}
+            if method == "textDocument/references":
+                params["context"] = {"includeDeclaration": True}
+            return await manager.request(root, method, params)
+        except ReportingLspProcessError:
+            return self._unavailable(path, sha)
 
     async def _source(self, path: str | None) -> tuple[str, str, str]:
-        relative = self.binding.context.script_path if path is None else self._path(path)
-        if not relative.endswith(".py"):
+        path = self.binding.context.script_path if path is None else self._path(path)
+        if not path.endswith(".py"):
             raise ReportingError("report_lsp_invalid_request", "LSP 仅支持 Python 文件。")
         try:
             raw = await self.binding.workspace.read_limited_regular_file(
-                self.binding.context.task_id,
-                relative,
-                max_bytes=self.binding.context.max_source_bytes,
+                self.binding.context.task_id, path, max_bytes=self.binding.context.max_source_bytes
             )
-        except WorkspaceError as error:
-            raise ReportingError("report_lsp_file_invalid", "LSP 读取工作区 Python 文件失败。") from error
-        try:
-            source = raw.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ReportingError("report_lsp_file_invalid", "LSP 文件不是有效的 UTF-8 文本。") from error
-        return relative, source, hashlib.sha256(raw).hexdigest()
-
-    @staticmethod
-    def _with_source_version(result: dict[str, Any], source_sha256: str) -> dict[str, Any]:
-        return {**result, "sourceSha256": source_sha256}
-
-    def _expected_source_version(
-        self, expected_source_sha256: str | None, source_sha256: str
-    ) -> dict[str, Any] | None:
-        if expected_source_sha256 is None:
-            return None
-        if not isinstance(expected_source_sha256, str) or len(expected_source_sha256) != 64:
-            return self._with_source_version(
-                _failure("report_lsp_invalid_request", "LSP 文件版本无效。"), source_sha256
-            )
-        if expected_source_sha256 != source_sha256:
-            return self._with_source_version(
-                _failure(
-                    "report_lsp_document_version_mismatch",
-                    "LSP 请求对应的脚本版本已变化，请重新读取后重试。",
-                ),
-                source_sha256,
-            )
-        return None
+            return path, raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+        except (WorkspaceError, UnicodeDecodeError) as error:
+            raise ReportingError(
+                "report_lsp_file_invalid", "LSP 读取工作区 Python 文件失败。"
+            ) from error
 
     def _path(self, path: str) -> str:
         if not isinstance(path, str) or not path:
             raise ReportingError("report_lsp_invalid_request", "LSP 路径无效。")
         try:
             return self.binding.workspace.paths.normalize(path)
-        except WorkspaceError as error:
-            raise ReportingError("report_lsp_invalid_request", "LSP 路径必须位于当前工作区。") from error
+        except (WorkspaceError, TypeError) as error:
+            raise ReportingError(
+                "report_lsp_invalid_request", "LSP 路径必须位于当前工作区。"
+            ) from error
+
+    def _uri(self, path: str) -> str:
+        return (self.binding.context.workspace_root / path).resolve().as_uri()
+
+    def _manager(self) -> ReportingLspProcessManager:
+        if self.manager is None:
+            self.manager = ReportingLspProcessManager()
+        return self.manager
 
     @staticmethod
-    def _position(source: str, line: int, character: int) -> tuple[int, int]:
-        if (
-            isinstance(line, bool)
-            or isinstance(character, bool)
-            or not isinstance(line, int)
-            or not isinstance(character, int)
-            or line < 0
-            or character < 0
-        ):
-            raise ReportingError("report_lsp_invalid_request", "LSP 位置必须是非负整数。")
-        lines = source.splitlines()
-        if line >= len(lines) or character > len(lines[line]):
-            raise ReportingError("report_lsp_invalid_request", "LSP 位置超出文件范围。")
-        return line + 1, character
+    def _expected(expected: str | None, actual: str) -> dict[str, Any] | None:
+        if expected is not None and (not isinstance(expected, str) or len(expected) != 64):
+            return {
+                "ok": False,
+                "code": "report_lsp_invalid_request",
+                "message": "LSP 文件版本无效。",
+                "sourceSha256": actual,
+            }
+        if expected is not None and expected != actual:
+            return {
+                "ok": False,
+                "code": "report_lsp_document_version_mismatch",
+                "message": "LSP 请求对应的脚本版本已变化，请重新读取后重试。",
+                "sourceSha256": actual,
+            }
+        return None
 
-    async def _jedi_call(
-        self,
-        source: str,
-        relative: str,
-        operation: Callable[[Any], Iterable[Any]],
-    ) -> tuple[Any, ...] | dict[str, Any]:
-        if jedi is None:
-            return _failure("report_lsp_unavailable", "Python LSP 当前不可用。")
-
-        def run() -> tuple[Any, ...]:
-            script = jedi.Script(
-                code=source,
-                path=str(self._workspace_root / relative),
-                project=jedi.Project(path=str(self._workspace_root)),
-            )
-            return tuple(operation(script))
-
-        try:
-            return await anyio.to_thread.run_sync(run)
-        except Exception as error:
-            logger.warning(
-                "report_lsp_jedi_failed workspace_key={} path={} error_type={}",
-                self.binding.context.workspace_key,
-                relative,
-                type(error).__name__,
-            )
-            return _failure("report_lsp_unavailable", "Python LSP 当前不可用。")
-
-    def _location(self, item: Any) -> dict[str, Any]:
-        module_path = getattr(item, "module_path", None)
-        if module_path is None:
-            return {"outsideWorkspace": True}
-        try:
-            relative = Path(module_path).resolve().relative_to(self._workspace_root.resolve())
-            path = self.binding.workspace.paths.normalize(relative.as_posix())
-        except (OSError, ValueError, WorkspaceError):
-            return {"outsideWorkspace": True}
+    def _unavailable(self, path: str, sha: str) -> dict[str, Any]:
+        logger.warning(
+            "report_lsp_unavailable workspace_key={} path={}",
+            self.binding.context.workspace_key,
+            path,
+        )
         return {
-            "path": path,
-            "line": max(0, int(getattr(item, "line", 1)) - 1),
-            "character": max(0, int(getattr(item, "column", 0))),
-            "kind": str(getattr(item, "type", "unknown")),
+            "ok": False,
+            "code": "report_lsp_unavailable",
+            "message": "Python LSP 当前不可用。",
+            "sourceSha256": sha,
         }
 
-    def _unique_locations(self, items: Iterable[Any]) -> list[dict[str, Any]]:
-        locations: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
-        for item in items:
-            location = self._location(item)
-            locations[tuple(sorted(location.items()))] = location
-        return sorted(
-            locations.values(),
-            key=lambda item: (
-                item.get("outsideWorkspace", False),
-                item.get("path", ""),
-                item.get("line", -1),
-                item.get("character", -1),
-                item.get("kind", ""),
-            ),
-        )[:MAX_LOCATIONS]
+    def _location(self, item: dict[str, Any]) -> dict[str, Any]:
+        nested = item.get("location") or {}
+        uri = item.get("targetUri") or item.get("uri") or nested.get("uri")
+        position = (
+            item.get("targetSelectionRange") or item.get("range") or nested.get("range") or {}
+        ).get("start", {})
+        try:
+            path = (
+                Path(str(uri).removeprefix("file://"))
+                .resolve()
+                .relative_to(self.binding.context.workspace_root.resolve())
+                .as_posix()
+            )
+        except ValueError:
+            return {"outsideWorkspace": True}
+        path = self.binding.workspace.paths.normalize(path)
+        return {
+            "path": path,
+            "line": position.get("line", 0),
+            "character": position.get("character", 0),
+            "kind": "symbol",
+        }
+
+    @staticmethod
+    def _contents(value: Any) -> str:
+        if isinstance(value, str):
+            return value.encode()[:MAX_HOVER_BYTES].decode(errors="ignore")
+        if isinstance(value, dict):
+            return ReportingWorkspaceLsp._contents(value.get("value"))
+        if isinstance(value, list):
+            return "\n".join(ReportingWorkspaceLsp._contents(item) for item in value)
+        return ""
 
 
 __all__ = ["ReportingWorkspaceLsp"]

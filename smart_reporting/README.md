@@ -65,9 +65,13 @@ Workspace 相对路径，并在 `html` 字段提供 HTML 路径、大小和 SHA-
 - `write_script` 和 `execute_code` 通过 Responses API free-form custom tool 接收原始源码；
 - `read_script`、`restart_code_mode`、`run_script` 和 `submit_script` 使用普通 function tool；
 - 每个 coding task 独享 Agent、Toolkit、任务绑定和 CodeMode session，不创建临时 Workspace；
+- 可按当前 Workspace 检索项目文档、规范和已验收成功的修复知识；
+- LSP 工具通过当前 Workspace 的 `python-lsp-server` stdio 进程提供诊断、hover、定义、引用和文档符号，请求可携带 `expectedSourceSha256` 做版本门禁；
 - `submit_script` 只接受最近一次成功执行且脚本/声明输出哈希未变化的执行回执。
 
 正式脚本必须经过 `write_script → run_script → submit_script`；探索性 `execute_code` 不会直接产生阶段交接回执。
+
+Knowledge 索引位于 `REPORTING_HOST_WORKSPACE_ROOT/knowledge/index.sqlite3`，动态修复只在领域验收成功后记录，并按 Workspace 隔离。LSP 进程由执行上下文统一管理，进程不可用时仅返回软告警。
 
 HTML 是静态自包含文档：图片以内嵌 data URL 提供，禁止脚本、表单和外部资源；HTTP 预览响应通过
 sandbox Content-Security-Policy 隔离页面。

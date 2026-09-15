@@ -22,6 +22,7 @@ from .context import (
     ReportingCodingTaskContext,
 )
 from .lsp import ReportingWorkspaceLsp
+from .lsp_process import ReportingLspProcessManager
 
 MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_DIAGNOSTIC_BYTES = 8 * 1024
@@ -271,11 +272,16 @@ class ReportingCodeModeToolkit(Toolkit):
         binding: ReportingCodingTaskBinding,
         runtime: ReportingCodeModeRuntime,
         knowledge_index: ReportingKnowledgeIndex | None = None,
+        lsp_manager: ReportingLspProcessManager | None = None,
     ) -> None:
         self.binding = binding
         self.runtime = runtime
         self.knowledge_index = knowledge_index
-        self.lsp = ReportingWorkspaceLsp(binding)
+        self.lsp = (
+            ReportingWorkspaceLsp(binding, lsp_manager)
+            if lsp_manager is not None
+            else ReportingWorkspaceLsp(binding)
+        )
         self.submitted_receipt: ExecutionReceipt | None = None
         tools = [
             Function(
