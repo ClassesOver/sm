@@ -10,6 +10,7 @@ from agno.tools.code import CodeMode
 
 from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
 from ..reporting.host_workspace import ReportingWorkspaceRegistry
+from ..reporting.knowledge import ReportingKnowledgeIndex
 from ..sandbox.factory import create_sandbox_provider
 from ..task_execution import DEFAULT_TERMINAL_TIMEOUT
 from ..workspace import AsyncSandboxRegistry, WorkspaceService
@@ -26,6 +27,7 @@ class ExecutionContext:
     trace_database: BaseDb | None = None
     reporting_workspace_registry: ReportingWorkspaceRegistry | None = None
     reporting_code_mode_runtime: Any | None = None
+    reporting_knowledge_index: ReportingKnowledgeIndex | None = None
 
 
 def configure_execution_tracing(
@@ -85,6 +87,7 @@ def create_execution_context(
             ),
         )
     )
+    reporting_knowledge_index = ReportingKnowledgeIndex(reporting_workspace_registry.root)
     return ExecutionContext(
         settings=current_settings,
         database=database.async_db,
@@ -92,6 +95,7 @@ def create_execution_context(
         trace_database=database.sync_db,
         reporting_workspace_registry=reporting_workspace_registry,
         reporting_code_mode_runtime=reporting_code_mode_runtime,
+        reporting_knowledge_index=reporting_knowledge_index,
     )
 
 
@@ -115,6 +119,7 @@ async def close_execution_resources(
     clients.extend((context.workspace_service, context.database))
     reporting_registry = getattr(context, "reporting_workspace_registry", None)
     code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
+    knowledge_index = getattr(context, "reporting_knowledge_index", None)
     trace_database = getattr(context, "trace_database", None)
     if trace_database is not None:
         clients.append(trace_database)
@@ -122,6 +127,8 @@ async def close_execution_resources(
         clients.append(code_mode_runtime)
     if reporting_registry is not None:
         clients.append(reporting_registry)
+    if knowledge_index is not None:
+        clients.append(knowledge_index)
 
     first_error: BaseException | None = None
     try:

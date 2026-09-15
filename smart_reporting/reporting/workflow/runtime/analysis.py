@@ -711,6 +711,7 @@ class RuntimeAnalysisMixin:
                         return ReportingCodeGenerationRunner(
                             self.visualization_code_agent_factory,
                             self.code_mode_runtime,
+                            knowledge_index=self.knowledge_index,
                         )
 
                     async def run_code(
@@ -2162,6 +2163,7 @@ class RuntimeAnalysisMixin:
         code_runner = ReportingCodeGenerationRunner(
             self._analysis_script_agent_factory,
             self.code_mode_runtime,
+            knowledge_index=self.knowledge_index,
         )
 
         async def run_structured_agent(

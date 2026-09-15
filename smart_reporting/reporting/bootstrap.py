@@ -18,6 +18,7 @@ from .delivery.publishing import (
     ReportDownloadGrantService,
 )
 from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
+from .knowledge import ReportingKnowledgeIndex
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
 from .vision import ReportVisionReviewer
@@ -66,6 +67,9 @@ def create_report_runtime(
         secret=settings.workspace_hmac_secret,
     )
     reporting_workspace = ReportingWorkspaceRouter(workspace_registry)
+    knowledge_index = getattr(context, "reporting_knowledge_index", None)
+    if knowledge_index is None:
+        knowledge_index = ReportingKnowledgeIndex(workspace_registry.root)
     if artifact_persistence is not None:
         artifact_persistence = ReportArtifactPersistenceService(
             artifact_persistence.repository,
@@ -130,6 +134,7 @@ def create_report_runtime(
         workspace_service=reporting_workspace,
         workspace_registry=workspace_registry,
         code_mode_runtime=getattr(context, "reporting_code_mode_runtime", None),
+        knowledge_index=knowledge_index,
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,

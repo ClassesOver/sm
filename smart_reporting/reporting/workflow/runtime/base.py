@@ -133,6 +133,7 @@ from ...instructions import (
     HOSPITAL_OUTLINE_INSTRUCTIONS,
     HOSPITAL_REQUEST_INSTRUCTIONS,
 )
+from ...knowledge import ReportingKnowledgeIndex
 from ...metadata import ReportingMetadataClient
 from ...model_policy import (
     ReportingThinkingProfile,
@@ -428,6 +429,7 @@ class _ReportWorkflowRuntimeBase:
         workspace_service: WorkspaceService | ReportingWorkspaceRouter,
         workspace_registry: ReportingWorkspaceRegistry | None = None,
         code_mode_runtime: Any | None = None,
+        knowledge_index: ReportingKnowledgeIndex | None = None,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
@@ -465,6 +467,7 @@ class _ReportWorkflowRuntimeBase:
         self.workspace_service = workspace_service
         self.workspace_registry = workspace_registry
         self.code_mode_runtime = code_mode_runtime
+        self.knowledge_index = knowledge_index
         self._host_workspaces: dict[str, HostReportingWorkspace] = {}
         self.registry = registry
         self.profiles = profiles

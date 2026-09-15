@@ -25,6 +25,12 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
     ReportingCodeGenerationRunner,
 )
 from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
+from smart_reporting.runtime.execution import (
+    ExecutionContext,
+    close_execution_resources,
+    create_execution_context,
+)
+from smart_reporting.runtime.settings import AgentSettings
 
 
 @pytest.fixture
@@ -147,6 +153,60 @@ async def test_runner_passes_knowledge_index_to_its_task_local_toolkit(tmp_path:
 
     assert knowledge.calls == [("API", "workspace-a")]
     assert runtime.shutdowns == ["code-task-1"]
+
+
+def test_execution_context_creates_shared_knowledge_index_under_host_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path),
+            "AGENT_WORKSPACE_HMAC_SECRET": "0" * 32,
+        },
+        load_env_file=False,
+    )
+    database = type("Database", (), {"async_db": object(), "sync_db": object()})()
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.AsyncSandboxRegistry",
+        lambda _database: object(),
+    )
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.create_sandbox_provider",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    context = create_execution_context(
+        settings,
+        database_factory=lambda _url: database,
+        tracing_configurer=lambda *_args, **_kwargs: None,
+        workspace_factory=lambda **_kwargs: object(),
+    )
+
+    assert isinstance(context.reporting_knowledge_index, ReportingKnowledgeIndex)
+    assert context.reporting_knowledge_index.database_path == tmp_path / "knowledge" / "index.sqlite3"
+
+
+@pytest.mark.anyio
+async def test_execution_resource_close_closes_shared_knowledge_index() -> None:
+    class ClosableKnowledge:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    knowledge = ClosableKnowledge()
+    context = ExecutionContext(
+        settings=object(),  # type: ignore[arg-type]
+        database=object(),
+        workspace_service=object(),  # type: ignore[arg-type]
+        reporting_knowledge_index=knowledge,  # type: ignore[arg-type]
+    )
+
+    await close_execution_resources(context, tracing_flusher=lambda: True)
+
+    assert knowledge.closed is True
 
 
 @pytest.mark.anyio
