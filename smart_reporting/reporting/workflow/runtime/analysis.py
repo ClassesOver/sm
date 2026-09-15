@@ -13,6 +13,7 @@ from ....task_execution import (
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
 from ...code_agent.context import ReportingCodingTaskContext
+from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
@@ -131,6 +132,42 @@ _VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
     {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
 )
+
+
+async def _record_successful_repair(
+    knowledge_index: ReportingKnowledgeIndex | None,
+    *,
+    workspace_key: str | None,
+    task_kind: str,
+    diagnostic: Mapping[str, Any],
+    script_file: FileIdentity,
+) -> None:
+    """知识写入失败只降级为日志，不能回滚已经 accepted 的领域结果。"""
+
+    error_code = diagnostic.get("code")
+    if (
+        knowledge_index is None
+        or not isinstance(workspace_key, str)
+        or not workspace_key
+        or not isinstance(error_code, str)
+        or not error_code
+    ):
+        return
+    summary = f"修复 {error_code} 后，正式领域验收已通过。"
+    try:
+        await knowledge_index.record_successful_repair(
+            workspace_key=workspace_key,
+            task_kind=task_kind,
+            error_code=error_code,
+            source_sha256=script_file.sha256,
+            summary=summary,
+        )
+    except Exception as error:
+        loguru_logger.bind(
+            task_kind=task_kind,
+            error_code=error_code,
+            error_type=type(error).__name__,
+        ).warning("report_knowledge_repair_record_failed")
 
 
 def _analysis_summary_input_token_budget(agent: Any, run_context: RunContext) -> int:
@@ -674,6 +711,8 @@ class RuntimeAnalysisMixin:
                             "report_phase_contract_invalid", "章节图表 Toolkit 装配结果无效。"
                         )
                     toolkit = toolkits[0]
+                    repair_workspace_key: str | None = None
+                    knowledge_index = getattr(self, "knowledge_index", None)
 
                     async def generate_plan(
                         request: Mapping[str, Any], task_context: RunContext
@@ -711,7 +750,7 @@ class RuntimeAnalysisMixin:
                         return ReportingCodeGenerationRunner(
                             self.visualization_code_agent_factory,
                             self.code_mode_runtime,
-                            knowledge_index=self.knowledge_index,
+                            knowledge_index=knowledge_index,
                         )
 
                     async def run_code(
@@ -721,6 +760,7 @@ class RuntimeAnalysisMixin:
                         diagnostic: Mapping[str, Any] | None,
                         task_facts: Mapping[str, Any] | None = None,
                     ) -> CodeGenerationResult:
+                        nonlocal repair_workspace_key
                         binding = (
                             task_context.dependencies.get("AgentOS 任务执行")
                             if isinstance(task_context.dependencies, Mapping)
@@ -758,6 +798,7 @@ class RuntimeAnalysisMixin:
                             declared_output_paths=declared_outputs,
                             max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
                         )
+                        repair_workspace_key = coding_context.workspace_key
                         facts_payload = {
                             "visualizationFacts": facts,
                             "visualizationWorkspace": instruction_payload[
@@ -772,6 +813,17 @@ class RuntimeAnalysisMixin:
                             facts_payload,
                             run_context=task_context,
                             diagnostic=diagnostic,
+                        )
+
+                    async def record_successful_repair(
+                        diagnostic: Mapping[str, Any], script_file: FileIdentity
+                    ) -> None:
+                        await _record_successful_repair(
+                            knowledge_index,
+                            workspace_key=repair_workspace_key,
+                            task_kind="visualization",
+                            diagnostic=diagnostic,
+                            script_file=script_file,
                         )
 
                     async def inspect_chart(chart: ChartDraft, task_context: RunContext) -> Any:
@@ -847,16 +899,21 @@ class RuntimeAnalysisMixin:
                             section_code, [], run_context=task_context
                         )
 
-                    result = await VisualizationSectionWorkflow(
-                        generate_plan=generate_plan,
-                        run_code=run_code,
-                        inspect_chart=(
+                    workflow_kwargs: dict[str, Any] = {
+                        "generate_plan": generate_plan,
+                        "run_code": run_code,
+                        "inspect_chart": (
                             inspect_chart if self.vision_reviewer is not None else None
                         ),
-                        submit=submit,
-                        degrade=degrade,
-                        thinking_enabled=self._analysis_thinking_enabled,
-                        thinking_budget_cap=self._analysis_thinking_budget_cap,
+                        "submit": submit,
+                        "degrade": degrade,
+                        "thinking_enabled": self._analysis_thinking_enabled,
+                        "thinking_budget_cap": self._analysis_thinking_budget_cap,
+                    }
+                    if knowledge_index is not None:
+                        workflow_kwargs["record_successful_repair"] = record_successful_repair
+                    result = await VisualizationSectionWorkflow(
+                        **workflow_kwargs
                     ).run(instruction_payload, invocation.run_context)
                     return result.plan
 
@@ -2163,8 +2220,10 @@ class RuntimeAnalysisMixin:
         code_runner = ReportingCodeGenerationRunner(
             self._analysis_script_agent_factory,
             self.code_mode_runtime,
-            knowledge_index=self.knowledge_index,
+            knowledge_index=getattr(self, "knowledge_index", None),
         )
+        repair_workspace_key: str | None = None
+        knowledge_index = getattr(self, "knowledge_index", None)
 
         async def run_structured_agent(
             agent: Any,
@@ -2212,6 +2271,7 @@ class RuntimeAnalysisMixin:
             diagnostic: Mapping[str, Any] | None,
             run_context: RunContext,
         ) -> CodeGenerationResult:
+            nonlocal repair_workspace_key
             failure_kind = _code_failure_kind(diagnostic)
             decision = select_reporting_thinking(
                 ThinkingRequest(
@@ -2262,6 +2322,7 @@ class RuntimeAnalysisMixin:
                 declared_output_paths=(evidence_path,),
                 max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
             )
+            repair_workspace_key = coding_context.workspace_key
             with bind_reporting_thinking(decision):
                 return await code_runner.run(
                     coding_context,
@@ -2270,6 +2331,17 @@ class RuntimeAnalysisMixin:
                     run_context=run_context,
                     diagnostic=diagnostic,
                 )
+
+        async def record_successful_repair(
+            diagnostic: Mapping[str, Any], script_file: FileIdentity
+        ) -> None:
+            await _record_successful_repair(
+                knowledge_index,
+                workspace_key=repair_workspace_key,
+                task_kind="analysis",
+                diagnostic=diagnostic,
+                script_file=script_file,
+            )
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             summary_request = _prepare_analysis_summary_request(
@@ -2286,12 +2358,17 @@ class RuntimeAnalysisMixin:
             )
             return cast(AnalysisSummaryDraft, output)
 
+        workflow_kwargs: dict[str, Any] = {
+            "decide_evidence": decide_evidence,
+            "run_code": run_code,
+            "summarize": summarize,
+            "read_file": toolkit.read_file,
+            "complete": toolkit.complete_analysis_item,
+        }
+        if knowledge_index is not None:
+            workflow_kwargs["record_successful_repair"] = record_successful_repair
         workflow = AnalysisItemWorkflow(
-            decide_evidence=decide_evidence,
-            run_code=run_code,
-            summarize=summarize,
-            read_file=toolkit.read_file,
-            complete=toolkit.complete_analysis_item,
+            **workflow_kwargs
         )
         result = await workflow.run(payload, task_run_context)
         return result.output

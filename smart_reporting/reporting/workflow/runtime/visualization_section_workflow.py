@@ -367,6 +367,8 @@ class VisualizationSectionWorkflow:
         inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
         degrade: DegradeVisualization | None = None,
+        record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
+        | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
     ) -> None:
@@ -375,6 +377,7 @@ class VisualizationSectionWorkflow:
         self.inspect_chart = inspect_chart
         self.submit = submit
         self.degrade = degrade
+        self.record_successful_repair = record_successful_repair
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
 
@@ -392,6 +395,7 @@ class VisualizationSectionWorkflow:
         script_file: FileIdentity | None = None
         generation_failure: Exception | None = None
         generated_result: CodeGenerationResult | None = None
+        successful_repair: tuple[Mapping[str, Any], FileIdentity] | None = None
         for generate_attempt in range(_MAX_GENERATE_ATTEMPTS):
             try:
                 diagnostic = (
@@ -417,6 +421,8 @@ class VisualizationSectionWorkflow:
                         diagnostic=diagnostic,
                     )
                 script_file = _ensure_script_identity(generated_result, script_path)
+                if diagnostic is not None:
+                    successful_repair = (diagnostic, script_file)
                 break
             except Exception as error:
                 generation_failure = error
@@ -493,6 +499,8 @@ class VisualizationSectionWorkflow:
 
                 receipt = await self.submit(plan, inspections, run_context)
                 _raise_rejected_submission(receipt)
+                if successful_repair is not None and self.record_successful_repair is not None:
+                    await self.record_successful_repair(*successful_repair)
                 return VisualizationWorkflowResult(
                     "accepted", plan, script_file, inspections, recovery_used
                 )
@@ -561,6 +569,7 @@ class VisualizationSectionWorkflow:
                         ),
                     )
                 repaired_file = _ensure_script_identity(repaired, script_path)
+                successful_repair = (diagnostic, repaired_file)
                 generated_result = repaired
                 repaired_outputs = {
                     item.path for item in repaired.execution_receipt.output_files

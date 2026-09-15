@@ -413,6 +413,7 @@ class _AnalysisItemState:
     recovery: _DurableAnalysisCompletion | None = None
     script_file: FileIdentity | None = None
     execution_receipt: ExecutionReceipt | None = None
+    repair_diagnostic: Mapping[str, Any] | None = None
     failure: Exception | None = None
     warnings: list[str] = field(default_factory=list)
     generation_attempts: int = 0
@@ -431,12 +432,15 @@ class AnalysisItemWorkflow:
         summarize: Summarize,
         read_file: ToolCall,
         complete: ToolCall,
+        record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
+        | None = None,
     ) -> None:
         self.decide_evidence = decide_evidence
         self.run_code = run_code
         self.summarize = summarize
         self.read_file = read_file
         self.complete = complete
+        self.record_successful_repair = record_successful_repair
 
     async def run(
         self, instruction: Mapping[str, Any], run_context: RunContext
@@ -719,6 +723,8 @@ class AnalysisItemWorkflow:
             )
             state.script_file = self._signed_script_file(generated, script_path)
             state.execution_receipt = generated.execution_receipt
+            if diagnostic is not None:
+                state.repair_diagnostic = dict(diagnostic)
             state.failure = None
             if previous_sha256 is not None and state.script_file.sha256 == previous_sha256:
                 logger.warning(
@@ -1044,6 +1050,13 @@ class AnalysisItemWorkflow:
             run_context=run_context,
         )
         self._validate_completion_result(result)
+        if (
+            not state.supplement_abandoned
+            and state.repair_diagnostic is not None
+            and state.script_file is not None
+            and self.record_successful_repair is not None
+        ):
+            await self.record_successful_repair(state.repair_diagnostic, state.script_file)
         state.statuses["complete-analysis"] = "completed"
         return StepOutput(content={"status": "accepted"})
 
