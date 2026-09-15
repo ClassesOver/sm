@@ -13,7 +13,7 @@ from loguru import logger
 from ....model_routing import TaskComplexity
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
-from ...phase import bounded_python_script_diagnostic, reporting_python_script_failed
+from ...phase import bounded_python_script_diagnostic
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .code_generation import (
     CodeGenerationResult,
@@ -28,7 +28,7 @@ GenerateVisualizationPlan = Callable[
 ]
 
 
-class GenerateVisualizationScript(Protocol):
+class RunVisualizationCode(Protocol):
     def __call__(
         self,
         plan: VisualizationPlanDraft,
@@ -36,26 +36,16 @@ class GenerateVisualizationScript(Protocol):
         /,
         *,
         diagnostic: Mapping[str, Any] | None,
+        task_facts: Mapping[str, Any] | None = None,
     ) -> Awaitable[CodeGenerationResult]: ...
 
 
-RepairVisualizationScript = Callable[
-    [
-        FileIdentity,
-        Mapping[str, Any],
-        Mapping[str, Any],
-        RunContext,
-    ],
-    Awaitable[CodeGenerationResult],
-]
-ExecuteScript = Callable[[str, RunContext], Awaitable[Mapping[str, Any]]]
 InspectChart = Callable[[ChartDraft, RunContext], Awaitable[ChartVisualInspectionReceipt]]
 SubmitVisualization = Callable[
     [VisualizationPlanDraft, tuple[ChartVisualInspectionReceipt, ...], RunContext],
     Awaitable[Mapping[str, Any]],
 ]
 DegradeVisualization = Callable[[Exception, RunContext], Awaitable[Mapping[str, Any]]]
-LoadScript = Callable[[str, RunContext], Awaitable[FileIdentity | None]]
 
 _NON_RECOVERABLE_CODES = frozenset(
     {
@@ -371,24 +361,18 @@ class VisualizationSectionWorkflow:
         self,
         *,
         generate_plan: GenerateVisualizationPlan,
-        generate_script: GenerateVisualizationScript,
-        repair_script: RepairVisualizationScript | None,
-        execute_script: ExecuteScript,
+        run_code: RunVisualizationCode,
         inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
         degrade: DegradeVisualization | None = None,
-        load_script: LoadScript | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
     ) -> None:
         self.generate_plan = generate_plan
-        self.generate_script = generate_script
-        self.repair_script = repair_script
-        self.execute_script = execute_script
+        self.run_code = run_code
         self.inspect_chart = inspect_chart
         self.submit = submit
         self.degrade = degrade
-        self.load_script = load_script
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
 
@@ -403,47 +387,49 @@ class VisualizationSectionWorkflow:
             return VisualizationWorkflowResult("accepted", plan, None, ())
 
         script_path = _signed_script_path(payload)
-        script_file = (
-            await self.load_script(script_path, run_context)
-            if self.load_script is not None
-            else None
-        )
+        script_file: FileIdentity | None = None
         generation_failure: Exception | None = None
-        if script_file is None:
-            for generate_attempt in range(_MAX_GENERATE_ATTEMPTS):
-                try:
-                    diagnostic = (
-                        _repair_diagnostic(plan, generation_failure, script_path)
-                        if generation_failure is not None
-                        else None
+        generated_result: CodeGenerationResult | None = None
+        for generate_attempt in range(_MAX_GENERATE_ATTEMPTS):
+            try:
+                diagnostic = (
+                    _repair_diagnostic(plan, generation_failure, script_path)
+                    if generation_failure is not None
+                    else None
+                )
+                failure_kind = _code_failure_kind(diagnostic)
+                decision = select_reporting_thinking(
+                    ThinkingRequest(
+                        operation="visualization_script",
+                        complexity=thinking_complexity,
+                        attempt=1 if failure_kind is not None else 0,
+                        failure_kind=failure_kind,
+                        configured_budget_cap=self.thinking_budget_cap,
+                        thinking_enabled=self.thinking_enabled,
                     )
-                    failure_kind = _code_failure_kind(diagnostic)
-                    decision = select_reporting_thinking(
-                        ThinkingRequest(
-                            operation="visualization_script",
-                            complexity=thinking_complexity,
-                            attempt=1 if failure_kind is not None else 0,
-                            failure_kind=failure_kind,
-                            configured_budget_cap=self.thinking_budget_cap,
-                            thinking_enabled=self.thinking_enabled,
-                        )
+                )
+                with bind_reporting_thinking(decision):
+                    generated_result = await self.run_code(
+                        plan,
+                        run_context,
+                        diagnostic=diagnostic,
                     )
-                    with bind_reporting_thinking(decision):
-                        generated = await self.generate_script(
-                            plan,
-                            run_context,
-                            diagnostic=diagnostic,
-                        )
-                    script_file = _ensure_script_identity(generated, script_path)
-                    break
-                except Exception as error:
-                    generation_failure = error
-                    if _is_nonrecoverable(error) or generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
-                        raise
-        else:
-            script_file = _ensure_script_identity(CodeGenerationResult(script_file), script_path)
+                script_file = _ensure_script_identity(generated_result, script_path)
+                break
+            except Exception as error:
+                generation_failure = error
+                if _is_nonrecoverable(error) or generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
+                    raise
         if script_file is None:
             raise RuntimeError("可视化脚本生成状态不可达")
+        if generated_result is None:
+            raise RuntimeError("可视化执行回执状态不可达")
+        output_paths = {item.path for item in generated_result.execution_receipt.output_files}
+        if any(chart.source_path not in output_paths for chart in plan.charts):
+            raise ReportingError(
+                "report_phase_artifact_changed",
+                "图表路径不在 Coding Agent 签发输出中。",
+            )
         recovery_used = False
         execution_repairs = 0
         visual_review_repairs = 0
@@ -455,14 +441,6 @@ class VisualizationSectionWorkflow:
                     error = pending_repair_error
                     pending_repair_error = None
                     raise error
-                execution = await self.execute_script(script_path, run_context)
-                if reporting_python_script_failed(execution):
-                    raise ReportingError(
-                        "report_visualization_script_failed",
-                        "可视化脚本执行失败。",
-                        details=dict(execution),
-                    )
-
                 inspections: tuple[ChartVisualInspectionReceipt, ...] = ()
                 if self.inspect_chart is not None:
                     inspections = tuple(
@@ -507,7 +485,7 @@ class VisualizationSectionWorkflow:
             except Exception as error:
                 if _is_nonrecoverable(error):
                     raise
-                if not _is_degradable(error) or self.repair_script is None:
+                if not _is_degradable(error):
                     raise
                 is_visual_review_failure = (
                     isinstance(error, ReportingError)
@@ -552,10 +530,11 @@ class VisualizationSectionWorkflow:
                     )
                 )
                 with bind_reporting_thinking(repair_decision):
-                    repaired = await self.repair_script(
-                        script_file,
-                        diagnostic,
-                        _repair_task_facts(
+                    repaired = await self.run_code(
+                        plan,
+                        run_context,
+                        diagnostic=diagnostic,
+                        task_facts=_repair_task_facts(
                             plan,
                             error,
                             script_path,
@@ -566,9 +545,16 @@ class VisualizationSectionWorkflow:
                                 else execution_repairs
                             ),
                         ),
-                        run_context,
                     )
                 repaired_file = _ensure_script_identity(repaired, script_path)
+                repaired_outputs = {
+                    item.path for item in repaired.execution_receipt.output_files
+                }
+                if any(chart.source_path not in repaired_outputs for chart in plan.charts):
+                    raise ReportingError(
+                        "report_phase_artifact_changed",
+                        "图表路径不在 Coding Agent 签发输出中。",
+                    )
                 if repaired_file.sha256 == script_file.sha256:
                     pending_repair_error = _with_unchanged_repair(
                         error, script_file=script_file

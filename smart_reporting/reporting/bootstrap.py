@@ -8,7 +8,7 @@ from ..runtime.execution import ExecutionContext
 from ..runtime.settings import AgentSettings
 from ..task_execution import TaskExecutionKernel, TaskExecutionRepository
 from .agent import (
-    create_reporting_code_agent,
+    create_reporting_code_agent_factory,
     create_reporting_generator_agent,
     create_reporting_phase_agent,
 )
@@ -86,7 +86,7 @@ def create_report_runtime(
         output_schema=VisualizationPlanDraft,
         name="reporting-visualization-generator",
     )
-    visualization_code_agent = create_reporting_code_agent(
+    visualization_code_agent_factory = create_reporting_code_agent_factory(
         model=reporting_agent_template.model,
         name="reporting-visualization-code-agent",
         role="只为冻结图表计划签发可视化脚本。",
@@ -122,7 +122,7 @@ def create_report_runtime(
         reporting_agent_template=reporting_agent_template,
         task_runner=task_runner,
         visualization_generator=visualization_generator,
-        visualization_recovery=visualization_code_agent,
+        visualization_code_agent_factory=visualization_code_agent_factory,
         section_generator=section_generator,
         section_recovery=section_recovery,
         vision_reviewer=vision_reviewer,

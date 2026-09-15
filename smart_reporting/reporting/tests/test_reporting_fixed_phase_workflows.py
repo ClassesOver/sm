@@ -11,6 +11,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from smart_reporting.reporting.agent import ReportingPhaseOpenAIChat
+from smart_reporting.reporting.code_agent.context import ExecutionReceipt
 from smart_reporting.reporting.model_policy import (
     ThinkingRequest,
     current_reporting_thinking_decision,
@@ -397,6 +398,26 @@ def _inspection() -> ChartVisualInspectionReceipt:
         modelId="vision-test",
         reviewed=True,
         requiresRevision=False,
+    )
+
+
+def _execution_receipt(
+    script_path: str,
+    script_size: int,
+    script_sha256: str,
+    output_paths: tuple[str, ...],
+) -> ExecutionReceipt:
+    return ExecutionReceipt(
+        runId="run-1",
+        sourceFile=FileIdentity(
+            path=script_path,
+            size=script_size,
+            sha256=script_sha256,
+        ),
+        outputFiles=tuple(
+            FileIdentity(path=path, size=1, sha256=str(index) * 64)
+            for index, path in enumerate(output_paths, start=1)
+        ),
     )
 
 
@@ -933,7 +954,7 @@ async def test_visualization_workflow_hydrates_committed_script_without_regenera
 
 
 @pytest.mark.anyio
-async def test_visualization_workflow_repairs_visual_review_failure_once() -> None:
+async def test_visualization_review_failure_starts_new_interactive_run() -> None:
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
     failed_inspection = _inspection().model_copy(
@@ -949,16 +970,29 @@ async def test_visualization_workflow_repairs_visual_review_failure_once() -> No
             ),
         }
     )
-    repair = AsyncMock(return_value=CodeGenerationResult(repaired_file))
+    run_code = AsyncMock(
+        side_effect=[
+            CodeGenerationResult(
+                script_file=initial_file,
+                execution_receipt=_execution_receipt(
+                    "charts/charts.py", 1, "a" * 64, ("charts/chart.png",)
+                ),
+            ),
+            CodeGenerationResult(
+                script_file=repaired_file,
+                execution_receipt=_execution_receipt(
+                    "charts/charts.py", 2, "b" * 64, ("charts/chart.png",)
+                ),
+            ),
+        ]
+    )
     messages: list[str] = []
     sink_id = logger.add(messages.append, level="WARNING", format="{message}")
 
     try:
         result = await VisualizationSectionWorkflow(
             generate_plan=AsyncMock(return_value=_visualization_plan()),
-            generate_script=AsyncMock(return_value=CodeGenerationResult(initial_file)),
-            repair_script=repair,
-            execute_script=AsyncMock(return_value={"exitCode": 0}),
+            run_code=run_code,
             inspect_chart=AsyncMock(side_effect=[failed_inspection, _inspection()]),
             submit=AsyncMock(return_value={"status": "accepted"}),
         ).run(_visualization_payload(), _context())
@@ -973,8 +1007,9 @@ async def test_visualization_workflow_repairs_visual_review_failure_once() -> No
     assert "text_overlap" in review_log
     assert "critical" in review_log
     assert "图例遮挡横轴标签" in review_log
-    repair.assert_awaited_once()
-    _, diagnostic, task_facts, _ = repair.await_args.args
+    assert run_code.await_count == 2
+    diagnostic = run_code.await_args_list[1].kwargs["diagnostic"]
+    task_facts = run_code.await_args_list[1].kwargs["task_facts"]
     assert diagnostic == {
         "code": "report_visualization_review_failed",
         "message": "图表正式审查未通过。",

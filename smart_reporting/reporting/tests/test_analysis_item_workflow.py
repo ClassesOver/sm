@@ -13,6 +13,7 @@ from agno.workflow.types import StepOutput
 from loguru import logger
 from pydantic import ValidationError
 
+from smart_reporting.reporting.code_agent.context import ExecutionReceipt
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.reporting.workflow.runtime import analysis_item_workflow as item_workflow
@@ -66,7 +67,15 @@ def _code_result(
     *,
     path: str = "报表/智能分析/run-1/evidence/analysis_001/supplement.py",
 ) -> CodeGenerationResult:
-    return CodeGenerationResult(FileIdentity(path=path, size=1, sha256=sha256))
+    evidence_path = "报表/智能分析/run-1/evidence/analysis_001/supplement.json"
+    return CodeGenerationResult(
+        script_file=FileIdentity(path=path, size=1, sha256=sha256),
+        execution_receipt=ExecutionReceipt(
+            runId="run-1",
+            sourceFile=FileIdentity(path=path, size=1, sha256=sha256),
+            outputFiles=(FileIdentity(path=evidence_path, size=1, sha256="b" * 64),),
+        ),
+    )
 
 
 def _facts_read_result(content: str | None = None) -> dict[str, Any]:
@@ -404,14 +413,7 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
         events.append("validate")
         return _tool_result(content=evidence, sha256="b" * 64)
 
-    generate_script = AsyncMock(
-        side_effect=lambda **_kwargs: events.append("generate") or _code_result()
-    )
-    terminal = AsyncMock(
-        side_effect=lambda **_kwargs: (
-            events.append("execute") or _tool_result(exitCode=0, output="")
-        )
-    )
+    run_code = AsyncMock(side_effect=lambda **_kwargs: events.append("run_code") or _code_result())
     complete = AsyncMock(
         side_effect=lambda **_kwargs: (
             events.append("complete") or _tool_result(status="accepted", taskFinished=True)
@@ -419,11 +421,9 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
     )
     workflow = AnalysisItemWorkflow(
         decide_evidence=decide,
-        generate_script=generate_script,
-        repair_script=AsyncMock(),
+        run_code=run_code,
         summarize=summarize,
         read_file=read_file,
-        run_script=terminal,
         complete=complete,
     )
 
@@ -432,8 +432,8 @@ async def test_analysis_item_workflow_executes_all_five_stages_in_order() -> Non
     )
 
     assert [status for _, status in result.stage_statuses] == ["completed"] * 5
-    assert events == ["decision", "generate", "execute", "validate", "summarize", "complete"]
-    task_facts = generate_script.await_args.kwargs["task_facts"]
+    assert events == ["decision", "run_code", "validate", "summarize", "complete"]
+    task_facts = run_code.await_args.kwargs["task_facts"]
     assert task_facts["evidenceDecision"]["missingFacts"] == ["收入类型构成"]
     assert "run_python_script" not in task_facts
     assert "complete_analysis_item" not in task_facts

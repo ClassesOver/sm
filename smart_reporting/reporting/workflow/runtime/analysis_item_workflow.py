@@ -24,9 +24,9 @@ from pydantic import (
     model_validator,
 )
 
+from ...code_agent.context import ExecutionReceipt
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...models import ReportingError
-from ...phase import bounded_python_script_diagnostic
 from ..checkpoint import FileIdentity
 from .code_generation import CodeGenerationResult
 
@@ -379,11 +379,9 @@ def _project_analysis_summary_payload(
 
 
 DecideEvidence = Callable[[Mapping[str, Any]], Awaitable[AnalysisEvidenceDecision]]
-GenerateScript = Callable[..., Awaitable[CodeGenerationResult]]
-RepairScript = Callable[..., Awaitable[CodeGenerationResult]]
+RunAnalysisCode = Callable[..., Awaitable[CodeGenerationResult]]
 Summarize = Callable[[Mapping[str, Any]], Awaitable[AnalysisSummaryDraft]]
 ToolCall = Callable[..., Awaitable[dict[str, Any]]]
-LoadScript = Callable[[str, RunContext], Awaitable[FileIdentity | None]]
 
 
 @dataclass
@@ -404,6 +402,7 @@ class _AnalysisItemState:
     evidence_file: FileIdentity | None = None
     recovery: _DurableAnalysisCompletion | None = None
     script_file: FileIdentity | None = None
+    execution_receipt: ExecutionReceipt | None = None
     failure: Exception | None = None
     warnings: list[str] = field(default_factory=list)
     generation_attempts: int = 0
@@ -418,22 +417,16 @@ class AnalysisItemWorkflow:
         self,
         *,
         decide_evidence: DecideEvidence,
-        generate_script: GenerateScript,
-        repair_script: RepairScript,
+        run_code: RunAnalysisCode,
         summarize: Summarize,
         read_file: ToolCall,
-        run_script: ToolCall,
         complete: ToolCall,
-        load_script: LoadScript | None = None,
     ) -> None:
         self.decide_evidence = decide_evidence
-        self.generate_script = generate_script
-        self.repair_script = repair_script
+        self.run_code = run_code
         self.summarize = summarize
         self.read_file = read_file
-        self.run_script = run_script
         self.complete = complete
-        self.load_script = load_script
 
     async def run(
         self, instruction: Mapping[str, Any], run_context: RunContext
@@ -701,87 +694,40 @@ class AnalysisItemWorkflow:
         script_path = self._script_path(state)
         previous_sha256 = state.script_file.sha256 if state.script_file is not None else None
         try:
-            if state.script_file is None and self.load_script is not None:
-                loaded = await self.load_script(script_path, run_context)
-                if loaded is not None:
-                    state.script_file = self._signed_script_file(
-                        CodeGenerationResult(loaded), script_path
-                    )
-                    state.failure = None
             if state.script_file is None:
                 state.generation_attempts += 1
-                generated = await self.generate_script(
-                    script_path=script_path,
-                    task_facts=self._script_task_facts(state),
-                    diagnostic=self._repair_error(state.failure),
-                    run_context=run_context,
-                )
             elif state.failure is not None:
                 if state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS:
                     return self._abandon_supplement(state)
                 state.repair_count += 1
-                generated = await self.repair_script(
-                    script_file=state.script_file,
-                    diagnostic=self._repair_diagnostic(state),
-                    decision=decision,
-                    run_context=run_context,
-                )
-            else:
-                generated = None
-            if generated is not None:
-                state.script_file = self._signed_script_file(generated, script_path)
-                state.failure = None
-                if previous_sha256 is not None and state.script_file.sha256 == previous_sha256:
-                    logger.warning(
-                        "report_analysis_script_repair_unchanged analysis_id={} sha256={}",
-                        state.instruction.get("currentAnalysisId"),
-                        previous_sha256,
-                    )
-                    raise ReportingError(
-                        "report_analysis_script_repair_unchanged",
-                        "补充分析脚本修复后内容未发生变化。",
-                        details={"path": script_path, "sha256": previous_sha256},
-                    )
-            script_file = state.script_file
-            if script_file is None:
-                raise ReportingError(
-                    "report_analysis_script_generation_invalid",
-                    "补充分析脚本生成后缺少签发文件身份。",
-                )
-            execution = await self.run_script(
-                script_path=script_file.path,
+            diagnostic = self._repair_error(state.failure)
+            generated = await self.run_code(
+                script_path=script_path,
+                task_facts=self._script_task_facts(state),
+                diagnostic=diagnostic,
                 run_context=run_context,
             )
-            exit_code = execution.get("exitCode", execution.get("exit_code"))
-            if execution.get("ok") is False or exit_code != 0:
-                output = str(execution.get("output") or "")
-                diagnostic_output, diagnostic_output_truncated = bounded_python_script_diagnostic(
-                    output, 4000
+            state.script_file = self._signed_script_file(generated, script_path)
+            state.execution_receipt = generated.execution_receipt
+            state.failure = None
+            if previous_sha256 is not None and state.script_file.sha256 == previous_sha256:
+                logger.warning(
+                    "report_analysis_script_repair_unchanged analysis_id={} sha256={}",
+                    state.instruction.get("currentAnalysisId"),
+                    previous_sha256,
                 )
                 raise ReportingError(
-                    "report_analysis_script_failed",
-                    "补充分析脚本执行失败。",
-                    details={
-                        "exitCode": exit_code,
-                        "output": diagnostic_output,
-                        "outputTruncated": bool(
-                            execution.get("outputTruncated") is True or diagnostic_output_truncated
-                        ),
-                        "toolCode": execution.get("code"),
-                        "toolMessage": execution.get("message"),
-                    },
+                    "report_analysis_script_repair_unchanged",
+                    "补充分析脚本修复后内容未发生变化。",
+                    details={"path": script_path, "sha256": previous_sha256},
+                )
+            output_paths = {item.path for item in generated.execution_receipt.output_files}
+            if self._evidence_path(state) not in output_paths:
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "补充 evidence 不在 Coding Agent 签发输出中。",
                 )
         except ReportingError as error:
-            if error.code == "report_analysis_script_failed" and isinstance(error.details, Mapping):
-                output = str(error.details.get("output") or "")
-                logger.warning(
-                    "report_analysis_script_execution_failed analysis_id={} exit_code={} "
-                    "output_truncated={} output_bytes={}",
-                    state.instruction.get("currentAnalysisId"),
-                    error.details.get("exitCode"),
-                    error.details.get("outputTruncated"),
-                    len(output.encode("utf-8")),
-                )
             state.failure = error
             state.evidence = None
             exhausted = (

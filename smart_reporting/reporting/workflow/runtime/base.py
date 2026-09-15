@@ -420,7 +420,7 @@ class _ReportWorkflowRuntimeBase:
         reporting_agent_template: Agent,
         task_runner: ReportingTaskCoordinator,
         visualization_generator: Agent | None = None,
-        visualization_recovery: Agent | None = None,
+        visualization_code_agent_factory: Callable[[Sequence[Any]], Agent] | None = None,
         section_generator: Agent | None = None,
         section_recovery: Agent | None = None,
         vision_reviewer: ReportVisionReviewer | None = None,
@@ -458,7 +458,7 @@ class _ReportWorkflowRuntimeBase:
         )
         self.task_runner = task_runner
         self.visualization_generator = visualization_generator
-        self.visualization_recovery = visualization_recovery
+        self.visualization_code_agent_factory = visualization_code_agent_factory
         self.section_generator = section_generator
         self.section_recovery = section_recovery
         self.vision_reviewer = vision_reviewer
@@ -651,7 +651,7 @@ class _ReportWorkflowRuntimeBase:
                 "固定事实足够时 missingFacts 必须为空数组，不得为了探索数据而声明缺口。",
             ),
         )
-        from ...agent import create_reporting_code_agent
+        from ...agent import create_reporting_code_agent_factory
 
         if not isinstance(reporting_agent_template.model, OpenAIChat):
             raise TypeError("Report analysis code agent requires OpenAIChat")
@@ -663,7 +663,7 @@ class _ReportWorkflowRuntimeBase:
         analysis_code_model.exponential_backoff = False
         analysis_code_model.__dict__.pop("_report_escalation_thinking_profile", None)
         analysis_code_model.__dict__.pop("_report_thinking_escalation_fields", None)
-        self._analysis_script_agent = create_reporting_code_agent(
+        self._analysis_script_agent_factory = create_reporting_code_agent_factory(
             model=analysis_code_model,
             name="report-analysis-script-writer",
             role="只根据签发事实缺口生成或修复补证 Python 脚本。",

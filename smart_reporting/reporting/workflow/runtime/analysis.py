@@ -9,10 +9,10 @@ from agno.models.message import Message
 from agno.session.agent import AgentSession
 
 from ....task_execution import (
-    DEFAULT_TERMINAL_TIMEOUT,
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
+from ...code_agent.context import ReportingCodingTaskContext
 from ...model_policy import (
     ThinkingFailureKind,
     ThinkingRequest,
@@ -35,7 +35,6 @@ from .analysis_item_workflow import (
     AnalysisSummaryDraft,
     SupplementalEvidence,
     _project_analysis_summary_payload,
-    supplemental_evidence_output_contract,
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
@@ -699,103 +698,80 @@ class RuntimeAnalysisMixin:
                         )
 
                     def code_runner() -> ReportingCodeGenerationRunner:
-                        if self.visualization_recovery is None:
+                        if self.visualization_code_agent_factory is None:
                             raise ReportingError(
                                 "report_visualization_code_agent_missing",
                                 "章节图表代码 Agent 未配置。",
                             )
-                        return ReportingCodeGenerationRunner(agent=self.visualization_recovery)
-
-                    async def apply_patch(
-                        *, patch: str, run_context: RunContext | None = None
-                    ) -> Mapping[str, Any]:
-                        return await toolkit.apply_analysis_patch(
-                            patch,
-                            run_context=run_context,
+                        if self.code_mode_runtime is None:
+                            raise ReportingError(
+                                "report_code_mode_runtime_missing",
+                                "章节图表 CodeMode runtime 未配置。",
+                            )
+                        return ReportingCodeGenerationRunner(
+                            self.visualization_code_agent_factory,
+                            self.code_mode_runtime,
                         )
 
-                    async def generate_script(
+                    async def run_code(
                         plan: VisualizationPlanDraft,
                         task_context: RunContext,
                         *,
                         diagnostic: Mapping[str, Any] | None,
+                        task_facts: Mapping[str, Any] | None = None,
                     ) -> CodeGenerationResult:
-                        return await code_runner().generate(
-                            script_path,
-                            {
-                                "visualizationFacts": facts,
-                                "visualizationWorkspace": instruction_payload[
-                                    "visualizationWorkspace"
-                                ],
-                                "visualizationPlan": plan.model_dump(mode="json", by_alias=True),
-                            },
-                            apply_patch,
-                            task_context,
-                            diagnostic=diagnostic,
-                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
+                        binding = (
+                            task_context.dependencies.get("AgentOS 任务执行")
+                            if isinstance(task_context.dependencies, Mapping)
+                            else None
                         )
-
-                    async def repair_script(
-                        script_file: FileIdentity,
-                        diagnostic: Mapping[str, Any],
-                        task_facts: Mapping[str, Any],
-                        task_context: RunContext,
-                    ) -> CodeGenerationResult:
-                        return await code_runner().repair(
-                            script_file,
-                            diagnostic,
-                            toolkit.read_file,
-                            apply_patch,
-                            task_context,
-                            task_facts=task_facts,
-                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
-                        )
-
-                    async def load_script(
-                        path: str, task_context: RunContext
-                    ) -> FileIdentity | None:
-                        return await toolkit.recover_signed_analysis_script(path, task_context)
-
-                    async def execute_script(
-                        script_path: str, task_context: RunContext
-                    ) -> Mapping[str, Any]:
-                        if self.code_mode_runtime is not None:
-                            binding = (
-                                task_context.dependencies.get("AgentOS 任务执行")
+                        coding_task_id = (
+                            binding.get("externalRunId")
+                            if isinstance(binding, Mapping)
+                            else None
+                        ) or task_id
+                        task_workspace = self.workspace_for(
+                            run_id=str(task_context.run_id or ""),
+                            session_id=str(task_context.session_id or ""),
+                            user_id=str(task_context.user_id or "") or None,
+                            dependencies=(
+                                dict(task_context.dependencies)
                                 if isinstance(task_context.dependencies, Mapping)
                                 else None
-                            )
-                            task_id = (
-                                binding.get("externalRunId")
-                                if isinstance(binding, Mapping)
-                                else None
-                            ) or section_code
-                            task_workspace = self.workspace_for(
-                                run_id=str(task_context.run_id or ""),
-                                session_id=str(task_context.session_id or ""),
-                                user_id=str(task_context.user_id or "") or None,
-                                dependencies=(
-                                    dict(task_context.dependencies)
-                                    if isinstance(task_context.dependencies, Mapping)
-                                    else None
-                                ),
-                            )
-                            return await self.code_mode_runtime.execute_script(
-                                f"visualization:{task_id}",
-                                task_workspace,
-                                script_path,
-                                timeout=DEFAULT_TERMINAL_TIMEOUT,
-                            )
-                        receipt = await toolkit.run_python_script(
-                            script_path, run_context=task_context
+                            ),
                         )
-                        if receipt.get("ok") is False:
-                            raise ReportingError(
-                                str(receipt.get("code", "report_visualization_script_failed")),
-                                str(receipt.get("message", "章节图表脚本执行未被接受。")),
-                                details=dict(receipt),
-                            )
-                        return receipt
+                        declared_outputs = tuple(
+                            sorted(chart.source_path for chart in plan.charts)
+                        )
+                        coding_context = ReportingCodingTaskContext(
+                            task_id=str(coding_task_id),
+                            task_kind="visualization",
+                            code_mode_session_id=f"visualization:{coding_task_id}",
+                            workspace_key=task_workspace.identity.workspace_key,
+                            workspace_root=task_workspace.identity.root,
+                            script_path=script_path,
+                            authorized_read_paths=tuple(
+                                sorted(item.path for item in section_fact_files.values())
+                            ),
+                            authorized_write_paths=(script_path, *declared_outputs),
+                            declared_output_paths=declared_outputs,
+                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
+                        )
+                        facts_payload = {
+                            "visualizationFacts": facts,
+                            "visualizationWorkspace": instruction_payload[
+                                "visualizationWorkspace"
+                            ],
+                            "visualizationPlan": plan.model_dump(mode="json", by_alias=True),
+                            **dict(task_facts or {}),
+                        }
+                        return await code_runner().run(
+                            coding_context,
+                            task_workspace,
+                            facts_payload,
+                            run_context=task_context,
+                            diagnostic=diagnostic,
+                        )
 
                     async def inspect_chart(chart: ChartDraft, task_context: RunContext) -> Any:
                         receipt = await toolkit.inspect_chart(
@@ -870,37 +846,18 @@ class RuntimeAnalysisMixin:
                             section_code, [], run_context=task_context
                         )
 
-                    try:
-                        result = await VisualizationSectionWorkflow(
-                            generate_plan=generate_plan,
-                            generate_script=generate_script,
-                            repair_script=(
-                                repair_script if self.visualization_recovery is not None else None
-                            ),
-                            execute_script=execute_script,
-                            inspect_chart=(
-                                inspect_chart if self.vision_reviewer is not None else None
-                            ),
-                            submit=submit,
-                            degrade=degrade,
-                            load_script=load_script,
-                            thinking_enabled=self._analysis_thinking_enabled,
-                            thinking_budget_cap=self._analysis_thinking_budget_cap,
-                        ).run(instruction_payload, invocation.run_context)
-                        return result.plan
-                    finally:
-                        if self.code_mode_runtime is not None:
-                            binding = (
-                                invocation.run_context.dependencies.get("AgentOS 任务执行")
-                                if isinstance(invocation.run_context.dependencies, Mapping)
-                                else None
-                            )
-                            task_id = (
-                                binding.get("externalRunId")
-                                if isinstance(binding, Mapping)
-                                else None
-                            ) or section_code
-                            await self.code_mode_runtime.shutdown(f"visualization:{task_id}")
+                    result = await VisualizationSectionWorkflow(
+                        generate_plan=generate_plan,
+                        run_code=run_code,
+                        inspect_chart=(
+                            inspect_chart if self.vision_reviewer is not None else None
+                        ),
+                        submit=submit,
+                        degrade=degrade,
+                        thinking_enabled=self._analysis_thinking_enabled,
+                        thinking_budget_cap=self._analysis_thinking_budget_cap,
+                    ).run(instruction_payload, invocation.run_context)
+                    return result.plan
 
                 await self.task_runner.run(
                     task_scope,
@@ -2197,7 +2154,15 @@ class RuntimeAnalysisMixin:
         )
         thinking_enabled = self._analysis_thinking_enabled
         thinking_budget_cap = self._analysis_thinking_budget_cap
-        code_runner = ReportingCodeGenerationRunner(agent=self._analysis_script_agent)
+        if self.code_mode_runtime is None:
+            raise ReportingError(
+                "report_code_mode_runtime_missing",
+                "分析脚本 CodeMode runtime 未配置。",
+            )
+        code_runner = ReportingCodeGenerationRunner(
+            self._analysis_script_agent_factory,
+            self.code_mode_runtime,
+        )
 
         async def run_structured_agent(
             agent: Any,
@@ -2238,7 +2203,7 @@ class RuntimeAnalysisMixin:
                 ),
             )
 
-        async def generate_script(
+        async def run_code(
             *,
             script_path: str,
             task_facts: Mapping[str, Any],
@@ -2256,79 +2221,53 @@ class RuntimeAnalysisMixin:
                     thinking_enabled=thinking_enabled,
                 )
             )
-            with bind_reporting_thinking(decision):
-                return await code_runner.generate(
-                    script_path,
-                    task_facts,
-                    toolkit.apply_analysis_patch,
-                    run_context,
-                    diagnostic=diagnostic,
-                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
-                )
-
-        async def repair_script(
-            *,
-            script_file: FileIdentity,
-            diagnostic: Mapping[str, Any],
-            decision: AnalysisEvidenceDecision,
-            run_context: RunContext,
-        ) -> CodeGenerationResult:
-            failure_kind = _code_failure_kind(diagnostic)
-            repair_decision = select_reporting_thinking(
-                ThinkingRequest(
-                    operation="analysis_script",
-                    complexity=thinking_complexity,
-                    attempt=1 if failure_kind is not None else 0,
-                    failure_kind=failure_kind,
-                    configured_budget_cap=thinking_budget_cap,
-                    thinking_enabled=thinking_enabled,
-                )
+            binding = (
+                run_context.dependencies.get("AgentOS 任务执行")
+                if isinstance(run_context.dependencies, Mapping)
+                else None
             )
-            with bind_reporting_thinking(repair_decision):
-                return await code_runner.repair(
-                    script_file,
-                    diagnostic,
-                    toolkit.read_file,
-                    toolkit.apply_analysis_patch,
-                    run_context,
-                    task_facts={
-                        "missingFacts": list(decision.missing_facts),
-                        "outputContract": supplemental_evidence_output_contract(),
-                    },
-                    max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
-                )
-
-        async def run_script(
-            script_path: str,
-            task_context: RunContext,
-        ) -> Mapping[str, Any]:
-            if self.code_mode_runtime is not None:
-                binding = (
-                    task_context.dependencies.get("AgentOS 任务执行")
-                    if isinstance(task_context.dependencies, Mapping)
+            task_id = (
+                binding.get("externalRunId") if isinstance(binding, Mapping) else None
+            ) or analysis_id
+            task_workspace = self.workspace_for(
+                run_id=str(run_context.run_id or ""),
+                session_id=str(run_context.session_id or ""),
+                user_id=str(run_context.user_id or "") or None,
+                dependencies=(
+                    dict(run_context.dependencies)
+                    if isinstance(run_context.dependencies, Mapping)
                     else None
+                ),
+            )
+            datasets = task_facts.get("datasets")
+            dataset_paths = tuple(
+                sorted(
+                    str(item["path"])
+                    for item in datasets
+                    if isinstance(item, Mapping) and isinstance(item.get("path"), str)
                 )
-                task_id = (
-                    binding.get("externalRunId") if isinstance(binding, Mapping) else None
-                ) or analysis_id
-                task_workspace = self.workspace_for(
-                    run_id=str(task_context.run_id or ""),
-                    session_id=str(task_context.session_id or ""),
-                    user_id=str(task_context.user_id or "") or None,
-                    dependencies=(
-                        dict(task_context.dependencies)
-                        if isinstance(task_context.dependencies, Mapping)
-                        else None
-                    ),
-                )
-                return await self.code_mode_runtime.execute_script(
-                    f"analysis:{task_id}",
+            ) if isinstance(datasets, (list, tuple)) else ()
+            evidence_path = str(task_facts.get("evidencePath") or "")
+            coding_context = ReportingCodingTaskContext(
+                task_id=str(task_id),
+                task_kind="analysis",
+                code_mode_session_id=f"analysis:{task_id}",
+                workspace_key=task_workspace.identity.workspace_key,
+                workspace_root=task_workspace.identity.root,
+                script_path=script_path,
+                authorized_read_paths=dataset_paths,
+                authorized_write_paths=(script_path, evidence_path),
+                declared_output_paths=(evidence_path,),
+                max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
+            )
+            with bind_reporting_thinking(decision):
+                return await code_runner.run(
+                    coding_context,
                     task_workspace,
-                    script_path,
-                    timeout=DEFAULT_TERMINAL_TIMEOUT,
-                    matplotlib_agg=False,
+                    task_facts,
+                    run_context=run_context,
+                    diagnostic=diagnostic,
                 )
-            return await toolkit.run_python_script(script_path, run_context=task_context)
 
         async def summarize(summary_payload: Mapping[str, Any]) -> AnalysisSummaryDraft:
             summary_request = _prepare_analysis_summary_request(
@@ -2347,28 +2286,13 @@ class RuntimeAnalysisMixin:
 
         workflow = AnalysisItemWorkflow(
             decide_evidence=decide_evidence,
-            generate_script=generate_script,
-            repair_script=repair_script,
+            run_code=run_code,
             summarize=summarize,
             read_file=toolkit.read_file,
-            run_script=run_script,
             complete=toolkit.complete_analysis_item,
-            load_script=toolkit.recover_signed_analysis_script,
         )
-        try:
-            result = await workflow.run(payload, task_run_context)
-            return result.output
-        finally:
-            if self.code_mode_runtime is not None:
-                binding = (
-                    task_run_context.dependencies.get("AgentOS 任务执行")
-                    if isinstance(task_run_context.dependencies, Mapping)
-                    else None
-                )
-                task_id = (
-                    binding.get("externalRunId") if isinstance(binding, Mapping) else None
-                ) or analysis_id
-                await self.code_mode_runtime.shutdown(f"analysis:{task_id}")
+        result = await workflow.run(payload, task_run_context)
+        return result.output
 
     async def _run_analysis_item_task(
         self,
