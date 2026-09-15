@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -10,7 +11,6 @@ from typing import Any
 
 from agno.run import RunContext
 
-from ...sandbox.contracts import RunPythonScriptRequest
 from ...task_execution import (
     MAX_TOOL_FAILURE_ENTRIES,
     MAX_TOOL_PROGRESS_ENTRIES,
@@ -24,9 +24,21 @@ from ...task_execution import (
     stable_progress_result,
     suggested_workspace_path,
 )
-from ...workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
+from ...workspace import (
+    MAX_UPLOAD_BYTES,
+    WorkspaceError,
+    WorkspacePathConflict,
+    WorkspaceService,
+)
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
+
+
+def _validate_reporting_content(content: bytes) -> None:
+    if not isinstance(content, bytes):
+        raise WorkspaceError("文件内容格式无效，请使用二进制内容后重试。")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise WorkspaceError("文件内容超过 200 MiB，请缩小文件后重试。")
 
 
 class WorkspaceServiceReportingPort:
@@ -89,7 +101,7 @@ class WorkspaceServiceReportingPort:
     ) -> ReportingFileRef:
         normalized = self._require_output(path)
         raw = content.encode("utf-8")
-        self._service._validate_content(raw)
+        _validate_reporting_content(raw)
         result = await self._kernel.patch(
             "overwrite" if overwrite else "create",
             normalized,
@@ -141,7 +153,7 @@ class ReportingWorkspaceAdapter:
         return self._service.read_text(thread_id, path)
 
     def validate_content(self, content: bytes) -> None:
-        self._service._validate_content(content)
+        _validate_reporting_content(content)
 
     async def hash_file(self, thread_id: str, path: str) -> dict[str, Any]:
         return await self._service.ahash_file(thread_id, path)
@@ -156,30 +168,8 @@ class ReportingWorkspaceAdapter:
             or any(re.fullmatch(r"[A-Za-z_]\w*", name) is None for name in names)
         ):
             raise WorkspaceError("Python 依赖探测参数无效。")
-        encoded_names = json.dumps(sorted(names), separators=(",", ":"))
-        script = (
-            "import importlib.util,json\n"
-            f"names=json.loads({encoded_names!r})\n"
-            "print(json.dumps([name for name in names "
-            "if importlib.util.find_spec(name) is not None],separators=(',',':')))\n"
-        )
-        async with self._service._async_client() as client:
-            sandbox = await self._service._asandbox_for(client, thread_id)
-            execution = getattr(sandbox, "execution", None)
-            if execution is None:
-                raise WorkspaceError("sandbox provider 不支持 Python 依赖探测。")
-            result = await execution.run_python_script(
-                RunPythonScriptRequest(script=script, timeout_ms=30_000)
-            )
-        if result.exit_code != 0:
-            raise WorkspaceError("Python 依赖探测执行失败。")
-        try:
-            value = json.loads(result.stdout)
-        except (TypeError, ValueError) as error:
-            raise WorkspaceError("Python 依赖探测结果无效。") from error
-        if not isinstance(value, list) or any(item not in names for item in value):
-            raise WorkspaceError("Python 依赖探测结果无效。")
-        return {item for item in value if isinstance(item, str)}
+        del thread_id
+        return {name for name in names if importlib.util.find_spec(name) is not None}
 
     async def read_limited_regular_file(
         self,
@@ -188,16 +178,9 @@ class ReportingWorkspaceAdapter:
         *,
         max_bytes: int,
     ) -> bytes:
-        relative, remote = WorkspaceService.normalize_path(path, allow_root=False)
-        async with self._service._async_client() as client:
-            sandbox = await self._service._asandbox_for(client, thread_id)
-            await self._service._avalidate_existing_path(sandbox, relative)
-            info = await self._service._ainfo(sandbox, remote)
-            if not self._service._is_regular_file(info):
-                raise WorkspaceError("Reporting 文件必须是普通文件。")
-            if int(getattr(info, "size", 0) or 0) > max_bytes:
-                raise WorkspaceError("Reporting 文件超过读取大小上限。")
-            return await self._service._adownload_file(sandbox, remote, max_bytes)
+        return await self._service.read_limited_regular_file(
+            thread_id, path, max_bytes=max_bytes
+        )
 
     async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
         from ..workspace import inspect_report_chart_file

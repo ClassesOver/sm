@@ -1174,17 +1174,8 @@ class RuntimeAnalysisMixin:
             run_context=self._tool_context(run_context),
         )
         revision = int(result.get("revision", 0)) + 1
-        async with self.workspace_service._async_client() as client:
-            sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-            # Provider 句柄把资源标识固定放在 ref.resource_id；旧 Daytona 原生对象仍使用 id。
-            # 两种句柄都必须映射到同一个下游 sandbox_id，才能启动 Reporting Worker。
-            sandbox_id = str(
-                getattr(sandbox, "id", "")
-                or getattr(getattr(sandbox, "ref", None), "resource_id", "")
-                or ""
-            )
-        if not sandbox_id:
-            raise ReportingError("report_worker_unavailable", "报表 Reporting 工作区不可用。")
+        # TaskExecutionScope 暂时保留 sandbox_id 字段名；宿主机模式写入稳定 workspace key。
+        sandbox_id = scope["threadId"]
         lineage = tuple(
             DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
         )
@@ -1637,13 +1628,12 @@ class RuntimeAnalysisMixin:
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
-        self.workspace_service._validate_content(content)
-        relative, remote = self.workspace_service.normalize_path(path, allow_root=False)
-        async with self.workspace_service._async_client() as client:
-            sandbox = await self.workspace_service._asandbox_for(client, thread_id)
-            await self.workspace_service._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
-            await sandbox.fs.upload_file(content, remote)
-            stored = await self.workspace_service._adownload_file(sandbox, remote, len(content))
+        self.workspace_service.validate_content(content)
+        relative, _host_path = self.workspace_service.normalize_path(path, allow_root=False)
+        await self.workspace_service.awrite_bytes(thread_id, relative, content, overwrite=True)
+        stored = await self.workspace_service.read_limited_regular_file(
+            thread_id, relative, max_bytes=len(content)
+        )
         if stored != content:
             raise ReportingError(
                 "report_artifact_validation_context_changed",
@@ -1866,10 +1856,11 @@ class RuntimeAnalysisMixin:
     ) -> bytes:
         if identity.size > max_bytes:
             raise ReportingError("report_phase_artifact_too_large", "阶段产物超过读取边界。")
-        _relative, remote = self.workspace_service.normalize_path(identity.path, allow_root=False)
-        async with self.workspace_service._async_client() as client:
-            sandbox = await self.workspace_service._asandbox_for(client, thread_id)
-            content = await self.workspace_service._adownload_file(sandbox, remote, identity.size)
+        content = await self.workspace_service.read_limited_regular_file(
+            thread_id,
+            identity.path,
+            max_bytes=identity.size,
+        )
         if len(content) != identity.size or hashlib.sha256(content).hexdigest() != identity.sha256:
             raise ReportingError("report_phase_artifact_changed", "阶段产物身份校验失败。")
         return content
@@ -1892,7 +1883,7 @@ class RuntimeAnalysisMixin:
         path: str,
         content: bytes,
     ) -> FileIdentity:
-        self.workspace_service._validate_content(content)
+        self.workspace_service.validate_content(content)
         digest = hashlib.sha256(content).hexdigest()
         current = (await self.workspace_service.abatch_hash_files(thread_id, [path]))[0]
         if current.get("missing") is not True:
@@ -1901,12 +1892,11 @@ class RuntimeAnalysisMixin:
             raise ReportingError(
                 "report_artifact_file_changed", "当前 revision 的服务端产物已存在但身份不同。"
             )
-        relative, remote = self.workspace_service.normalize_path(path, allow_root=False)
-        async with self.workspace_service._async_client() as client:
-            sandbox = await self.workspace_service._asandbox_for(client, thread_id)
-            await self.workspace_service._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
-            await sandbox.fs.upload_file(content, remote)
-            stored = await self.workspace_service._adownload_file(sandbox, remote, len(content))
+        relative, _host_path = self.workspace_service.normalize_path(path, allow_root=False)
+        await self.workspace_service.awrite_bytes(thread_id, relative, content)
+        stored = await self.workspace_service.read_limited_regular_file(
+            thread_id, relative, max_bytes=len(content)
+        )
         if stored != content:
             raise ReportingError("report_artifact_file_changed", "服务端产物写入后发生变化。")
         return FileIdentity(path=relative, size=len(content), sha256=digest)
@@ -2850,10 +2840,11 @@ class RuntimeAnalysisMixin:
         )
         contents: dict[str, bytes] = {}
         for handle in dataset_handles:
-            _relative, remote = self.workspace_service.normalize_path(handle.path, allow_root=False)
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(client, thread_id)
-                content = await self.workspace_service._adownload_file(sandbox, remote, handle.size)
+            content = await self.workspace_service.read_limited_regular_file(
+                thread_id,
+                handle.path,
+                max_bytes=handle.size,
+            )
             if len(content) != handle.size or hashlib.sha256(content).hexdigest() != handle.sha256:
                 raise ReportingError("stale_dataset", "确定性事实计算前 Dataset 身份已变化。")
             contents[handle.dataset_id] = content

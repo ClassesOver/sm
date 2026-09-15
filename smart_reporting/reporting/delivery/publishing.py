@@ -39,7 +39,6 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ...workspace import (
-    MAX_ASYNC_DOWNLOAD_TIMEOUT,
     MAX_DOWNLOAD_BYTES,
     WorkspaceService,
 )
@@ -692,7 +691,7 @@ class ReportArtifactPersistenceService:
                 or re.fullmatch(r"[0-9a-f]{64}", spec.sha256) is None
             ):
                 raise ReportingError("report_artifact_invalid", "报告产物身份无效。")
-            relative, remote = self.workspace_service.normalize_path(spec.path, allow_root=False)
+            relative, _host_path = self.workspace_service.normalize_path(spec.path, allow_root=False)
             if relative != spec.path:
                 raise ReportingError("report_artifact_changed", "报告文件路径已变化。")
             artifact = StoredReportArtifact(
@@ -712,40 +711,28 @@ class ReportArtifactPersistenceService:
                 continue
             await self.repository.put(
                 artifact,
-                self._workspace_chunks(scope.thread_id, remote, expected_size=spec.size),
+                self._workspace_chunks(scope.thread_id, relative, expected_size=spec.size),
             )
 
     async def _workspace_chunks(
         self,
         thread_id: str,
-        remote: str,
+        path: str,
         *,
         expected_size: int,
     ) -> AsyncIterator[bytes]:
         try:
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(
-                    client, thread_id, create=False
-                )
-                if sandbox is None:
-                    raise ReportingError("report_artifact_missing", "报告工作区不存在。")
-                stream = await sandbox.fs.download_file_stream(
-                    remote,
-                    timeout=MAX_ASYNC_DOWNLOAD_TIMEOUT,
-                )
-                buffered = bytearray()
-                total = 0
-                async for chunk in stream:
-                    _validate_artifact_chunk(chunk)
-                    total += len(chunk)
-                    if total > expected_size or total > MAX_DOWNLOAD_BYTES:
-                        raise ReportingError("report_artifact_changed", "报告文件已变化。")
-                    buffered.extend(chunk)
-                    while len(buffered) >= REPORT_ARTIFACT_CHUNK_BYTES:
-                        yield bytes(buffered[:REPORT_ARTIFACT_CHUNK_BYTES])
-                        del buffered[:REPORT_ARTIFACT_CHUNK_BYTES]
-                if buffered:
-                    yield bytes(buffered)
+            content = await self.workspace_service.read_limited_regular_file(
+                thread_id,
+                path,
+                max_bytes=min(expected_size, MAX_DOWNLOAD_BYTES),
+            )
+            if len(content) != expected_size:
+                raise ReportingError("report_artifact_changed", "报告文件已变化。")
+            for offset in range(0, len(content), REPORT_ARTIFACT_CHUNK_BYTES):
+                chunk = content[offset : offset + REPORT_ARTIFACT_CHUNK_BYTES]
+                _validate_artifact_chunk(chunk)
+                yield chunk
         except ReportingError:
             raise
         except Exception as error:

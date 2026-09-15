@@ -10,6 +10,7 @@ from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingPathMapper,
     ReportingWorkspaceRegistry,
+    ReportingWorkspaceRouter,
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
@@ -192,6 +193,46 @@ async def test_host_workspace_batch_hash_marks_missing_files(tmp_path: Path) -> 
 
     assert identities[0]["sha256"] == hashlib.sha256(b"value").hexdigest()
     assert identities[1] == {"path": "facts/missing.json", "missing": True}
+
+
+@pytest.mark.anyio
+async def test_workspace_router_keeps_reporting_runs_isolated(tmp_path: Path) -> None:
+    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    first = registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
+    second = registry.resolve(_scope(run_id="run-2", workspace_key="workspace-2"))
+    router = ReportingWorkspaceRouter(registry)
+
+    await router.awrite_bytes("workspace-1", "facts/value.txt", b"first")
+    await router.awrite_bytes("workspace-2", "facts/value.txt", b"second")
+
+    assert await router.aread_text("workspace-1", "facts/value.txt") == "first"
+    assert await router.aread_text("workspace-2", "facts/value.txt") == "second"
+    assert (first.root / "facts/value.txt").read_bytes() == b"first"
+    assert (second.root / "facts/value.txt").read_bytes() == b"second"
+
+
+@pytest.mark.anyio
+async def test_workspace_router_rejects_unregistered_run(tmp_path: Path) -> None:
+    router = ReportingWorkspaceRouter(ReportingWorkspaceRegistry(tmp_path, secret=SECRET))
+
+    with pytest.raises(ReportingError) as raised:
+        await router.aread_text("missing-workspace", "facts/value.txt")
+
+    assert raised.value.code == "report_host_workspace_missing"
+
+
+@pytest.mark.anyio
+async def test_host_workspace_moves_and_deletes_directories(tmp_path: Path) -> None:
+    workspace = _host_workspace(tmp_path)
+    await workspace.awrite_text("workspace-1", "staging/report.md", "report")
+
+    await workspace.amove_files("workspace-1", "staging", "reports/revision-1")
+    assert await workspace.aread_text(
+        "workspace-1", "reports/revision-1/report.md"
+    ) == "report"
+
+    await workspace.adelete_file("workspace-1", "reports/revision-1", recursive=True)
+    assert not (workspace.identity.root / "reports/revision-1").exists()
 
 
 @pytest.mark.anyio

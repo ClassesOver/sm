@@ -17,7 +17,7 @@ from .delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
 )
-from .host_workspace import ReportingWorkspaceRegistry
+from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
 from .vision import ReportVisionReviewer
@@ -65,6 +65,12 @@ def create_report_runtime(
         settings.reporting_host_workspace_root,
         secret=settings.workspace_hmac_secret,
     )
+    reporting_workspace = ReportingWorkspaceRouter(workspace_registry)
+    if artifact_persistence is not None:
+        artifact_persistence = ReportArtifactPersistenceService(
+            artifact_persistence.repository,
+            reporting_workspace,
+        )
     task_repository = TaskExecutionRepository(context.database)
     state_repository = ReportingStateRepository(context.database)
     reporting_agent_template = create_reporting_phase_agent(
@@ -96,7 +102,7 @@ def create_report_runtime(
         name="reporting-section-recovery",
     )
     vision_reviewer = (
-        ReportVisionReviewer(settings, context.workspace_service)
+        ReportVisionReviewer(settings, reporting_workspace)
         if settings.report_enable_vision
         else None
     )
@@ -120,7 +126,7 @@ def create_report_runtime(
         section_recovery=section_recovery,
         vision_reviewer=vision_reviewer,
         vision_enabled=settings.report_enable_vision,
-        workspace_service=context.workspace_service,
+        workspace_service=reporting_workspace,
         workspace_registry=workspace_registry,
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),

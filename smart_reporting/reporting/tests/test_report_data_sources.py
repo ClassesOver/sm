@@ -78,6 +78,24 @@ class _FakeDatasetService:
     async def _aensure_directory(self, _sandbox: object, _remote: str) -> None:
         return None
 
+    async def aensure_directory(self, _thread: str, _path: str) -> None:
+        return None
+
+    async def awrite_bytes(self, _thread: str, path: str, content: bytes) -> None:
+        _relative, remote = self.normalize_path(path)
+        await self.fs.upload_file(content, remote)
+
+    async def amove_files(self, _thread: str, source: str, destination: str) -> None:
+        _source_relative, source_remote = self.normalize_path(source)
+        _destination_relative, destination_remote = self.normalize_path(destination)
+        await self.fs.move_files(source_remote, destination_remote)
+
+    async def adelete_file(
+        self, _thread: str, path: str, *, recursive: bool = False
+    ) -> None:
+        _relative, remote = self.normalize_path(path)
+        await self.fs.delete_file(remote, recursive=recursive)
+
     @staticmethod
     def normalize_path(path: str, *, allow_root: bool = True) -> tuple[str, str]:
         del allow_root

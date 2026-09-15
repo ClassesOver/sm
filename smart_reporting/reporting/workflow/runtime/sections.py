@@ -2116,14 +2116,11 @@ class RuntimeSectionsMixin:
                 warnings.append(
                     f"analysisId {analysis_id} 的 facts 文件身份或 SHA-256 已变化，已按当前内容继续发布。"
                 )
-                _relative, remote = self.workspace_service.normalize_path(
-                    fact_files[analysis_id].path, allow_root=False
+                content = await self.workspace_service.read_limited_regular_file(
+                    scope["threadId"],
+                    fact_files[analysis_id].path,
+                    max_bytes=10 * 1024 * 1024,
                 )
-                async with self.workspace_service._async_client() as client:
-                    sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-                    content = await self.workspace_service._adownload_file(
-                        sandbox, remote, 10 * 1024 * 1024
-                    )
                 try:
                     fact = DeterministicAnalysisBundle.model_validate_json(content)
                 except ValidationError as validation_error:

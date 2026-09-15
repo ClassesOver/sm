@@ -232,153 +232,145 @@ class ReportDatasetStore:
         final_root = f"{root}/batch-{batch_id}"
         staging_root = f"{root}/.staging-{batch_id}"
         _session_state(run_context)
-        async with self.service._async_client() as client:
-            sandbox = await self.service._asandbox_for(client, _thread(run_context))
-            _relative_root, remote_root = self.service.normalize_path(root, allow_root=False)
-            await self.service._aensure_directory(sandbox, remote_root)
-            _relative_staging, remote_staging = self.service.normalize_path(
-                staging_root, allow_root=False
+        thread_id = _thread(run_context)
+        await self.service.aensure_directory(thread_id, root)
+        try:
+            await self.service.aensure_directory(thread_id, staging_root)
+        except BaseException:
+            await complete_cleanup(
+                _best_effort_delete(self.service, thread_id, staging_root, recursive=True)
             )
-            _relative_final, remote_final = self.service.normalize_path(
-                final_root, allow_root=False
+            await complete_cleanup(
+                _best_effort_delete(self.service, thread_id, final_root, recursive=True)
             )
+            raise
+        global_limiter = anyio.CapacityLimiter(
+            min(item[1].config.limits.query_concurrency for item in validated)
+        )
+        source_limiters = {
+            source_id: anyio.CapacityLimiter(adapter.config.limits.query_concurrency)
+            for source_id, adapter in adapters.items()
+        }
+
+        async def materialize_one(
+            index: int,
+            query: ApprovedQuery,
+            adapter: DataSourceAdapter,
+            sql: str,
+        ) -> None:
             try:
-                await self.service._aensure_directory(sandbox, remote_staging)
-            except BaseException:
-                await complete_cleanup(_best_effort_delete(sandbox, remote_staging, recursive=True))
-                await complete_cleanup(_best_effort_delete(sandbox, remote_final, recursive=True))
-                raise
-            global_limiter = anyio.CapacityLimiter(
-                min(item[1].config.limits.query_concurrency for item in validated)
-            )
-            source_limiters = {
-                source_id: anyio.CapacityLimiter(adapter.config.limits.query_concurrency)
-                for source_id, adapter in adapters.items()
-            }
-
-            async def materialize_one(
-                index: int,
-                query: ApprovedQuery,
-                adapter: DataSourceAdapter,
-                sql: str,
-            ) -> None:
-                try:
-                    async with global_limiter:
-                        async with source_limiters[query.source_id]:
-                            result = await adapter.materialize(
-                                sql,
-                                max_bytes=MAX_DATASET_FILE_BYTES,
-                            )
-                            content = result.content
-                            if result.size > min(
-                                MAX_DATASET_FILE_BYTES,
-                                adapter.config.limits.max_bytes,
-                            ):
-                                raise ReportingError(
-                                    "query_result_too_large", "查询结果超过单文件限制。"
-                                )
-                            digest = hashlib.sha256(content).hexdigest()
-                            dataset_id = (
-                                "dataset-"
-                                + hashlib.sha256(
-                                    f"{query.source_id}:{query.requirement_id}:"
-                                    f"{query.query_window_id}:{query.sql_hash}:{digest}".encode()
-                                ).hexdigest()[:32]
-                            )
-                            path = f"{final_root}/{dataset_id}.csv"
-                            staging_path = f"{staging_root}/{dataset_id}.csv"
-                            _relative_staged, remote_staged = self.service.normalize_path(
-                                staging_path, allow_root=False
-                            )
-                            await sandbox.fs.upload_file(content, remote_staged)
-                            handles[index] = DatasetHandle(
-                                dataset_id=dataset_id,
-                                path=path,
-                                source_id=query.source_id,
-                                requirement_id=query.requirement_id,
-                                sql_hash=query.sql_hash,
-                                period_roles=query.period_roles,
-                                query_window_id=query.query_window_id,
-                                row_count=result.row_count,
-                                size=len(content),
-                                sha256=digest,
-                            )
-                            staging_paths[index] = staging_path
-                except Exception as error:
-                    raise _BatchItemError(index, error) from error
-
-            try:
-                async with anyio.create_task_group() as task_group:
-                    for index, (query, adapter, sql) in enumerate(validated):
-                        task_group.start_soon(materialize_one, index, query, adapter, sql)
-
-                completed = tuple(item for item in handles if item is not None)
-                completed_staging_paths = tuple(path for path in staging_paths if path is not None)
-                if len(completed) != len(validated) or len(completed_staging_paths) != len(
-                    validated
-                ):
-                    raise ReportingError(
-                        "report_dataset_commit_failed", "数据集 staging 结果不完整。"
-                    )
-
-                # 真实运行曾在同一 sandbox 并发校验时收到格式异常的哈希回执；上传仍可
-                # 并发，但身份校验必须在所有文件落盘后串行执行。仅对协议格式短暂异常
-                # 重试，真实大小或摘要不一致直接失败，避免把数据漂移当成网络抖动。
-                for item, staging_path in zip(completed, completed_staging_paths, strict=True):
-                    current: dict[str, Any] | None = None
-                    for attempt in range(_DATASET_HASH_ATTEMPTS):
-                        try:
-                            current = await self.service.ahash_file(
-                                _thread(run_context), staging_path
-                            )
-                        except WorkspaceHashResultError:
-                            if attempt + 1 >= _DATASET_HASH_ATTEMPTS:
-                                raise
-                            await anyio.sleep(_DATASET_HASH_RETRY_DELAY_SECONDS * (2**attempt))
-                            continue
-                        break
-                    if current is None:
-                        raise ReportingError(
-                            "report_dataset_commit_failed", "数据集提交校验未返回结果。"
+                async with global_limiter:
+                    async with source_limiters[query.source_id]:
+                        result = await adapter.materialize(
+                            sql,
+                            max_bytes=MAX_DATASET_FILE_BYTES,
                         )
-                    if (
-                        current.get("sha256") != item.sha256
-                        or int(current.get("size", -1)) != item.size
-                    ):
-                        raise ReportingError("report_dataset_commit_failed", "数据集提交校验失败。")
+                        content = result.content
+                        if result.size > min(
+                            MAX_DATASET_FILE_BYTES,
+                            adapter.config.limits.max_bytes,
+                        ):
+                            raise ReportingError(
+                                "query_result_too_large", "查询结果超过单文件限制。"
+                            )
+                        digest = hashlib.sha256(content).hexdigest()
+                        dataset_id = (
+                            "dataset-"
+                            + hashlib.sha256(
+                                f"{query.source_id}:{query.requirement_id}:"
+                                f"{query.query_window_id}:{query.sql_hash}:{digest}".encode()
+                            ).hexdigest()[:32]
+                        )
+                        path = f"{final_root}/{dataset_id}.csv"
+                        staging_path = f"{staging_root}/{dataset_id}.csv"
+                        await self.service.awrite_bytes(thread_id, staging_path, content)
+                        handles[index] = DatasetHandle(
+                            dataset_id=dataset_id,
+                            path=path,
+                            source_id=query.source_id,
+                            requirement_id=query.requirement_id,
+                            sql_hash=query.sql_hash,
+                            period_roles=query.period_roles,
+                            query_window_id=query.query_window_id,
+                            row_count=result.row_count,
+                            size=len(content),
+                            sha256=digest,
+                        )
+                        staging_paths[index] = staging_path
+            except Exception as error:
+                raise _BatchItemError(index, error) from error
 
-                lineage = tuple(
-                    DatasetLineage(
-                        datasetId=item.dataset_id,
-                        sourceId=item.source_id,
-                        requirementId=item.requirement_id,
-                        sqlHash=item.sql_hash,
-                        rowCount=item.row_count,
-                        size=item.size,
-                        sha256=item.sha256,
-                        periodRoles=item.period_roles,
-                        queryWindowId=item.query_window_id,
-                    )
-                    for item in completed
-                )
-                validate_lineage(approved, lineage)
-                await sandbox.fs.move_files(remote_staging, remote_final)
-            # 取消也必须删除 staging/final 目录；清理完成后再保留原始取消语义，
-            # 否则取消窗口会遗留可被后续运行误用的半成品目录。
-            except BaseException as error:
-                await complete_cleanup(_best_effort_delete(sandbox, remote_staging, recursive=True))
-                await complete_cleanup(_best_effort_delete(sandbox, remote_final, recursive=True))
-                if isinstance(error, asyncio.CancelledError):
-                    raise
-                if not isinstance(error, Exception):
-                    raise
-                failure = _first_batch_error(error)
-                if isinstance(failure, ReportingError):
-                    raise failure
+        try:
+            async with anyio.create_task_group() as task_group:
+                for index, (query, adapter, sql) in enumerate(validated):
+                    task_group.start_soon(materialize_one, index, query, adapter, sql)
+
+            completed = tuple(item for item in handles if item is not None)
+            completed_staging_paths = tuple(path for path in staging_paths if path is not None)
+            if len(completed) != len(validated) or len(completed_staging_paths) != len(validated):
                 raise ReportingError(
-                    "report_dataset_commit_failed", "数据集原子提交失败。"
-                ) from failure
-            await complete_cleanup(_best_effort_delete(sandbox, remote_staging, recursive=True))
+                    "report_dataset_commit_failed", "数据集 staging 结果不完整。"
+                )
+
+            # 上传可以并发，但身份校验必须在所有文件落盘后串行执行。
+            for item, staging_path in zip(completed, completed_staging_paths, strict=True):
+                current: dict[str, Any] | None = None
+                for attempt in range(_DATASET_HASH_ATTEMPTS):
+                    try:
+                        current = await self.service.ahash_file(thread_id, staging_path)
+                    except WorkspaceHashResultError:
+                        if attempt + 1 >= _DATASET_HASH_ATTEMPTS:
+                            raise
+                        await anyio.sleep(_DATASET_HASH_RETRY_DELAY_SECONDS * (2**attempt))
+                        continue
+                    break
+                if current is None:
+                    raise ReportingError(
+                        "report_dataset_commit_failed", "数据集提交校验未返回结果。"
+                    )
+                if (
+                    current.get("sha256") != item.sha256
+                    or int(current.get("size", -1)) != item.size
+                ):
+                    raise ReportingError("report_dataset_commit_failed", "数据集提交校验失败。")
+
+            lineage = tuple(
+                DatasetLineage(
+                    datasetId=item.dataset_id,
+                    sourceId=item.source_id,
+                    requirementId=item.requirement_id,
+                    sqlHash=item.sql_hash,
+                    rowCount=item.row_count,
+                    size=item.size,
+                    sha256=item.sha256,
+                    periodRoles=item.period_roles,
+                    queryWindowId=item.query_window_id,
+                )
+                for item in completed
+            )
+            validate_lineage(approved, lineage)
+            await self.service.amove_files(thread_id, staging_root, final_root)
+        # 取消也必须删除 staging/final 目录；清理完成后再保留原始取消语义。
+        except BaseException as error:
+            await complete_cleanup(
+                _best_effort_delete(self.service, thread_id, staging_root, recursive=True)
+            )
+            await complete_cleanup(
+                _best_effort_delete(self.service, thread_id, final_root, recursive=True)
+            )
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            if not isinstance(error, Exception):
+                raise
+            failure = _first_batch_error(error)
+            if isinstance(failure, ReportingError):
+                raise failure
+            raise ReportingError(
+                "report_dataset_commit_failed", "数据集原子提交失败。"
+            ) from failure
+        await complete_cleanup(
+            _best_effort_delete(self.service, thread_id, staging_root, recursive=True)
+        )
 
         self._store_handles(completed, run_context)
         return completed, lineage
@@ -419,9 +411,11 @@ class ReportDatasetStore:
         state[REPORT_DATASET_HANDLES_STATE_KEY] = stored
 
 
-async def _best_effort_delete(sandbox: Any, path: str, *, recursive: bool) -> None:
+async def _best_effort_delete(
+    service: Any, thread_id: str, path: str, *, recursive: bool
+) -> None:
     try:
-        await sandbox.fs.delete_file(path, recursive=recursive)
+        await service.adelete_file(thread_id, path, recursive=recursive)
     except Exception:
         pass
 

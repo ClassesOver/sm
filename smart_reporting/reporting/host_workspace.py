@@ -8,6 +8,7 @@ import hmac
 import json
 import mimetypes
 import os
+import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -168,6 +169,10 @@ class HostReportingWorkspace:
 
     normalize_path = staticmethod(WorkspaceService.normalize_path)
 
+    @staticmethod
+    def validate_content(content: bytes) -> None:
+        WorkspaceService._validate_content(content)
+
     async def awrite_bytes(
         self,
         _thread_id: str,
@@ -223,6 +228,74 @@ class HostReportingWorkspace:
             return content.decode("utf-8")
         except UnicodeDecodeError as error:
             raise WorkspaceError("工作区文件不是有效的 UTF-8 文本。") from error
+
+    async def aensure_directory(self, _thread_id: str, path: str) -> None:
+        target = self.paths.to_host_path(path)
+        await anyio.to_thread.run_sync(
+            lambda: _ensure_directory(target, self.identity.root)
+        )
+
+    async def apath_exists(self, _thread_id: str, path: str) -> bool:
+        target = self.paths.to_host_path(path)
+        return await anyio.to_thread.run_sync(
+            lambda: target.exists() and not target.is_symlink()
+        )
+
+    async def amove_files(
+        self, _thread_id: str, source: str, destination: str
+    ) -> None:
+        source_path = self.paths.to_host_path(source)
+        destination_path = self.paths.to_host_path(destination)
+
+        def move() -> None:
+            try:
+                source_info = source_path.lstat()
+            except FileNotFoundError as error:
+                raise WorkspaceError("待移动的工作区路径不存在。") from error
+            if stat.S_ISLNK(source_info.st_mode):
+                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
+            if destination_path.exists() or destination_path.is_symlink():
+                raise WorkspacePathConflict("移动目标已经存在，请更换路径。")
+            _ensure_directory(destination_path.parent, self.identity.root)
+            os.replace(source_path, destination_path)
+
+        await anyio.to_thread.run_sync(move)
+
+    async def adelete_file(
+        self, _thread_id: str, path: str, recursive: bool = False
+    ) -> None:
+        target = self.paths.to_host_path(path)
+
+        def delete() -> None:
+            try:
+                info = target.lstat()
+            except FileNotFoundError:
+                return
+            if stat.S_ISLNK(info.st_mode):
+                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
+            if stat.S_ISDIR(info.st_mode):
+                if recursive:
+                    shutil.rmtree(target)
+                else:
+                    target.rmdir()
+                return
+            if not stat.S_ISREG(info.st_mode):
+                raise WorkspaceError("工作区路径不是普通文件或目录。")
+            target.unlink()
+
+        await anyio.to_thread.run_sync(delete)
+
+    async def arun_command(
+        self,
+        _thread_id: str,
+        args: list[str],
+        *,
+        timeout: int,
+        tail: int = 100,
+    ) -> str:
+        return await anyio.to_thread.run_sync(
+            lambda: self.identity.workspace.run_command(args, tail=tail, timeout=timeout)
+        )
 
     async def read_limited_regular_file(
         self,
@@ -348,10 +421,97 @@ class ReportingWorkspaceRegistry:
         self._entries.clear()
 
 
+class ReportingWorkspaceRouter:
+    """按 Reporting workspace key 路由程序化文件访问。"""
+
+    normalize_path = staticmethod(WorkspaceService.normalize_path)
+
+    def __init__(self, registry: ReportingWorkspaceRegistry) -> None:
+        self.registry = registry
+        self._workspaces: dict[str, HostReportingWorkspace] = {}
+
+    @staticmethod
+    def validate_content(content: bytes) -> None:
+        WorkspaceService._validate_content(content)
+
+    def workspace(self, workspace_key: str) -> HostReportingWorkspace:
+        identity = self.registry.get(workspace_key)
+        if identity is None:
+            raise ReportingError(
+                "report_host_workspace_missing",
+                "Reporting Workspace 尚未绑定当前运行。",
+            )
+        workspace = self._workspaces.get(workspace_key)
+        if workspace is None or workspace.identity is not identity:
+            workspace = HostReportingWorkspace(identity)
+            self._workspaces[workspace_key] = workspace
+        return workspace
+
+    async def awrite_bytes(self, thread_id: str, path: str, content: bytes, **kwargs: Any):
+        return await self.workspace(thread_id).awrite_bytes(thread_id, path, content, **kwargs)
+
+    async def awrite_text(self, thread_id: str, path: str, content: str, **kwargs: Any):
+        return await self.workspace(thread_id).awrite_text(thread_id, path, content, **kwargs)
+
+    async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+        return await self.workspace(thread_id).afile_bytes(thread_id, path)
+
+    async def aread_text(self, thread_id: str, path: str) -> str:
+        return await self.workspace(thread_id).aread_text(thread_id, path)
+
+    async def read_limited_regular_file(
+        self, thread_id: str, path: str, *, max_bytes: int
+    ) -> bytes:
+        return await self.workspace(thread_id).read_limited_regular_file(
+            thread_id, path, max_bytes=max_bytes
+        )
+
+    async def ahash_file(self, thread_id: str, path: str) -> dict[str, Any]:
+        return await self.workspace(thread_id).ahash_file(thread_id, path)
+
+    async def abatch_hash_files(
+        self, thread_id: str, paths: list[str]
+    ) -> list[dict[str, Any]]:
+        return await self.workspace(thread_id).abatch_hash_files(thread_id, paths)
+
+    async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
+        return await self.workspace(thread_id).inspect_chart_file(thread_id, path)
+
+    async def aview_image(self, thread_id: str, path: str) -> ToolResult:
+        return await self.workspace(thread_id).aview_image(thread_id, path)
+
+    async def aensure_directory(self, thread_id: str, path: str) -> None:
+        await self.workspace(thread_id).aensure_directory(thread_id, path)
+
+    async def apath_exists(self, thread_id: str, path: str) -> bool:
+        return await self.workspace(thread_id).apath_exists(thread_id, path)
+
+    async def amove_files(self, thread_id: str, source: str, destination: str) -> None:
+        await self.workspace(thread_id).amove_files(thread_id, source, destination)
+
+    async def adelete_file(
+        self, thread_id: str, path: str, recursive: bool = False
+    ) -> None:
+        await self.workspace(thread_id).adelete_file(thread_id, path, recursive)
+
+    async def arun_command(
+        self,
+        thread_id: str,
+        args: list[str],
+        *,
+        timeout: int,
+        tail: int = 100,
+    ) -> str:
+        return await self.workspace(thread_id).arun_command(
+            thread_id, args, timeout=timeout, tail=tail
+        )
+
+
 __all__ = [
     "HostReportingWorkspace",
     "ReportingPathMapper",
     "ReportingWorkspaceIdentity",
     "ReportingWorkspaceRegistry",
+    "ReportingWorkspaceRouter",
     "validate_host_workspace_root",
 ]

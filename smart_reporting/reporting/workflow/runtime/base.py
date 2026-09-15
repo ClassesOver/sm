@@ -122,7 +122,11 @@ from ...hospital_operation.outline import (
     freeze_outline,
     normalize_outline_proposal_candidate,
 )
-from ...host_workspace import HostReportingWorkspace, ReportingWorkspaceRegistry
+from ...host_workspace import (
+    HostReportingWorkspace,
+    ReportingWorkspaceRegistry,
+    ReportingWorkspaceRouter,
+)
 from ...instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
@@ -421,8 +425,8 @@ class _ReportWorkflowRuntimeBase:
         section_recovery: Agent | None = None,
         vision_reviewer: ReportVisionReviewer | None = None,
         vision_enabled: bool | None = None,
-        workspace_service: WorkspaceService,
-        workspace_registry: ReportingWorkspaceRegistry,
+        workspace_service: WorkspaceService | ReportingWorkspaceRouter,
+        workspace_registry: ReportingWorkspaceRegistry | None = None,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
@@ -1122,6 +1126,11 @@ class _ReportWorkflowRuntimeBase:
     def _workspace_for_scope(
         self, scope: ReportingWorkflowScope
     ) -> HostReportingWorkspace:
+        if self.workspace_registry is None:
+            raise ReportingError(
+                "report_host_workspace_missing",
+                "Reporting Workspace 注册表未配置。",
+            )
         workspaces = getattr(self, "_host_workspaces", None)
         if workspaces is None:
             workspaces = {}

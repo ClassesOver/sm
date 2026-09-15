@@ -31,6 +31,10 @@ from smart_reporting.reporting.delivery.publishing import (
     _artifact_key,
     create_report_download_router,
 )
+from smart_reporting.reporting.host_workspace import (
+    ReportingWorkspaceRegistry,
+    ReportingWorkspaceRouter,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.delivery_fakes import (
     InMemoryDownloadGrantRepository,
@@ -38,7 +42,7 @@ from smart_reporting.reporting.tests.delivery_fakes import (
 )
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting.workflow.runtime import base as runtime_module
-from smart_reporting.reporting.workflow.scope import reporting_scope_keys
+from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope, reporting_scope_keys
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
@@ -166,6 +170,18 @@ class _Workspace:
         del create
         return self.sandbox
 
+    async def read_limited_regular_file(
+        self,
+        _thread: str,
+        path: str,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        content = self.sandbox.fs.files[f"/home/daytona/workspace/{path}"]
+        if len(content) > max_bytes:
+            raise ValueError("file too large")
+        return content
+
     async def adestroy(self, thread_id: str) -> bool:
         self.destroyed.append(thread_id)
         self.sandbox = None
@@ -262,6 +278,75 @@ async def test_persisted_report_download_survives_sandbox_deletion() -> None:
     assert await _content(pdf_stream) == pdf
     assert await _content(word_stream) == word
     assert await _content(html_stream) == html
+
+
+@pytest.mark.anyio
+async def test_artifact_persistence_reads_host_workspace_without_private_sandbox_api(
+    tmp_path,
+) -> None:
+    registry = ReportingWorkspaceRegistry(
+        tmp_path,
+        secret="0123456789abcdef0123456789abcdef",
+    )
+    registry.resolve(
+        ReportingWorkflowScope(
+            run_id="run-1",
+            external_run_id="external-run-1",
+            session_id="session-1",
+            caller_thread_id="caller-thread-1",
+            user_id="user-1",
+            database="database-1",
+            company_id="company-1",
+            thread_lease_key="lease-1",
+            workspace_key="workspace-1",
+        )
+    )
+    workspace = ReportingWorkspaceRouter(registry)
+    contents = {
+        "pdf": b"pdf-content",
+        "word": b"word-content",
+        "html": b"<html>report</html>",
+    }
+    suffixes = {"pdf": "pdf", "word": "docx", "html": "html"}
+    specs = []
+    for artifact, content in contents.items():
+        path = f"reports/report.{suffixes[artifact]}"
+        await workspace.awrite_bytes("workspace-1", path, content)
+        specs.append(
+            ReportArtifactSpec(
+                artifact=artifact,
+                path=path,
+                size=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        )
+    repository = InMemoryReportArtifactRepository()
+    persistence = ReportArtifactPersistenceService(repository, workspace)  # type: ignore[arg-type]
+    scope = ReportDownloadScope(
+        database="database-1",
+        user_id="user-1",
+        company_id="company-1",
+        session_id="session-1",
+        thread_id="workspace-1",
+        workflow_run_id="run-1",
+    )
+
+    await persistence.persist(
+        scope=scope,
+        report_id="report-1",
+        revision=1,
+        artifacts=tuple(specs),  # type: ignore[arg-type]
+    )
+
+    for spec in specs:
+        stored = await repository.resolve(
+            scope=scope,
+            report_id="report-1",
+            revision=1,
+            artifact=spec.artifact,
+        )
+        assert stored is not None
+        assert await _content(repository.stream(stored.artifact_key)) == contents[spec.artifact]
 
 
 @pytest.mark.anyio

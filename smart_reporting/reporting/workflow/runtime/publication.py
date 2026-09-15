@@ -757,18 +757,16 @@ class RuntimePublicationMixin:
                 "report_artifact_acceptance_missing",
                 "正式产物验收回执缺少报告 Markdown。",
             )
-        _relative, markdown_remote = self.workspace_service.normalize_path(
+        _relative, _markdown_host_path = self.workspace_service.normalize_path(
             markdown_path, allow_root=False
         )
-        _relative, manifest_remote = self.workspace_service.normalize_path(
+        manifest_relative, _manifest_host_path = self.workspace_service.normalize_path(
             manifest_path, allow_root=False
         )
         try:
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-                markdown_bytes = await self.workspace_service._adownload_file(
-                    sandbox, markdown_remote, 10 * 1024 * 1024
-                )
+            markdown_bytes = await self.workspace_service.read_limited_regular_file(
+                scope["threadId"], markdown_path, max_bytes=10 * 1024 * 1024
+            )
             if len(markdown_bytes) != accepted.get("size") or hashlib.sha256(
                 markdown_bytes
             ).hexdigest() != accepted.get("sha256"):
@@ -799,16 +797,13 @@ class RuntimePublicationMixin:
                 separators=(",", ":"),
                 allow_nan=False,
             ).encode("utf-8")
-            self.workspace_service._validate_content(content)
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-                await self.workspace_service._aensure_directory(
-                    sandbox, manifest_remote.rsplit("/", 1)[0]
-                )
-                await sandbox.fs.upload_file(content, manifest_remote)
-                stored = await self.workspace_service._adownload_file(
-                    sandbox, manifest_remote, len(content)
-                )
+            self.workspace_service.validate_content(content)
+            await self.workspace_service.awrite_bytes(
+                scope["threadId"], manifest_relative, content, overwrite=True
+            )
+            stored = await self.workspace_service.read_limited_regular_file(
+                scope["threadId"], manifest_relative, max_bytes=len(content)
+            )
             if stored != content:
                 raise ReportingError(
                     "report_artifact_manifest_changed",

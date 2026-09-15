@@ -6,7 +6,6 @@ import uuid
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,14 +28,8 @@ from smart_reporting.reporting.delivery.report_runtime.pdf import (
     _apply_pdf_page_decorations,
     _page_number_context,
 )
-from smart_reporting.reporting.tests.workspace_fakes import (
-    AsyncFakeClient,
-    AsyncMemoryRegistry,
-    service,
-)
 from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
-from smart_reporting.sandbox import ExecutionStatus, RunPythonScriptResult
-from smart_reporting.workspace import WORKSPACE_ROOT, WorkspaceError, WorkspaceService
+from smart_reporting.workspace import WorkspaceError
 
 
 @pytest.mark.parametrize(
@@ -288,52 +281,28 @@ def test_render_markdown_returns_html_artifact_identity(
 async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoint(
     tmp_path: Path,
 ) -> None:
-    current = service(tmp_path)
-    workspace = WorkspaceService(
-        current.secret,
-        client=current.client,
-        registry=current.registry,
-        async_client=AsyncFakeClient(current.client),
-        async_registry=AsyncMemoryRegistry(current.registry.values),
-    )
-    report_workspace = WorkspaceReportService(workspace)
+    del tmp_path
 
-    class Execution:
+    class Workspace:
         def __init__(self) -> None:
-            self.requests = []
+            self.writes: list[tuple[str, str, bytes]] = []
+            self.commands: list[tuple[str, list[str], int, int]] = []
+            self.deletes: list[tuple[str, str]] = []
 
-        async def run_python_script(self, request):
-            self.requests.append(request)
-            return RunPythonScriptResult(
-                status=ExecutionStatus.SUCCEEDED,
-                exit_code=0,
-                stdout='{"status":"ok"}\n',
-                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
-            )
+        async def awrite_bytes(self, thread: str, path: str, content: bytes) -> None:
+            self.writes.append((thread, path, content))
 
-    class Process:
-        async def exec(self, *_args, **_kwargs):
-            raise AssertionError("报表运行时不得使用任意 Shell")
+        async def arun_command(
+            self, thread: str, args: list[str], *, timeout: int, tail: int
+        ) -> str:
+            self.commands.append((thread, args, timeout, tail))
+            return '{"status":"ok"}\n{"__reportExitCode":0}'
 
-    class FileSystem:
-        def __init__(self) -> None:
-            self.uploads: list[tuple[bytes, str]] = []
-            self.deleted: list[str] = []
+        async def adelete_file(self, thread: str, path: str) -> None:
+            self.deletes.append((thread, path))
 
-        async def upload_file(self, content: bytes, path: str) -> None:
-            assert path.startswith(f"{WORKSPACE_ROOT}/")
-            self.uploads.append((content, path))
-
-        async def delete_file(self, path: str) -> None:
-            self.deleted.append(path)
-
-    execution = Execution()
-    filesystem = FileSystem()
-
-    async def sandbox_for(_client, _thread):
-        return SimpleNamespace(execution=execution, process=Process(), fs=filesystem)
-
-    workspace._asandbox_for = sandbox_for  # type: ignore[method-assign]
+    workspace = Workspace()
+    report_workspace = WorkspaceReportService(workspace)  # type: ignore[arg-type]
 
     result = await report_workspace._run_report_runtime(
         "validate_pdf",
@@ -341,13 +310,14 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
         RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
     )
 
-    assert len(execution.requests) == 1
-    request = execution.requests[0]
-    assert len(filesystem.uploads) == 1
-    archive, archive_path = filesystem.uploads[0]
-    assert archive_path.startswith(f"{WORKSPACE_ROOT}/.workspace-report-runtime-")
+    assert len(workspace.commands) == 1
+    thread, args, timeout, tail = workspace.commands[0]
+    assert thread == "report-runtime-package"
+    assert len(workspace.writes) == 1
+    _thread, archive_path, archive = workspace.writes[0]
+    assert archive_path.startswith(".workspace-report-runtime-")
     assert archive_path.endswith(f"-{_report_runtime_digest()}.zip")
-    assert filesystem.deleted == [archive_path]
+    assert workspace.deletes == [(thread, archive_path)]
     with zipfile.ZipFile(BytesIO(archive)) as package:
         assert set(package.namelist()) == {
             "report_runtime/__init__.py",
@@ -358,14 +328,16 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
             "report_runtime/runtime.py",
             "report_runtime/validation.py",
         }
-    assert "from report_runtime.cli import main" in request.script
-    assert "sys.path.insert(0" in request.script
-    assert archive_path not in request.script
-    assert archive_path.removeprefix(f"{WORKSPACE_ROOT}/") in request.script
-    assert _report_runtime_digest() in request.script
-    assert "报表运行时版本不匹配" in request.script
-    assert "validate_pdf" in request.script
-    assert request.timeout_ms == 600_000
+    script = args[2]
+    assert args[1] == "-c"
+    assert "from report_runtime.cli import main" in script
+    assert "sys.path.insert(0" in script
+    assert archive_path in script
+    assert _report_runtime_digest() in script
+    assert "报表运行时版本不匹配" in script
+    assert "validate_pdf" in script
+    assert timeout == 600
+    assert tail == 200
     assert result == {"status": "ok"}
 
 
@@ -373,37 +345,22 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
 async def test_report_runtime_preserves_structured_error_before_stderr_warning(
     tmp_path: Path,
 ) -> None:
-    current = service(tmp_path)
-    workspace = WorkspaceService(
-        current.secret,
-        client=current.client,
-        registry=current.registry,
-        async_client=AsyncFakeClient(current.client),
-        async_registry=AsyncMemoryRegistry(current.registry.values),
-    )
-    report_workspace = WorkspaceReportService(workspace)
+    del tmp_path
 
-    class Execution:
-        async def run_python_script(self, request):
-            return RunPythonScriptResult(
-                status=ExecutionStatus.FAILED,
-                exit_code=1,
-                stdout='{"error":"Markdown 正式章节标识与已批准提纲不一致"}\n',
-                stderr="Fontconfig warning: ignored invalid cache\n",
-                script_hash=hashlib.sha256(request.script.encode()).hexdigest(),
+    class Workspace:
+        async def awrite_bytes(self, *_args: object) -> None:
+            return None
+
+        async def arun_command(self, *_args: object, **_kwargs: object) -> str:
+            return (
+                '{"error":"Markdown 正式章节标识与已批准提纲不一致"}\n'
+                '{"__reportExitCode":1}'
             )
 
-    class FileSystem:
-        async def upload_file(self, _content: bytes, _path: str) -> None:
+        async def adelete_file(self, *_args: object) -> None:
             return None
 
-        async def delete_file(self, _path: str) -> None:
-            return None
-
-    async def sandbox_for(_client, _thread):
-        return SimpleNamespace(execution=Execution(), fs=FileSystem())
-
-    workspace._asandbox_for = sandbox_for  # type: ignore[method-assign]
+    report_workspace = WorkspaceReportService(Workspace())  # type: ignore[arg-type]
 
     with pytest.raises(
         WorkspaceError,

@@ -209,130 +209,108 @@ class RuntimeDatasetsMixin:
                 return None
             return candidate
 
-        async with self.workspace_service._async_client() as client:
-            sandbox = await self.workspace_service._asandbox_for(client, thread_id)
-
-            async def prepare_one(index: int, handle: DatasetHandle) -> None:
-                try:
-                    cached = cached_context(handle)
-                    if cached is not None:
-                        _relative_profile, profile_remote = self.workspace_service.normalize_path(
-                            cached.profile_file.path, allow_root=False
+        async def prepare_one(index: int, handle: DatasetHandle) -> None:
+            try:
+                cached = cached_context(handle)
+                if cached is not None:
+                    try:
+                        stored_profile = await self.workspace_service.read_limited_regular_file(
+                            thread_id,
+                            cached.profile_file.path,
+                            max_bytes=cached.profile_file.size,
                         )
-                        try:
-                            stored_profile = await self.workspace_service._adownload_file(
-                                sandbox, profile_remote, cached.profile_file.size
-                            )
-                        except Exception:
-                            stored_profile = b""
-                        if (
-                            len(stored_profile) == cached.profile_file.size
-                            and hashlib.sha256(stored_profile).hexdigest()
-                            == cached.profile_file.sha256
-                        ):
-                            contexts[index] = cached
-                            return
-
-                    _relative, remote = self.workspace_service.normalize_path(
-                        handle.path, allow_root=False
-                    )
-                    content = await self.workspace_service._adownload_file(
-                        sandbox, remote, handle.size
-                    )
+                    except Exception:
+                        stored_profile = b""
                     if (
-                        len(content) != handle.size
-                        or hashlib.sha256(content).hexdigest() != handle.sha256
+                        len(stored_profile) == cached.profile_file.size
+                        and hashlib.sha256(stored_profile).hexdigest()
+                        == cached.profile_file.sha256
                     ):
-                        raise ReportingError("stale_dataset", "分析数据集已变化。")
-                    requirement = requirements.get(handle.requirement_id)
-                    requirement_tables = (
-                        {table.table.lower() for table in requirement.tables}
-                        if requirement is not None
-                        else set()
-                    )
-                    profile_job = partial(
-                        profile_csv_dataset,
-                        content,
-                        dataset_id=handle.dataset_id,
-                        path=handle.path,
-                        expected_sha256=handle.sha256,
-                        profile_path=profile_path(handle),
-                        period_fields=(
-                            tuple(
-                                dict.fromkeys(table.period_column for table in requirement.tables)
-                            )
-                            if requirement is not None
-                            else ()
-                        ),
-                        schema={
-                            "sourceId": handle.source_id,
-                            "requirementId": handle.requirement_id,
-                            "tables": [
-                                table.model_dump(mode="json", by_alias=True)
-                                for snapshot in snapshots
-                                for table in snapshot.tables
-                                if table.source_id == handle.source_id
-                                and (
-                                    not requirement_tables
-                                    or f"{table.database}.{table.name}".lower()
-                                    in requirement_tables
-                                    or table.name.lower() in requirement_tables
-                                )
-                            ],
-                        },
-                        organization_grain=(
-                            tuple(requirement.grain_columns) if requirement is not None else ()
-                        ),
-                        metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
-                        source_warnings=source_warning_messages,
-                        enable_time_series_diagnostics=enable_time_series_diagnostics,
-                    )
-                    # fg-data-profiling 内部已有列级并行；外层串行避免嵌套进程池
-                    # 在画像完成后的 IPC/资源清理阶段永久等待。
-                    profiled = await _run_profile_job(profile_job, profile_limiter)
-                    # 生产 WorkspaceService 始终提供内容边界校验；极小的单元测试夹具
-                    # 可以只实现读写原语，不应改变 Profile 或其哈希契约。
-                    validate_content = getattr(self.workspace_service, "_validate_content", None)
-                    if callable(validate_content):
-                        validate_content(profiled.profile_content)
-                    _relative_profile, profile_remote = self.workspace_service.normalize_path(
-                        profiled.context.profile_file.path, allow_root=False
-                    )
-                    filesystem = getattr(sandbox, "fs", None)
-                    if filesystem is not None and hasattr(filesystem, "upload_file"):
-                        ensure_directory = getattr(
-                            self.workspace_service, "_aensure_directory", None
-                        )
-                        if callable(ensure_directory):
-                            await ensure_directory(sandbox, profile_remote.rsplit("/", 1)[0])
-                        # Daytona SDK 的 timeout 只约束连接和响应读取，不保证请求体写入
-                        # 阶段存在墙钟上限。画像上传属于可重试步骤，外层取消边界必须覆盖
-                        # 整个调用，否则网络背压会永久占住 Workflow 和画像并发槽位。
-                        with anyio.fail_after(PROFILE_TRANSFER_TIMEOUT_SECONDS):
-                            await filesystem.upload_file(
-                                profiled.profile_content,
-                                profile_remote,
-                                timeout=PROFILE_TRANSFER_TIMEOUT_SECONDS,
-                            )
-                        stored_profile = await self.workspace_service._adownload_file(
-                            sandbox, profile_remote, profiled.context.profile_file.size
-                        )
-                        if (
-                            len(stored_profile) != profiled.context.profile_file.size
-                            or hashlib.sha256(stored_profile).hexdigest()
-                            != profiled.context.profile_file.sha256
-                        ):
-                            raise ReportingError(
-                                "report_analysis_profile_changed",
-                                "完整数据画像写入后发生变化。",
-                            )
-                    contexts[index] = profiled.context
-                except Exception as error:
-                    errors[index] = error
+                        contexts[index] = cached
+                        return
 
-            async with anyio.create_task_group() as task_group:
-                for index, handle in enumerate(handles):
-                    task_group.start_soon(prepare_one, index, handle)
+                content = await self.workspace_service.read_limited_regular_file(
+                    thread_id,
+                    handle.path,
+                    max_bytes=handle.size,
+                )
+                if (
+                    len(content) != handle.size
+                    or hashlib.sha256(content).hexdigest() != handle.sha256
+                ):
+                    raise ReportingError("stale_dataset", "分析数据集已变化。")
+                requirement = requirements.get(handle.requirement_id)
+                requirement_tables = (
+                    {table.table.lower() for table in requirement.tables}
+                    if requirement is not None
+                    else set()
+                )
+                profile_job = partial(
+                    profile_csv_dataset,
+                    content,
+                    dataset_id=handle.dataset_id,
+                    path=handle.path,
+                    expected_sha256=handle.sha256,
+                    profile_path=profile_path(handle),
+                    period_fields=(
+                        tuple(dict.fromkeys(table.period_column for table in requirement.tables))
+                        if requirement is not None
+                        else ()
+                    ),
+                    schema={
+                        "sourceId": handle.source_id,
+                        "requirementId": handle.requirement_id,
+                        "tables": [
+                            table.model_dump(mode="json", by_alias=True)
+                            for snapshot in snapshots
+                            for table in snapshot.tables
+                            if table.source_id == handle.source_id
+                            and (
+                                not requirement_tables
+                                or f"{table.database}.{table.name}".lower()
+                                in requirement_tables
+                                or table.name.lower() in requirement_tables
+                            )
+                        ],
+                    },
+                    organization_grain=(
+                        tuple(requirement.grain_columns) if requirement is not None else ()
+                    ),
+                    metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
+                    source_warnings=source_warning_messages,
+                    enable_time_series_diagnostics=enable_time_series_diagnostics,
+                )
+                # fg-data-profiling 内部已有列级并行；外层串行避免嵌套进程池。
+                profiled = await _run_profile_job(profile_job, profile_limiter)
+                self.workspace_service.validate_content(profiled.profile_content)
+                with anyio.fail_after(PROFILE_TRANSFER_TIMEOUT_SECONDS):
+                    await self.workspace_service.awrite_bytes(
+                        thread_id,
+                        profiled.context.profile_file.path,
+                        profiled.profile_content,
+                        overwrite=True,
+                    )
+                stored_profile = await self.workspace_service.read_limited_regular_file(
+                    thread_id,
+                    profiled.context.profile_file.path,
+                    max_bytes=profiled.context.profile_file.size,
+                )
+                if (
+                    len(stored_profile) != profiled.context.profile_file.size
+                    or hashlib.sha256(stored_profile).hexdigest()
+                    != profiled.context.profile_file.sha256
+                ):
+                    raise ReportingError(
+                        "report_analysis_profile_changed",
+                        "完整数据画像写入后发生变化。",
+                    )
+                contexts[index] = profiled.context
+            except Exception as error:
+                errors[index] = error
+
+        async with anyio.create_task_group() as task_group:
+            for index, handle in enumerate(handles):
+                task_group.start_soon(prepare_one, index, handle)
 
         failure = next((item for item in errors if item is not None), None)
         if failure is not None:
