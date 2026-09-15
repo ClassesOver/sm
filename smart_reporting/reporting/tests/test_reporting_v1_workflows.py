@@ -14,8 +14,13 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisSummaryDraft,
 )
 from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
-from smart_reporting.reporting.workflow.runtime.phase_models import ChartDraft, VisualizationPlanDraft
-from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import VisualizationSectionWorkflow
+from smart_reporting.reporting.workflow.runtime.phase_models import (
+    ChartDraft,
+    VisualizationPlanDraft,
+)
+from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
+    VisualizationSectionWorkflow,
+)
 
 
 @pytest.fixture
