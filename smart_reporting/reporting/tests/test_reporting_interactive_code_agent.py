@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,16 +12,20 @@ from agno.tools.function import Function
 from openai.types.responses import Response
 
 from smart_reporting.reporting.code_agent.context import (
+    ExecutionReceipt,
+    ReportingCodingTaskBinding,
     ReportingCodingTaskContext,
     ReportingCodingTaskRegistry,
 )
 from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
+from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingWorkspaceRegistry,
 )
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.checkpoint import FileIdentity
 from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
 
 
@@ -97,6 +102,62 @@ def _task_context(
     )
 
 
+def _identity(path: str, content: bytes) -> FileIdentity:
+    return FileIdentity(
+        path=path,
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+
+def _valid_source() -> str:
+    return "from pathlib import Path\nPath('analysis/out.json').write_text('{}')\n"
+
+
+def _failed_cell(traceback: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        status="error",
+        stdout="",
+        stderr="",
+        result=None,
+        traceback=traceback,
+        truncated=[],
+        execution_count=1,
+    )
+
+
+def _receipt() -> ExecutionReceipt:
+    source = _valid_source().encode()
+    return ExecutionReceipt(
+        runId="old-run",
+        sourceFile=_identity("analysis/a.py", source),
+        outputFiles=(_identity("analysis/out.json", b"{}"),),
+    )
+
+
+async def _write_output(workspace: HostReportingWorkspace, path: str) -> None:
+    await workspace.awrite_text("task-1", path, "{}", overwrite=False)
+
+
+class ToolkitRuntime:
+    def __init__(self) -> None:
+        self.next_cell: SimpleNamespace | None = None
+        self.shutdowns: list[str] = []
+
+    async def execute(self, _session_id, _workspace, _code, **_kwargs):
+        return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+    async def execute_script_process(self, _session_id, workspace, _path, **_kwargs):
+        if self.next_cell is not None:
+            cell, self.next_cell = self.next_cell, None
+            return cell
+        await workspace.awrite_text("task-1", "analysis/out.json", "{}")
+        return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+    async def shutdown(self, session_id: str) -> None:
+        self.shutdowns.append(session_id)
+
+
 class FakeCodeMode:
     def __init__(self) -> None:
         self.cells: list[tuple[str, str]] = []
@@ -133,6 +194,16 @@ def workspace(tmp_path: Path) -> HostReportingWorkspace:
     )
     identity = ReportingWorkspaceRegistry(tmp_path, secret="0" * 32).resolve(scope)
     return HostReportingWorkspace(identity)
+
+
+@pytest.fixture
+def binding(workspace: HostReportingWorkspace) -> ReportingCodingTaskBinding:
+    return ReportingCodingTaskBinding(_task_context(workspace), workspace)
+
+
+@pytest.fixture
+def runtime() -> ToolkitRuntime:
+    return ToolkitRuntime()
 
 
 def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
@@ -310,3 +381,50 @@ async def test_execute_script_uses_clean_python_subprocess(
     assert code_mode.cells[-1][1].startswith("%%bash\n")
     assert "exec(compile(" not in code_mode.cells[-1][1]
     assert "analysis/a.py" in code_mode.cells[-1][1]
+
+
+@pytest.mark.anyio
+async def test_run_and_submit_bind_source_and_declared_outputs(
+    binding: ReportingCodingTaskBinding,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    await toolkit.write_script(_valid_source())
+    run = await toolkit.run_script()
+    assert run["ok"] is True
+    submitted = await toolkit.submit_script()
+    assert submitted["ok"] is True
+    assert submitted["executionReceipt"]["sourceFile"]["path"] == "analysis/a.py"
+    assert [item["path"] for item in submitted["executionReceipt"]["outputFiles"]] == [
+        "analysis/out.json"
+    ]
+
+
+@pytest.mark.anyio
+async def test_submit_rejects_source_or_output_changed_after_run(
+    binding: ReportingCodingTaskBinding,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    await toolkit.write_script(_valid_source())
+    assert (await toolkit.run_script())["ok"] is True
+    await binding.workspace.awrite_text(
+        "task", "analysis/out.json", '{"changed":true}', overwrite=True
+    )
+    rejected = await toolkit.submit_script()
+    assert rejected["code"] == "report_code_output_modified_after_execution"
+
+
+@pytest.mark.anyio
+async def test_failed_run_clears_old_declared_output_and_receipt(
+    binding: ReportingCodingTaskBinding,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    binding.execution_receipt = _receipt()
+    await _write_output(binding.workspace, "analysis/out.json")
+    runtime.next_cell = _failed_cell("ValueError: bad")
+    result = await toolkit.run_script()
+    assert result["ok"] is False
+    assert binding.execution_receipt is None
+    assert not await binding.workspace.apath_exists("task", "analysis/out.json")
