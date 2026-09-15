@@ -88,7 +88,7 @@ class ReportingCodeGenerationRunner:
         self.code_mode_runtime = code_mode_runtime
         self.registry = registry or ReportingCodingTaskRegistry()
         self.knowledge_index = knowledge_index
-        self.lsp_manager = lsp_manager
+        self.lsp_manager = lsp_manager or ReportingLspProcessManager()
 
     async def run(
         self,

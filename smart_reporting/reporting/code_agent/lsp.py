@@ -18,9 +18,12 @@ MAX_HOVER_BYTES = 2048
 
 class ReportingWorkspaceLsp:
     def __init__(
-        self, binding: ReportingCodingTaskBinding, manager: ReportingLspProcessManager | None = None
+        self,
+        binding: ReportingCodingTaskBinding,
+        manager: ReportingLspProcessManager | None = None,
     ) -> None:
-        self.binding, self.manager = binding, manager
+        # Manager 在构造阶段固定，避免请求期间懒创建和并发竞态。
+        self.binding, self.manager = binding, manager or ReportingLspProcessManager()
 
     async def diagnostics(
         self, path: str | None = None, *, expected_source_sha256: str | None = None
@@ -29,7 +32,7 @@ class ReportingWorkspaceLsp:
         if failure := self._expected(expected_source_sha256, sha):
             return failure
         try:
-            _, diagnostics = await self._manager().diagnostics(
+            _, diagnostics = await self.manager.diagnostics(
                 self.binding.context.workspace_root, self._uri(path), source
             )
         except ReportingLspProcessError:
@@ -115,7 +118,7 @@ class ReportingWorkspaceLsp:
         self, path: str, source: str, method: str, line: int | None, character: int | None, sha: str
     ) -> Any:
         try:
-            manager = self._manager()
+            manager = self.manager
             root = self.binding.context.workspace_root
             uri = self._uri(path)
             await manager.synchronize_document(root, uri, source)
@@ -154,11 +157,6 @@ class ReportingWorkspaceLsp:
 
     def _uri(self, path: str) -> str:
         return (self.binding.context.workspace_root / path).resolve().as_uri()
-
-    def _manager(self) -> ReportingLspProcessManager:
-        if self.manager is None:
-            self.manager = ReportingLspProcessManager()
-        return self.manager
 
     @staticmethod
     def _expected(expected: str | None, actual: str) -> dict[str, Any] | None:
