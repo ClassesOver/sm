@@ -58,6 +58,17 @@ HTML 回执字段为 `html.previewUrl`。持久化成功后删除对应 Daytona 
 无有效授权引用的产物在 24 小时安全窗口后分批回收。Reporting CLI 不启动 HTTP 下载服务，仍返回
 Workspace 相对路径，并在 `html` 字段提供 HTML 路径、大小和 SHA-256。
 
+### 交互式 Coding Agent V1
+
+分析补证和可视化脚本使用单一交互式 Coding Agent，在当前正式 Reporting Workspace 内多轮执行：
+
+- `write_script` 和 `execute_code` 通过 Responses API free-form custom tool 接收原始源码；
+- `read_script`、`restart_code_mode`、`run_script` 和 `submit_script` 使用普通 function tool；
+- 每个 coding task 独享 Agent、Toolkit、任务绑定和 CodeMode session，不创建临时 Workspace；
+- `submit_script` 只接受最近一次成功执行且脚本/声明输出哈希未变化的执行回执。
+
+正式脚本必须经过 `write_script → run_script → submit_script`；探索性 `execute_code` 不会直接产生阶段交接回执。
+
 HTML 是静态自包含文档：图片以内嵌 data URL 提供，禁止脚本、表单和外部资源；HTTP 预览响应通过
 sandbox Content-Security-Policy 隔离页面。
 
