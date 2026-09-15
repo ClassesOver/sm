@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
@@ -562,6 +563,30 @@ async def test_runner_shuts_down_kernel_when_agent_factory_fails(
         )
 
     assert caught.value.code == "report_code_generation_agent_failed"
+    assert runtime.shutdowns == ["code-task-1"]
+
+
+@pytest.mark.anyio
+async def test_runner_shuts_down_kernel_when_agent_is_cancelled(
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    class CancelledAgent:
+        async def arun(self, _prompt: str, **_kwargs: Any) -> None:
+            raise asyncio.CancelledError
+
+    runtime = Runtime()
+    with pytest.raises(asyncio.CancelledError):
+        await ReportingCodeGenerationRunner(lambda _tools: CancelledAgent(), runtime).run(
+            _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
+        )
+
     assert runtime.shutdowns == ["code-task-1"]
 
 
