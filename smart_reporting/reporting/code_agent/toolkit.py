@@ -479,6 +479,21 @@ class ReportingCodeModeToolkit(Toolkit):
             "executionReceipt": receipt.model_dump(mode="json", by_alias=True),
         }
 
+    async def require_current_receipt(self, receipt: ExecutionReceipt) -> None:
+        try:
+            source = await self._validated_source_identity()
+            outputs = await self._declared_output_identities()
+        except (ReportingError, WorkspaceError) as error:
+            raise ReportingError(
+                "report_phase_artifact_changed",
+                "Coding Agent 签发产物在阶段交接前发生变化。",
+            ) from error
+        if source != receipt.source_file or outputs != receipt.output_files:
+            raise ReportingError(
+                "report_phase_artifact_changed",
+                "Coding Agent 签发产物在阶段交接前发生变化。",
+            )
+
 
 __all__ = [
     "ReportingCodeModeToolkit",

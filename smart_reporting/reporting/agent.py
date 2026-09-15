@@ -2,7 +2,7 @@ import ast
 import hashlib
 import inspect
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import fields
@@ -2886,6 +2886,66 @@ def _reporting_code_reasoning(
         exponential_backoff=False,
         telemetry=False,
     )
+
+
+CodeAgentFactory = Callable[[Sequence[Any]], Agent]
+_INTERACTIVE_CODE_INSTRUCTIONS = (
+    "在当前正式 Workspace 内迭代脚本；普通文本、Markdown 和代码围栏都不算成功。",
+    "先读取或写入绑定脚本，可用 execute_code 探索；正式结果必须依次成功调用 run_script 和 submit_script。",
+    "write_script 与 execute_code 的 custom input 只包含原始源码或 cell 文本，不得添加 JSON 包装或说明。",
+    "工具路径和任务身份由服务端绑定；不得猜测、替换或传入其他路径。",
+)
+
+
+def create_reporting_code_agent_factory(
+    *,
+    model: Any,
+    name: str,
+    role: str | None = None,
+    instructions: Any = (),
+) -> CodeAgentFactory:
+    """创建 task 独享的交互式 Coding Agent 工厂。"""
+
+    if not isinstance(model, OpenAIChat):
+        raise TypeError("Reporting code agent requires OpenAIChat")
+    extra_instructions = (
+        (instructions,)
+        if isinstance(instructions, str)
+        else tuple(str(item) for item in instructions or ())
+    )
+
+    def create(tools: Sequence[Any]) -> Agent:
+        code_model = _reporting_code_model(model)
+        code_model.parallel_tool_calls = False
+        return Agent(
+            id=name,
+            name=name,
+            role=role or "在正式 Workspace 中交互编写并签发 Reporting Python 脚本。",
+            model=code_model,
+            reasoning_model=None,
+            reasoning_agent=None,
+            instructions=[*_INTERACTIVE_CODE_INSTRUCTIONS, *extra_instructions],
+            output_schema=None,
+            parse_response=False,
+            structured_outputs=False,
+            use_json_mode=False,
+            tools=[deepcopy(tool) for tool in tools],
+            tool_choice="auto",
+            tool_call_limit=20,
+            add_history_to_context=False,
+            num_history_runs=0,
+            store_history_messages=False,
+            read_chat_history=False,
+            read_tool_call_history=False,
+            enable_session_summaries=False,
+            add_session_summary_to_context=False,
+            retries=0,
+            exponential_backoff=False,
+            markdown=False,
+            telemetry=False,
+        )
+
+    return create
 
 
 def create_reporting_code_agent(

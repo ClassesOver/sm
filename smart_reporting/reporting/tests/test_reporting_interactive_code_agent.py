@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from agno.models.message import Message
+from agno.models.openai import OpenAIChat
+from agno.run import RunContext
 from agno.tools.function import Function
 from openai.types.responses import Response
 
+from smart_reporting.reporting.agent import create_reporting_code_agent_factory
 from smart_reporting.reporting.code_agent.context import (
     ExecutionReceipt,
     ReportingCodingTaskBinding,
@@ -26,7 +30,12 @@ from smart_reporting.reporting.host_workspace import (
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    ReportingCodeGenerationRunner,
+)
 from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
+
+SOURCE = "from pathlib import Path\nPath('analysis/out.json').write_text('{}')\n"
 
 
 def _code_responses_model() -> ReportingCodeOpenAIResponses:
@@ -111,7 +120,11 @@ def _identity(path: str, content: bytes) -> FileIdentity:
 
 
 def _valid_source() -> str:
-    return "from pathlib import Path\nPath('analysis/out.json').write_text('{}')\n"
+    return SOURCE
+
+
+def _run_context(task_id: str = "task-1") -> RunContext:
+    return RunContext(run_id=task_id, session_id="session-1")
 
 
 def _failed_cell(traceback: str) -> SimpleNamespace:
@@ -428,3 +441,88 @@ async def test_failed_run_clears_old_declared_output_and_receipt(
     assert result["ok"] is False
     assert binding.execution_receipt is None
     assert not await binding.workspace.apath_exists("task", "analysis/out.json")
+
+
+@pytest.mark.anyio
+async def test_runner_uses_one_multitool_run_and_returns_submission(
+    workspace: HostReportingWorkspace,
+) -> None:
+    created = []
+
+    class Runtime:
+        shutdowns: list[str] = []
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            await received.awrite_text("task-1", "analysis/out.json", "{}")
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    runtime = Runtime()
+
+    class ScriptedAgent:
+        tool_call_limit = 20
+        model = SimpleNamespace(parallel_tool_calls=False)
+
+        def __init__(self, tools: Sequence[Function]) -> None:
+            self.tools = {tool.name: tool for tool in tools}
+
+        async def arun(self, _prompt: str, **_kwargs: Any) -> object:
+            await self.tools["write_script"].entrypoint(source=SOURCE)
+            await self.tools["run_script"].entrypoint()
+            return await self.tools["submit_script"].entrypoint()
+
+    def factory(tools: Sequence[Function]) -> ScriptedAgent:
+        agent = ScriptedAgent(tools)
+        created.append(agent)
+        return agent
+
+    result = await ReportingCodeGenerationRunner(factory, runtime).run(
+        _task_context(workspace),
+        workspace,
+        {"fact": 1},
+        run_context=_run_context("task-1"),
+    )
+    assert len(created) == 1
+    assert result.script_file.path == "analysis/a.py"
+    assert result.execution_receipt.output_files[0].path == "analysis/out.json"
+    assert created[0].tool_call_limit == 20
+    assert created[0].model.parallel_tool_calls is False
+
+
+@pytest.mark.anyio
+async def test_runner_shuts_down_kernel_on_no_submission(
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    runtime = Runtime()
+
+    class TextOnlyAgent:
+        async def arun(self, _prompt: str, **_kwargs: Any) -> str:
+            return "done"
+
+    with pytest.raises(ReportingError) as caught:
+        await ReportingCodeGenerationRunner(lambda _tools: TextOnlyAgent(), runtime).run(
+            _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
+        )
+    assert caught.value.code == "report_code_generation_no_submission"
+    assert runtime.shutdowns == ["code-task-1"]
+
+
+def test_code_agent_factory_creates_task_exclusive_mutable_objects() -> None:
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        name="reporting-code-agent",
+    )
+    first = factory([_function("read_script")])
+    second = factory([_function("read_script")])
+    assert first is not second
+    assert first.model is not second.model
+    assert first.tools[0] is not second.tools[0]

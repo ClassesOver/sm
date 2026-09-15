@@ -9,7 +9,7 @@ import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from time import perf_counter
 from typing import Any, NoReturn
@@ -20,6 +20,14 @@ from agno.run import RunContext, RunStatus
 from agno.tools.function import Function
 from loguru import logger
 
+from ...code_agent.context import (
+    ExecutionReceipt,
+    ReportingCodingTaskContext,
+    ReportingCodingTaskRegistry,
+)
+from ...code_agent.toolkit import ReportingCodeModeToolkit
+from ...code_mode import ReportingCodeModeRuntime
+from ...host_workspace import HostReportingWorkspace
 from ...model_policy import ThinkingFailureKind, current_reporting_thinking_decision
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
@@ -139,6 +147,7 @@ def _code_failure_kind(
 @dataclass(frozen=True, slots=True)
 class CodeGenerationResult:
     script_file: FileIdentity
+    execution_receipt: ExecutionReceipt
 
 
 def _tool_parameters(name: str) -> dict[str, Any]:
@@ -487,18 +496,63 @@ async def _invoke(
 
 
 class ReportingCodeGenerationRunner:
-    """每次阶段调用都创建独立上下文，并以唯一源码提交和 patch 回执收口。"""
+    """在 task 独享 Agent 和 Kernel 中迭代并签发正式脚本。"""
 
     def __init__(
         self,
+        agent_factory: Callable[[tuple[Function, ...]], Agent],
+        code_mode_runtime: ReportingCodeModeRuntime,
+        registry: ReportingCodingTaskRegistry | None = None,
+    ) -> None:
+        self.agent_factory = agent_factory
+        self.code_mode_runtime = code_mode_runtime
+        self.registry = registry or ReportingCodingTaskRegistry()
+
+    async def run(
+        self,
+        task_context: ReportingCodingTaskContext,
+        workspace: HostReportingWorkspace,
+        task_facts: Mapping[str, Any],
         *,
-        agent: Agent | Callable[[], Agent] | None = None,
-        agent_factory: Callable[[], Agent] | None = None,
-    ):
-        agent_source = agent_factory if agent_factory is not None else agent
-        if agent_source is None:
-            raise TypeError("ReportingCodeGenerationRunner requires agent or agent_factory")
-        self._agent_source: Agent | Callable[[], Agent] | None = agent_source
+        run_context: RunContext,
+        diagnostic: Mapping[str, Any] | None = None,
+    ) -> CodeGenerationResult:
+        async with self.registry.bind(task_context, workspace) as binding:
+            toolkit = ReportingCodeModeToolkit(binding, self.code_mode_runtime)
+            agent = self.agent_factory(toolkit.tool_functions)
+            task_payload = asdict(task_context)
+            task_payload["workspace_root"] = str(task_context.workspace_root)
+            payload = {
+                "task": task_payload,
+                "facts": dict(task_facts),
+                "diagnostic": self._short_diagnostic(diagnostic) if diagnostic else None,
+            }
+            started_at = perf_counter()
+            try:
+                await agent.arun(self._prompt(payload), run_context=run_context)
+                receipt = toolkit.submitted_receipt
+                if receipt is None:
+                    raise ReportingError(
+                        "report_code_generation_no_submission",
+                        "Coding Agent 未签发成功执行的 Python 脚本。",
+                    )
+            except ReportingError:
+                raise
+            except Exception as error:
+                raise self._agent_failure(error) from error
+            finally:
+                await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
+            await toolkit.require_current_receipt(receipt)
+            logger.info(
+                "report_code_generation_completed task_id={} path={} duration_ms={}",
+                task_context.task_id,
+                receipt.source_file.path,
+                max(0, round((perf_counter() - started_at) * 1000)),
+            )
+            return CodeGenerationResult(
+                script_file=receipt.source_file,
+                execution_receipt=receipt,
+            )
 
     def _fresh_agent(self) -> Agent:
         agent_source = self._agent_source
