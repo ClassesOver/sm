@@ -1098,7 +1098,7 @@ class ReportingCodeGenerationRunner:
             ) from error
         return self._trusted_read_receipt(receipt, script_file)
 
-    async def generate(
+    async def _legacy_generate(
         self,
         script_path: str,
         task_facts: Mapping[str, Any],
@@ -1321,7 +1321,7 @@ class ReportingCodeGenerationRunner:
             )
         return result
 
-    async def repair(
+    async def _legacy_repair(
         self,
         script_file: FileIdentity,
         diagnostic: Mapping[str, Any],
@@ -1339,7 +1339,7 @@ class ReportingCodeGenerationRunner:
         read_receipt = await self._read_signed_script(
             script_file, read_file, run_context, max_source_bytes
         )
-        result = await self.generate(
+        result = await self._legacy_generate(
             script_file.path,
             {
                 "readReceipt": read_receipt,
