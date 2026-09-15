@@ -45,7 +45,7 @@ from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_tools,
     _report_model_tool_name,
-    create_reporting_code_agent,
+    create_reporting_code_agent_factory as create_reporting_code_agent,
     create_reporting_generator_agent,
 )
 from smart_reporting.reporting.phase import (  # noqa: E402 - 同上

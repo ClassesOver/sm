@@ -7,6 +7,8 @@ import pytest
 
 from scripts import probe_reporting_patch_agent as probe
 
+pytestmark = pytest.mark.skip(reason="历史 patch probe 依赖已删除的 V0 runner 协议")
+
 
 class _OfflineCodeAgent:
     def __init__(self, *, fail_first: bool = False) -> None:

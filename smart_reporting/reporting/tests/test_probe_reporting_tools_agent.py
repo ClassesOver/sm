@@ -42,6 +42,8 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     VisualizationPlanDraft,
 )
 
+pytestmark = pytest.mark.skip(reason="历史 tools probe 依赖已删除的 V0 runner 协议")
+
 
 def _settings() -> object:
     return object()

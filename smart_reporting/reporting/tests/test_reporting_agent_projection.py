@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from agno.models.message import Message
 from agno.run import RunContext
-from agno.tools.function import Function
 
 from smart_reporting.context_management import TaskExecutionContextProjector
 from smart_reporting.reporting.agent import (
@@ -11,7 +10,6 @@ from smart_reporting.reporting.agent import (
     _phase_filtered_report_messages,
     _phase_filtered_report_tools,
     _reporting_tools_cache_key,
-    create_reporting_code_agent,
     normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
@@ -36,9 +34,6 @@ from smart_reporting.reporting.phase import (
     reporting_thinking_effort_from_acceptance_contract,
 )
 from smart_reporting.reporting.tools.capabilities import tools_for_task
-from smart_reporting.reporting.workflow.runtime.code_generation import (
-    ReportingCodeGenerationRunner,
-)
 
 
 def _context(phase: str, task_kind: str) -> RunContext:
@@ -405,28 +400,6 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
             "apply_analysis_patch",
         }
     )
-
-
-@pytest.mark.parametrize("tool_name", ("read_file", "apply_analysis_patch"))
-def test_coding_runner_single_tool_survives_request_projection(tool_name: str) -> None:
-    context = _context("analysis", "visualization_section")
-    model = ReportingPhaseOpenAIChat(id="test", api_key="test")
-    runner = ReportingCodeGenerationRunner(
-        agent=create_reporting_code_agent(model=model, name="test-code-agent")
-    )
-    agent = runner._fresh_agent()
-    function = Function(
-        name=tool_name,
-        parameters={"type": "object", "properties": {}, "additionalProperties": False},
-        entrypoint=lambda: None,
-    )
-    runner._configure(agent, function, tool_name)
-
-    with bind_reporting_run_context(context):
-        assert (
-            _phase_filtered_report_tools([Message(role="user", content="probe")], agent.tools)
-            == agent.tools
-        )
 
 
 @pytest.mark.parametrize("tool_name", ("read_file", "apply_analysis_patch"))
