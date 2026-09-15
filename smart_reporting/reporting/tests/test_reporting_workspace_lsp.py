@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
+from smart_reporting.reporting.code_agent import lsp as lsp_module
 from smart_reporting.reporting.code_agent.context import (
     ReportingCodingTaskBinding,
     ReportingCodingTaskContext,
@@ -91,6 +93,12 @@ async def test_hover_definition_references_and_symbols_stay_inside_bound_workspa
         "answer = helper(2)\n",
     )
     lsp = ReportingWorkspaceLsp(binding)
+    source_sha256 = hashlib.sha256(
+        b"def helper(value: int) -> int:\n"
+        b"    return value + 1\n"
+        b"\n"
+        b"answer = helper(2)\n"
+    ).hexdigest()
 
     hover = await lsp.hover("analysis/script.py", line=3, character=10)
     definition = await lsp.definition("analysis/script.py", line=3, character=10)
@@ -100,8 +108,10 @@ async def test_hover_definition_references_and_symbols_stay_inside_bound_workspa
     assert hover["ok"] is True
     assert hover["found"] is True
     assert "helper(value: int) -> int" in hover["contents"]
+    assert hover["sourceSha256"] == source_sha256
     assert definition == {
         "ok": True,
+        "sourceSha256": source_sha256,
         "locations": [
             {
                 "path": "analysis/script.py",
@@ -113,6 +123,7 @@ async def test_hover_definition_references_and_symbols_stay_inside_bound_workspa
     }
     assert references == {
         "ok": True,
+        "sourceSha256": source_sha256,
         "locations": [
             {
                 "path": "analysis/script.py",
@@ -131,6 +142,7 @@ async def test_hover_definition_references_and_symbols_stay_inside_bound_workspa
     assert symbols == {
         "ok": True,
         "path": "analysis/script.py",
+        "sourceSha256": source_sha256,
         "symbols": [
             {"name": "helper", "kind": "function", "line": 0, "character": 4},
             {"name": "value", "kind": "param", "line": 0, "character": 11},
@@ -148,12 +160,62 @@ async def test_definition_does_not_expose_paths_outside_workspace(
         "analysis/script.py", line=0, character=9
     )
 
-    assert result == {"ok": True, "locations": [{"outsideWorkspace": True}]}
+    assert result == {
+        "ok": True,
+        "sourceSha256": hashlib.sha256(b"value = len([])\n").hexdigest(),
+        "locations": [{"outsideWorkspace": True}],
+    }
 
 
 async def test_lsp_rejects_paths_outside_the_workspace(binding: ReportingCodingTaskBinding) -> None:
     with pytest.raises(ReportingError, match="report_lsp_invalid_request"):
         await ReportingWorkspaceLsp(binding).document_symbols("../outside.py")
+
+
+async def test_lsp_versions_every_snapshot_response_and_rejects_stale_request(
+    binding: ReportingCodingTaskBinding,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "value = 1\n\n"
+    await _write_script(binding, source)
+    lsp = ReportingWorkspaceLsp(binding)
+    source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    results = [
+        await lsp.diagnostics(expected_source_sha256=source_sha256),
+        await lsp.hover("analysis/script.py", line=1, character=0),
+        await lsp.definition("analysis/script.py", line=0, character=0),
+        await lsp.references("analysis/script.py", line=0, character=0),
+        await lsp.document_symbols("analysis/script.py"),
+    ]
+
+    assert results[1]["found"] is False
+    assert all(result["sourceSha256"] == source_sha256 for result in results)
+    monkeypatch.setattr(lsp_module, "jedi", None)
+    unavailable = await lsp.definition("analysis/script.py", line=0, character=0)
+    assert unavailable == {
+        "ok": False,
+        "code": "report_lsp_unavailable",
+        "message": "Python LSP 当前不可用。",
+        "sourceSha256": source_sha256,
+    }
+
+    async def unexpected_jedi(*_args: object) -> object:
+        raise AssertionError("stale request must not start Jedi")
+
+    monkeypatch.setattr(lsp, "_jedi_call", unexpected_jedi)
+    stale = await lsp.hover(
+        "analysis/script.py",
+        line=0,
+        character=0,
+        expected_source_sha256="0" * 64,
+    )
+    assert stale == {
+        "ok": False,
+        "code": "report_lsp_document_version_mismatch",
+        "message": "LSP 请求对应的脚本版本已变化，请重新读取后重试。",
+        "sourceSha256": source_sha256,
+    }
 
 
 async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
@@ -166,24 +228,34 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
         def __init__(self, received_binding: ReportingCodingTaskBinding) -> None:
             assert received_binding is binding
 
-        async def diagnostics(self, path: str | None) -> dict[str, str | None]:
-            calls.append(("diagnostics", path))
+        async def diagnostics(
+            self, path: str | None, *, expected_source_sha256: str | None
+        ) -> dict[str, str | None]:
+            calls.append(("diagnostics", (path, expected_source_sha256)))
             return {"tool": "diagnostics", "path": path}
 
-        async def hover(self, path: str, *, line: int, character: int) -> dict[str, object]:
-            calls.append(("hover", (path, line, character)))
+        async def hover(
+            self, path: str, *, line: int, character: int, expected_source_sha256: str | None
+        ) -> dict[str, object]:
+            calls.append(("hover", (path, line, character, expected_source_sha256)))
             return {"tool": "hover"}
 
-        async def definition(self, path: str, *, line: int, character: int) -> dict[str, object]:
-            calls.append(("definition", (path, line, character)))
+        async def definition(
+            self, path: str, *, line: int, character: int, expected_source_sha256: str | None
+        ) -> dict[str, object]:
+            calls.append(("definition", (path, line, character, expected_source_sha256)))
             return {"tool": "definition"}
 
-        async def references(self, path: str, *, line: int, character: int) -> dict[str, object]:
-            calls.append(("references", (path, line, character)))
+        async def references(
+            self, path: str, *, line: int, character: int, expected_source_sha256: str | None
+        ) -> dict[str, object]:
+            calls.append(("references", (path, line, character, expected_source_sha256)))
             return {"tool": "references"}
 
-        async def document_symbols(self, path: str) -> dict[str, object]:
-            calls.append(("document_symbols", path))
+        async def document_symbols(
+            self, path: str, *, expected_source_sha256: str | None
+        ) -> dict[str, object]:
+            calls.append(("document_symbols", (path, expected_source_sha256)))
             return {"tool": "document_symbols"}
 
     monkeypatch.setattr(
@@ -199,21 +271,41 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
         "lsp_references",
         "lsp_document_symbols",
     }.issubset({function.name for function in toolkit.tool_functions})
-    assert await toolkit.lsp_diagnostics() == {"tool": "diagnostics", "path": None}
-    assert await toolkit.lsp_hover("analysis/script.py", line=1, character=2) == {"tool": "hover"}
-    assert await toolkit.lsp_definition("analysis/script.py", line=1, character=2) == {
+    expected_source_sha256 = "a" * 64
+    assert await toolkit.lsp_diagnostics(expectedSourceSha256=expected_source_sha256) == {
+        "tool": "diagnostics",
+        "path": None,
+    }
+    assert await toolkit.lsp_hover(
+        "analysis/script.py", line=1, character=2, expectedSourceSha256=expected_source_sha256
+    ) == {"tool": "hover"}
+    assert await toolkit.lsp_definition(
+        "analysis/script.py", line=1, character=2, expectedSourceSha256=expected_source_sha256
+    ) == {
         "tool": "definition"
     }
-    assert await toolkit.lsp_references("analysis/script.py", line=1, character=2) == {
+    assert await toolkit.lsp_references(
+        "analysis/script.py", line=1, character=2, expectedSourceSha256=expected_source_sha256
+    ) == {
         "tool": "references"
     }
-    assert await toolkit.lsp_document_symbols("analysis/script.py") == {
+    assert await toolkit.lsp_document_symbols(
+        "analysis/script.py", expectedSourceSha256=expected_source_sha256
+    ) == {
         "tool": "document_symbols"
     }
     assert calls == [
-        ("diagnostics", None),
-        ("hover", ("analysis/script.py", 1, 2)),
-        ("definition", ("analysis/script.py", 1, 2)),
-        ("references", ("analysis/script.py", 1, 2)),
-        ("document_symbols", "analysis/script.py"),
+        ("diagnostics", (None, expected_source_sha256)),
+        ("hover", ("analysis/script.py", 1, 2, expected_source_sha256)),
+        ("definition", ("analysis/script.py", 1, 2, expected_source_sha256)),
+        ("references", ("analysis/script.py", 1, 2, expected_source_sha256)),
+        ("document_symbols", ("analysis/script.py", expected_source_sha256)),
     ]
+    schemas = {function.name: function.parameters for function in toolkit.tool_functions}
+    assert all("expectedSourceSha256" in schemas[name]["properties"] for name in {
+        "lsp_diagnostics",
+        "lsp_hover",
+        "lsp_definition",
+        "lsp_references",
+        "lsp_document_symbols",
+    })

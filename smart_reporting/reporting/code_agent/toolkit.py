@@ -245,6 +245,24 @@ def _stop_after_success(fc: Any) -> None:
     )
 
 
+def _lsp_parameters(*, path_required: bool, include_position: bool) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "path": {"type": "string", "minLength": 1},
+        "expectedSourceSha256": {"type": "string", "minLength": 64, "maxLength": 64},
+    }
+    if include_position:
+        properties.update(
+            {
+                "line": {"type": "integer", "minimum": 0},
+                "character": {"type": "integer", "minimum": 0},
+            }
+        )
+    required = ["path"] if path_required else []
+    if include_position:
+        required.extend(("line", "character"))
+    return {"type": "object", "properties": properties, "required": required}
+
+
 class ReportingCodeModeToolkit(Toolkit):
     """把固定 task binding 暴露为执行与只读代码理解工具。"""
 
@@ -287,11 +305,31 @@ class ReportingCodeModeToolkit(Toolkit):
             ),
             Function(name="restart_code_mode", entrypoint=self.restart_code_mode),
             Function(name="run_script", entrypoint=self.run_script),
-            Function(name="lsp_diagnostics", entrypoint=self.lsp_diagnostics),
-            Function(name="lsp_hover", entrypoint=self.lsp_hover),
-            Function(name="lsp_definition", entrypoint=self.lsp_definition),
-            Function(name="lsp_references", entrypoint=self.lsp_references),
-            Function(name="lsp_document_symbols", entrypoint=self.lsp_document_symbols),
+            Function(
+                name="lsp_diagnostics",
+                parameters=_lsp_parameters(path_required=False, include_position=False),
+                entrypoint=self.lsp_diagnostics,
+            ),
+            Function(
+                name="lsp_hover",
+                parameters=_lsp_parameters(path_required=True, include_position=True),
+                entrypoint=self.lsp_hover,
+            ),
+            Function(
+                name="lsp_definition",
+                parameters=_lsp_parameters(path_required=True, include_position=True),
+                entrypoint=self.lsp_definition,
+            ),
+            Function(
+                name="lsp_references",
+                parameters=_lsp_parameters(path_required=True, include_position=True),
+                entrypoint=self.lsp_references,
+            ),
+            Function(
+                name="lsp_document_symbols",
+                parameters=_lsp_parameters(path_required=True, include_position=False),
+                entrypoint=self.lsp_document_symbols,
+            ),
             Function(
                 name="submit_script",
                 entrypoint=self.submit_script,
@@ -430,48 +468,74 @@ class ReportingCodeModeToolkit(Toolkit):
     async def lsp_diagnostics(
         self,
         path: str | None = None,
+        expectedSourceSha256: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
-        return await self.lsp.diagnostics(path)
+        return await self.lsp.diagnostics(
+            path,
+            expected_source_sha256=expectedSourceSha256,
+        )
 
     async def lsp_hover(
         self,
         path: str,
         line: int,
         character: int,
+        expectedSourceSha256: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
-        return await self.lsp.hover(path, line=line, character=character)
+        return await self.lsp.hover(
+            path,
+            line=line,
+            character=character,
+            expected_source_sha256=expectedSourceSha256,
+        )
 
     async def lsp_definition(
         self,
         path: str,
         line: int,
         character: int,
+        expectedSourceSha256: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
-        return await self.lsp.definition(path, line=line, character=character)
+        return await self.lsp.definition(
+            path,
+            line=line,
+            character=character,
+            expected_source_sha256=expectedSourceSha256,
+        )
 
     async def lsp_references(
         self,
         path: str,
         line: int,
         character: int,
+        expectedSourceSha256: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
-        return await self.lsp.references(path, line=line, character=character)
+        return await self.lsp.references(
+            path,
+            line=line,
+            character=character,
+            expected_source_sha256=expectedSourceSha256,
+        )
 
     async def lsp_document_symbols(
         self,
         path: str,
+        expectedSourceSha256: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
-        return await self.lsp.document_symbols(path)
+        return await self.lsp.document_symbols(
+            path,
+            expected_source_sha256=expectedSourceSha256,
+        )
 
     async def _validated_source_identity(self) -> FileIdentity:
         raw = await self.workspace.read_limited_regular_file(
