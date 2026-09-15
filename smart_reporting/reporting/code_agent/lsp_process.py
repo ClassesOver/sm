@@ -49,6 +49,7 @@ class ReportingLspProcessManager:
         self._states_lock = asyncio.Lock()
         self._next_request_id = 1
         self._closed = False
+        self._reaper_task: asyncio.Task[None] | None = None
 
     async def request(self, root: Path, method: str, params: dict[str, Any]) -> Any:
         state = await self._state(root)
@@ -106,6 +107,13 @@ class ReportingLspProcessManager:
 
     async def aclose(self) -> None:
         self._closed = True
+        if self._reaper_task is not None:
+            self._reaper_task.cancel()
+            try:
+                await self._reaper_task
+            except asyncio.CancelledError:
+                pass
+            self._reaper_task = None
         async with self._states_lock:
             states = list(self._states.values())
             self._states.clear()
@@ -117,6 +125,8 @@ class ReportingLspProcessManager:
         async with self._states_lock:
             if self._closed:
                 raise ReportingLspProcessError("pylsp 管理器已关闭。")
+            if self._reaper_task is None:
+                self._reaper_task = asyncio.create_task(self._reap_loop())
             state = self._states.get(canonical_root)
             if state is not None and state.process.returncode is None and not state.closed:
                 state.last_used = monotonic()
@@ -154,6 +164,19 @@ class ReportingLspProcessManager:
                 raise ReportingLspProcessError("pylsp 管理器已关闭。")
             self._states[canonical_root] = created
         return created
+
+    async def _reap_loop(self) -> None:
+        interval = max(0.01, min(self.idle_ttl_seconds, 60.0))
+        try:
+            while not self._closed:
+                await asyncio.sleep(interval)
+                await self.reap_idle()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(
+                "report_lsp_idle_reaper_failed error_type={}", type(error).__name__
+            )
 
     async def _request(self, state: _LspState, method: str, params: dict[str, Any]) -> Any:
         loop = asyncio.get_running_loop()

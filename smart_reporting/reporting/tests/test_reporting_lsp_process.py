@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -111,6 +112,30 @@ async def test_manager_restarts_after_death_reaps_idle_process_and_closes_all(
     await manager.aclose()
     assert (root / "starts.txt").read_text(encoding="utf-8").splitlines() == [
         "start",
+        "start",
+        "start",
+    ]
+
+
+async def test_manager_automatically_reaps_idle_process(
+    tmp_path: Path,
+    lsp_server: tuple[str, ...],
+) -> None:
+    manager = ReportingLspProcessManager(
+        command=lsp_server,
+        request_timeout_seconds=1,
+        idle_ttl_seconds=0.01,
+    )
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    await manager.request(root, "test/first", {})
+    await asyncio.sleep(0.08)
+
+    await manager.request(root, "test/second", {})
+    await manager.aclose()
+
+    assert (root / "starts.txt").read_text(encoding="utf-8").splitlines() == [
         "start",
         "start",
     ]
