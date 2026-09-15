@@ -8,7 +8,6 @@ from smart_reporting.context_management import TaskExecutionContextProjector
 from smart_reporting.reporting.agent import (
     ReportingPhaseOpenAIChat,
     _phase_filtered_report_messages,
-    _phase_filtered_report_tools,
     _reporting_tools_cache_key,
     normalize_reporting_tool_arguments,
 )

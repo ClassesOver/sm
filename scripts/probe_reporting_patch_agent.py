@@ -22,6 +22,8 @@ from agno.run import RunContext  # noqa: E402 - 直接执行脚本时必须先�
 
 from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
     _report_model,
+)
+from smart_reporting.reporting.agent import (  # noqa: E402 - 同上
     create_reporting_code_agent_factory as create_reporting_code_agent,
 )
 from smart_reporting.reporting.model_policy import (  # noqa: E402 - 同上
