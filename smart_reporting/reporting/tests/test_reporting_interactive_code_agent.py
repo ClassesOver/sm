@@ -526,3 +526,82 @@ def test_code_agent_factory_creates_task_exclusive_mutable_objects() -> None:
     assert first is not second
     assert first.model is not second.model
     assert first.tools[0] is not second.tools[0]
+
+
+@pytest.mark.anyio
+async def test_interactive_v1_write_fail_fix_run_submit(
+    workspace: HostReportingWorkspace,
+) -> None:
+    binding = ReportingCodingTaskBinding(_task_context(workspace), workspace)
+
+    class Runtime:
+        async def execute(self, _session_id, _workspace, _code, **_kwargs):
+            return SimpleNamespace(status="ok", stdout="probe\n", stderr="", traceback=None)
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            source = await received.aread_text("task-1", "analysis/a.py")
+            if "broken" in source:
+                return _failed_cell("SyntaxError: invalid syntax")
+            exists = await received.apath_exists("task-1", "analysis/out.json")
+            await received.awrite_text(
+                "task-1", "analysis/out.json", "{}", overwrite=exists
+            )
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, _session_id):
+            return None
+
+    runtime = Runtime()
+    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    await toolkit.write_script("if True print('broken')\n")
+    assert (await toolkit.run_script())["ok"] is False
+    await toolkit.write_script(SOURCE)
+    assert (await toolkit.execute_code("print('probe')"))["ok"] is True
+    assert (await toolkit.run_script())["ok"] is True
+    submitted = await toolkit.submit_script()
+    assert submitted["ok"] is True
+    receipt = ExecutionReceipt.model_validate(submitted["executionReceipt"])
+    assert receipt.source_file == binding.execution_receipt.source_file
+    assert receipt.output_files == binding.execution_receipt.output_files
+
+
+@pytest.mark.anyio
+async def test_interactive_v1_releases_all_task_resources(
+    workspace: HostReportingWorkspace,
+) -> None:
+    registry = ReportingCodingTaskRegistry()
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            await received.awrite_text("task-1", "analysis/out.json", "{}")
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    runtime = Runtime()
+
+    class SubmitAgent:
+        tool_call_limit = 20
+        model = SimpleNamespace(parallel_tool_calls=False)
+
+        def __init__(self, tools: Sequence[Function]) -> None:
+            self.tools = {tool.name: tool for tool in tools}
+
+        async def arun(self, _prompt: str, **_kwargs: Any) -> object:
+            await self.tools["write_script"].entrypoint(source=SOURCE)
+            await self.tools["run_script"].entrypoint()
+            return await self.tools["submit_script"].entrypoint()
+
+    runner = ReportingCodeGenerationRunner(
+        lambda tools: SubmitAgent(tools), runtime, registry=registry
+    )
+    result = await runner.run(
+        _task_context(workspace), workspace, {}, run_context=_run_context()
+    )
+    assert result.script_file == result.execution_receipt.source_file
+    assert registry.active_count == 0
+    assert runtime.shutdowns == ["code-task-1"]
