@@ -191,3 +191,21 @@ async def test_manager_close_waits_for_process_still_starting(
     with pytest.raises(ReportingLspProcessError, match="管理器已关闭"):
         await request
     assert closed_when_aclose_returned is True
+
+
+async def test_manager_close_waits_for_reader_task(
+    tmp_path: Path,
+    lsp_server: tuple[str, ...],
+) -> None:
+    manager = ReportingLspProcessManager(command=lsp_server, request_timeout_seconds=1)
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    await manager.request(root, "test/first", {})
+    state = manager._states[root.resolve()]
+    reader_task = state.reader_task
+    assert reader_task is not None
+
+    await manager.aclose()
+
+    assert reader_task.done()
