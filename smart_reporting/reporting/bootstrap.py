@@ -129,7 +129,7 @@ def create_report_runtime(
         vision_enabled=settings.report_enable_vision,
         workspace_service=reporting_workspace,
         workspace_registry=workspace_registry,
-        code_mode_runtime=context.reporting_code_mode_runtime,
+        code_mode_runtime=getattr(context, "reporting_code_mode_runtime", None),
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,
