@@ -47,6 +47,7 @@ class ReportingLspProcessManager:
         self.idle_ttl_seconds = idle_ttl_seconds
         self._states: dict[Path, _LspState] = {}
         self._states_lock = asyncio.Lock()
+        self._start_locks: dict[Path, asyncio.Lock] = {}
         self._next_request_id = 1
         self._closed = False
         self._reaper_task: asyncio.Task[None] | None = None
@@ -131,39 +132,48 @@ class ReportingLspProcessManager:
             if state is not None and state.process.returncode is None and not state.closed:
                 state.last_used = monotonic()
                 return state
+            start_lock = self._start_locks.setdefault(canonical_root, asyncio.Lock())
+        async with start_lock:
+            async with self._states_lock:
+                if self._closed:
+                    raise ReportingLspProcessError("pylsp 管理器已关闭。")
+                state = self._states.get(canonical_root)
+                if state is not None and state.process.returncode is None and not state.closed:
+                    state.last_used = monotonic()
+                    return state
+                if state is not None:
+                    self._states.pop(canonical_root, None)
             if state is not None:
-                self._states.pop(canonical_root, None)
-        if state is not None:
-            await self._close_state(state)
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *self.command,
-                cwd=str(canonical_root),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except (OSError, ValueError) as error:
-            raise ReportingLspProcessError("pylsp 启动失败。") from error
-        if process.stdin is None or process.stdout is None:
-            await process.wait()
-            raise ReportingLspProcessError("pylsp stdio 不可用。")
-        created = _LspState(root=canonical_root, process=process)
-        created.reader_task = asyncio.create_task(self._read_loop(created))
-        try:
-            await self._request(
-                created, "initialize", {"rootUri": canonical_root.as_uri(), "capabilities": {}}
-            )
-            await self._notify(created, "initialized", {})
-        except ReportingLspProcessError:
-            await self._close_state(created)
-            raise
-        async with self._states_lock:
-            if self._closed:
+                await self._close_state(state)
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self.command,
+                    cwd=str(canonical_root),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except (OSError, ValueError) as error:
+                raise ReportingLspProcessError("pylsp 启动失败。") from error
+            if process.stdin is None or process.stdout is None:
+                await process.wait()
+                raise ReportingLspProcessError("pylsp stdio 不可用。")
+            created = _LspState(root=canonical_root, process=process)
+            created.reader_task = asyncio.create_task(self._read_loop(created))
+            try:
+                await self._request(
+                    created, "initialize", {"rootUri": canonical_root.as_uri(), "capabilities": {}}
+                )
+                await self._notify(created, "initialized", {})
+            except ReportingLspProcessError:
                 await self._close_state(created)
-                raise ReportingLspProcessError("pylsp 管理器已关闭。")
-            self._states[canonical_root] = created
-        return created
+                raise
+            async with self._states_lock:
+                if self._closed:
+                    await self._close_state(created)
+                    raise ReportingLspProcessError("pylsp 管理器已关闭。")
+                self._states[canonical_root] = created
+            return created
 
     async def _reap_loop(self) -> None:
         interval = max(0.01, min(self.idle_ttl_seconds, 60.0))

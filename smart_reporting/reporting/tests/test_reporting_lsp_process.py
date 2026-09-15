@@ -52,6 +52,8 @@ while request := receive():
     method = request.get("method")
     params = request.get("params", {})
     if method == "initialize":
+        import time
+        time.sleep(0.05)
         send({"jsonrpc": "2.0", "id": request["id"], "result": {"capabilities": {}}})
     elif method == "test/die":
         raise SystemExit(0)
@@ -139,3 +141,24 @@ async def test_manager_automatically_reaps_idle_process(
         "start",
         "start",
     ]
+
+
+async def test_manager_deduplicates_concurrent_first_start(
+    tmp_path: Path,
+    lsp_server: tuple[str, ...],
+) -> None:
+    manager = ReportingLspProcessManager(command=lsp_server, request_timeout_seconds=1)
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    results = await asyncio.gather(
+        manager.request(root, "test/first", {}),
+        manager.request(root, "test/second", {}),
+    )
+
+    assert results == [
+        {"method": "test/first", "params": {}},
+        {"method": "test/second", "params": {}},
+    ]
+    assert (root / "starts.txt").read_text(encoding="utf-8").splitlines() == ["start"]
+    await manager.aclose()
