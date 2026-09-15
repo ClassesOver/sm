@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+from agno.models.message import Message
+from agno.tools.function import Function
+from openai.types.responses import Response
+
+from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
+from smart_reporting.reporting.models import ReportingError
+
+
+def _code_responses_model() -> ReportingCodeOpenAIResponses:
+    return ReportingCodeOpenAIResponses(
+        id="test-model",
+        api_key="test-key",
+        base_url="http://localhost",
+        parallel_tool_calls=False,
+    )
+
+
+def _function(name: str) -> Function:
+    return Function(
+        name=name,
+        description=name,
+        parameters={"type": "object", "properties": {}},
+    )
+
+
+def _custom_response(name: str, raw_input: str) -> Response:
+    return Response.model_validate(
+        {
+            "id": "resp-1",
+            "created_at": 0,
+            "model": "test-model",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "id": "item-1",
+                    "call_id": "call-1",
+                    "name": name,
+                    "input": raw_input,
+                    "type": "custom_tool_call",
+                }
+            ],
+            "parallel_tool_calls": False,
+            "tool_choice": "auto",
+            "tools": [],
+        }
+    )
+
+
+def _assistant_and_result_messages(call: dict[str, Any], result: dict[str, Any]) -> list[Message]:
+    return [
+        Message(role="assistant", content="", tool_calls=[call]),
+        Message(
+            role="tool",
+            content=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+            tool_call_id=call["call_id"],
+            tool_name=call["function"]["name"],
+        ),
+    ]
+
+
+def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
+    model = _code_responses_model()
+    tools = model._format_tool_params([], [_function("read_script"), _function("write_script")])
+    assert tools[0]["type"] == "function"
+    assert tools[1] == {
+        "type": "custom",
+        "name": "write_script",
+        "description": "write_script",
+        "format": {"type": "text"},
+    }
+
+
+def test_custom_call_round_trip_uses_custom_output() -> None:
+    model = _code_responses_model()
+    parsed = model._parse_provider_response(_custom_response("execute_code", "print('ok')"))
+    assert parsed.tool_calls is not None
+    call = parsed.tool_calls[0]
+    assert json.loads(call["function"]["arguments"]) == {"code": "print('ok')"}
+    assert call["provider_data"]["reporting_wire_type"] == "custom"
+    replay = model._format_messages(_assistant_and_result_messages(call, {"ok": True}))
+    assert [item["type"] for item in replay[-2:]] == [
+        "custom_tool_call",
+        "custom_tool_call_output",
+    ]
+
+
+def test_function_call_round_trip_stays_function_protocol() -> None:
+    model = _code_responses_model()
+    response = Response.model_validate(
+        {
+            "id": "resp-2",
+            "created_at": 0,
+            "model": "test-model",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "id": "item-2",
+                    "call_id": "call-2",
+                    "name": "run_script",
+                    "arguments": "{}",
+                    "type": "function_call",
+                }
+            ],
+            "parallel_tool_calls": False,
+            "tool_choice": "auto",
+            "tools": [],
+        }
+    )
+    parsed = model._parse_provider_response(response)
+    assert parsed.tool_calls is not None
+    replay = model._format_messages(
+        _assistant_and_result_messages(parsed.tool_calls[0], {"ok": True})
+    )
+    assert [item["type"] for item in replay[-2:]] == [
+        "function_call",
+        "function_call_output",
+    ]
+
+
+def test_custom_protocol_rejects_streaming_and_unknown_names() -> None:
+    assistant = Message(role="assistant", content="")
+    with pytest.raises(ReportingError, match="非流式"):
+        _code_responses_model().invoke_stream([], assistant, None, [_function("write_script")])
+    with pytest.raises(ReportingError) as caught:
+        _code_responses_model()._parse_provider_response(_custom_response("unknown", "x"))
+    assert caught.value.code == "report_code_custom_tool_protocol_error"

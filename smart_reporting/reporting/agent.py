@@ -14,10 +14,9 @@ from uuid import uuid4
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
 from agno.exceptions import AgentRunException, StopAgentRun
-from agno.models.base import Model
 from agno.models.deepseek import DeepSeek
 from agno.models.message import Message
-from agno.models.openai import OpenAIChat, OpenAIResponses
+from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
 from agno.run import RunContext, RunStatus
 from agno.run.agent import RunOutputEvent
@@ -61,6 +60,27 @@ from ..task_execution import (
     is_task_tool_scheduler_hook,
 )
 from ..workspace import WorkspaceService
+from .code_agent.protocol import (
+    ReportingCodeOpenAIResponses,
+)
+from .code_agent.protocol import (
+    phase_filtered_model_call as _phase_filtered_model_call,
+)
+from .code_agent.protocol import (
+    phase_filtered_report_messages as _phase_filtered_report_messages,
+)
+from .code_agent.protocol import (
+    phase_filtered_report_tools as _phase_filtered_report_tools,
+)
+from .code_agent.protocol import (
+    report_model_tool_name as _report_model_tool_name,
+)
+from .code_agent.protocol import (
+    reporting_phase_from_messages as _reporting_phase_from_messages,
+)
+from .code_agent.protocol import (
+    with_reporting_durable_identities as _with_reporting_durable_identities,
+)
 from .host_workspace import ReportingWorkspaceRegistry
 from .instructions import build_report_agent_instructions
 from .model_policy import (
@@ -91,7 +111,6 @@ from .phase import (
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
-    ReportingPhase,
     _nonnegative_int,
     current_reporting_run_context,
     record_reporting_projection_metrics,
@@ -170,21 +189,7 @@ _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
-_REPORT_CODE_SOURCE_TOOL_NAME = "submit_python_source"
-_REPORT_CODE_SOURCE_TOOL_ERROR = "report_code_source_tool_response_invalid"
-_REPORT_CODE_STREAMING_UNSUPPORTED = "report_code_streaming_unsupported"
-# custom 源码工具是否随本次模型请求下发。必须用 ContextVar 而非模型实例属性：
-# 请求副本共享进程内 ContextVar 的任务内语义，异步并发下各 task 互不串扰，
-# copy(self) 也不会携带上一次请求的残留状态。
-_REPORT_CODE_CUSTOM_TOOL_REQUEST: ContextVar[bool] = ContextVar(
-    "report_code_custom_tool_request",
-    default=False,
-)
-
-
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
-_REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
-_REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 _REPORT_CODE_REASONING_MARKER_MODEL_ID = "deepseek-v4-flash"
 _REPORT_CODE_REASONING_DEGRADED_ERROR = "report_code_reasoning_degraded"
@@ -1753,11 +1758,6 @@ def _tool_response(
     )
 
 
-def _reporting_phase_from_messages(messages: list[Message]) -> ReportingPhase | None:
-    _ = messages
-    return reporting_phase_from_run_context(current_reporting_run_context())
-
-
 def _reporting_request_uses_escalation(
     messages: list[Message],
     fields: tuple[str, ...],
@@ -1781,43 +1781,6 @@ def _reporting_request_uses_escalation(
     return False
 
 
-def _report_model_tool_name(tool: Any) -> str | None:
-    if isinstance(tool, dict):
-        function = tool.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            return function["name"]
-        custom = tool.get("custom")
-        if isinstance(custom, dict) and isinstance(custom.get("name"), str):
-            return custom["name"]
-        return tool.get("name") if isinstance(tool.get("name"), str) else None
-    name = getattr(tool, "name", None)
-    if isinstance(name, str):
-        return name
-    function = getattr(tool, "function", None)
-    function_name = getattr(function, "name", None)
-    return function_name if isinstance(function_name, str) else None
-
-
-def _report_tool_admission_name(name: str) -> str:
-    return "apply_analysis_patch" if name == _REPORT_CODE_SOURCE_TOOL_NAME else name
-
-
-def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
-    phase = _reporting_phase_from_messages(messages)
-    run_context = current_reporting_run_context()
-    task_kind = reporting_task_kind_from_run_context(run_context)
-    if phase is None or tools is None:
-        return tools
-    return [
-        tool
-        for tool in tools
-        if (name := _report_model_tool_name(tool)) is not None
-        and reporting_phase_allows_tool(
-            phase, _report_tool_admission_name(name), task_kind=task_kind
-        )
-    ]
-
-
 def _reporting_tools_cache_key(run_context: RunContext) -> str:
     """按调用者与受信阶段隔离 Agno callable-tool 缓存。"""
 
@@ -1828,140 +1791,6 @@ def _reporting_tools_cache_key(run_context: RunContext) -> str:
     phase = reporting_phase_from_run_context(run_context) or "unbound"
     task_kind = reporting_task_kind_from_run_context(run_context) or "unbound"
     return f"smart-reporting:{identity}:{task_id or run_context.run_id}:{phase}:{task_kind}"
-
-
-def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
-    phase = _reporting_phase_from_messages(messages)
-    # Reporting 各阶段的约束均由静态指令提供，不向 Agent 投影通用 Skill 提示。
-    if phase not in {"analysis", "section"}:
-        return messages
-    projected: list[Message] | None = None
-    opening = "<skills_system>"
-    closing = "</skills_system>"
-    for index, message in enumerate(messages):
-        content = message.content
-        if message.role != "system" or not isinstance(content, str):
-            continue
-        start = content.find(opening)
-        end = content.find(closing, start + len(opening)) if start >= 0 else -1
-        if start < 0 or end < 0:
-            continue
-        end += len(closing)
-        before = content[:start]
-        after = content[end:]
-        if before.endswith("\n") and after.startswith("\n"):
-            after = after[1:]
-        if projected is None:
-            projected = list(messages)
-        updated = deepcopy(message)
-        updated.content = before + after
-        projected[index] = updated
-    return projected if projected is not None else messages
-
-
-def _with_reporting_durable_identities(messages: list[Message]) -> list[Message]:
-    """在 Analysis 投影中固定保留 Profile 回执身份，不带回查询结果正文。
-
-    工具正文可能被压缩，完整回合也可能因输入 hard cap 被移出窗口；但 receiptId、
-    Dataset、snapshot 与查询节点决定了后续 complete_analysis_item 能否准确绑定事实。
-    这里仅从当前 run 已成功返回的工具回执提取身份，不读取数据库、不复制 Profile value，
-    也不把已取消 child task 的回执注入新任务。
-    """
-
-    if _reporting_phase_from_messages(messages) != "analysis":
-        return messages
-    receipts: dict[str, dict[str, str]] = {}
-    for message in messages:
-        if message.role != "tool" or message.tool_name != "query_profile":
-            continue
-        payload: dict[str, Any] | None = None
-        for content in (message.content, message.compressed_content):
-            if isinstance(content, dict):
-                candidate = content
-            elif isinstance(content, str):
-                try:
-                    candidate = json.loads(content)
-                except (TypeError, ValueError):
-                    continue
-            else:
-                continue
-            if isinstance(candidate, dict) and candidate.get("ok") is True:
-                payload = candidate
-                break
-        receipt = payload.get("readReceipt") if isinstance(payload, dict) else None
-        if not isinstance(receipt, dict):
-            continue
-        receipt_id = receipt.get("receiptId")
-        dataset_id = receipt.get("datasetId")
-        snapshot_hash = receipt.get("snapshotHash")
-        query = receipt.get("query")
-        if (
-            not isinstance(receipt_id, str)
-            or not receipt_id
-            or not isinstance(dataset_id, str)
-            or not dataset_id
-            or not isinstance(snapshot_hash, str)
-            or not snapshot_hash
-            or not isinstance(query, str)
-            or not query
-        ):
-            continue
-        identity: dict[str, str] = {
-            "receiptId": receipt_id,
-            "datasetId": dataset_id,
-            "snapshotHash": snapshot_hash,
-            "querySha256": hashlib.sha256(query.encode()).hexdigest(),
-        }
-        if len(query) <= _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH:
-            identity["query"] = query
-        receipts[receipt_id] = identity
-    if not receipts:
-        return messages
-    ledger = {
-        "marker": "REPORTING_DURABLE_IDENTITIES",
-        "version": 1,
-        "profileReadReceipts": list(receipts.values())[-_REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT:],
-    }
-    return [
-        *messages,
-        Message(
-            role="user",
-            content=json.dumps(ledger, ensure_ascii=False, separators=(",", ":")),
-        ),
-    ]
-
-
-def _phase_filtered_model_call(
-    messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    positional = list(args)
-    updated_kwargs = dict(kwargs)
-    if "tools" in updated_kwargs:
-        updated_kwargs["tools"] = _phase_filtered_report_tools(
-            messages, updated_kwargs.get("tools")
-        )
-    elif len(args) >= 3:
-        positional[2] = _phase_filtered_report_tools(messages, positional[2])
-    projected_tools = updated_kwargs.get("tools")
-    if projected_tools is None and len(positional) >= 3:
-        projected_tools = positional[2]
-    if (
-        reporting_task_kind_from_run_context(current_reporting_run_context())
-        == "visualization_section"
-    ):
-        visible_names = [
-            name
-            for tool in projected_tools or ()
-            if (name := _report_model_tool_name(tool)) is not None
-        ]
-        if len(visible_names) == 1:
-            tool_name = visible_names[0]
-            updated_kwargs["tool_choice"] = (
-                {"type": "custom", "custom": {"name": tool_name}}
-                if tool_name == _REPORT_CODE_SOURCE_TOOL_NAME
-                else {"type": "function", "function": {"name": tool_name}}
-            )
-    return tuple(positional), updated_kwargs
 
 
 class ReportingOpenAIChat(ProjectedOpenAIChat):
@@ -2423,7 +2252,7 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
                 and phase in {"analysis", "section"}
                 and not reporting_phase_allows_tool(
                     phase,
-                    _report_tool_admission_name(name),
+                    name,
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
@@ -2585,356 +2414,6 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         async for response in super().ainvoke_stream(messages, *args, **kwargs):
             yield response
-
-
-class ReportingCodeOpenAIResponses(OpenAIResponses):
-    """仅为 Coding Agent 桥接 Responses API custom text tool。"""
-
-    def _format_tool_params(
-        self,
-        messages: list[Message],
-        tools: Any = None,
-    ) -> list[dict[str, Any]]:
-        formatted_tools = super()._format_tool_params(messages, tools)
-        custom_tools = [
-            tool
-            for tool in formatted_tools
-            if _report_model_tool_name(tool) == _REPORT_CODE_SOURCE_TOOL_NAME
-        ]
-        if custom_tools and len(formatted_tools) != 1:
-            raise ReportingError(
-                _REPORT_CODE_SOURCE_TOOL_ERROR,
-                "源码提交阶段只能暴露唯一 custom 工具。",
-            )
-        _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(bool(custom_tools))
-        if not custom_tools:
-            return formatted_tools
-
-        function = custom_tools[0]
-        description = (
-            function.get("description")
-            if isinstance(function, Mapping) and isinstance(function.get("description"), str)
-            else "提交完整原始 Python 源码。"
-        )
-        return [
-            {
-                "type": "custom",
-                "name": _REPORT_CODE_SOURCE_TOOL_NAME,
-                "description": description,
-                "format": {"type": "text"},
-            }
-        ]
-
-    def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        # 请求内推导 custom 工具状态：tools 为空时 _format_tool_params 不会被调用，
-        # 必须先复位，避免同 task 内上一次请求的激活状态泄漏到本次解析。
-        _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
-        params = super().get_request_params(*args, **kwargs)
-        # DashScope Responses 只负责根据 reasoning 结果提交源码，不再开启 thinking。
-        if _REPORT_CODE_CUSTOM_TOOL_REQUEST.get():
-            params["tool_choice"] = "auto"
-        else:
-            params.setdefault("tool_choice", "auto")
-        params.pop("reasoning", None)
-        return params
-
-    def count_tokens(
-        self,
-        messages: list[Message],
-        tools: Any = None,
-        output_schema: Any = None,
-    ) -> int:
-        return Model.count_tokens(self, messages, tools, output_schema)
-
-    def _phase_request_model(self, messages: list[Message]) -> "ReportingCodeOpenAIResponses":
-        request_model = copy(self)
-        model_route = reporting_model_route_from_run_context(current_reporting_run_context())
-        if model_route is not None:
-            _, request_model.id = model_route
-        task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
-        if task_kind == "visualization_section":
-            output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
-        elif task_kind == "section":
-            output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
-        else:
-            output_limit = None
-        limits = [
-            value
-            for value in (
-                request_model.max_output_tokens,
-                output_limit,
-                reporting_model_output_token_limit(request_model.id),
-            )
-            if isinstance(value, int) and value > 0
-        ]
-        request_model.max_output_tokens = min(limits) if limits else None
-        extra_body = dict(request_model.extra_body or {})
-        extra_body.pop("thinking_budget", None)
-        extra_body["enable_thinking"] = False
-        request_model.extra_body = extra_body
-        request_model.reasoning = None
-        request_model.reasoning_effort = None
-        request_model.reasoning_summary = None
-        return request_model
-
-    def _project(
-        self,
-        messages: list[Message],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> list[Message]:
-        response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
-        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-        tools = _phase_filtered_report_tools(messages, tools)
-        configured_cap = getattr(self, "_task_execution_input_token_budget", None)
-        if (
-            not isinstance(configured_cap, int)
-            or isinstance(configured_cap, bool)
-            or configured_cap < 1
-        ):
-            configured_cap = (
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            )
-        output_reserve = (
-            self.max_output_tokens
-            if isinstance(self.max_output_tokens, int) and self.max_output_tokens > 0
-            else 0
-        )
-        hard_cap = resolve_reporting_input_token_hard_cap(
-            configured_input_token_cap=configured_cap,
-            model_id=self.id,
-            output_token_reserve=max(TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, output_reserve),
-            absolute_input_token_cap=(
-                TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-            ),
-        )
-        projected, metrics = TaskExecutionContextProjector.project_with_metrics(
-            _with_reporting_durable_identities(messages),
-            model=self,
-            tools=tools,
-            response_format=response_format,
-            hard_cap=hard_cap,
-        )
-        record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
-        return projected
-
-    @staticmethod
-    def _raw_field(value: Any, field: str) -> Any:
-        return value.get(field) if isinstance(value, Mapping) else getattr(value, field, None)
-
-    @classmethod
-    def _invalid_custom_response(cls, message: str, output: Any = None) -> ReportingError:
-        details = None
-        if isinstance(output, (list, tuple)):
-            item_types = [cls._raw_field(item, "type") for item in output]
-            details = {
-                "outputItemTypes": [
-                    str(item_type) for item_type in item_types if item_type is not None
-                ]
-            }
-        return ReportingError(_REPORT_CODE_SOURCE_TOOL_ERROR, message, details=details)
-
-    def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
-        custom_tool_active = _REPORT_CODE_CUSTOM_TOOL_REQUEST.get()
-        # 每次响应只消费一次请求状态；无论 provider/协议校验成功还是抛错，
-        # 都不能污染同 task 的下一轮。
-        _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
-        if self._raw_field(response, "error") is not None:
-            return super()._parse_provider_response(response, **kwargs)
-        output = self._raw_field(response, "output")
-        output = list(output) if isinstance(output, (list, tuple)) else []
-        custom_calls = [
-            item for item in output if self._raw_field(item, "type") == "custom_tool_call"
-        ]
-        if not custom_tool_active:
-            if custom_calls:
-                raise self._invalid_custom_response("当前阶段收到未知 custom 工具调用。", output)
-            return super()._parse_provider_response(response, **kwargs)
-
-        # Responses API 允许模型在 custom 工具调用前后输出 assistant 文本；
-        # 真实 DashScope deepseek-v4-flash 会间歇性输出前导文本。文本不是成功结果，
-        # 只要唯一 custom 调用有效就忽略文本，function/未知输出项仍视为协议违规。
-        if any(
-            self._raw_field(item, "type") not in {"reasoning", "custom_tool_call", "message"}
-            for item in output
-        ):
-            raise self._invalid_custom_response(
-                "源码 custom 工具响应包含其他工具或未知输出项。", output
-            )
-        if len(custom_calls) != 1:
-            raise self._invalid_custom_response(
-                "源码 custom 工具响应必须只包含一次工具调用。", output
-            )
-        call = custom_calls[0]
-        name = self._raw_field(call, "name")
-        source = self._raw_field(call, "input")
-        call_id = self._raw_field(call, "id")
-        provider_call_id = self._raw_field(call, "call_id")
-        if name != _REPORT_CODE_SOURCE_TOOL_NAME:
-            raise self._invalid_custom_response("源码 custom 工具响应包含未知工具调用。", output)
-        if (
-            not isinstance(source, str)
-            or not source
-            or not isinstance(call_id, str)
-            or not call_id
-            or not isinstance(provider_call_id, str)
-            or not provider_call_id
-        ):
-            raise self._invalid_custom_response(
-                "源码 custom 工具响应缺少有效 input 或调用身份。", output
-            )
-
-        parsed = super()._parse_provider_response(response, **kwargs)
-        # 文本前导永远不是成功结果；解析结果只保留唯一工具调用。
-        parsed.content = None
-        parsed.tool_calls = [
-            {
-                "id": call_id,
-                "call_id": provider_call_id,
-                "type": "function",
-                "function": {
-                    "name": _REPORT_CODE_SOURCE_TOOL_NAME,
-                    "arguments": json.dumps(
-                        {"source": source}, ensure_ascii=False, separators=(",", ":")
-                    ),
-                },
-            }
-        ]
-        parsed.extra = parsed.extra or {}
-        parsed.extra["tool_call_ids"] = [provider_call_id]
-        return parsed
-
-    @staticmethod
-    def _raise_stable_custom_error(error: Exception) -> None:
-        cause = error.__cause__
-        if isinstance(cause, ReportingError) and cause.code == _REPORT_CODE_SOURCE_TOOL_ERROR:
-            raise cause
-
-    def _clear_report_run_error(self) -> None:
-        _REPORT_MODEL_RUN_ERROR.set(None)
-
-    def _record_report_run_error(self, error: Exception) -> None:
-        _REPORT_MODEL_RUN_ERROR.set((id(self), error))
-
-    def report_run_error(self) -> Exception | None:
-        recorded = _REPORT_MODEL_RUN_ERROR.get()
-        return recorded[1] if recorded is not None and recorded[0] == id(self) else None
-
-    def response(self, messages: list[Message], *args: Any, **kwargs: Any) -> ModelResponse:
-        request_model = self._phase_request_model(messages)
-        self._clear_report_run_error()
-        try:
-            response = OpenAIResponses.response(request_model, messages, *args, **kwargs)
-            self._clear_report_run_error()
-            return response
-        except Exception as error:
-            self._record_report_run_error(error)
-            raise
-
-    async def aresponse(self, messages: list[Message], *args: Any, **kwargs: Any) -> ModelResponse:
-        request_model = self._phase_request_model(messages)
-        self._clear_report_run_error()
-        started_at = perf_counter()
-        logger.bind(
-            model_id=request_model.id,
-            duration_ms=0,
-            status="started",
-            degraded=False,
-            error_type=None,
-        ).info(
-            "report_code_response_started model_id={} duration_ms=0 "
-            "status=started degraded=false error_type=-",
-            request_model.id,
-        )
-        try:
-            response = await OpenAIResponses.aresponse(request_model, messages, *args, **kwargs)
-            self._clear_report_run_error()
-            duration_ms = elapsed_ms(started_at)
-            logger.bind(
-                model_id=request_model.id,
-                duration_ms=duration_ms,
-                status="completed",
-                degraded=False,
-                error_type=None,
-            ).info(
-                "report_code_response_completed model_id={} duration_ms={} "
-                "status=completed degraded=false error_type=-",
-                request_model.id,
-                duration_ms,
-            )
-            return response
-        except Exception as error:
-            self._record_report_run_error(error)
-            duration_ms = elapsed_ms(started_at)
-            error_type = type(error).__name__
-            logger.bind(
-                model_id=request_model.id,
-                duration_ms=duration_ms,
-                status="failed",
-                degraded=False,
-                error_type=error_type,
-            ).warning(
-                "report_code_response_completed model_id={} duration_ms={} "
-                "status=failed degraded=false error_type={}",
-                request_model.id,
-                duration_ms,
-                error_type,
-            )
-            raise
-
-    def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        messages = _phase_filtered_report_messages(messages)
-        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
-        messages = self._project(messages, args, kwargs)
-        try:
-            # OpenInference 通过描述符包装 Agno 模型方法；显式传 self 会破坏参数绑定。
-            return super().invoke(messages, *args, **kwargs)
-        except Exception as error:
-            self._raise_stable_custom_error(error)
-            raise
-        finally:
-            _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
-
-    async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        messages = _phase_filtered_report_messages(messages)
-        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
-        messages = self._project(messages, args, kwargs)
-        try:
-            return await super().ainvoke(messages, *args, **kwargs)
-        except Exception as error:
-            self._raise_stable_custom_error(error)
-            raise
-        finally:
-            _REPORT_CODE_CUSTOM_TOOL_REQUEST.set(False)
-
-    @staticmethod
-    def _custom_source_tool_requested(tools: Any) -> bool:
-        if not tools:
-            return False
-        return any(_report_model_tool_name(tool) == _REPORT_CODE_SOURCE_TOOL_NAME for tool in tools)
-
-    def _reject_streaming_custom_source_tool(
-        self, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> None:
-        # Agno 流式增量解析只识别 function_call，custom 工具调用会被静默丢弃，
-        # 最终误报 report_code_generation_no_source；这里把误用变成显式失败。
-        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-        if self._custom_source_tool_requested(tools):
-            raise ReportingError(
-                _REPORT_CODE_STREAMING_UNSUPPORTED,
-                "源码提交阶段不支持流式响应；流式解析不识别 custom 工具调用，"
-                "请使用非流式 invoke/ainvoke。",
-            )
-
-    def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
-        self._reject_streaming_custom_source_tool(args, kwargs)
-        return super().invoke_stream(messages, *args, **kwargs)
-
-    def ainvoke_stream(
-        self, messages: list[Message], *args: Any, **kwargs: Any
-    ) -> AsyncIterator[Any]:
-        self._reject_streaming_custom_source_tool(args, kwargs)
-        return super().ainvoke_stream(messages, *args, **kwargs)
 
 
 class ReportFacadeOpenAIChat(ReportingOpenAIChat):
