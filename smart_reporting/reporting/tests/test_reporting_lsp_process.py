@@ -162,3 +162,32 @@ async def test_manager_deduplicates_concurrent_first_start(
     ]
     assert (root / "starts.txt").read_text(encoding="utf-8").splitlines() == ["start"]
     await manager.aclose()
+
+
+async def test_manager_close_waits_for_process_still_starting(
+    tmp_path: Path,
+    lsp_server: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes: list[asyncio.subprocess.Process] = []
+    create_subprocess_exec = asyncio.create_subprocess_exec
+
+    async def capture_process(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        process = await create_subprocess_exec(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_process)
+    manager = ReportingLspProcessManager(command=lsp_server, request_timeout_seconds=1)
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    request = asyncio.create_task(manager.request(root, "test/first", {}))
+    while not processes:
+        await asyncio.sleep(0)
+    await manager.aclose()
+    closed_when_aclose_returned = processes[0].returncode is not None
+
+    with pytest.raises(ReportingLspProcessError, match="管理器已关闭"):
+        await request
+    assert closed_when_aclose_returned is True

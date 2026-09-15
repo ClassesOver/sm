@@ -116,8 +116,14 @@ class ReportingLspProcessManager:
                 pass
             self._reaper_task = None
         async with self._states_lock:
+            start_locks = tuple(self._start_locks.values())
+        for start_lock in start_locks:
+            async with start_lock:
+                pass
+        async with self._states_lock:
             states = list(self._states.values())
             self._states.clear()
+            self._start_locks.clear()
         for state in states:
             await self._close_state(state)
 
