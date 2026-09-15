@@ -1128,7 +1128,7 @@ class _ReportWorkflowRuntimeBase:
     def _workspace_for_scope(
         self, scope: ReportingWorkflowScope
     ) -> HostReportingWorkspace:
-        if self.workspace_registry is None:
+        if getattr(self, "workspace_registry", None) is None:
             raise ReportingError(
                 "report_host_workspace_missing",
                 "Reporting Workspace 注册表未配置。",
@@ -1180,7 +1180,8 @@ class _ReportWorkflowRuntimeBase:
         )
         if entrypoint not in {"agentos", "cli", "mcp"}:
             raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
-        self._workspace_for_scope(scope)
+        if getattr(self, "workspace_registry", None) is not None:
+            self._workspace_for_scope(scope)
         return {
             REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
             REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
@@ -1199,7 +1200,8 @@ class _ReportWorkflowRuntimeBase:
         entrypoint = str(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY) or "")
         if entrypoint not in {"agentos", "cli", "mcp"}:
             raise ReportingError("report_workflow_context_invalid", "Reporting Workflow 入口无效。")
-        self._workspace_for_scope(scope)
+        if getattr(self, "workspace_registry", None) is not None:
+            self._workspace_for_scope(scope)
         has_external_caller = (
             scope.external_run_id != run_id or scope.caller_thread_id != scope.session_id
         )

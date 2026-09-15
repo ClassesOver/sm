@@ -256,6 +256,14 @@ class RuntimePlanningMixin:
                 task_cleanup_error = task_cleanup_error or error
         if task_cleanup_error is not None:
             raise task_cleanup_error
+        if getattr(self, "workspace_registry", None) is not None:
+            # 宿主机模式只释放进程内 Workspace 身份，保留会话目录和全部产物供审计/恢复。
+            self.workspace_registry.release(scope["thread_id"])
+            getattr(self, "_host_workspaces", {}).pop(scope["thread_id"], None)
+            loguru_logger.info(
+                "report_host_workspace_released workspace_key={}", scope["thread_id"]
+            )
+            return
         await self._destroy_or_quarantine_workspace(
             scope["thread_id"],
             message="报表工作流已结束，但运行环境删除失败，已隔离并转入后台清理。",
