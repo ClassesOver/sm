@@ -4,13 +4,149 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from agno.run import RunContext
 
-from smart_reporting.reporting.knowledge import KnowledgeDocument, ReportingKnowledgeIndex
+from smart_reporting.reporting.code_agent.context import (
+    ReportingCodingTaskBinding,
+    ReportingCodingTaskContext,
+)
+from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
+from smart_reporting.reporting.host_workspace import (
+    HostReportingWorkspace,
+    ReportingWorkspaceRegistry,
+)
+from smart_reporting.reporting.knowledge import (
+    KnowledgeDocument,
+    KnowledgeSearchResult,
+    ReportingKnowledgeIndex,
+)
+from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    ReportingCodeGenerationRunner,
+)
+from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
 
 
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+def _binding(tmp_path: Path) -> ReportingCodingTaskBinding:
+    scope = ReportingWorkflowScope(
+        run_id="run-1",
+        external_run_id="external-run-1",
+        session_id="session-1",
+        caller_thread_id="thread-1",
+        user_id="user-1",
+        database="database-1",
+        company_id="company-1",
+        thread_lease_key="lease-1",
+        workspace_key="workspace-a",
+    )
+    identity = ReportingWorkspaceRegistry(tmp_path, secret="0" * 32).resolve(scope)
+    workspace = HostReportingWorkspace(identity)
+    return ReportingCodingTaskBinding(
+        ReportingCodingTaskContext(
+            task_id="task-1",
+            task_kind="analysis",
+            code_mode_session_id="code-task-1",
+            workspace_key="workspace-a",
+            workspace_root=workspace.identity.root,
+            script_path="analysis/script.py",
+            authorized_read_paths=(),
+            authorized_write_paths=("analysis/script.py", "analysis/out.json"),
+            declared_output_paths=("analysis/out.json",),
+            max_source_bytes=128 * 1024,
+        ),
+        workspace,
+    )
+
+
+class _Knowledge:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def search(
+        self, query: str, *, workspace_key: str | None = None
+    ) -> tuple[KnowledgeSearchResult, ...]:
+        self.calls.append((query, workspace_key))
+        return (
+            KnowledgeSearchResult(
+                identity="static:api",
+                kind="static",
+                snippet="API 契约",
+                score=1.0,
+                content_sha256="0" * 64,
+                workspace_key=None,
+                task_kind=None,
+                error_code=None,
+                source_sha256=None,
+            ),
+        )
+
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.shutdowns: list[str] = []
+
+    async def shutdown(self, session_id: str) -> None:
+        self.shutdowns.append(session_id)
+
+
+@pytest.mark.anyio
+async def test_knowledge_tool_is_opt_in_and_workspace_scoped(tmp_path: Path) -> None:
+    binding = _binding(tmp_path)
+    runtime = _Runtime()
+    knowledge = _Knowledge()
+
+    disabled = ReportingCodeModeToolkit(binding, runtime)
+    enabled = ReportingCodeModeToolkit(binding, runtime, knowledge_index=knowledge)
+    result = await enabled.search_knowledge("API")
+
+    assert "search_knowledge" not in {function.name for function in disabled.tool_functions}
+    assert "search_knowledge" in {function.name for function in enabled.tool_functions}
+    assert knowledge.calls == [("API", "workspace-a")]
+    assert result == {
+        "ok": True,
+        "results": [
+            {
+                "identity": "static:api",
+                "kind": "static",
+                "snippet": "API 契约",
+                "score": 1.0,
+                "contentSha256": "0" * 64,
+            }
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_runner_passes_knowledge_index_to_its_task_local_toolkit(tmp_path: Path) -> None:
+    binding = _binding(tmp_path)
+    runtime = _Runtime()
+    knowledge = _Knowledge()
+
+    class SearchOnlyAgent:
+        def __init__(self, tools) -> None:
+            self.tools = {tool.name: tool for tool in tools}
+
+        async def arun(self, _prompt: str, **_kwargs: object) -> None:
+            await self.tools["search_knowledge"].entrypoint(query="API")
+
+    runner = ReportingCodeGenerationRunner(
+        lambda tools: SearchOnlyAgent(tools), runtime, knowledge_index=knowledge
+    )
+    with pytest.raises(ReportingError, match="report_code_generation_no_submission"):
+        await runner.run(
+            binding.context,
+            binding.workspace,
+            {},
+            run_context=RunContext(run_id="task-1", session_id="session-1"),
+        )
+
+    assert knowledge.calls == [("API", "workspace-a")]
+    assert runtime.shutdowns == ["code-task-1"]
 
 
 @pytest.mark.anyio

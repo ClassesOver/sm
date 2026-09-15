@@ -22,6 +22,7 @@ from ...code_agent.context import (
 from ...code_agent.toolkit import ReportingCodeModeToolkit
 from ...code_mode import ReportingCodeModeRuntime
 from ...host_workspace import HostReportingWorkspace
+from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import ThinkingFailureKind
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
@@ -66,14 +67,25 @@ class CodeGenerationResult:
 class ReportingCodeGenerationRunner:
     """为单个 Coding task 创建 Agent 并签发一次交互式执行回执。"""
 
-    def __init__(self, agent_factory: Callable[[tuple[Function, ...]], Agent], code_mode_runtime: ReportingCodeModeRuntime, registry: ReportingCodingTaskRegistry | None = None) -> None:
+    def __init__(
+        self,
+        agent_factory: Callable[[tuple[Function, ...]], Agent],
+        code_mode_runtime: ReportingCodeModeRuntime,
+        registry: ReportingCodingTaskRegistry | None = None,
+        knowledge_index: ReportingKnowledgeIndex | None = None,
+    ) -> None:
         self.agent_factory = agent_factory
         self.code_mode_runtime = code_mode_runtime
         self.registry = registry or ReportingCodingTaskRegistry()
+        self.knowledge_index = knowledge_index
 
     async def run(self, task_context: ReportingCodingTaskContext, workspace: HostReportingWorkspace, task_facts: Mapping[str, Any], *, run_context: RunContext, diagnostic: Mapping[str, Any] | None = None) -> CodeGenerationResult:
         async with self.registry.bind(task_context, workspace) as binding:
-            toolkit = ReportingCodeModeToolkit(binding, self.code_mode_runtime)
+            toolkit = ReportingCodeModeToolkit(
+                binding,
+                self.code_mode_runtime,
+                knowledge_index=self.knowledge_index,
+            )
             task_payload = asdict(task_context)
             task_payload["workspace_root"] = str(task_context.workspace_root)
             payload = {"task": task_payload, "facts": dict(task_facts), "diagnostic": self._short_diagnostic(diagnostic) if diagnostic else None}

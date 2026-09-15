@@ -13,6 +13,7 @@ from agno.tools import Function, Toolkit
 
 from ...workspace import WorkspaceError
 from ..code_mode import ReportingCodeModeRuntime
+from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
 from ..workflow.checkpoint import FileIdentity
 from .context import (
@@ -251,9 +252,11 @@ class ReportingCodeModeToolkit(Toolkit):
         self,
         binding: ReportingCodingTaskBinding,
         runtime: ReportingCodeModeRuntime,
+        knowledge_index: ReportingKnowledgeIndex | None = None,
     ) -> None:
         self.binding = binding
         self.runtime = runtime
+        self.knowledge_index = knowledge_index
         self.lsp = ReportingWorkspaceLsp(binding)
         self.submitted_receipt: ExecutionReceipt | None = None
         tools = [
@@ -296,6 +299,23 @@ class ReportingCodeModeToolkit(Toolkit):
                 post_hook=_stop_after_success,
             ),
         ]
+        if knowledge_index is not None:
+            tools.append(
+                Function(
+                    name="search_knowledge",
+                    description="检索当前 Workspace 可见的项目文档、规范和成功修复记录。",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "minLength": 1, "maxLength": 4096}
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                    strict=True,
+                    entrypoint=self.search_knowledge,
+                )
+            )
         super().__init__(name="reporting_code_mode", tools=tools)
 
     @property
@@ -332,6 +352,33 @@ class ReportingCodeModeToolkit(Toolkit):
             "source": source,
             "size": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+
+    async def search_knowledge(
+        self, query: str, run_context: RunContext | None = None
+    ) -> dict[str, Any]:
+        del run_context
+        if self.knowledge_index is None:
+            return _failure("report_knowledge_unavailable", "知识索引未配置。")
+        try:
+            results = await self.knowledge_index.search(
+                query,
+                workspace_key=self.context.workspace_key,
+            )
+        except KnowledgeIndexError as error:
+            return _failure(error.code, str(error))
+        return {
+            "ok": True,
+            "results": [
+                {
+                    "identity": item.identity,
+                    "kind": item.kind,
+                    "snippet": item.snippet,
+                    "score": item.score,
+                    "contentSha256": item.content_sha256,
+                }
+                for item in results
+            ],
         }
 
     async def write_script(
