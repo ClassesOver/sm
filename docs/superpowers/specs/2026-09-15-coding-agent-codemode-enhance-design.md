@@ -21,7 +21,7 @@ Reporting Code Agent
 
 ## 已确认约束
 
-- 使用 Agno `OpenAIResponses` 和标准 function calling，不保留 custom text tool 私有协议。
+- 使用 Agno `OpenAIResponses` 工具循环和 Responses API 混合工具协议：结构化操作使用 JSON function tool，大文本源码与执行 cell 使用 free-form custom tool。
 - Agent 可以多轮调用知识库、LSP、Python 和 Shell，直到脚本成功签发或达到工具调用上限。
 - CodeMode 直接读写当前报表会话的正式 Workspace，不创建临时 Workspace，不复制数据。
 - 交互过程中允许正式 Workspace 暂时存在语法错误脚本、运行失败脚本和中间产物；固定 Workflow 只信任最终签发回执。
@@ -39,14 +39,15 @@ Reporting Code Agent
 - 不保证交互期间 Workspace 始终处于可发布状态。
 - 不支持跨进程恢复 CodeMode Kernel 或未签发草稿。
 - 不实现流式 UI、人工确认或 AgentOS 前端展示。
+- 首版 Coding Agent 使用非流式 Responses 调用，不实现 `custom_tool_call_input.delta` 增量解析。
 - 不引入 embedding、外部向量库或外部知识 SaaS。
 - 不开放 LSP rename、format、applyEdit 或 workspace symbols。
 
 ## 核心方案
 
-### 1. 单一 Responses API 工具循环
+### 1. 单一 Responses API 混合工具循环
 
-Code Agent 使用原生 `OpenAIResponses`。一次 `Agent.arun` 内由 Agno 维护 Responses API 多轮消息和工具结果，模型可以按需查询、写入、执行、诊断和修复。
+Code Agent 使用 `ReportingCodeOpenAIResponses`，它是 Agno `OpenAIResponses` 的薄协议适配。一次 `Agent.arun` 内仍由 Agno 维护 Responses API 多轮消息、工具执行和停止条件，模型可以按需查询、写入、执行、诊断和修复；适配层不自行实现 Agent 工具循环。
 
 Agent 工具表固定为：
 
@@ -65,7 +66,12 @@ run_script
 submit_script
 ```
 
-以上 Reporting 工具全部声明为带 JSON Schema 的普通 function tool。完整源码只作为 `write_script.source` 或 `execute_code.code` 字符串字段交给 OpenAI SDK 编码；应用不手写 `function_call.arguments` JSON，也不引入 Codex 风格的 free-form `custom_tool_call`、Lark grammar、JavaScript runtime 或 nested-tool broker。
+工具协议按载荷类型固定划分：
+
+- `write_script`、`execute_code` 声明为 `format: {type: "text"}` 的 free-form custom tool，源码或 Python/Shell cell 直接放在 `custom_tool_call.input`，省去 `function_call.arguments` 内层 JSON 对象及其字符串转义；HTTP 请求外层仍由 OpenAI SDK 正常编码；
+- 其余工具声明为带 JSON Schema 的普通 function tool；
+- custom 与 function 可以出现在同一请求工具表和同一个多轮 run 中，但 `parallel_tool_calls=False` 禁止模型并行发出多个工具调用；
+- 不引入 Lark grammar、JavaScript runtime 或 nested-tool broker。这里采用 Codex 的原始文本载荷优势，不复制其 CodeMode 编排运行时。
 
 - `tool_choice="auto"`。
 - `parallel_tool_calls=False`，避免写脚本、执行和签发并行发生。
@@ -74,7 +80,15 @@ submit_script
 - `submit_script` 校验失败时返回结构化诊断并继续当前工具循环；沿用现有 Function post-hook 模式，只在 task 独享的 Function 上、且回执 `ok=true` 时将本次调用标记为 `stop_after_tool_call=True`。
 - Agent 输出普通文本或达到调用上限但没有成功签发，统一返回 `report_code_generation_no_submission`。
 
-删除 `ReportingCodeOpenAIResponses` 对 custom tool 的格式化和响应解析。模型配置直接构造或注入 Agno `OpenAIResponses`，reasoning/thinking 参数继续由现有模型策略决定。
+保留并重构现有 `ReportingCodeOpenAIResponses`：删除“custom 工具必须唯一”、单轮源码直签和 custom 请求后立即结束的限制，将其收敛为通用混合协议适配器。适配器负责：
+
+1. 将内部 `write_script(source)` 和 `execute_code(code)` Function 定义转换为 Responses custom tool 定义；
+2. 将 `custom_tool_call.input` 转换为 Agno 工具执行器可消费的内部单字符串参数调用，并将 provider item id、call id 和 custom 类型标记保存在对应消息元数据中；
+3. 根据消息自带的类型标记，将有界工具结果序列化为 `custom_tool_call_output`；普通 Function 结果仍序列化为 `function_call_output`，历史重放和 `previous_response_id` 两种路径使用同一身份映射；
+4. 校验未知 custom 工具、空 input、重复 call identity 和协议类型错配，返回稳定技术错误；
+5. 保留 Agno 原有工具 hook、`tool_call_limit`、RunContext、指标和停止语义。
+
+每个 task 独享模型适配器实例；工具类型以消息元数据为权威，不得通过进程级可变全局、跨任务 `ContextVar` 或最近一次请求的工具表反推。reasoning/thinking 参数继续由现有模型策略决定，不再为源码提交单独切换成关闭 thinking 的第二阶段模型请求。
 
 ### 2. 任务绑定
 
@@ -105,17 +119,17 @@ max_source_bytes
 
 从绑定的固定 `script_path` 读取当前正式脚本，不接受模型提供路径。文件不存在时返回稳定的空状态；文件存在时校验普通文件、非符号链接、UTF-8 和大小限制，并返回源码、SHA-256 和字节数。
 
-#### `write_script(source)`
+#### `write_script(<free-form source>)`
 
-将完整源码写入绑定的固定 `script_path`，不接受模型提供路径。写入阶段只校验字符串类型、UTF-8 字节数、物理行约束和目标路径属性，允许正式 Workspace 暂时保存语法错误或运行失败的中间稿。
+custom input 就是完整源码。工具将其写入绑定的固定 `script_path`，不接受模型提供路径，也不要求 JSON、Markdown 代码围栏或 patch 包装。写入阶段只校验非空文本、UTF-8 字节数、物理行约束和目标路径属性，允许正式 Workspace 暂时保存语法错误或运行失败的中间稿。
 
 使用 Workspace 现有的原子文件替换能力，避免并发读取到半写文件。原子替换使用的同目录临时文件只是文件写入实现细节，不是临时 Workspace，也不承载可恢复草稿。工具返回逻辑路径、SHA-256 和字节数；源码身份变化后，先前的成功执行回执立即失效。
 
-#### `execute_code(code)`
+#### `execute_code(<free-form code>)`
 
-在当前任务 Kernel 中执行任意 Python cell 或 `%%bash` cell，用于读取数据、试验 API、执行临时计算和检查中间结果。首次调用前由 runtime 将 cwd 设置为当前正式 Workspace root；可视化任务同时设置 `MPLBACKEND=Agg`。
+custom input 就是待执行的 Python cell 或以 `%%bash` 开头的 Shell cell。在当前任务 Kernel 中执行该 cell，用于读取数据、试验 API、执行临时计算和检查中间结果。首次调用前由 runtime 将 cwd 设置为当前正式 Workspace root；可视化任务同时设置 `MPLBACKEND=Agg`。
 
-`execute_code` 仍拥有宿主机权限，因此可以直接修改正式 Workspace；模型应优先使用 `write_script` 更新目标脚本，以避免在 Python/Shell cell 中再次嵌套和转义完整源码。无论通过哪个入口修改，`submit_script` 都以当前文件和最近成功执行回执的身份比较为准。
+`execute_code` 仍拥有宿主机权限，因此可以直接修改正式 Workspace；模型应优先使用 `write_script` 更新目标脚本，以避免在 Python/Shell cell 中再次嵌套完整源码。无论通过哪个入口修改，`submit_script` 都以当前文件和最近成功执行回执的身份比较为准。
 
 返回 stdout、stderr、traceback、图片和状态的有界结果。文本诊断合计不超过 8KB，变量类型摘要不超过 2KB，图片沿用 CodeMode 实例级数量和字节上限。工具结果不得包含宿主机 Workspace 绝对路径。
 
@@ -262,6 +276,7 @@ report_code_script_modified_during_execution
 report_code_submission_not_executed
 report_code_output_missing
 report_code_output_modified_after_execution
+report_code_custom_tool_protocol_error
 report_code_generation_no_submission
 report_lsp_unavailable
 report_knowledge_unavailable
@@ -271,10 +286,10 @@ report_knowledge_unavailable
 
 ## 代码删除与替换
 
-允许并要求删除以下旧设计：
+允许并要求删除或替换以下旧设计：
 
-- `ReportingCodeOpenAIResponses` custom tool 格式化、解析和 request-scoped 状态；
-- `_tool_parameters("submit_python_source")` 与原始源码 custom input；
+- `ReportingCodeOpenAIResponses` 中仅支持唯一 `submit_python_source`、只消费一次 custom call、禁止混合工具的专用逻辑；
+- `_tool_parameters("submit_python_source")` 与单轮最终源码直签；
 - `_configure` 中强制唯一工具、固定 custom tool choice 和 `tool_call_limit=1`；
 - `wrapped_source` 单轮调用计数；
 - 服务端构造 unified diff 后再写脚本的 patch-before-write 路径；
@@ -282,7 +297,7 @@ report_knowledge_unavailable
 - `generate`/`repair` 两套重复 Agent 配置；
 - 与上述行为绑定的兼容测试。
 
-保留现有 AST、compile、authorizedPaths、文件大小、物理行和 FileIdentity 校验函数；它们迁移到 `run_script` 与 `submit_script` 的共享 validator。
+保留现有 custom tool 定义转换、非流式响应解析和稳定错误归一化中的可复用部分，将其泛化为 `write_script`、`execute_code` 与 function tool 共存的多轮协议适配。保留现有 AST、compile、authorizedPaths、文件大小、物理行和 FileIdentity 校验函数；它们迁移到 `run_script` 与 `submit_script` 的共享 validator。
 
 ## 测试计划
 
@@ -290,15 +305,17 @@ report_knowledge_unavailable
 
 ### Responses API 工具循环
 
-- 普通知识工具调用、LSP 调用、CodeMode 调用和最终 submit 可以在同一 Responses run 中顺序发生；
-- provider function call → tool result → 下一轮 request 的消息形状正确；
+- 普通知识/LSP function tool、CodeMode custom tool 和最终 submit function tool 可以在同一 Responses run 中顺序发生；
+- provider `custom_tool_call` → Agno 内部工具执行 → `custom_tool_call_output` → 下一轮请求的消息形状正确；
+- provider `function_call` → 工具结果 → `function_call_output` → 下一轮请求的消息形状正确；
+- custom 与 function 的 call identity 分别关联正确，未知 custom 名称、空 input 和输出类型错配被稳定拒绝；
 - `parallel_tool_calls=False`；
 - submit 失败后继续，成功后停止；
 - 文本结束、工具上限耗尽或无签发均失败。
 
 ### 交互式写入与签发
 
-- `read_script` 和 `write_script` 只访问服务端绑定路径，完整源码通过标准 JSON function call 往返；
+- `read_script` 和 `write_script` 只访问服务端绑定路径，完整源码通过 free-form custom input 往返且不进入 `function_call.arguments` 的内层 JSON 包装；
 - `write_script` 可将语法错误中间稿原子写入正式 Workspace，CodeMode 也可直接修改目标脚本；
 - 运行失败后模型可以在同一 run 中修改并再次执行；
 - 探索 cell 中定义的变量不能泄漏为正式脚本的运行依赖；
@@ -328,20 +345,21 @@ report_knowledge_unavailable
 
 ## 落地顺序
 
-1. 用原生 `OpenAIResponses` 替换 custom source provider，并建立标准多轮工具契约；
+1. 将现有 `ReportingCodeOpenAIResponses` 重构为非流式混合协议适配器，打通 custom/function 多轮调用及各自 output 消息；
 2. 建立 `ReportingCodingTaskContext`、task binding 和 task 独享的 Agent/Toolkit/Function；
 3. 实现 `read_script`、`write_script`、共享源码 validator、干净子进程 `run_script` 和源码加输出身份门禁；
 4. 合并 generation/repair runner，接入 analysis 与 visualization Workflow；
 5. 实现 Knowledge 索引和短查询回退；
 6. 实现 LSP process manager 和只读工具；
 7. 在领域验收成功点记录动态修复知识；
-8. 删除旧 custom tool、patch-before-write 和兼容测试，运行相关定点测试。
+8. 删除旧单轮源码直签、patch-before-write 和兼容测试，运行相关定点测试。
 
 每一步只运行对应测试文件；不重复运行完整测试集。
 
 ## 验收标准
 
 - 同一个 Responses API run 能完成“查询知识 → LSP 检查 → 写脚本 → 执行 → 观察错误 → 原地修复 → 再执行 → 签发”。
+- `write_script` 与 `execute_code` 使用 free-form custom tool，其余工具使用 JSON function tool；两类工具在同一非流式多轮 run 中正确共存。
 - CodeMode 直接使用当前报表会话正式 Workspace，不存在临时 Workspace 或数据复制。
 - 签发脚本及声明输出的 FileIdentity 必须分别等于该任务最后一次成功执行回执中的源码和输出身份。
 - 固定 Workflow 不消费未签发文件，不重复执行已经由签发回执证明成功的脚本。
