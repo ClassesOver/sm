@@ -55,6 +55,8 @@ _NON_RECOVERABLE_CODES = frozenset(
         "report_task_cancelled",
         "report_task_timeout",
         "report_workspace_unavailable",
+        "report_coding_task_conflict",
+        "report_code_mode_runtime_missing",
     }
 )
 _MAX_GENERATE_ATTEMPTS = 3
@@ -320,7 +322,7 @@ def _visual_review_issue_summary(
 
 def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> FileIdentity:
     script_file = result.script_file
-    if script_file.path != script_path:
+    if script_file.path != script_path or script_file != result.execution_receipt.source_file:
         raise ReportingError(
             "report_phase_artifact_changed", "脚本回执路径与 Workflow 签发路径不一致。"
         )
@@ -454,6 +456,18 @@ class VisualizationSectionWorkflow:
                             "report_phase_artifact_changed",
                             "图表审查回执与签发图表路径不一致。",
                         )
+                    signed_outputs = {
+                        item.path: item for item in generated_result.execution_receipt.output_files
+                    }
+                    if any(
+                        signed_outputs.get(item.source_path) is None
+                        or signed_outputs[item.source_path].sha256 != item.sha256
+                        for item in inspections
+                    ):
+                        raise ReportingError(
+                            "report_phase_artifact_changed",
+                            "图表当前身份与 Coding Agent 签发回执不一致。",
+                        )
                     if any(
                         item.requires_revision or item.visual_review_status != "passed"
                         for item in inspections
@@ -547,6 +561,7 @@ class VisualizationSectionWorkflow:
                         ),
                     )
                 repaired_file = _ensure_script_identity(repaired, script_path)
+                generated_result = repaired
                 repaired_outputs = {
                     item.path for item in repaired.execution_receipt.output_files
                 }

@@ -415,7 +415,7 @@ def _execution_receipt(
             sha256=script_sha256,
         ),
         outputFiles=tuple(
-            FileIdentity(path=path, size=1, sha256=str(index) * 64)
+            FileIdentity(path=path, size=1, sha256="a" * 64)
             for index, path in enumerate(output_paths, start=1)
         ),
     )

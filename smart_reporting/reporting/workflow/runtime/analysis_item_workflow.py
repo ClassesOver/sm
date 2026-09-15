@@ -37,6 +37,16 @@ DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
+_NON_RECOVERABLE_CODES = frozenset(
+    {
+        "report_coding_task_conflict",
+        "report_code_mode_runtime_missing",
+        "report_workspace_unavailable",
+        "report_task_cancelled",
+        "report_task_timeout",
+        "report_phase_artifact_changed",
+    }
+)
 _STAGE_NAMES = (
     "read-facts",
     "plan-evidence",
@@ -728,6 +738,10 @@ class AnalysisItemWorkflow:
                     "补充 evidence 不在 Coding Agent 签发输出中。",
                 )
         except ReportingError as error:
+            if error.code in _NON_RECOVERABLE_CODES or (
+                isinstance(error.details, Mapping) and error.details.get("retryable") is False
+            ):
+                raise
             state.failure = error
             state.evidence = None
             exhausted = (
@@ -761,7 +775,11 @@ class AnalysisItemWorkflow:
 
     @staticmethod
     def _signed_script_file(result: CodeGenerationResult, script_path: str) -> FileIdentity:
-        if not isinstance(result, CodeGenerationResult) or result.script_file.path != script_path:
+        if (
+            not isinstance(result, CodeGenerationResult)
+            or result.script_file.path != script_path
+            or result.script_file != result.execution_receipt.source_file
+        ):
             raise ReportingError(
                 "report_phase_artifact_changed",
                 "补充分析脚本写入回执不是签发路径的唯一文件身份。",
@@ -836,6 +854,10 @@ class AnalysisItemWorkflow:
             state.statuses["validate-evidence"] = "retrying"
             return StepOutput(content={"status": "retry", "code": rejection.code})
         except ReportingError as error:
+            if error.code in _NON_RECOVERABLE_CODES or (
+                isinstance(error.details, Mapping) and error.details.get("retryable") is False
+            ):
+                raise
             state.evidence = None
             state.evidence_file = None
             state.failure = error
@@ -942,6 +964,17 @@ class AnalysisItemWorkflow:
             size=total_bytes,
             sha256=sha256,
         )
+        receipt = state.execution_receipt
+        expected = (
+            next((item for item in receipt.output_files if item.path == state.evidence_file.path), None)
+            if receipt is not None
+            else None
+        )
+        if expected is None or expected != state.evidence_file:
+            raise ReportingError(
+                "report_phase_artifact_changed",
+                "补充 evidence 当前身份与 Coding Agent 签发回执不一致。",
+            )
         return joined
 
     @staticmethod
