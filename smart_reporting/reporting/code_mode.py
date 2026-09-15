@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,11 +29,9 @@ def _bootstrap_cell(workspace: HostReportingWorkspace, *, matplotlib_agg: bool) 
     return "\n".join(lines)
 
 
-def _script_cell(script_path: str) -> str:
-    return (
-        "exec(compile(open("
-        f"{script_path!r}, 'rb').read(), {script_path!r}, 'exec'))"
-    )
+def _script_process_cell(script_path: str) -> str:
+    command = " ".join((shlex.quote(sys.executable), shlex.quote(script_path)))
+    return f"%%bash\n{command}\n"
 
 
 class ReportingCodeModeRuntime:
@@ -98,10 +98,14 @@ class ReportingCodeModeRuntime:
         matplotlib_agg: bool = True,
     ) -> dict[str, Any]:
         del timeout  # CodeMode 的 cell timeout 在实例级配置；调用方仍保留该契约参数。
-        normalized = workspace.paths.normalize(script_path)
         try:
-            await self._bootstrap(session_id, workspace, matplotlib_agg=matplotlib_agg)
-            cell = await self.code_mode.arun(session_id, _script_cell(normalized))
+            normalized = workspace.paths.normalize(script_path)
+            cell = await self.execute_script_process(
+                session_id,
+                workspace,
+                normalized,
+                matplotlib_agg=matplotlib_agg,
+            )
             status = _cell_field(cell, "status")
             if status != "ok":
                 details = {
@@ -127,6 +131,25 @@ class ReportingCodeModeRuntime:
         finally:
             if close:
                 await self.shutdown(session_id)
+
+    async def execute_script_process(
+        self,
+        session_id: str,
+        workspace: HostReportingWorkspace,
+        script_path: str,
+        *,
+        matplotlib_agg: bool,
+    ) -> Any:
+        normalized = workspace.paths.normalize(script_path)
+        await self._bootstrap(session_id, workspace, matplotlib_agg=matplotlib_agg)
+        try:
+            return await self.code_mode.arun(session_id, _script_process_cell(normalized))
+        except Exception as error:
+            raise ReportingError(
+                "report_code_mode_execution_failed",
+                "CodeMode 脚本执行失败。",
+                details={"sessionId": session_id, "errorType": type(error).__name__},
+            ) from error
 
     async def shutdown(self, session_id: str) -> None:
         await self.code_mode.ashutdown(session_id)
