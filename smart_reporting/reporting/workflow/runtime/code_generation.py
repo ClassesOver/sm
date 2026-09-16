@@ -27,7 +27,7 @@ from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import ThinkingFailureKind
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
-from ..checkpoint import FileIdentity
+from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
 MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
@@ -71,6 +71,7 @@ def _code_failure_kind(diagnostic: Mapping[str, Any] | None) -> ThinkingFailureK
 class CodeGenerationResult:
     script_file: FileIdentity
     execution_receipt: ExecutionReceipt
+    visual_inspection_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
 
 
 class ReportingCodeGenerationRunner:

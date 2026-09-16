@@ -31,8 +31,12 @@ from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
 )
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+from smart_reporting.reporting.workflow.checkpoint import (
+    ChartVisualInspectionReceipt,
+    FileIdentity,
+)
 from smart_reporting.reporting.workflow.runtime.code_generation import (
+    CodeGenerationResult,
     ReportingCodeGenerationRunner,
 )
 from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
@@ -172,6 +176,40 @@ def _receipt() -> ExecutionReceipt:
         sourceFile=_identity("analysis/a.py", source),
         outputFiles=(_identity("analysis/out.json", b"{}"),),
     )
+
+
+def test_visual_receipt_state_is_cleared_with_execution_state(
+    binding: ReportingCodingTaskBinding,
+) -> None:
+    receipt = ChartVisualInspectionReceipt.model_validate(
+        {
+            "sourcePath": "analysis/charts/chart.png",
+            "sha256": "a" * 64,
+            "inspectionMode": "vision",
+            "visualReviewStatus": "passed",
+            "modelId": "vision-test",
+            "reviewed": True,
+            "requiresRevision": False,
+        }
+    )
+    binding.visual_inspection_receipts[receipt.source_path] = receipt
+    binding.execution_receipt = _receipt()
+
+    binding.clear_execution_state()
+
+    assert binding.execution_receipt is None
+    assert binding.visual_inspection_receipts == {}
+
+
+def test_code_generation_result_visual_receipts_default_empty() -> None:
+    execution_receipt = _receipt()
+
+    result = CodeGenerationResult(
+        script_file=execution_receipt.source_file,
+        execution_receipt=execution_receipt,
+    )
+
+    assert result.visual_inspection_receipts == ()
 
 
 async def _write_output(workspace: HostReportingWorkspace, path: str) -> None:

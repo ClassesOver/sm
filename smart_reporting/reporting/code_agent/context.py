@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -15,7 +15,7 @@ from ...workspace import WorkspaceService
 from ..contract import StrictModel
 from ..host_workspace import HostReportingWorkspace
 from ..models import ReportingError
-from ..workflow.checkpoint import FileIdentity
+from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 
 def _normalized_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -64,6 +64,9 @@ class ReportingCodingTaskBinding:
     context: ReportingCodingTaskContext
     workspace: HostReportingWorkspace
     execution_receipt: ExecutionReceipt | None = None
+    visual_inspection_receipts: dict[str, ChartVisualInspectionReceipt] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if self.context.workspace_key != self.workspace.identity.workspace_key:
@@ -76,6 +79,10 @@ class ReportingCodingTaskBinding:
                 "report_coding_task_workspace_mismatch",
                 "Coding task 与 Reporting Workspace 根目录不一致。",
             )
+
+    def clear_execution_state(self) -> None:
+        self.execution_receipt = None
+        self.visual_inspection_receipts.clear()
 
 
 class ReportingCodingTaskRegistry:
