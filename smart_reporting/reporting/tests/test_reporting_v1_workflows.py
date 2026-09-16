@@ -198,6 +198,36 @@ async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
 
 
 @pytest.mark.anyio
+async def test_visualization_v1_does_not_retry_nonrecoverable_coding_failure() -> None:
+    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    calls = {"run": 0, "degrade": 0}
+
+    async def run_code(*_: object, **__: object) -> CodeGenerationResult:
+        calls["run"] += 1
+        raise ReportingError("report_phase_artifact_changed", "签发身份冲突")
+
+    async def degrade(*_: object) -> dict[str, str]:
+        calls["degrade"] += 1
+        return {"status": "accepted"}
+
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=(chart,))),
+        run_code=run_code,
+        inspect_chart=None,
+        submit=lambda *_: _accepted(),
+        degrade=degrade,
+    )
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
+
+    assert caught.value.code == "report_phase_artifact_changed"
+    assert calls == {"run": 1, "degrade": 0}
+
+
+@pytest.mark.anyio
 async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
@@ -236,6 +266,44 @@ async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
     assert diagnostics[1]["code"] == "report_visualization_review_failed"
     assert task_facts[1]["repairAttempt"] == 1
     assert submit == [True]
+
+
+@pytest.mark.anyio
+async def test_visualization_v1_degrades_after_visual_review_repairs_exhausted() -> None:
+    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    plan = VisualizationPlanDraft(charts=(chart,))
+    run_count = 0
+    repair_attempts: list[int] = []
+
+    async def run_code(*_: object, **kwargs: object) -> CodeGenerationResult:
+        nonlocal run_count
+        run_count += 1
+        task_facts = kwargs.get("task_facts")
+        if isinstance(task_facts, dict):
+            repair_attempts.append(task_facts["repairAttempt"])
+        marker = format(run_count, "x")
+        script = FileIdentity(path="charts/charts.py", size=run_count, sha256=marker * 64)
+        output = FileIdentity(path=chart.source_path, size=run_count, sha256=marker * 64)
+        return CodeGenerationResult(script_file=script, execution_receipt=ExecutionReceipt(runId=f"run-{run_count}", sourceFile=script, outputFiles=(output,)))
+
+    async def inspect(*_: object) -> ChartVisualInspectionReceipt:
+        marker = format(run_count, "x")
+        return ChartVisualInspectionReceipt(sourcePath=chart.source_path, sha256=marker * 64, inspectionMode="vision", visualReviewStatus="passed", modelId="vision-1", reviewed=True, requiresRevision=True, summary="仍需修复")
+
+    degraded: list[ReportingError] = []
+
+    async def degrade(error: Exception, _context: RunContext) -> dict[str, str]:
+        assert isinstance(error, ReportingError)
+        degraded.append(error)
+        return {"status": "accepted"}
+
+    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, inspect_chart=inspect, submit=lambda *_: _accepted(), degrade=degrade)
+    result = await workflow.run({"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}, RunContext(run_id="run-1", session_id="session-1"))
+
+    assert result.status == "degraded"
+    assert run_count == 4
+    assert repair_attempts == [1, 2, 3]
+    assert degraded[0].details["visualReviewRepairCount"] == 3
 
 
 async def _plan(plan: VisualizationPlanDraft) -> VisualizationPlanDraft:
