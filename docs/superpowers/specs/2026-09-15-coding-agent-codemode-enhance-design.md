@@ -68,24 +68,25 @@ submit_script
 
 工具协议按载荷类型固定划分：
 
-- `write_script`、`execute_code` 声明为 `format: {type: "text"}` 的 free-form custom tool，源码或 Python/Shell cell 直接放在 `custom_tool_call.input`，省去 `function_call.arguments` 内层 JSON 对象及其字符串转义；HTTP 请求外层仍由 OpenAI SDK 正常编码；
+- `write_script`、`execute_code` 声明为使用 Lark grammar 的 free-form custom tool，grammar 采用 `start: SOURCE` 与 `SOURCE: /[\s\S]+/`，只约束 input 必须是非空原始源码或 Python/Shell cell；内容直接放在 `custom_tool_call.input`，省去 `function_call.arguments` 内层 JSON 对象及其字符串转义；HTTP 请求外层仍由 OpenAI SDK 正常编码；
 - 其余工具声明为带 JSON Schema 的普通 function tool；
 - custom 与 function 可以出现在同一请求工具表和同一个多轮 run 中，但 `parallel_tool_calls=False` 禁止模型并行发出多个工具调用；
-- 不引入 Lark grammar、JavaScript runtime 或 nested-tool broker。这里采用 Codex 的原始文本载荷优势，不复制其 CodeMode 编排运行时。
+- grammar 只约束 custom input 的传输形状，不解析 Python/Shell，也不引入 JavaScript runtime 或 nested-tool broker。这里采用 Codex 的 grammar custom tool 传输方式，不复制其 CodeMode 编排运行时。
 
-- `tool_choice="auto"`。
+- 调用方显式传入的 `tool_choice` 必须原样保留；未指定时才使用 `tool_choice="auto"`。
 - `parallel_tool_calls=False`，避免写脚本、执行和签发并行发生。
 - `tool_call_limit=20`，所有工具调用统一计数。
 - 每个 coding task 创建独立 Agent、Toolkit 和 Function 实例，不跨任务复用带 task binding 或可变停止状态的对象。
 - `submit_script` 校验失败时返回结构化诊断并继续当前工具循环；沿用现有 Function post-hook 模式，只在 task 独享的 Function 上、且回执 `ok=true` 时将本次调用标记为 `stop_after_tool_call=True`。
-- Agent 输出普通文本或达到调用上限但没有成功签发，统一返回 `report_code_generation_no_submission`。
+- Responses 返回包含 DSML 工具标记的 assistant 正文但没有结构化工具调用时，返回 `report_code_custom_tool_protocol_error`，标记 `retryable=false`；正文不得被解析或执行。
+- Agent 输出普通文本、达到调用上限或正常结束但没有成功签发时，统一返回 `report_code_generation_no_submission`，标记 `retryable=false`。这类失败没有可供下一轮修复的新脚本或诊断，上层不得从零重复生成。
 
 保留并重构现有 `ReportingCodeOpenAIResponses`：删除“custom 工具必须唯一”、单轮源码直签和 custom 请求后立即结束的限制，将其收敛为通用混合协议适配器。适配器负责：
 
 1. 将内部 `write_script(source)` 和 `execute_code(code)` Function 定义转换为 Responses custom tool 定义；
 2. 将 `custom_tool_call.input` 转换为 Agno 工具执行器可消费的内部单字符串参数调用，并将 provider item id、call id 和 custom 类型标记保存在对应消息元数据中；
 3. 根据消息自带的类型标记，将有界工具结果序列化为 `custom_tool_call_output`；普通 Function 结果仍序列化为 `function_call_output`，历史重放和 `previous_response_id` 两种路径使用同一身份映射；
-4. 校验未知 custom 工具、空 input、重复 call identity 和协议类型错配，返回稳定技术错误；
+4. 校验未知 custom 工具、空 input、重复 call identity、协议类型错配以及正文中的 DSML 工具标记，返回稳定技术错误；
 5. 保留 Agno 原有工具 hook、`tool_call_limit`、RunContext、指标和停止语义。
 
 每个 task 独享模型适配器实例；工具类型以消息元数据为权威，不得通过进程级可变全局、跨任务 `ContextVar` 或最近一次请求的工具表反推。reasoning/thinking 参数继续由现有模型策略决定，不再为源码提交单独切换成关闭 thinking 的第二阶段模型请求。
@@ -286,6 +287,8 @@ report_knowledge_unavailable
 
 工具可恢复错误以 `{ok:false, code, message, details}` 返回给模型；上下文缺失、任务冲突、资源关闭和文件身份冲突作为不可恢复 `ReportingError` 终止本轮。错误详情只包含逻辑路径、有界输出、行列位置、SHA-256 和异常类型，不包含宿主机绝对路径或环境变量。
 
+协议失败和脚本修复必须分开处理：DSML 正文、未知或畸形工具调用、以及无签发结束均为不可恢复的本轮协议失败，不得触发 generation 重试；已产生并签发脚本后，固定 Workflow 发现编译、执行、输出身份或领域技术校验失败时，仍可携带有界诊断进入下一轮交互修复。语义业务校验只产生软告警，不进入技术修复循环。
+
 ## 代码删除与替换
 
 允许并要求删除或替换以下旧设计：
@@ -311,9 +314,13 @@ report_knowledge_unavailable
 - provider `custom_tool_call` → Agno 内部工具执行 → `custom_tool_call_output` → 下一轮请求的消息形状正确；
 - provider `function_call` → 工具结果 → `function_call_output` → 下一轮请求的消息形状正确；
 - custom 与 function 的 call identity 分别关联正确，未知 custom 名称、空 input 和输出类型错配被稳定拒绝；
+- `write_script` 与 `execute_code` 的 wire format 使用非空源码 Lark grammar；
+- 调用方显式指定的 `tool_choice` 不会被适配器覆盖；
 - `parallel_tool_calls=False`；
 - submit 失败后继续，成功后停止；
-- 文本结束、工具上限耗尽或无签发均失败。
+- DSML assistant 正文只产生不可重试协议错误，正文中的工具名、参数和源码绝不执行；
+- 文本结束、工具上限耗尽或无签发均不可重试，单个 coding task 只调用一次 Agent；
+- 已签发脚本的真实技术失败仍可携带诊断进入后续修复。
 
 ### 交互式写入与签发
 
@@ -363,9 +370,11 @@ report_knowledge_unavailable
 
 - 同一个 Responses API run 能完成“查询知识 → LSP 检查 → 写脚本 → 执行 → 观察错误 → 原地修复 → 再执行 → 签发”。
 - `write_script` 与 `execute_code` 使用 free-form custom tool，其余工具使用 JSON function tool；两类工具在同一非流式多轮 run 中正确共存。
+- free-form custom tool 使用非空源码 Lark grammar；显式 `tool_choice` 不被覆盖，DSML 正文绝不作为工具调用执行。
 - CodeMode 直接使用当前报表会话正式 Workspace，不存在临时 Workspace 或数据复制。
 - 签发脚本及声明输出的 FileIdentity 必须分别等于该任务最后一次成功执行回执中的源码和输出身份。
 - 固定 Workflow 不消费未签发文件，不重复执行已经由签发回执证明成功的脚本。
 - 多个 coding task 不共享 Agent、Toolkit、Function 或 Kernel；任务结束后无遗留 Kernel 和 task binding。
 - LSP 和动态知识不会向其他 Workspace 返回源码或业务内容。
+- 协议失败和无签发结束不触发三次 generation 重试；已签发脚本的技术失败仍保留诊断驱动修复。
 - 相关定点测试全部通过，且不保留旧行为兼容分支。
