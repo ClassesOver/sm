@@ -1,0 +1,27 @@
+{
+  "name": "smart-reporting-editor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "check:budget": "node scripts/check-build-budget.mjs",
+    "test:budget": "node scripts/check-build-budget.contract.mjs",
+    "dev": "vite --host 0.0.0.0",
+    "smoke": "node smoke/report-editor-smoke.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@milkdown/crepe": "^7.22.1",
+    "@milkdown/kit": "^7.22.1",
+    "diff": "^8.0.4",
+    "lucide": "^1.46.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "jsdom": "^27.4.0",
+    "playwright": "^1.55.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  }
+}

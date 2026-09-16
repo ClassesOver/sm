@@ -661,6 +661,9 @@ class RuntimePublicationMixin:
                 "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
             ) from error
         gate = await self._dataset_publication_gate(run_context, result)
+        editor_job = self.report_tools._load_job(
+            str(result["jobId"]), self._tool_context(run_context)
+        )
         return StepOutput(
             content={
                 "status": "validated",
@@ -668,6 +671,7 @@ class RuntimePublicationMixin:
                 "publicationGate": gate,
                 "auditSummary": gate.get("auditSummary", {}),
                 "jobId": result["jobId"],
+                "editorJob": editor_job,
                 "reportId": str(run_context.run_id),
                 "reportTitle": _frozen_outline(state).title,
                 "revision": int(result.get("revision", 0)) + 1,

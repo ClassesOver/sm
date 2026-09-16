@@ -435,6 +435,7 @@ class _ReportWorkflowRuntimeBase:
         planner_thinking_budget: int = 8192,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
+        editor_grants: Any | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         quality_warning_service: QualityWarningService | None = None,
         report_public_base_url: str | None = None,
@@ -470,6 +471,7 @@ class _ReportWorkflowRuntimeBase:
         self.profiles = profiles
         self.metadata_client = metadata_client
         self.download_grants = download_grants
+        self.editor_grants = editor_grants
         self.artifact_persistence = artifact_persistence
         self.quality_warning_service = quality_warning_service
         self.report_public_base_url = report_public_base_url
@@ -1320,6 +1322,9 @@ class _ReportWorkflowRuntimeBase:
         values = {
             "reportId": content.get("reportId"),
             "revision": content.get("revision"),
+            "jobId": content.get("jobId"),
+            "editorJob": content.get("editorJob"),
+            "markdownPath": content.get("markdownPath"),
             "pdfPath": content.get("pdfPath"),
             "pdfSize": content.get("pdfSize"),
             "pdfSha256": content.get("pdfSha256"),
@@ -1332,6 +1337,10 @@ class _ReportWorkflowRuntimeBase:
         if (
             not isinstance(values["reportId"], str)
             or not isinstance(values["revision"], int)
+            or not isinstance(values["jobId"], str)
+            or not isinstance(values["editorJob"], dict)
+            or values["editorJob"].get("jobId") != values["jobId"]
+            or not isinstance(values["markdownPath"], str)
             or not isinstance(values["pdfPath"], str)
             or not isinstance(values["pdfSize"], int)
             or values["pdfSize"] <= 0

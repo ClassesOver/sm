@@ -189,7 +189,20 @@ class ReportRuntime:
             pdf_markdown = _normalize_cjk_strong_markers(pdf_markdown)
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
-            layout = _page_layout(page_layout)
+            export_settings = state.get("_editorExportSettings")
+            include_cover = not isinstance(export_settings, dict) or export_settings.get("cover", True)
+            include_toc = not isinstance(export_settings, dict) or export_settings.get("toc", True)
+            include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
+                "headerFooter", True
+            )
+            include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
+                "pageNumbers", True
+            )
+            layout = _page_layout(
+                page_layout,
+                include_header_footer=include_header_footer,
+                include_page_numbers=include_page_numbers,
+            )
             context = _document_context(state.get("_documentContext"))
             title = _markdown_title(tokens)
             if title != context["title"]:
@@ -229,6 +242,8 @@ class ReportRuntime:
                 body,
                 context=context,
                 layout=layout,
+                include_cover=include_cover,
+                include_toc=include_toc,
             )
             preflight_document = HTML(
                 string=pdf_document,
@@ -243,6 +258,8 @@ class ReportRuntime:
                 context=context,
                 layout=layout,
                 toc_page_numbers=toc_page_numbers,
+                include_cover=include_cover,
+                include_toc=include_toc,
             )
             final_document = HTML(
                 string=pdf_document,
@@ -339,6 +356,12 @@ class ReportRuntime:
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
                 "pageLayout": layout,
+                "exportSettings": {
+                    "cover": include_cover,
+                    "toc": include_toc,
+                    "headerFooter": include_header_footer,
+                    "pageNumbers": include_page_numbers,
+                },
                 "reportTitle": title,
                 "documentContext": context,
                 "visualTheme": deepcopy(REPORT_VISUAL_THEME),
@@ -444,7 +467,18 @@ class ReportRuntime:
                 if process.returncode != 0 or len(rendered_pages) != len(reader.pages):
                     raise ReportFailure("PDF 视觉验收栅格化失败")
                 extracted_pages: list[str] = []
-                layout = _page_layout(render.get("pageLayout"))
+                export_settings = render.get("exportSettings")
+                include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
+                    "headerFooter", True
+                )
+                include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
+                    "pageNumbers", True
+                )
+                layout = _page_layout(
+                    render.get("pageLayout"),
+                    include_header_footer=include_header_footer,
+                    include_page_numbers=include_page_numbers,
+                )
                 title = str(render.get("reportTitle") or "智能运营报表")
                 context = _document_context(render.get("documentContext"))
                 section_pages = _pdf_section_pages(reader, context["sections"])

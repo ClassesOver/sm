@@ -336,6 +336,8 @@ def _semantic_documents(
     context: dict[str, Any],
     layout: dict[str, str],
     toc_page_numbers: Mapping[str, int] | None = None,
+    include_cover: bool = True,
+    include_toc: bool = True,
 ) -> tuple[str, str]:
     theme = REPORT_VISUAL_THEME
     body = _prepare_figure_layout(body)
@@ -352,13 +354,17 @@ def _semantic_documents(
         "</a></p>"
         for item in context["headingNumbers"]
     )
-    shared = (
+    cover = (
         f'<section class="report-cover"><h1>{title}</h1>'
         f'<p class="report-period">分析期间：{period}</p>'
         f'<p class="report-organization">{organization}</p>'
         f'<p class="report-generated">{generated_label}</p></section>'
-        f'<section class="report-toc"><h1>目录</h1>{toc}</section>'
-        f'<main class="report-body">{body}'
+        if include_cover
+        else ""
+    )
+    toc_section = f'<section class="report-toc"><h1>目录</h1>{toc}</section>' if include_toc else ""
+    shared = (
+        f"{cover}{toc_section}<main class=\"report-body\">{body}"
         f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>'
         "</footer></main>"
     )
@@ -446,12 +452,22 @@ def _semantic_documents(
         f"<style>{pdf_css}</style></head>"
         f"<body>{shared}</body></html>"
     )
+    word_cover = (
+        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p>"
+        f"<p>{generated_label}</p>"
+        if include_cover
+        else ""
+    )
+    word_toc = (
+        f"<h1>目录</h1><p>{_WORD_MARKERS['toc_field_start']}</p>{toc}"
+        f"<p>{_WORD_MARKERS['toc_field_end']}</p>"
+        if include_toc
+        else ""
+    )
     word_document = (
         "<meta charset='utf-8'><body>"
-        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p>"
-        f"<p>{generated_label}</p><p>{_WORD_MARKERS['cover_end']}</p>"
-        f"<h1>目录</h1><p>{_WORD_MARKERS['toc_field_start']}</p>{toc}"
-        f"<p>{_WORD_MARKERS['toc_field_end']}</p><p>{_WORD_MARKERS['toc_end']}</p>"
+        f"{word_cover}<p>{_WORD_MARKERS['cover_end']}</p>"
+        f"{word_toc}<p>{_WORD_MARKERS['toc_end']}</p>"
         f"<p>{_WORD_MARKERS['body_start']}</p>{body}"
         f"<p>{organization}</p><p>{generated_date}</p></body>"
     )

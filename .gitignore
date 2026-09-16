@@ -12,6 +12,7 @@ lerna-debug.log*
 # Local generated artifacts
 *.pdf
 .local-artifacts/
+smart_reporting/report_editor/static/
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

@@ -18,8 +18,8 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 - `smart-reporting` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
 - `GET /ready` 服务就绪检查。
 - `/workspace/*` 工作区文件接口。
-- `/reports/v1/download/*` 报告公开 bearer 下载接口，链接默认 30 天有效；HTML 使用
-  `/reports/v1/download/{grant}/html` 在线预览。
+- `/reports/v1/download/*` PDF/Word 公开 bearer 下载接口，链接默认 30 天有效。
+- `/reports/v1/editor/*` 发布后报告编辑 Page、受控图片和同源编辑 API。
 
 通用 AgentOS Console 的 run 请求可不携带 Workspace 请求头，此时沿用原生
 `user_id/session_id`，且不会生成默认 Odoo 身份。Odoo 集成请求必须同时使用
@@ -52,14 +52,34 @@ HTTPS CSV：最多 4 个、单个最多 50 MiB、合计最多 200 MiB，不跟�
 clientRequestId 即使跨进程或重启也不能改写请求。当前后台 task 的主动取消仍是进程内操作，部署时
 同一 AgentOS PostgreSQL 数据库只能运行一个 Reporting 服务实例，且 `AGENT_OS_WORKERS` 必须为 1。
 
-AgentOS 中的 Reporting 正常发布时会将 PDF、Word 和自包含 HTML 持久化到 PostgreSQL、签发默认
-30 天有效的公开 bearer 下载授权，并返回基于 `AGENT_REPORT_PUBLIC_BASE_URL` 的完整下载 URL；
-HTML 回执字段为 `html.previewUrl`。持久化成功后删除对应 Daytona sandbox。过期授权会被删除，
-无有效授权引用的产物在 24 小时安全窗口后分批回收。Reporting CLI 不启动 HTTP 下载服务，仍返回
-Workspace 相对路径，并在 `html` 字段提供 HTML 路径、大小和 SHA-256。
+AgentOS 中的 Reporting 正常发布时只将 PDF 和 Word 持久化到 PostgreSQL，并签发默认 30 天有效的
+公开 bearer 下载授权。发布结果同时返回 `editor.openUrl`：短期一次性编辑 grant 首次打开后交换为
+HttpOnly、SameSite=Strict 的编辑会话 Cookie，并重定向到不含 token 的报告 Page。所有 URL 都基于
+`AGENT_REPORT_PUBLIC_BASE_URL` 生成。过期授权会被删除，无有效授权引用的产物在 24 小时安全窗口后
+分批回收。Reporting CLI 不启动 HTTP 服务，只返回 PDF/Word 的 Workspace 相对路径、大小和 SHA-256。
 
-HTML 是静态自包含文档：图片以内嵌 data URL 提供，禁止脚本、表单和外部资源；HTTP 预览响应通过
-sandbox Content-Security-Policy 隔离页面。
+报告 Page 使用 Milkdown Crepe 即时编辑权威 Markdown。已发布 revision 永不原地覆盖；人工修改保存到
+对应 revision 的 `draft/`，并通过 SHA-256 CAS 防止并发覆盖。导出会创建新的 revision，重新执行现有
+PDF/Word 渲染与验收，然后返回新的下载链接和编辑链接。`[[section:*]]` 在页面中隐藏，
+`[[citation:*]]` 显示为只读“引用”标签；原始 HTML 和脚本只作为文本处理，报告图片只能从当前 job
+登记且大小、SHA-256 未变化的 PNG/JPEG 资源读取。
+
+选中文字后可使用 Crepe 官方 AI feature 进行“润色表达”“精简内容”“扩写说明”或“专业报告语气”
+改写。模型响应通过同源 FastAPI 接口流式返回，并先进入 Diff Review，由用户接受或拒绝；AI 不会
+自动保存或导出。空选区、自由 prompt、超长选区以及包含 section/citation 协议标记的选区会在模型调用
+前拒绝。浏览器不接触模型 API Key，服务端复用现有 Reporting Agno/OpenAI-compatible 模型配置。
+
+编辑器静态资源不提交到 Git。Dockerfile 使用 Node 22 构建阶段执行 `npm ci` 和 `npm run build`，运行
+镜像只复制构建后的 `smart_reporting/report_editor/static`。本地开发可在
+`smart_reporting/report_editor/frontend` 目录运行 `npm ci`、`npm test` 和 `npm run build`。
+
+编辑器增强包括：服务端 revision 历史与分页读取、历史差异和草稿恢复、CAS 保存冲突的本地/远端对比、
+本地草稿恢复、章节拖拽与键盘排序、文档搜索替换、结构和图片说明软告警、离线待同步提示、阅读进度、
+专注模式、移动端“更多”菜单、PDF/Word 导出设置以及安全的导出链接复制。历史恢复只写入当前 draft，
+不会覆盖已发布 revision。
+
+当前限制：图表仍以已发布 job 登记的 PNG/JPEG 资源为准；暂不支持 Plotly.js、任意 JavaScript 或编辑器内
+图片上传。导出设置通过受控 job context 传递，PDF/Word 渲染器仍以现有 reporting 页面契约为最终验收依据。
 
 ## CLI
 
@@ -69,7 +89,8 @@ Reporting CLI：
 AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 ```
 
-服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、三格式验收和发布。
+服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、PDF/Word 双格式
+验收和发布。
 
 ## 配置
 
@@ -97,6 +118,7 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 | `SANDBOX_LOCAL_CLIENT_CERT` | Local mTLS 客户端证书；HTTPS 模式必填 |
 | `SANDBOX_LOCAL_CLIENT_KEY` | Local mTLS 客户端私钥；HTTPS 模式必填 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
+| `AGENT_REPORT_PUBLIC_BASE_URL` | PDF/Word 下载和 `editor.openUrl` 使用的公开同源基地址；生产环境使用 HTTPS |
 | `DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting 阶段 Agent thinking 开关（兼容配置名） |

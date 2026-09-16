@@ -19,6 +19,7 @@ from ..async_utils import complete_cleanup
 from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     WorkspaceError,
+    WorkspacePathConflict,
     WorkspaceService,
     _thread,
 )
@@ -495,9 +496,12 @@ class WorkspaceReportService:
         try:
             thread_id = _thread(run_context)
             await self.service.aensure_directory(thread_id, output.parent.parent.as_posix())
-            for candidate in (final_directory_relative, staging_relative):
-                if await self.service.apath_exists(thread_id, candidate):
-                    raise WorkspaceError("报告 revision 输出目录已经存在，请使用新的 revision。")
+            if await self.service.apath_exists(thread_id, final_directory_relative):
+                raise WorkspacePathConflict(
+                    "报告 revision 输出目录已经存在，请使用新的 revision。"
+                )
+            if await self.service.apath_exists(thread_id, staging_relative):
+                raise WorkspaceError("报告 revision 暂存目录已经存在。")
             result = await self._run_report_runtime(
                 "render_markdown",
                 {

@@ -21,7 +21,7 @@ from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRunti
 from smart_reporting.reporting.workflow.state import ReportingCommand
 from smart_reporting.reporting.workspace import REPORT_JOBS_STATE_KEY, WorkspaceReportService
 from smart_reporting.runtime.database import create_agent_database
-from smart_reporting.workspace import WorkspaceError
+from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
 
 
 def _integration_database_url() -> str:
@@ -64,6 +64,9 @@ def test_publication_content_accepts_pdf_and_word_identity() -> None:
     payload = {
         "reportId": "report",
         "revision": 1,
+        "jobId": "job",
+        "editorJob": {"jobId": "job"},
+        "markdownPath": "reports/report.md",
         "pdfPath": "reports/report.pdf",
         "pdfSize": 1,
         "pdfSha256": "a" * 64,
@@ -184,6 +187,29 @@ def _report_pair_identities(*, staged_word_sha256: str = "word") -> dict[str, di
         "reports/revision-1/report.pdf": {"size": 1, "sha256": "pdf"},
         "reports/revision-1/report.docx": {"size": 2, "sha256": "word"},
     }
+
+
+@pytest.mark.anyio
+async def test_render_report_pair_reports_existing_revision_as_path_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _ReportPairService({})
+    service.apath_exists = AsyncMock(return_value=True)
+    report_service = WorkspaceReportService(service)  # type: ignore[arg-type]
+    context = RunContext(run_id="run", session_id="thread", session_state={})
+    job = {"jobId": str(uuid4()), "sources": [{"path": "source.csv"}]}
+    monkeypatch.setattr(report_service, "_load_job", lambda *_args: job)
+    monkeypatch.setattr(report_service, "_job_status", AsyncMock(return_value={}))
+    monkeypatch.setattr(report_service, "_delete_report_path", AsyncMock())
+
+    with pytest.raises(WorkspacePathConflict, match="输出目录已经存在"):
+        await report_service._render_report_pair(
+            job["jobId"],
+            "report.md",
+            "reports/revision-1/report.pdf",
+            artifact_manifest=None,
+            run_context=context,
+        )
 
 
 @pytest.mark.anyio

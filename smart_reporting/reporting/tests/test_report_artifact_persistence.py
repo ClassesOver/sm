@@ -79,6 +79,27 @@ def _scope(database: str = "odoo") -> ReportDownloadScope:
     )
 
 
+def _scope_state_for_publication() -> dict[str, str]:
+    keys = reporting_scope_keys(
+        database="database-1",
+        company_id="company-1",
+        user_id="7",
+        thread_id="thread",
+        run_id="workflow-run",
+    )
+    return ReportingWorkflowScope(
+        run_id="workflow-run",
+        external_run_id="external-1",
+        session_id="workflow-session",
+        caller_thread_id="thread",
+        user_id="7",
+        database="database-1",
+        company_id="company-1",
+        thread_lease_key=keys.thread_lease_key,
+        workspace_key=keys.workspace_key,
+    ).as_state()
+
+
 def _integration_database_url() -> str:
     value = os.getenv("REPORTING_TEST_DB_URL", "").strip()
     if not value:
@@ -571,12 +592,16 @@ def test_runtime_requires_public_base_url_for_http_publication() -> None:
 @pytest.mark.anyio
 async def test_http_publication_persists_and_destroys_sandbox_before_issuing_grant() -> None:
     events: list[str] = []
+    markdown_snapshots: list[tuple[str, str]] = []
     persisted_artifacts: tuple[object, ...] = ()
     pdf = b"pdf"
     word = b"word"
     content = {
         "reportId": "report-1",
         "revision": 1,
+        "jobId": "job-1",
+        "editorJob": {"jobId": "job-1", "status": "validated"},
+        "markdownPath": "reports/report.md",
         "pdfPath": "reports/report.pdf",
         "pdfSize": len(pdf),
         "pdfSha256": hashlib.sha256(pdf).hexdigest(),
@@ -610,7 +635,29 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
                 expires_at=datetime.now(UTC) + timedelta(hours=1),
             )
 
+    class EditorGrants:
+        async def issue(self, context: Any):
+            events.append("editor-grant")
+            assert context.markdown_path == "reports/revision-1/report.md"
+            assert context.job["jobId"] == "job-1"
+            assert context.scope["database"] == "database-1"
+            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+
     class Workspace:
+        async def aread_text(self, thread_id: str, path: str) -> str:
+            assert thread_id == "thread"
+            assert path == "reports/report.md"
+            return "# 报告\n"
+
+        async def apath_exists(self, thread_id: str, path: str) -> bool:
+            assert thread_id == "thread"
+            assert path == "reports/revision-1/report.md"
+            return False
+
+        async def awrite_text(self, thread_id: str, path: str, content: str) -> None:
+            assert thread_id == "thread"
+            markdown_snapshots.append((path, content))
+
         async def adestroy(self, thread_id: str) -> bool:
             assert thread_id == "thread"
             events.append("destroy")
@@ -619,8 +666,28 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
+    runtime.editor_grants = EditorGrants()
     runtime.workspace_service = Workspace()
     runtime.report_public_base_url = "http://10.233.32.64:27018"
+    durable = SimpleNamespace(
+        state_version=3,
+        payload={"report_workflow_scope": _scope_state_for_publication()},
+    )
+
+    class StateRepository:
+        async def get(self, report_run_id: str):
+            assert report_run_id == "workflow-run"
+            return durable
+
+        async def apply(self, report_run_id: str, command: Any, *, expected_version: int):
+            assert report_run_id == "workflow-run"
+            assert expected_version == 3
+            events.append("editor-context")
+            durable.payload["reportEditorContexts"] = {
+                "1": command.payload["context"]
+            }
+
+    runtime.state_repository = StateRepository()
     result = await runtime.issue_http_publication(
         thread_id="thread",
         user_id="7",
@@ -629,11 +696,15 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
         output=content,
     )
 
-    assert events == ["persist", "destroy", "grant"]
+    assert events == ["persist", "editor-context", "destroy", "grant", "editor-grant"]
+    assert markdown_snapshots == [("reports/revision-1/report.md", "# 报告\n")]
     assert {item.artifact for item in persisted_artifacts} == {"pdf", "word"}
     assert result["pdf"]["downloadUrl"] == ("http://10.233.32.64:27018/reports/v1/download/raw")
     assert result["word"]["downloadUrl"] == (
         "http://10.233.32.64:27018/reports/v1/download/raw/word"
+    )
+    assert result["editor"]["openUrl"] == (
+        "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
     )
     assert "html" not in result
 
@@ -820,12 +891,16 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
+    runtime.editor_grants = Grants()
     runtime.workspace_service = Workspace()
     runtime.report_public_base_url = "http://10.233.32.64:27018"
     content = b"report"
     output = {
         "reportId": "report-1",
         "revision": 1,
+        "jobId": "job-1",
+        "editorJob": {"jobId": "job-1", "status": "validated"},
+        "markdownPath": "reports/revision-1/report.md",
         "pdfPath": "reports/report.pdf",
         "pdfSize": len(content),
         "pdfSha256": hashlib.sha256(content).hexdigest(),
@@ -873,12 +948,25 @@ async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails(
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
+    runtime.editor_grants = Grants()
     runtime.workspace_service = Workspace()
     runtime.report_public_base_url = "http://127.0.0.1:33046"
+    runtime.state_repository = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                state_version=1,
+                payload={"report_workflow_scope": _scope_state_for_publication()},
+            )
+        ),
+        apply=AsyncMock(),
+    )
     content = b"report"
     output = {
         "reportId": "report-1",
         "revision": 1,
+        "jobId": "job-1",
+        "editorJob": {"jobId": "job-1", "status": "validated"},
+        "markdownPath": "reports/revision-1/report.md",
         "pdfPath": "reports/report.pdf",
         "pdfSize": len(content),
         "pdfSha256": hashlib.sha256(content).hexdigest(),

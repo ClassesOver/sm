@@ -49,6 +49,7 @@ REPORT_ARTIFACT_CHUNK_BYTES = 1024 * 1024
 REPORT_ARTIFACT_CLEANUP_GRACE = timedelta(days=1)
 REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
+_EDITOR_ACCESS_PATH = re.compile(r"/reports/v1/editor/open/[^?\s]+(?:\?[^\s]*)?")
 _PUBLICATION_LOCK_KEY = "report-download-publication-v2"
 _metadata = MetaData()
 report_download_grants_v2 = Table(
@@ -880,6 +881,8 @@ def publication_result(
     raw_grant: str,
     grant: ReportDownloadGrant,
     base_url: str,
+    editor_raw_grant: str,
+    editor_expires_at: datetime,
     source_warnings: list[dict[str, object]] | None = None,
     task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -888,15 +891,21 @@ def publication_result(
         "revision": revision,
         "pdf": {
             "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}",
+            "path": grant.pdf_path,
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.pdf_size,
             "sha256": grant.pdf_sha256,
         },
         "word": {
             "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}/word",
+            "path": grant.word_path,
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.word_size,
             "sha256": grant.word_sha256,
+        },
+        "editor": {
+            "openUrl": f"{base_url}/reports/v1/editor/open/{editor_raw_grant}",
+            "expiresAt": editor_expires_at.isoformat(),
         },
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(task_receipts or ()),
@@ -956,7 +965,8 @@ def _grant_hash(value: str) -> str:
 
 
 def _redact_download_path(value: str) -> str:
-    return _DOWNLOAD_ACCESS_PATH.sub("/reports/v1/download/<redacted>", value)
+    redacted = _DOWNLOAD_ACCESS_PATH.sub("/reports/v1/download/<redacted>", value)
+    return _EDITOR_ACCESS_PATH.sub("/reports/v1/editor/open/<redacted>", redacted)
 
 
 def _utc_datetime(value: datetime) -> datetime:

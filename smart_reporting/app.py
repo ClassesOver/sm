@@ -30,8 +30,16 @@ from .integrations.dingyi_process import DingyiProcessAdapter
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
+from .report_editor import (
+    ReportEditorGrantService,
+    ReportEditorService,
+    SqlAlchemyReportEditorRepository,
+    create_report_editor_ai_service,
+    create_report_editor_router,
+)
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
+from .reporting.code_mode import create_reporting_code_mode_runtime
 from .reporting.data_source.starrocks import StarRocksSourceConfig
 from .reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
@@ -46,6 +54,7 @@ from .reporting.diagnostics import (
     ReportingDependencyDiagnostics,
     create_reporting_dependency_diagnostics_router,
 )
+from .reporting.host_workspace import ReportingWorkspaceRegistry
 from .reporting.workflow.controller import ReportWorkflowController
 from .reporting.workflow.repository import REPORTING_DB_SCHEMA
 from .reporting_mcp.identity import CapabilityTokenVerifier
@@ -55,6 +64,7 @@ from .runtime.execution import ExecutionContext, configure_execution_tracing
 from .runtime.logging import configure_application_logging, configure_file_logging
 from .runtime.settings import AgentSettings
 from .sandbox.factory import create_sandbox_provider
+from .task_execution import DEFAULT_TERMINAL_TIMEOUT
 from .workspace import (
     AsyncSandboxRegistry,
     WorkspaceError,
@@ -97,7 +107,22 @@ workspace_service = WorkspaceService(
     async_registry=async_sandbox_registry,
     provider=sandbox_provider,
 )
+reporting_workspace_registry = ReportingWorkspaceRegistry(
+    settings.reporting_host_workspace_root,
+    secret=settings.workspace_hmac_secret,
+)
+reporting_code_mode_runtime = create_reporting_code_mode_runtime(
+    reporting_workspace_registry.root,
+    analysis_concurrency=settings.report_analysis_concurrency,
+    section_concurrency=settings.report_section_concurrency,
+    timeout=DEFAULT_TERMINAL_TIMEOUT,
+)
 report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
+report_editor_repository = SqlAlchemyReportEditorRepository(agent_database.async_engine)
+report_editor_grants = ReportEditorGrantService(
+    report_editor_repository,
+    secret=settings.workspace_hmac_secret,
+)
 quality_warning_repository = SqlAlchemyQualityWarningRepository(agent_database.async_engine)
 quality_warning_service = QualityWarningService(quality_warning_repository)
 report_artifact_repository = SqlAlchemyReportArtifactRepository(agent_database.async_engine)
@@ -402,12 +427,26 @@ reporting_agent_template, report_runtime = create_report_runtime(
         database=agent_database.async_db,
         workspace_service=workspace_service,
         trace_database=agent_database.sync_db,
+        reporting_workspace_registry=reporting_workspace_registry,
+        reporting_code_mode_runtime=reporting_code_mode_runtime,
     ),
     settings,
     download_grants=report_download_grants,
+    editor_grants=report_editor_grants,
     artifact_persistence=report_artifact_persistence,
     quality_warning_service=quality_warning_service,
 )
+report_editor = ReportEditorService(
+    state_repository=report_runtime.state_repository,
+    workspace_registry=reporting_workspace_registry,
+    workspace=report_runtime.workspace_service,
+    report_tools=report_runtime.report_tools,
+    artifact_persistence=report_runtime.artifact_persistence,
+    download_grants=report_download_grants,
+    editor_grants=report_editor_grants,
+    public_base_url=settings.report_public_base_url,
+)
+report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
 report_workflow = report_runtime.workflow()
 dingyi_process = DingyiProcessAdapter(agent_database.sync_engine)
 report_workflow_controller = ReportWorkflowController(
@@ -437,6 +476,18 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
+    application.include_router(
+        create_report_editor_router(
+            report_editor_grants,
+            editor=report_editor,
+            ai=report_editor_ai,
+            cookie_secure=bool(
+                settings.report_public_base_url
+                and settings.report_public_base_url.startswith("https://")
+            ),
+            allowed_origin=settings.report_public_base_url,
+        )
+    )
     application.include_router(create_quality_warning_router())
     try:
         # ProcessJournal 建表会触碰数据库；健康数据库可在路由构建阶段直接挂载，
@@ -457,6 +508,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
+    application.router.add_event_handler("startup", report_editor_repository.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
     return application
 

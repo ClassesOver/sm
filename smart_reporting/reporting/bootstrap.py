@@ -4,14 +4,16 @@ from agno.agent import Agent
 
 from ..model_routing import build_model_profiles
 from ..quality_warnings.service import QualityWarningService
+from ..report_editor import ReportEditorGrantService
 from ..runtime.execution import ExecutionContext
 from ..runtime.settings import AgentSettings
-from ..task_execution import TaskExecutionKernel, TaskExecutionRepository
+from ..task_execution import DEFAULT_TERMINAL_TIMEOUT, TaskExecutionKernel, TaskExecutionRepository
 from .agent import (
     create_reporting_code_agent,
     create_reporting_generator_agent,
     create_reporting_phase_agent,
 )
+from .code_mode import create_reporting_code_mode_runtime
 from .data_source import load_configured_report_source_registry
 from .delivery.publishing import (
     ReportArtifactPersistenceService,
@@ -57,6 +59,7 @@ def create_report_runtime(
     settings: AgentSettings,
     *,
     download_grants: ReportDownloadGrantService | None = None,
+    editor_grants: ReportEditorGrantService | None = None,
     artifact_persistence: ReportArtifactPersistenceService | None = None,
     quality_warning_service: QualityWarningService | None = None,
     reporting_event_sink: ReportingEventSink | None = None,
@@ -129,7 +132,15 @@ def create_report_runtime(
         vision_enabled=settings.report_enable_vision,
         workspace_service=reporting_workspace,
         workspace_registry=workspace_registry,
-        code_mode_runtime=getattr(context, "reporting_code_mode_runtime", None),
+        code_mode_runtime=(
+            getattr(context, "reporting_code_mode_runtime", None)
+            or create_reporting_code_mode_runtime(
+                workspace_registry.root,
+                analysis_concurrency=settings.report_analysis_concurrency,
+                section_concurrency=settings.report_section_concurrency,
+                timeout=DEFAULT_TERMINAL_TIMEOUT,
+            )
+        ),
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,
@@ -144,6 +155,7 @@ def create_report_runtime(
             else None
         ),
         download_grants=download_grants,
+        editor_grants=editor_grants,
         artifact_persistence=artifact_persistence,
         quality_warning_service=quality_warning_service,
         report_public_base_url=(
