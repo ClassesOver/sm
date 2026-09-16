@@ -32,6 +32,7 @@ Reporting Code Agent
 - 语义业务校验继续只产生软告警；路径、源码形状、编译、执行和文件身份错误属于技术失败。
 - 应用日志使用 Loguru；验证只运行定点测试，不重复运行完整测试集。
 - 优先使用 Agno 原生 Agent、Toolkit、CodeMode 和工具循环，不重新实现模型循环或 Python Kernel。
+- 2026-09-16 真实探针确认 DashScope Token Plan Responses API 上的 `deepseek-v4-flash-0731` 和 `qwen3.8-flash` 都能完成 `custom_tool_call -> custom_tool_call_output -> 最终回复` 闭环。
 
 ## 非目标
 
@@ -73,12 +74,12 @@ submit_script
 - custom 与 function 可以出现在同一请求工具表和同一个多轮 run 中，但 `parallel_tool_calls=False` 禁止模型并行发出多个工具调用；
 - grammar 只约束 custom input 的传输形状，不解析 Python/Shell，也不引入 JavaScript runtime 或 nested-tool broker。这里采用 Codex 的 grammar custom tool 传输方式，不复制其 CodeMode 编排运行时。
 
-- 调用方显式传入的 `tool_choice` 必须原样保留；未指定时才使用 `tool_choice="auto"`。
+- 只要当前工具表包含 free-form custom tool，适配层必须使用 `tool_choice="auto"`；DashScope 实测会拒绝命名 custom choice 和包含 custom tool 的 `allowed_tools`，思考模式下也不能依赖 `required`。function-only 请求才可保留 provider 支持的显式 function choice。
 - `parallel_tool_calls=False`，避免写脚本、执行和签发并行发生。
 - `tool_call_limit=20`，所有工具调用统一计数。
 - 每个 coding task 创建独立 Agent、Toolkit 和 Function 实例，不跨任务复用带 task binding 或可变停止状态的对象。
 - `submit_script` 校验失败时返回结构化诊断并继续当前工具循环；沿用现有 Function post-hook 模式，只在 task 独享的 Function 上、且回执 `ok=true` 时将本次调用标记为 `stop_after_tool_call=True`。
-- Responses 返回包含 DSML 工具标记的 assistant 正文但没有结构化工具调用时，返回 `report_code_custom_tool_protocol_error`，标记 `retryable=false`；正文不得被解析或执行。
+- Responses 返回包含 ASCII/全角 DSML 工具标记或 `execute_code`/`write_script` Markdown code fence 的 assistant 正文，但没有结构化工具调用时，返回 `report_code_custom_tool_protocol_error`，标记 `retryable=false`；正文不得被解析或执行。
 - Agent 输出普通文本、达到调用上限或正常结束但没有成功签发时，统一返回 `report_code_generation_no_submission`，标记 `retryable=false`。这类失败没有可供下一轮修复的新脚本或诊断，上层不得从零重复生成。
 
 保留并重构现有 `ReportingCodeOpenAIResponses`：删除“custom 工具必须唯一”、单轮源码直签和 custom 请求后立即结束的限制，将其收敛为通用混合协议适配器。适配器负责：
@@ -86,10 +87,17 @@ submit_script
 1. 将内部 `write_script(source)` 和 `execute_code(code)` Function 定义转换为 Responses custom tool 定义；
 2. 将 `custom_tool_call.input` 转换为 Agno 工具执行器可消费的内部单字符串参数调用，并将 provider item id、call id 和 custom 类型标记保存在对应消息元数据中；
 3. 根据消息自带的类型标记，将有界工具结果序列化为 `custom_tool_call_output`；普通 Function 结果仍序列化为 `function_call_output`，历史重放和 `previous_response_id` 两种路径使用同一身份映射；
-4. 校验未知 custom 工具、空 input、重复 call identity、协议类型错配以及正文中的 DSML 工具标记，返回稳定技术错误；
+4. 校验未知 custom 工具、空 input、重复 call identity、协议类型错配，以及正文中的 ASCII/全角 DSML 标记和 `execute_code`/`write_script` Markdown code fence，返回稳定技术错误；
 5. 保留 Agno 原有工具 hook、`tool_call_limit`、RunContext、指标和停止语义。
 
 每个 task 独享模型适配器实例；工具类型以消息元数据为权威，不得通过进程级可变全局、跨任务 `ContextVar` 或最近一次请求的工具表反推。reasoning/thinking 参数继续由现有模型策略决定，不再为源码提交单独切换成关闭 thinking 的第二阶段模型请求。
+
+#### Provider 能力边界
+
+- DashScope Responses API 按上述实测契约直接启用；不将 Chat Completions endpoint 视为 free-form custom tool provider。
+- OpenAI Responses API 按标准 custom tool 契约处理。
+- vLLM 的 Responses API 和 function calling 支持不能推导出 free-form custom tool 支持。部署前必须针对具体 endpoint、模型和 tool parser 运行同等闭环探针，未通过时拒绝启用 Code Agent。
+- 任何 provider 都不得静默降级为 JSON function tool，也不得从 assistant 正文恢复伪工具调用。
 
 ### 2. 任务绑定
 
@@ -287,7 +295,7 @@ report_knowledge_unavailable
 
 工具可恢复错误以 `{ok:false, code, message, details}` 返回给模型；上下文缺失、任务冲突、资源关闭和文件身份冲突作为不可恢复 `ReportingError` 终止本轮。错误详情只包含逻辑路径、有界输出、行列位置、SHA-256 和异常类型，不包含宿主机绝对路径或环境变量。
 
-协议失败和脚本修复必须分开处理：DSML 正文、未知或畸形工具调用、以及无签发结束均为不可恢复的本轮协议失败，不得触发 generation 重试；已产生并签发脚本后，固定 Workflow 发现编译、执行、输出身份或领域技术校验失败时，仍可携带有界诊断进入下一轮交互修复。语义业务校验只产生软告警，不进入技术修复循环。
+协议失败和脚本修复必须分开处理：文本伪调用、未知或畸形工具调用、以及无签发结束均为不可恢复的本轮协议失败，不得触发 generation 重试；已产生并签发脚本后，固定 Workflow 发现编译、执行、输出身份或领域技术校验失败时，仍可携带有界诊断进入下一轮交互修复。语义业务校验只产生软告警，不进入技术修复循环。
 
 ## 代码删除与替换
 
@@ -315,10 +323,10 @@ report_knowledge_unavailable
 - provider `function_call` → 工具结果 → `function_call_output` → 下一轮请求的消息形状正确；
 - custom 与 function 的 call identity 分别关联正确，未知 custom 名称、空 input 和输出类型错配被稳定拒绝；
 - `write_script` 与 `execute_code` 的 wire format 使用非空源码 Lark grammar；
-- 调用方显式指定的 `tool_choice` 不会被适配器覆盖；
+- 工具表包含 custom tool 时强制使用 `tool_choice="auto"`；function-only 请求保留 provider 支持的显式 function choice；
 - `parallel_tool_calls=False`；
 - submit 失败后继续，成功后停止；
-- DSML assistant 正文只产生不可重试协议错误，正文中的工具名、参数和源码绝不执行；
+- ASCII/全角 DSML 和 `execute_code`/`write_script` Markdown code fence 只产生不可重试协议错误，正文中的工具名、参数和源码绝不执行；
 - 文本结束、工具上限耗尽或无签发均不可重试，单个 coding task 只调用一次 Agent；
 - 已签发脚本的真实技术失败仍可携带诊断进入后续修复。
 
@@ -370,7 +378,7 @@ report_knowledge_unavailable
 
 - 同一个 Responses API run 能完成“查询知识 → LSP 检查 → 写脚本 → 执行 → 观察错误 → 原地修复 → 再执行 → 签发”。
 - `write_script` 与 `execute_code` 使用 free-form custom tool，其余工具使用 JSON function tool；两类工具在同一非流式多轮 run 中正确共存。
-- free-form custom tool 使用非空源码 Lark grammar；显式 `tool_choice` 不被覆盖，DSML 正文绝不作为工具调用执行。
+- free-form custom tool 使用非空源码 Lark grammar；包含 custom tool 的请求使用 `tool_choice="auto"`，所有文本伪调用绝不作为工具调用执行。
 - CodeMode 直接使用当前报表会话正式 Workspace，不存在临时 Workspace 或数据复制。
 - 签发脚本及声明输出的 FileIdentity 必须分别等于该任务最后一次成功执行回执中的源码和输出身份。
 - 固定 Workflow 不消费未签发文件，不重复执行已经由签发回执证明成功的脚本。
