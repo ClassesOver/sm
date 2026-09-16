@@ -282,7 +282,6 @@ class ReportingCodeModeToolkit(Toolkit):
         self.vision_reviewer = vision_reviewer
         self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
-        self.submitted_visual_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
         tools = [
             Function(
                 name="write_script",
@@ -459,7 +458,6 @@ class ReportingCodeModeToolkit(Toolkit):
         )
         self.binding.clear_execution_state()
         self.submitted_receipt = None
-        self.submitted_visual_receipts = ()
         return {
             "ok": True,
             **await self.workspace.ahash_file(self.context.task_id, self.context.script_path),
@@ -491,7 +489,6 @@ class ReportingCodeModeToolkit(Toolkit):
         del run_context
         self.binding.clear_execution_state()
         self.submitted_receipt = None
-        self.submitted_visual_receipts = ()
         await self.runtime.shutdown(self.context.code_mode_session_id)
         return {"ok": True}
 
@@ -709,7 +706,6 @@ class ReportingCodeModeToolkit(Toolkit):
         del run_context
         self.binding.clear_execution_state()
         self.submitted_receipt = None
-        self.submitted_visual_receipts = ()
         await self._clear_declared_outputs()
         try:
             source_before = await self._validated_source_identity()
@@ -799,9 +795,6 @@ class ReportingCodeModeToolkit(Toolkit):
                         "report_code_visual_revision_required",
                         "独立视觉审查要求修订当前图片输出。",
                     )
-            self.submitted_visual_receipts = tuple(
-                reviews[path] for path in sorted(output_by_path)
-            )
         self.submitted_receipt = receipt
         return {
             "ok": True,

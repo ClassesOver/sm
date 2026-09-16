@@ -159,6 +159,10 @@ class ReportingCodeGenerationRunner:
             finally:
                 await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
             await toolkit.require_current_receipt(receipt)
+            visual_receipts = tuple(
+                binding.visual_inspection_receipts[path]
+                for path in sorted(binding.visual_inspection_receipts)
+            )
             logger.info(
                 "report_code_generation_completed task_id={} path={} duration_ms={}",
                 task_context.task_id,
@@ -168,7 +172,7 @@ class ReportingCodeGenerationRunner:
             return CodeGenerationResult(
                 script_file=receipt.source_file,
                 execution_receipt=receipt,
-                visual_inspection_receipts=toolkit.submitted_visual_receipts,
+                visual_inspection_receipts=visual_receipts,
             )
 
     @staticmethod
