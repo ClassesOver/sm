@@ -7,6 +7,7 @@ import pytest
 from agno.run import RunContext
 
 from smart_reporting.reporting.code_agent.context import ExecutionReceipt
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import (
     ChartVisualInspectionReceipt,
     FileIdentity,
@@ -143,6 +144,60 @@ async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_re
 
 
 @pytest.mark.anyio
+async def test_visualization_v1_zero_chart_plan_skips_coding() -> None:
+    calls = {"run": 0, "submit": 0}
+
+    async def run_code(*_: object, **__: object) -> CodeGenerationResult:
+        calls["run"] += 1
+        raise AssertionError("零图计划不得启动 Coding Agent")
+
+    async def submit(*_: object, **__: object) -> dict[str, str]:
+        calls["submit"] += 1
+        return {"status": "accepted"}
+
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=())),
+        run_code=run_code,
+        inspect_chart=None,
+        submit=submit,
+    )
+    result = await workflow.run({}, RunContext(run_id="run-1", session_id="session-1"))
+
+    assert result.status == "accepted"
+    assert result.script_file is None
+    assert calls == {"run": 0, "submit": 1}
+
+
+@pytest.mark.anyio
+async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
+    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    plan = VisualizationPlanDraft(charts=(chart,))
+    script = FileIdentity(path="charts/charts.py", size=8, sha256="a" * 64)
+
+    async def run_code(*_: object, **__: object) -> CodeGenerationResult:
+        return CodeGenerationResult(
+            script_file=script,
+            execution_receipt=ExecutionReceipt(
+                runId="run-1", sourceFile=script, outputFiles=()
+            ),
+        )
+
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(plan),
+        run_code=run_code,
+        inspect_chart=None,
+        submit=lambda *_: _accepted(),
+    )
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": script.path}},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
+
+    assert caught.value.code == "report_phase_artifact_changed"
+
+
+@pytest.mark.anyio
 async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
@@ -185,3 +240,7 @@ async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
 
 async def _plan(plan: VisualizationPlanDraft) -> VisualizationPlanDraft:
     return plan
+
+
+async def _accepted() -> dict[str, str]:
+    return {"status": "accepted"}
