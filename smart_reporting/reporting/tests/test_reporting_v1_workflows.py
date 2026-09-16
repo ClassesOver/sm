@@ -76,6 +76,48 @@ async def _summary() -> AnalysisSummaryDraft:
 
 
 @pytest.mark.anyio
+async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -> None:
+    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
+    invalid_evidence = json.dumps({"findings": [], "reconciliations": [], "warnings": []})
+    valid_evidence = json.dumps({"findings": [{"name": "收入"}], "reconciliations": [{"name": "对账", "passed": True}], "warnings": []})
+    facts_path = "facts/analysis_001.json"
+    script_path = "evidence/analysis_001/supplement.py"
+    evidence_path = "evidence/analysis_001/supplement.json"
+    evidence_reads = 0
+    diagnostics: list[object] = []
+
+    async def read_file(*, path: str, **_: object) -> dict[str, object]:
+        nonlocal evidence_reads
+        if path == facts_path:
+            content = facts
+        else:
+            content = invalid_evidence if evidence_reads == 0 else valid_evidence
+            evidence_reads += 1
+        return {"ok": True, "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest(), "totalBytes": len(content.encode()), "nextOffset": len(content.encode())}
+
+    async def run_code(**kwargs: object) -> CodeGenerationResult:
+        diagnostics.append(kwargs.get("diagnostic"))
+        content = invalid_evidence if len(diagnostics) == 1 else valid_evidence
+        script = FileIdentity(path=script_path, size=len(diagnostics), sha256=("a" if len(diagnostics) == 1 else "b") * 64)
+        evidence_file = FileIdentity(path=evidence_path, size=len(content.encode()), sha256=hashlib.sha256(content.encode()).hexdigest())
+        return CodeGenerationResult(script_file=script, execution_receipt=ExecutionReceipt(runId=f"run-{len(diagnostics)}", sourceFile=script, outputFiles=(evidence_file,)))
+
+    complete = []
+
+    async def accepted(**_: object) -> dict[str, object]:
+        complete.append(True)
+        return {"status": "accepted", "taskFinished": True}
+
+    workflow = AnalysisItemWorkflow(decide_evidence=lambda _payload: _decision(), run_code=run_code, summarize=lambda _payload: _summary(), read_file=read_file, complete=accepted)
+    await workflow.run({"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]}, RunContext(run_id="run-1", session_id="session-1"))
+
+    assert len(diagnostics) == 2
+    assert diagnostics[0] is None
+    assert diagnostics[1]["code"] == "report_analysis_evidence_schema_invalid"
+    assert complete == [True]
+
+
+@pytest.mark.anyio
 async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_reexecution() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
