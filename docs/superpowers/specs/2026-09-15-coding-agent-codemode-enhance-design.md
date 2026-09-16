@@ -205,7 +205,9 @@ run(task_context, task_facts, diagnostic=None)
 `run_script` 的最后一次成功子进程执行即本轮权威脚本执行。Workflow 收到签发结果后不重复执行脚本，只读取并核对签发回执中的输出身份，然后继续做领域验收：
 
 - analysis：读取并校验证据 JSON，然后完成分析项；
-- visualization：校验图表文件、执行视觉审查并提交图表；
+- visualization：校验 Code Agent 签发的图表文件与视觉回执并提交图表；独立视觉模型、
+  结构化工具回执和服务端门禁见 `2026-09-16-coding-agent-view-image-design.md`，Workflow
+  不再执行外层视觉审查；
 - 领域验收失败时，Workflow 用结构化 diagnostic 再启动一次交互式 coding run；
 - 达到现有业务修复上限后，analysis 放弃补证，visualization 按零图降级。
 
@@ -337,7 +339,8 @@ report_knowledge_unavailable
 ### Workflow
 
 - analysis 交互生成并执行脚本后直接进入证据验证，不重复执行；
-- visualization 交互生成并执行脚本后进入产物和视觉验证，不重复执行；
+- visualization 交互生成、执行并在 Code Agent 内完成独立视觉修复后，Workflow 只核对
+  当前文件身份和服务端持有的签名视觉回执，不重复执行或发起外层视觉审查；
 - execution diagnostic 和领域验收 diagnostic 都能启动下一轮交互修复；
 - 修复知识只在最终领域验收成功后记录；
 - 修复耗尽后的 analysis 放弃补证和 visualization 零图降级保持不变；

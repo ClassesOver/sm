@@ -45,6 +45,9 @@ from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
 
 SOURCE = "from pathlib import Path\nPath('analysis/out.json').write_text('{}')\n"
 VISUAL_SOURCE = "from pathlib import Path\nPath('charts/chart.png').write_bytes(b'image')\n"
+REVISED_VISUAL_SOURCE = (
+    "from pathlib import Path\nPath('charts/chart.png').write_bytes(b'image-v2')\n"
+)
 
 
 def _code_responses_model() -> ReportingCodeOpenAIResponses:
@@ -1182,6 +1185,7 @@ async def test_interactive_v1_end_to_end_responses_loop(
     class FakeResponsesClient:
         def __init__(self) -> None:
             self.responses = self
+            self.input_tokens = self
             self.requests: list[dict[str, Any]] = []
 
         def is_closed(self) -> bool:
@@ -1190,6 +1194,9 @@ async def test_interactive_v1_end_to_end_responses_loop(
         async def create(self, **kwargs: Any) -> Response:
             self.requests.append(kwargs)
             return responses.pop(0)
+
+        async def count(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(input_tokens=1)
 
     class Runtime:
         def __init__(self) -> None:
@@ -1263,6 +1270,195 @@ async def test_interactive_v1_end_to_end_responses_loop(
     ]
     assert "custom_tool_call_output" in replay_types
     assert "function_call_output" in replay_types
+
+
+@pytest.mark.anyio
+async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
+    workspace: HostReportingWorkspace,
+) -> None:
+    responses = [
+        _custom_response("write_script", VISUAL_SOURCE),
+        _function_response(2, "run_script", {}),
+        _function_response(3, "view_image", {"path": "charts/chart.png"}),
+        Response.model_validate(
+            {
+                **_custom_response("write_script", REVISED_VISUAL_SOURCE).model_dump(),
+                "id": "resp-4",
+                "output": [
+                    {
+                        "id": "item-4",
+                        "call_id": "call-4",
+                        "name": "write_script",
+                        "input": REVISED_VISUAL_SOURCE,
+                        "type": "custom_tool_call",
+                    }
+                ],
+            }
+        ),
+        _function_response(5, "run_script", {}),
+        _function_response(6, "view_image", {"path": "charts/chart.png"}),
+        _function_response(7, "submit_script", {}),
+    ]
+
+    class FakeResponsesClient:
+        def __init__(self) -> None:
+            self.responses = self
+            self.input_tokens = self
+            self.requests: list[dict[str, Any]] = []
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def create(self, **kwargs: Any) -> Response:
+            self.requests.append(kwargs)
+            return responses.pop(0)
+
+        async def count(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(input_tokens=1)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            source = await received.aread_text("task-1", "analysis/chart.py")
+            content = b"image-v2" if "image-v2" in source else b"image-v1"
+            await received.awrite_bytes("task-1", "charts/chart.png", content)
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    class Reviewer:
+        def __init__(self) -> None:
+            self.hashes: list[str] = []
+
+        async def review(self, workspace_key: str, path: str, *, detail: str):
+            assert workspace_key == workspace.identity.workspace_key
+            assert detail == "high"
+            output = FileIdentity.model_validate(await workspace.ahash_file("task-1", path))
+            self.hashes.append(output.sha256)
+            requires_revision = len(self.hashes) == 1
+            return ChartVisualInspectionReceipt(
+                sourcePath=path,
+                sha256=output.sha256,
+                inspectionMode="vision",
+                visualReviewStatus="passed",
+                modelId="vision-test",
+                reviewed=True,
+                requiresRevision=requires_revision,
+                issues=(
+                    {
+                        "category": "text_overlap",
+                        "severity": "critical",
+                        "description": "关键标题完全重叠，无法辨认。",
+                    },
+                )
+                if requires_revision
+                else (),
+                summary="需要修订。" if requires_revision else "图表清晰。",
+            )
+
+    client = FakeResponsesClient()
+    base_factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        name="reporting-visual-code-agent-e2e",
+    )
+
+    def agent_factory(tools: Sequence[Function]):
+        agent = base_factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    runtime = Runtime()
+    reviewer = Reviewer()
+    registry = ReportingCodingTaskRegistry()
+    result = await ReportingCodeGenerationRunner(
+        agent_factory,
+        runtime,
+        ReportingLspProcessManager(),
+        registry=registry,
+        vision_reviewer=reviewer,
+    ).run(
+        _visualization_task_context(workspace),
+        workspace,
+        {},
+        run_context=_run_context(),
+    )
+
+    assert len(reviewer.hashes) == 2
+    assert reviewer.hashes[0] != reviewer.hashes[1]
+    assert result.visual_inspection_receipts[0].sha256 == reviewer.hashes[1]
+    assert result.visual_inspection_receipts[0].requires_revision is False
+    request_history = json.dumps(client.requests, ensure_ascii=False, default=str)
+    assert "关键标题完全重叠" in request_history
+    assert "image_url" not in request_history
+    assert "data:image" not in request_history
+    assert responses == []
+    assert runtime.shutdowns == ["code-task-1"]
+    assert registry.active_count == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_visual_reviewer_failure_releases_task_resources(
+    cancelled: bool,
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            await received.awrite_bytes("task-1", "charts/chart.png", b"image")
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    class Reviewer:
+        async def review(self, *_args: object, **_kwargs: object):
+            if cancelled:
+                raise asyncio.CancelledError
+            raise RuntimeError("vision provider failed")
+
+    captured_bindings: list[ReportingCodingTaskBinding] = []
+
+    class ReviewAgent:
+        tool_call_limit = 20
+        model = SimpleNamespace(parallel_tool_calls=False)
+
+        def __init__(self, tools: Sequence[Function]) -> None:
+            self.tools = {tool.name: tool for tool in tools}
+            captured_bindings.append(next(iter(tools)).entrypoint.__self__.binding)
+
+        async def arun(self, _prompt: str, **_kwargs: Any) -> object:
+            await self.tools["write_script"].entrypoint(source=VISUAL_SOURCE)
+            await self.tools["run_script"].entrypoint()
+            return await self.tools["view_image"].entrypoint(path="charts/chart.png")
+
+    runtime = Runtime()
+    registry = ReportingCodingTaskRegistry()
+    runner = ReportingCodeGenerationRunner(
+        lambda tools: ReviewAgent(tools),
+        runtime,
+        ReportingLspProcessManager(),
+        registry=registry,
+        vision_reviewer=Reviewer(),
+    )
+
+    expected_error = asyncio.CancelledError if cancelled else ReportingError
+    with pytest.raises(expected_error):
+        await runner.run(
+            _visualization_task_context(workspace),
+            workspace,
+            {},
+            run_context=_run_context(),
+        )
+
+    assert runtime.shutdowns == ["code-task-1"]
+    assert registry.active_count == 0
+    assert captured_bindings[0].visual_inspection_receipts == {}
 
 
 @pytest.mark.anyio
