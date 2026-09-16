@@ -67,8 +67,6 @@ from smart_reporting.reporting.workflow.runtime.visualization_section_workflow i
 from smart_reporting.reporting.workflow.state import ReportingPhase
 from smart_reporting.task_execution import TaskExecutionScope
 
-pytestmark = pytest.mark.skip(reason="旧 visualization 兼容 fixture 待 V1 测试重写")
-
 
 def _context() -> RunContext:
     return RunContext(run_id="run-1", session_id="session-1")
@@ -446,7 +444,6 @@ def test_visualization_plan_thinking_follows_analysis_count(
     ("code", "expected"),
     [
         ("report_python_source_shape_invalid", "python_compile_failure"),
-        ("report_code_generation_no_source", "python_compile_failure"),
         ("report_python_source_path_invalid", "python_compile_failure"),
         ("report_analysis_script_failed", "python_execution_failure"),
         ("report_visualization_script_failed", "python_execution_failure"),
@@ -463,6 +460,7 @@ def test_code_failure_kind_only_classifies_recoverable_failures(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_script_execution_repair_uses_initial_then_4k() -> None:
     observed: list[int] = []
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -492,6 +490,7 @@ async def test_visualization_script_execution_repair_uses_initial_then_4k() -> N
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_execution_repair_receives_metric_local_contract_and_attempt() -> None:
     script_files = [
         FileIdentity(path="charts/charts.py", size=index, sha256=str(index) * 64)
@@ -597,6 +596,7 @@ async def test_visualization_execution_repair_receives_metric_local_contract_and
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_visual_repair_uses_8k() -> None:
     observed: list[int] = []
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -626,6 +626,7 @@ async def test_visualization_visual_repair_uses_8k() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_orders_fixed_steps() -> None:
     events: list[str] = []
     plan = _visualization_plan()
@@ -676,6 +677,7 @@ async def test_visualization_workflow_orders_fixed_steps() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_submits_zero_charts_without_code_or_checks() -> None:
     plan = _visualization_plan(charts=())
     generate_script = AsyncMock()
@@ -702,6 +704,7 @@ async def test_visualization_workflow_submits_zero_charts_without_code_or_checks
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_repairs_script_failure_once_with_frozen_plan() -> None:
     plan = _visualization_plan()
     execute = AsyncMock(
@@ -754,6 +757,7 @@ async def test_visualization_workflow_repairs_script_failure_once_with_frozen_pl
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_degrades_after_three_execution_repairs() -> None:
     plan = _visualization_plan()
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -789,6 +793,7 @@ async def test_visualization_workflow_degrades_after_three_execution_repairs() -
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_degrades_real_runner_errors_after_repair() -> None:
     plan = _visualization_plan()
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -823,6 +828,7 @@ async def test_visualization_workflow_degrades_real_runner_errors_after_repair()
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_does_not_degrade_nonrecoverable_failure() -> None:
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     degrade = AsyncMock()
@@ -849,6 +855,7 @@ async def test_visualization_workflow_does_not_degrade_nonrecoverable_failure() 
     "failure_code",
     ["report_code_generation_no_source", "report_python_source_shape_invalid"],
 )
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_retries_initial_generation_with_frozen_plan(
     failure_code: str,
 ) -> None:
@@ -898,6 +905,7 @@ async def test_visualization_workflow_retries_initial_generation_with_frozen_pla
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_preserves_unsigned_paths_for_fresh_retry() -> None:
     plan = _visualization_plan()
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -933,6 +941,7 @@ async def test_visualization_workflow_preserves_unsigned_paths_for_fresh_retry()
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_hydrates_committed_script_without_regeneration() -> None:
     plan = _visualization_plan()
     script_file = FileIdentity(path="charts/charts.py", size=20, sha256="a" * 64)
@@ -955,6 +964,7 @@ async def test_visualization_workflow_hydrates_committed_script_without_regenera
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_review_failure_starts_new_interactive_run() -> None:
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     repaired_file = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
@@ -1039,6 +1049,7 @@ async def test_visualization_review_failure_starts_new_interactive_run() -> None
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_allows_three_execution_repairs() -> None:
     script_files = [
         FileIdentity(path="charts/charts.py", size=index + 1, sha256=str(index) * 64)
@@ -1069,6 +1080,7 @@ async def test_visualization_workflow_allows_three_execution_repairs() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_does_not_execute_unchanged_repair_script() -> None:
     initial = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
     changed = FileIdentity(path="charts/charts.py", size=2, sha256="b" * 64)
@@ -1095,6 +1107,7 @@ async def test_visualization_workflow_does_not_execute_unchanged_repair_script()
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_allows_three_visual_review_repairs() -> None:
     failed_inspection = _inspection().model_copy(
         update={"visual_review_status": "failed", "requires_revision": True}
@@ -1130,6 +1143,7 @@ async def test_visualization_workflow_allows_three_visual_review_repairs() -> No
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_recovers_missing_chart_file_with_compact_payload() -> None:
     plan = _visualization_plan()
     initial_file = FileIdentity(path="charts/charts.py", size=1, sha256="a" * 64)
@@ -1206,6 +1220,7 @@ async def test_visualization_workflow_recovers_missing_chart_file_with_compact_p
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_propagates_missing_chart_after_three_repairs() -> None:
     missing_chart = {
         "ok": False,
@@ -1238,6 +1253,7 @@ async def test_visualization_workflow_propagates_missing_chart_after_three_repai
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_does_not_recover_artifact_change() -> None:
     repair = AsyncMock()
     with pytest.raises(ReportingError) as caught:
@@ -1256,6 +1272,7 @@ async def test_visualization_workflow_does_not_recover_artifact_change() -> None
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_does_not_repair_nonretryable_error() -> None:
     repair = AsyncMock()
 
@@ -1285,6 +1302,7 @@ async def test_visualization_workflow_does_not_repair_nonretryable_error() -> No
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="V0 visualization 构造器已删除")
 async def test_visualization_workflow_allows_deterministic_submission_without_vision() -> None:
     submit = AsyncMock(return_value={"status": "committed"})
     result = await VisualizationSectionWorkflow(
