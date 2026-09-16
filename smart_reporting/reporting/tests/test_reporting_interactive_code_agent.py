@@ -1097,6 +1097,42 @@ async def test_runner_shuts_down_kernel_on_no_submission(
             _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
         )
     assert caught.value.code == "report_code_generation_no_submission"
+    assert caught.value.details == {"retryable": False}
+    assert runtime.shutdowns == ["code-task-1"]
+
+
+@pytest.mark.anyio
+async def test_runner_raises_recorded_protocol_error_before_no_submission(
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    protocol_error = ReportingError(
+        "report_code_custom_tool_protocol_error",
+        "Coding Agent 将工具调用写入了 assistant 正文。",
+        details={"retryable": False},
+    )
+
+    class RecordedProtocolErrorAgent:
+        model = SimpleNamespace(report_run_error=lambda: protocol_error)
+
+        async def arun(self, _prompt: str, **_kwargs: Any) -> str:
+            return "done"
+
+    runtime = Runtime()
+    with pytest.raises(ReportingError) as caught:
+        await ReportingCodeGenerationRunner(
+            lambda _tools: RecordedProtocolErrorAgent(),
+            runtime,
+            ReportingLspProcessManager(),
+        ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
+
+    assert caught.value is protocol_error
     assert runtime.shutdowns == ["code-task-1"]
 
 

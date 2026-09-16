@@ -147,11 +147,19 @@ class ReportingCodeGenerationRunner:
                 agent = self.agent_factory(toolkit.tool_functions)
                 agent.tool_call_limit = min(MAX_TOOL_CALL_LIMIT, requested_tool_call_limit)
                 await agent.arun(self._prompt(payload), run_context=run_context)
+                report_run_error = getattr(
+                    getattr(agent, "model", None), "report_run_error", None
+                )
+                if callable(report_run_error):
+                    recorded_error = report_run_error()
+                    if isinstance(recorded_error, Exception):
+                        raise recorded_error
                 receipt = toolkit.submitted_receipt
                 if receipt is None:
                     raise ReportingError(
                         "report_code_generation_no_submission",
                         "Coding Agent 未签发成功执行的 Python 脚本。",
+                        details={"retryable": False},
                     )
             except ReportingError:
                 raise
