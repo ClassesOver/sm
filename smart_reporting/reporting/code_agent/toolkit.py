@@ -11,11 +11,12 @@ from uuid import uuid4
 from agno.run import RunContext
 from agno.tools import Function, Toolkit
 
-from ...workspace import WorkspaceError
+from ...workspace import WorkspaceError, WorkspaceService
 from ..code_mode import ReportingCodeModeRuntime
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
-from ..workflow.checkpoint import FileIdentity
+from ..vision import ReportVisionReviewer
+from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .context import (
     ExecutionReceipt,
     ReportingCodingTaskBinding,
@@ -273,10 +274,12 @@ class ReportingCodeModeToolkit(Toolkit):
         runtime: ReportingCodeModeRuntime,
         lsp_manager: ReportingLspProcessManager,
         knowledge_index: ReportingKnowledgeIndex | None = None,
+        vision_reviewer: ReportVisionReviewer | None = None,
     ) -> None:
         self.binding = binding
         self.runtime = runtime
         self.knowledge_index = knowledge_index
+        self.vision_reviewer = vision_reviewer
         self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
         tools = [
@@ -339,6 +342,26 @@ class ReportingCodeModeToolkit(Toolkit):
                 post_hook=_stop_after_success,
             ),
         ]
+        if self.context.task_kind == "visualization":
+            tools.append(
+                Function(
+                    name="view_image",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "detail": {
+                                "type": "string",
+                                "enum": ["high", "original"],
+                            },
+                        },
+                        "required": ["path"],
+                        "additionalProperties": False,
+                    },
+                    strict=True,
+                    entrypoint=self.view_image,
+                )
+            )
         if knowledge_index is not None:
             tools.append(
                 Function(
@@ -433,7 +456,7 @@ class ReportingCodeModeToolkit(Toolkit):
             source,
             overwrite=exists,
         )
-        self.binding.execution_receipt = None
+        self.binding.clear_execution_state()
         self.submitted_receipt = None
         return {
             "ok": True,
@@ -464,8 +487,111 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def restart_code_mode(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
+        self.binding.clear_execution_state()
+        self.submitted_receipt = None
         await self.runtime.shutdown(self.context.code_mode_session_id)
         return {"ok": True}
+
+    async def view_image(
+        self,
+        path: str,
+        detail: str = "high",
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        del run_context
+        try:
+            source_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+        except WorkspaceError:
+            return _failure(
+                "report_code_visual_path_forbidden",
+                "图片路径不属于当前 Coding task 的声明输出。",
+            )
+        if source_path not in self.context.declared_output_paths:
+            return _failure(
+                "report_code_visual_path_forbidden",
+                "图片路径不属于当前 Coding task 的声明输出。",
+            )
+        execution = self.binding.execution_receipt
+        if execution is None:
+            return _failure(
+                "report_code_visual_review_required_execution",
+                "图片必须先由当前脚本成功执行生成。",
+            )
+        output = next(
+            (item for item in execution.output_files if item.path == source_path),
+            None,
+        )
+        if output is None:
+            return _failure(
+                "report_code_visual_path_forbidden",
+                "图片不属于最近一次成功执行的输出。",
+            )
+        try:
+            before = FileIdentity.model_validate(
+                await self.workspace.ahash_file(self.context.task_id, source_path)
+            )
+        except (TypeError, ValueError, WorkspaceError):
+            self.binding.visual_inspection_receipts.pop(source_path, None)
+            return _failure(
+                "report_code_visual_output_changed",
+                "图片输出在执行或视觉审查后发生变化。",
+            )
+        if before != output:
+            self.binding.visual_inspection_receipts.pop(source_path, None)
+            return _failure(
+                "report_code_visual_output_changed",
+                "图片输出在执行或视觉审查后发生变化。",
+            )
+        cached = self.binding.visual_inspection_receipts.get(source_path)
+        if cached is not None and cached.sha256 == output.sha256:
+            return {
+                "ok": True,
+                "receipt": cached.model_dump(mode="json", by_alias=True),
+            }
+        if self.vision_reviewer is None:
+            return _failure(
+                "report_code_visual_review_unavailable",
+                "独立视觉审查暂不可用，请稍后重试。",
+            )
+        try:
+            reviewed = ChartVisualInspectionReceipt.model_validate(
+                await self.vision_reviewer.review(
+                    self.context.workspace_key,
+                    source_path,
+                    detail=detail,
+                )
+            )
+        except Exception:
+            return _failure(
+                "report_code_visual_review_unavailable",
+                "独立视觉审查暂不可用，请稍后重试。",
+            )
+        try:
+            after = FileIdentity.model_validate(
+                await self.workspace.ahash_file(self.context.task_id, source_path)
+            )
+        except (TypeError, ValueError, WorkspaceError):
+            self.binding.visual_inspection_receipts.pop(source_path, None)
+            return _failure(
+                "report_code_visual_output_changed",
+                "图片输出在执行或视觉审查后发生变化。",
+            )
+        if (
+            reviewed.source_path != source_path
+            or before.sha256 != reviewed.sha256
+            or reviewed.sha256 != after.sha256
+            or after != output
+        ):
+            self.binding.visual_inspection_receipts.pop(source_path, None)
+            return _failure(
+                "report_code_visual_output_changed",
+                "图片输出在执行或视觉审查后发生变化。",
+            )
+        self.binding.visual_inspection_receipts[source_path] = reviewed
+        return {
+            "ok": True,
+            "receipt": reviewed.model_dump(mode="json", by_alias=True),
+        }
 
     async def lsp_diagnostics(
         self,
@@ -578,7 +704,7 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def run_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
-        self.binding.execution_receipt = None
+        self.binding.clear_execution_state()
         self.submitted_receipt = None
         await self._clear_declared_outputs()
         try:
@@ -639,6 +765,36 @@ class ReportingCodeModeToolkit(Toolkit):
                 "report_code_output_modified_after_execution",
                 "脚本输出在执行后发生变化。",
             )
+        if self.context.task_kind == "visualization":
+            output_by_path = {item.path: item for item in receipt.output_files}
+            reviews = self.binding.visual_inspection_receipts
+            if set(reviews) != set(output_by_path):
+                return _failure(
+                    "report_code_visual_review_required",
+                    "每个当前图片输出都必须完成独立视觉审查。",
+                )
+            for path, output in output_by_path.items():
+                reviewed = reviews[path]
+                if reviewed.source_path != path:
+                    return _failure(
+                        "report_code_visual_review_required",
+                        "每个当前图片输出都必须完成独立视觉审查。",
+                    )
+                if reviewed.sha256 != output.sha256:
+                    return _failure(
+                        "report_code_visual_output_changed",
+                        "图片输出在执行或视觉审查后发生变化。",
+                    )
+                if not reviewed.reviewed or reviewed.visual_review_status != "passed":
+                    return _failure(
+                        "report_code_visual_review_required",
+                        "每个当前图片输出都必须完成独立视觉审查。",
+                    )
+                if reviewed.requires_revision:
+                    return _failure(
+                        "report_code_visual_revision_required",
+                        "独立视觉审查要求修订当前图片输出。",
+                    )
         self.submitted_receipt = receipt
         return {
             "ok": True,

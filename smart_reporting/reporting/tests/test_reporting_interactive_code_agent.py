@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.models.message import Message
@@ -31,6 +32,7 @@ from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
 )
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.reporting.workflow.checkpoint import (
     ChartVisualInspectionReceipt,
     FileIdentity,
@@ -42,6 +44,7 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
 from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
 
 SOURCE = "from pathlib import Path\nPath('analysis/out.json').write_text('{}')\n"
+VISUAL_SOURCE = "from pathlib import Path\nPath('charts/chart.png').write_bytes(b'image')\n"
 
 
 def _code_responses_model() -> ReportingCodeOpenAIResponses:
@@ -141,6 +144,23 @@ def _task_context(
     )
 
 
+def _visualization_task_context(
+    workspace: HostReportingWorkspace,
+) -> ReportingCodingTaskContext:
+    return ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/chart.py", "charts/chart.png"),
+        declared_output_paths=("charts/chart.png",),
+        max_source_bytes=128 * 1024,
+    )
+
+
 def _identity(path: str, content: bytes) -> FileIdentity:
     return FileIdentity(
         path=path,
@@ -176,6 +196,55 @@ def _receipt() -> ExecutionReceipt:
         sourceFile=_identity("analysis/a.py", source),
         outputFiles=(_identity("analysis/out.json", b"{}"),),
     )
+
+
+def _visual_receipt(
+    output: FileIdentity,
+    *,
+    requires_revision: bool = False,
+    sha256: str | None = None,
+) -> ChartVisualInspectionReceipt:
+    return ChartVisualInspectionReceipt.model_validate(
+        {
+            "sourcePath": output.path,
+            "sha256": sha256 or output.sha256,
+            "inspectionMode": "vision",
+            "visualReviewStatus": "passed",
+            "modelId": "vision-test",
+            "reviewed": True,
+            "requiresRevision": requires_revision,
+            "summary": "需要修订。" if requires_revision else "图表清晰。",
+        }
+    )
+
+
+async def _prepared_visualization_toolkit(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+    reviewer: ReportVisionReviewer | None = None,
+) -> tuple[ReportingCodingTaskBinding, ReportingCodeModeToolkit, FileIdentity]:
+    context = _visualization_task_context(workspace)
+    binding = ReportingCodingTaskBinding(context, workspace)
+    await workspace.awrite_text(context.task_id, context.script_path, VISUAL_SOURCE)
+    await workspace.awrite_text(context.task_id, "charts/chart.png", "image")
+    source = FileIdentity.model_validate(
+        await workspace.ahash_file(context.task_id, context.script_path)
+    )
+    output = FileIdentity.model_validate(
+        await workspace.ahash_file(context.task_id, "charts/chart.png")
+    )
+    binding.execution_receipt = ExecutionReceipt(
+        runId="visual-run",
+        sourceFile=source,
+        outputFiles=(output,),
+    )
+    toolkit = ReportingCodeModeToolkit(
+        binding,
+        runtime,
+        ReportingLspProcessManager(),
+        vision_reviewer=reviewer,
+    )
+    return binding, toolkit, output
 
 
 def test_visual_receipt_state_is_cleared_with_execution_state(
@@ -461,6 +530,190 @@ async def test_execute_script_uses_clean_python_subprocess(
 
 
 @pytest.mark.anyio
+async def test_view_image_is_registered_only_for_visualization_tasks(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    analysis = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(_task_context(workspace), workspace),
+        runtime,
+        ReportingLspProcessManager(),
+    )
+    visualization = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(_visualization_task_context(workspace), workspace),
+        runtime,
+        ReportingLspProcessManager(),
+    )
+
+    assert "view_image" not in {tool.name for tool in analysis.tool_functions}
+    assert "view_image" in {tool.name for tool in visualization.tool_functions}
+
+
+@pytest.mark.anyio
+async def test_view_image_rejects_undeclared_path_before_execution(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(_visualization_task_context(workspace), workspace),
+        runtime,
+        ReportingLspProcessManager(),
+    )
+
+    result = await toolkit.view_image("charts/not-declared.png")
+
+    assert result["ok"] is False
+    assert result["code"] == "report_code_visual_path_forbidden"
+
+
+@pytest.mark.anyio
+async def test_view_image_requires_current_execution(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(_visualization_task_context(workspace), workspace),
+        runtime,
+        ReportingLspProcessManager(),
+    )
+
+    result = await toolkit.view_image("charts/chart.png")
+
+    assert result["code"] == "report_code_visual_review_required_execution"
+
+
+@pytest.mark.anyio
+async def test_view_image_returns_and_stores_structured_visual_review(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+    reviewed = _visual_receipt(output)
+    reviewer.review.return_value = reviewed
+
+    result = await toolkit.view_image("charts/chart.png", detail="original")
+
+    assert result == {
+        "ok": True,
+        "receipt": reviewed.model_dump(mode="json", by_alias=True),
+    }
+    assert binding.visual_inspection_receipts == {"charts/chart.png": reviewed}
+    reviewer.review.assert_awaited_once_with(
+        workspace.identity.workspace_key,
+        "charts/chart.png",
+        detail="original",
+    )
+
+
+@pytest.mark.anyio
+async def test_view_image_reuses_visual_review_for_same_sha256(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+    reviewed = _visual_receipt(output)
+    binding.visual_inspection_receipts[output.path] = reviewed
+
+    result = await toolkit.view_image(output.path)
+
+    assert result["receipt"]["sha256"] == output.sha256
+    reviewer.review.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_view_image_rejects_output_changed_during_visual_review(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+
+    async def mutate_output(*_args: object, **_kwargs: object) -> ChartVisualInspectionReceipt:
+        await workspace.awrite_text(
+            "task-1", "charts/chart.png", "changed", overwrite=True
+        )
+        return _visual_receipt(output)
+
+    reviewer.review.side_effect = mutate_output
+
+    result = await toolkit.view_image(output.path)
+
+    assert result["code"] == "report_code_visual_output_changed"
+    assert binding.visual_inspection_receipts == {}
+
+
+@pytest.mark.anyio
+async def test_view_image_rejects_output_deleted_during_visual_review(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+
+    async def delete_output(*_args: object, **_kwargs: object) -> ChartVisualInspectionReceipt:
+        await workspace.adelete_file("task-1", "charts/chart.png")
+        return _visual_receipt(output)
+
+    reviewer.review.side_effect = delete_output
+
+    result = await toolkit.view_image(output.path)
+
+    assert result["code"] == "report_code_visual_output_changed"
+    assert binding.visual_inspection_receipts == {}
+
+
+@pytest.mark.anyio
+async def test_view_image_bounds_visual_reviewer_failures(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    _binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+    reviewer.review.side_effect = RuntimeError("provider secret response")
+
+    result = await toolkit.view_image(output.path)
+
+    assert result["code"] == "report_code_visual_review_unavailable"
+    assert "provider secret response" not in str(result)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["write", "run", "restart"])
+async def test_visual_review_state_is_invalidated_by_execution_changes(
+    operation: str,
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime)
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
+    assert binding.execution_receipt is not None
+    toolkit.submitted_receipt = binding.execution_receipt
+
+    if operation == "write":
+        await toolkit.write_script(VISUAL_SOURCE)
+    elif operation == "run":
+        await toolkit.run_script()
+    else:
+        await toolkit.restart_code_mode()
+
+    assert binding.execution_receipt is None
+    assert binding.visual_inspection_receipts == {}
+    assert toolkit.submitted_receipt is None
+
+
+@pytest.mark.anyio
 async def test_run_and_submit_bind_source_and_declared_outputs(
     binding: ReportingCodingTaskBinding,
     runtime: ToolkitRuntime,
@@ -475,6 +728,62 @@ async def test_run_and_submit_bind_source_and_declared_outputs(
     assert [item["path"] for item in submitted["executionReceipt"]["outputFiles"]] == [
         "analysis/out.json"
     ]
+
+
+@pytest.mark.anyio
+async def test_visual_submit_requires_review_for_every_current_output(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
+
+    result = await toolkit.submit_script()
+
+    assert result["code"] == "report_code_visual_review_required"
+
+
+@pytest.mark.anyio
+async def test_visual_submit_rejects_review_requiring_revision(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime)
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(
+        output, requires_revision=True
+    )
+
+    result = await toolkit.submit_script()
+
+    assert result["code"] == "report_code_visual_revision_required"
+
+
+@pytest.mark.anyio
+async def test_visual_submit_rejects_stale_visual_review(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime)
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(
+        output, sha256="0" * 64
+    )
+
+    result = await toolkit.submit_script()
+
+    assert result["code"] == "report_code_visual_output_changed"
+
+
+@pytest.mark.anyio
+async def test_visual_submit_accepts_all_current_visual_reviews(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime)
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
+
+    result = await toolkit.submit_script()
+
+    assert result["ok"] is True
+    assert toolkit.submitted_receipt is binding.execution_receipt
 
 
 @pytest.mark.anyio
