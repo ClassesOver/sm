@@ -403,8 +403,9 @@ class VisualizationSectionWorkflow:
                         ),
                     )
                 script_file = _ensure_script_identity(generated_result, script_path)
-                if diagnostic is not None:
-                    successful_repair = (diagnostic, script_file)
+                repair_candidate = generated_result.visual_repair_diagnostic or diagnostic
+                if repair_candidate is not None:
+                    successful_repair = (repair_candidate, script_file)
                     initial_recovery_used = True
                 break
             except Exception as error:
@@ -513,7 +514,10 @@ class VisualizationSectionWorkflow:
                         ),
                     )
                 repaired_file = _ensure_script_identity(repaired, script_path)
-                successful_repair = (diagnostic, repaired_file)
+                successful_repair = (
+                    repaired.visual_repair_diagnostic or diagnostic,
+                    repaired_file,
+                )
                 generated_result = repaired
                 repaired_outputs = {
                     item.path for item in repaired.execution_receipt.output_files

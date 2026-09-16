@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -67,6 +67,7 @@ class ReportingCodingTaskBinding:
     visual_inspection_receipts: dict[str, ChartVisualInspectionReceipt] = field(
         default_factory=dict
     )
+    visual_repair_diagnostic: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.context.workspace_key != self.workspace.identity.workspace_key:

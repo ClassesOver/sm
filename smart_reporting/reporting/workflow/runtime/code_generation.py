@@ -76,6 +76,7 @@ class CodeGenerationResult:
     script_file: FileIdentity
     execution_receipt: ExecutionReceipt
     visual_inspection_receipts: tuple[ChartVisualInspectionReceipt, ...] = ()
+    visual_repair_diagnostic: Mapping[str, Any] | None = None
 
 
 class ReportingCodeGenerationRunner:
@@ -173,6 +174,11 @@ class ReportingCodeGenerationRunner:
                 script_file=receipt.source_file,
                 execution_receipt=receipt,
                 visual_inspection_receipts=visual_receipts,
+                visual_repair_diagnostic=(
+                    binding.visual_repair_diagnostic
+                    if task_context.task_kind == "visualization"
+                    else None
+                ),
             )
 
     @staticmethod

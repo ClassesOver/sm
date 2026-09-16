@@ -61,7 +61,9 @@ def _visualization_plan() -> VisualizationPlanDraft:
     )
 
 
-def _result() -> CodeGenerationResult:
+def _result(
+    *, visual_repair_diagnostic: Mapping[str, object] | None = None
+) -> CodeGenerationResult:
     script_file = _script_file()
     chart_file = _chart_file()
     return CodeGenerationResult(
@@ -83,6 +85,7 @@ def _result() -> CodeGenerationResult:
                 summary="通过",
             ),
         ),
+        visual_repair_diagnostic=visual_repair_diagnostic,
     )
 
 
@@ -153,6 +156,52 @@ async def test_visualization_does_not_record_repair_when_domain_submission_rejec
                 ReportingError("report_visualization_script_failed", "执行失败"),
                 _result(),
             ]
+        ),
+        submit=AsyncMock(return_value={"status": "rejected", "code": "not_accepted"}),
+        record_successful_repair=record,
+    )
+
+    with pytest.raises(ReportingError, match="not_accepted"):
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
+
+    record.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("submission_status", ["accepted", "committed", "already_committed"])
+async def test_visualization_records_in_run_visual_repair_only_after_accepted_submission(
+    submission_status: str,
+) -> None:
+    diagnostic = {"code": "report_visualization_review_failed"}
+    record = AsyncMock()
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=AsyncMock(return_value=_result(visual_repair_diagnostic=diagnostic)),
+        submit=AsyncMock(return_value={"status": submission_status}),
+        record_successful_repair=record,
+    )
+
+    result = await workflow.run(
+        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result.status == "accepted"
+    record.assert_awaited_once_with(diagnostic, _script_file())
+
+
+@pytest.mark.anyio
+async def test_visualization_does_not_record_in_run_visual_repair_when_submission_rejects() -> None:
+    record = AsyncMock()
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=AsyncMock(
+            return_value=_result(
+                visual_repair_diagnostic={"code": "report_visualization_review_failed"}
+            )
         ),
         submit=AsyncMock(return_value={"status": "rejected", "code": "not_accepted"}),
         record_successful_repair=record,

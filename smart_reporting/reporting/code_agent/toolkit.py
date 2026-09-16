@@ -237,6 +237,24 @@ def _bounded_failure(code: str, cell: Any) -> dict[str, Any]:
     }
 
 
+def _visual_repair_diagnostic(
+    receipt: ChartVisualInspectionReceipt,
+) -> dict[str, Any] | None:
+    if receipt.visual_review_status == "passed" and not receipt.requires_revision:
+        return None
+    return {
+        "code": "report_visualization_review_failed",
+        "message": "图表独立视觉审查要求修订。",
+        "details": {
+            "sourcePath": receipt.source_path,
+            "visualReviewStatus": receipt.visual_review_status,
+            "requiresRevision": receipt.requires_revision,
+            "issueCategories": sorted({issue.category for issue in receipt.issues}),
+            "issueSeverities": sorted({issue.severity for issue in receipt.issues}),
+        },
+    }
+
+
 def _reset_stop_after_tool_call(fc: Any) -> None:
     fc.function.stop_after_tool_call = False
 
@@ -588,6 +606,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 "图片输出在执行或视觉审查后发生变化。",
             )
         self.binding.visual_inspection_receipts[source_path] = reviewed
+        diagnostic = _visual_repair_diagnostic(reviewed)
+        if diagnostic is not None:
+            self.binding.visual_repair_diagnostic = diagnostic
         return {
             "ok": True,
             "receipt": reviewed.model_dump(mode="json", by_alias=True),
