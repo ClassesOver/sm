@@ -744,6 +744,10 @@ class AnalysisItemWorkflow:
                     "补充 evidence 不在 Coding Agent 签发输出中。",
                 )
         except ReportingError as error:
+            if error.code == "report_code_generation_no_submission":
+                state.failure = error
+                state.evidence = None
+                return self._abandon_supplement(state)
             if error.code in _NON_RECOVERABLE_CODES or (
                 isinstance(error.details, Mapping) and error.details.get("retryable") is False
             ):

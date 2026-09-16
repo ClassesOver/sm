@@ -410,8 +410,6 @@ class VisualizationSectionWorkflow:
                 break
             except Exception as error:
                 generation_failure = error
-                if _is_nonrecoverable(error):
-                    raise
                 if (
                     isinstance(error, ReportingError)
                     and error.code == "report_code_generation_no_submission"
@@ -424,6 +422,8 @@ class VisualizationSectionWorkflow:
                             "degraded", plan, None, (), True
                         )
                     raise exhausted_error
+                if _is_nonrecoverable(error):
+                    raise
                 if _is_degradable(error):
                     if generate_attempt >= MAX_VISUALIZATION_EXECUTION_REPAIRS:
                         exhausted_error = _with_repair_count(

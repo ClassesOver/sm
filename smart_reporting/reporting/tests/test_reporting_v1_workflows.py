@@ -122,6 +122,88 @@ async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -
 
 
 @pytest.mark.anyio
+async def test_analysis_v1_abandons_supplement_after_no_submission() -> None:
+    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
+    facts_path = "facts/analysis_001.json"
+    run_count = 0
+    completions: list[dict[str, object]] = []
+
+    async def read_file(*, path: str, **_: object) -> dict[str, object]:
+        assert path == facts_path
+        return {"ok": True, "content": facts, "sha256": hashlib.sha256(facts.encode()).hexdigest(), "totalBytes": len(facts.encode()), "nextOffset": len(facts.encode())}
+
+    async def run_code(**_: object) -> CodeGenerationResult:
+        nonlocal run_count
+        run_count += 1
+        raise ReportingError(
+            "report_code_generation_no_submission",
+            "Coding Agent 未签发成功执行的 Python 脚本。",
+            details={"retryable": False},
+        )
+
+    async def complete(**kwargs: object) -> dict[str, object]:
+        completions.append(kwargs)
+        return {"status": "accepted", "taskFinished": True}
+
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=lambda _payload: _decision(),
+        run_code=run_code,
+        summarize=lambda _payload: _summary(),
+        read_file=read_file,
+        complete=complete,
+    )
+    result = await workflow.run(
+        {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]},
+        RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result.stage_statuses == tuple((name, "completed") for name in ("read-facts", "plan-evidence", "execute-script", "validate-evidence", "complete-analysis"))
+    assert run_count == 1
+    assert completions[0]["evidencePaths"] == []
+    assert "report_code_generation_no_submission" in completions[0]["warnings"][0]
+
+
+@pytest.mark.anyio
+async def test_analysis_v1_fails_closed_on_protocol_error() -> None:
+    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
+    facts_path = "facts/analysis_001.json"
+    protocol_error = ReportingError(
+        "report_code_custom_tool_protocol_error",
+        "Coding Agent 将工具调用写入了 assistant 正文。",
+        details={"retryable": False},
+    )
+    calls = {"run": 0, "complete": 0}
+
+    async def read_file(*, path: str, **_: object) -> dict[str, object]:
+        assert path == facts_path
+        return {"ok": True, "content": facts, "sha256": hashlib.sha256(facts.encode()).hexdigest(), "totalBytes": len(facts.encode()), "nextOffset": len(facts.encode())}
+
+    async def run_code(**_: object) -> CodeGenerationResult:
+        calls["run"] += 1
+        raise protocol_error
+
+    async def complete(**_: object) -> dict[str, object]:
+        calls["complete"] += 1
+        return {"status": "accepted", "taskFinished": True}
+
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=lambda _payload: _decision(),
+        run_code=run_code,
+        summarize=lambda _payload: _summary(),
+        read_file=read_file,
+        complete=complete,
+    )
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
+
+    assert caught.value is protocol_error
+    assert calls == {"run": 1, "complete": 0}
+
+
+@pytest.mark.anyio
 async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_reexecution() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
@@ -324,7 +406,7 @@ async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
 
 
 @pytest.mark.anyio
-async def test_visualization_v1_degrades_after_code_agent_visual_repairs_exhausted() -> None:
+async def test_visualization_v1_degrades_after_code_agent_no_submission() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
     run_count = 0
@@ -332,7 +414,11 @@ async def test_visualization_v1_degrades_after_code_agent_visual_repairs_exhaust
     async def run_code(*_: object, **kwargs: object) -> CodeGenerationResult:
         nonlocal run_count
         run_count += 1
-        raise ReportingError("report_code_generation_no_submission", "视觉修复耗尽")
+        raise ReportingError(
+            "report_code_generation_no_submission",
+            "视觉修复耗尽",
+            details={"retryable": False},
+        )
 
     degraded: list[ReportingError] = []
 
@@ -348,6 +434,40 @@ async def test_visualization_v1_degrades_after_code_agent_visual_repairs_exhaust
     assert run_count == 1
     assert degraded[0].details["executionRepairCount"] == 0
     assert "visualReviewRepairCount" not in degraded[0].details
+
+
+@pytest.mark.anyio
+async def test_visualization_v1_fails_closed_on_protocol_error() -> None:
+    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    protocol_error = ReportingError(
+        "report_code_custom_tool_protocol_error",
+        "Coding Agent 将工具调用写入了 assistant 正文。",
+        details={"retryable": False},
+    )
+    calls = {"run": 0, "degrade": 0}
+
+    async def run_code(*_: object, **__: object) -> CodeGenerationResult:
+        calls["run"] += 1
+        raise protocol_error
+
+    async def degrade(*_: object) -> dict[str, str]:
+        calls["degrade"] += 1
+        return {"status": "accepted"}
+
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=(chart,))),
+        run_code=run_code,
+        submit=lambda *_: _accepted(),
+        degrade=degrade,
+    )
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
+
+    assert caught.value is protocol_error
+    assert calls == {"run": 1, "degrade": 0}
 
 
 async def _plan(plan: VisualizationPlanDraft) -> VisualizationPlanDraft:
