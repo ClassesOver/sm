@@ -13,7 +13,6 @@ from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
 from agno.models.response import ModelResponse
-from agno.utils.message import normalize_tool_messages, reformat_tool_call_ids
 from loguru import logger
 
 from ...context_management import (
@@ -42,8 +41,17 @@ FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
 
 _CUSTOM_TOOL_PROTOCOL_ERROR = "report_code_custom_tool_protocol_error"
 _FREEFORM_TOOL_GRAMMAR = "start: SOURCE\nSOURCE: /[\\s\\S]+/"
-_DSML_TOOL_MARKERS = ("<|recipient=", "<|recipient|>", "<|tool_call=", "<|tool_call|>")
 _STREAMING_UNSUPPORTED = "report_code_streaming_unsupported"
+_TEXTUAL_TOOL_MARKERS = (
+    "<|recipient=",
+    "<|recipient|>",
+    "<|tool_call=",
+    "<|tool_call|>",
+    "<｜DSML｜tool_calls>",
+    "<｜DSML｜invoke",
+    "```execute_code",
+    "```write_script",
+)
 _PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
@@ -195,9 +203,9 @@ def phase_filtered_model_call(
         if len(visible_names) == 1:
             tool_name = visible_names[0]
             updated_kwargs["tool_choice"] = (
-                {"type": "custom", "name": tool_name}
+                "auto"
                 if tool_name in FREEFORM_TOOL_ARGUMENTS
-                else {"type": "function", "function": {"name": tool_name}}
+                else {"type": "function", "name": tool_name}
             )
     return tuple(positional), updated_kwargs
 
@@ -210,75 +218,18 @@ def _custom_protocol_error(message: str) -> ReportingError:
     return ReportingError(_CUSTOM_TOOL_PROTOCOL_ERROR, message, details={"retryable": False})
 
 
-def _contains_dsml_tool_marker(output: list[Any]) -> bool:
+def _contains_textual_tool_marker(output: list[Any]) -> bool:
     for item in output:
         if _field(item, "type") != "message" or _field(item, "role") != "assistant":
             continue
         content = _field(item, "content")
         for part in content if isinstance(content, (list, tuple)) else ():
             text = _field(part, "text")
-            if isinstance(text, str) and any(marker in text for marker in _DSML_TOOL_MARKERS):
+            if isinstance(text, str) and any(
+                marker in text for marker in _TEXTUAL_TOOL_MARKERS
+            ):
                 return True
     return False
-
-
-def _required_id(value: Any, field: str) -> str:
-    identity = _field(value, field)
-    if not isinstance(identity, str) or not identity:
-        raise _custom_protocol_error("Coding Agent custom 工具调用缺少身份。")
-    return identity
-
-
-def _synthetic_custom_call(item: Any) -> dict[str, Any]:
-    name = _field(item, "name")
-    raw_input = _field(item, "input")
-    if name not in FREEFORM_TOOL_ARGUMENTS or not isinstance(raw_input, str) or not raw_input:
-        raise _custom_protocol_error("Coding Agent custom 工具调用无效。")
-    item_id = _required_id(item, "id")
-    call_id = _required_id(item, "call_id")
-    return {
-        "id": item_id,
-        "call_id": call_id,
-        "type": "function",
-        "function": {
-            "name": name,
-            "arguments": json.dumps(
-                {FREEFORM_TOOL_ARGUMENTS[name]: raw_input},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        },
-        "provider_data": {"reporting_wire_type": "custom", "raw_input": raw_input},
-    }
-
-
-def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
-    provider_data = _field(call, "provider_data")
-    if (
-        not isinstance(provider_data, Mapping)
-        or provider_data.get("reporting_wire_type") != "custom"
-    ):
-        return None
-    function = _field(call, "function")
-    name = _field(function, "name")
-    raw_input = provider_data.get("raw_input")
-    if name not in FREEFORM_TOOL_ARGUMENTS or not isinstance(raw_input, str) or not raw_input:
-        raise _custom_protocol_error("Coding Agent custom 工具重放数据无效。")
-    item_id = _required_id(call, "id")
-    call_id = _required_id(call, "call_id")
-    arguments = _field(function, "arguments")
-    try:
-        decoded_arguments = json.loads(arguments) if isinstance(arguments, str) else None
-    except (TypeError, ValueError) as error:
-        raise _custom_protocol_error("Coding Agent custom 工具重放参数无效。") from error
-    if decoded_arguments != {FREEFORM_TOOL_ARGUMENTS[name]: raw_input}:
-        raise _custom_protocol_error("Coding Agent custom 工具重放参数不匹配。")
-    return {
-        "id": item_id,
-        "call_id": call_id,
-        "name": name,
-        "raw_input": raw_input,
-    }
 
 
 class ReportingCodeOpenAIResponses(OpenAIResponses):
@@ -324,7 +275,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             run_response=run_response,
         )
         params["parallel_tool_calls"] = False
-        if tools and tool_choice is None:
+        formatted_tools = params.get("tools") or ()
+        if any(tool.get("type") == "custom" for tool in formatted_tools):
+            params["tool_choice"] = "auto"
+        elif tools and tool_choice is None:
             params["tool_choice"] = "auto"
         return params
 
@@ -399,104 +353,14 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return super()._parse_provider_response(response, **kwargs)
         output = _field(response, "output")
         output = list(output) if isinstance(output, (list, tuple)) else []
-        actionable = [
-            item for item in output if _field(item, "type") in {"custom_tool_call", "function_call"}
-        ]
-        if len(actionable) > 1:
+        if any(_field(item, "type") == "custom_tool_call" for item in output):
+            raise _custom_protocol_error("Coding Agent 不支持 custom 工具调用。")
+        function_calls = [item for item in output if _field(item, "type") == "function_call"]
+        if len(function_calls) > 1:
             raise _custom_protocol_error("Coding Agent 每轮只允许一次工具调用。")
-        if not actionable and _contains_dsml_tool_marker(output):
+        if not function_calls and _contains_textual_tool_marker(output):
             raise _custom_protocol_error("Coding Agent 将工具调用写入了 assistant 正文。")
-        custom_calls = [item for item in actionable if _field(item, "type") == "custom_tool_call"]
-        parsed = super()._parse_provider_response(response, **kwargs)
-        if not custom_calls:
-            return parsed
-        call = _synthetic_custom_call(custom_calls[0])
-        parsed.content = None
-        parsed.tool_calls = [call]
-        parsed.extra = parsed.extra or {}
-        parsed.extra["tool_call_ids"] = [call["call_id"]]
-        return parsed
-
-    def _format_messages(
-        self,
-        messages: list[Message],
-        compress_tool_results: bool = False,
-        tools: Any = None,
-    ) -> list[Any]:
-        normalized_messages = reformat_tool_call_ids(
-            normalize_tool_messages(messages), provider="openai_responses"
-        )
-        original_calls = [call for message in messages for call in message.tool_calls or ()]
-        normalized_calls = [
-            call for message in normalized_messages for call in message.tool_calls or ()
-        ]
-        if len(original_calls) != len(normalized_calls):
-            raise _custom_protocol_error("Coding Agent 工具重放调用数量不一致。")
-        custom_calls: dict[str, dict[str, Any]] = {}
-        custom_replays: list[dict[str, Any]] = []
-        known_call_ids: set[str] = set()
-        for original, normalized in zip(original_calls, normalized_calls, strict=True):
-            identities = tuple(
-                identity
-                for identity in (_field(normalized, "id"), _field(normalized, "call_id"))
-                if isinstance(identity, str) and identity
-            )
-            known_call_ids.update(identities)
-            custom = _validated_custom_replay_call(original)
-            if custom is None:
-                continue
-            custom_replays.append(custom)
-            for identity in identities:
-                custom_calls[identity] = custom
-        custom_result_counts: dict[str, int] = {}
-        for message in normalized_messages:
-            if message.role != "tool":
-                continue
-            if message.tool_call_id not in known_call_ids:
-                raise _custom_protocol_error("Coding Agent 工具结果缺少对应调用。")
-            custom = custom_calls.get(message.tool_call_id)
-            if custom is not None:
-                if message.tool_name not in {None, custom["name"]}:
-                    raise _custom_protocol_error("Coding Agent custom 工具结果与调用不匹配。")
-                call_id = custom["call_id"]
-                custom_result_counts[call_id] = custom_result_counts.get(call_id, 0) + 1
-                if custom_result_counts[call_id] > 1:
-                    raise _custom_protocol_error("Coding Agent custom 工具调用存在重复结果。")
-            elif message.tool_name in FREEFORM_TOOL_ARGUMENTS:
-                raise _custom_protocol_error("Coding Agent custom 工具结果缺少对应调用。")
-        if any(custom_result_counts.get(custom["call_id"], 0) != 1 for custom in custom_replays):
-            raise _custom_protocol_error("Coding Agent custom 工具调用缺少对应结果。")
-        formatted = super()._format_messages(messages, compress_tool_results, tools)
-        for index, item in enumerate(formatted):
-            if not isinstance(item, dict) or item.get("type") not in {
-                "function_call",
-                "function_call_output",
-            }:
-                continue
-            if item["type"] == "function_call":
-                custom = custom_calls.get(str(item.get("call_id") or "")) or custom_calls.get(
-                    str(item.get("id") or "")
-                )
-                if custom is None:
-                    continue
-                formatted[index] = {
-                    "type": "custom_tool_call",
-                    "id": custom["id"],
-                    "call_id": custom["call_id"],
-                    "name": custom["name"],
-                    "input": custom["raw_input"],
-                    "status": "completed",
-                }
-            else:
-                custom = custom_calls.get(str(item.get("call_id") or ""))
-                if custom is None:
-                    continue
-                formatted[index] = {
-                    "type": "custom_tool_call_output",
-                    "call_id": custom["call_id"],
-                    "output": item["output"],
-                }
-        return formatted
+        return super()._parse_provider_response(response, **kwargs)
 
     @staticmethod
     def _raise_stable_custom_error(error: Exception) -> None:
