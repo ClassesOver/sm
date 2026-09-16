@@ -115,6 +115,32 @@ def _function_response(index: int, name: str, arguments: dict[str, Any]) -> Resp
     )
 
 
+def _message_response(text: str) -> Response:
+    return Response.model_validate(
+        {
+            "id": "resp-message",
+            "created_at": 0,
+            "model": "test-model",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "id": "message-1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {"type": "output_text", "text": text, "annotations": []}
+                    ],
+                }
+            ],
+            "parallel_tool_calls": False,
+            "tool_choice": "auto",
+            "tools": [],
+        }
+    )
+
+
 def _assistant_and_result_messages(call: dict[str, Any], result: dict[str, Any]) -> list[Message]:
     return [
         Message(role="assistant", content="", tool_calls=[call]),
@@ -363,7 +389,11 @@ def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
         "type": "custom",
         "name": "write_script",
         "description": "write_script",
-        "format": {"type": "text"},
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": "start: SOURCE\nSOURCE: /[\\s\\S]+/",
+        },
     }
 
 
@@ -478,7 +508,7 @@ def test_function_call_round_trip_stays_function_protocol() -> None:
     ]
 
 
-def test_code_requests_force_serial_auto_tool_calls() -> None:
+def test_code_requests_preserve_explicit_tool_choice() -> None:
     model = ReportingCodeOpenAIResponses(
         id="test-model",
         api_key="test-key",
@@ -493,7 +523,36 @@ def test_code_requests_force_serial_auto_tool_calls() -> None:
     )
 
     assert params["parallel_tool_calls"] is False
+    assert params["tool_choice"] == {"type": "custom", "name": "write_script"}
+
+
+def test_code_requests_default_to_auto_tool_choice() -> None:
+    params = _code_responses_model().get_request_params(
+        messages=[Message(role="user", content="write")],
+        tools=[_function("write_script"), _function("run_script")],
+    )
+
+    assert params["parallel_tool_calls"] is False
     assert params["tool_choice"] == "auto"
+
+
+def test_custom_protocol_rejects_dsml_assistant_text_without_executing_it() -> None:
+    with pytest.raises(ReportingError) as caught:
+        _code_responses_model()._parse_provider_response(
+            _message_response("<|recipient=write_script|>print('must not run')")
+        )
+
+    assert caught.value.code == "report_code_custom_tool_protocol_error"
+    assert caught.value.details == {"retryable": False}
+
+
+def test_custom_protocol_keeps_plain_assistant_text_as_text() -> None:
+    parsed = _code_responses_model()._parse_provider_response(
+        _message_response("无法在当前上下文完成脚本。")
+    )
+
+    assert parsed.content == "无法在当前上下文完成脚本。"
+    assert not parsed.tool_calls
 
 
 def test_custom_protocol_rejects_streaming_and_unknown_names() -> None:
