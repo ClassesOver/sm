@@ -27,6 +27,7 @@ from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import ThinkingFailureKind
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
+from ...vision import ReportVisionReviewer
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 MAX_DIAGNOSTIC_MESSAGE_LENGTH = 512
@@ -34,6 +35,9 @@ MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
 MAX_DIAGNOSTIC_PATH_LENGTH = 1024
 MAX_DIAGNOSTIC_UNSIGNED_PATHS = 20
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
+ANALYSIS_TOOL_CALL_LIMIT = 20
+VISUALIZATION_TOOL_CALL_BASE = 29
+MAX_TOOL_CALL_LIMIT = 140
 
 
 def _bounded_unsigned_paths(value: Any) -> list[str]:
@@ -84,12 +88,14 @@ class ReportingCodeGenerationRunner:
         lsp_manager: ReportingLspProcessManager,
         registry: ReportingCodingTaskRegistry | None = None,
         knowledge_index: ReportingKnowledgeIndex | None = None,
+        vision_reviewer: ReportVisionReviewer | None = None,
     ) -> None:
         self.agent_factory = agent_factory
         self.code_mode_runtime = code_mode_runtime
         self.registry = registry or ReportingCodingTaskRegistry()
         self.knowledge_index = knowledge_index
         self.lsp_manager = lsp_manager
+        self.vision_reviewer = vision_reviewer
 
     async def run(
         self,
@@ -100,12 +106,33 @@ class ReportingCodeGenerationRunner:
         run_context: RunContext,
         diagnostic: Mapping[str, Any] | None = None,
     ) -> CodeGenerationResult:
+        if task_context.task_kind == "visualization" and self.vision_reviewer is None:
+            raise ReportingError(
+                "report_code_visual_reviewer_missing",
+                "章节图表 Coding Agent 未配置独立视觉审查模型。",
+            )
+        requested_tool_call_limit = (
+            VISUALIZATION_TOOL_CALL_BASE + len(task_context.declared_output_paths)
+            if task_context.task_kind == "visualization"
+            else ANALYSIS_TOOL_CALL_LIMIT
+        )
+        if requested_tool_call_limit > MAX_TOOL_CALL_LIMIT:
+            raise ReportingError(
+                "report_code_tool_call_limit_exceeded",
+                "章节图表数量超过 Coding Agent 工具调用硬上限。",
+                details={
+                    "declaredOutputCount": len(task_context.declared_output_paths),
+                    "requestedToolCallLimit": requested_tool_call_limit,
+                    "maxToolCallLimit": MAX_TOOL_CALL_LIMIT,
+                },
+            )
         async with self.registry.bind(task_context, workspace) as binding:
             toolkit = ReportingCodeModeToolkit(
                 binding,
                 self.code_mode_runtime,
                 knowledge_index=self.knowledge_index,
                 lsp_manager=self.lsp_manager,
+                vision_reviewer=self.vision_reviewer,
             )
             task_payload = asdict(task_context)
             task_payload["workspace_root"] = str(task_context.workspace_root)
@@ -117,6 +144,7 @@ class ReportingCodeGenerationRunner:
             started_at = perf_counter()
             try:
                 agent = self.agent_factory(toolkit.tool_functions)
+                agent.tool_call_limit = min(MAX_TOOL_CALL_LIMIT, requested_tool_call_limit)
                 await agent.arun(self._prompt(payload), run_context=run_context)
                 receipt = toolkit.submitted_receipt
                 if receipt is None:
@@ -137,7 +165,11 @@ class ReportingCodeGenerationRunner:
                 receipt.source_file.path,
                 max(0, round((perf_counter() - started_at) * 1000)),
             )
-            return CodeGenerationResult(script_file=receipt.source_file, execution_receipt=receipt)
+            return CodeGenerationResult(
+                script_file=receipt.source_file,
+                execution_receipt=receipt,
+                visual_inspection_receipts=toolkit.submitted_visual_receipts,
+            )
 
     @staticmethod
     def _prompt(payload: Mapping[str, Any]) -> str:

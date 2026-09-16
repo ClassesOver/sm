@@ -865,6 +865,155 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
 
 
 @pytest.mark.anyio
+async def test_runner_vision_uses_exact_reviewer_dynamic_budget_and_sorted_receipts(
+    workspace: HostReportingWorkspace,
+) -> None:
+    output_paths = ("charts/b.png", "charts/a.png")
+    source = (
+        "from pathlib import Path\n"
+        "Path('charts/b.png').write_bytes(b'b')\n"
+        "Path('charts/a.png').write_bytes(b'a')\n"
+    )
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/chart.py", *output_paths),
+        declared_output_paths=output_paths,
+        max_source_bytes=128 * 1024,
+    )
+
+    class Runtime:
+        shutdowns: list[str] = []
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            for path in output_paths:
+                await received.awrite_text("task-1", path, path)
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def shutdown(self, session_id: str) -> None:
+            self.shutdowns.append(session_id)
+
+    class Reviewer:
+        def __init__(self) -> None:
+            self.reviewed_paths: list[str] = []
+
+        async def review(self, workspace_key: str, path: str, *, detail: str):
+            assert workspace_key == workspace.identity.workspace_key
+            assert detail == "original"
+            self.reviewed_paths.append(path)
+            output = FileIdentity.model_validate(await workspace.ahash_file("task-1", path))
+            return _visual_receipt(output)
+
+    class ScriptedAgent:
+        tool_call_limit = 20
+
+        def __init__(self, tools: Sequence[Function]) -> None:
+            self.tools = {tool.name: tool for tool in tools}
+
+        async def arun(self, _prompt: str, **_kwargs: Any) -> object:
+            await self.tools["write_script"].entrypoint(source=source)
+            await self.tools["run_script"].entrypoint()
+            for path in output_paths:
+                await self.tools["view_image"].entrypoint(path=path, detail="original")
+            return await self.tools["submit_script"].entrypoint()
+
+    agents: list[ScriptedAgent] = []
+
+    def factory(tools: Sequence[Function]) -> ScriptedAgent:
+        agent = ScriptedAgent(tools)
+        agents.append(agent)
+        return agent
+
+    reviewer = Reviewer()
+    result = await ReportingCodeGenerationRunner(
+        factory,
+        Runtime(),
+        ReportingLspProcessManager(),
+        vision_reviewer=reviewer,
+    ).run(
+        context,
+        workspace,
+        {},
+        run_context=_run_context("task-1"),
+    )
+
+    assert reviewer.reviewed_paths == list(output_paths)
+    assert tuple(item.source_path for item in result.visual_inspection_receipts) == (
+        "charts/a.png",
+        "charts/b.png",
+    )
+    assert {item.sha256 for item in result.visual_inspection_receipts} == {
+        item.sha256 for item in result.execution_receipt.output_files
+    }
+    assert agents[0].tool_call_limit == 31
+
+
+@pytest.mark.anyio
+async def test_runner_vision_requires_reviewer_before_agent_execution(
+    workspace: HostReportingWorkspace,
+) -> None:
+    with pytest.raises(ReportingError) as caught:
+        await ReportingCodeGenerationRunner(
+            lambda _tools: object(),
+            object(),
+            ReportingLspProcessManager(),
+        ).run(
+            _visualization_task_context(workspace),
+            workspace,
+            {},
+            run_context=_run_context("task-1"),
+        )
+
+    assert caught.value.code == "report_code_visual_reviewer_missing"
+
+
+@pytest.mark.anyio
+async def test_runner_tool_call_limit_rejects_visualization_above_hard_limit(
+    workspace: HostReportingWorkspace,
+) -> None:
+    output_paths = tuple(f"charts/{index}.png" for index in range(112))
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/chart.py", *output_paths),
+        declared_output_paths=output_paths,
+        max_source_bytes=128 * 1024,
+    )
+    factory_called = False
+
+    def factory(_tools: Sequence[Function]) -> object:
+        nonlocal factory_called
+        factory_called = True
+        return object()
+
+    with pytest.raises(ReportingError) as caught:
+        await ReportingCodeGenerationRunner(
+            factory,
+            object(),
+            ReportingLspProcessManager(),
+            vision_reviewer=AsyncMock(),
+        ).run(context, workspace, {}, run_context=_run_context("task-1"))
+
+    assert caught.value.code == "report_code_tool_call_limit_exceeded"
+    assert caught.value.details == {
+        "declaredOutputCount": 112,
+        "requestedToolCallLimit": 141,
+        "maxToolCallLimit": 140,
+    }
+    assert factory_called is False
+
+
+@pytest.mark.anyio
 async def test_runner_shuts_down_kernel_on_no_submission(
     workspace: HostReportingWorkspace,
 ) -> None:

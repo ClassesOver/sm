@@ -752,6 +752,7 @@ class RuntimeAnalysisMixin:
                             self.code_mode_runtime,
                             knowledge_index=knowledge_index,
                             lsp_manager=getattr(self, "lsp_manager", None),
+                            vision_reviewer=self.vision_reviewer,
                         )
 
                     async def run_code(
