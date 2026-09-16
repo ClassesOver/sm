@@ -59,6 +59,22 @@ describe('createSearchController', () => {
     expect(controller.panel.hidden).toBe(true)
   })
 
+  it('does not replace text that overlaps a protected protocol marker', () => {
+    markdown = '前缀[[section:finance]]后缀'
+    const controller = createSearchController({ root, getText: () => markdown, replaceText })
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    const replacement = root.querySelector<HTMLInputElement>('.search-replacement')!
+    query.value = '前缀[[section'
+    replacement.value = '已破坏'
+    query.dispatchEvent(new Event('input'))
+
+    root.querySelector<HTMLButtonElement>('[data-search="all"]')!.click()
+
+    expect(markdown).toBe('前缀[[section:finance]]后缀')
+    expect(root.querySelector('.search-count')?.textContent).toBe('0 个匹配')
+  })
+
   it('supports familiar search keyboard shortcuts', () => {
     const controller = createSearchController({ root, getText: () => markdown, replaceText })
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }))
@@ -78,6 +94,51 @@ describe('createSearchController', () => {
 
     expect(controller.panel.previousElementSibling?.className).toBe('report-meta')
     expect(controller.panel.nextElementSibling?.className).toBe('report-workspace')
+  })
+
+  it('removes highlights when the query is cleared', () => {
+    root.innerHTML = '<div id="editor">收入与收入</div>'
+    const editor = root.querySelector<HTMLElement>('#editor')!
+    const controller = createSearchController({ root, getText: () => '收入与收入', replaceText })
+    controller.setEditor(editor)
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    query.value = '收入'
+    query.dispatchEvent(new Event('input'))
+    expect(editor.querySelectorAll('.search-match')).toHaveLength(2)
+
+    query.value = ''
+    query.dispatchEvent(new Event('input'))
+
+    expect(editor.querySelectorAll('.search-match')).toHaveLength(0)
+  })
+
+  it('removes highlights when the search panel closes', () => {
+    root.innerHTML = '<div id="editor">收入与收入</div>'
+    const editor = root.querySelector<HTMLElement>('#editor')!
+    const controller = createSearchController({ root, getText: () => '收入与收入', replaceText })
+    controller.setEditor(editor)
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    query.value = '收入'
+    query.dispatchEvent(new Event('input'))
+    expect(editor.querySelectorAll('.search-match')).toHaveLength(2)
+
+    controller.close()
+
+    expect(editor.querySelectorAll('.search-match')).toHaveLength(0)
+  })
+
+  it('restores focus when the search panel closes', () => {
+    const opener = document.createElement('button')
+    root.append(opener)
+    opener.focus()
+    const controller = createSearchController({ root, getText: () => markdown, replaceText })
+    controller.open()
+
+    controller.close()
+
+    expect(document.activeElement).toBe(opener)
   })
 
   it('delegates highlight and active-result navigation to the editor search plugin', () => {

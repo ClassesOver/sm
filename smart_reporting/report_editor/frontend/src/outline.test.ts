@@ -73,6 +73,36 @@ describe('createOutlineController', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('applies a persisted initial collapsed state', () => {
+    const container = document.querySelector<HTMLElement>('#outline')!
+    const toggle = document.querySelector<HTMLButtonElement>('#toggle')!
+
+    createOutlineController({
+      container,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle,
+      initialCollapsed: true,
+    })
+
+    expect(container.classList).toContain('is-collapsed')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('reports user collapse changes for preference persistence', () => {
+    const onCollapsedChange = vi.fn()
+    const toggle = document.querySelector<HTMLButtonElement>('#toggle')!
+    createOutlineController({
+      container: document.querySelector<HTMLElement>('#outline')!,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle,
+      onCollapsedChange,
+    })
+
+    toggle.click()
+
+    expect(onCollapsedChange).toHaveBeenCalledWith(true)
+  })
+
   it('reports the active section to the surrounding shell', () => {
     const onActive = vi.fn()
     const controller = createOutlineController({
@@ -132,6 +162,24 @@ describe('createOutlineController', () => {
     controller.update([{ text: '摘要', level: 1, id: '' }])
     expect(container.querySelector('.outline-count')?.textContent).toBe('1 个章节')
     expect(container.querySelector('.outline-empty-hint')).toBeNull()
+  })
+
+  it('does not rebuild outline controls when headings are unchanged', () => {
+    const controller = createOutlineController({
+      container: document.querySelector<HTMLElement>('#outline')!,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle: document.querySelector<HTMLButtonElement>('#toggle')!,
+    })
+    const items = [
+      { id: 'summary', level: 1, text: '摘要' },
+      { id: 'operation', level: 2, text: '经营情况' },
+    ]
+    controller.update(items)
+    const firstButton = document.querySelector('.outline-link')
+
+    controller.update(items.map((item) => ({ ...item })))
+
+    expect(document.querySelector('.outline-link')).toBe(firstButton)
   })
 
   it('respects reduced motion when navigating', () => {

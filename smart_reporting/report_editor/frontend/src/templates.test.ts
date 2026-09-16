@@ -35,4 +35,13 @@ describe('report templates', () => {
     panel.dialog.querySelector<HTMLButtonElement>('[data-template="risk-section"]')!.click()
     expect(apply).toHaveBeenCalledWith(expect.stringMatching(/^# 现有报告\n\n## 风险与建议/))
   })
+
+  it('closes the template panel with Escape', () => {
+    const panel = createTemplatePanel(document.body, () => '', vi.fn())
+    panel.open()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+
+    expect(panel.dialog.hidden).toBe(true)
+  })
 })

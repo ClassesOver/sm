@@ -6,7 +6,6 @@ import {
   createFocusModeController,
   createExportPanel,
   createImagePreview,
-  createViewModeController,
   createEditorPreferenceController,
   installEditorShortcuts,
 } from './enhancements'
@@ -34,20 +33,6 @@ describe('report editor enhancements', () => {
     expect(status.title).toContain('自动保存')
   })
 
-  it('starts desktop editing in wide mode and can switch to A4', () => {
-    const root = document.querySelector<HTMLElement>('#app')!
-    const toggle = document.querySelector<HTMLButtonElement>('#view')!
-    createViewModeController(root, toggle)
-
-    expect(root.classList).toContain('view-wide')
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    toggle.click()
-
-    expect(root.classList).toContain('view-a4')
-    expect(root.classList).not.toContain('view-wide')
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-  })
-
   it('persists view and outline preferences by report key', () => {
     localStorage.clear()
     const root = document.querySelector<HTMLElement>('#app')!
@@ -62,6 +47,53 @@ describe('report editor enhancements', () => {
     createEditorPreferenceController(secondRoot, secondToggle, 'report-1')
     expect(secondRoot.classList).toContain('view-a4')
     expect(secondRoot.classList).toContain('outline-collapsed')
+  })
+
+  it('ignores invalid persisted preference values', () => {
+    localStorage.clear()
+    localStorage.setItem(
+      'smart-reporting-editor:prefs:invalid-prefs',
+      JSON.stringify({ view: 'broken', outlineCollapsed: 'yes' }),
+    )
+    const root = document.querySelector<HTMLElement>('#app')!
+    const toggle = document.querySelector<HTMLButtonElement>('#view')!
+
+    createEditorPreferenceController(root, toggle, 'invalid-prefs')
+
+    expect(root.classList).toContain('view-wide')
+    expect(root.classList).not.toContain('outline-collapsed')
+  })
+
+  it('applies default preferences without redundant storage writes', () => {
+    localStorage.clear()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const root = document.querySelector<HTMLElement>('#app')!
+    const toggle = document.querySelector<HTMLButtonElement>('#view')!
+    try {
+      createEditorPreferenceController(root, toggle, 'report-defaults')
+
+      expect(setItem).not.toHaveBeenCalled()
+    } finally {
+      setItem.mockRestore()
+    }
+  })
+
+  it('keeps preferences usable when localStorage writes fail', () => {
+    localStorage.clear()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota exceeded', 'QuotaExceededError')
+    })
+    const root = document.querySelector<HTMLElement>('#app')!
+    const toggle = document.querySelector<HTMLButtonElement>('#view')!
+
+    try {
+      const controller = createEditorPreferenceController(root, toggle, 'report-quota')
+      expect(() => controller.setOutlineCollapsed(true)).not.toThrow()
+      expect(() => controller.saveScroll(240)).not.toThrow()
+      expect(root.classList).toContain('outline-collapsed')
+    } finally {
+      setItem.mockRestore()
+    }
   })
 
   it('restores the saved scroll position after editor loading', () => {
@@ -190,6 +222,16 @@ describe('report editor enhancements', () => {
     panel.dialog.querySelector<HTMLButtonElement>('[data-copy="pdf"]')!.click()
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('/pdf'))
     expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('PDF 链接已复制')
+  })
+
+  it('closes the export result panel with Escape', () => {
+    const panel = createExportPanel()
+    panel.show({ revision: 2, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' } })
+    expect(panel.dialog.hidden).toBe(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+
+    expect(panel.dialog.hidden).toBe(true)
   })
 
   it('shows and closes keyboard shortcut help', () => {

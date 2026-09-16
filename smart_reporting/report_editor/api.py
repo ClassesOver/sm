@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -25,14 +25,6 @@ class EditorWritePayload(BaseModel):
     expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
 
 
-class EditorExportPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
-    settings: EditorExportSettings | None = None
-    note: str | None = Field(default=None, max_length=200)
-
-
 class EditorExportSettings(BaseModel):
     cover: StrictBool = False
     toc: StrictBool = True
@@ -40,6 +32,14 @@ class EditorExportSettings(BaseModel):
     page_numbers: StrictBool = Field(True, alias="pageNumbers")
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class EditorExportPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+    settings: EditorExportSettings | None = None
+    note: str | None = Field(default=None, max_length=200)
 
 
 class EditorAIRewritePayload(BaseModel):
@@ -196,13 +196,9 @@ def create_report_editor_router(
                 grants, editor, request, report_id=report_id, revision=revision
             )
             try:
-                items = await editor.list_history(
-                    context, limit=limit, offset=offset, include_markdown=False
-                )
+                return await editor.history_page(context, limit=limit, offset=offset)
             except ReportingError as error:
                 _editor_http_error(error)
-            total_items = await editor.list_history(context, limit=100, offset=0, include_markdown=False)
-            return {"items": items, "total": len(total_items), "hasMore": offset + len(items) < len(total_items)}
 
         @router.get(
             "/reports/v1/editor/{report_id}/{revision}/api/history/{history_revision}",
@@ -283,7 +279,7 @@ def create_report_editor_router(
                 if payload.note is not None:
                     export_options["note"] = payload.note
                 result = await editor.export_revision(context, **export_options)
-                return {**result, "requestId": request_id}
+                return result
             except ReportingError as error:
                 _editor_http_error(error, request_id=request_id)
 
@@ -408,7 +404,7 @@ def _request_id(value: str | None) -> str:
         return str(uuid4())
 
 
-def _editor_http_error(error: ReportingError, *, request_id: str | None = None) -> None:
+def _editor_http_error(error: ReportingError, *, request_id: str | None = None) -> NoReturn:
     if error.code in {"report_editor_conflict", "report_editor_revision_conflict"}:
         status = 409
     elif error.code == "report_editor_export_timeout":

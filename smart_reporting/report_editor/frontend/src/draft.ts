@@ -1,3 +1,5 @@
+import { readStorage, removeStorage, writeStorage } from './storage'
+
 export function createLocalDraftController(
   root: HTMLElement,
   storageKey: string,
@@ -10,27 +12,49 @@ export function createLocalDraftController(
   const appBar = root.querySelector('.app-bar')
   if (appBar) appBar.insertAdjacentElement('afterend', banner)
   else root.prepend(banner)
+  let pendingMarkdown: string | null = null
+  let storeTimer: number | undefined
+  const cancelPendingStore = () => {
+    window.clearTimeout(storeTimer)
+    storeTimer = undefined
+    pendingMarkdown = null
+  }
+  const flush = () => {
+    if (pendingMarkdown === null) return
+    try {
+      if (writeStorage(storageKey, pendingMarkdown)) {
+        pendingMarkdown = null
+      }
+    } finally {
+      storeTimer = undefined
+    }
+  }
   const hide = () => { banner.hidden = true }
   banner.querySelector<HTMLButtonElement>('[data-draft="restore"]')!.addEventListener('click', () => {
-    const draft = localStorage.getItem(storageKey)
+    const draft = readStorage(storageKey)
     if (draft !== null) restore(draft)
     hide()
   })
   banner.querySelector<HTMLButtonElement>('[data-draft="discard"]')!.addEventListener('click', () => {
-    localStorage.removeItem(storageKey)
+    cancelPendingStore()
+    removeStorage(storageKey)
     hide()
   })
+  window.addEventListener('beforeunload', flush)
   return {
     banner,
     offer(serverMarkdown: string) {
-      const draft = localStorage.getItem(storageKey)
+      const draft = readStorage(storageKey)
       banner.hidden = draft === null || draft === serverMarkdown
     },
     store(markdown: string) {
-      localStorage.setItem(storageKey, markdown)
+      pendingMarkdown = markdown
+      window.clearTimeout(storeTimer)
+      storeTimer = window.setTimeout(flush, 2000)
     },
     clear() {
-      localStorage.removeItem(storageKey)
+      cancelPendingStore()
+      removeStorage(storageKey)
       hide()
     },
   }

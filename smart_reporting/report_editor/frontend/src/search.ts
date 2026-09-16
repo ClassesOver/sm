@@ -1,3 +1,5 @@
+import { findProtocolMarkers } from './protocol'
+
 export interface SearchControllerOptions {
   root: HTMLElement
   getText: () => string
@@ -6,17 +8,17 @@ export interface SearchControllerOptions {
   navigate?: (direction: 'prev' | 'next') => void
 }
 
-const PROTOCOL_MARKER = /\[\[(?:section|citation):[^\]]+\]\]/g
-
 function protectedRanges(text: string): Array<[number, number]> {
-  return Array.from(text.matchAll(PROTOCOL_MARKER), (match) => [
-    match.index ?? 0,
-    (match.index ?? 0) + match[0].length,
-  ])
+  return findProtocolMarkers(text).map((marker) => [marker.start, marker.end])
 }
 
-function isProtected(index: number, ranges: Array<[number, number]>): boolean {
-  return ranges.some(([start, end]) => index >= start && index < end)
+function overlapsProtected(
+  index: number,
+  length: number,
+  ranges: Array<[number, number]>,
+): boolean {
+  const end = index + length
+  return ranges.some(([start, rangeEnd]) => index < rangeEnd && end > start)
 }
 
 function replaceOutsideProtected(text: string, query: string, replacement: string): string {
@@ -26,7 +28,7 @@ function replaceOutsideProtected(text: string, query: string, replacement: strin
   let cursor = 0
   let index = text.indexOf(query)
   while (index >= 0) {
-    if (!isProtected(index, ranges)) {
+    if (!overlapsProtected(index, query.length, ranges)) {
       result += text.slice(cursor, index) + replacement
       cursor = index + query.length
     }
@@ -49,10 +51,12 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
   let matches: number[] = []
   let current = 0
   let editor: HTMLElement | null = null
+  let opener: HTMLElement | null = null
   const clearHighlights = () => editor?.querySelectorAll('.search-match').forEach((node) => node.replaceWith(document.createTextNode(node.textContent ?? '')))
   const highlight = () => {
-    if (!editor || !query.value) return
+    if (!editor) return
     clearHighlights()
+    if (!query.value) return
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
     const nodes: Text[] = []
     while (walker.nextNode()) if (walker.currentNode.textContent?.includes(query.value)) nodes.push(walker.currentNode as Text)
@@ -83,7 +87,7 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
     if (query.value) {
       let index = text.indexOf(query.value)
       while (index >= 0) {
-        if (!isProtected(index, ranges)) matches.push(index)
+        if (!overlapsProtected(index, query.value.length, ranges)) matches.push(index)
         index = text.indexOf(query.value, index + query.value.length)
       }
     }
@@ -100,8 +104,20 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
     const active = editor?.querySelector<HTMLElement>('.search-match-active')
     if (active && typeof active.scrollIntoView === 'function') active.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
-  const close = () => { panel.hidden = true }
+  const close = () => {
+    panel.hidden = true
+    matches = []
+    current = 0
+    count.textContent = '0 个匹配'
+    if (setQuery) setQuery('', replacement.value)
+    else clearHighlights()
+    opener?.focus()
+    opener = null
+  }
   const open = () => {
+    if (panel.hidden) {
+      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    }
     panel.hidden = false
     query.focus()
     refresh()

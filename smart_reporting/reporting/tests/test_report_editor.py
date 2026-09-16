@@ -415,6 +415,10 @@ async def test_editor_lists_persisted_report_revision_history(tmp_path: Path) ->
     assert all("markdown" not in item for item in metadata)
     page = await service.list_history(second, limit=1, offset=1, include_markdown=False)
     assert page == [metadata[1]]
+    full_page = await service.history_page(second)
+    assert full_page == {"items": metadata, "total": 2, "hasMore": False}
+    paged = await service.history_page(second, limit=1, offset=0)
+    assert paged == {"items": [metadata[0]], "total": 2, "hasMore": True}
     detail = await service.read_history_revision(second, 1)
     assert detail == {
         "revision": 1,
@@ -634,7 +638,7 @@ async def test_editor_save_records_manual_revision_soft_warning(tmp_path: Path) 
         logger.remove(sink)
 
     assert any(
-        "report_manual_revision" in message and "report-1" in message and document.sha256 in message
+        "report_editor_manual_save" in message and "report-1" in message and document.sha256 in message
         for message in messages
     )
 

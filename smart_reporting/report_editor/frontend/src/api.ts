@@ -57,12 +57,6 @@ export class ReportEditorClient {
     })
   }
 
-  async history(limit = 20, offset = 0): Promise<ReportHistoryItem[]> {
-    const result = await this.request<{ items: ReportHistoryItem[] }>(
-      `/api/history?limit=${limit}&offset=${offset}`,
-    )
-    return result.items
-  }
   async historyPage(limit = 20, offset = 0): Promise<ReportHistoryPage> {
     return this.request<ReportHistoryPage>(`/api/history?limit=${limit}&offset=${offset}`)
   }
@@ -120,7 +114,7 @@ export class ReportEditorClient {
       signal,
     })
     if (!response.ok) {
-      const payload = (await response.json()) as { detail?: { code?: string } }
+      const payload = await parseErrorBody(response)
       throw new ReportEditorApiError(
         response.status,
         payload.detail?.code ?? 'report_editor_ai_failed',
@@ -151,7 +145,7 @@ export class ReportEditorClient {
         ...init.headers,
       },
     })
-    const payload = (await response.json()) as {
+    const payload = (await response.json().catch(() => ({}))) as {
       detail?: { code?: string; requestId?: string }
     }
     if (!response.ok) {
@@ -162,5 +156,15 @@ export class ReportEditorClient {
       )
     }
     return payload as T
+  }
+}
+
+async function parseErrorBody(
+  response: Response,
+): Promise<{ detail?: { code?: string } }> {
+  try {
+    return (await response.json()) as { detail?: { code?: string } }
+  } catch {
+    return {}
   }
 }

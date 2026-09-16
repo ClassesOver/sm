@@ -80,6 +80,9 @@ export function createTemplatePanel(
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) close()
   })
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !dialog.hidden) close()
+  })
   dialog.querySelector<HTMLButtonElement>('[data-template="hospital-operations"]')!
     .addEventListener('click', () => {
       if (getMarkdown().trim() && !window.confirm('应用完整模板将替换当前草稿，是否继续？')) return

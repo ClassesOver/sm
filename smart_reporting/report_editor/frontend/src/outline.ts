@@ -53,27 +53,42 @@ interface OutlineElements {
   getMarkdown?: () => string
   replaceMarkdown?: (markdown: string) => void
   onActive?: (item: OutlineItem) => void
+  initialCollapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
 }
 
-export function createOutlineController({ container, editor, toggle, getMarkdown, replaceMarkdown, onActive }: OutlineElements) {
+export function createOutlineController({
+  container,
+  editor,
+  toggle,
+  getMarkdown,
+  replaceMarkdown,
+  onActive,
+  initialCollapsed,
+  onCollapsedChange,
+}: OutlineElements) {
   const list = container.querySelector<HTMLElement>('.outline-list')
   if (!list) throw new Error('report outline list is missing')
   let currentItems: OutlineItem[] = []
+  let hasRendered = false
   let previousMarkdown: string | null = null
   const undo = document.createElement('button')
   undo.type = 'button'; undo.className = 'outline-undo'; undo.textContent = '撤销排序'; undo.hidden = true
   container.querySelector('.outline-heading')?.append(undo)
   undo.addEventListener('click', () => { if (previousMarkdown !== null) { replaceMarkdown?.(previousMarkdown); previousMarkdown = null; undo.hidden = true } })
 
-  const setCollapsed = (collapsed: boolean) => {
+  const setCollapsed = (collapsed: boolean, notify = false) => {
     container.classList.toggle('is-collapsed', collapsed)
     container.parentElement?.classList.toggle('outline-collapsed', collapsed)
     toggle.setAttribute('aria-expanded', String(!collapsed))
+    if (notify) onCollapsedChange?.(collapsed)
   }
 
-  setCollapsed(container.classList.contains('is-collapsed'))
+  setCollapsed(initialCollapsed ?? container.classList.contains('is-collapsed'))
 
-  toggle.addEventListener('click', () => setCollapsed(!container.classList.contains('is-collapsed')))
+  toggle.addEventListener('click', () =>
+    setCollapsed(!container.classList.contains('is-collapsed'), true),
+  )
 
   const setActive = (index: number) => {
     list.querySelectorAll('.outline-link').forEach((item, itemIndex) => {
@@ -86,6 +101,17 @@ export function createOutlineController({ container, editor, toggle, getMarkdown
 
   return {
     update(items: OutlineItem[]) {
+      if (
+        hasRendered &&
+        items.length === currentItems.length &&
+        items.every((item, index) => {
+          const current = currentItems[index]
+          return current?.id === item.id && current.level === item.level && current.text === item.text
+        })
+      ) {
+        return
+      }
+      hasRendered = true
       currentItems = items
       list.replaceChildren(
         ...items.map((item, index) => {

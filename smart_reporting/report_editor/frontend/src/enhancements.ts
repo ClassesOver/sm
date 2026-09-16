@@ -1,47 +1,50 @@
-export function createViewModeController(root: HTMLElement, toggle: HTMLButtonElement) {
-  const setA4 = (a4: boolean) => {
-    root.classList.toggle('view-a4', a4)
-    root.classList.toggle('view-wide', !a4)
-    toggle.setAttribute('aria-pressed', String(a4))
-    const label = toggle.querySelector('span')
-    if (label) label.textContent = a4 ? 'A4' : '宽屏'
-  }
-  setA4(false)
-  toggle.addEventListener('click', () => setA4(!root.classList.contains('view-a4')))
-  return { setA4 }
-}
+import { installFocusTrap } from './focus-trap'
+import { readStorage, writeStorage } from './storage'
 
 type EditorPreferences = { view: 'wide' | 'a4'; outlineCollapsed: boolean }
 export function createEditorPreferenceController(root: HTMLElement, toggle: HTMLButtonElement, key: string) {
   const storageKey = `smart-reporting-editor:prefs:${key}`
   let prefs: EditorPreferences = { view: 'wide', outlineCollapsed: false }
-  try { prefs = { ...prefs, ...(JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Partial<EditorPreferences>) } } catch { /* ignore malformed preference */ }
-  const persist = () => localStorage.setItem(storageKey, JSON.stringify(prefs))
-  const setOutlineCollapsed = (collapsed: boolean) => {
+  try {
+    const saved = JSON.parse(readStorage(storageKey) ?? '{}') as Record<string, unknown>
+    if (saved.view === 'wide' || saved.view === 'a4') prefs.view = saved.view
+    if (typeof saved.outlineCollapsed === 'boolean') {
+      prefs.outlineCollapsed = saved.outlineCollapsed
+    }
+  } catch { /* ignore malformed preference */ }
+  const persist = () => {
+    writeStorage(storageKey, JSON.stringify(prefs))
+  }
+  const setOutlineCollapsed = (collapsed: boolean, shouldPersist = true) => {
     prefs.outlineCollapsed = collapsed
     root.classList.toggle('outline-collapsed', collapsed)
     root.querySelector('.report-workspace')?.classList.toggle('outline-collapsed', collapsed)
-    persist()
+    if (shouldPersist) persist()
   }
-  const setView = (view: 'wide' | 'a4') => {
+  const setView = (view: 'wide' | 'a4', shouldPersist = true) => {
     prefs.view = view
     root.classList.toggle('view-a4', view === 'a4')
     root.classList.toggle('view-wide', view === 'wide')
     toggle.setAttribute('aria-pressed', String(view === 'a4'))
     const label = toggle.querySelector('span')
     if (label) label.textContent = view === 'a4' ? 'A4' : '宽屏'
-    persist()
+    if (shouldPersist) persist()
   }
-  setView(prefs.view)
-  setOutlineCollapsed(prefs.outlineCollapsed)
+  setView(prefs.view, false)
+  setOutlineCollapsed(prefs.outlineCollapsed, false)
   toggle.addEventListener('click', () => setView(prefs.view === 'a4' ? 'wide' : 'a4'))
   const scrollKey = `${storageKey}:scroll`
   return {
+    get outlineCollapsed() {
+      return prefs.outlineCollapsed
+    },
     setView,
     setOutlineCollapsed,
-    saveScroll: (top: number) => localStorage.setItem(scrollKey, String(Math.max(0, Math.round(top)))),
+    saveScroll: (top: number) => {
+      writeStorage(scrollKey, String(Math.max(0, Math.round(top))))
+    },
     restoreScroll: () => {
-      const top = Number(localStorage.getItem(scrollKey))
+      const top = Number(readStorage(scrollKey))
       if (Number.isFinite(top) && top > 0) window.scrollTo({ top, behavior: 'auto' })
     },
   }
@@ -152,7 +155,7 @@ export function createImagePreview(editor: HTMLElement) {
     if (event.target === dialog) hide()
   })
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') hide()
+    if (event.key === 'Escape' && !dialog.hidden) hide()
   })
   editor.addEventListener('click', (event) => {
     const target = event.target
@@ -221,6 +224,9 @@ export function createExportPanel() {
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) hide()
   })
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !dialog.hidden) hide()
+  })
   dialog.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((button) => {
     button.addEventListener('click', async () => {
       const format = button.dataset.copy as 'pdf' | 'word'
@@ -264,4 +270,3 @@ export function createExportPanel() {
     },
   }
 }
-import { installFocusTrap } from './focus-trap'

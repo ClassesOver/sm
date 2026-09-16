@@ -3,25 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { ReportEditorClient } from './api'
 
 describe('ReportEditorClient', () => {
-  it('loads persisted revision history', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ items: [{ revision: 1, markdown: '# 第一版\n', sha256: 'a'.repeat(64) }] }),
-        { status: 200 },
-      ),
-    )
-    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
-    await expect(client.history()).resolves.toHaveLength(1)
-    expect(fetcher).toHaveBeenCalledWith(
-      '/reports/v1/editor/report-1/1/api/history?limit=20&offset=0',
-      expect.objectContaining({ credentials: 'same-origin' }),
-    )
-  })
-
   it('returns history pagination metadata', async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ items: [], total: 41, hasMore: true }), { status: 200 }))
     const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher as typeof fetch)
     await expect(client.historyPage(20, 20)).resolves.toMatchObject({ total: 41, hasMore: true })
+    expect(fetcher).toHaveBeenCalledWith(
+      '/reports/v1/editor/report-1/1/api/history?limit=20&offset=20',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    )
   })
 
   it('loads history markdown only after selecting a revision', async () => {
@@ -134,6 +123,38 @@ describe('ReportEditorClient', () => {
     await expect(client.save('# 本地内容\n', 'a'.repeat(64))).rejects.toMatchObject({
       code: 'report_editor_conflict',
       status: 409,
+    })
+  })
+
+  it('falls back to a generic API error when the gateway returns non-JSON', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('<html>Bad Gateway</html>', {
+        status: 502,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+    )
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+
+    await expect(client.load()).rejects.toMatchObject({
+      code: 'report_editor_request_failed',
+      status: 502,
+    })
+  })
+
+  it('falls back to a generic AI error when the rewrite response is non-JSON', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('upstream error page', {
+        status: 504,
+        headers: { 'Content-Type': 'text/plain' },
+      }),
+    )
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+
+    await expect(
+      Array.fromAsync(client.streamRewrite('正文', 'polish', new AbortController().signal)),
+    ).rejects.toMatchObject({
+      code: 'report_editor_ai_failed',
+      status: 504,
     })
   })
 

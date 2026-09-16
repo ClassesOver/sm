@@ -41,13 +41,13 @@ import {
 
 import { ReportEditorApiError, ReportEditorClient } from './api'
 import { configureSelectionAISuggestions, selectionAIProvider } from './ai'
+import { runInBackground } from './background'
 import {
   createFocusModeController,
   createMoreActionsController,
   createNetworkStatusController,
   createExportPanel,
   createImagePreview,
-  createViewModeController,
   createEditorPreferenceController,
   installEditorShortcuts,
 } from './enhancements'
@@ -82,9 +82,13 @@ if (progressBar) createScrollProgressController(progressBar)
 const backToTop = root.querySelector<HTMLButtonElement>('.back-to-top')
 if (backToTop) createBackToTopController(backToTop)
 createMoreActionsController(root, shell.more)
+let shortcutsPanelPromise: Promise<{ open(): void }> | null = null
 shell.shortcuts.addEventListener('click', async () => {
-  const { createShortcutsPanel } = await import('./shortcuts')
-  createShortcutsPanel().open()
+  shortcutsPanelPromise ??= import('./shortcuts').then(({ createShortcutsPanel }) =>
+    createShortcutsPanel(),
+  )
+  const panel = await shortcutsPanelPromise
+  panel.open()
 })
 const preferences = createEditorPreferenceController(root, shell.viewToggle, basePath)
 createFocusModeController(root, shell.focus, shell.focusExit)
@@ -94,7 +98,7 @@ let pendingExportSettings: ExportSettings | null = null
 shell.exportSettings.addEventListener('click', () => exportSettingsPanel.open())
 exportSettingsPanel.dialog.querySelector('[data-export-settings="confirm"]')?.addEventListener('click', () => {
   pendingExportSettings = exportSettingsPanel.read()
-  exportSettingsPanel.dialog.hidden = true
+  exportSettingsPanel.close()
 })
 let getEditorMarkdown = () => ''
 let replaceEditorMarkdown: (markdown: string) => void = () => {}
@@ -105,6 +109,8 @@ const outlineController = createOutlineController({
   toggle: shell.outlineToggle,
   getMarkdown: () => getEditorMarkdown(),
   replaceMarkdown: (markdown) => replaceEditorMarkdown(markdown),
+  initialCollapsed: preferences.outlineCollapsed || undefined,
+  onCollapsedChange: preferences.setOutlineCollapsed,
   onActive: (item) => {
     if (currentSectionLabel) currentSectionLabel.textContent = `当前位置：${item.text}`
   },
@@ -211,16 +217,17 @@ function errorStatusLabel(error: unknown): string {
 
 try {
   const documentState = await client.load()
+  const saveInBackground = () => runInBackground(saveNow())
   void telemetry.record({
     event: 'document_loaded',
     durationMs: Math.round(performance.now() - loadStartedAt),
   })
   conflictPanel = createConflictPanel(root, {
-    keepLocal: () => void saveNow(),
+    keepLocal: saveInBackground,
     useRemote: () => void recoverFromConflict(),
     mergeAndRetry: (markdown) => {
       crepe.editor.action(replaceAll(markdown))
-      void saveNow()
+      saveInBackground()
     },
   })
   sha256 = documentState.sha256
@@ -280,13 +287,16 @@ try {
       draftController?.store(markdown)
       status(saveState?.dirtyLabel(!navigator.onLine) ?? '有未保存更改', 'dirty')
       window.clearTimeout(saveTimer)
-      saveTimer = window.setTimeout(() => void saveNow(), 800)
+      saveTimer = window.setTimeout(saveInBackground, 800)
     })
   })
   await crepe.create()
   loadState.hide()
   showEditorOnboarding(root, basePath)
-  const [{ createSearchController }, { createHistoryController }] = await Promise.all([
+  const [
+    { createSearchController },
+    { createHistoryController, createPersistedHistoryLoader },
+  ] = await Promise.all([
     import('./search'),
     import('./history'),
   ])
@@ -297,21 +307,26 @@ try {
   })
   searchController.setEditor(shell.editor)
   shell.search.addEventListener('click', () => searchController.open())
-  const historyController = createHistoryController(root, (markdown) => {
-    crepe.editor.action(replaceAll(markdown))
-    status('历史版本已恢复为草稿', 'dirty')
-  }, async (historyRevision) => (await client.historyRevision(historyRevision)).markdown, async (offset, filters) => {
-    const page = await client.historyPage(20, offset)
-    return { ...page, items: page.items.filter((item) => (!filters.source || item.source === filters.source) && (!filters.date || item.createdAt?.startsWith(filters.date))) .map((item) => ({ label: `Revision ${item.revision}`, markdown: '', revision: item.revision, source: item.source, createdAt: item.createdAt, note: item.note })) }
-  })
+  const historyController = createHistoryController(
+    root,
+    (markdown) => {
+      crepe.editor.action(replaceAll(markdown))
+      status('历史版本已恢复为草稿', 'dirty')
+    },
+    async (historyRevision) => (await client.historyRevision(historyRevision)).markdown,
+    createPersistedHistoryLoader((limit, offset) => client.historyPage(limit, offset)),
+  )
   shell.history.addEventListener('click', () => historyController.open())
+  let templatePanelPromise: Promise<{ open(): void }> | null = null
   shell.templates.addEventListener('click', async () => {
-    const { createTemplatePanel } = await import('./templates')
-    const panel = createTemplatePanel(
-      root,
-      () => crepe.getMarkdown(),
-      (markdown) => crepe.editor.action(replaceAll(markdown)),
+    templatePanelPromise ??= import('./templates').then(({ createTemplatePanel }) =>
+      createTemplatePanel(
+        root,
+        () => crepe.getMarkdown(),
+        (markdown) => crepe.editor.action(replaceAll(markdown)),
+      ),
     )
+    const panel = await templatePanelPromise
     panel.open()
   })
   draftController = createLocalDraftController(
@@ -321,21 +336,7 @@ try {
   )
   draftController.offer(documentState.markdown)
   if (metricsLabel) metricsLabel.textContent = documentMetrics(documentState.markdown)
-  try {
-    const persistedHistory = (await client.historyPage()).items
-    historyController.replace(
-      persistedHistory.map((item) => ({
-        label: `Revision ${item.revision}`,
-        markdown: '',
-        revision: item.revision,
-        source: item.source,
-        createdAt: item.createdAt,
-        note: item.note,
-      })),
-    )
-  } catch {
-    historyController.record(`Revision ${revision} · 初始版本`, documentState.markdown)
-  }
+  historyController.record(`Revision ${revision} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
   window.addEventListener(
@@ -405,7 +406,7 @@ try {
             status('保存冲突 · 点击重试载入远端', 'error', () => void recoverFromConflict())
           }
         } else {
-          status(errorLabel(error), 'error', () => void saveNow())
+          status(errorLabel(error), 'error', saveInBackground)
         }
         throw error
       })
@@ -418,7 +419,7 @@ try {
   const networkLabel = root.querySelector<HTMLElement>('.network-status')
   if (networkLabel) {
     createNetworkStatusController(networkLabel, () => {
-      if (currentMarkdown !== lastSavedMarkdown) void saveNow()
+      if (currentMarkdown !== lastSavedMarkdown) saveInBackground()
     })
     window.addEventListener('offline', () => {
       if (currentMarkdown !== lastSavedMarkdown) {
@@ -483,11 +484,11 @@ try {
     }
   }
 
-  shell.save.addEventListener('click', () => void saveNow())
+  shell.save.addEventListener('click', saveInBackground)
   shell.exportPdf.addEventListener('click', () => void exportFormat('pdf'))
   shell.exportWord.addEventListener('click', () => void exportFormat('word'))
   installEditorShortcuts({
-    save: () => void saveNow(),
+    save: saveInBackground,
     exportPdf: () => void exportFormat('pdf'),
   })
   window.addEventListener('beforeunload', (event) => {

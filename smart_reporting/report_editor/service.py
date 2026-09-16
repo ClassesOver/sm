@@ -237,14 +237,8 @@ class ReportEditorService:
 
     async def read_document(self, expected: ReportEditorContext) -> ReportEditorDocument:
         context = await self._restore(expected)
-        draft_path = _draft_path(context.markdown_path)
-        path = (
-            draft_path
-            if await self.workspace.apath_exists(context.scope["threadId"], draft_path)
-            else context.markdown_path
-        )
-        markdown = await self.workspace.aread_text(context.scope["threadId"], path)
-        return ReportEditorDocument(path, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+        path, markdown, sha256 = await self._read_revision_markdown(context)
+        return ReportEditorDocument(path, markdown, sha256)
 
     async def list_history(
         self,
@@ -254,81 +248,45 @@ class ReportEditorService:
         offset: int = 0,
         include_markdown: bool = True,
     ) -> list[dict[str, object]]:
-        context = await self._restore(expected)
-        state = await self.state_repository.get(context.workflow_run_id)
-        contexts = state.payload.get("reportEditorContexts") if state is not None else None
+        candidates = await self._candidate_revisions(expected)
         history: list[dict[str, object]] = []
-        if not isinstance(contexts, dict):
-            return history
-        candidates: list[ReportEditorContext] = []
-        for raw in contexts.values():
-            try:
-                candidate = ReportEditorContext.model_validate(raw)
-            except Exception:
-                continue
-            if (
-                candidate.report_id == context.report_id
-                and candidate.workflow_run_id == context.workflow_run_id
-                and candidate.scope == context.scope
-            ):
-                candidates.append(candidate)
-        ordered = sorted(candidates, key=lambda item: item.revision)
-        for candidate in ordered[max(0, offset) : max(0, offset) + max(1, min(limit, 100))]:
-            item: dict[str, object] = {
-                "revision": candidate.revision,
-                "source": candidate.source,
-                "createdAt": candidate.created_at.isoformat() if candidate.created_at else None,
-                "note": candidate.note,
-                "sha256": (
-                        candidate.job.get("render", {}).get("markdown", {}).get("sha256", "")
-                        if isinstance(candidate.job.get("render"), dict)
-                        and isinstance(candidate.job.get("render", {}).get("markdown"), dict)
-                        else ""
-                    ),
-            }
+        for candidate in candidates[offset : offset + limit]:
+            item = self._history_metadata(candidate)
             if include_markdown:
-                draft_path = _draft_path(candidate.markdown_path)
-                path = (
-                    draft_path
-                    if await self.workspace.apath_exists(candidate.scope["threadId"], draft_path)
-                    else candidate.markdown_path
-                )
-                markdown = await self.workspace.aread_text(candidate.scope["threadId"], path)
+                _path, markdown, sha256 = await self._read_revision_markdown(candidate)
                 item["markdown"] = markdown
-                item["sha256"] = hashlib.sha256(markdown.encode()).hexdigest()
+                item["sha256"] = sha256
             history.append(item)
         return history
+
+    async def history_page(
+        self,
+        expected: ReportEditorContext,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        candidates = await self._candidate_revisions(expected)
+        total = len(candidates)
+        page = candidates[offset : offset + limit]
+        items = [self._history_metadata(candidate) for candidate in page]
+        return {
+            "items": items,
+            "total": total,
+            "hasMore": offset + len(items) < total,
+        }
 
     async def read_history_revision(
         self, expected: ReportEditorContext, revision: int
     ) -> dict[str, object]:
-        context = await self._restore(expected)
-        state = await self.state_repository.get(context.workflow_run_id)
-        contexts = state.payload.get("reportEditorContexts") if state is not None else None
-        if not isinstance(contexts, dict):
-            raise ReportingError("report_editor_history_missing", "历史版本不存在。")
-        for raw in contexts.values():
-            try:
-                candidate = ReportEditorContext.model_validate(raw)
-            except Exception:
-                continue
-            if (
-                candidate.revision == revision
-                and candidate.report_id == context.report_id
-                and candidate.workflow_run_id == context.workflow_run_id
-                and candidate.scope == context.scope
-            ):
-                draft_path = _draft_path(candidate.markdown_path)
-                path = (
-                    draft_path
-                    if await self.workspace.apath_exists(candidate.scope["threadId"], draft_path)
-                    else candidate.markdown_path
-                )
-                markdown = await self.workspace.aread_text(candidate.scope["threadId"], path)
+        candidates = await self._candidate_revisions(expected)
+        for candidate in candidates:
+            if candidate.revision == revision:
+                _path, markdown, sha256 = await self._read_revision_markdown(candidate)
                 return {
                     "revision": candidate.revision,
                     "markdown": markdown,
-                    "sha256": hashlib.sha256(markdown.encode()).hexdigest(),
+                    "sha256": sha256,
                 }
         raise ReportingError("report_editor_history_missing", "历史版本不存在。")
 
@@ -389,7 +347,7 @@ class ReportEditorService:
         )
         if not secrets.compare_digest(document.sha256, expected_sha256):
             logger.warning(
-                "report_manual_revision report_id={} revision={} user_id={} "
+                "report_editor_manual_save report_id={} revision={} user_id={} "
                 "base_markdown_sha256={} edited_markdown_sha256={}",
                 context.report_id,
                 context.revision,
@@ -430,48 +388,22 @@ class ReportEditorService:
                 timeout=self.export_timeout_seconds,
             )
         except TimeoutError as error:
-            elapsed_ms = round((time.monotonic() - started) * 1000)
-            logger.warning(
-                "report_editor_export_failed request_id={} report_id={} base_revision={} "
-                "target_revision={} user_id={} elapsed_ms={} error_code={}",
-                correlation_id,
-                expected.report_id,
-                expected.revision,
-                expected.revision + 1,
-                expected.scope.get("userId", ""),
-                elapsed_ms,
-                "report_editor_export_timeout",
-            )
+            self._log_export_failure(correlation_id, expected, started, "report_editor_export_timeout")
             raise ReportingError(
                 "report_editor_export_timeout",
                 "报告导出超时，请稍后重试。",
             ) from error
         except ReportingError as error:
-            elapsed_ms = round((time.monotonic() - started) * 1000)
-            logger.warning(
-                "report_editor_export_failed request_id={} report_id={} base_revision={} "
-                "target_revision={} user_id={} elapsed_ms={} error_code={}",
-                correlation_id,
-                expected.report_id,
-                expected.revision,
-                expected.revision + 1,
-                expected.scope.get("userId", ""),
-                elapsed_ms,
-                error.code,
-            )
+            self._log_export_failure(correlation_id, expected, started, error.code)
             raise
         except BaseException as error:
-            elapsed_ms = round((time.monotonic() - started) * 1000)
-            logger.exception(
-                "report_editor_export_failed request_id={} report_id={} base_revision={} "
-                "target_revision={} user_id={} elapsed_ms={} error_type={}",
+            self._log_export_failure(
                 correlation_id,
-                expected.report_id,
-                expected.revision,
-                expected.revision + 1,
-                expected.scope.get("userId", ""),
-                elapsed_ms,
+                expected,
+                started,
                 type(error).__name__,
+                level="ERROR",
+                exc_info=True,
             )
             raise
         elapsed_ms = round((time.monotonic() - started) * 1000)
@@ -487,6 +419,30 @@ class ReportEditorService:
         )
         return {**result, "requestId": correlation_id}
 
+    @staticmethod
+    def _log_export_failure(
+        correlation_id: str,
+        expected: ReportEditorContext,
+        started: float,
+        code: str,
+        *,
+        level: str = "WARNING",
+        exc_info: bool = False,
+    ) -> None:
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        logger.opt(exception=exc_info).log(
+            level,
+            "report_editor_export_failed request_id={} report_id={} base_revision={} "
+            "target_revision={} user_id={} elapsed_ms={} error_code={}",
+            correlation_id,
+            expected.report_id,
+            expected.revision,
+            expected.revision + 1,
+            expected.scope.get("userId", ""),
+            elapsed_ms,
+            code,
+        )
+
     async def _export_revision(
         self,
         expected: ReportEditorContext,
@@ -499,17 +455,21 @@ class ReportEditorService:
         document = await self.read_document(context)
         if not secrets.compare_digest(document.sha256, expected_sha256):
             raise ReportingError("report_editor_conflict", "报告草稿已变化，请重新载入。")
-        if any(
-            dependency is None
-            for dependency in (
-                self.report_tools,
-                self.artifact_persistence,
-                self.download_grants,
-                self.editor_grants,
-                self.public_base_url,
-            )
-        ):
+        if self.report_tools is None:
             raise RuntimeError("报告编辑导出依赖配置不完整")
+        if self.artifact_persistence is None:
+            raise RuntimeError("报告编辑导出依赖配置不完整")
+        if self.download_grants is None:
+            raise RuntimeError("报告编辑导出依赖配置不完整")
+        if self.editor_grants is None:
+            raise RuntimeError("报告编辑导出依赖配置不完整")
+        if self.public_base_url is None:
+            raise RuntimeError("报告编辑导出依赖配置不完整")
+        report_tools = self.report_tools
+        artifact_persistence = self.artifact_persistence
+        download_grants = self.download_grants
+        editor_grants = self.editor_grants
+        public_base_url = self.public_base_url
 
         scope = resolve_reporting_workflow_scope(
             run_id=context.workflow_run_id,
@@ -541,7 +501,7 @@ class ReportEditorService:
         cleanup_revision = True
         try:
             try:
-                rendered = await self.report_tools._render_report_pair(
+                rendered = await report_tools._render_report_pair(
                     context.job_id,
                     document.path,
                     output_path,
@@ -598,7 +558,7 @@ class ReportEditorService:
                     sha256=str(word_identity["sha256"]),
                 ),
             )
-            await self.artifact_persistence.persist(
+            await artifact_persistence.persist(
                 scope=download_scope,
                 report_id=context.report_id,
                 revision=next_revision,
@@ -632,7 +592,7 @@ class ReportEditorService:
                 ),
                 expected_version=durable.state_version,
             )
-            raw_download, download_grant = await self.download_grants.issue(
+            raw_download, download_grant = await download_grants.issue(
                 scope=download_scope,
                 report_id=context.report_id,
                 revision=next_revision,
@@ -643,7 +603,7 @@ class ReportEditorService:
                 word_size=int(word_identity["size"]),
                 word_sha256=str(word_identity["sha256"]),
             )
-            raw_editor, editor_expires_at = await self.editor_grants.issue(next_context)
+            raw_editor, editor_expires_at = await editor_grants.issue(next_context)
         except BaseException:
             if cleanup_revision:
                 await self._cleanup_export_revision(
@@ -651,7 +611,7 @@ class ReportEditorService:
                 )
             raise
         logger.warning(
-            "report_manual_revision_exported report_id={} base_revision={} revision={} "
+            "report_editor_manual_exported report_id={} base_revision={} revision={} "
             "user_id={} markdown_sha256={}",
             context.report_id,
             context.revision,
@@ -664,7 +624,7 @@ class ReportEditorService:
             revision=next_revision,
             raw_grant=raw_download,
             grant=download_grant,
-            base_url=self.public_base_url,
+            base_url=public_base_url,
             editor_raw_grant=raw_editor,
             editor_expires_at=editor_expires_at,
         )
@@ -681,6 +641,49 @@ class ReportEditorService:
                 revision_path,
                 type(error).__name__,
             )
+
+    async def _candidate_revisions(
+        self, expected: ReportEditorContext
+    ) -> list[ReportEditorContext]:
+        context = await self._restore(expected)
+        state = await self.state_repository.get(context.workflow_run_id)
+        contexts = state.payload.get("reportEditorContexts") if state is not None else None
+        candidates: list[ReportEditorContext] = []
+        if isinstance(contexts, dict):
+            for raw in contexts.values():
+                try:
+                    candidate = ReportEditorContext.model_validate(raw)
+                except Exception:
+                    continue
+                if (
+                    candidate.report_id == context.report_id
+                    and candidate.workflow_run_id == context.workflow_run_id
+                    and candidate.scope == context.scope
+                ):
+                    candidates.append(candidate)
+        return sorted(candidates, key=lambda item: item.revision)
+
+    async def _read_revision_markdown(
+        self, candidate: ReportEditorContext
+    ) -> tuple[str, str, str]:
+        draft_path = _draft_path(candidate.markdown_path)
+        path = (
+            draft_path
+            if await self.workspace.apath_exists(candidate.scope["threadId"], draft_path)
+            else candidate.markdown_path
+        )
+        markdown = await self.workspace.aread_text(candidate.scope["threadId"], path)
+        return path, markdown, hashlib.sha256(markdown.encode()).hexdigest()
+
+    @staticmethod
+    def _history_metadata(candidate: ReportEditorContext) -> dict[str, object]:
+        return {
+            "revision": candidate.revision,
+            "source": candidate.source,
+            "createdAt": candidate.created_at.isoformat() if candidate.created_at else None,
+            "note": candidate.note,
+            "sha256": _registered_markdown_sha(candidate.job),
+        }
 
     async def _restore(self, expected: ReportEditorContext) -> ReportEditorContext:
         state = await self.state_repository.get(expected.workflow_run_id)
@@ -709,15 +712,21 @@ def _draft_path(markdown_path: str) -> str:
     return str(source.parent / "draft" / source.name)
 
 
+def _registered_markdown_sha(job: dict[str, Any]) -> str:
+    render = job.get("render")
+    markdown = render.get("markdown") if isinstance(render, dict) else None
+    if isinstance(markdown, dict):
+        return str(markdown.get("sha256", ""))
+    return ""
+
+
 def _next_pdf_path(context: ReportEditorContext) -> str:
     render = context.job.get("render")
     pdf = render.get("pdf") if isinstance(render, dict) else None
-    path = PurePosixPath(str(pdf.get("path"))) if isinstance(pdf, dict) else None
-    if (
-        path is None
-        or path.suffix.lower() != ".pdf"
-        or path.parent.name != f"revision-{context.revision}"
-    ):
+    if not isinstance(pdf, dict) or "path" not in pdf:
+        raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前 PDF revision。")
+    path = PurePosixPath(str(pdf["path"]))
+    if path.suffix.lower() != ".pdf" or path.parent.name != f"revision-{context.revision}":
         raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前 PDF revision。")
     return str(path.parent.with_name(f"revision-{context.revision + 1}") / path.name)
 

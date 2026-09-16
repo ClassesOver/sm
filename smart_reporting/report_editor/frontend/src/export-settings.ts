@@ -1,3 +1,6 @@
+import { installFocusTrap } from './focus-trap'
+import { readStorage, writeStorage } from './storage'
+
 export interface ExportSettings {
   cover: boolean
   toc: boolean
@@ -5,8 +8,6 @@ export interface ExportSettings {
   pageNumbers: boolean
   note: string
 }
-
-import { installFocusTrap } from './focus-trap'
 
 export function createExportSettingsPanel(root: HTMLElement) {
   const dialog = document.createElement('div')
@@ -16,7 +17,7 @@ export function createExportSettingsPanel(root: HTMLElement) {
   root.append(dialog)
   const storageKey = `smart-reporting-editor:export-settings:${window.location.pathname}`
   try {
-    const saved = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Partial<ExportSettings>
+    const saved = JSON.parse(readStorage(storageKey) ?? '{}') as Partial<ExportSettings>
     for (const name of ['cover', 'toc', 'headerFooter', 'pageNumbers'] as const) {
       if (typeof saved[name] === 'boolean') dialog.querySelector<HTMLInputElement>(`[name="${name}"]`)!.checked = saved[name]!
     }
@@ -30,6 +31,7 @@ export function createExportSettingsPanel(root: HTMLElement) {
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !dialog.hidden) close() })
   return {
     dialog,
+    close,
     open() {
       opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
       dialog.hidden = false
@@ -41,7 +43,7 @@ export function createExportSettingsPanel(root: HTMLElement) {
         dialog.querySelector<HTMLInputElement>(`[name="${name}"]`)!.checked,
       ])) as unknown as ExportSettings
       settings.note = dialog.querySelector<HTMLTextAreaElement>('[name="note"]')!.value.trim()
-      localStorage.setItem(storageKey, JSON.stringify(settings))
+      writeStorage(storageKey, JSON.stringify(settings))
       return settings
     },
   }
