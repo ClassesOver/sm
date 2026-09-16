@@ -403,13 +403,268 @@ def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
     assert tools[2]["type"] == "custom"
 
 
-def test_custom_tool_call_is_rejected() -> None:
+def test_custom_call_round_trip_uses_custom_output() -> None:
+    model = _code_responses_model()
+    parsed = model._parse_provider_response(
+        _custom_response("execute_code", "print('ok')")
+    )
+    call = parsed.tool_calls[0]
+
+    assert json.loads(call["function"]["arguments"]) == {"code": "print('ok')"}
+    assert call["provider_data"] == {
+        "reporting_wire_type": "custom",
+        "raw_input": "print('ok')",
+    }
+    replay = model._format_messages(
+        _assistant_and_result_messages(call, {"ok": True})
+    )
+    assert [item["type"] for item in replay[-2:]] == [
+        "custom_tool_call",
+        "custom_tool_call_output",
+    ]
+
+
+def test_custom_output_stays_custom_with_previous_response_id() -> None:
+    model = ReportingCodeOpenAIResponses(
+        id="gpt-5-test",
+        api_key="test-key",
+        base_url="http://localhost",
+        store=True,
+    )
+    call = model._parse_provider_response(
+        _custom_response("execute_code", "print('ok')")
+    ).tool_calls[0]
+    messages = _assistant_and_result_messages(call, {"ok": True})
+    messages[0].provider_data = {"response_id": "resp-previous"}
+
+    assert model._format_messages(messages) == [
+        {
+            "type": "custom_tool_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true}',
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("item", "message"),
+    [
+        (
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "name": "unknown_tool",
+                "input": "payload",
+                "type": "custom_tool_call",
+            },
+            "unknown name",
+        ),
+        (
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "name": "execute_code",
+                "input": "",
+                "type": "custom_tool_call",
+            },
+            "empty input",
+        ),
+        (
+            {
+                "call_id": "call-1",
+                "name": "execute_code",
+                "input": "print(1)",
+                "type": "custom_tool_call",
+            },
+            "missing id",
+        ),
+        (
+            {
+                "id": "item-1",
+                "name": "execute_code",
+                "input": "print(1)",
+                "type": "custom_tool_call",
+            },
+            "missing call_id",
+        ),
+    ],
+)
+def test_custom_protocol_rejects_invalid_provider_custom_call(
+    item: dict[str, Any], message: str
+) -> None:
+    response = SimpleNamespace(error=None, output=[item])
+
     with pytest.raises(ReportingError) as caught:
-        _code_responses_model()._parse_provider_response(
-            _custom_response("execute_code", "print('must not run')")
-        )
+        _code_responses_model()._parse_provider_response(response)
+
+    assert caught.value.code == "report_code_custom_tool_protocol_error", message
+    assert caught.value.details == {"retryable": False}
+
+
+def _synthetic_custom_call_for_replay(
+    *,
+    item_id: str = "item-1",
+    call_id: str = "call-1",
+    name: str = "execute_code",
+    raw_input: str = "print('ok')",
+) -> dict[str, Any]:
+    argument = "source" if name == "write_script" else "code"
+    return {
+        "id": item_id,
+        "call_id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(
+                {argument: raw_input}, ensure_ascii=False, separators=(",", ":")
+            ),
+        },
+        "provider_data": {
+            "reporting_wire_type": "custom",
+            "raw_input": raw_input,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    _synthetic_custom_call_for_replay(),
+                    _synthetic_custom_call_for_replay(
+                        item_id="item-2", call_id="call-1"
+                    ),
+                ],
+            ),
+            Message(
+                role="tool",
+                content="ok",
+                tool_call_id="call-1",
+                tool_name="execute_code",
+            ),
+        ],
+        _assistant_and_result_messages(
+            {
+                **_synthetic_custom_call_for_replay(),
+                "provider_data": {
+                    "reporting_wire_type": "custom",
+                    "raw_input": "forged",
+                },
+            },
+            {"ok": True},
+        ),
+        _assistant_and_result_messages(
+            {
+                **_synthetic_custom_call_for_replay(),
+                "function": {
+                    "name": "execute_code",
+                    "arguments": '{"code":"forged"}',
+                },
+            },
+            {"ok": True},
+        ),
+        [
+            Message(
+                role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]
+            ),
+            Message(
+                role="tool",
+                content="ok",
+                tool_call_id="call-wrong",
+                tool_name="execute_code",
+            ),
+        ],
+        [
+            Message(
+                role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]
+            ),
+            Message(
+                role="tool",
+                content="ok",
+                tool_call_id="call-1",
+                tool_name="write_script",
+            ),
+        ],
+        _assistant_and_result_messages(
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "type": "function",
+                "function": {"name": "run_script", "arguments": "{}"},
+            },
+            {"ok": True},
+        )[:-1]
+        + [
+            Message(
+                role="tool",
+                content="ok",
+                tool_call_id="call-1",
+                tool_name="execute_code",
+            )
+        ],
+        _assistant_and_result_messages(_synthetic_custom_call_for_replay(), {"ok": True})
+        + [
+            Message(
+                role="tool",
+                content="duplicate",
+                tool_call_id="call-1",
+                tool_name="execute_code",
+            )
+        ],
+        [
+            Message(
+                role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]
+            )
+        ],
+    ],
+    ids=[
+        "duplicate-call-identity",
+        "forged-raw-input",
+        "decoded-argument-mismatch",
+        "wrong-result-id",
+        "wrong-result-name",
+        "freeform-result-on-function-call",
+        "duplicate-result",
+        "missing-result",
+    ],
+)
+def test_custom_replay_rejects_invalid_history(messages: list[Message]) -> None:
+    with pytest.raises(ReportingError) as caught:
+        _code_responses_model()._format_messages(messages)
 
     assert caught.value.code == "report_code_custom_tool_protocol_error"
+    assert caught.value.details == {"retryable": False}
+
+
+def test_custom_protocol_rejects_multiple_actionable_calls() -> None:
+    response = SimpleNamespace(
+        error=None,
+        output=[
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "name": "execute_code",
+                "input": "print(1)",
+                "type": "custom_tool_call",
+            },
+            {
+                "id": "item-2",
+                "call_id": "call-2",
+                "name": "run_script",
+                "arguments": "{}",
+                "type": "function_call",
+            },
+        ],
+    )
+
+    with pytest.raises(ReportingError) as caught:
+        _code_responses_model()._parse_provider_response(response)
+
+    assert caught.value.code == "report_code_custom_tool_protocol_error"
+    assert caught.value.details == {"retryable": False}
 
 
 def test_function_call_round_trip_stays_function_protocol() -> None:

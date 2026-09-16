@@ -13,6 +13,7 @@ from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
 from agno.models.response import ModelResponse
+from agno.utils.message import normalize_tool_messages, reformat_tool_call_ids
 from loguru import logger
 
 from ...context_management import (
@@ -232,6 +233,65 @@ def _contains_textual_tool_marker(output: list[Any]) -> bool:
     return False
 
 
+def _required_id(value: Any, field: str) -> str:
+    identity = _field(value, field)
+    if not isinstance(identity, str) or not identity:
+        raise _custom_protocol_error("Coding Agent custom 工具调用缺少身份。")
+    return identity
+
+
+def _synthetic_custom_call(item: Any) -> dict[str, Any]:
+    name = _field(item, "name")
+    raw_input = _field(item, "input")
+    if name not in FREEFORM_TOOL_ARGUMENTS or not isinstance(raw_input, str) or not raw_input:
+        raise _custom_protocol_error("Coding Agent custom 工具调用无效。")
+    item_id = _required_id(item, "id")
+    call_id = _required_id(item, "call_id")
+    return {
+        "id": item_id,
+        "call_id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(
+                {FREEFORM_TOOL_ARGUMENTS[name]: raw_input},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+        "provider_data": {"reporting_wire_type": "custom", "raw_input": raw_input},
+    }
+
+
+def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
+    provider_data = _field(call, "provider_data")
+    if (
+        not isinstance(provider_data, Mapping)
+        or provider_data.get("reporting_wire_type") != "custom"
+    ):
+        return None
+    function = _field(call, "function")
+    name = _field(function, "name")
+    raw_input = provider_data.get("raw_input")
+    if name not in FREEFORM_TOOL_ARGUMENTS or not isinstance(raw_input, str) or not raw_input:
+        raise _custom_protocol_error("Coding Agent custom 工具重放数据无效。")
+    item_id = _required_id(call, "id")
+    call_id = _required_id(call, "call_id")
+    arguments = _field(function, "arguments")
+    try:
+        decoded_arguments = json.loads(arguments) if isinstance(arguments, str) else None
+    except (TypeError, ValueError) as error:
+        raise _custom_protocol_error("Coding Agent custom 工具重放参数无效。") from error
+    if decoded_arguments != {FREEFORM_TOOL_ARGUMENTS[name]: raw_input}:
+        raise _custom_protocol_error("Coding Agent custom 工具重放参数不匹配。")
+    return {
+        "id": item_id,
+        "call_id": call_id,
+        "name": name,
+        "raw_input": raw_input,
+    }
+
+
 class ReportingCodeOpenAIResponses(OpenAIResponses):
     """为 Coding Agent 桥接 Responses API function/custom 混合协议。"""
 
@@ -353,14 +413,138 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return super()._parse_provider_response(response, **kwargs)
         output = _field(response, "output")
         output = list(output) if isinstance(output, (list, tuple)) else []
-        if any(_field(item, "type") == "custom_tool_call" for item in output):
-            raise _custom_protocol_error("Coding Agent 不支持 custom 工具调用。")
-        function_calls = [item for item in output if _field(item, "type") == "function_call"]
-        if len(function_calls) > 1:
+        actionable = [
+            item
+            for item in output
+            if _field(item, "type") in {"custom_tool_call", "function_call"}
+        ]
+        if len(actionable) > 1:
             raise _custom_protocol_error("Coding Agent 每轮只允许一次工具调用。")
-        if not function_calls and _contains_textual_tool_marker(output):
+        if not actionable and _contains_textual_tool_marker(output):
             raise _custom_protocol_error("Coding Agent 将工具调用写入了 assistant 正文。")
-        return super()._parse_provider_response(response, **kwargs)
+        custom_calls = [
+            item for item in actionable if _field(item, "type") == "custom_tool_call"
+        ]
+        call = _synthetic_custom_call(custom_calls[0]) if custom_calls else None
+        parsed = super()._parse_provider_response(response, **kwargs)
+        if call is None:
+            return parsed
+        parsed.content = None
+        parsed.tool_calls = [call]
+        parsed.extra = parsed.extra or {}
+        parsed.extra["tool_call_ids"] = [call["call_id"]]
+        return parsed
+
+    def _format_messages(
+        self,
+        messages: list[Message],
+        compress_tool_results: bool = False,
+        tools: Any = None,
+    ) -> list[Any]:
+        normalized_messages = reformat_tool_call_ids(
+            normalize_tool_messages(messages), provider="openai_responses"
+        )
+        original_calls = [call for message in messages for call in message.tool_calls or ()]
+        normalized_calls = [
+            call for message in normalized_messages for call in message.tool_calls or ()
+        ]
+        if len(original_calls) != len(normalized_calls):
+            raise _custom_protocol_error("Coding Agent 工具重放调用数量不一致。")
+
+        known_call_ids: set[str] = set()
+        identity_owners: dict[str, int] = {}
+        custom_calls: dict[str, dict[str, Any]] = {}
+        custom_replays: list[dict[str, Any]] = []
+        for index, (original, normalized) in enumerate(
+            zip(original_calls, normalized_calls, strict=True)
+        ):
+            original_identities = {
+                identity
+                for identity in (_field(original, "id"), _field(original, "call_id"))
+                if isinstance(identity, str) and identity
+            }
+            for identity in original_identities:
+                owner = identity_owners.get(identity)
+                if owner is not None and owner != index:
+                    raise _custom_protocol_error("Coding Agent 工具调用身份重复。")
+                identity_owners[identity] = index
+            identities = {
+                identity
+                for identity in (_field(normalized, "id"), _field(normalized, "call_id"))
+                if isinstance(identity, str) and identity
+            }
+            for identity in identities:
+                owner = identity_owners.get(identity)
+                if owner is not None and owner != index:
+                    raise _custom_protocol_error("Coding Agent 工具调用身份重复。")
+                identity_owners[identity] = index
+            known_call_ids.update(identities)
+
+            custom = _validated_custom_replay_call(original)
+            function = _field(original, "function")
+            name = _field(function, "name")
+            if custom is None:
+                if name in FREEFORM_TOOL_ARGUMENTS:
+                    raise _custom_protocol_error("Coding Agent custom 工具调用类型不匹配。")
+                continue
+            custom_replays.append(custom)
+            for identity in identities:
+                custom_calls[identity] = custom
+
+        custom_result_counts: dict[str, int] = {}
+        for message in normalized_messages:
+            if message.role != "tool":
+                continue
+            result_identity = message.tool_call_id
+            if not isinstance(result_identity, str) or result_identity not in known_call_ids:
+                raise _custom_protocol_error("Coding Agent 工具结果缺少对应调用。")
+            custom = custom_calls.get(result_identity)
+            if custom is not None:
+                if message.tool_name != custom["name"]:
+                    raise _custom_protocol_error("Coding Agent custom 工具结果与调用不匹配。")
+                call_id = custom["call_id"]
+                custom_result_counts[call_id] = custom_result_counts.get(call_id, 0) + 1
+                if custom_result_counts[call_id] > 1:
+                    raise _custom_protocol_error("Coding Agent custom 工具调用存在重复结果。")
+            elif message.tool_name in FREEFORM_TOOL_ARGUMENTS:
+                raise _custom_protocol_error("Coding Agent custom 工具结果类型不匹配。")
+        if any(
+            custom_result_counts.get(custom["call_id"], 0) != 1
+            for custom in custom_replays
+        ):
+            raise _custom_protocol_error("Coding Agent custom 工具调用缺少对应结果。")
+
+        formatted = super()._format_messages(messages, compress_tool_results, tools)
+        for index, item in enumerate(formatted):
+            if not isinstance(item, dict) or item.get("type") not in {
+                "function_call",
+                "function_call_output",
+            }:
+                continue
+            if item["type"] == "function_call":
+                custom = custom_calls.get(str(item.get("call_id") or "")) or custom_calls.get(
+                    str(item.get("id") or "")
+                )
+                if custom is None:
+                    continue
+                formatted[index] = {
+                    "type": "custom_tool_call",
+                    "id": custom["id"],
+                    "call_id": custom["call_id"],
+                    "name": custom["name"],
+                    "input": custom["raw_input"],
+                    "status": "completed",
+                }
+            else:
+                custom = custom_calls.get(str(item.get("call_id") or ""))
+                if custom is None:
+                    continue
+                formatted[index] = {
+                    "type": "custom_tool_call_output",
+                    "call_id": custom["call_id"],
+                    "output": item["output"],
+                }
+        return formatted
 
     @staticmethod
     def _raise_stable_custom_error(error: Exception) -> None:
