@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from ...workspace import WorkspaceError, WorkspaceService
 from ..delivery.draft_v1 import ReportChartRegistration
 from ..models import ReportingError
-from ..workflow.checkpoint import FileIdentity
+from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .validation import _stable_digest
 
 MAX_VISUALIZATION_SCRIPT_BYTES = 64 * 1024
@@ -295,6 +295,31 @@ class RuntimeVisualizationMixin:
                         sha256=identity["sha256"],
                     ).model_dump(mode="json", by_alias=True)
                 )
+            receipts = tuple(
+                ChartVisualInspectionReceipt.model_validate(item)
+                for item in visual_receipts
+            )
+            receipt_by_path = {item.source_path: item for item in receipts}
+            file_by_path = {item["path"]: item for item in files}
+            if (
+                len(receipt_by_path) != len(receipts)
+                or set(receipt_by_path) != set(file_by_path)
+                or any(
+                    receipt.sha256 != file_by_path[path]["sha256"]
+                    or not receipt.reviewed
+                    or receipt.visual_review_status != "passed"
+                    or receipt.requires_revision
+                    for path, receipt in receipt_by_path.items()
+                )
+            ):
+                raise ReportingError(
+                    "report_phase_artifact_changed",
+                    "图表视觉回执未通过或与当前文件身份不一致。",
+                )
+            serialized_receipts = [
+                receipt_by_path[path].model_dump(mode="json", by_alias=True)
+                for path in sorted(receipt_by_path)
+            ]
             if isinstance(existing, dict):
                 if existing.get("files") != files:
                     raise ReportingError(
@@ -304,7 +329,7 @@ class RuntimeVisualizationMixin:
                 status = "already_committed"
             else:
                 digest = _stable_digest(
-                    {"charts": inspected, "files": files, "visualReceipts": list(visual_receipts)}
+                    {"charts": inspected, "files": files, "visualReceipts": serialized_receipts}
                 )
                 durable_result = await self._apply_durable_command(
                     scope,
@@ -313,7 +338,7 @@ class RuntimeVisualizationMixin:
                         "sectionCode": sectionCode,
                         "charts": list(inspected),
                         "files": files,
-                        "visualReceipts": list(visual_receipts),
+                        "visualReceipts": serialized_receipts,
                     },
                     command_id=f"viz-section:{durable.revision}:{sectionCode}:{digest}",
                 )

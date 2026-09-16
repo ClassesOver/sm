@@ -12,8 +12,6 @@ from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tools.sections import RuntimeSectionsMixin
 from smart_reporting.reporting.tools.toolkit import ReportingToolkit
 from smart_reporting.reporting.tools.validation import analysis_patch_parameters
-from smart_reporting.reporting.tools.visualization import RuntimeVisualizationMixin
-from smart_reporting.reporting.workflow.checkpoint import ChartVisualInspectionReceipt
 from smart_reporting.task_execution import MAX_TOOL_OUTPUT_READ_BYTES
 
 
@@ -43,6 +41,18 @@ def _toolkit(*, durable_payload: dict | None = None) -> ReportingToolkit:
     return toolkit
 
 
+def _visual_receipt(path: str) -> dict[str, object]:
+    return {
+        "sourcePath": path,
+        "sha256": "a" * 64,
+        "inspectionMode": "vision",
+        "visualReviewStatus": "passed",
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+    }
+
+
 def test_render_report_section_is_bound_to_toolkit_instance() -> None:
     descriptor = inspect.getattr_static(RuntimeSectionsMixin, "render_report_section")
 
@@ -68,33 +78,8 @@ def test_apply_analysis_patch_signature_hides_expected_sha256() -> None:
     assert "expected_sha256" not in signature.parameters
 
 
-@pytest.mark.anyio
-async def test_inspect_chart_reuses_receipt_for_unchanged_file_identity() -> None:
-    path = "analysis/charts/section_001/chart.png"
-    receipt = ChartVisualInspectionReceipt(
-        sourcePath=path,
-        sha256="a" * 64,
-        inspectionMode="vision",
-        visualReviewStatus="passed",
-        modelId="vision-model",
-        reviewed=True,
-        requiresRevision=False,
-        issues=(),
-        warnings=(),
-        suggestions=(),
-    ).model_dump(mode="json", by_alias=True)
-    toolkit = _toolkit(durable_payload={"chartInspectionReceipts": [receipt]})
-    toolkit.runtime.workspace = SimpleNamespace(
-        inspect_chart_file=AsyncMock(return_value={"path": path, "size": 10, "sha256": "a" * 64})
-    )
-    toolkit._vision_reviewer = SimpleNamespace(review=AsyncMock())
-    toolkit._apply_durable = AsyncMock()
-
-    result = await RuntimeVisualizationMixin.inspect_chart(toolkit, path)
-
-    assert result == {"ok": True, "status": "reviewed", "receipt": receipt}
-    toolkit._vision_reviewer.review.assert_not_awaited()
-    toolkit._apply_durable.assert_not_awaited()
+def test_legacy_visual_tools_are_absent_from_phase_toolkit() -> None:
+    assert not hasattr(ReportingToolkit, "inspect_chart")
 
 
 def test_signed_fact_page_preserves_structured_read_receipt() -> None:
@@ -174,7 +159,43 @@ async def test_section_visualization_allows_zero_chart_submission() -> None:
         "sectionCode": "section_001",
         "charts": [],
         "files": [],
+        "visualReceipts": [],
     }
+
+
+@pytest.mark.anyio
+async def test_section_visualization_requires_signed_visual_receipt() -> None:
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    toolkit = _toolkit()
+    toolkit.runtime.workspace = SimpleNamespace(
+        inspect_chart_file=AsyncMock(
+            return_value={
+                "sourcePath": chart["sourcePath"],
+                "size": 10,
+                "sha256": "a" * 64,
+            }
+        )
+    )
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_phase_artifact_changed"
+    toolkit._apply_durable_command.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -208,6 +229,7 @@ async def test_section_visualization_warns_and_keeps_unfrozen_dataset_chart() ->
         sectionCode="section_001",
         charts=[chart],
         run_context=RunContext(run_id="run-1", session_id="session-1"),
+        visual_receipts=(_visual_receipt(chart["sourcePath"]),),
     )
 
     assert result["ok"] is True
@@ -265,6 +287,7 @@ async def test_section_visualization_warning_persistence_failure_does_not_fail_s
         sectionCode="section_001",
         charts=[chart],
         run_context=RunContext(run_id="run-1", session_id="session-1"),
+        visual_receipts=(_visual_receipt(chart["sourcePath"]),),
     )
 
     assert result["ok"] is True

@@ -27,7 +27,6 @@ def test_visualization_agent_exposes_only_its_section_toolset() -> None:
         {
             "delete_file",
             "edit_file",
-            "inspect_chart",
             "list_files",
             "move_file",
             "read_file",
@@ -36,7 +35,6 @@ def test_visualization_agent_exposes_only_its_section_toolset() -> None:
             "run_python_script",
             "search_content",
             "submit_visualization_charts",
-            "view_image",
             "write_file",
             "apply_analysis_patch",
         }

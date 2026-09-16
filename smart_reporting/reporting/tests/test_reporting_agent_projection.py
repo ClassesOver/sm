@@ -385,7 +385,6 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
         {
             "delete_file",
             "edit_file",
-            "inspect_chart",
             "list_files",
             "move_file",
             "read_file",
@@ -394,7 +393,6 @@ def test_capability_matrix_exposes_only_section_visualization_tools() -> None:
             "run_python_script",
             "search_content",
             "submit_visualization_charts",
-            "view_image",
             "write_file",
             "apply_analysis_patch",
         }
