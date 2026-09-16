@@ -583,12 +583,19 @@ async def test_runner_shuts_down_kernel_when_agent_is_cancelled(
             raise asyncio.CancelledError
 
     runtime = Runtime()
+    registry = ReportingCodingTaskRegistry()
     with pytest.raises(asyncio.CancelledError):
-        await ReportingCodeGenerationRunner(lambda _tools: CancelledAgent(), runtime, ReportingLspProcessManager()).run(
+        await ReportingCodeGenerationRunner(
+            lambda _tools: CancelledAgent(),
+            runtime,
+            ReportingLspProcessManager(),
+            registry=registry,
+        ).run(
             _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
         )
 
     assert runtime.shutdowns == ["code-task-1"]
+    assert registry.active_count == 0
 
 
 def test_code_agent_factory_creates_task_exclusive_mutable_objects() -> None:
