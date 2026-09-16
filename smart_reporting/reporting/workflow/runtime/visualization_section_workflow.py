@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -21,7 +20,7 @@ from .code_generation import (
     _bounded_unsigned_paths,
     _code_failure_kind,
 )
-from .phase_models import ChartDraft, VisualizationPlanDraft
+from .phase_models import VisualizationPlanDraft
 
 GenerateVisualizationPlan = Callable[
     [Mapping[str, Any], RunContext], Awaitable[VisualizationPlanDraft]
@@ -40,7 +39,6 @@ class RunVisualizationCode(Protocol):
     ) -> Awaitable[CodeGenerationResult]: ...
 
 
-InspectChart = Callable[[ChartDraft, RunContext], Awaitable[ChartVisualInspectionReceipt]]
 SubmitVisualization = Callable[
     [VisualizationPlanDraft, tuple[ChartVisualInspectionReceipt, ...], RunContext],
     Awaitable[Mapping[str, Any]],
@@ -61,7 +59,6 @@ _NON_RECOVERABLE_CODES = frozenset(
 )
 _MAX_GENERATE_ATTEMPTS = 3
 MAX_VISUALIZATION_EXECUTION_REPAIRS = 3
-MAX_VISUALIZATION_REVIEW_REPAIRS = 3
 _DEGRADABLE_CODES = frozenset(
     {
         "execution_output_error",
@@ -290,36 +287,6 @@ def _with_unchanged_repair(error: Exception, *, script_file: FileIdentity) -> Re
     return ReportingError(code, message, details=details)
 
 
-def _visual_review_issue_summary(
-    inspections: tuple[ChartVisualInspectionReceipt, ...],
-) -> list[dict[str, Any]]:
-    summary: list[dict[str, Any]] = []
-    for inspection in inspections:
-        if not inspection.requires_revision and inspection.visual_review_status == "passed":
-            continue
-        if not inspection.issues:
-            summary.append(
-                {
-                    "sourcePath": inspection.source_path,
-                    "category": "unknown",
-                    "severity": "critical",
-                    "description": (inspection.summary or "视觉审查状态未通过。")[:500],
-                }
-            )
-        for issue in inspection.issues:
-            summary.append(
-                {
-                    "sourcePath": inspection.source_path,
-                    "category": issue.category,
-                    "severity": issue.severity,
-                    "description": issue.description[:500],
-                }
-            )
-            if len(summary) >= 20:
-                return summary
-    return summary
-
-
 def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> FileIdentity:
     script_file = result.script_file
     if script_file.path != script_path or script_file != result.execution_receipt.source_file:
@@ -327,6 +294,30 @@ def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> F
             "report_phase_artifact_changed", "脚本回执路径与 Workflow 签发路径不一致。"
         )
     return script_file
+
+
+def _validated_visual_receipts(
+    result: CodeGenerationResult, plan: VisualizationPlanDraft
+) -> tuple[ChartVisualInspectionReceipt, ...]:
+    outputs = {item.path: item for item in result.execution_receipt.output_files}
+    expected_paths = {chart.source_path for chart in plan.charts}
+    receipts = {item.source_path: item for item in result.visual_inspection_receipts}
+    if set(receipts) != expected_paths or set(outputs) != expected_paths:
+        raise ReportingError(
+            "report_phase_artifact_changed", "图表视觉回执与签发输出不一致。"
+        )
+    for path, output in outputs.items():
+        receipt = receipts[path]
+        if (
+            receipt.sha256 != output.sha256
+            or not receipt.reviewed
+            or receipt.visual_review_status != "passed"
+            or receipt.requires_revision
+        ):
+            raise ReportingError(
+                "report_phase_artifact_changed", "图表视觉回执未通过或与签发输出不一致。"
+            )
+    return tuple(receipts[path] for path in sorted(receipts))
 
 
 def _raise_rejected_submission(receipt: Mapping[str, Any]) -> None:
@@ -364,7 +355,6 @@ class VisualizationSectionWorkflow:
         *,
         generate_plan: GenerateVisualizationPlan,
         run_code: RunVisualizationCode,
-        inspect_chart: InspectChart | None,
         submit: SubmitVisualization,
         degrade: DegradeVisualization | None = None,
         record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
@@ -374,7 +364,6 @@ class VisualizationSectionWorkflow:
     ) -> None:
         self.generate_plan = generate_plan
         self.run_code = run_code
-        self.inspect_chart = inspect_chart
         self.submit = submit
         self.degrade = degrade
         self.record_successful_repair = record_successful_repair
@@ -445,6 +434,22 @@ class VisualizationSectionWorkflow:
                 generation_failure = error
                 if _is_nonrecoverable(error):
                     raise
+                if (
+                    isinstance(error, ReportingError)
+                    and error.code == "report_code_generation_no_submission"
+                ):
+                    exhausted_error = _with_repair_counts(
+                        error,
+                        execution_repairs=0,
+                        visual_review_repairs=0,
+                    )
+                    if self.degrade is not None:
+                        receipt = await self.degrade(exhausted_error, run_context)
+                        _raise_rejected_submission(receipt)
+                        return VisualizationWorkflowResult(
+                            "degraded", plan, None, (), True
+                        )
+                    raise exhausted_error
                 if _is_degradable(error):
                     if generate_attempt >= MAX_VISUALIZATION_EXECUTION_REPAIRS:
                         exhausted_error = _with_repair_counts(
@@ -474,7 +479,6 @@ class VisualizationSectionWorkflow:
             )
         recovery_used = initial_recovery_used
         execution_repairs = 0
-        visual_review_repairs = 0
         pending_repair_error: Exception | None = None
 
         while True:
@@ -483,54 +487,7 @@ class VisualizationSectionWorkflow:
                     error = pending_repair_error
                     pending_repair_error = None
                     raise error
-                inspections: tuple[ChartVisualInspectionReceipt, ...] = ()
-                if self.inspect_chart is not None:
-                    inspections = tuple(
-                        [await self.inspect_chart(chart, run_context) for chart in plan.charts]
-                    )
-                    if any(
-                        receipt.source_path != chart.source_path
-                        for chart, receipt in zip(plan.charts, inspections, strict=True)
-                    ):
-                        raise ReportingError(
-                            "report_phase_artifact_changed",
-                            "图表审查回执与签发图表路径不一致。",
-                        )
-                    signed_outputs = {
-                        item.path: item for item in generated_result.execution_receipt.output_files
-                    }
-                    if any(
-                        signed_outputs.get(item.source_path) is None
-                        or signed_outputs[item.source_path].sha256 != item.sha256
-                        for item in inspections
-                    ):
-                        raise ReportingError(
-                            "report_phase_artifact_changed",
-                            "图表当前身份与 Coding Agent 签发回执不一致。",
-                        )
-                    if any(
-                        item.requires_revision or item.visual_review_status != "passed"
-                        for item in inspections
-                    ):
-                        logger.warning(
-                            "report_visualization_review_failed issues={}",
-                            json.dumps(
-                                _visual_review_issue_summary(inspections),
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            ),
-                        )
-                        raise ReportingError(
-                            "report_visualization_review_failed",
-                            "图表正式审查未通过。",
-                            details={
-                                "inspections": [
-                                    item.model_dump(mode="json", by_alias=True)
-                                    for item in inspections
-                                ]
-                            },
-                        )
-
+                inspections = _validated_visual_receipts(generated_result, plan)
                 receipt = await self.submit(plan, inspections, run_context)
                 _raise_rejected_submission(receipt)
                 if successful_repair is not None and self.record_successful_repair is not None:
@@ -543,23 +500,13 @@ class VisualizationSectionWorkflow:
                     raise
                 if not _is_degradable(error):
                     raise
-                is_visual_review_failure = (
-                    isinstance(error, ReportingError)
-                    and error.code == "report_visualization_review_failed"
-                )
-                repair_count = (
-                    visual_review_repairs if is_visual_review_failure else execution_repairs
-                )
-                repair_limit = (
-                    MAX_VISUALIZATION_REVIEW_REPAIRS
-                    if is_visual_review_failure
-                    else MAX_VISUALIZATION_EXECUTION_REPAIRS
-                )
+                repair_count = execution_repairs
+                repair_limit = MAX_VISUALIZATION_EXECUTION_REPAIRS
                 if repair_count >= repair_limit:
                     exhausted_error = _with_repair_counts(
                         error,
                         execution_repairs=execution_repairs,
-                        visual_review_repairs=visual_review_repairs,
+                        visual_review_repairs=0,
                     )
                     if self.degrade is not None and _is_degradable(error):
                         receipt = await self.degrade(exhausted_error, run_context)
@@ -568,10 +515,7 @@ class VisualizationSectionWorkflow:
                             "degraded", plan, script_file, (), recovery_used
                         )
                     raise exhausted_error
-                if is_visual_review_failure:
-                    visual_review_repairs += 1
-                else:
-                    execution_repairs += 1
+                execution_repairs += 1
                 recovery_used = True
                 diagnostic = _repair_diagnostic(plan, error, script_path)
                 failure_kind = _code_failure_kind(diagnostic)
@@ -595,11 +539,7 @@ class VisualizationSectionWorkflow:
                             error,
                             script_path,
                             payload=payload,
-                            repair_attempt=(
-                                visual_review_repairs
-                                if is_visual_review_failure
-                                else execution_repairs
-                            ),
+                            repair_attempt=execution_repairs,
                         ),
                     )
                 repaired_file = _ensure_script_identity(repaired, script_path)
@@ -619,11 +559,10 @@ class VisualizationSectionWorkflow:
                     )
                     logger.warning(
                         "report_visualization_script_repair_unchanged path={} sha256={} "
-                        "execution_repairs={} visual_review_repairs={}",
+                        "execution_repairs={}",
                         script_path,
                         script_file.sha256,
                         execution_repairs,
-                        visual_review_repairs,
                     )
                 else:
                     script_file = repaired_file
@@ -633,7 +572,6 @@ class VisualizationSectionWorkflow:
 
 __all__ = [
     "MAX_VISUALIZATION_EXECUTION_REPAIRS",
-    "MAX_VISUALIZATION_REVIEW_REPAIRS",
     "VisualizationSectionWorkflow",
     "VisualizationWorkflowResult",
 ]

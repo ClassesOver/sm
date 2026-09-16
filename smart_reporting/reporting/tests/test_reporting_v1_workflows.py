@@ -127,17 +127,33 @@ async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_re
     plan = VisualizationPlanDraft(charts=(chart,))
     script = FileIdentity(path="charts/charts.py", size=8, sha256="a" * 64)
     chart_file = FileIdentity(path=chart.source_path, size=9, sha256="b" * 64)
+    receipt = ChartVisualInspectionReceipt(
+        sourcePath=chart.source_path,
+        sha256="b" * 64,
+        inspectionMode="vision",
+        visualReviewStatus="passed",
+        modelId="vision-1",
+        reviewed=True,
+        requiresRevision=False,
+        summary="通过",
+    )
     calls = {"run": 0, "submit": 0}
 
     async def run_code(*_: object, **__: object) -> CodeGenerationResult:
         calls["run"] += 1
-        return CodeGenerationResult(script_file=script, execution_receipt=ExecutionReceipt(runId="run-1", sourceFile=script, outputFiles=(chart_file,)))
+        return CodeGenerationResult(
+            script_file=script,
+            execution_receipt=ExecutionReceipt(
+                runId="run-1", sourceFile=script, outputFiles=(chart_file,)
+            ),
+            visual_inspection_receipts=(receipt,),
+        )
 
     async def submit(*_: object, **__: object) -> dict[str, str]:
         calls["submit"] += 1
         return {"status": "accepted"}
 
-    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, inspect_chart=None, submit=submit)
+    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=submit)
     result = await workflow.run({"visualizationWorkspace": {"scriptPath": script.path}}, RunContext(run_id="run-1", session_id="session-1"))
     assert result.status == "accepted"
     assert calls == {"run": 1, "submit": 1}
@@ -158,7 +174,6 @@ async def test_visualization_v1_zero_chart_plan_skips_coding() -> None:
     workflow = VisualizationSectionWorkflow(
         generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=())),
         run_code=run_code,
-        inspect_chart=None,
         submit=submit,
     )
     result = await workflow.run({}, RunContext(run_id="run-1", session_id="session-1"))
@@ -185,7 +200,6 @@ async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
     workflow = VisualizationSectionWorkflow(
         generate_plan=lambda *_: _plan(plan),
         run_code=run_code,
-        inspect_chart=None,
         submit=lambda *_: _accepted(),
     )
     with pytest.raises(ReportingError) as caught:
@@ -213,7 +227,6 @@ async def test_visualization_v1_does_not_retry_nonrecoverable_coding_failure() -
     workflow = VisualizationSectionWorkflow(
         generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=(chart,))),
         run_code=run_code,
-        inspect_chart=None,
         submit=lambda *_: _accepted(),
         degrade=degrade,
     )
@@ -250,7 +263,6 @@ async def test_visualization_v1_degrades_after_execution_repairs_exhausted() -> 
     workflow = VisualizationSectionWorkflow(
         generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=(chart,))),
         run_code=run_code,
-        inspect_chart=None,
         submit=lambda *_: _accepted(),
         degrade=degrade,
     )
@@ -268,28 +280,31 @@ async def test_visualization_v1_degrades_after_execution_repairs_exhausted() -> 
 
 
 @pytest.mark.anyio
-async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
+async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
     script_path = "charts/charts.py"
-    diagnostics: list[object] = []
-    task_facts: list[object] = []
+    script = FileIdentity(path=script_path, size=1, sha256="a" * 64)
+    output = FileIdentity(path=chart.source_path, size=1, sha256="c" * 64)
+    receipt = ChartVisualInspectionReceipt(
+        sourcePath=chart.source_path,
+        sha256="d" * 64,
+        inspectionMode="vision",
+        visualReviewStatus="passed",
+        modelId="vision-1",
+        reviewed=True,
+        requiresRevision=False,
+        summary="通过",
+    )
 
     async def run_code(*_: object, **kwargs: object) -> CodeGenerationResult:
-        diagnostics.append(kwargs.get("diagnostic"))
-        task_facts.append(kwargs.get("task_facts"))
-        version = len(diagnostics)
-        script = FileIdentity(path=script_path, size=version, sha256=("a" if version == 1 else "b") * 64)
-        output = FileIdentity(path=chart.source_path, size=version, sha256=("c" if version == 1 else "d") * 64)
-        return CodeGenerationResult(script_file=script, execution_receipt=ExecutionReceipt(runId=f"run-{version}", sourceFile=script, outputFiles=(output,)))
-
-    inspections = iter((
-        ChartVisualInspectionReceipt(sourcePath=chart.source_path, sha256="c" * 64, inspectionMode="vision", visualReviewStatus="passed", modelId="vision-1", reviewed=True, requiresRevision=True, summary="标题遮挡"),
-        ChartVisualInspectionReceipt(sourcePath=chart.source_path, sha256="d" * 64, inspectionMode="vision", visualReviewStatus="passed", modelId="vision-1", reviewed=True, requiresRevision=False, summary="通过"),
-    ))
-
-    async def inspect(*_: object) -> ChartVisualInspectionReceipt:
-        return next(inspections)
+        return CodeGenerationResult(
+            script_file=script,
+            execution_receipt=ExecutionReceipt(
+                runId="run-1", sourceFile=script, outputFiles=(output,)
+            ),
+            visual_inspection_receipts=(receipt,),
+        )
 
     submit = []
 
@@ -297,38 +312,27 @@ async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
         submit.append(True)
         return {"status": "accepted"}
 
-    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, inspect_chart=inspect, submit=accepted)
-    result = await workflow.run({"visualizationWorkspace": {"scriptPath": script_path}}, RunContext(run_id="run-1", session_id="session-1"))
+    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=accepted)
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": script_path}},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
 
-    assert result.status == "accepted"
-    assert result.recovery_used is True
-    assert diagnostics[0] is None
-    assert diagnostics[1]["code"] == "report_visualization_review_failed"
-    assert task_facts[1]["repairAttempt"] == 1
-    assert submit == [True]
+    assert caught.value.code == "report_phase_artifact_changed"
+    assert submit == []
 
 
 @pytest.mark.anyio
-async def test_visualization_v1_degrades_after_visual_review_repairs_exhausted() -> None:
+async def test_visualization_v1_degrades_after_code_agent_visual_repairs_exhausted() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
     run_count = 0
-    repair_attempts: list[int] = []
 
     async def run_code(*_: object, **kwargs: object) -> CodeGenerationResult:
         nonlocal run_count
         run_count += 1
-        task_facts = kwargs.get("task_facts")
-        if isinstance(task_facts, dict):
-            repair_attempts.append(task_facts["repairAttempt"])
-        marker = format(run_count, "x")
-        script = FileIdentity(path="charts/charts.py", size=run_count, sha256=marker * 64)
-        output = FileIdentity(path=chart.source_path, size=run_count, sha256=marker * 64)
-        return CodeGenerationResult(script_file=script, execution_receipt=ExecutionReceipt(runId=f"run-{run_count}", sourceFile=script, outputFiles=(output,)))
-
-    async def inspect(*_: object) -> ChartVisualInspectionReceipt:
-        marker = format(run_count, "x")
-        return ChartVisualInspectionReceipt(sourcePath=chart.source_path, sha256=marker * 64, inspectionMode="vision", visualReviewStatus="passed", modelId="vision-1", reviewed=True, requiresRevision=True, summary="仍需修复")
+        raise ReportingError("report_code_generation_no_submission", "视觉修复耗尽")
 
     degraded: list[ReportingError] = []
 
@@ -337,13 +341,13 @@ async def test_visualization_v1_degrades_after_visual_review_repairs_exhausted()
         degraded.append(error)
         return {"status": "accepted"}
 
-    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, inspect_chart=inspect, submit=lambda *_: _accepted(), degrade=degrade)
+    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=lambda *_: _accepted(), degrade=degrade)
     result = await workflow.run({"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}, RunContext(run_id="run-1", session_id="session-1"))
 
     assert result.status == "degraded"
-    assert run_count == 4
-    assert repair_attempts == [1, 2, 3]
-    assert degraded[0].details["visualReviewRepairCount"] == 3
+    assert run_count == 1
+    assert degraded[0].details["executionRepairCount"] == 0
+    assert degraded[0].details["visualReviewRepairCount"] == 0
 
 
 async def _plan(plan: VisualizationPlanDraft) -> VisualizationPlanDraft:

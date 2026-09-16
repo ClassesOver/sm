@@ -9,7 +9,10 @@ from agno.workflow.types import StepOutput
 
 from smart_reporting.reporting.code_agent.context import ExecutionReceipt
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+from smart_reporting.reporting.workflow.checkpoint import (
+    ChartVisualInspectionReceipt,
+    FileIdentity,
+)
 from smart_reporting.reporting.workflow.runtime.analysis import _record_successful_repair
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisItemWorkflow,
@@ -60,12 +63,25 @@ def _visualization_plan() -> VisualizationPlanDraft:
 
 def _result() -> CodeGenerationResult:
     script_file = _script_file()
+    chart_file = _chart_file()
     return CodeGenerationResult(
         script_file=script_file,
         execution_receipt=ExecutionReceipt(
             runId="run-1",
             sourceFile=script_file,
-            outputFiles=(_chart_file(),),
+            outputFiles=(chart_file,),
+        ),
+        visual_inspection_receipts=(
+            ChartVisualInspectionReceipt(
+                sourcePath=chart_file.path,
+                sha256=chart_file.sha256,
+                inspectionMode="vision",
+                visualReviewStatus="passed",
+                modelId="vision-1",
+                reviewed=True,
+                requiresRevision=False,
+                summary="通过",
+            ),
         ),
     )
 
@@ -85,7 +101,6 @@ async def test_visualization_records_only_accepted_repair_after_domain_submissio
                 _result(),
             ]
         ),
-        inspect_chart=None,
         submit=AsyncMock(return_value={"status": "accepted"}),
         record_successful_repair=record,
     )
@@ -115,7 +130,6 @@ async def test_visualization_does_not_record_first_generation() -> None:
     workflow = VisualizationSectionWorkflow(
         generate_plan=AsyncMock(return_value=_visualization_plan()),
         run_code=AsyncMock(return_value=_result()),
-        inspect_chart=None,
         submit=AsyncMock(return_value={"status": "accepted"}),
         record_successful_repair=record,
     )
@@ -140,7 +154,6 @@ async def test_visualization_does_not_record_repair_when_domain_submission_rejec
                 _result(),
             ]
         ),
-        inspect_chart=None,
         submit=AsyncMock(return_value={"status": "rejected", "code": "not_accepted"}),
         record_successful_repair=record,
     )

@@ -828,19 +828,6 @@ class RuntimeAnalysisMixin:
                             script_file=script_file,
                         )
 
-                    async def inspect_chart(chart: ChartDraft, task_context: RunContext) -> Any:
-                        receipt = await toolkit.inspect_chart(
-                            chart.source_path, run_context=task_context
-                        )
-                        raw = receipt.get("receipt") if isinstance(receipt, Mapping) else None
-                        if receipt.get("ok") is not True or not isinstance(raw, Mapping):
-                            raise ReportingError(
-                                str(receipt.get("code", "report_visualization_review_failed")),
-                                str(receipt.get("message", "章节图表审查未被接受。")),
-                                details=dict(receipt) if isinstance(receipt, Mapping) else None,
-                            )
-                        return ChartVisualInspectionReceipt.model_validate(raw)
-
                     async def submit(
                         plan: VisualizationPlanDraft,
                         _inspections: tuple[ChartVisualInspectionReceipt, ...],
@@ -904,9 +891,6 @@ class RuntimeAnalysisMixin:
                     workflow_kwargs: dict[str, Any] = {
                         "generate_plan": generate_plan,
                         "run_code": run_code,
-                        "inspect_chart": (
-                            inspect_chart if self.vision_reviewer is not None else None
-                        ),
                         "submit": submit,
                         "degrade": degrade,
                         "thinking_enabled": self._analysis_thinking_enabled,
