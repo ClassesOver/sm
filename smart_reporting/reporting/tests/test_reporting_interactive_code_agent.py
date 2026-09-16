@@ -22,6 +22,7 @@ from smart_reporting.reporting.code_agent.context import (
     ReportingCodingTaskContext,
     ReportingCodingTaskRegistry,
 )
+from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
@@ -426,7 +427,7 @@ async def test_run_and_submit_bind_source_and_declared_outputs(
     binding: ReportingCodingTaskBinding,
     runtime: ToolkitRuntime,
 ) -> None:
-    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     await toolkit.write_script(_valid_source())
     run = await toolkit.run_script()
     assert run["ok"] is True
@@ -443,7 +444,7 @@ async def test_submit_rejects_source_or_output_changed_after_run(
     binding: ReportingCodingTaskBinding,
     runtime: ToolkitRuntime,
 ) -> None:
-    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     await toolkit.write_script(_valid_source())
     assert (await toolkit.run_script())["ok"] is True
     await binding.workspace.awrite_text(
@@ -458,7 +459,7 @@ async def test_failed_run_clears_old_declared_output_and_receipt(
     binding: ReportingCodingTaskBinding,
     runtime: ToolkitRuntime,
 ) -> None:
-    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     binding.execution_receipt = _receipt()
     await _write_output(binding.workspace, "analysis/out.json")
     runtime.next_cell = _failed_cell("ValueError: bad")
@@ -503,7 +504,7 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
         created.append(agent)
         return agent
 
-    result = await ReportingCodeGenerationRunner(factory, runtime).run(
+    result = await ReportingCodeGenerationRunner(factory, runtime, ReportingLspProcessManager()).run(
         _task_context(workspace),
         workspace,
         {"fact": 1},
@@ -534,7 +535,7 @@ async def test_runner_shuts_down_kernel_on_no_submission(
             return "done"
 
     with pytest.raises(ReportingError) as caught:
-        await ReportingCodeGenerationRunner(lambda _tools: TextOnlyAgent(), runtime).run(
+        await ReportingCodeGenerationRunner(lambda _tools: TextOnlyAgent(), runtime, ReportingLspProcessManager()).run(
             _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
         )
     assert caught.value.code == "report_code_generation_no_submission"
@@ -558,7 +559,7 @@ async def test_runner_shuts_down_kernel_when_agent_factory_fails(
         raise RuntimeError("factory failed")
 
     with pytest.raises(ReportingError) as caught:
-        await ReportingCodeGenerationRunner(factory, runtime).run(
+        await ReportingCodeGenerationRunner(factory, runtime, ReportingLspProcessManager()).run(
             _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
         )
 
@@ -583,7 +584,7 @@ async def test_runner_shuts_down_kernel_when_agent_is_cancelled(
 
     runtime = Runtime()
     with pytest.raises(asyncio.CancelledError):
-        await ReportingCodeGenerationRunner(lambda _tools: CancelledAgent(), runtime).run(
+        await ReportingCodeGenerationRunner(lambda _tools: CancelledAgent(), runtime, ReportingLspProcessManager()).run(
             _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
         )
 
@@ -603,7 +604,7 @@ def test_code_agent_factory_creates_task_exclusive_mutable_objects() -> None:
 
 
 def test_interactive_runner_exposes_only_run_public_entrypoint() -> None:
-    runner = ReportingCodeGenerationRunner(lambda _tools: object(), object())
+    runner = ReportingCodeGenerationRunner(lambda _tools: object(), object(), ReportingLspProcessManager())
 
     assert callable(runner.run)
     assert not hasattr(runner, "generate")
@@ -634,7 +635,7 @@ async def test_interactive_v1_write_fail_fix_run_submit(
             return None
 
     runtime = Runtime()
-    toolkit = ReportingCodeModeToolkit(binding, runtime)
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     await toolkit.write_script("if True print('broken')\n")
     assert (await toolkit.run_script())["ok"] is False
     await toolkit.write_script(SOURCE)
@@ -793,7 +794,7 @@ async def test_interactive_v1_releases_all_task_resources(
             return await self.tools["submit_script"].entrypoint()
 
     runner = ReportingCodeGenerationRunner(
-        lambda tools: SubmitAgent(tools), runtime, registry=registry
+        lambda tools: SubmitAgent(tools), runtime, ReportingLspProcessManager(), registry=registry
     )
     result = await runner.run(
         _task_context(workspace), workspace, {}, run_context=_run_context()

@@ -263,7 +263,7 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
         "smart_reporting.reporting.code_agent.toolkit.ReportingWorkspaceLsp",
         RecordingLsp,
     )
-    toolkit = ReportingCodeModeToolkit(binding, object())
+    toolkit = ReportingCodeModeToolkit(binding, object(), ReportingLspProcessManager())
 
     assert {
         "lsp_diagnostics",

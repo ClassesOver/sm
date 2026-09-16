@@ -80,15 +80,15 @@ class ReportingCodeGenerationRunner:
         self,
         agent_factory: Callable[[tuple[Function, ...]], Agent],
         code_mode_runtime: ReportingCodeModeRuntime,
+        lsp_manager: ReportingLspProcessManager,
         registry: ReportingCodingTaskRegistry | None = None,
         knowledge_index: ReportingKnowledgeIndex | None = None,
-        lsp_manager: ReportingLspProcessManager | None = None,
     ) -> None:
         self.agent_factory = agent_factory
         self.code_mode_runtime = code_mode_runtime
         self.registry = registry or ReportingCodingTaskRegistry()
         self.knowledge_index = knowledge_index
-        self.lsp_manager = lsp_manager or ReportingLspProcessManager()
+        self.lsp_manager = lsp_manager
 
     async def run(
         self,

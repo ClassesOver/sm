@@ -271,15 +271,13 @@ class ReportingCodeModeToolkit(Toolkit):
         self,
         binding: ReportingCodingTaskBinding,
         runtime: ReportingCodeModeRuntime,
+        lsp_manager: ReportingLspProcessManager,
         knowledge_index: ReportingKnowledgeIndex | None = None,
-        lsp_manager: ReportingLspProcessManager | None = None,
     ) -> None:
         self.binding = binding
         self.runtime = runtime
         self.knowledge_index = knowledge_index
-        self.lsp = ReportingWorkspaceLsp(
-            binding, lsp_manager or ReportingLspProcessManager()
-        )
+        self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
         tools = [
             Function(

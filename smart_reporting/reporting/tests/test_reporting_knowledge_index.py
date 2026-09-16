@@ -10,6 +10,7 @@ from smart_reporting.reporting.code_agent.context import (
     ReportingCodingTaskBinding,
     ReportingCodingTaskContext,
 )
+from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
@@ -106,8 +107,10 @@ async def test_knowledge_tool_is_opt_in_and_workspace_scoped(tmp_path: Path) -> 
     runtime = _Runtime()
     knowledge = _Knowledge()
 
-    disabled = ReportingCodeModeToolkit(binding, runtime)
-    enabled = ReportingCodeModeToolkit(binding, runtime, knowledge_index=knowledge)
+    disabled = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    enabled = ReportingCodeModeToolkit(
+        binding, runtime, ReportingLspProcessManager(), knowledge_index=knowledge
+    )
     result = await enabled.search_knowledge("API")
 
     assert "search_knowledge" not in {function.name for function in disabled.tool_functions}
@@ -141,7 +144,10 @@ async def test_runner_passes_knowledge_index_to_its_task_local_toolkit(tmp_path:
             await self.tools["search_knowledge"].entrypoint(query="API")
 
     runner = ReportingCodeGenerationRunner(
-        lambda tools: SearchOnlyAgent(tools), runtime, knowledge_index=knowledge
+        lambda tools: SearchOnlyAgent(tools),
+        runtime,
+        ReportingLspProcessManager(),
+        knowledge_index=knowledge,
     )
     with pytest.raises(ReportingError, match="report_code_generation_no_submission"):
         await runner.run(
