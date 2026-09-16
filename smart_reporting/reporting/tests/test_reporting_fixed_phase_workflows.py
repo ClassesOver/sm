@@ -420,6 +420,32 @@ def _execution_receipt(
     )
 
 
+@pytest.mark.anyio
+async def test_visualization_workflow_consumes_code_agent_visual_receipts() -> None:
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64)
+    receipt = _execution_receipt(
+        "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+    )
+    result = CodeGenerationResult(
+        script_file=script_file,
+        execution_receipt=receipt,
+        visual_inspection_receipts=(_inspection(),),
+    )
+    submit = AsyncMock(return_value={"status": "accepted"})
+
+    workflow_result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=AsyncMock(return_value=result),
+        submit=submit,
+    ).run(_visualization_payload(), _context())
+
+    assert workflow_result.status == "accepted"
+    assert workflow_result.inspections == (_inspection(),)
+    submit.assert_awaited_once_with(
+        _visualization_plan(), (_inspection(),), _context()
+    )
+
+
 @pytest.mark.parametrize(
     ("analysis_ids", "expected_complexity", "expected_budget"),
     [

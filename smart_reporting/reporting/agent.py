@@ -1471,7 +1471,6 @@ async def normalize_reporting_tool_arguments(
         details = exploration_receipt["details"]
         if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
             details["allowedTerminalTools"] = [
-                "inspect_chart",
                 "submit_visualization_charts",
             ]
         error = ReportingError(
@@ -2256,7 +2255,7 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
-            vision_disabled = name in {"view_image", "inspect_chart"} and not getattr(
+            vision_disabled = name in {"view_image"} and not getattr(
                 self, "_report_vision_enabled", True
             )
             if not phase_forbidden and not vision_disabled:

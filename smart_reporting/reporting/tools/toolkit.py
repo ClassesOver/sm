@@ -255,8 +255,7 @@ class ReportingToolkit(
         view_image = self.async_functions.get("view_image")
         if view_image is not None:
             view_image.description = (
-                "使用独立视觉模型临时查看工作区图片；正式图表必须改用 inspect_chart 生成"
-                "绑定文件哈希的耐久检查回执。"
+                "使用独立视觉模型查看工作区图片，并返回结构化视觉结论。"
                 '{"path":"analysis/charts/trend.png","detail":"high"}'
             )
         raw_toolkit_instructions = getattr(self, "instructions", None)
@@ -576,34 +575,6 @@ class ReportingToolkit(
         )
         self.register(
             Function(
-                name="inspect_chart",
-                description=(
-                    "只读检查 visualizationWorkspace.chartOutputRoot 内的最终 PNG/JPEG。"
-                    "服务端执行文件类型、大小、解码、空白像素和视觉模型检查，并耐久保存"
-                    "绑定 sourcePath、sha256 与 modelId 的回执；文件修改后必须重新检查。"
-                    '示例：{"path":"analysis/charts/income.png","detail":"high"}'
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "minLength": 1, "maxLength": 512},
-                        "detail": {
-                            "type": "string",
-                            "enum": ["high", "original"],
-                            "default": "high",
-                        },
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-                strict=True,
-                entrypoint=self.inspect_chart,
-                pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_nonretryable_tool_call,
-            )
-        )
-        self.register(
-            Function(
                 name="render_report_section",
                 description=(
                     "提交当前 SectionWorkItem 指定章节。每个 block 的 markdown 不得重复"
@@ -645,7 +616,7 @@ class ReportingToolkit(
                 name="submit_visualization_charts",
                 description=(
                     "提交当前 visualization_section 章节生成的全部图表草案；允许提交空数组，"
-                    "每张图必须先调用 inspect_chart，且必须来自当前章节签发的 chartOutputRoot；"
+                    "每张图必须来自当前章节签发的 chartOutputRoot；"
                     "服务端会检查每个图表文件身份"
                     "并按章节持久化，成功后结束当前 Task。"
                 ),

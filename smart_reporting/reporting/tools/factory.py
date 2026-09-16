@@ -50,7 +50,9 @@ def build_reporting_tools(
     if vision_reviewer is None:
         for functions in (toolkit.functions, toolkit.async_functions):
             functions.pop("view_image", None)
-            functions.pop("inspect_chart", None)
+    if reporting_task_kind_from_run_context(run_context) == "visualization_section":
+        for functions in (toolkit.functions, toolkit.async_functions):
+            functions.pop("view_image", None)
     if exclude_file_tools:
         for functions in (toolkit.functions, toolkit.async_functions):
             for name in (*FILE_TOOL_NAMES, "run_python_script"):

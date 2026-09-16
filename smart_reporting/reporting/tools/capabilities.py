@@ -37,12 +37,10 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
 # 不再暴露全局登记/冻结 Agent，最终分析产物由服务端确定性汇总。
 REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
     {
-        "inspect_chart",
         *REPORTING_WORKSPACE_TOOL_NAMES,
         "read_tool_output",
         "submit_visualization_charts",
         "run_python_script",
-        "view_image",
         "apply_analysis_patch",
     }
 )
