@@ -68,18 +68,18 @@ def _function(name: str) -> Function:
     )
 
 
-def _custom_response(name: str, raw_input: str) -> Response:
+def _custom_response(name: str, raw_input: str, index: int = 1) -> Response:
     return Response.model_validate(
         {
-            "id": "resp-1",
+            "id": f"resp-{index}",
             "created_at": 0,
             "model": "test-model",
             "object": "response",
             "status": "completed",
             "output": [
                 {
-                    "id": "item-1",
-                    "call_id": "call-1",
+                    "id": f"item-{index}",
+                    "call_id": f"call-{index}",
                     "name": name,
                     "input": raw_input,
                     "type": "custom_tool_call",
@@ -532,11 +532,20 @@ def _synthetic_custom_call_for_replay(
         [
             Message(
                 role="assistant",
+                tool_calls=[_synthetic_custom_call_for_replay()],
+            ),
+            Message(
+                role="tool",
+                content="ok",
+                tool_call_id="call-1",
+                tool_name="execute_code",
+            ),
+            Message(
+                role="assistant",
                 tool_calls=[
-                    _synthetic_custom_call_for_replay(),
                     _synthetic_custom_call_for_replay(
                         item_id="item-2", call_id="call-1"
-                    ),
+                    )
                 ],
             ),
             Message(
@@ -1584,13 +1593,14 @@ async def test_interactive_v1_end_to_end_responses_loop(
     workspace: HostReportingWorkspace,
 ) -> None:
     responses = [
-        _function_response(1, "write_script", {"source": "if True print('broken')\n"}),
+        _custom_response("write_script", "if True print('broken')\n", 1),
         _function_response(2, "run_script", {}),
-        _function_response(3, "write_script", {"source": SOURCE}),
-        _function_response(4, "lsp_diagnostics", {}),
-        _function_response(5, "search_knowledge", {"query": "脚本规范"}),
-        _function_response(6, "run_script", {}),
-        _function_response(7, "submit_script", {}),
+        _custom_response("execute_code", "print('probe')", 3),
+        _custom_response("write_script", SOURCE, 4),
+        _function_response(5, "lsp_diagnostics", {}),
+        _function_response(6, "search_knowledge", {"query": "脚本规范"}),
+        _function_response(7, "run_script", {}),
+        _function_response(8, "submit_script", {}),
     ]
 
     class FakeResponsesClient:
@@ -1612,6 +1622,15 @@ async def test_interactive_v1_end_to_end_responses_loop(
     class Runtime:
         def __init__(self) -> None:
             self.shutdowns: list[str] = []
+
+        async def execute(self, session_id, received, code, **kwargs):
+            assert session_id == "code-task-1"
+            assert received is workspace
+            assert code == "print('probe')"
+            assert kwargs == {"matplotlib_agg": False}
+            return SimpleNamespace(
+                status="ok", stdout="probe\n", stderr="", traceback=None
+            )
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             source = await received.aread_text("task-1", "analysis/a.py")
@@ -1672,12 +1691,13 @@ async def test_interactive_v1_end_to_end_responses_loop(
     assert result.execution_receipt.output_files[0].path == "analysis/out.json"
     assert await workspace.aread_text("task-1", "analysis/a.py") == SOURCE
     assert runtime.shutdowns == ["code-task-1"]
-    assert len(client.requests) == 7
+    assert len(client.requests) == 8
     assert responses == []
-    assert all(
-        tool["type"] == "function"
-        for request in client.requests
-        for tool in request["tools"]
+    request_tools = [tool for request in client.requests for tool in request["tools"]]
+    assert {tool["type"] for tool in request_tools} == {"custom", "function"}
+    assert not any(
+        tool["type"] == "function" and tool["name"] in {"write_script", "execute_code"}
+        for tool in request_tools
     )
     replay_types = [
         item.get("type")
@@ -1685,6 +1705,7 @@ async def test_interactive_v1_end_to_end_responses_loop(
         for item in request["input"]
         if isinstance(item, dict)
     ]
+    assert "custom_tool_call_output" in replay_types
     assert "function_call_output" in replay_types
 
 
@@ -1693,10 +1714,10 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     workspace: HostReportingWorkspace,
 ) -> None:
     responses = [
-        _function_response(1, "write_script", {"source": VISUAL_SOURCE}),
+        _custom_response("write_script", VISUAL_SOURCE, 1),
         _function_response(2, "run_script", {}),
         _function_response(3, "view_image", {"path": "charts/chart.png"}),
-        _function_response(4, "write_script", {"source": REVISED_VISUAL_SOURCE}),
+        _custom_response("write_script", REVISED_VISUAL_SOURCE, 4),
         _function_response(5, "run_script", {}),
         _function_response(6, "view_image", {"path": "charts/chart.png"}),
         _function_response(7, "submit_script", {}),
@@ -1796,6 +1817,12 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     assert "关键标题完全重叠" in request_history
     assert "image_url" not in request_history
     assert "data:image" not in request_history
+    request_tools = [tool for request in client.requests for tool in request["tools"]]
+    assert any(tool["type"] == "custom" and tool["name"] == "write_script" for tool in request_tools)
+    assert not any(
+        tool["type"] == "function" and tool["name"] == "write_script"
+        for tool in request_tools
+    )
     assert responses == []
     assert runtime.shutdowns == ["code-task-1"]
     assert registry.active_count == 0
