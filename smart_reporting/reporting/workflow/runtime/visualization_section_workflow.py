@@ -270,6 +270,12 @@ def _ensure_script_identity(result: CodeGenerationResult, script_path: str) -> F
 def _validated_visual_receipts(
     result: CodeGenerationResult, plan: VisualizationPlanDraft
 ) -> tuple[ChartVisualInspectionReceipt, ...]:
+    if len({item.path for item in result.execution_receipt.output_files}) != len(
+        result.execution_receipt.output_files
+    ) or len({item.source_path for item in result.visual_inspection_receipts}) != len(
+        result.visual_inspection_receipts
+    ):
+        raise ReportingError("report_phase_artifact_changed", "图表签发回执包含重复路径。")
     outputs = {item.path: item for item in result.execution_receipt.output_files}
     expected_paths = {chart.source_path for chart in plan.charts}
     receipts = {item.source_path: item for item in result.visual_inspection_receipts}

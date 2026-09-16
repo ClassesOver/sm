@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from ...workspace import WorkspaceError, WorkspaceService
 from ..delivery.draft_v1 import ReportChartRegistration
 from ..models import ReportingError
-from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
+from ..workflow.checkpoint import FileIdentity
 from .validation import _stable_digest
 
 MAX_VISUALIZATION_SCRIPT_BYTES = 64 * 1024
@@ -167,93 +167,12 @@ class RuntimeVisualizationMixin:
             warnings,
         )
 
-    async def inspect_chart(
-        self,
-        path: str,
-        detail: str = "high",
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        try:
-            scope = await self.runtime.scope(run_context)
-            self._require_phase_tool(
-                scope,
-                allowed=frozenset({"analysis"}),
-                tool_name="inspect_chart",
-                run_context=run_context,
-                task_kinds=frozenset({"visualization_section"}),
-            )
-            if self._active_reporting_task_kind(scope) != "visualization_section":
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "inspect_chart 只允许 visualization_section Task 调用。",
-                )
-            if detail not in {"high", "original"}:
-                raise ReportingError("report_chart_inspection_invalid", "图片 detail 无效。")
-            _parameters, contract = self._phase_parameters(scope, "analysis")
-            if contract.get("visualInspectionMode", "vision") != "vision":
-                raise ReportingError(
-                    "report_phase_tool_forbidden",
-                    "deterministic 图表检查模式不允许调用 inspect_chart。",
-                )
-            output_root = self._chart_output_root(contract)
-            source_path = self._require_chart_output_path(path, output_root)
-            reviewer = self._vision_reviewer
-            if reviewer is None:
-                raise WorkspaceError("当前 Reporting Agent 未启用图片视觉审查。")
-            identity = await self._inspect_chart_file(thread_id=scope.thread_id, path=source_path)
-            durable = await self._durable_state(scope)
-            durable_payload = getattr(durable, "payload", {})
-            raw_receipts = (
-                durable_payload.get("chartInspectionReceipts", [])
-                if isinstance(durable_payload, Mapping)
-                else []
-            )
-            if not isinstance(raw_receipts, list):
-                raise ReportingError("report_state_invalid", "chartInspectionReceipts 状态损坏。")
-            for raw_receipt in raw_receipts:
-                if (
-                    isinstance(raw_receipt, Mapping)
-                    and raw_receipt.get("sourcePath") == source_path
-                    and raw_receipt.get("sha256") == identity["sha256"]
-                ):
-                    receipt = ChartVisualInspectionReceipt.model_validate(raw_receipt)
-                    return {
-                        "ok": True,
-                        "status": "reviewed",
-                        "receipt": receipt.model_dump(mode="json", by_alias=True),
-                    }
-            receipt = ChartVisualInspectionReceipt.model_validate(
-                await reviewer.review(scope.thread_id, source_path, detail=detail)
-            )
-            # 文件在像素检查和模型审查之间发生变化时，两份哈希会不一致。此时任何一份
-            # 视觉结论都不能证明当前候选图表，必须失败关闭并要求重新检查。
-            if receipt.sha256 != identity["sha256"]:
-                raise ReportingError(
-                    "report_chart_inspection_changed",
-                    "图表在视觉审查期间发生变化，请重新检查最终文件。",
-                )
-            await self._apply_durable(
-                scope,
-                name="record_chart_inspection",
-                payload={"receipt": receipt.model_dump(mode="json", by_alias=True)},
-                command_id=(
-                    f"chart-inspection:{identity['sha256']}:"
-                    f"{_stable_digest(receipt.model_dump(mode='json', by_alias=True))}"
-                ),
-            )
-        except (ReportingError, ValidationError, WorkspaceError) as error:
-            return self._failure(error)
-        return {
-            "ok": True,
-            "status": "reviewed",
-            "receipt": receipt.model_dump(mode="json", by_alias=True),
-        }
-
     async def submit_visualization_charts(
         self,
         sectionCode: str,
         charts: list[dict[str, Any]],
         run_context: RunContext | None = None,
+        visual_receipts: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
         """提交当前章节图表草案（允许零图）并结束可视化 Task。"""
 
@@ -384,11 +303,18 @@ class RuntimeVisualizationMixin:
                     )
                 status = "already_committed"
             else:
-                digest = _stable_digest({"charts": inspected, "files": files})
+                digest = _stable_digest(
+                    {"charts": inspected, "files": files, "visualReceipts": list(visual_receipts)}
+                )
                 durable_result = await self._apply_durable_command(
                     scope,
                     name="submit_visualization_charts",
-                    payload={"sectionCode": sectionCode, "charts": list(inspected), "files": files},
+                    payload={
+                        "sectionCode": sectionCode,
+                        "charts": list(inspected),
+                        "files": files,
+                        "visualReceipts": list(visual_receipts),
+                    },
                     command_id=f"viz-section:{durable.revision}:{sectionCode}:{digest}",
                 )
                 status = "already_committed" if durable_result.idempotent else "committed"

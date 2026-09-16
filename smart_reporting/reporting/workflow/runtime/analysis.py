@@ -837,6 +837,10 @@ class RuntimeAnalysisMixin:
                             section_code,
                             [item.model_dump(mode="json", by_alias=True) for item in plan.charts],
                             run_context=task_context,
+                            visual_receipts=tuple(
+                                item.model_dump(mode="json", by_alias=True)
+                                for item in _inspections
+                            ),
                         )
 
                     async def degrade(
