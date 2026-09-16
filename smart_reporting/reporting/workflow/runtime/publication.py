@@ -204,24 +204,19 @@ class RuntimePublicationMixin:
             run_context=context,
         )
         word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
-        html_path = str(PurePosixPath(pdf_path).with_suffix(".html"))
         try:
             if not isinstance(rendered_result, dict):
                 raise ReportingError(
-                    "report_artifact_validation_failed", "PDF/Word/HTML 联合验收回执无效。"
+                    "report_artifact_validation_failed", "PDF/Word 联合验收回执无效。"
                 )
             validation = rendered_result.get("validation")
             if not isinstance(validation, dict) or validation.get("ok") is not True:
                 raise ReportingError(
-                    "report_artifact_validation_failed", "PDF/Word/HTML 联合验收未通过。"
+                    "report_artifact_validation_failed", "PDF/Word 联合验收未通过。"
                 )
             if rendered_result.get("wordPath") != word_path:
                 raise ReportingError(
                     "report_artifact_validation_failed", "Word 验收路径缺失或不匹配。"
-                )
-            if rendered_result.get("htmlPath") != html_path:
-                raise ReportingError(
-                    "report_artifact_validation_failed", "HTML 验收路径缺失或不匹配。"
                 )
             pdf_identity = await self.workspace_service.ahash_file(
                 self._scope(run_context)["threadId"], pdf_path
@@ -229,23 +224,17 @@ class RuntimePublicationMixin:
             word_identity = await self.workspace_service.ahash_file(
                 self._scope(run_context)["threadId"], word_path
             )
-            html_identity = await self.workspace_service.ahash_file(
-                self._scope(run_context)["threadId"], html_path
-            )
             validated_pdf_sha256 = validation.get("pdfSha256")
             validated_word_sha256 = validation.get("wordSha256")
-            validated_html_sha256 = validation.get("htmlSha256")
             if (
                 not isinstance(validated_pdf_sha256, str)
                 or pdf_identity.get("sha256") != validated_pdf_sha256
                 or not isinstance(validated_word_sha256, str)
                 or word_identity.get("sha256") != validated_word_sha256
-                or not isinstance(validated_html_sha256, str)
-                or html_identity.get("sha256") != validated_html_sha256
             ):
                 raise ReportingError(
                     "report_artifact_changed",
-                    "PDF、Word 或 HTML 在验收后发生变化，必须重新渲染并验收。",
+                    "PDF 或 Word 在验收后发生变化，必须重新渲染并验收。",
                 )
             source_chart_sha256s = tuple(item.sha256 for item in draft.charts)
             page_count = validation.get("pageCount")
@@ -351,9 +340,6 @@ class RuntimePublicationMixin:
                     "wordPath": word_path,
                     "wordSize": int(word_identity["size"]),
                     "wordSha256": str(word_identity["sha256"]),
-                    "htmlPath": html_path,
-                    "htmlSize": int(html_identity["size"]),
-                    "htmlSha256": str(html_identity["sha256"]),
                     "validation": validation,
                     "status": "validated",
                 }
@@ -370,12 +356,11 @@ class RuntimePublicationMixin:
                 "markdownPath": result["markdownPath"],
                 "pdfPath": pdf_path,
                 "wordPath": word_path,
-                "htmlPath": html_path,
                 "validation": validation,
             }
         except BaseException:
             # _render_report_pair 返回即表示 revision 目录已正式发布。之后任何回执、
-            # 身份、manifest 或状态异常都必须删除同一 revision 的三种产物；取消也不能打断清理。
+            # 身份、manifest 或状态异常都必须删除同一 revision 的两种产物；取消也不能打断清理。
             await complete_cleanup(
                 self.report_tools.discard_report_revision(
                     str(result["jobId"]), pdf_path, word_path, run_context=context
@@ -594,8 +579,8 @@ class RuntimePublicationMixin:
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
         if result.get("status") != "validated":
-            issue("artifact_not_validated", "Markdown、PDF、DOCX 或 HTML 尚未完成验收。")
-        for key in ("markdownPath", "pdfPath", "wordPath", "htmlPath"):
+            issue("artifact_not_validated", "Markdown、PDF 或 DOCX 尚未完成验收。")
+        for key in ("markdownPath", "pdfPath", "wordPath"):
             path = result.get(key)
             if not isinstance(path, str) or not path:
                 issue("artifact_identity_invalid", "验收回执缺少产物路径。", field=key)
@@ -676,6 +661,9 @@ class RuntimePublicationMixin:
                 "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
             ) from error
         gate = await self._dataset_publication_gate(run_context, result)
+        editor_job = self.report_tools._load_job(
+            str(result["jobId"]), self._tool_context(run_context)
+        )
         return StepOutput(
             content={
                 "status": "validated",
@@ -683,6 +671,7 @@ class RuntimePublicationMixin:
                 "publicationGate": gate,
                 "auditSummary": gate.get("auditSummary", {}),
                 "jobId": result["jobId"],
+                "editorJob": editor_job,
                 "reportId": str(run_context.run_id),
                 "reportTitle": _frozen_outline(state).title,
                 "revision": int(result.get("revision", 0)) + 1,
@@ -693,9 +682,6 @@ class RuntimePublicationMixin:
                 "wordPath": result["wordPath"],
                 "wordSize": result["wordSize"],
                 "wordSha256": result["wordSha256"],
-                "htmlPath": result["htmlPath"],
-                "htmlSize": result["htmlSize"],
-                "htmlSha256": result["htmlSha256"],
                 "validation": result["validation"],
                 "sourceWarnings": result.get("sourceWarnings", []),
                 "codingReceipts": result.get("codingReceipts", []),

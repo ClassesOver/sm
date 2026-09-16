@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import ConfigDict, Field
 from sqlglot import exp
 
+from ....report_editor.service import ReportEditorContext
 from ...structured_output import StructuredOutputCallBudget
 from .base import (
     _PLANNER_DISPLAY_NAMES,
@@ -26,6 +28,7 @@ from .base import (
     REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY,
     REPORT_SCHEMA_SNAPSHOTS_STATE_KEY,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
+    REPORT_WORKFLOW_SCOPE_STATE_KEY,
     AnalysisBundle,
     Any,
     ApprovedQuery,
@@ -52,6 +55,7 @@ from .base import (
     ReconciliationShape,
     ReportArtifactSpec,
     ReportDownloadScope,
+    ReportingCommand,
     ReportingError,
     ReportingWorkflowInput,
     ReportOutline,
@@ -89,6 +93,7 @@ from .base import (
     re,
     require_sources,
     resolve_profile_capabilities,
+    resolve_reporting_workflow_scope,
     resolve_schema_snapshot,
 )
 from .datasets import _analysis_context_payload
@@ -306,13 +311,36 @@ class RuntimePlanningMixin:
         output: Any,
     ) -> dict[str, Any]:
         download_grants = self.download_grants
+        editor_grants = self.editor_grants
         artifact_persistence = self.artifact_persistence
-        if download_grants is None or artifact_persistence is None:
+        if download_grants is None or artifact_persistence is None or editor_grants is None:
             raise RuntimeError("HTTP 报表发布依赖配置不完整")
         report_public_base_url = self.report_public_base_url
         if report_public_base_url is None:
             raise RuntimeError("HTTP 报表发布缺少公开下载基址")
         content = self._publication_content(output)
+        source_markdown = PurePosixPath(content["markdownPath"])
+        revision_directory = f"revision-{content['revision']}"
+        revision_markdown = (
+            source_markdown
+            if source_markdown.parent.name == revision_directory
+            else source_markdown.parent / revision_directory / source_markdown.name
+        )
+        if revision_markdown != source_markdown:
+            markdown = await self.workspace_service.aread_text(thread_id, str(source_markdown))
+            if await self.workspace_service.apath_exists(thread_id, str(revision_markdown)):
+                existing = await self.workspace_service.aread_text(
+                    thread_id, str(revision_markdown)
+                )
+                if existing != markdown:
+                    raise ReportingError(
+                        "report_editor_revision_conflict",
+                        "当前报告 revision 已存在不同的 Markdown 快照。",
+                    )
+            else:
+                await self.workspace_service.awrite_text(
+                    thread_id, str(revision_markdown), markdown
+                )
         # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
         # 修订撤销和审计，不再作为下载时的调用方权限条件。
         download_scope = ReportDownloadScope(
@@ -340,13 +368,43 @@ class RuntimePlanningMixin:
                     size=content["wordSize"],
                     sha256=content["wordSha256"],
                 ),
-                ReportArtifactSpec(
-                    artifact="html",
-                    path=content["htmlPath"],
-                    size=content["htmlSize"],
-                    sha256=content["htmlSha256"],
-                ),
             ),
+        )
+        durable = await self.state_repository.get(workflow_run_id)
+        stored_scope = (
+            durable.payload.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
+            if durable is not None and isinstance(durable.payload, dict)
+            else None
+        )
+        scope = resolve_reporting_workflow_scope(
+            run_id=workflow_run_id,
+            session_id=workflow_session_id,
+            user_id=user_id,
+            stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
+        )
+        if durable is None or scope.caller_thread_id != thread_id:
+            raise ReportingError(
+                "report_editor_scope_mismatch", "报告编辑上下文与发布作用域不一致。"
+            )
+        editor_context = ReportEditorContext(
+            reportId=content["reportId"],
+            revision=content["revision"],
+            jobId=content["jobId"],
+            workflowRunId=workflow_run_id,
+            markdownPath=str(revision_markdown),
+            job=content["editorJob"],
+            scope=scope.as_state(),
+        )
+        await self.state_repository.apply(
+            workflow_run_id,
+            ReportingCommand(
+                name="set_report_editor_context",
+                payload={
+                    "context": editor_context.model_dump(mode="json", by_alias=True)
+                },
+                commandId=f"editor-context:{content['revision']}:{editor_context.digest()}",
+            ),
+            expected_version=durable.state_version,
         )
         await self._destroy_or_quarantine_workspace(
             thread_id,
@@ -366,12 +424,15 @@ class RuntimePlanningMixin:
             word_size=content["wordSize"],
             word_sha256=content["wordSha256"],
         )
+        editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
         return publication_result(
             report_id=content["reportId"],
             revision=content["revision"],
             raw_grant=raw,
             grant=grant,
             base_url=report_public_base_url,
+            editor_raw_grant=editor_raw,
+            editor_expires_at=editor_expires_at,
             source_warnings=content["sourceWarnings"],
             task_receipts=content["codingReceipts"],
         )
@@ -385,10 +446,8 @@ class RuntimePlanningMixin:
         content = self._publication_content(output)
         current_pdf = await self.workspace_service.ahash_file(thread_id, content["pdfPath"])
         current_word = await self.workspace_service.ahash_file(thread_id, content["wordPath"])
-        current_html = await self.workspace_service.ahash_file(thread_id, content["htmlPath"])
         self._require_artifact_identity(content, current_pdf, artifact="pdf")
         self._require_artifact_identity(content, current_word, artifact="word")
-        self._require_artifact_identity(content, current_html, artifact="html")
         return cli_result(
             path=content["pdfPath"],
             size=content["pdfSize"],
@@ -396,9 +455,6 @@ class RuntimePlanningMixin:
             word_path=content["wordPath"],
             word_size=content["wordSize"],
             word_sha256=content["wordSha256"],
-            html_path=content["htmlPath"],
-            html_size=content["htmlSize"],
-            html_sha256=content["htmlSha256"],
             source_warnings=content["sourceWarnings"],
             task_receipts=content["codingReceipts"],
         )

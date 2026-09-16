@@ -4,6 +4,7 @@ from agno.agent import Agent
 
 from ..model_routing import build_model_profiles
 from ..quality_warnings.service import QualityWarningService
+from ..report_editor import ReportEditorGrantService
 from ..runtime.execution import ExecutionContext
 from ..runtime.settings import AgentSettings
 from ..task_execution import TaskExecutionKernel, TaskExecutionRepository
@@ -58,6 +59,7 @@ def create_report_runtime(
     settings: AgentSettings,
     *,
     download_grants: ReportDownloadGrantService | None = None,
+    editor_grants: ReportEditorGrantService | None = None,
     artifact_persistence: ReportArtifactPersistenceService | None = None,
     quality_warning_service: QualityWarningService | None = None,
     reporting_event_sink: ReportingEventSink | None = None,
@@ -156,6 +158,7 @@ def create_report_runtime(
             else None
         ),
         download_grants=download_grants,
+        editor_grants=editor_grants,
         artifact_persistence=artifact_persistence,
         quality_warning_service=quality_warning_service,
         report_public_base_url=(

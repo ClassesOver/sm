@@ -122,8 +122,8 @@ class _Controller:
                     "size": 14,
                     "sha256": "b" * 64,
                 },
-                "html": {
-                    "previewUrl": "https://reports.example.com/report.html",
+                "editor": {
+                    "openUrl": "https://reports.example.com/editor/report",
                     "expiresAt": "2026-10-09T00:00:00Z",
                 },
             },
@@ -226,8 +226,8 @@ async def test_reporting_tools_work_over_authenticated_streamable_http() -> None
                 {"operationId": operation_id, "threadId": thread_id},
             )
             assert completed.structured_content is not None
-            assert completed.structured_content["report"]["html"]["previewUrl"] == (
-                "https://reports.example.com/report.html"
+            assert completed.structured_content["report"]["editor"]["openUrl"] == (
+                "https://reports.example.com/editor/report"
             )
 
             reviewed = await client.call_tool(

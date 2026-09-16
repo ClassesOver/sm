@@ -602,6 +602,28 @@ def apply(
         ):
             raise ReportingStateError("report_warning_invalid", "Reporting 告警必须是对象列表。")
         payload["warnings"] = _tuple_unique([*payload.get("warnings", []), *warnings])
+    elif name == "set_report_editor_context":
+        from ...report_editor.service import ReportEditorContext
+
+        try:
+            context = ReportEditorContext.model_validate(arguments.get("context"))
+        except Exception as error:
+            raise ReportingStateError(
+                "report_editor_context_invalid", "报告编辑上下文无效。"
+            ) from error
+        contexts = payload.setdefault("reportEditorContexts", {})
+        if not isinstance(contexts, dict):
+            raise ReportingStateError(
+                "report_state_invalid", "reportEditorContexts 状态损坏。"
+            )
+        key = str(context.revision)
+        serialized = context.model_dump(mode="json", by_alias=True)
+        existing = contexts.get(key)
+        if existing is not None and existing != serialized:
+            raise ReportingStateError(
+                "report_editor_context_conflict", "当前报告 revision 已绑定其他编辑上下文。"
+            )
+        contexts[key] = serialized
     elif name == "set_workflow_checkpoint":
         checkpoint = arguments.get("checkpoint")
         if not isinstance(checkpoint, Mapping):

@@ -84,7 +84,7 @@ def test_mcp_tools_publish_strong_contracts_without_identity_arguments() -> None
     assert "reject" in str(review_hints["action"])
 
 
-def test_completed_operation_contract_includes_html_preview() -> None:
+def test_completed_operation_contract_includes_editor_and_no_html_preview() -> None:
     result = ReportingOperationResult.model_validate(
         {
             "ok": True,
@@ -105,8 +105,8 @@ def test_completed_operation_contract_includes_html_preview() -> None:
                     "size": 14,
                     "sha256": "b" * 64,
                 },
-                "html": {
-                    "previewUrl": "https://reports.example.com/report.html",
+                "editor": {
+                    "openUrl": "https://reports.example.com/reports/v1/editor/open/token",
                     "expiresAt": "2026-10-09T00:00:00Z",
                 },
             },
@@ -114,7 +114,10 @@ def test_completed_operation_contract_includes_html_preview() -> None:
     )
 
     assert result.report is not None
-    assert str(result.report.html.preview_url) == "https://reports.example.com/report.html"
+    assert str(result.report.editor.open_url) == (
+        "https://reports.example.com/reports/v1/editor/open/token"
+    )
+    assert "html" not in result.report.model_dump(mode="json")
 
 
 @pytest.mark.anyio
@@ -134,7 +137,8 @@ async def test_fastmcp_tool_list_contains_closed_input_and_output_schema() -> No
     assert output_schema is not None
     assert output_schema["additionalProperties"] is False
     report_schema = output_schema["properties"]["report"]["anyOf"][0]
-    assert "html" in report_schema["properties"]
+    assert "editor" in report_schema["properties"]
+    assert "html" not in report_schema["properties"]
 
 
 @pytest.mark.anyio

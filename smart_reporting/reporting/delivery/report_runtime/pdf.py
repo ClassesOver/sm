@@ -92,9 +92,14 @@ def _pdf_markdown(markdown: str, presentations: Any) -> tuple[str, list[dict[str
     return _TABLE_MARKER.sub("", visible_markdown), normalized
 
 
-def _page_layout(value: Any) -> dict[str, str]:
+def _page_layout(
+    value: Any,
+    *,
+    include_header_footer: bool = True,
+    include_page_numbers: bool = True,
+) -> dict[str, str]:
     if value is None:
-        return dict(DEFAULT_PAGE_LAYOUT)
+        value = DEFAULT_PAGE_LAYOUT
     if not isinstance(value, dict) or set(value) - PAGE_LAYOUT_FIELDS:
         raise ReportFailure("PDF 页面格式无效")
     layout = dict(DEFAULT_PAGE_LAYOUT)
@@ -114,8 +119,12 @@ def _page_layout(value: Any) -> dict[str, str]:
         ):
             raise ReportFailure("PDF 页面格式包含不受支持的占位符")
         layout[key] = item
+    if not include_header_footer:
+        layout.update({"headerLeft": "", "headerRight": "", "footerLeft": "", "footerRight": ""})
+    elif not include_page_numbers:
+        layout["footerRight"] = ""
     footer = f"{layout['footerLeft']}\n{layout['footerRight']}"
-    if "{page}" not in footer or "{pages}" not in footer:
+    if include_page_numbers and ("{page}" not in footer or "{pages}" not in footer):
         raise ReportFailure("PDF 页脚必须包含当前页和总页数")
     return layout
 

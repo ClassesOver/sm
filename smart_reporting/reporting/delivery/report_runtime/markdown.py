@@ -66,11 +66,10 @@ _IMAGE_WITH_CAPTION = re.compile(
     re.DOTALL,
 )
 _IMAGE_PARAGRAPH = re.compile(r"(?P<image><p>\s*<img\b[^>]*?/?>\s*</p>)")
-_HTML_TABLE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 
 
 def _figure_image_html(image_paragraph: str) -> str:
-    """将 Markdown 图片段落放入稳定的 figure 容器，供三种产物共享分页语义。"""
+    """将 Markdown 图片段落放入稳定的 figure 容器，供 PDF/Word 共享分页语义。"""
 
     image = image_paragraph.strip()
     image = re.sub(r"^<p>\s*|\s*</p>$", "", image)
@@ -100,12 +99,6 @@ def _prepare_figure_layout(body: str) -> str:
         return f'<figure class="report-figure">{_figure_image_html(match["image"])}</figure>'
 
     return _IMAGE_PARAGRAPH.sub(without_caption, prepared)
-
-
-def _prepare_html_table_layout(body: str) -> str:
-    """为浏览器预览中的表格增加独立横向滚动容器。"""
-
-    return _HTML_TABLE.sub(lambda match: f'<div class="report-table-scroll">{match[0]}</div>', body)
 
 
 def _trim_strong_marker_spacing(match: re.Match[str]) -> str:
@@ -343,6 +336,8 @@ def _semantic_documents(
     context: dict[str, Any],
     layout: dict[str, str],
     toc_page_numbers: Mapping[str, int] | None = None,
+    include_cover: bool = True,
+    include_toc: bool = True,
 ) -> tuple[str, str]:
     theme = REPORT_VISUAL_THEME
     body = _prepare_figure_layout(body)
@@ -359,13 +354,17 @@ def _semantic_documents(
         "</a></p>"
         for item in context["headingNumbers"]
     )
-    shared = (
+    cover = (
         f'<section class="report-cover"><h1>{title}</h1>'
         f'<p class="report-period">分析期间：{period}</p>'
         f'<p class="report-organization">{organization}</p>'
         f'<p class="report-generated">{generated_label}</p></section>'
-        f'<section class="report-toc"><h1>目录</h1>{toc}</section>'
-        f'<main class="report-body">{body}'
+        if include_cover
+        else ""
+    )
+    toc_section = f'<section class="report-toc"><h1>目录</h1>{toc}</section>' if include_toc else ""
+    shared = (
+        f"{cover}{toc_section}<main class=\"report-body\">{body}"
         f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>'
         "</footer></main>"
     )
@@ -453,97 +452,26 @@ def _semantic_documents(
         f"<style>{pdf_css}</style></head>"
         f"<body>{shared}</body></html>"
     )
+    word_cover = (
+        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p>"
+        f"<p>{generated_label}</p>"
+        if include_cover
+        else ""
+    )
+    word_toc = (
+        f"<h1>目录</h1><p>{_WORD_MARKERS['toc_field_start']}</p>{toc}"
+        f"<p>{_WORD_MARKERS['toc_field_end']}</p>"
+        if include_toc
+        else ""
+    )
     word_document = (
         "<meta charset='utf-8'><body>"
-        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p>"
-        f"<p>{generated_label}</p><p>{_WORD_MARKERS['cover_end']}</p>"
-        f"<h1>目录</h1><p>{_WORD_MARKERS['toc_field_start']}</p>{toc}"
-        f"<p>{_WORD_MARKERS['toc_field_end']}</p><p>{_WORD_MARKERS['toc_end']}</p>"
+        f"{word_cover}<p>{_WORD_MARKERS['cover_end']}</p>"
+        f"{word_toc}<p>{_WORD_MARKERS['toc_end']}</p>"
         f"<p>{_WORD_MARKERS['body_start']}</p>{body}"
         f"<p>{organization}</p><p>{generated_date}</p></body>"
     )
     return pdf_document, word_document
-
-
-def _html_document(
-    body: str,
-    *,
-    context: dict[str, Any],
-    layout: dict[str, str],
-) -> str:
-    """构造浏览器预览文档；调用方必须先将图片替换为 data URL。"""
-
-    body = _prepare_html_table_layout(body)
-    pdf_document, _ = _semantic_documents(body, context=context, layout=layout)
-    theme = REPORT_VISUAL_THEME
-    preview_css = (
-        "@media screen{"
-        "*{box-sizing:border-box}"
-        "html{scroll-behavior:smooth;background:#F2F5F7}"
-        "body{display:grid;grid-template-columns:minmax(220px,260px) minmax(0,860px);"
-        "justify-content:center;align-items:start;gap:0 40px;max-width:1240px;margin:0 auto;"
-        "padding:32px 40px 64px;font-size:16px;line-height:1.75;background:#F2F5F7}"
-        ".report-cover{grid-column:1/-1;min-height:0;break-after:auto;align-items:flex-start;"
-        "text-align:left;margin:0 0 32px;padding:44px 48px 40px;background:#FFFFFF;"
-        f"border-top:5px solid {theme['highlight']};border-bottom:1px solid {theme['grid']}}}"
-        ".report-cover h1{max-width:900px;margin:0;padding:0;border:0;font-size:32px;"
-        "line-height:1.3}"
-        ".report-period{margin:18px 0 0;font-size:16px}"
-        ".report-organization{margin:24px 0 0;font-size:15px;font-weight:600}"
-        ".report-generated{position:static;margin:6px 0 0;font-size:13px}"
-        ".report-toc{grid-column:1;position:sticky;top:24px;min-height:0;max-height:"
-        "calc(100vh - 48px);overflow:auto;break-after:auto;padding:0 0 24px}"
-        ".report-toc h1{margin:0 0 12px;padding:0 0 10px;font-size:18px;"
-        f"border-bottom:2px solid {theme['accent']}}}"
-        ".toc-entry{margin:2px 0}"
-        ".toc-entry a{display:block;padding:7px 10px;border-left:3px solid transparent;"
-        "line-height:1.45;border-radius:0 4px 4px 0}"
-        ".toc-entry a:hover,.toc-entry a:focus-visible{background:#FFFFFF;"
-        f"border-left-color:{theme['highlight']};color:{theme['primary']};outline:none}}"
-        ".toc-level-3{padding-left:12px}.toc-level-4{padding-left:24px}"
-        ".toc-leader,.toc-page{display:none}"
-        ".report-body{grid-column:2;min-width:0;padding:8px 48px 48px;background:#FFFFFF;"
-        f"border-top:5px solid {theme['primary']};box-shadow:0 1px 3px rgba(27,42,65,.10)}}"
-        ".report-body h2,.report-body h3,.report-body h4{scroll-margin-top:24px;"
-        "letter-spacing:0}"
-        ".report-body h2{margin:44px 0 20px;padding-left:12px;font-size:24px;line-height:1.4}"
-        ".report-body h3{margin:32px 0 14px;font-size:19px;line-height:1.45}"
-        ".report-body h4{margin:24px 0 10px;font-size:17px;line-height:1.5}"
-        ".report-body p{margin:12px 0}.report-body li{margin:5px 0}"
-        ".report-table-scroll{max-width:100%;overflow-x:auto;margin:24px 0;border-radius:4px;"
-        "overscroll-behavior-inline:contain}"
-        ".report-table-scroll table{margin:0}"
-        ".report-body th,.report-body td{min-width:8rem;padding:10px 12px;vertical-align:top}"
-        ".report-body tbody tr:hover{background:#F3F7FA}"
-        ".report-body blockquote{margin:20px 0;padding:12px 18px;border-radius:0 4px 4px 0}"
-        ".report-body pre{margin:20px 0;padding:16px;overflow:auto;background:#F7F9FB;"
-        f"border:1px solid {theme['grid']};border-radius:4px}}"
-        ".report-figure{margin:32px auto 36px}"
-        ".report-figure-image img{max-height:70vh}"
-        ".report-figure-caption{margin-top:10px;font-size:13px}"
-        ".report-signature{margin-top:48px;padding-top:20px;"
-        f"border-top:1px solid {theme['grid']}}}"
-        "}"
-        "@media screen and (max-width:800px){"
-        "html{background:#FFFFFF}"
-        "body{display:block;max-width:none;padding:0 18px 40px;font-size:15px;background:#FFFFFF}"
-        ".report-cover{margin:0 -18px 28px;padding:30px 20px 26px}"
-        ".report-cover h1{font-size:26px}.report-period{margin-top:14px;font-size:15px}"
-        ".report-organization{margin-top:18px}"
-        ".report-toc{position:static;max-height:none;margin:0 0 30px;padding:0 0 24px;"
-        f"border-bottom:1px solid {theme['grid']}}}"
-        ".report-body{padding:1px 0 32px;border-top:0;box-shadow:none}"
-        ".report-body h2{margin-top:36px;font-size:21px}"
-        ".report-body h3{font-size:18px}.report-body h4{font-size:16px}"
-        ".report-body th,.report-body td{min-width:7rem;padding:9px 10px}"
-        ".report-figure-image img{max-height:none}"
-        "}"
-    )
-    preview_head = (
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<style>{preview_css}</style>"
-    )
-    return "<!doctype html>" + pdf_document.replace("</head>", f"{preview_head}</head>", 1)
 
 
 __all__ = [
@@ -553,7 +481,6 @@ __all__ = [
     "_body_tokens",
     "_document_context",
     "format_heading_label",
-    "_html_document",
     "_markdown_title",
     "_normalize_cjk_strong_markers",
     "_normalize_report_markdown_segments",

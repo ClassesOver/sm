@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shutil
 import uuid
 import zipfile
@@ -19,7 +18,6 @@ from smart_reporting.reporting.delivery.report_runtime.docx import (
     _postprocess_docx,
 )
 from smart_reporting.reporting.delivery.report_runtime.markdown import (
-    _html_document,
     _normalize_cjk_strong_markers,
     normalize_report_markdown_strong_spacing,
 )
@@ -89,86 +87,9 @@ def test_pdf_page_decorations_are_merged_above_report_content(
     assert merge_layers == [True]
 
 
-def test_html_document_is_static_and_self_contained() -> None:
-    document = _html_document(
-        '<p>正文</p><img src="data:image/png;base64,AAAA">',
-        context={
-            "title": "测试报告",
-            "periodLabel": "2026 年",
-            "organizationName": "测试机构",
-            "generatedByLabel": "Reporting Agent",
-            "watermarkText": "内部资料",
-            "generatedDate": "2026-08-17",
-            "sections": [{"code": "overview", "title": "经营概览", "sectionNumber": "1"}],
-            "sectionNumbers": ["1"],
-            "headingNumbers": [
-                {
-                    "level": 2,
-                    "number": "1",
-                    "title": "经营概览",
-                    "sectionCode": "overview",
-                    "anchor": "report-heading-overview",
-                }
-            ],
-        },
-        layout=DEFAULT_PAGE_LAYOUT,
-    )
-
-    assert document.startswith("<!doctype html>")
-    assert "<html lang='zh-CN'>" in document
-    assert "<style>" in document
-    assert "<script" not in document.lower()
-    assert "<form" not in document.lower()
-    assert "http://" not in document
-    assert "https://" not in document
-    assert "data:image/png;base64,AAAA" in document
-
-
-def test_html_document_keeps_table_layout_inside_scroll_container() -> None:
-    document = _html_document(
-        "<table><thead><tr><th>科室</th></tr></thead>"
-        "<tbody><tr><td>内科</td></tr></tbody></table>",
-        context={
-            "title": "测试报告",
-            "periodLabel": "2026 年",
-            "organizationName": "测试机构",
-            "generatedByLabel": "Reporting Agent",
-            "watermarkText": "内部资料",
-            "generatedDate": "2026-08-17",
-            "sections": [{"code": "overview", "title": "经营概览", "sectionNumber": "1"}],
-            "sectionNumbers": ["1"],
-            "headingNumbers": [
-                {
-                    "level": 2,
-                    "number": "1",
-                    "title": "经营概览",
-                    "sectionCode": "overview",
-                    "anchor": "report-heading-overview",
-                }
-            ],
-        },
-        layout=DEFAULT_PAGE_LAYOUT,
-    )
-
-    assert '<div class="report-table-scroll"><table>' in document
-    assert "</table></div>" in document
-    assert ".report-table-scroll{max-width:100%;overflow-x:auto" in document
-    assert ".report-body table{display:block" not in document
-
-
-@pytest.mark.parametrize(
-    "href", ["https://example.com", "//example.com", "report.md", "mailto:a@example.com"]
-)
-def test_html_rejects_markdown_links(href: str) -> None:
-    from markdown_it import MarkdownIt
-
-    body = MarkdownIt("commonmark", {"html": False}).render(f"[链接]({href})")
-
-    with pytest.raises(ValueError, match="不允许外部或工作区链接"):
-        runtime_module.ReportRuntime._reject_html_links(body)
-
-
-def test_cli_forwards_optional_html_output_path(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+def test_cli_forwards_only_pdf_and_word_output_paths(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
     captured: dict[str, object] = {}
 
     class FakeRuntime:
@@ -177,7 +98,7 @@ def test_cli_forwards_optional_html_output_path(monkeypatch: pytest.MonkeyPatch,
 
         def render_markdown(self, *args: object) -> dict[str, object]:
             captured["args"] = args
-            return {"status": "rendered", "htmlPath": "reports/report.html"}
+            return {"status": "rendered", "wordPath": "reports/report.docx"}
 
     monkeypatch.setattr(runtime_cli, "ReportRuntime", FakeRuntime)
     assert (
@@ -186,17 +107,18 @@ def test_cli_forwards_optional_html_output_path(monkeypatch: pytest.MonkeyPatch,
                 "render_markdown",
                 '{"job": {}, "markdown_path": "report.md", "output_path": "report.pdf", '
                 '"temporary_path": "/tmp/workspace-report-test/render.pdf", '
-                '"html_output_path": "report.html"}',
+                '"word_output_path": "report.docx"}',
             ]
         )
         == 0
     )
 
-    assert captured["args"][-1] == "report.html"
-    assert '"htmlPath": "reports/report.html"' in capsys.readouterr().out
+    assert captured["args"][-1] == "report.docx"
+    assert len(captured["args"]) == 6
+    assert '"wordPath": "reports/report.docx"' in capsys.readouterr().out
 
 
-def test_render_markdown_returns_html_artifact_identity(
+def test_render_markdown_returns_only_pdf_and_word_artifact_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "report.md"
@@ -240,16 +162,6 @@ def test_render_markdown_returns_html_artifact_identity(
         lambda *_args, **kwargs: kwargs["output"].write_bytes(b"docx") or {},
     )
     monkeypatch.setattr(runtime_module, "_validate_docx_structure", lambda *_args, **_kwargs: {})
-    html_capture: dict[str, bytes] = {}
-    original_sha256 = runtime_module._sha256
-
-    def capture_sha256(path: Path) -> str:
-        digest = original_sha256(path)
-        if path.name == "render.html":
-            html_capture["bytes"] = path.read_bytes()
-        return digest
-
-    monkeypatch.setattr(runtime_module, "_sha256", capture_sha256)
     monkeypatch.setattr(
         Path,
         "replace",
@@ -267,14 +179,11 @@ def test_render_markdown_returns_html_artifact_identity(
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
 
-    html_bytes = html_capture["bytes"]
-    assert result["render"]["html"]["path"] == "revision/report.html"
-    assert result["htmlSize"] == len(html_bytes)
-    assert result["htmlSha256"] == hashlib.sha256(html_bytes).hexdigest()
-    assert html_bytes.startswith(b"<!doctype html>")
+    assert "html" not in result["render"]
+    assert "htmlPath" not in result
     assert output.is_file()
     assert output.with_suffix(".docx").is_file()
-    assert output.with_suffix(".html").read_bytes() == html_bytes
+    assert not output.with_suffix(".html").exists()
 
 
 @pytest.mark.anyio

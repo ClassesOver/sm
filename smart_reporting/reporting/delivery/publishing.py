@@ -49,6 +49,7 @@ REPORT_ARTIFACT_CHUNK_BYTES = 1024 * 1024
 REPORT_ARTIFACT_CLEANUP_GRACE = timedelta(days=1)
 REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
+_EDITOR_ACCESS_PATH = re.compile(r"/reports/v1/editor/open/[^?\s]+(?:\?[^\s]*)?")
 _PUBLICATION_LOCK_KEY = "report-download-publication-v2"
 _metadata = MetaData()
 report_download_grants_v2 = Table(
@@ -154,7 +155,7 @@ class ReportDownloadGrant:
 
 @dataclass(frozen=True)
 class ReportArtifactSpec:
-    artifact: Literal["pdf", "word", "html"]
+    artifact: Literal["pdf", "word"]
     path: str
     size: int
     sha256: str
@@ -166,7 +167,7 @@ class StoredReportArtifact:
     scope: ReportDownloadScope
     report_id: str
     revision: int
-    artifact: Literal["pdf", "word", "html"]
+    artifact: Literal["pdf", "word"]
     path: str
     size: int
     sha256: str
@@ -206,7 +207,7 @@ class ReportArtifactRepository(Protocol):
         scope: ReportDownloadScope,
         report_id: str,
         revision: int,
-        artifact: Literal["pdf", "word", "html"],
+        artifact: Literal["pdf", "word"],
     ) -> StoredReportArtifact | None: ...
 
     async def touch(self, artifact_key: str, *, now: datetime) -> None: ...
@@ -290,7 +291,7 @@ async def _artifact_has_active_grant(
                 report_download_grants_v2.c.word_sha256 == artifact["sha256"],
             )
         )
-    elif artifact_type != "html":
+    else:
         return False
     return (
         await connection.scalar(
@@ -533,7 +534,7 @@ class SqlAlchemyReportArtifactRepository:
         if row is None:
             return None
         artifact = cast(str, row["artifact"])
-        if artifact not in {"pdf", "word", "html"}:
+        if artifact not in {"pdf", "word"}:
             raise ReportingError("report_artifact_invalid", "持久化报告产物无效。")
         return StoredReportArtifact(
             artifact_key=cast(str, row["artifact_key"]),
@@ -547,7 +548,7 @@ class SqlAlchemyReportArtifactRepository:
             ),
             report_id=cast(str, row["report_id"]),
             revision=cast(int, row["revision"]),
-            artifact=cast(Literal["pdf", "word", "html"], artifact),
+            artifact=cast(Literal["pdf", "word"], artifact),
             path=cast(str, row["path"]),
             size=cast(int, row["size"]),
             sha256=cast(str, row["sha256"]),
@@ -560,7 +561,7 @@ class SqlAlchemyReportArtifactRepository:
         scope: ReportDownloadScope,
         report_id: str,
         revision: int,
-        artifact: Literal["pdf", "word", "html"],
+        artifact: Literal["pdf", "word"],
     ) -> StoredReportArtifact | None:
         statement = (
             select(report_artifact_files_v1.c.artifact_key)
@@ -678,12 +679,11 @@ class ReportArtifactPersistenceService:
         revision: int,
         artifacts: tuple[ReportArtifactSpec, ...],
     ) -> None:
-        if len(artifacts) != 3 or {item.artifact for item in artifacts} != {
+        if len(artifacts) != 2 or {item.artifact for item in artifacts} != {
             "pdf",
             "word",
-            "html",
         }:
-            raise ReportingError("report_artifact_invalid", "必须同时持久化 PDF、Word 和 HTML。")
+            raise ReportingError("report_artifact_invalid", "必须同时持久化 PDF 和 Word。")
         for spec in artifacts:
             if (
                 spec.size <= 0
@@ -754,25 +754,13 @@ class ReportDownloadHttpService:
         self,
         raw_grant: str,
         *,
-        artifact: Literal["pdf", "word", "html"] = "pdf",
+        artifact: Literal["pdf", "word"] = "pdf",
     ) -> tuple[ReportDownloadGrant, AsyncIterator[bytes]]:
         grant = await self.grants.lookup(raw_grant)
-        if artifact == "html":
-            stored = await self.artifacts.resolve(
-                scope=grant.scope,
-                report_id=grant.report_id,
-                revision=grant.revision,
-                artifact="html",
-            )
-            if stored is None:
-                raise ReportingError("report_download_file_changed", "报告文件已变化。")
-            path, size, sha256 = stored.path, stored.size, stored.sha256
-            artifact_key = stored.artifact_key
-        else:
-            path, size, sha256 = _grant_artifact(grant, artifact)
-            spec = ReportArtifactSpec(artifact=artifact, path=path, size=size, sha256=sha256)
-            artifact_key = _artifact_key(grant.scope, grant.report_id, grant.revision, spec)
-            stored = await self.artifacts.get(artifact_key)
+        path, size, sha256 = _grant_artifact(grant, artifact)
+        spec = ReportArtifactSpec(artifact=artifact, path=path, size=size, sha256=sha256)
+        artifact_key = _artifact_key(grant.scope, grant.report_id, grant.revision, spec)
+        stored = await self.artifacts.get(artifact_key)
         if size <= 0 or size > MAX_DOWNLOAD_BYTES:
             raise ReportingError("report_download_file_changed", "报告文件已变化。")
         if (
@@ -871,55 +859,19 @@ def create_report_download_router(
             },
         )
 
-    @router.get("/reports/v1/download/{opaque_grant}/html", name="preview_report_html")
-    async def preview_report_html(
-        opaque_grant: str,
-    ) -> StreamingResponse:
-        try:
-            _grant, content = await service.stream(opaque_grant, artifact="html")
-            stored = await service.artifacts.resolve(
-                scope=_grant.scope,
-                report_id=_grant.report_id,
-                revision=_grant.revision,
-                artifact="html",
-            )
-            if stored is None:
-                raise ReportingError("report_download_file_changed", "报告文件已变化。")
-        except ReportingError as error:
-            raise HTTPException(
-                status_code=_download_error_status(error.code),
-                detail={"code": error.code, "message": error.message},
-            ) from None
-        return StreamingResponse(
-            content,
-            media_type="text/html",
-            headers={
-                "Content-Disposition": _content_disposition(stored.path, artifact="html"),
-                "Content-Length": str(stored.size),
-                "Cache-Control": "no-store",
-                "Content-Security-Policy": (
-                    "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-                    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
-                ),
-                "X-Content-Type-Options": "nosniff",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
     return router
 
 
-def _content_disposition(path: str, *, artifact: Literal["pdf", "word", "html"]) -> str:
+def _content_disposition(path: str, *, artifact: Literal["pdf", "word"]) -> str:
     filename = Path(path).name
-    suffix = {"pdf": ".pdf", "word": ".docx", "html": ".html"}[artifact]
+    suffix = {"pdf": ".pdf", "word": ".docx"}[artifact]
     if Path(filename).suffix.lower() != suffix:
         filename = f"report{suffix}"
     ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
     if ascii_name != filename or not ascii_name:
         ascii_name = f"report{suffix}"
     encoded_name = quote(filename, safe="")
-    disposition = "inline" if artifact == "html" else "attachment"
-    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
 
 
 def publication_result(
@@ -929,6 +881,8 @@ def publication_result(
     raw_grant: str,
     grant: ReportDownloadGrant,
     base_url: str,
+    editor_raw_grant: str,
+    editor_expires_at: datetime,
     source_warnings: list[dict[str, object]] | None = None,
     task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -937,19 +891,21 @@ def publication_result(
         "revision": revision,
         "pdf": {
             "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}",
+            "path": grant.pdf_path,
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.pdf_size,
             "sha256": grant.pdf_sha256,
         },
         "word": {
             "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}/word",
+            "path": grant.word_path,
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.word_size,
             "sha256": grant.word_sha256,
         },
-        "html": {
-            "previewUrl": f"{base_url}/reports/v1/download/{raw_grant}/html",
-            "expiresAt": grant.expires_at.isoformat(),
+        "editor": {
+            "openUrl": f"{base_url}/reports/v1/editor/open/{editor_raw_grant}",
+            "expiresAt": editor_expires_at.isoformat(),
         },
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(task_receipts or ()),
@@ -964,9 +920,6 @@ def cli_result(
     word_path: str,
     word_size: int,
     word_sha256: str,
-    html_path: str,
-    html_size: int,
-    html_sha256: str,
     source_warnings: list[dict[str, object]] | None = None,
     task_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -975,7 +928,6 @@ def cli_result(
         "size": size,
         "sha256": sha256,
         "word": {"path": word_path, "size": word_size, "sha256": word_sha256},
-        "html": {"path": html_path, "size": html_size, "sha256": html_sha256},
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(task_receipts or ()),
     }
@@ -1013,7 +965,8 @@ def _grant_hash(value: str) -> str:
 
 
 def _redact_download_path(value: str) -> str:
-    return _DOWNLOAD_ACCESS_PATH.sub("/reports/v1/download/<redacted>", value)
+    redacted = _DOWNLOAD_ACCESS_PATH.sub("/reports/v1/download/<redacted>", value)
+    return _EDITOR_ACCESS_PATH.sub("/reports/v1/editor/open/<redacted>", redacted)
 
 
 def _utc_datetime(value: datetime) -> datetime:

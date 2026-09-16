@@ -106,7 +106,7 @@ class InMemoryReportArtifactRepository:
         scope: ReportDownloadScope,
         report_id: str,
         revision: int,
-        artifact: Literal["pdf", "word", "html"],
+        artifact: Literal["pdf", "word"],
     ) -> StoredReportArtifact | None:
         matches = [
             item

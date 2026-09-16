@@ -438,6 +438,7 @@ class _ReportWorkflowRuntimeBase:
         planner_thinking_budget: int = 8192,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
+        editor_grants: Any | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         quality_warning_service: QualityWarningService | None = None,
         report_public_base_url: str | None = None,
@@ -475,6 +476,7 @@ class _ReportWorkflowRuntimeBase:
         self.profiles = profiles
         self.metadata_client = metadata_client
         self.download_grants = download_grants
+        self.editor_grants = editor_grants
         self.artifact_persistence = artifact_persistence
         self.quality_warning_service = quality_warning_service
         self.report_public_base_url = report_public_base_url
@@ -1325,21 +1327,25 @@ class _ReportWorkflowRuntimeBase:
         values = {
             "reportId": content.get("reportId"),
             "revision": content.get("revision"),
+            "jobId": content.get("jobId"),
+            "editorJob": content.get("editorJob"),
+            "markdownPath": content.get("markdownPath"),
             "pdfPath": content.get("pdfPath"),
             "pdfSize": content.get("pdfSize"),
             "pdfSha256": content.get("pdfSha256"),
             "wordPath": content.get("wordPath"),
             "wordSize": content.get("wordSize"),
             "wordSha256": content.get("wordSha256"),
-            "htmlPath": content.get("htmlPath"),
-            "htmlSize": content.get("htmlSize"),
-            "htmlSha256": content.get("htmlSha256"),
             "sourceWarnings": content.get("sourceWarnings", []),
             "codingReceipts": content.get("codingReceipts", []),
         }
         if (
             not isinstance(values["reportId"], str)
             or not isinstance(values["revision"], int)
+            or not isinstance(values["jobId"], str)
+            or not isinstance(values["editorJob"], dict)
+            or values["editorJob"].get("jobId") != values["jobId"]
+            or not isinstance(values["markdownPath"], str)
             or not isinstance(values["pdfPath"], str)
             or not isinstance(values["pdfSize"], int)
             or values["pdfSize"] <= 0
@@ -1350,11 +1356,6 @@ class _ReportWorkflowRuntimeBase:
             or values["wordSize"] <= 0
             or not isinstance(values["wordSha256"], str)
             or re.fullmatch(r"[0-9a-f]{64}", values["wordSha256"]) is None
-            or not isinstance(values["htmlPath"], str)
-            or not isinstance(values["htmlSize"], int)
-            or values["htmlSize"] <= 0
-            or not isinstance(values["htmlSha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", values["htmlSha256"]) is None
             or not isinstance(values["sourceWarnings"], list)
             or not isinstance(values["codingReceipts"], list)
         ):
@@ -1380,7 +1381,7 @@ class _ReportWorkflowRuntimeBase:
         expected: dict[str, Any],
         current: dict[str, Any],
         *,
-        artifact: Literal["pdf", "word", "html"],
+        artifact: Literal["pdf", "word"],
     ) -> None:
         prefix = artifact
         if (
@@ -1389,7 +1390,7 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ReportingError(
                 "report_artifact_changed",
-                "PDF、Word 或 HTML 在验收或审核后发生变化，必须重新验收。",
+                "PDF 或 Word 在验收或审核后发生变化，必须重新验收。",
             )
 
     def _tool_context(self, run_context: RunContext) -> RunContext:

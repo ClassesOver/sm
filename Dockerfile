@@ -1,5 +1,6 @@
 ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
 ARG UV_IMAGE=ghcr.m.daocloud.io/astral-sh/uv:0.11.26
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22-slim
 FROM ${PYTHON_IMAGE} AS base
 
 ARG APT_MIRROR_HOST=mirrors.aliyun.com
@@ -10,6 +11,19 @@ RUN sed -i \
         /etc/apt/sources.list.d/debian.sources
 
 FROM ${UV_IMAGE} AS uv-source
+
+FROM ${NODE_IMAGE} AS report-editor-frontend
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
+WORKDIR /build/frontend
+
+COPY smart_reporting/report_editor/frontend/package.json \
+    smart_reporting/report_editor/frontend/package-lock.json ./
+RUN npm ci --registry="${NPM_REGISTRY}"
+
+COPY smart_reporting/report_editor/frontend ./
+RUN npm run build
 
 FROM base AS env-init
 
@@ -36,6 +50,7 @@ RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
 COPY smart_reporting ./smart_reporting
+COPY --from=report-editor-frontend /build/static ./smart_reporting/report_editor/static
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_OS_PORT=7777 \

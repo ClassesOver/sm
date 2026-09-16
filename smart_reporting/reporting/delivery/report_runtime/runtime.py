@@ -17,7 +17,6 @@ from .markdown import (
     _bind_heading_anchors,
     _body_tokens,
     _document_context,
-    _html_document,
     _markdown_title,
     _normalize_cjk_strong_markers,
     _semantic_documents,
@@ -39,7 +38,6 @@ from .pdf import (
 from .validation import (
     IMAGE_SUFFIXES,
     MAX_DOCX_BYTES,
-    MAX_HTML_BYTES,
     MAX_IMAGE_BYTES,
     MAX_MARKDOWN_BYTES,
     MAX_PDF_BYTES,
@@ -47,14 +45,12 @@ from .validation import (
     ReportFailure,
     _check_image_signature,
     _cleanup_directory,
-    _html_output_path,
     _input_path,
     _output_path,
     _reject_symlinks,
     _relative_path,
     _sha256,
     _temporary_docx_path,
-    _temporary_html_path,
     _temporary_pdf_path,
     _validation_directory,
     _word_output_path,
@@ -168,7 +164,6 @@ class ReportRuntime:
         temporary_path: str,
         page_layout: dict[str, str] | None = None,
         word_output_path: str | None = None,
-        html_output_path: str | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -179,8 +174,6 @@ class ReportRuntime:
 
         self._validate_datasets(state)
         temporary: Path | None = None
-        html_output: Path | None = None
-        temporary_html: Path | None = None
         try:
             source = _input_path(self.workspace, markdown_path, ".md")
             if source.stat().st_size > MAX_MARKDOWN_BYTES:
@@ -196,7 +189,20 @@ class ReportRuntime:
             pdf_markdown = _normalize_cjk_strong_markers(pdf_markdown)
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
-            layout = _page_layout(page_layout)
+            export_settings = state.get("_editorExportSettings")
+            include_cover = not isinstance(export_settings, dict) or export_settings.get("cover", True)
+            include_toc = not isinstance(export_settings, dict) or export_settings.get("toc", True)
+            include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
+                "headerFooter", True
+            )
+            include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
+                "pageNumbers", True
+            )
+            layout = _page_layout(
+                page_layout,
+                include_header_footer=include_header_footer,
+                include_page_numbers=include_page_numbers,
+            )
             context = _document_context(state.get("_documentContext"))
             title = _markdown_title(tokens)
             if title != context["title"]:
@@ -217,15 +223,10 @@ class ReportRuntime:
                 self.workspace,
                 word_output_path or str(PurePosixPath(output_path).with_suffix(".docx")),
             )
-            html_output = _html_output_path(
-                self.workspace,
-                html_output_path or str(PurePosixPath(output_path).with_suffix(".html")),
-            )
-            if output.parent != word_output.parent or output.parent != html_output.parent:
-                raise ReportFailure("PDF、Word 和 HTML 必须发布到同一 revision 目录")
+            if output.parent != word_output.parent:
+                raise ReportFailure("PDF 和 Word 必须发布到同一 revision 目录")
             temporary = _temporary_pdf_path(temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
-            temporary_html = _temporary_html_path(temporary)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
 
             def fetch_resource(url: str) -> dict[str, Any]:
@@ -241,6 +242,8 @@ class ReportRuntime:
                 body,
                 context=context,
                 layout=layout,
+                include_cover=include_cover,
+                include_toc=include_toc,
             )
             preflight_document = HTML(
                 string=pdf_document,
@@ -255,6 +258,8 @@ class ReportRuntime:
                 context=context,
                 layout=layout,
                 toc_page_numbers=toc_page_numbers,
+                include_cover=include_cover,
+                include_toc=include_toc,
             )
             final_document = HTML(
                 string=pdf_document,
@@ -306,11 +311,6 @@ class ReportRuntime:
                 expected_headings=context["headingNumbers"],
                 expected_image_count=len(allowed_images),
             )
-            html_document = _html_document(html_body, context=context, layout=layout)
-            html_bytes = html_document.encode("utf-8")
-            if len(html_bytes) > MAX_HTML_BYTES:
-                raise ReportFailure("HTML 文件不能超过 200 MiB")
-            temporary_html.write_bytes(html_bytes)
             if self._artifact(source)["sha256"] != source_artifact["sha256"] or any(
                 self._artifact(path)["sha256"] != artifact["sha256"]
                 for path, artifact in zip(sorted(allowed_images), image_artifacts, strict=True)
@@ -326,25 +326,19 @@ class ReportRuntime:
                 "size": docx_size,
                 "sha256": _sha256(temporary_docx),
             }
-            html_artifact = {
-                "path": str(html_output.relative_to(self.workspace)),
-                "size": len(html_bytes),
-                "sha256": _sha256(temporary_html),
-            }
             created_output_directory = False
             published: list[Path] = []
             try:
                 if not output.parent.exists():
                     output.parent.mkdir(mode=0o700)
                     created_output_directory = True
-                # 三种格式先在进程私有临时目录完成全部解析、大小和结构校验，再写入
+                # 两种格式先在进程私有临时目录完成全部解析、大小和结构校验，再写入
                 # workspace staging。/tmp 可能是独立 tmpfs，不能依赖跨文件系统 rename；
                 # 外层只发布完整 staging 目录，任一复制失败都必须
                 # 删除本轮已写文件，不能留下可被后续验收误认的半成品。
                 for temporary_source, destination in (
                     (temporary, output),
                     (temporary_docx, word_output),
-                    (temporary_html, html_output),
                 ):
                     shutil.copyfile(temporary_source, destination)
                     published.append(destination)
@@ -358,11 +352,16 @@ class ReportRuntime:
                 "markdown": source_artifact,
                 "pdf": pdf_artifact,
                 "word": word_artifact,
-                "html": html_artifact,
                 "images": image_artifacts,
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
                 "pageLayout": layout,
+                "exportSettings": {
+                    "cover": include_cover,
+                    "toc": include_toc,
+                    "headerFooter": include_header_footer,
+                    "pageNumbers": include_page_numbers,
+                },
                 "reportTitle": title,
                 "documentContext": context,
                 "visualTheme": deepcopy(REPORT_VISUAL_THEME),
@@ -376,9 +375,6 @@ class ReportRuntime:
                 "markdownPath": str(source.relative_to(self.workspace)),
                 "pdfPath": str(output.relative_to(self.workspace)),
                 "wordPath": str(word_output.relative_to(self.workspace)),
-                "htmlPath": str(html_output.relative_to(self.workspace)),
-                "htmlSize": len(html_bytes),
-                "htmlSha256": html_artifact["sha256"],
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
                 "size": pdf_size,
@@ -397,7 +393,6 @@ class ReportRuntime:
         temporary_directory: str,
         artifact_manifest: dict[str, Any] | None = None,
         word_path: str | None = None,
-        html_path: str | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -423,16 +418,6 @@ class ReportRuntime:
                 or registered_word.get("path") != current_word_path
             ):
                 raise ReportFailure("Word 未登记为当前分析任务的渲染产物")
-            registered_html = render.get("html")
-            current_html_path = html_path or (
-                registered_html.get("path") if isinstance(registered_html, dict) else None
-            )
-            if (
-                not isinstance(registered_html, dict)
-                or not isinstance(current_html_path, str)
-                or registered_html.get("path") != current_html_path
-            ):
-                raise ReportFailure("HTML 未登记为当前分析任务的渲染产物")
             supporting_artifacts = [render["markdown"], *render.get("images", [])]
             for artifact in supporting_artifacts:
                 supporting = self.workspace.joinpath(*_relative_path(artifact["path"]).parts)
@@ -449,13 +434,6 @@ class ReportRuntime:
             word_current = self._artifact(word)
             if word_current["sha256"] != registered_word.get("sha256"):
                 raise ReportFailure("Word 产物发生变化，请重新渲染后验收")
-            html_relative = _relative_path(current_html_path, ".html")
-            html = self.workspace.joinpath(*html_relative.parts)
-            html_current = self._artifact(html)
-            if html_current["sha256"] != registered_html.get("sha256") or html_current[
-                "size"
-            ] != registered_html.get("size"):
-                raise ReportFailure("HTML 产物发生变化，请重新渲染后验收")
             pages: list[dict[str, Any]] = []
             blank_pages: list[int] = []
             missing_page_layout: list[int] = []
@@ -489,7 +467,18 @@ class ReportRuntime:
                 if process.returncode != 0 or len(rendered_pages) != len(reader.pages):
                     raise ReportFailure("PDF 视觉验收栅格化失败")
                 extracted_pages: list[str] = []
-                layout = _page_layout(render.get("pageLayout"))
+                export_settings = render.get("exportSettings")
+                include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
+                    "headerFooter", True
+                )
+                include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
+                    "pageNumbers", True
+                )
+                layout = _page_layout(
+                    render.get("pageLayout"),
+                    include_header_footer=include_header_footer,
+                    include_page_numbers=include_page_numbers,
+                )
                 title = str(render.get("reportTitle") or "智能运营报表")
                 context = _document_context(render.get("documentContext"))
                 section_pages = _pdf_section_pages(reader, context["sections"])
@@ -656,9 +645,6 @@ class ReportRuntime:
                 "pdfSha256": current["sha256"],
                 "wordPath": current_word_path,
                 "wordSha256": word_current["sha256"],
-                "htmlPath": current_html_path,
-                "htmlSha256": html_current["sha256"],
-                "htmlSize": html_current["size"],
                 "pageCount": len(pages),
                 "markdownImageCount": markdown_image_count,
                 "renderedImageCount": rendered_image_count,
@@ -685,11 +671,6 @@ class ReportRuntime:
                 or word.stat().st_size != word_current["size"]
             ):
                 raise ReportFailure("Word 产物在验收期间发生变化，请重新验收")
-            if (
-                _sha256(html) != html_current["sha256"]
-                or html.stat().st_size != html_current["size"]
-            ):
-                raise ReportFailure("HTML 产物在验收期间发生变化，请重新验收")
             return validation
         finally:
             if temp_path is not None:

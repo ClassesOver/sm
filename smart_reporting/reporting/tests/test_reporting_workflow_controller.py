@@ -308,7 +308,7 @@ async def test_external_background_start_returns_before_workflow_completes() -> 
     assert completed == {"ok": True, "status": "completed"}
 
 
-def test_completed_external_result_preserves_html_preview() -> None:
+def test_completed_external_result_preserves_editor_link() -> None:
     output = SimpleNamespace(
         content={
             "reportId": "report-1",
@@ -316,7 +316,7 @@ def test_completed_external_result_preserves_html_preview() -> None:
             "revision": 1,
             "pdf": {"downloadUrl": "https://reports.example.com/report.pdf"},
             "word": {"downloadUrl": "https://reports.example.com/report.docx"},
-            "html": {"previewUrl": "https://reports.example.com/report.html"},
+            "editor": {"openUrl": "https://reports.example.com/editor/report"},
             "sourceWarnings": [],
         }
     )
@@ -332,7 +332,7 @@ def test_completed_external_result_preserves_html_preview() -> None:
 
     result = ReportWorkflowController._result(control, output)
 
-    assert result["report"]["html"] == {"previewUrl": "https://reports.example.com/report.html"}
+    assert result["report"]["editor"] == {"openUrl": "https://reports.example.com/editor/report"}
     assert result["report"]["reportTitle"] == "年度运营分析报告"
 
 

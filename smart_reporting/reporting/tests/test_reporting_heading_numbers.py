@@ -25,6 +25,7 @@ from smart_reporting.reporting.delivery.report_runtime.markdown import (
 )
 from smart_reporting.reporting.delivery.report_runtime.pdf import (
     DEFAULT_PAGE_LAYOUT,
+    _page_layout,
 )
 from smart_reporting.reporting.hospital_operation.outline import ReportOutline, freeze_outline
 from smart_reporting.reporting.models import ReportingError
@@ -470,3 +471,52 @@ def test_validate_report_draft_blocks_tracks_h3_parent_across_blocks() -> None:
     )
 
     validate_report_draft_blocks(blocks, expected_section_title="经营分析")
+
+
+def test_page_layout_export_flags_remove_optional_decorations() -> None:
+    layout = _page_layout(
+        DEFAULT_PAGE_LAYOUT,
+        include_header_footer=False,
+        include_page_numbers=False,
+    )
+    assert layout == {
+        "headerLeft": "",
+        "headerRight": "",
+        "footerLeft": "",
+        "footerRight": "",
+    }
+    assert _page_layout(None, include_page_numbers=False)["footerRight"] == ""
+
+
+def test_semantic_documents_can_skip_cover_and_toc() -> None:
+    context = _document_context(
+        {
+            "title": "运营报告",
+            "periodLabel": "2026",
+            "organizationName": "测试机构",
+            "generatedByLabel": "平台",
+            "watermarkText": "水印",
+            "generatedDate": "2026-01-01",
+            "sectionNumbers": ["1"],
+            "sections": [{"code": "section_001", "sectionNumber": "1", "title": "经营分析"}],
+            "headingNumbers": [
+                {
+                    "level": 2,
+                    "number": "1",
+                    "title": "经营分析",
+                    "sectionCode": "section_001",
+                    "anchor": "report-section-section_001",
+                }
+            ],
+        }
+    )
+    pdf_html, word_html = _semantic_documents(
+        "<h2>1. 经营分析</h2><p>正文</p>",
+        context=context,
+        layout=DEFAULT_PAGE_LAYOUT,
+        include_cover=False,
+        include_toc=False,
+    )
+    assert '<section class="report-cover">' not in pdf_html
+    assert '<section class="report-toc">' not in pdf_html
+    assert "目录" not in word_html

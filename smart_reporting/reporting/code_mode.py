@@ -5,6 +5,7 @@ from __future__ import annotations
 import shlex
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from agno.tools.code import CodeMode
@@ -32,6 +33,27 @@ def _bootstrap_cell(workspace: HostReportingWorkspace, *, matplotlib_agg: bool) 
 def _script_process_cell(script_path: str) -> str:
     command = " ".join((shlex.quote(sys.executable), shlex.quote(script_path)))
     return f"%%bash\n{command}\n"
+
+
+def create_reporting_code_mode_runtime(
+    workspace_root: str | Path,
+    *,
+    analysis_concurrency: int,
+    section_concurrency: int,
+    timeout: int,
+) -> ReportingCodeModeRuntime:
+    """为 Reporting 进程创建共享的宿主机 CodeMode 运行时。"""
+
+    return ReportingCodeModeRuntime(
+        CodeMode(
+            allow_shell=True,
+            allow_restart=True,
+            snapshot=False,
+            cwd=str(workspace_root),
+            timeout=timeout,
+            max_kernels=max(analysis_concurrency, section_concurrency),
+        )
+    )
 
 
 class ReportingCodeModeRuntime:
@@ -158,4 +180,4 @@ class ReportingCodeModeRuntime:
         await self.code_mode.ashutdown()
 
 
-__all__ = ["ReportingCodeModeRuntime"]
+__all__ = ["ReportingCodeModeRuntime", "create_reporting_code_mode_runtime"]

@@ -21,4 +21,5 @@
 **/*.log
 **/*.pdf
 **/.local-artifacts/
+smart_reporting/report_editor/static/
 **/.run-logs/

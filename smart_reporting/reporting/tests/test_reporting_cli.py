@@ -182,7 +182,7 @@ def test_report_input_parsing_is_shared_with_agentos() -> None:
     }
 
 
-def test_cli_publication_result_includes_html_artifact() -> None:
+def test_cli_publication_result_includes_only_pdf_and_word_artifacts() -> None:
     result = cli_result(
         path="reports/report.pdf",
         size=1,
@@ -190,16 +190,14 @@ def test_cli_publication_result_includes_html_artifact() -> None:
         word_path="reports/report.docx",
         word_size=2,
         word_sha256="b" * 64,
-        html_path="reports/report.html",
-        html_size=3,
-        html_sha256="c" * 64,
     )
 
-    assert result["html"] == {
-        "path": "reports/report.html",
-        "size": 3,
-        "sha256": "c" * 64,
+    assert result["word"] == {
+        "path": "reports/report.docx",
+        "size": 2,
+        "sha256": "b" * 64,
     }
+    assert "html" not in result
 
 
 @pytest.mark.anyio
