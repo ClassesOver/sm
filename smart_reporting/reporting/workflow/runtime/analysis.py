@@ -116,7 +116,7 @@ from .code_generation import (
     _code_failure_kind,
 )
 from .datasets import _profile_coverage_instruction_projection
-from .phase_models import ChartDraft, VisualizationPlanDraft
+from .phase_models import VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,

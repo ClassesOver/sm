@@ -347,7 +347,7 @@ async def test_visualization_v1_degrades_after_code_agent_visual_repairs_exhaust
     assert result.status == "degraded"
     assert run_count == 1
     assert degraded[0].details["executionRepairCount"] == 0
-    assert degraded[0].details["visualReviewRepairCount"] == 0
+    assert "visualReviewRepairCount" not in degraded[0].details
 
 
 async def _plan(plan: VisualizationPlanDraft) -> VisualizationPlanDraft:

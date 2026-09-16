@@ -63,7 +63,6 @@ _DEGRADABLE_CODES = frozenset(
     {
         "execution_output_error",
         "report_visualization_script_failed",
-        "report_visualization_review_failed",
         "report_chart_file_missing",
     }
 )
@@ -215,27 +214,6 @@ def _repair_task_facts(
             for chart in plan.charts
             if chart.source_path == path
         ]
-    elif code == "report_visualization_review_failed":
-        inspections = details.get("inspections")
-        if isinstance(inspections, list):
-            facts["inspections"] = [
-                {
-                    "sourcePath": inspection["sourcePath"],
-                    "visualReviewStatus": inspection.get("visualReviewStatus"),
-                    "requiresRevision": inspection.get("requiresRevision"),
-                    "issues": inspection.get("issues", []),
-                    "summary": inspection.get("summary"),
-                    "warnings": inspection.get("warnings", []),
-                    "suggestions": inspection.get("suggestions", []),
-                }
-                for inspection in inspections
-                if isinstance(inspection, Mapping)
-                and isinstance(inspection.get("sourcePath"), str)
-                and (
-                    inspection.get("requiresRevision") is True
-                    or inspection.get("visualReviewStatus") != "passed"
-                )
-            ]
     elif code in {"execution_output_error", "report_visualization_script_failed"}:
         data_contract = _visualization_data_contract(payload)
         if data_contract is not None:
@@ -254,18 +232,11 @@ def _is_degradable(error: Exception) -> bool:
     return isinstance(error, ReportingError) and error.code in _DEGRADABLE_CODES
 
 
-def _with_repair_counts(
-    error: Exception, *, execution_repairs: int, visual_review_repairs: int
-) -> Exception:
+def _with_repair_count(error: Exception, *, execution_repairs: int) -> Exception:
     if not isinstance(error, ReportingError):
         return error
     details = dict(error.details) if isinstance(error.details, Mapping) else {}
-    details.update(
-        {
-            "executionRepairCount": execution_repairs,
-            "visualReviewRepairCount": visual_review_repairs,
-        }
-    )
+    details["executionRepairCount"] = execution_repairs
     return ReportingError(error.code, error.message, details=details)
 
 
@@ -348,7 +319,7 @@ class VisualizationWorkflowResult:
 
 
 class VisualizationSectionWorkflow:
-    """计划只生成一次；固定 Workflow 独立限制执行修复与视觉审查修复。"""
+    """计划只生成一次；固定 Workflow 独立限制执行修复。"""
 
     def __init__(
         self,
@@ -438,11 +409,7 @@ class VisualizationSectionWorkflow:
                     isinstance(error, ReportingError)
                     and error.code == "report_code_generation_no_submission"
                 ):
-                    exhausted_error = _with_repair_counts(
-                        error,
-                        execution_repairs=0,
-                        visual_review_repairs=0,
-                    )
+                    exhausted_error = _with_repair_count(error, execution_repairs=0)
                     if self.degrade is not None:
                         receipt = await self.degrade(exhausted_error, run_context)
                         _raise_rejected_submission(receipt)
@@ -452,10 +419,9 @@ class VisualizationSectionWorkflow:
                     raise exhausted_error
                 if _is_degradable(error):
                     if generate_attempt >= MAX_VISUALIZATION_EXECUTION_REPAIRS:
-                        exhausted_error = _with_repair_counts(
+                        exhausted_error = _with_repair_count(
                             error,
                             execution_repairs=MAX_VISUALIZATION_EXECUTION_REPAIRS,
-                            visual_review_repairs=0,
                         )
                         if self.degrade is not None:
                             receipt = await self.degrade(exhausted_error, run_context)
@@ -503,10 +469,8 @@ class VisualizationSectionWorkflow:
                 repair_count = execution_repairs
                 repair_limit = MAX_VISUALIZATION_EXECUTION_REPAIRS
                 if repair_count >= repair_limit:
-                    exhausted_error = _with_repair_counts(
-                        error,
-                        execution_repairs=execution_repairs,
-                        visual_review_repairs=0,
+                    exhausted_error = _with_repair_count(
+                        error, execution_repairs=execution_repairs
                     )
                     if self.degrade is not None and _is_degradable(error):
                         receipt = await self.degrade(exhausted_error, run_context)
