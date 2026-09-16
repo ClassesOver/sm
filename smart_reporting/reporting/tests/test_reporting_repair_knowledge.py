@@ -96,6 +96,7 @@ async def test_visualization_records_only_accepted_repair_after_domain_submissio
     )
 
     assert result.status == "accepted"
+    assert result.recovery_used is True
     assert recorded == [
         (
             {

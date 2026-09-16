@@ -228,6 +228,46 @@ async def test_visualization_v1_does_not_retry_nonrecoverable_coding_failure() -
 
 
 @pytest.mark.anyio
+async def test_visualization_v1_degrades_after_execution_repairs_exhausted() -> None:
+    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    diagnostics: list[object] = []
+    repair_attempts: list[int] = []
+
+    async def run_code(*_: object, **kwargs: object) -> CodeGenerationResult:
+        diagnostics.append(kwargs.get("diagnostic"))
+        task_facts = kwargs.get("task_facts")
+        if isinstance(task_facts, dict):
+            repair_attempts.append(task_facts["repairAttempt"])
+        raise ReportingError("report_visualization_script_failed", "脚本执行失败")
+
+    degraded: list[ReportingError] = []
+
+    async def degrade(error: Exception, _context: RunContext) -> dict[str, str]:
+        assert isinstance(error, ReportingError)
+        degraded.append(error)
+        return {"status": "accepted"}
+
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(VisualizationPlanDraft(charts=(chart,))),
+        run_code=run_code,
+        inspect_chart=None,
+        submit=lambda *_: _accepted(),
+        degrade=degrade,
+    )
+    result = await workflow.run(
+        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result.status == "degraded"
+    assert len(diagnostics) == 4
+    assert diagnostics[0] is None
+    assert all(item["code"] == "report_visualization_script_failed" for item in diagnostics[1:])
+    assert repair_attempts == [1, 2, 3]
+    assert degraded[0].details["executionRepairCount"] == 3
+
+
+@pytest.mark.anyio
 async def test_visualization_v1_workflow_repairs_failed_visual_review() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))

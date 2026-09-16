@@ -396,7 +396,12 @@ class VisualizationSectionWorkflow:
         generation_failure: Exception | None = None
         generated_result: CodeGenerationResult | None = None
         successful_repair: tuple[Mapping[str, Any], FileIdentity] | None = None
-        for generate_attempt in range(_MAX_GENERATE_ATTEMPTS):
+        initial_recovery_used = False
+        max_attempts = max(
+            _MAX_GENERATE_ATTEMPTS,
+            MAX_VISUALIZATION_EXECUTION_REPAIRS + 1,
+        )
+        for generate_attempt in range(max_attempts):
             try:
                 diagnostic = (
                     _repair_diagnostic(plan, generation_failure, script_path)
@@ -419,14 +424,43 @@ class VisualizationSectionWorkflow:
                         plan,
                         run_context,
                         diagnostic=diagnostic,
+                        task_facts=(
+                            _repair_task_facts(
+                                plan,
+                                generation_failure,
+                                script_path,
+                                payload=payload,
+                                repair_attempt=generate_attempt,
+                            )
+                            if generation_failure is not None
+                            else None
+                        ),
                     )
                 script_file = _ensure_script_identity(generated_result, script_path)
                 if diagnostic is not None:
                     successful_repair = (diagnostic, script_file)
+                    initial_recovery_used = True
                 break
             except Exception as error:
                 generation_failure = error
-                if _is_nonrecoverable(error) or generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
+                if _is_nonrecoverable(error):
+                    raise
+                if _is_degradable(error):
+                    if generate_attempt >= MAX_VISUALIZATION_EXECUTION_REPAIRS:
+                        exhausted_error = _with_repair_counts(
+                            error,
+                            execution_repairs=MAX_VISUALIZATION_EXECUTION_REPAIRS,
+                            visual_review_repairs=0,
+                        )
+                        if self.degrade is not None:
+                            receipt = await self.degrade(exhausted_error, run_context)
+                            _raise_rejected_submission(receipt)
+                            return VisualizationWorkflowResult(
+                                "degraded", plan, None, (), True
+                            )
+                        raise exhausted_error
+                    continue
+                if generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
                     raise
         if script_file is None:
             raise RuntimeError("可视化脚本生成状态不可达")
@@ -438,7 +472,7 @@ class VisualizationSectionWorkflow:
                 "report_phase_artifact_changed",
                 "图表路径不在 Coding Agent 签发输出中。",
             )
-        recovery_used = False
+        recovery_used = initial_recovery_used
         execution_repairs = 0
         visual_review_repairs = 0
         pending_repair_error: Exception | None = None
