@@ -62,6 +62,12 @@ def create_report_runtime(
     quality_warning_service: QualityWarningService | None = None,
     reporting_event_sink: ReportingEventSink | None = None,
 ) -> tuple[Agent, ReportWorkflowRuntime]:
+    code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
+    if code_mode_runtime is None:
+        raise RuntimeError("reporting_code_mode_runtime_missing")
+    lsp_manager = getattr(context, "reporting_lsp_process_manager", None)
+    if lsp_manager is None:
+        raise RuntimeError("reporting_lsp_process_manager_missing")
     workspace_registry = context.reporting_workspace_registry or ReportingWorkspaceRegistry(
         settings.reporting_host_workspace_root,
         secret=settings.workspace_hmac_secret,
@@ -133,9 +139,9 @@ def create_report_runtime(
         vision_enabled=settings.report_enable_vision,
         workspace_service=reporting_workspace,
         workspace_registry=workspace_registry,
-        code_mode_runtime=getattr(context, "reporting_code_mode_runtime", None),
+        code_mode_runtime=code_mode_runtime,
         knowledge_index=knowledge_index,
-        lsp_manager=getattr(context, "reporting_lsp_process_manager", None),
+        lsp_manager=lsp_manager,
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,
