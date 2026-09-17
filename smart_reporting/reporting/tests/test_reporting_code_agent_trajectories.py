@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from smart_reporting.reporting.agent import create_reporting_code_agent_factory
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
-from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.code_mode import ScriptProcessResult
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
     _batch_response,
     _custom_response,
@@ -106,10 +106,10 @@ class _ScriptProcessRuntime:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
-        return CellResult(
+        return ScriptProcessResult(CellResult(
             status="ok" if process.returncode == 0 else "error",
             stdout=stdout.decode(), stderr=stderr.decode(),
-        )
+        ), process.returncode)
 
     async def shutdown(self, session_id):
         self.shutdowns.append(session_id)
@@ -198,30 +198,31 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
                                   "sha256": hashlib.sha256(facts.encode()).hexdigest()},
         "deterministicFacts": json.loads(facts),
     }
-    if scenario == "exhausted":
-        with pytest.raises(ReportingError) as caught:
-            await workflow.run(instruction, _run_context())
-        assert caught.value.code == "report_code_generation_no_submission"
-        assert caught.value.details["lastFailure"]["code"] == "report_analysis_evidence_schema_invalid"
-        assert completions == []
+    # C5（outputValidation 阻断 submit_script）让 schema 校验在 Coding Agent 循环
+    # 内部就能捕获，不再需要 validate-evidence 阶段兜底；因此无论 tool_call_limit
+    # 是否紧张（degraded/last_slot/exhausted 均如此），失败都在 execute-script
+    # 阶段以 report_code_generation_no_submission 出现，按 generation_attempts
+    # 重试到耗尽后统一软降级，而不是像 outputValidation 阻断之前那样区分
+    # 「预算刚好够提交、稍后被 validate-evidence 拦下」与「预算太紧连提交都
+    # 谈不上、在 execute-script 直接硬失败」两条路径。
+    result = await workflow.run(instruction, _run_context())
+    assert all(status == "completed" for _, status in result.stage_statuses)
+    assert len(completions) == 1
+    if scenario == "repaired":
         assert len(clients) == 1
+        assert runtime.executions == 2
+        assert completions[0]["evidencePaths"] == [evidence_path]
+        assert summaries[0]["supplementalEvidence"]["analysisId"] == "analysis_001"
+        assert any("report_analysis_evidence_reconciliation_warning" in item for item in completions[0]["warnings"])
     else:
-        result = await workflow.run(instruction, _run_context())
-        assert all(status == "completed" for _, status in result.stage_statuses)
-        assert len(completions) == 1
-        if scenario == "repaired":
-            assert len(clients) == 1
-            assert runtime.executions == 2
-            assert completions[0]["evidencePaths"] == [evidence_path]
-            assert summaries[0]["supplementalEvidence"]["analysisId"] == "analysis_001"
-            assert any("report_analysis_evidence_reconciliation_warning" in item for item in completions[0]["warnings"])
-        else:
-            assert len(clients) == 3
-            assert runtime.executions == 3
-            assert all(item["code"] == "report_analysis_evidence_schema_invalid" for item in diagnostics[1:])
-            assert completions[0]["evidencePaths"] == []
-            assert summaries[0]["supplementalEvidence"] is None
-            assert any("report_analysis_supplement_abandoned" in item for item in completions[0]["warnings"])
+        assert len(clients) == 3
+        assert runtime.executions == 3
+        assert all(
+            item["code"] == "report_analysis_evidence_schema_invalid" for item in diagnostics[1:]
+        )
+        assert completions[0]["evidencePaths"] == []
+        assert summaries[0]["supplementalEvidence"] is None
+        assert any("report_analysis_supplement_abandoned" in item for item in completions[0]["warnings"])
     assert len(runtime.shutdowns) == len(clients)
     for client in clients:
         user_message = next(item for item in client.requests[0]["input"] if item.get("role") == "user")

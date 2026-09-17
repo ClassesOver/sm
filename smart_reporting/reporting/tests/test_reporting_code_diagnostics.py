@@ -26,6 +26,7 @@ from smart_reporting.reporting.tests.test_reporting_interactive_code_agent impor
 )
 from smart_reporting.reporting.tests.test_reporting_repair_knowledge import _visualization_plan
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
+    MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS,
     AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     _AnalysisItemState,
@@ -201,6 +202,10 @@ async def test_submit_missing_source_returns_repairable_failure(  # noqa: F811
 
 @pytest.mark.anyio
 async def test_analysis_no_submission_degrades_supplemental_evidence():
+    """补充 evidence 是可选增强；no_submission 与 visualization 对必需图表的
+    策略一致——先重试到 MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS 耗尽才软降级，
+    而不是第一次失败就放弃（后者会与 test_evidence_feedback_to_workflow_
+    completion 长期验证的重试行为冲突）。"""
     error = ReportingError("report_code_generation_no_submission", "failed",
                            details={"retryable": False})
     workflow = AnalysisItemWorkflow(
@@ -212,9 +217,13 @@ async def test_analysis_no_submission_degrades_supplemental_evidence():
         decision=AnalysisEvidenceDecision(requiresSupplementalEvidence=True,
                                          reason="missing", missingFacts=("trend",)),
     )
-    result = await workflow._execute_script(
-        state, RunContext(run_id="run", session_id="session")
-    )
+    run_context = RunContext(run_id="run", session_id="session")
+    for attempt in range(1, MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS):
+        result = await workflow._execute_script(state, run_context)
+        assert result.content["status"] == "retry"
+        assert state.generation_attempts == attempt
+        assert state.supplement_abandoned is False
+    result = await workflow._execute_script(state, run_context)
     assert result.content["status"] == "degraded"
     assert state.supplement_abandoned is True
 

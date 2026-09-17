@@ -64,9 +64,9 @@ async def test_runner_records_metrics_before_no_submission(workspace):  # noqa: 
     output = SimpleNamespace(metrics=RunMetrics(total_tokens=42))
 
     class Model:
-        def configure_code_run(self, _tools, *, max_model_requests):
-            # 20 次工具调用后仍需允许一次模型终止响应。
-            assert max_model_requests == 21
+        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None):
+            # 30 次工具调用后仍需允许一次模型终止响应。
+            assert max_model_requests == 31
 
         def code_run_request_count(self):
             return 2
@@ -127,8 +127,8 @@ async def test_runner_records_request_count_when_agent_raises(workspace):  # noq
     recorded: list[tuple[object, int]] = []
 
     class Model:
-        def configure_code_run(self, _tools, *, max_model_requests):
-            assert max_model_requests == 21
+        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None):
+            assert max_model_requests == 31
 
         def code_run_request_count(self):
             return 2

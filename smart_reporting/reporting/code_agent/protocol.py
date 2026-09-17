@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from time import perf_counter
@@ -41,6 +41,7 @@ from ..phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
 )
+from .budget import CodeBudget
 
 FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
     {"write_script": "source", "run_snippet": "code"}
@@ -319,14 +320,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return False
         if not isinstance(payload, Mapping):
             return False
-        details = payload.get("details")
-        if isinstance(details, Mapping) and details.get("escalated") is True:
-            return False
-        return (payload.get("code"), payload.get("status")) in {
-            ("report_code_delivery_budget_reserved", "rejected"),
-            ("report_code_batch_stopped", "skipped"),
-            ("report_code_visual_review_redundant", "skipped"),
-        }
+        return CodeBudget.exempt(payload)
 
     @staticmethod
     def _limit_charge_for(results: list[Message], result_store: Any) -> int:
@@ -339,12 +333,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
 
     @staticmethod
     def _budget_payload(used: int, limit: int) -> dict[str, int]:
-        bounded_used = min(limit, max(0, used))
-        return {
-            "used": bounded_used,
-            "limit": limit,
-            "remaining": max(0, limit - bounded_used),
-        }
+        return CodeBudget.snapshot(used, limit)
 
     @classmethod
     def _attach_tool_budget(
@@ -357,33 +346,43 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 continue
             try:
                 payload = json.loads(content)
-            except (TypeError, ValueError):
+                use_json = True
+            except (TypeError, ValueError, RecursionError, MemoryError):
                 try:
                     payload = ast.literal_eval(content)
                 # 深嵌套或畸形文本可能让 ast.literal_eval 抛出比 SyntaxError/ValueError
                 # 更广的异常；宁可跳过附加 budget，也不能让协议层崩溃。
                 except (SyntaxError, ValueError, RecursionError, MemoryError, TypeError):
                     continue
+                # Agno 对未包装为 ToolResult 的普通 dict 返回值默认走
+                # str(function_call.result)（Python repr：单引号、True/False/None），
+                # 不是 JSON；这是 Reporting 工具结果最常见的落地格式。写回时必须
+                # 保持原有语法，否则把 'True' 变成 true 之类的改写会让任何按原始
+                # 格式重新解析该内容的下游（包括测试对 wire 内容的还原）出错，
+                # 即使模型本身能读懂两种格式。
+                use_json = False
             if not isinstance(payload, dict):
                 continue
             payload["budget"] = budget
-            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            try:
+                encoded = (
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    if use_json else repr(payload)
+                )
+                encoded_size = len(encoded.encode("utf-8"))
+            except (TypeError, ValueError, UnicodeError, RecursionError, MemoryError):
+                continue
             # 诊断字段已按各自硬上限精确塞满；附加 budget 不得让消息整体突破
             # 一个宽松的兜底上限——找不到安全空间就放弃附加，而不是无界增长。
-            if len(encoded.encode("utf-8")) > _ATTACH_BUDGET_MAX_ENCODED_BYTES:
+            if encoded_size > _ATTACH_BUDGET_MAX_ENCODED_BYTES:
                 continue
             message.content = encoded
 
-    @staticmethod
-    def _is_redundant_visual_review(call: FunctionCall) -> bool:
+    def _is_redundant_visual_review(self, call: FunctionCall) -> bool:
         if call.function.name != "view_image" or not isinstance(call.arguments, Mapping):
             return False
         path = call.arguments.get("path")
-        entrypoint = getattr(call.function, "entrypoint", None)
-        owner = getattr(call.function, "source_toolkit", None) or getattr(
-            entrypoint, "__self__", None
-        )
-        checker = getattr(owner, "has_current_visual_review", None)
+        checker = getattr(self, "_code_redundant_review_check", None)
         return isinstance(path, str) and callable(checker) and checker(path) is True
 
     def configure_code_run(
@@ -392,6 +391,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         *,
         max_model_requests: int,
         delivery_reserve: int | None = None,
+        redundant_call_check: Callable[[str], bool] | None = None,
     ) -> None:
         """绑定本任务实际 Function 范围；浅复制模型共享同一任务请求计数。"""
         names = [report_model_tool_name(tool) for tool in tools]
@@ -400,40 +400,38 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         if isinstance(max_model_requests, bool) or not isinstance(max_model_requests, int) or max_model_requests < 1:
             raise ValueError("max_model_requests must be a positive integer")
         self._code_tool_names = frozenset(names)
-        self._code_request_budget = {"limit": max_model_requests, "used": 0}
         if delivery_reserve is not None and (
             isinstance(delivery_reserve, bool)
             or not isinstance(delivery_reserve, int)
             or delivery_reserve < 1
         ):
             raise ValueError("delivery_reserve must be a positive integer")
-        self._code_delivery_reserve = (
-            delivery_reserve if delivery_reserve is not None else _DELIVERY_TOOL_RESERVE
+        self._code_budget = CodeBudget(
+            request_limit=max_model_requests,
+            reserve=delivery_reserve if delivery_reserve is not None else _DELIVERY_TOOL_RESERVE,
         )
-        self._code_reserve_rejections = 0
+        self._code_redundant_review_check = redundant_call_check
 
     def _consume_code_request(self) -> None:
-        budget = getattr(self, "_code_request_budget", None)
+        budget = getattr(self, "_code_budget", None)
         if budget is None:
             return
-        if budget["used"] >= budget["limit"]:
+        if not budget.consume_request():
             raise ReportingError(
                 "report_code_model_request_limit", "Coding Agent 模型请求次数已达上限。",
-                details={"retryable": False, "modelRequestCount": budget["used"], "modelRequestLimit": budget["limit"]},
+                details={"retryable": False, "recovery": "retry_then_degrade", "modelRequestCount": budget.requests, "modelRequestLimit": budget.request_limit},
             )
-        budget["used"] += 1
 
     def code_run_request_count(self) -> int:
         """返回当前 Coding task 已实际发出的模型请求数。"""
-        budget = getattr(self, "_code_request_budget", None)
-        return int(budget["used"]) if isinstance(budget, dict) else 0
+        budget = getattr(self, "_code_budget", None)
+        return budget.requests if budget is not None else 0
 
     def _current_code_request(self) -> tuple[int, int]:
-        budget = getattr(self, "_code_request_budget", None)
-        if not isinstance(budget, dict):
+        budget = getattr(self, "_code_budget", None)
+        if budget is None:
             return 1, 1
-        limit = int(budget["limit"])
-        return min(limit, max(1, int(budget["used"]))), limit
+        return min(budget.request_limit, max(1, budget.requests)), budget.request_limit
 
     def _format_tool_params(
         self, messages: list[Message], tools: Any = None
@@ -638,6 +636,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     ) -> Iterator[tuple[FunctionCall, int]]:
         """保持 provider 顺序；失败或签发后为剩余调用补齐未执行回执。"""
         stopped = False
+        budget = getattr(self, "_code_budget", None)
         for call in function_calls:
             tool_name = call.function.name
             if stopped:
@@ -668,12 +667,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 continue
             is_redundant_review = self._is_redundant_visual_review(call)
             if (
-                getattr(self, "_code_tool_names", None) is not None
+                budget is not None
                 and function_call_limit is not None
                 and (tool_name not in _DELIVERY_TOOL_NAMES or is_redundant_review)
-                and current_count
-                >= function_call_limit
-                - getattr(self, "_code_delivery_reserve", _DELIVERY_TOOL_RESERVE)
+                and budget.reserved(current_count, function_call_limit)
             ):
                 # 冗余的 view_image（图片已通过当前内容的审查）不是预算耗尽，只是
                 # 一次浪费的调用；跳过它但不终止本批次，避免连带丢弃同批次里其他
@@ -706,10 +703,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         "report_code_tool_progress tool_name={} status=skipped", tool_name
                     )
                     continue
-                self._code_reserve_rejections = (
-                    getattr(self, "_code_reserve_rejections", 0) + 1
-                )
-                escalated = self._code_reserve_rejections >= 2
+                escalated = budget.reject_exploration()
                 rejected = Message(
                     role=self.tool_message_role,
                     tool_call_id=call.call_id,
@@ -721,8 +715,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         "status": "rejected",
                         "code": "report_code_delivery_budget_reserved",
                         "message": (
-                            "剩余额度仅供交付；请立即调用 write_script、run_script、"
-                            "view_image 或 submit_script，不要再调用探索工具。"
+                            "剩余额度仅供交付；请立即调用 requiredNextTools 中的工具，"
+                            "不要再调用探索工具。"
                             if escalated
                             else "剩余工具调用额度仅供正式脚本写入、运行、审查和提交。"
                         ),
@@ -738,6 +732,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     }, ensure_ascii=False),
                 )
                 charged_count = current_count + (1 if escalated else 0)
+                current_count = charged_count
                 self._attach_tool_budget(
                     [rejected], used=charged_count, limit=function_call_limit
                 )
@@ -772,11 +767,11 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 isinstance(call.result, Mapping) and call.result.get("ok") is False
             )
             result = call.result if isinstance(call.result, Mapping) else {}
-            if tool_name in _DELIVERY_TOOL_NAMES and result.get("ok") is True:
+            if budget is not None and tool_name in _DELIVERY_TOOL_NAMES and result.get("ok") is True:
                 # 模型已恢复交付类调用并成功执行；升级计数不应把这次成功前的
                 # 拒绝历史带到下一次预留区拒绝上，否则一次陈旧的拒绝就会让
                 # 后续正常拒绝被误判为升级。
-                self._code_reserve_rejections = 0
+                budget.delivery_succeeded()
             status = (
                 "rejected"
                 if result.get("ok") is False

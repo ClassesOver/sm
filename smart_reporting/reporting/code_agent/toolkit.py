@@ -14,7 +14,7 @@ from agno.tools import Function, Toolkit
 from loguru import logger
 
 from ...workspace import WorkspaceError, WorkspaceService
-from ..code_mode import ReportingCodeModeRuntime, script_process_exit_code
+from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
 from ..vision import ReportVisionReviewer
@@ -1045,19 +1045,19 @@ class ReportingCodeModeToolkit(Toolkit):
         try:
             source_before = await self._validated_source_identity()
             await self._clear_declared_outputs()
-            cell = await self.runtime.execute_script_process(
+            process = await self.runtime.execute_script_process(
                 self.context.code_mode_session_id,
                 self.workspace,
                 self.context.script_path,
                 matplotlib_agg=self.context.task_kind == "visualization",
             )
-            if _cell_field(cell, "status") != "ok":
-                return _bounded_failure("report_code_mode_execution_failed", cell)
-            # cell 自身的退出码通道（由 `exit $report_exit` 恢复）是权威失败信号；
-            # stderr/stdout 标记只用于交叉校验。标记缺失（截断或流合并）不得让已经
-            # 成功的 status 被误判为失败，只有标记与 status 明确不一致时才拒绝。
-            exit_code = script_process_exit_code(cell)
-            if exit_code is not None and exit_code != 0:
+            if not isinstance(process, ScriptProcessResult):
+                return _failure(
+                    "report_code_exit_receipt_invalid",
+                    "Coding Agent 脚本退出码回执缺失或无效。",
+                )
+            cell, exit_code = process.cell, process.exit_code
+            if _cell_field(cell, "status") != "ok" or exit_code not in (None, 0):
                 details: dict[str, Any] = {
                     name: str(_cell_field(cell, name, "") or "")
                     for name in ("traceback", "stderr", "stdout")
@@ -1067,6 +1067,11 @@ class ReportingCodeModeToolkit(Toolkit):
                     "report_code_mode_execution_failed",
                     "Coding Agent 脚本子进程未正常退出。",
                     details,
+                )
+            if exit_code is None:
+                return _failure(
+                    "report_code_exit_receipt_invalid",
+                    "Coding Agent 脚本退出码回执缺失或无效。",
                 )
             source_after = await self._validated_source_identity()
             if source_after != source_before:

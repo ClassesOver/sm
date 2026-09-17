@@ -19,6 +19,7 @@ from smart_reporting.reporting.code_agent.toolkit import (
     MAX_DIAGNOSTIC_BYTES,
     ReportingCodeModeToolkit,
 )
+from smart_reporting.reporting.code_mode import ScriptProcessResult
 from smart_reporting.reporting.model_policy import ThinkingDecision, bind_reporting_thinking
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
@@ -395,16 +396,14 @@ async def test_runner_rejects_missing_authorized_input_before_model_call(workspa
 
 
 @pytest.mark.anyio
-async def test_run_script_tolerates_truncated_exit_marker_when_status_ok(
+async def test_run_script_accepts_structured_zero_exit_code(
     binding, workspace  # noqa: F811
 ):
-    """stderr 中的 __REPORT_EXIT__ 标记只是交叉校验；status=="ok" 时标记缺失
-    （截断或与 stdout 合并）不得让已经成功的脚本被误判失败。"""
-
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            cell = SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return ScriptProcessResult(cell=cell, exit_code=0)
 
     toolkit = ReportingCodeModeToolkit(binding, Runtime(), ReportingLspProcessManager())
     await toolkit.write_script(SOURCE)
@@ -415,16 +414,13 @@ async def test_run_script_tolerates_truncated_exit_marker_when_status_ok(
 
 
 @pytest.mark.anyio
-async def test_run_script_fails_closed_on_exit_marker_status_mismatch(
+async def test_run_script_rejects_structured_nonzero_exit_code(
     binding  # noqa: F811
 ):
-    """cell status=="ok" 但退出码标记解析出非零值属于真实异常（例如宿主与
-    IPython 状态不一致），必须拒绝而不是信任 status。"""
+    cell = SimpleNamespace(status="error", stdout="", stderr="boom", traceback=None)
     runtime = SimpleNamespace(
         execute_script_process=AsyncMock(
-            return_value=SimpleNamespace(
-                status="ok", stdout="", stderr="boom\n__REPORT_EXIT__=7\n", traceback=None
-            )
+            return_value=ScriptProcessResult(cell=cell, exit_code=7)
         )
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
@@ -434,19 +430,16 @@ async def test_run_script_fails_closed_on_exit_marker_status_mismatch(
 
     assert result["ok"] is False
     assert result["code"] == "report_code_mode_execution_failed"
-    assert result["details"]["exitCode"] == 7
 
 
 @pytest.mark.anyio
-async def test_run_script_finds_exit_marker_in_stdout_when_streams_merged(
+async def test_run_script_rejects_missing_structured_exit_receipt(
     binding  # noqa: F811
 ):
-    """某些运行环境会把 stderr 合并进 stdout；退出码标记必须在两个流都能查找到。"""
+    cell = SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
     runtime = SimpleNamespace(
         execute_script_process=AsyncMock(
-            return_value=SimpleNamespace(
-                status="ok", stdout="__REPORT_EXIT__=9\n", stderr="", traceback=None
-            )
+            return_value=ScriptProcessResult(cell=cell, exit_code=None)
         )
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
@@ -454,9 +447,12 @@ async def test_run_script_finds_exit_marker_in_stdout_when_streams_merged(
 
     result = await toolkit.run_script()
 
-    assert result["ok"] is False
-    assert result["code"] == "report_code_mode_execution_failed"
-    assert result["details"]["exitCode"] == 9
+    assert result == {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_code_exit_receipt_invalid",
+        "message": "Coding Agent 脚本退出码回执缺失或无效。",
+    }
 
 
 @pytest.mark.anyio

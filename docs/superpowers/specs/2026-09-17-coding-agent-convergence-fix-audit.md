@@ -1,5 +1,24 @@
 # Reporting Coding Agent 收敛性修复复审
 
+## 后续实施进展（2026-09-17）
+
+以下是基于当前工作区与定向实跑的更新；下文对 `47d1e2e` 的评审保留为历史记录。
+
+- **A5 已实现**：`execute_script_process` 通过 workspace 内每次执行唯一的
+  `.reporting-exits/<uuid>.status` 文件读取退出码，返回 `ScriptProcessResult`。
+  继续使用 Agno CodeMode 执行 cell；Agno 的 `CellResult` 没有子进程退出码字段，
+  因此只在宿主适配层补充回执。`execute_script` 和 toolkit 不再解析 stdout/stderr
+  中的标记；缺失、非法或超长回执无法产生成功执行凭据。非零退出与 cell 失败仍保留
+  执行错误分类。回执在 `finally` 中清理，清理失败通过 loguru 记录，不覆盖执行根因。
+- **B2 结论修订**：接续的工作区改动恢复 analysis 按已有 generation/repair 预算
+  重试到耗尽再软降级，并把阻塞提交的校验根因带到下一轮。轨迹测试已验证此路径；
+  下文“首次 no_submission 即降级是有意设计”的结论已被此实现取代。
+- **B5 结论修订**：Agno 普通 dict 工具结果确实可采用 Python repr；当前协议层
+  附加预算时保留 JSON/repr 各自格式。下文“repr 未见真实触发点”的判断不再适用。
+- **A1–A4 已实施**：详见文末第二轮记录；B4、B5、B7-2 的定向边界测试也已补齐。
+
+本轮测试结果见文末追加记录。
+
 ## 范围与方法
 
 复审对象：commit `47d1e2e` "fix(reporting): harden coding agent convergence"，即对
@@ -326,7 +345,7 @@ C3 的「仅 escalated 计费」本质是补丁：因为豁免让计数非单调
 
 ---
 
-## 建议落地顺序（B1–B7 已处理完毕；B2 与探索额度计费判定为非缺陷；架构项待处理）
+## 原建议落地顺序（历史评审；当前状态见文首和文末）
 
 | 优先级 | 项目 | 状态 |
 | --- | --- | --- |
@@ -335,7 +354,7 @@ C3 的「仅 escalated 计费」本质是补丁：因为豁免让计数非单调
 | — | B2 | 复审后判定为有意设计，未改动行为，仅补注释 |
 | P2 | B5、B6、B7-1~4 | 均已修复 |
 | — | B7 探索额度计费 | 复审后确认不是缺陷，未改动行为 |
-| 架构 | A5 → A2 → A3 → A1 → A4 | 未处理；A5（哨兵文件）会让 B1 的双通道文本解析彻底成为历史 |
+| 架构 | A5 → A2 → A3 → A1 → A4 | 已实施；具体实现取舍与验证见本轮记录 |
 
 ## 已完成的回归测试
 
@@ -362,9 +381,57 @@ C3 的「仅 escalated 计费」本质是补丁：因为豁免让计数非单调
    `test_complete_rounds_drops_round_missing_any_call_coverage`（确认多调用场景下真正
    缺失覆盖的轮次仍会被正确丢弃，不因放宽单调用判定而误判宽松）。
 
-## 待办
+## 原待办的处理状态
 
-- B4、B5、B7-2（`_repair_diagnostic` 截断标记）未单独补测试：均为低风险行为改动，现有
-  测试未断言相关字段的具体内容或缺失状态；可在后续补充定向用例。
-- 全部架构项（A1–A5）未处理，按原建议顺序留待下一轮，其中 A5（脚本退出码写入哨兵文件）
-  优先级最高——它会让 B1 引入的双通道文本解析彻底成为历史。
+- B4、B5、B7-2 已补充 `test_reporting_code_audit_edges.py` 定向用例。
+- A1–A5 均已实施；本记录与代码、定向测试一同纳入本地修复提交。
+
+## 本轮实跑记录
+
+- `test_reporting_script_process.py`、`test_reporting_interactive_code_agent.py`、
+  `test_reporting_code_agent_stability.py`、`test_reporting_code_agent_trajectories.py`：
+  **128 passed**。覆盖真实 bash/Python 子进程、双流丢弃、非零退出、并发唯一回执、
+  缺失/损坏/越界/超长回执、执行后异常清理，以及既有交互与修复轨迹。
+- metrics 定向测试已通过；此前两项失败是 stub 保留旧的 21 次请求期望，现按
+  当前 analysis 30 次工具预算改为 31 次请求（预留最终模型响应）。
+- 上轮 batches、diagnostics、analysis 降级与 evidence 轨迹定向检查已有 40 项通过；
+  本轮仅按 A5 影响范围扩大验证，未运行或重复全量测试。
+- 未执行真实 provider 请求；shell 测试验证宿主执行契约，不能作为 provider 探针证据。
+
+## 第二轮实施：A1–A4 与剩余测试边界
+
+- **A2**：新增 `code_agent/budget.py`，集中模型请求、交付预留、拒绝升级/复位、
+  控制回执豁免及预算快照规则。保留 Agno `Model._limit_charge_for` 作为实际工具计费
+  权威，不另建与 Agno 重复的 `used/limit` 累加器；批次从 Agno 传入计数并按其结果
+  推进。模型浅复制共享同一个任务预算，新任务配置创建新的预算对象。修复升级拒绝后
+  同批次 skipped 回执预算仍显示旧值的问题。
+- **A1**：runner 显式注入 `toolkit.has_current_visual_review`；协议层移除
+  `source_toolkit` / `entrypoint.__self__` 反射。未注入时不执行冗余审查优化。
+- **A3**：新增 `code_agent/failure_policy.py`，用不可变策略表统一两个 workflow 的
+  恢复分类与 runner 的 thinking failure kind；保留按任务类型有意存在的分类差异。
+- **A4**：`no_submission`、模型请求上限和 rate limit 抛出点显式声明
+  `recovery: retry_then_degrade`；消费端统一读取策略，`retryable` 仅保留旧错误的兼容
+  解释。选用 `fatal/retry/retry_then_degrade` 三种策略，以明确“先按既有预算修复，
+  再降级”，而不是改变既有重试次数。已知任务取消、身份失效等终止态不能被错误详情
+  中的恢复字段降级。其他旧抛出点继续由共享表及兼容规则解释，无需一次性迁移所有错误。
+- **边界补充**：分析预留提示仅引用已声明交付工具；JSON 深嵌套解析异常也被保护；
+  验证 JSON/repr 语法保留、16 KiB wire 附加上限（不同于 8 KiB 诊断字段上限）、
+  各 stdout/stderr/traceback 的截断标记。
+
+验证：第一批受影响的 batches/metrics/stability/diagnostics/workflows/trajectories
+共 **93 passed**；第二批交互测试和新增策略/边界测试先得到 **87 passed、2 failed**，
+两项失败为新测试误用 8 KiB wire 上限，修正到实际 16 KiB 边界后仅重跑这两项，
+结果 **2 passed**；本轮共 182 项定向用例通过。`git diff --check` 通过。
+未执行全量测试或真实 provider 探针。
+
+## 收尾复核
+
+- 预算附加的异常保护延伸至序列化与 UTF-8 编码阶段：含孤立 surrogate 的 JSON
+  保持原始工具结果，不因附加预算失败而中断协议循环。
+- `_repair_diagnostic` 和 `_short_diagnostic` 保留上游已设置的各输出流截断标记，
+  即使本层接收到的文本已经足够短，也不会把片段误标为完整输出。
+- 新增真实 Agno 3.0.9 CodeMode 内核验证：脚本 stdout/stderr 超过 128 字符上限，
+  两个流确实被截断，结构化回执仍分别返回 0 / 7，cell 状态分别为 ok / error，
+  每次回执均清理。此项为本地内核验证，不涉及模型 provider。
+- 本轮定向测试 **16 passed**，包括上述边界和既有 thinking 分类兼容测试；
+  修改涉及的 Python 文件通过 Ruff 检查及 `git diff --check`。没有重复全量测试。

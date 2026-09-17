@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
+import shlex
 from ast import literal_eval
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
@@ -29,7 +31,7 @@ from smart_reporting.reporting.code_agent.context import (
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
-from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
+from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime, ScriptProcessResult
 from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingWorkspaceRegistry,
@@ -334,11 +336,9 @@ class ToolkitRuntime:
     async def execute_script_process(self, _session_id, workspace, _path, **_kwargs):
         if self.next_cell is not None:
             cell, self.next_cell = self.next_cell, None
-            return cell
+            return ScriptProcessResult(cell, 1)
         await workspace.awrite_text("task-1", "analysis/out.json", "{}")
-        return SimpleNamespace(
-            status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None
-        )
+        return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
     async def shutdown(self, session_id: str) -> None:
         self.shutdowns.append(session_id)
@@ -351,6 +351,10 @@ class FakeCodeMode:
 
     async def arun(self, session_id: str, code: str) -> SimpleNamespace:
         self.cells.append((session_id, code))
+        if code.startswith("%%bash"):
+            match = re.search(r"> (.+)\nexit \$report_exit", code)
+            assert match is not None
+            Path(shlex.split(match.group(1))[0]).write_text("0\n", encoding="ascii")
         return SimpleNamespace(
             status="ok",
             stdout="",
@@ -1052,10 +1056,15 @@ async def test_execute_script_uses_clean_python_subprocess(
     code_mode = FakeCodeMode()
     runtime = ReportingCodeModeRuntime(code_mode)
     await runtime.execute("task-1", workspace, "leaked = 7")
-    await runtime.execute_script_process("task-1", workspace, "analysis/a.py", matplotlib_agg=False)
+    process = await runtime.execute_script_process(
+        "task-1", workspace, "analysis/a.py", matplotlib_agg=False
+    )
+    assert process.exit_code == 0
     assert code_mode.cells[-1][1].startswith("%%bash\n")
     assert "exec(compile(" not in code_mode.cells[-1][1]
     assert "analysis/a.py" in code_mode.cells[-1][1]
+    assert "__REPORT_EXIT__" not in code_mode.cells[-1][1]
+    assert list((workspace.identity.root / ".reporting-exits").iterdir()) == []
 
 
 @pytest.mark.anyio
@@ -1248,7 +1257,7 @@ async def test_successful_visual_rerun_reuses_review_for_unchanged_output(
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "charts/chart.png", "image")
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
     reviewer = AsyncMock(spec=ReportVisionReviewer)
     binding, toolkit, output = await _prepared_visualization_toolkit(
@@ -1274,7 +1283,7 @@ async def test_visual_rerun_does_not_reuse_review_requiring_revision(
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "charts/chart.png", "image")
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
     binding, toolkit, output = await _prepared_visualization_toolkit(workspace, Runtime())
     binding.visual_inspection_receipts[output.path] = _visual_receipt(
@@ -1441,7 +1450,7 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1507,7 +1516,7 @@ async def test_runner_vision_uses_exact_reviewer_dynamic_budget_and_sorted_recei
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             for path in output_paths:
                 await received.awrite_text("task-1", path, path)
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1789,12 +1798,12 @@ async def test_interactive_v1_write_fail_fix_run_submit(
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             source = await received.aread_text("task-1", "analysis/a.py")
             if "broken" in source:
-                return _failed_cell("SyntaxError: invalid syntax")
+                return ScriptProcessResult(_failed_cell("SyntaxError: invalid syntax"), 1)
             exists = await received.apath_exists("task-1", "analysis/out.json")
             await received.awrite_text(
                 "task-1", "analysis/out.json", "{}", overwrite=exists
             )
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, _session_id):
             return None
@@ -1874,9 +1883,9 @@ async def test_interactive_v1_end_to_end_responses_loop(
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             source = await received.aread_text("task-1", "analysis/a.py")
             if "broken" in source:
-                return _failed_cell("SyntaxError: invalid syntax")
+                return ScriptProcessResult(_failed_cell("SyntaxError: invalid syntax"), 1)
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1989,7 +1998,7 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
             source = await received.aread_text("task-1", "analysis/chart.py")
             content = b"image-v2" if "image-v2" in source else b"image-v1"
             await received.awrite_bytes("task-1", "charts/chart.png", content)
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2092,7 +2101,7 @@ async def test_visual_reviewer_failure_releases_task_resources(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_bytes("task-1", "charts/chart.png", b"image")
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2154,7 +2163,7 @@ async def test_interactive_v1_releases_all_task_resources(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
+            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)

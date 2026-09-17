@@ -19,12 +19,12 @@ from ...code_agent.context import (
     ReportingCodingTaskContext,
     ReportingCodingTaskRegistry,
 )
+from ...code_agent.failure_policy import failure_kind as _code_failure_kind
 from ...code_agent.lsp_process import ReportingLspProcessManager
 from ...code_agent.toolkit import ReportingCodeModeToolkit
 from ...code_mode import ReportingCodeModeRuntime
 from ...host_workspace import HostReportingWorkspace
 from ...knowledge import ReportingKnowledgeIndex
-from ...model_policy import ThinkingFailureKind
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
 from ...vision import ReportVisionReviewer
@@ -54,27 +54,6 @@ def _bounded_forbidden_path_operations(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return sorted({item for item in value if isinstance(item, str)})[:MAX_DIAGNOSTIC_UNSIGNED_PATHS]
-
-
-def _code_failure_kind(diagnostic: Mapping[str, Any] | None) -> ThinkingFailureKind | None:
-    code = diagnostic.get("code") if isinstance(diagnostic, Mapping) else None
-    if code in {
-        "report_python_source_shape_invalid", "report_python_source_path_invalid",
-        "report_code_source_invalid",
-    }:
-        return "python_compile_failure"
-    if code in {
-        "execution_output_error",
-        "report_code_mode_execution_failed",
-        "report_analysis_script_failed",
-        "report_visualization_script_failed",
-    }:
-        return "python_execution_failure"
-    if code == "report_visualization_review_failed":
-        return "visual_review_failure"
-    if code == "report_analysis_evidence_schema_invalid":
-        return "schema_failure"
-    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +157,7 @@ class ReportingCodeGenerationRunner:
                     configure_code_run(
                         toolkit.tool_functions,
                         max_model_requests=max(4, agent.tool_call_limit + 1),
+                        redundant_call_check=toolkit.has_current_visual_review,
                         delivery_reserve=(
                             3 + len(task_context.declared_output_paths)
                             if task_context.task_kind == "visualization"
@@ -217,6 +197,7 @@ class ReportingCodeGenerationRunner:
                     )
                     details.update({
                         "retryable": False,
+                        "recovery": "retry_then_degrade",
                         "toolCallLimit": agent.tool_call_limit,
                         "toolResultCount": tool_results,
                         "modelRequests": request_count,
@@ -276,7 +257,7 @@ class ReportingCodeGenerationRunner:
             return ReportingError(
                 "report_code_generation_rate_limited",
                 "Coding Agent 模型调用受限，请稍后重试。",
-                details={"statusCode": error.status_code},
+                details={"statusCode": error.status_code, "recovery": "retry_then_degrade"},
             )
         return ReportingError("report_code_generation_agent_failed", "Coding Agent 调用失败。")
 
@@ -345,7 +326,7 @@ class ReportingCodeGenerationRunner:
                 safe[field], truncated = bounded_python_script_diagnostic(
                     value, MAX_DIAGNOSTIC_OUTPUT_LENGTH // 2
                 )
-                if truncated:
+                if truncated or details.get(f"{field}Truncated") is True:
                     safe[f"{field}Truncated"] = True
         for field in ("toolCode", "toolMessage"):
             value = details.get(field)
@@ -356,4 +337,4 @@ class ReportingCodeGenerationRunner:
         return result
 
 
-__all__ = ["CodeGenerationResult", "ReportingCodeGenerationRunner"]
+__all__ = ["CodeGenerationResult", "ReportingCodeGenerationRunner", "_code_failure_kind"]

@@ -10,6 +10,7 @@ from agno.run import RunContext
 from loguru import logger
 
 from ....model_routing import TaskComplexity
+from ...code_agent.failure_policy import recovery_for
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
@@ -45,30 +46,8 @@ SubmitVisualization = Callable[
 ]
 DegradeVisualization = Callable[[Exception, RunContext], Awaitable[Mapping[str, Any]]]
 
-_NON_RECOVERABLE_CODES = frozenset(
-    {
-        "report_phase_artifact_changed",
-        "report_capability_invalid",
-        "report_task_lease_conflict",
-        "report_task_cancelled",
-        "report_task_timeout",
-        "report_workspace_unavailable",
-        "report_coding_task_conflict",
-        "report_code_mode_runtime_missing",
-    }
-)
 _MAX_GENERATE_ATTEMPTS = 3
 MAX_VISUALIZATION_EXECUTION_REPAIRS = 3
-_DEGRADABLE_CODES = frozenset(
-    {
-        "execution_output_error",
-        "report_visualization_script_failed",
-        "report_chart_file_missing",
-        "report_code_generation_no_submission",
-        "report_code_model_request_limit",
-        "report_code_generation_rate_limited",
-    }
-)
 
 
 def _visualization_thinking_complexity(payload: Mapping[str, Any]) -> TaskComplexity:
@@ -155,7 +134,7 @@ def _repair_diagnostic(
         value = raw_details.get(field)
         if isinstance(value, str) and value:
             details[field], truncated = bounded_python_script_diagnostic(value, 1024)
-            if truncated:
+            if truncated or raw_details.get(f"{field}Truncated") is True:
                 details[f"{field}Truncated"] = True
     output_truncated = raw_details.get("outputTruncated")
     if isinstance(output_truncated, bool) or diagnostic_output_truncated:
@@ -256,18 +235,11 @@ def _repair_task_facts(
 
 
 def _is_nonrecoverable(error: Exception) -> bool:
-    return isinstance(error, ReportingError) and (
-        error.code in _NON_RECOVERABLE_CODES
-        or (
-            isinstance(error.details, Mapping)
-            and error.details.get("retryable") is False
-            and not _is_degradable(error)
-        )
-    )
+    return recovery_for(error, "visualization") == "fatal"
 
 
 def _is_degradable(error: Exception) -> bool:
-    return isinstance(error, ReportingError) and error.code in _DEGRADABLE_CODES
+    return recovery_for(error, "visualization") == "retry_then_degrade"
 
 
 def _with_repair_count(error: Exception, *, execution_repairs: int) -> Exception:

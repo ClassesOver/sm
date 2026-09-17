@@ -157,7 +157,11 @@ async def test_analysis_v1_degrades_after_no_submission() -> None:
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
-    assert run_count == 1
+    # 补充 evidence 可选，失败后退回软告警，但降级前必须先重试到
+    # MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS 耗尽，与 visualization 对必需
+    # 图表先重试再降级的策略一致（见 test_visualization_v1_degrades_after_
+    # code_agent_no_submission 和 test_evidence_feedback_to_workflow_completion）。
+    assert run_count == 3
     assert len(completions) == 1
 
 

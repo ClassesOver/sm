@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from ast import literal_eval
 
 import pytest
 from agno.models.message import Message
@@ -376,7 +377,9 @@ async def test_successful_delivery_call_resets_reserve_rejection_escalation() ->
             function_call_limit=20,
         )
     ]
-    assert json.loads(delivered[0].content)["ok"] is True
+    # 普通 dict 结果经 Agno str(function_call.result) 落地为 Python repr，
+    # 不是 JSON（区别于我们自建的 rejected/skipped 控制结果）。
+    assert literal_eval(delivered[0].content)["ok"] is True
 
     second: list[Message] = []
     _ = [
@@ -405,9 +408,9 @@ async def test_tool_results_include_budget_and_reserved_view_rejects_current_rev
     owner = Owner()
     function = Function(name="view_image", entrypoint=owner.view_image)
     function.process_entrypoint()
-    function.source_toolkit = owner
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    model.configure_code_run((function,), max_model_requests=4, delivery_reserve=3)
+    model.configure_code_run((function,), max_model_requests=4, delivery_reserve=3,
+                             redundant_call_check=owner.has_current_visual_review)
 
     allowed: list[Message] = []
     _ = [
@@ -425,7 +428,9 @@ async def test_tool_results_include_budget_and_reserved_view_rejects_current_rev
             function_call_limit=20,
         )
     ]
-    allowed_payload = json.loads(allowed[0].content)
+    # 普通 dict 结果经 Agno str(function_call.result) 落地为 Python repr，
+    # 不是 JSON（区别于我们自建的 rejected/skipped 控制结果）。
+    allowed_payload = literal_eval(allowed[0].content)
     assert allowed_payload["ok"] is True
     assert allowed_payload["budget"] == {"used": 18, "limit": 20, "remaining": 2}
 
@@ -466,7 +471,6 @@ async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
     owner = Owner()
     view_image = Function(name="view_image", entrypoint=owner.view_image)
     view_image.process_entrypoint()
-    view_image.source_toolkit = owner
 
     executed: list[str] = []
 
@@ -479,7 +483,8 @@ async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
 
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     model.configure_code_run(
-        (view_image, submit_script), max_model_requests=4, delivery_reserve=2
+        (view_image, submit_script), max_model_requests=4, delivery_reserve=2,
+        redundant_call_check=owner.has_current_visual_review,
     )
 
     results: list[Message] = []
@@ -501,9 +506,17 @@ async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
     ]
 
     # 冗余拒绝之后，同批次内真正需要执行的 submit_script 必须继续执行，
-    # 不能被当作批次终止的失败信号误伤。
+    # 不能被当作批次终止的失败信号误伤。第一项是我们自建的 JSON 控制结果，
+    # 第二项是 submit_script 的普通 dict 结果，经 Agno str() 落地为 Python repr。
     assert executed == ["submit_script"]
-    assert [json.loads(item.content).get("code") for item in results] == [
+
+    def _payload(content: str) -> dict[str, object]:
+        try:
+            return json.loads(content)
+        except (TypeError, ValueError):
+            return literal_eval(content)
+
+    assert [_payload(item.content).get("code") for item in results] == [
         "report_code_visual_review_redundant",
         None,
     ]

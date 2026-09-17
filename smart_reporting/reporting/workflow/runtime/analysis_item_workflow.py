@@ -25,6 +25,7 @@ from pydantic import (
 )
 
 from ...code_agent.context import ExecutionReceipt
+from ...code_agent.failure_policy import recovery_for
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...models import ReportingError
 from ..checkpoint import FileIdentity
@@ -37,23 +38,6 @@ DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
-_NON_RECOVERABLE_CODES = frozenset(
-    {
-        "report_coding_task_conflict",
-        "report_code_mode_runtime_missing",
-        "report_workspace_unavailable",
-        "report_task_cancelled",
-        "report_task_timeout",
-        "report_phase_artifact_changed",
-    }
-)
-_DEGRADABLE_CODES = frozenset(
-    {
-        "report_code_generation_no_submission",
-        "report_code_model_request_limit",
-        "report_code_generation_rate_limited",
-    }
-)
 _STAGE_NAMES = (
     "read-facts",
     "plan-evidence",
@@ -801,11 +785,7 @@ class AnalysisItemWorkflow:
                     "补充 evidence 不在 Coding Agent 签发输出中。",
                 )
         except ReportingError as error:
-            if error.code in _NON_RECOVERABLE_CODES or (
-                isinstance(error.details, Mapping)
-                and error.details.get("retryable") is False
-                and error.code not in _DEGRADABLE_CODES
-            ):
+            if recovery_for(error, "analysis") == "fatal":
                 raise
             state.failure = error
             state.evidence = None
@@ -815,12 +795,8 @@ class AnalysisItemWorkflow:
             ) or (
                 state.script_file is not None and state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS
             )
-            # 补充 evidence 是可选增强；_abandon_supplement 只是退回确定性事实
-            # 的软告警，不是致命失败。可降级 code 首次出现即放弃，避免为一份
-            # 可选产物再烧一轮全新工具预算——与 VisualizationSectionWorkflow 对
-            # 必需图表先重试再降级的策略不同，是故意的不对称（见
-            # test_analysis_v1_degrades_after_no_submission）。
-            if exhausted or error.code in _DEGRADABLE_CODES:
+            # 可选 evidence 在生成/修复预算耗尽后以软告警退回确定性事实。
+            if exhausted:
                 return self._abandon_supplement(state)
             state.statuses["execute-script"] = "retrying"
             return StepOutput(content={"status": "retry", "code": error.code})
@@ -900,9 +876,7 @@ class AnalysisItemWorkflow:
             state.statuses["validate-evidence"] = "retrying"
             return StepOutput(content={"status": "retry", "code": rejection.code})
         except ReportingError as error:
-            if error.code in _NON_RECOVERABLE_CODES or (
-                isinstance(error.details, Mapping) and error.details.get("retryable") is False
-            ):
+            if recovery_for(error, "analysis") == "fatal":
                 raise
             state.evidence = None
             state.evidence_file = None
@@ -1125,13 +1099,27 @@ class AnalysisItemWorkflow:
     def _repair_error(error: Exception | None) -> dict[str, Any] | None:
         if error is None:
             return None
-        if isinstance(error, ReportingError):
-            return {
-                "code": error.code,
-                "message": error.message,
-                **({"details": error.details} if error.details is not None else {}),
-            }
-        return {"code": type(error).__name__, "message": str(error)[:4_000]}
+        if not isinstance(error, ReportingError):
+            return {"code": type(error).__name__, "message": str(error)[:4_000]}
+        code, message, details = error.code, error.message, error.details
+        # report_code_generation_no_submission 是通用包装码；submit_script 若因
+        # outputValidation 被阻断（C5），真实根因在 pendingOutputValidation/
+        # lastFailure 里。修复循环下一轮的诊断必须反映真实根因，否则模型看到的
+        # 只是「未提交」而不知道具体哪里错了。
+        if isinstance(details, Mapping):
+            for key in ("pendingOutputValidation", "lastFailure"):
+                nested = details.get(key)
+                if isinstance(nested, Mapping) and isinstance(nested.get("code"), str):
+                    code = nested["code"]
+                    nested_message = nested.get("message")
+                    if isinstance(nested_message, str):
+                        message = nested_message
+                    break
+        return {
+            "code": code,
+            "message": message,
+            **({"details": details} if details is not None else {}),
+        }
 
     @staticmethod
     def _dataset_ids(state: _AnalysisItemState) -> list[str]:

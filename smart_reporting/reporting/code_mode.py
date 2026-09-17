@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
-import re
 import shlex
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agno.tools.code import CodeMode
+from loguru import logger
 
+from ..workspace import WorkspaceError
 from .host_workspace import HostReportingWorkspace
 from .models import ReportingError
 
-_SCRIPT_EXIT_MARKER = "__REPORT_EXIT__="
-_SCRIPT_EXIT_PATTERN = re.compile(r"__REPORT_EXIT__=(-?\d+)(?:\n|$)")
+_SCRIPT_EXIT_DIRECTORY = ".reporting-exits"
+_SCRIPT_EXIT_RECEIPT_MAX_BYTES = 16
+
+
+@dataclass(frozen=True)
+class ScriptProcessResult:
+    """Agno cell 诊断与独立文件回执；None 表示没有有效的进程退出凭据。"""
+
+    cell: Any
+    exit_code: int | None
 
 
 def _cell_field(cell: Any, name: str, default: Any = None) -> Any:
@@ -34,30 +45,27 @@ def _bootstrap_cell(workspace: HostReportingWorkspace, *, matplotlib_agg: bool) 
     return "\n".join(lines)
 
 
-def _script_process_cell(script_path: str) -> str:
+def _script_process_cell(script_path: str, exit_receipt_path: str) -> str:
     command = " ".join((shlex.quote(sys.executable), shlex.quote(script_path)))
     return (
         "%%bash\n"
         "set +e\n"
         f"{command}\n"
         "report_exit=$?\n"
-        f'echo "{_SCRIPT_EXIT_MARKER}$report_exit" >&2\n'
-        # 恢复 cell 自身的退出码通道：标记只是交叉校验，失败判定不得只依赖
-        # 可能被截断或与 stdout 合并的 stderr 文本。
+        f"printf '%s\\n' \"$report_exit\" > {shlex.quote(exit_receipt_path)}\n"
         "exit $report_exit\n"
     )
 
 
-def script_process_exit_code(cell: Any) -> int | None:
-    """在 stderr 和 stdout 两个流中查找退出码标记；截断或流合并都不应致命。"""
-    for name in ("stderr", "stdout"):
-        text = _cell_field(cell, name, "")
-        if not isinstance(text, str):
-            continue
-        matches = list(_SCRIPT_EXIT_PATTERN.finditer(text))
-        if matches:
-            return int(matches[-1].group(1))
-    return None
+def _parse_script_exit_receipt(raw: bytes) -> int | None:
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    if not text.isascii() or not text.isdigit():
+        return None
+    exit_code = int(text)
+    return exit_code if 0 <= exit_code <= 255 else None
 
 
 def create_reporting_code_mode_runtime(
@@ -147,18 +155,22 @@ class ReportingCodeModeRuntime:
         del timeout  # CodeMode 的 cell timeout 在实例级配置；调用方仍保留该契约参数。
         try:
             normalized = workspace.paths.normalize(script_path)
-            cell = await self.execute_script_process(
+            process = await self.execute_script_process(
                 session_id,
                 workspace,
                 normalized,
                 matplotlib_agg=matplotlib_agg,
             )
+            cell = process.cell
             status = _cell_field(cell, "status")
-            exit_code = script_process_exit_code(cell)
-            # cell 自身的退出码通道（由 `exit $report_exit` 恢复）是权威失败信号；
-            # stderr/stdout 标记只用于交叉校验，缺失标记（截断或流合并）不得让
-            # 已经成功的 status 被误判为失败。
-            if status != "ok" or (exit_code is not None and exit_code != 0):
+            exit_code = process.exit_code
+            if exit_code is None and status == "ok":
+                raise ReportingError(
+                    "report_code_exit_receipt_invalid",
+                    "CodeMode 脚本退出码回执缺失或无效。",
+                    details={"sessionId": session_id, "scriptPath": normalized},
+                )
+            if status != "ok" or exit_code != 0:
                 details = {
                     "sessionId": session_id,
                     "scriptPath": normalized,
@@ -191,17 +203,42 @@ class ReportingCodeModeRuntime:
         script_path: str,
         *,
         matplotlib_agg: bool,
-    ) -> Any:
+    ) -> ScriptProcessResult:
         normalized = workspace.paths.normalize(script_path)
+        receipt_path = f"{_SCRIPT_EXIT_DIRECTORY}/{uuid4().hex}.status"
+        receipt_host_path = str(workspace.paths.to_host_path(receipt_path))
+        await workspace.aensure_directory(session_id, _SCRIPT_EXIT_DIRECTORY)
         await self._bootstrap(session_id, workspace, matplotlib_agg=matplotlib_agg)
         try:
-            return await self.code_mode.arun(session_id, _script_process_cell(normalized))
-        except Exception as error:
-            raise ReportingError(
-                "report_code_mode_execution_failed",
-                "CodeMode 脚本执行失败。",
-                details={"sessionId": session_id, "errorType": type(error).__name__},
-            ) from error
+            try:
+                cell = await self.code_mode.arun(
+                    session_id, _script_process_cell(normalized, receipt_host_path)
+                )
+            except Exception as error:
+                raise ReportingError(
+                    "report_code_mode_execution_failed",
+                    "CodeMode 脚本执行失败。",
+                    details={"sessionId": session_id, "errorType": type(error).__name__},
+                ) from error
+            try:
+                raw_receipt = await workspace.read_limited_regular_file(
+                    session_id,
+                    receipt_path,
+                    max_bytes=_SCRIPT_EXIT_RECEIPT_MAX_BYTES,
+                )
+            except WorkspaceError:
+                exit_code = None
+            else:
+                exit_code = _parse_script_exit_receipt(raw_receipt)
+            return ScriptProcessResult(cell=cell, exit_code=exit_code)
+        finally:
+            try:
+                await workspace.adelete_file(session_id, receipt_path)
+            except (WorkspaceError, OSError) as error:
+                logger.warning(
+                    "report_code_exit_receipt_cleanup_failed session_id={} error_type={}",
+                    session_id, type(error).__name__,
+                )
 
     async def shutdown(self, session_id: str) -> None:
         await self.code_mode.ashutdown(session_id)
@@ -212,6 +249,6 @@ class ReportingCodeModeRuntime:
 
 __all__ = [
     "ReportingCodeModeRuntime",
+    "ScriptProcessResult",
     "create_reporting_code_mode_runtime",
-    "script_process_exit_code",
 ]
