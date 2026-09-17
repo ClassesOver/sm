@@ -911,6 +911,7 @@ class _ReportWorkflowRuntimeBase:
         thinking_complexity: TaskComplexity = "standard",
         failure_kind: ThinkingFailureKind | None = None,
         attempt: int = 0,
+        model_metrics_recorder: Callable[[Any, int], None] | None = None,
     ) -> BaseModel:
         thinking_policy = getattr(agent, "_reporting_thinking", None)
         if not isinstance(thinking_policy, ThinkingPolicyConfig):
@@ -962,7 +963,10 @@ class _ReportWorkflowRuntimeBase:
         output = structured.run_output
         content = structured.content
         metrics = getattr(output, "metrics", None)
-        record_step_model_metrics(metrics)
+        if model_metrics_recorder is not None:
+            model_metrics_recorder(output, structured.model_request_count)
+        else:
+            record_step_model_metrics(metrics)
         schema = agent.output_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             raise ReportingError("report_planner_invalid", "报表规划器缺少结构化输出。")

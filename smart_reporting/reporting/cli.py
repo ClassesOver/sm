@@ -10,12 +10,14 @@ import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from pathlib import PurePosixPath
 from time import monotonic
 from typing import Any
 from uuid import uuid4
 
 from agno.run.base import RunStatus
 from agno.workflow import OnReject
+from loguru import logger
 from pydantic import BaseModel
 
 from ..async_utils import complete_cleanup
@@ -40,8 +42,13 @@ _CLI_PROGRESS_TOOLS = frozenset(
     }
 )
 _CLI_PROGRESS_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_CLI_PROGRESS_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_./-]{1,512}$")
 DEFAULT_TENANT_DATABASE = "default"
 DEFAULT_TENANT_COMPANY_ID = "default"
+
+
+def _write_cli_line(value: str) -> None:
+    print(value, flush=True)
 
 
 class _CliProgressSink:
@@ -59,6 +66,104 @@ class _CliProgressSink:
         self._interval_seconds = interval_seconds
         self._last_write = clock()
         self._event_count = 0
+        self._model_wait: dict[str, Any] | None = None
+
+    @staticmethod
+    def _safe_value(value: Any) -> str | None:
+        text = value if isinstance(value, str) else ""
+        return text if _CLI_PROGRESS_VALUE_PATTERN.fullmatch(text) else None
+
+    @staticmethod
+    def _safe_path(value: Any) -> str | None:
+        if not isinstance(value, str) or not _CLI_PROGRESS_PATH_PATTERN.fullmatch(value):
+            return None
+        path = PurePosixPath(value)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            return None
+        return value
+
+    def _write_fields(self, fields: list[str]) -> None:
+        self._write(" ".join(["Reporting 进度:", *fields]))
+        self._last_write = self._clock()
+
+    def emit_log_record(self, message: Any) -> None:
+        """只投影显式标记的结构化字段，不读取日志正文或工具参数。"""
+        record = getattr(message, "record", None)
+        extra = record.get("extra") if isinstance(record, dict) else None
+        if not isinstance(extra, dict):
+            return
+        kind = extra.get("reporting_progress")
+        status = self._safe_value(extra.get("status"))
+        if kind == "workflow_step":
+            step_id = self._safe_value(extra.get("step_id"))
+            if step_id is not None and status is not None:
+                self._write_fields([f"step={step_id}", f"status={status}"])
+            return
+        if kind == "code_model_request":
+            model_id = self._safe_value(extra.get("model_id"))
+            request_index = extra.get("request_index")
+            request_limit = extra.get("request_limit")
+            if (
+                model_id is None
+                or status is None
+                or isinstance(request_index, bool)
+                or not isinstance(request_index, int)
+                or isinstance(request_limit, bool)
+                or not isinstance(request_limit, int)
+                or request_index < 1
+                or request_limit < request_index
+            ):
+                return
+            fields = [
+                f"model={model_id}",
+                f"request={request_index}/{request_limit}",
+                f"status={'waiting' if status == 'started' else status}",
+            ]
+            if status == "started":
+                started_at = self._clock()
+                self._model_wait = {
+                    "model_id": model_id,
+                    "request_index": request_index,
+                    "request_limit": request_limit,
+                    "started_at": started_at,
+                }
+                fields.append("elapsed=0s")
+            else:
+                self._model_wait = None
+                duration_ms = extra.get("duration_ms")
+                if isinstance(duration_ms, int) and not isinstance(duration_ms, bool):
+                    fields.append(f"duration={max(0, duration_ms) / 1000:.1f}s")
+            self._write_fields(fields)
+            return
+        if kind == "code_tool":
+            tool_name = self._safe_value(extra.get("tool_name"))
+            if tool_name is None or status is None:
+                return
+            fields = [f"tool={tool_name}", f"status={status}"]
+            path = self._safe_path(extra.get("path"))
+            if path is not None:
+                fields.append(f"path={path}")
+            code = self._safe_value(extra.get("code"))
+            if code is not None:
+                fields.append(f"code={code}")
+            self._write_fields(fields)
+
+    def emit_heartbeat(self) -> None:
+        waiting = self._model_wait
+        if waiting is None:
+            return
+        current = self._clock()
+        if current - self._last_write < self._interval_seconds:
+            return
+        elapsed = max(0, round(current - waiting["started_at"]))
+        self._write_fields(
+            [
+                f"model={waiting['model_id']}",
+                f"request={waiting['request_index']}/{waiting['request_limit']}",
+                "status=waiting",
+                f"elapsed={elapsed}s",
+            ]
+        )
 
     async def emit_reporting_event(
         self, _scope: Any, _workflow_run_id: str, raw_event: Any
@@ -112,6 +217,35 @@ class _CliProgressSink:
             fields.append(f"code={code}")
         self._write(" ".join(fields))
         self._last_write = current
+
+
+async def _emit_cli_progress_heartbeats(
+    sink: _CliProgressSink, interval_seconds: float
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        sink.emit_heartbeat()
+
+
+@asynccontextmanager
+async def _bind_cli_progress(
+    sink: _CliProgressSink,
+    *,
+    heartbeat_interval_seconds: float = 1.0,
+):
+    sink_id = logger.add(
+        sink.emit_log_record,
+        filter=lambda record: bool(record["extra"].get("reporting_progress")),
+    )
+    heartbeat = asyncio.create_task(
+        _emit_cli_progress_heartbeats(sink, heartbeat_interval_seconds)
+    )
+    try:
+        yield
+    finally:
+        logger.remove(sink_id)
+        heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)
 
 
 def _cli_settings(settings: AgentSettings, *, debug: bool) -> AgentSettings:
@@ -433,7 +567,7 @@ async def run_cli(
     *,
     settings: AgentSettings | None = None,
     read: Callable[[str], str] = input,
-    write: Callable[[str], None] = print,
+    write: Callable[[str], None] = _write_cli_line,
     resume_run_id: str | None = None,
     resume_session_id: str | None = None,
     database: str | None = None,
@@ -458,41 +592,38 @@ async def run_cli(
     current_settings = _cli_settings(current_settings, debug=debug)
     context = create_execution_context(current_settings)
     progress_sink = _CliProgressSink(write)
-    reporting_agent_template, runtime = create_report_runtime(
-        context,
-        context.settings,
-        reporting_event_sink=progress_sink.emit_reporting_event,
-    )
+    reporting_agent_template, runtime = create_report_runtime(context, context.settings)
     workflow = runtime.workflow()
     run_id = resume_run_id or f"cli-report-{uuid4().hex}"
     session_id = resume_session_id or f"cli-report-{uuid4().hex}"
     try:
-        if resume_run_id is not None:
-            result = await resume_workflow(
-                workflow,
-                runtime,
-                run_id=run_id,
-                session_id=session_id,
-                user_id="cli",
-                database=database,
-                company_id=company_id,
-                read=read,
-                write=write,
-            )
-        else:
-            assert report_input is not None
-            result = await drive_workflow(
-                workflow,
-                runtime,
-                report_input,
-                run_id=run_id,
-                session_id=session_id,
-                user_id="cli",
-                database=database,
-                company_id=company_id,
-                read=read,
-                write=write,
-            )
+        async with _bind_cli_progress(progress_sink):
+            if resume_run_id is not None:
+                result = await resume_workflow(
+                    workflow,
+                    runtime,
+                    run_id=run_id,
+                    session_id=session_id,
+                    user_id="cli",
+                    database=database,
+                    company_id=company_id,
+                    read=read,
+                    write=write,
+                )
+            else:
+                assert report_input is not None
+                result = await drive_workflow(
+                    workflow,
+                    runtime,
+                    report_input,
+                    run_id=run_id,
+                    session_id=session_id,
+                    user_id="cli",
+                    database=database,
+                    company_id=company_id,
+                    read=read,
+                    write=write,
+                )
         write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
         await complete_cleanup(close_execution_resources(context, reporting_agent_template))

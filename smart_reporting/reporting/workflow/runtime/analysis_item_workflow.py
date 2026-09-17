@@ -68,11 +68,61 @@ def _validation_issue_summary(error: ValidationError) -> str:
 
 
 def supplemental_evidence_output_contract() -> dict[str, Any]:
+    # 复用模型字段约束；自定义 validator 的跨字段规则需另行明确说明。
+    schema = SupplementalEvidence.model_json_schema(by_alias=True)
+    for key in ("analysisId", "datasetIds"):
+        schema["properties"].pop(key)
+    schema["required"] = ["findings", "reconciliations", "warnings"]
     return {
         "format": "json",
         "requiredRootKeys": ["findings", "reconciliations", "warnings"],
         "additionalRootKeys": False,
+        "schema": schema,
+        "rules": [
+            "仅写 findings、reconciliations、warnings；analysisId、datasetIds 由服务端注入。",
+            "findings 为非空对象数组；表格明细使用 columns + rows，不得使用对象行数组。",
+            "表格 columns 为不重复的非空字符串数组；每个 rows 行均为数组，长度与 columns 一致。",
+            "表格数值不得含 NaN 或无穷大；缺失值使用 JSON null。",
+            "reconciliations 为非空对象数组；每项包含非空 name 与布尔 passed，不得用字符串代替布尔值。",
+            "业务对账不通过时如实写 passed=false，并在 warnings 中说明；这是软告警，不是结构错误。",
+            "warnings 使用字符串数组，无告警时写 []。",
+            "example 仅示意格式；发现、金额与对账结论必须来自当前任务真实数据，不得照抄示例。",
+        ],
+        "example": {
+            "findings": [{
+                "name": "收入对账示例", "columns": ["项目", "金额"],
+                "rows": [["明细合计", 100.0], ["账面合计", 120.0]],
+            }],
+            "reconciliations": [{"name": "明细与账面对账", "passed": False}],
+            "warnings": ["示例金额存在差异，应按实际数据填报。"],
+        },
     }
+
+
+def validate_supplemental_evidence(
+    content: str | bytes, current_analysis: Mapping[str, Any],
+) -> SupplementalEvidence:
+    """工具预检与 Workflow 验收共享结构契约，身份只取自服务端。"""
+    payload = TypeAdapter(dict[str, Any]).validate_json(content)
+    for key in ("analysisId", "analysis_id", "datasetIds", "dataset_ids"):
+        payload.pop(key, None)
+    dataset_ids = list(dict.fromkeys(
+        value for value in current_analysis.get("datasetIds") or () if isinstance(value, str)
+    ))
+    return SupplementalEvidence.model_validate({
+        **payload, "analysisId": current_analysis.get("analysisId"), "datasetIds": dataset_ids,
+    })
+
+
+def supplemental_evidence_schema_error(error: ValidationError) -> ReportingError:
+    return ReportingError(
+        "report_analysis_evidence_schema_invalid",
+        "补充 evidence 不符合机器结构契约。",
+        details={
+            "issues": error.errors(include_url=False, include_context=False, include_input=False),
+            "issueSummary": _validation_issue_summary(error),
+        },
+    )
 
 
 class _StrictModel(BaseModel):
@@ -744,10 +794,6 @@ class AnalysisItemWorkflow:
                     "补充 evidence 不在 Coding Agent 签发输出中。",
                 )
         except ReportingError as error:
-            if error.code == "report_code_generation_no_submission":
-                state.failure = error
-                state.evidence = None
-                return self._abandon_supplement(state)
             if error.code in _NON_RECOVERABLE_CODES or (
                 isinstance(error.details, Mapping) and error.details.get("retryable") is False
             ):
@@ -818,37 +864,13 @@ class AnalysisItemWorkflow:
             return StepOutput(content={"status": "skipped_after_script_error"})
         try:
             content = await self._read_supplemental_evidence(state, run_context)
-            evidence_payload = TypeAdapter(dict[str, Any]).validate_json(content)
-            evidence_payload.pop("analysisId", None)
-            evidence_payload.pop("analysis_id", None)
-            evidence_payload.pop("datasetIds", None)
-            evidence_payload.pop("dataset_ids", None)
             current_analysis = state.instruction.get("currentAnalysis")
-            evidence = SupplementalEvidence.model_validate(
-                {
-                    **evidence_payload,
-                    "analysisId": (
-                        current_analysis.get("analysisId")
-                        if isinstance(current_analysis, Mapping)
-                        else None
-                    ),
-                    "datasetIds": self._dataset_ids(state),
-                }
+            evidence = validate_supplemental_evidence(
+                content, current_analysis if isinstance(current_analysis, Mapping) else {},
             )
         except ValidationError as error:
-            rejection = ReportingError(
-                "report_analysis_evidence_schema_invalid",
-                "补充 evidence 不符合机器结构契约。",
-                details={
-                    "issues": error.errors(
-                        include_url=False,
-                        include_context=False,
-                        include_input=False,
-                    ),
-                },
-            )
-            issue_summary = _validation_issue_summary(error)
-            rejection.details["issueSummary"] = issue_summary
+            rejection = supplemental_evidence_schema_error(error)
+            issue_summary = rejection.details["issueSummary"]
             state.evidence = None
             state.evidence_file = None
             state.failure = rejection

@@ -410,18 +410,6 @@ class VisualizationSectionWorkflow:
                 break
             except Exception as error:
                 generation_failure = error
-                if (
-                    isinstance(error, ReportingError)
-                    and error.code == "report_code_generation_no_submission"
-                ):
-                    exhausted_error = _with_repair_count(error, execution_repairs=0)
-                    if self.degrade is not None:
-                        receipt = await self.degrade(exhausted_error, run_context)
-                        _raise_rejected_submission(receipt)
-                        return VisualizationWorkflowResult(
-                            "degraded", plan, None, (), True
-                        )
-                    raise exhausted_error
                 if _is_nonrecoverable(error):
                     raise
                 if _is_degradable(error):

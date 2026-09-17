@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 import anyio
 from agno.agent import Agent
+from agno.metrics import RunMetrics
 from agno.models.message import Message
 from agno.run import RunContext
 from loguru import logger
@@ -61,6 +62,7 @@ class StructuredOutputResult:
     run_output: Any
     mode: StructuredOutputMode
     model_id: str
+    model_request_count: int
 
 
 @dataclass(slots=True)
@@ -112,6 +114,7 @@ class ReportingStructuredOutputExecutor:
         scope: TaskExecutionScope,
         run_context: RunContext,
         thinking_request: ThinkingRequest | None = None,
+        model_metrics_recorder: Callable[[Any, int], None] | None = None,
     ) -> Any:
         result = await self.execute(
             instruction,
@@ -121,6 +124,8 @@ class ReportingStructuredOutputExecutor:
             user_id=scope.owner_user_id,
             thinking_request=thinking_request,
         )
+        if model_metrics_recorder is not None:
+            model_metrics_recorder(result.run_output, result.model_request_count)
         return result.content
 
     async def execute(
@@ -172,6 +177,8 @@ class ReportingStructuredOutputExecutor:
                 "结构化 Agent 业务调用已达到上限。",
             )
         total_call_number = 0
+        aggregate_metrics = RunMetrics()
+        has_metrics = False
         business_call_number = 0
         protocol_attempt_number = 0
         thinking_attempt = min(thinking_request.attempt, 1) if thinking_request is not None else 0
@@ -208,6 +215,10 @@ class ReportingStructuredOutputExecutor:
                             protocol_attempt_number=protocol_attempt_number,
                             wire_contract=wire_contract,
                         )
+                    output_metrics = getattr(output, "metrics", None)
+                    if isinstance(output_metrics, RunMetrics):
+                        aggregate_metrics = aggregate_metrics + output_metrics
+                        has_metrics = True
                     _raise_recorded_agent_error(execution_agent)
                     content = _validate_content(
                         wire_contract.decode(getattr(output, "content", output)),
@@ -336,11 +347,14 @@ class ReportingStructuredOutputExecutor:
                     continue
                 business_call_number += 1
                 budget.record_model_call()
+                if has_metrics:
+                    output.metrics = aggregate_metrics
                 return StructuredOutputResult(
                     content=content,
                     run_output=output,
                     mode=mode,
                     model_id=model_id,
+                    model_request_count=total_call_number,
                 )
         raise AssertionError("Reporting 结构化输出执行循环未终止。")
 

@@ -155,6 +155,29 @@ class _TaskModelMetricsSettlement:
         for event in events:
             self.record(event)
 
+    def record_run_output(self, run_output: Any, request_count: int) -> None:
+        """汇总 Agno 非流式 RunOutput，并使用协议层的真实请求计数。"""
+        metrics = getattr(run_output, "metrics", None)
+        if isinstance(request_count, bool) or not isinstance(request_count, int) or request_count < 0:
+            raise ValueError("request_count 必须大于等于 0")
+        with self._lock:
+            self._metrics["requestCount"] += request_count
+            if metrics is None:
+                return
+            for field, alias in _MODEL_TOKEN_FIELDS:
+                value = getattr(metrics, field, None)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    self._metrics[alias] += value
+            time_to_first_token = getattr(metrics, "time_to_first_token", None)
+            if (
+                isinstance(time_to_first_token, int | float)
+                and not isinstance(time_to_first_token, bool)
+                and time_to_first_token >= 0
+            ):
+                self._metrics["timeToFirstTokenSeconds"] = (
+                    self._metrics.get("timeToFirstTokenSeconds", 0) + time_to_first_token
+                )
+
     def snapshot(self) -> dict[str, int | float]:
         with self._lock:
             return dict(self._metrics)

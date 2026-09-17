@@ -22,6 +22,7 @@ from agno.tools.workspace import Workspace
 
 from ..workspace import (
     MAX_DOWNLOAD_BYTES,
+    MAX_PATCH_FILES,
     WorkspaceError,
     WorkspacePathConflict,
     WorkspaceService,
@@ -166,6 +167,7 @@ class HostReportingWorkspace:
         self.identity = identity
         self.paths = ReportingPathMapper(identity.root)
         self._write_locks: dict[str, asyncio.Lock] = {}
+        self._changes_lock = asyncio.Lock()
 
     normalize_path = staticmethod(WorkspaceService.normalize_path)
 
@@ -337,6 +339,165 @@ class HostReportingWorkspace:
 
         return await inspect_report_chart_file(self, thread_id=thread_id, path=path)
 
+    async def aapply_changes(
+        self, thread_id: str, changes: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
+            raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
+        keys_by_operation = {
+            "create": {"operation", "path", "content"},
+            "update": {"operation", "path", "content", "expected_sha256"},
+            "delete": {"operation", "path", "expected_sha256"},
+            "move": {"operation", "path", "destination", "expected_sha256"},
+        }
+        async with self._changes_lock:
+            prepared: list[dict[str, Any]] = []
+            used_paths: set[str] = set()
+            for change in changes:
+                if not isinstance(change, dict):
+                    raise WorkspaceError("变更集中的每一项都必须是文件操作对象。")
+                raw_operation = change.get("operation")
+                if not isinstance(raw_operation, str):
+                    raise WorkspaceError("变更集操作必须是 create、update、delete 或 move。")
+                required_keys = keys_by_operation.get(raw_operation)
+                if required_keys is None or set(change) != required_keys:
+                    raise WorkspaceError(
+                        "变更集操作字段无效；请按 create、update、delete 或 move 的字段要求重试。"
+                    )
+                if not isinstance(change.get("path"), str):
+                    raise WorkspaceError("变更集路径必须是工作区相对路径字符串。")
+                relative = self.paths.normalize(change["path"])
+                occupied = [relative]
+                destination: str | None = None
+                if raw_operation == "move":
+                    if not isinstance(change.get("destination"), str):
+                        raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
+                    destination = self.paths.normalize(change["destination"])
+                    if destination == relative:
+                        raise WorkspaceError("移动源路径和目标路径不能相同。")
+                    occupied.append(destination)
+                if any(path in used_paths for path in occupied):
+                    raise WorkspaceError("变更集不能重复使用同一个源路径或目标路径。")
+                used_paths.update(occupied)
+
+                if raw_operation == "create":
+                    content = change["content"]
+                    if not isinstance(content, str):
+                        raise WorkspaceError("新建文件内容必须是 UTF-8 文本。")
+                    updated = content.encode("utf-8")
+                    self.validate_content(updated)
+                    if await self.apath_exists(thread_id, relative):
+                        raise WorkspacePathConflict(
+                            f"文件“{relative}”已经存在，请重新读取变更目标后重试。"
+                        )
+                    prepared.append(
+                        {"operation": raw_operation, "path": relative, "updated": updated}
+                    )
+                    continue
+
+                if not await self.apath_exists(thread_id, relative):
+                    raise WorkspaceError("工作区路径不存在，请检查名称后重试。")
+                original, _mime = await self.afile_bytes(thread_id, relative)
+                expected_sha256 = WorkspaceService._validate_patch_hash(change["expected_sha256"])
+                if hashlib.sha256(original).hexdigest() != expected_sha256:
+                    raise WorkspacePathConflict(
+                        "文件内容已变化，请重新读取全部目标文件和哈希后再应用变更集。"
+                    )
+                item: dict[str, Any] = {
+                    "operation": raw_operation,
+                    "path": relative,
+                    "original": original,
+                    "sha256": expected_sha256,
+                }
+                if raw_operation == "update":
+                    content = change["content"]
+                    if not isinstance(content, str):
+                        raise WorkspaceError("更新文件内容必须是 UTF-8 文本。")
+                    item["updated"] = content.encode("utf-8")
+                    self.validate_content(item["updated"])
+                elif raw_operation == "move":
+                    if destination is None:
+                        raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
+                    if await self.apath_exists(thread_id, destination):
+                        raise WorkspacePathConflict(
+                            f"移动目标“{destination}”已经存在，请更换路径后重试。"
+                        )
+                    item["destination"] = destination
+                prepared.append(item)
+
+            completed: list[dict[str, Any]] = []
+            try:
+                for item in prepared:
+                    operation = item["operation"]
+                    if operation in {"create", "update"}:
+                        await self.awrite_bytes(
+                            thread_id,
+                            item["path"],
+                            item["updated"],
+                            overwrite=operation == "update",
+                        )
+                    elif operation == "delete":
+                        await self.adelete_file(thread_id, item["path"])
+                    else:
+                        await self.amove_files(thread_id, item["path"], item["destination"])
+                    completed.append(item)
+                    if operation in {"create", "update"}:
+                        persisted, _mime = await self.afile_bytes(thread_id, item["path"])
+                        if persisted != item["updated"]:
+                            raise WorkspaceError("变更集落盘校验失败，请重新检查目标文件。")
+                    elif operation == "move":
+                        persisted, _mime = await self.afile_bytes(thread_id, item["destination"])
+                        if persisted != item["original"]:
+                            raise WorkspaceError("变更集移动校验失败，请重新检查目标文件。")
+            except Exception as error:
+                rollback_failed = False
+                for item in reversed(completed):
+                    try:
+                        operation = item["operation"]
+                        if operation == "create":
+                            await self.adelete_file(thread_id, item["path"])
+                        elif operation == "update":
+                            await self.awrite_bytes(
+                                thread_id,
+                                item["path"],
+                                item["original"],
+                                overwrite=True,
+                            )
+                        elif operation == "delete":
+                            await self.awrite_bytes(
+                                thread_id,
+                                item["path"],
+                                item["original"],
+                                overwrite=False,
+                            )
+                        else:
+                            await self.amove_files(thread_id, item["destination"], item["path"])
+                    except Exception:
+                        rollback_failed = True
+                if rollback_failed:
+                    raise WorkspaceError(
+                        "变更集执行失败且未能完整回滚，请重新检查所有目标文件。"
+                    ) from error
+                raise
+
+        results = []
+        for item in prepared:
+            result: dict[str, Any] = {"operation": item["operation"], "path": item["path"]}
+            if item["operation"] in {"create", "update"}:
+                result.update(
+                    {
+                        "size": len(item["updated"]),
+                        "sha256": hashlib.sha256(item["updated"]).hexdigest(),
+                    }
+                )
+            elif item["operation"] == "move":
+                result["destination"] = item["destination"]
+                result["sha256"] = item["sha256"]
+            else:
+                result["sha256"] = item["sha256"]
+            results.append(result)
+        return {"files": results, "operations": len(results)}
+
     async def aview_image(self, thread_id: str, path: str) -> ToolResult:
         inspection = await self.inspect_chart_file(thread_id, path)
         content = await self.read_limited_regular_file(
@@ -505,6 +666,11 @@ class ReportingWorkspaceRouter:
         return await self.workspace(thread_id).arun_command(
             thread_id, args, timeout=timeout, tail=tail
         )
+
+    async def aapply_changes(
+        self, thread_id: str, changes: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return await self.workspace(thread_id).aapply_changes(thread_id, changes)
 
 
 __all__ = [

@@ -13,6 +13,7 @@ from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
 from agno.models.response import ModelResponse
+from agno.tools.function import FunctionCall
 from agno.utils.message import normalize_tool_messages, reformat_tool_call_ids
 from loguru import logger
 
@@ -23,7 +24,11 @@ from ...context_management import (
 )
 from ...runtime.observability import duration_ms as elapsed_ms
 from ..model_policy import (
+    ReportingThinkingProfile,
+    apply_reporting_thinking_profile,
+    current_reporting_thinking_decision,
     reporting_model_output_token_limit,
+    reporting_thinking_profile_from_model,
     resolve_reporting_input_token_hard_cap,
 )
 from ..models import ReportingError
@@ -37,7 +42,7 @@ from ..phase import (
 )
 
 FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
-    {"write_script": "source", "execute_code": "code"}
+    {"write_script": "source", "run_snippet": "code"}
 )
 
 _CUSTOM_TOOL_PROTOCOL_ERROR = "report_code_custom_tool_protocol_error"
@@ -50,13 +55,15 @@ _TEXTUAL_TOOL_MARKERS = (
     "<|tool_call|>",
     "<｜DSML｜tool_calls>",
     "<｜DSML｜invoke",
-    "```execute_code",
+    "```run_snippet",
     "```write_script",
 )
 _PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
+_DELIVERY_TOOL_NAMES = frozenset({"write_script", "run_script", "submit_script"})
+_DELIVERY_TOOL_RESERVE = len(_DELIVERY_TOOL_NAMES)
 _MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error", default=None
 )
@@ -295,6 +302,61 @@ def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
 class ReportingCodeOpenAIResponses(OpenAIResponses):
     """为 Coding Agent 桥接 Responses API function/custom 混合协议。"""
 
+    @staticmethod
+    def _is_delivery_budget_rejection(message: Message) -> bool:
+        if not isinstance(message.content, str):
+            return False
+        try:
+            payload = json.loads(message.content)
+        except (TypeError, ValueError):
+            return False
+        return (
+            isinstance(payload, Mapping)
+            and payload.get("code") == "report_code_delivery_budget_reserved"
+        )
+
+    @staticmethod
+    def _limit_charge_for(results: list[Message], result_store: Any) -> int:
+        charged = [
+            item
+            for item in results
+            if not ReportingCodeOpenAIResponses._is_delivery_budget_rejection(item)
+        ]
+        return Model._limit_charge_for(charged, result_store)
+
+    def configure_code_run(self, tools: Any, *, max_model_requests: int) -> None:
+        """绑定本任务实际 Function 范围；浅复制模型共享同一任务请求计数。"""
+        names = [report_model_tool_name(tool) for tool in tools]
+        if not names or any(not name for name in names) or len(set(names)) != len(names):
+            raise _custom_protocol_error("Coding Agent 任务工具声明为空或无效。")
+        if isinstance(max_model_requests, bool) or not isinstance(max_model_requests, int) or max_model_requests < 1:
+            raise ValueError("max_model_requests must be a positive integer")
+        self._code_tool_names = frozenset(names)
+        self._code_request_budget = {"limit": max_model_requests, "used": 0}
+
+    def _consume_code_request(self) -> None:
+        budget = getattr(self, "_code_request_budget", None)
+        if budget is None:
+            return
+        if budget["used"] >= budget["limit"]:
+            raise ReportingError(
+                "report_code_model_request_limit", "Coding Agent 模型请求次数已达上限。",
+                details={"retryable": False, "modelRequestCount": budget["used"], "modelRequestLimit": budget["limit"]},
+            )
+        budget["used"] += 1
+
+    def code_run_request_count(self) -> int:
+        """返回当前 Coding task 已实际发出的模型请求数。"""
+        budget = getattr(self, "_code_request_budget", None)
+        return int(budget["used"]) if isinstance(budget, dict) else 0
+
+    def _current_code_request(self) -> tuple[int, int]:
+        budget = getattr(self, "_code_request_budget", None)
+        if not isinstance(budget, dict):
+            return 1, 1
+        limit = int(budget["limit"])
+        return min(limit, max(1, int(budget["used"]))), limit
+
     def _format_tool_params(
         self, messages: list[Message], tools: Any = None
     ) -> list[dict[str, Any]]:
@@ -335,7 +397,27 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             run_response=run_response,
         )
         params["parallel_tool_calls"] = False
+        # OpenInference 以无参调用读取静态 invocation 参数；该调用不发模型请求，
+        # 不能与 Agno 随后传入 messages/tools 的真实请求范围校验混为一谈。
+        if (
+            messages is None
+            and response_format is None
+            and tools is None
+            and tool_choice is None
+            and run_response is None
+        ):
+            return params
         formatted_tools = params.get("tools") or ()
+        declarations = {tool.get("name"): tool.get("type") for tool in formatted_tools}
+        expected = getattr(self, "_code_tool_names", None)
+        if expected is not None and set(declarations) != expected:
+            raise _custom_protocol_error("Coding Agent 请求工具与任务工具范围不一致。")
+        if len(declarations) != len(formatted_tools) or any(
+            not name or kind != ("custom" if name in FREEFORM_TOOL_ARGUMENTS else "function")
+            for name, kind in declarations.items()
+        ):
+            raise _custom_protocol_error("Coding Agent 请求工具声明类型无效。")
+        self._code_declared_tools = declarations
         if any(tool.get("type") == "custom" for tool in formatted_tools):
             params["tool_choice"] = "auto"
         elif tools and tool_choice is None:
@@ -369,6 +451,23 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             if isinstance(value, int) and value > 0
         ]
         request_model.max_output_tokens = min(limits) if limits else None
+        decision = current_reporting_thinking_decision()
+        if decision is not None:
+            base_profile = reporting_thinking_profile_from_model(self)
+            profile = (
+                ReportingThinkingProfile.on(
+                    reasoning_effort=decision.reasoning_effort,
+                    thinking_budget=decision.thinking_budget,
+                    temperature=base_profile.temperature,
+                )
+                if decision.enabled
+                and decision.reasoning_effort is not None
+                and decision.thinking_budget > 0
+                else ReportingThinkingProfile.off(temperature=base_profile.temperature)
+            )
+            # Responses 的显式 reasoning 字典不能覆盖本轮策略或保留旧 effort。
+            request_model.reasoning = None
+            apply_reporting_thinking_profile(request_model, profile)
         return request_model
 
     def _project(
@@ -376,7 +475,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     ) -> list[Message]:
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
-        tools = phase_filtered_report_tools(messages, tools)
+        # CodeMode 使用任务签发的 Function；父阶段白名单仅适用于外层模型。
         configured_cap = getattr(self, "_task_execution_input_token_budget", None)
         if (
             not isinstance(configured_cap, int)
@@ -418,22 +517,197 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             for item in output
             if _field(item, "type") in {"custom_tool_call", "function_call"}
         ]
-        if len(actionable) > 1:
-            raise _custom_protocol_error("Coding Agent 每轮只允许一次工具调用。")
+        declarations = getattr(self, "_code_declared_tools", None)
+        identities: set[str] = set()
+        for item in actionable:
+            name = _field(item, "name")
+            kind = "custom" if _field(item, "type") == "custom_tool_call" else "function"
+            if declarations is not None and declarations.get(name) != kind:
+                raise _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
+            call_identities = {_required_id(item, "id"), _required_id(item, "call_id")}
+            if identities.intersection(call_identities):
+                raise _custom_protocol_error("Coding Agent 工具调用身份重复。")
+            identities.update(call_identities)
         if not actionable and _contains_textual_tool_marker(output):
             raise _custom_protocol_error("Coding Agent 将工具调用写入了 assistant 正文。")
-        custom_calls = [
-            item for item in actionable if _field(item, "type") == "custom_tool_call"
-        ]
-        call = _synthetic_custom_call(custom_calls[0]) if custom_calls else None
+        custom_calls = {
+            _field(item, "id"): _synthetic_custom_call(item)
+            for item in actionable
+            if _field(item, "type") == "custom_tool_call"
+        }
         parsed = super()._parse_provider_response(response, **kwargs)
-        if call is None:
+        if not custom_calls:
             return parsed
+        function_calls = iter(parsed.tool_calls or ())
         parsed.content = None
-        parsed.tool_calls = [call]
+        parsed.tool_calls = [
+            custom_calls[_field(item, "id")]
+            if _field(item, "type") == "custom_tool_call"
+            else next(function_calls)
+            for item in actionable
+        ]
         parsed.extra = parsed.extra or {}
-        parsed.extra["tool_call_ids"] = [call["call_id"]]
+        parsed.extra["tool_call_ids"] = [call["call_id"] for call in parsed.tool_calls]
         return parsed
+
+    def _ordered_code_calls(
+        self,
+        function_calls: list[FunctionCall],
+        results: list[Message],
+        current_count: int,
+        function_call_limit: int | None,
+        result_store: Any,
+    ) -> Iterator[tuple[FunctionCall, int]]:
+        """保持 provider 顺序；失败或签发后为剩余调用补齐未执行回执。"""
+        stopped = False
+        for call in function_calls:
+            tool_name = call.function.name
+            if stopped:
+                results.append(Message(
+                    role=self.tool_message_role,
+                    tool_call_id=call.call_id,
+                    tool_name=call.function.name,
+                    tool_args=call.arguments,
+                    tool_call_error=True,
+                    content=json.dumps({
+                        "ok": False,
+                        "status": "skipped",
+                        "code": "report_code_batch_stopped",
+                        "message": "前序工具失败或任务已提交；本次调用未执行。",
+                    }, ensure_ascii=False),
+                ))
+                logger.bind(
+                    reporting_progress="code_tool",
+                    tool_name=tool_name,
+                    status="skipped",
+                    code="report_code_batch_stopped",
+                ).info("report_code_tool_progress tool_name={} status=skipped", tool_name)
+                continue
+            if (
+                getattr(self, "_code_tool_names", None) is not None
+                and function_call_limit is not None
+                and tool_name not in _DELIVERY_TOOL_NAMES
+                and current_count >= function_call_limit - _DELIVERY_TOOL_RESERVE
+            ):
+                results.append(Message(
+                    role=self.tool_message_role,
+                    tool_call_id=call.call_id,
+                    tool_name=tool_name,
+                    tool_args=call.arguments,
+                    tool_call_error=True,
+                    content=json.dumps({
+                        "ok": False,
+                        "status": "rejected",
+                        "code": "report_code_delivery_budget_reserved",
+                        "message": "剩余工具调用额度仅供正式脚本写入、运行和提交。",
+                        "details": {
+                            "used": current_count,
+                            "limit": function_call_limit,
+                            "requiredNextTools": sorted(_DELIVERY_TOOL_NAMES),
+                        },
+                    }, ensure_ascii=False),
+                ))
+                stopped = True
+                logger.bind(
+                    reporting_progress="code_tool",
+                    tool_name=tool_name,
+                    status="rejected",
+                    code="report_code_delivery_budget_reserved",
+                ).info("report_code_tool_progress tool_name={} status=rejected", tool_name)
+                continue
+            start = len(results)
+            logger.bind(
+                reporting_progress="code_tool",
+                tool_name=tool_name,
+                status="started",
+            ).info("report_code_tool_progress tool_name={} status=started", tool_name)
+            yield call, current_count
+            completed = results[start:]
+            current_count += self._limit_charge_for(completed, result_store)
+            stopped = any(item.stop_after_tool_call or item.tool_call_error for item in completed)
+            stopped = stopped or (
+                isinstance(call.result, Mapping) and call.result.get("ok") is False
+            )
+            result = call.result if isinstance(call.result, Mapping) else {}
+            status = (
+                "rejected"
+                if result.get("ok") is False
+                else "failed"
+                if any(item.tool_call_error for item in completed)
+                else "completed"
+            )
+            progress: dict[str, Any] = {
+                "reporting_progress": "code_tool",
+                "tool_name": tool_name,
+                "status": status,
+            }
+            path = result.get("path") or result.get("sourcePath")
+            receipt = result.get("executionReceipt")
+            source_file = receipt.get("sourceFile") if isinstance(receipt, Mapping) else None
+            if not isinstance(path, str) and isinstance(source_file, Mapping):
+                path = source_file.get("path")
+            if isinstance(path, str):
+                progress["path"] = path
+            code = result.get("code")
+            if isinstance(code, str):
+                progress["code"] = code
+            logger.bind(**progress).info(
+                "report_code_tool_progress tool_name={} status={}", tool_name, status
+            )
+
+    def run_function_calls(
+        self,
+        function_calls: list[FunctionCall],
+        function_call_results: list[Message],
+        additional_input: list[Message] | None = None,
+        current_function_call_count: int = 0,
+        function_call_limit: int | None = None,
+        result_store: Any = None,
+    ) -> Iterator[Any]:
+        for call, count in self._ordered_code_calls(
+            function_calls,
+            function_call_results,
+            current_function_call_count,
+            function_call_limit,
+            result_store,
+        ):
+            yield from super().run_function_calls(
+                [call], function_call_results,
+                current_function_call_count=count,
+                function_call_limit=function_call_limit,
+                result_store=result_store,
+            )
+        if additional_input:
+            function_call_results.extend(additional_input)
+
+    async def arun_function_calls(
+        self,
+        function_calls: list[FunctionCall],
+        function_call_results: list[Message],
+        additional_input: list[Message] | None = None,
+        current_function_call_count: int = 0,
+        function_call_limit: int | None = None,
+        skip_pause_check: bool = False,
+        result_store: Any = None,
+    ) -> AsyncIterator[Any]:
+        # Agno 3.0.9 会 gather 一批调用；逐个委托以保留原生 hooks、计数和取消语义。
+        for call, count in self._ordered_code_calls(
+            function_calls,
+            function_call_results,
+            current_function_call_count,
+            function_call_limit,
+            result_store,
+        ):
+            async for event in super().arun_function_calls(
+                [call], function_call_results,
+                current_function_call_count=count,
+                function_call_limit=function_call_limit,
+                skip_pause_check=skip_pause_check,
+                result_store=result_store,
+            ):
+                yield event
+        if additional_input:
+            function_call_results.extend(additional_input)
 
     def _format_messages(
         self,
@@ -623,8 +897,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
 
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         messages = phase_filtered_report_messages(messages)
-        args, kwargs = phase_filtered_model_call(messages, args, kwargs)
         messages = self._project(messages, args, kwargs)
+        self._consume_code_request()
         try:
             return super().invoke(messages, *args, **kwargs)
         except Exception as error:
@@ -633,13 +907,57 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         messages = phase_filtered_report_messages(messages)
-        args, kwargs = phase_filtered_model_call(messages, args, kwargs)
         messages = self._project(messages, args, kwargs)
+        self._consume_code_request()
+        request_index, request_limit = self._current_code_request()
+        started_at = perf_counter()
+        logger.bind(
+            reporting_progress="code_model_request",
+            model_id=self.id,
+            request_index=request_index,
+            request_limit=request_limit,
+            duration_ms=0,
+            status="started",
+        ).info(
+            "report_code_model_request_started model_id={} request_index={} request_limit={}",
+            self.id,
+            request_index,
+            request_limit,
+        )
         try:
-            return await super().ainvoke(messages, *args, **kwargs)
+            response = await super().ainvoke(messages, *args, **kwargs)
         except Exception as error:
+            logger.bind(
+                reporting_progress="code_model_request",
+                model_id=self.id,
+                request_index=request_index,
+                request_limit=request_limit,
+                duration_ms=elapsed_ms(started_at),
+                status="failed",
+            ).warning(
+                "report_code_model_request_completed model_id={} request_index={} "
+                "request_limit={} status=failed",
+                self.id,
+                request_index,
+                request_limit,
+            )
             self._raise_stable_custom_error(error)
             raise
+        logger.bind(
+            reporting_progress="code_model_request",
+            model_id=self.id,
+            request_index=request_index,
+            request_limit=request_limit,
+            duration_ms=elapsed_ms(started_at),
+            status="completed",
+        ).info(
+            "report_code_model_request_completed model_id={} request_index={} "
+            "request_limit={} status=completed",
+            self.id,
+            request_index,
+            request_limit,
+        )
+        return response
 
     @staticmethod
     def _freeform_tool_requested(tools: Any) -> bool:

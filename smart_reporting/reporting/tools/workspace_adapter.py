@@ -33,6 +33,67 @@ from ...workspace import (
 from .context import ReportingFileRef, ReportingOutputPolicy, ReportingToolContext
 from .workspace_port import ReportingWorkspaceError
 
+_DAYTONA_WORKSPACE_PREFIX = "/home/daytona/workspace/"
+_DAYTONA_HOME_PREFIX = "/home/daytona/"
+
+
+class _HostSandboxProcess:
+    async def exec(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+class _HostSandboxFS:
+    def __init__(self, service: Any, thread_id: str) -> None:
+        self._service = service
+        self._thread_id = thread_id
+
+    @staticmethod
+    def _relative(path: str) -> str:
+        if path.startswith(_DAYTONA_WORKSPACE_PREFIX):
+            return path[len(_DAYTONA_WORKSPACE_PREFIX) :]
+        if path.startswith(_DAYTONA_HOME_PREFIX):
+            return path[len(_DAYTONA_HOME_PREFIX) :]
+        return WorkspaceService.normalize_path(path, allow_root=False)[0]
+
+    async def create_folder(self, directory: str, _mode: str | None = None) -> None:
+        relative = self._relative(directory)
+        if relative:
+            await self._service.aensure_directory(self._thread_id, relative)
+
+    async def upload_file(self, content: bytes, path: str) -> None:
+        await self._service.awrite_bytes(
+            self._thread_id,
+            self._relative(path),
+            content,
+            overwrite=True,
+        )
+
+    async def download_file(self, path: str) -> bytes:
+        content, _mime = await self._service.afile_bytes(
+            self._thread_id, self._relative(path)
+        )
+        return content
+
+    async def delete_file(self, path: str, recursive: bool = False) -> None:
+        await self._service.adelete_file(
+            self._thread_id, self._relative(path), recursive=recursive
+        )
+
+    async def move_files(self, source: str, destination: str) -> None:
+        await self._service.amove_files(
+            self._thread_id,
+            self._relative(source),
+            self._relative(destination),
+        )
+
+
+class _HostSandbox:
+    def __init__(self, service: Any, thread_id: str) -> None:
+        self.fs = _HostSandboxFS(service, thread_id)
+        self.process = _HostSandboxProcess()
+        self.id = thread_id
+        self.ref = None
+
 
 def _validate_reporting_content(content: bytes) -> None:
     if not isinstance(content, bytes):
@@ -208,6 +269,12 @@ class WorkspaceServiceReportingRuntime:
         self.workspace = ReportingWorkspaceAdapter(service)
         self._service = service
         self.repository = repository
+        if not hasattr(service, "_async_client"):
+
+            async def host_sandbox(scope: Any):
+                yield _HostSandbox(service, scope.thread_id)
+
+            self._kernel._sandbox = host_sandbox
 
     def __getattr__(self, name: str) -> Any:
         """迁移期间只转发 TaskExecutionKernel 公共执行原语。"""

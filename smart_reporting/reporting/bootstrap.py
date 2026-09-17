@@ -23,7 +23,7 @@ from .knowledge import ReportingKnowledgeIndex
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
 from .vision import ReportVisionReviewer
-from .workflow.execution import ReportingEventSink, ReportingTaskCoordinator
+from .workflow.execution import ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
 from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationPlanDraft
@@ -62,7 +62,6 @@ def create_report_runtime(
     editor_grants: ReportEditorGrantService | None = None,
     artifact_persistence: ReportArtifactPersistenceService | None = None,
     quality_warning_service: QualityWarningService | None = None,
-    reporting_event_sink: ReportingEventSink | None = None,
 ) -> tuple[Agent, ReportWorkflowRuntime]:
     code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
     if code_mode_runtime is None:
@@ -128,7 +127,6 @@ def create_report_runtime(
             strong_model_id=settings.model_strong_id,
         ),
     )
-    _ = reporting_event_sink
     runtime = ReportWorkflowRuntime(
         db=context.database,
         reporting_agent_template=reporting_agent_template,

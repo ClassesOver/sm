@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from agno.agent import Agent
 from agno.agent import _response as agno_response
+from agno.metrics import RunMetrics
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.utils import string as agno_string
@@ -715,6 +716,31 @@ async def test_first_schema_structure_error_downgrades_and_is_remembered() -> No
     repeated._execute_mode.assert_awaited_once()
     assert repeated._execute_mode.await_args.args[0] is StructuredOutputMode.JSON_OBJECT
     assert repeated_result.content.value == 12
+
+
+@pytest.mark.anyio
+async def test_structured_result_aggregates_metrics_and_request_count_across_corrections() -> None:
+    executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
+    first = Mock(content={}, metrics=RunMetrics(input_tokens=10, total_tokens=10))
+    second = Mock(
+        content={"value": 11},
+        metrics=RunMetrics(output_tokens=20, total_tokens=20),
+    )
+    executor._execute_mode = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[(executor.agent, first), (executor.agent, second)]
+    )
+
+    result = await executor.execute(
+        "original instruction",
+        routing_context=None,
+        session_id="session-metrics",
+        user_id="user-1",
+    )
+
+    assert result.model_request_count == 2
+    assert result.run_output.metrics.input_tokens == 10
+    assert result.run_output.metrics.output_tokens == 20
+    assert result.run_output.metrics.total_tokens == 30
 
 
 @pytest.mark.anyio

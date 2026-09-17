@@ -122,7 +122,7 @@ async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -
 
 
 @pytest.mark.anyio
-async def test_analysis_v1_abandons_supplement_after_no_submission() -> None:
+async def test_analysis_v1_fails_closed_after_no_submission() -> None:
     facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
     facts_path = "facts/analysis_001.json"
     run_count = 0
@@ -152,15 +152,15 @@ async def test_analysis_v1_abandons_supplement_after_no_submission() -> None:
         read_file=read_file,
         complete=complete,
     )
-    result = await workflow.run(
-        {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]},
-        RunContext(run_id="run-1", session_id="session-1"),
-    )
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]},
+            RunContext(run_id="run-1", session_id="session-1"),
+        )
 
-    assert result.stage_statuses == tuple((name, "completed") for name in ("read-facts", "plan-evidence", "execute-script", "validate-evidence", "complete-analysis"))
+    assert caught.value.code == "report_code_generation_no_submission"
     assert run_count == 1
-    assert completions[0]["evidencePaths"] == []
-    assert "report_code_generation_no_submission" in completions[0]["warnings"][0]
+    assert completions == []
 
 
 @pytest.mark.anyio
@@ -406,7 +406,7 @@ async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
 
 
 @pytest.mark.anyio
-async def test_visualization_v1_degrades_after_code_agent_no_submission() -> None:
+async def test_visualization_v1_fails_closed_after_code_agent_no_submission() -> None:
     chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
     plan = VisualizationPlanDraft(charts=(chart,))
     run_count = 0
@@ -428,12 +428,12 @@ async def test_visualization_v1_degrades_after_code_agent_no_submission() -> Non
         return {"status": "accepted"}
 
     workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=lambda *_: _accepted(), degrade=degrade)
-    result = await workflow.run({"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}, RunContext(run_id="run-1", session_id="session-1"))
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run({"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}, RunContext(run_id="run-1", session_id="session-1"))
 
-    assert result.status == "degraded"
+    assert caught.value.code == "report_code_generation_no_submission"
     assert run_count == 1
-    assert degraded[0].details["executionRepairCount"] == 0
-    assert "visualReviewRepairCount" not in degraded[0].details
+    assert degraded == []
 
 
 @pytest.mark.anyio

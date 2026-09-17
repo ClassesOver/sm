@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import copy
 from typing import Literal
 
@@ -12,7 +13,7 @@ from ....task_execution import (
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
-from ...code_agent.context import ReportingCodingTaskContext
+from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -31,11 +32,14 @@ from ...tools import build_reporting_tools
 from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
 from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
+    MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
     AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
     SupplementalEvidence,
     _project_analysis_summary_payload,
+    supplemental_evidence_schema_error,
+    validate_supplemental_evidence,
 )
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
@@ -127,8 +131,9 @@ __all__ = ["RuntimeAnalysisMixin"]
 
 
 _ANALYSIS_THINKING_BUDGETS = {"simple": 1024, "standard": 2048, "complex": 4096}
-_ANALYSIS_SCRIPT_MAX_BYTES = 128 * 1024
-_VISUALIZATION_SCRIPT_MAX_BYTES = 64 * 1024
+_CODING_SCRIPT_MAX_BYTES = 4 * 1024 * 1024
+_ANALYSIS_SCRIPT_MAX_BYTES = _CODING_SCRIPT_MAX_BYTES
+_VISUALIZATION_SCRIPT_MAX_BYTES = _CODING_SCRIPT_MAX_BYTES
 _ANALYSIS_EVIDENCE_RETRY_REASONS = frozenset(
     {"evidence_incomplete", "fact_incomplete", "evidence_binding"}
 )
@@ -733,6 +738,9 @@ class RuntimeAnalysisMixin:
                                 scope=invocation.scope,
                                 run_context=task_context,
                                 thinking_request=thinking_request,
+                                model_metrics_recorder=(
+                                    invocation.model_metrics_settlement.record_run_output
+                                ),
                             ),
                         )
 
@@ -753,6 +761,9 @@ class RuntimeAnalysisMixin:
                             knowledge_index=knowledge_index,
                             lsp_manager=getattr(self, "lsp_manager", None),
                             vision_reviewer=self.vision_reviewer,
+                            model_metrics_recorder=(
+                                invocation.model_metrics_settlement.record_run_output
+                            ),
                         )
 
                     async def run_code(
@@ -2167,6 +2178,7 @@ class RuntimeAnalysisMixin:
         task_run_context: RunContext,
         *,
         parent_run_context: RunContext,
+        model_metrics_recorder: Callable[[Any, int], None],
     ) -> StepOutput:
         """在当前 Task lease 内执行五阶段子流程，工具继续复用现有强契约。"""
 
@@ -2212,6 +2224,7 @@ class RuntimeAnalysisMixin:
             self.code_mode_runtime,
             knowledge_index=getattr(self, "knowledge_index", None),
             lsp_manager=getattr(self, "lsp_manager", None),
+            model_metrics_recorder=model_metrics_recorder,
         )
         repair_workspace_key: str | None = None
         knowledge_index = getattr(self, "knowledge_index", None)
@@ -2230,6 +2243,7 @@ class RuntimeAnalysisMixin:
                 thinking_complexity=thinking_complexity,
                 attempt=1 if evidence_failure_kind is not None else 0,
                 failure_kind=evidence_failure_kind,
+                model_metrics_recorder=model_metrics_recorder,
             )
             if not isinstance(output, expected_type):
                 raise ReportingError(
@@ -2314,6 +2328,29 @@ class RuntimeAnalysisMixin:
                 max_source_bytes=_ANALYSIS_SCRIPT_MAX_BYTES,
             )
             repair_workspace_key = coding_context.workspace_key
+
+            async def preflight_evidence(receipt: ExecutionReceipt) -> Mapping[str, Any] | None:
+                output = receipt.output_files[0]
+                if not 0 < output.size <= MAX_SUPPLEMENTAL_EVIDENCE_BYTES:
+                    return {
+                        "code": "report_analysis_evidence_too_large",
+                        "message": "补充 evidence 超过 10 MiB 安全上限或大小无效。",
+                    }
+                content = await task_workspace.read_limited_regular_file(
+                    coding_context.task_id, output.path,
+                    max_bytes=MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
+                )
+                current = task_facts.get("currentAnalysis")
+                try:
+                    validate_supplemental_evidence(
+                        content, current if isinstance(current, Mapping) else {},
+                    )
+                except ValidationError as error:
+                    rejection = supplemental_evidence_schema_error(error)
+                    return {"code": rejection.code, "message": rejection.message,
+                            "details": rejection.details}
+                return None
+
             with bind_reporting_thinking(decision):
                 return await code_runner.run(
                     coding_context,
@@ -2321,6 +2358,7 @@ class RuntimeAnalysisMixin:
                     task_facts,
                     run_context=run_context,
                     diagnostic=diagnostic,
+                    output_preflight=preflight_evidence,
                 )
 
         async def record_successful_repair(
@@ -2655,6 +2693,9 @@ class RuntimeAnalysisMixin:
                         invocation.instruction,
                         invocation.run_context,
                         parent_run_context=run_context,
+                        model_metrics_recorder=(
+                            invocation.model_metrics_settlement.record_run_output
+                        ),
                     )
 
                 receipt = await self.task_runner.run(

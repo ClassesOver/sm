@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,8 +20,10 @@ from loguru import logger
 
 from smart_reporting.reporting import cli as reporting_cli
 from smart_reporting.reporting.cli import (
+    _bind_cli_progress,
     _cli_settings,
     _CliProgressSink,
+    _write_cli_line,
     drive_workflow,
     parse_report_input,
     resume_workflow,
@@ -102,8 +105,13 @@ async def test_timed_workflow_step_logs_safe_success_and_failure() -> None:
 
     debug_records: list[str] = []
     info_records: list[str] = []
+    progress_records: list[dict[str, object]] = []
     debug_sink_id = logger.add(debug_records.append, level="DEBUG", format="{message}")
     info_sink_id = logger.add(info_records.append, level="INFO", format="{message}")
+    progress_sink_id = logger.add(
+        lambda message: progress_records.append(dict(message.record["extra"])),
+        filter=lambda record: bool(record["extra"].get("reporting_progress")),
+    )
 
     try:
         output = await _timed_step_executor(succeed, step_id="confirm-source")()
@@ -112,6 +120,7 @@ async def test_timed_workflow_step_logs_safe_success_and_failure() -> None:
     finally:
         logger.remove(debug_sink_id)
         logger.remove(info_sink_id)
+        logger.remove(progress_sink_id)
 
     log_text = "".join(debug_records)
     info_text = "".join(info_records)
@@ -125,6 +134,35 @@ async def test_timed_workflow_step_logs_safe_success_and_failure() -> None:
     assert "error_type=RuntimeError" in log_text
     assert "workflow-output" not in log_text
     assert "private-workflow-error" not in log_text
+    assert [
+        {
+            "reporting_progress": item["reporting_progress"],
+            "step_id": item["step_id"],
+            "status": item["status"],
+        }
+        for item in progress_records
+    ] == [
+        {
+            "reporting_progress": "workflow_step",
+            "step_id": "confirm-source",
+            "status": "started",
+        },
+        {
+            "reporting_progress": "workflow_step",
+            "step_id": "confirm-source",
+            "status": "completed",
+        },
+        {
+            "reporting_progress": "workflow_step",
+            "step_id": "prepare-data-profile",
+            "status": "started",
+        },
+        {
+            "reporting_progress": "workflow_step",
+            "step_id": "prepare-data-profile",
+            "status": "failed",
+        },
+    ]
 
 
 @pytest.mark.anyio
@@ -903,9 +941,14 @@ async def test_assemble_error_pause_retries_only_assembly_step() -> None:
     assert calls.count("validate-report") == 1
 
 
-def test_reporting_cli_applies_requested_debug_setting() -> None:
-    enabled = AgentSettings.from_environment({"AGENT_DEBUG": "true"}, load_env_file=False)
-    disabled = AgentSettings.from_environment({"AGENT_DEBUG": "false"}, load_env_file=False)
+def test_reporting_cli_applies_requested_debug_setting(tmp_path: Path) -> None:
+    base = {"REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path / "workspaces")}
+    enabled = AgentSettings.from_environment(
+        {**base, "AGENT_DEBUG": "true"}, load_env_file=False
+    )
+    disabled = AgentSettings.from_environment(
+        {**base, "AGENT_DEBUG": "false"}, load_env_file=False
+    )
 
     assert _cli_settings(enabled, debug=False).debug is False
     assert _cli_settings(disabled, debug=True).debug is True
@@ -1082,3 +1125,132 @@ async def test_cli_progress_sink_reports_safe_high_signal_and_throttled_progress
         "analysisId=analysis_003 code=report_analysis_evidence_identity_mismatch",
     ]
     assert "不得输出" not in "".join(writes)
+
+
+def test_cli_progress_sink_projects_structured_lifecycle_and_waiting_heartbeat() -> None:
+    writes: list[str] = []
+    current = [100.0]
+    sink = _CliProgressSink(
+        writes.append,
+        clock=lambda: current[0],
+        interval_seconds=10.0,
+    )
+
+    sink.emit_log_record(
+        SimpleNamespace(
+            record={
+                "extra": {
+                    "reporting_progress": "workflow_step",
+                    "step_id": "run-coding-analysis",
+                    "status": "started",
+                }
+            }
+        )
+    )
+    sink.emit_log_record(
+        SimpleNamespace(
+            record={
+                "extra": {
+                    "reporting_progress": "code_model_request",
+                    "model_id": "deepseek-v4-flash-0731",
+                    "request_index": 1,
+                    "request_limit": 21,
+                    "status": "started",
+                    "source": "不得输出的请求正文",
+                }
+            }
+        )
+    )
+    current[0] = 109.0
+    sink.emit_heartbeat()
+    current[0] = 110.0
+    sink.emit_heartbeat()
+    sink.emit_log_record(
+        SimpleNamespace(
+            record={
+                "extra": {
+                    "reporting_progress": "code_tool",
+                    "tool_name": "write_script",
+                    "status": "started",
+                    "arguments": "不得输出的源码",
+                }
+            }
+        )
+    )
+    sink.emit_log_record(
+        SimpleNamespace(
+            record={
+                "extra": {
+                    "reporting_progress": "code_tool",
+                    "tool_name": "write_script",
+                    "status": "completed",
+                    "path": "evidence/analysis_001/supplement.py",
+                    "result": "不得输出的工具结果",
+                }
+            }
+        )
+    )
+
+    assert writes == [
+        "Reporting 进度: step=run-coding-analysis status=started",
+        "Reporting 进度: model=deepseek-v4-flash-0731 request=1/21 status=waiting elapsed=0s",
+        "Reporting 进度: model=deepseek-v4-flash-0731 request=1/21 status=waiting elapsed=10s",
+        "Reporting 进度: tool=write_script status=started",
+        "Reporting 进度: tool=write_script status=completed "
+        "path=evidence/analysis_001/supplement.py",
+    ]
+    assert "不得输出" not in "".join(writes)
+
+
+def test_cli_progress_sink_omits_unsafe_progress_values() -> None:
+    writes: list[str] = []
+    sink = _CliProgressSink(writes.append, clock=lambda: 0.0)
+
+    sink.emit_log_record(
+        SimpleNamespace(
+            record={
+                "extra": {
+                    "reporting_progress": "code_tool",
+                    "tool_name": "write_script\nforged=true",
+                    "status": "completed",
+                    "path": "../../secret.py",
+                }
+            }
+        )
+    )
+
+    assert writes == []
+
+
+def test_cli_default_writer_flushes_each_progress_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, bool]] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda value, *, flush=False: calls.append((value, flush)),
+    )
+
+    _write_cli_line("Reporting 进度: status=waiting")
+
+    assert calls == [("Reporting 进度: status=waiting", True)]
+
+
+@pytest.mark.anyio
+async def test_cli_progress_binding_forwards_only_during_context() -> None:
+    writes: list[str] = []
+    sink = _CliProgressSink(writes.append, clock=lambda: 0.0)
+
+    async with _bind_cli_progress(sink, heartbeat_interval_seconds=3600.0):
+        logger.bind(
+            reporting_progress="workflow_step",
+            step_id="run-coding-analysis",
+            status="started",
+        ).info("inside")
+    logger.bind(
+        reporting_progress="workflow_step",
+        step_id="assemble-report",
+        status="started",
+    ).info("outside")
+
+    assert writes == ["Reporting 进度: step=run-coding-analysis status=started"]

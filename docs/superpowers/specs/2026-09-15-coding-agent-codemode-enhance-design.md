@@ -61,7 +61,7 @@ lsp_references
 lsp_document_symbols
 read_script
 write_script
-execute_code
+run_snippet
 restart_code_mode
 run_script
 submit_script
@@ -69,25 +69,26 @@ submit_script
 
 工具协议按载荷类型固定划分：
 
-- `write_script`、`execute_code` 声明为使用 Lark grammar 的 free-form custom tool，grammar 采用 `start: SOURCE` 与 `SOURCE: /[\s\S]+/`，只约束 input 必须是非空原始源码或 Python/Shell cell；内容直接放在 `custom_tool_call.input`，省去 `function_call.arguments` 内层 JSON 对象及其字符串转义；HTTP 请求外层仍由 OpenAI SDK 正常编码；
+- `write_script`、`run_snippet` 声明为使用 Lark grammar 的 free-form custom tool，grammar 采用 `start: SOURCE` 与 `SOURCE: /[\s\S]+/`，只约束 input 必须是非空原始源码或 Python/Shell cell；内容直接放在 `custom_tool_call.input`，省去 `function_call.arguments` 内层 JSON 对象及其字符串转义；HTTP 请求外层仍由 OpenAI SDK 正常编码；
 - 其余工具声明为带 JSON Schema 的普通 function tool；
-- custom 与 function 可以出现在同一请求工具表和同一个多轮 run 中，但 `parallel_tool_calls=False` 禁止模型并行发出多个工具调用；
+- custom 与 function 可以出现在同一请求工具表和同一个多轮 run 中；请求设置 `parallel_tool_calls=False`，但仍兼容 provider 一次返回多个结构化调用；
 - grammar 只约束 custom input 的传输形状，不解析 Python/Shell，也不引入 JavaScript runtime 或 nested-tool broker。这里采用 Codex 的 grammar custom tool 传输方式，不复制其 CodeMode 编排运行时。
 
 - 只要当前工具表包含 free-form custom tool，适配层必须使用 `tool_choice="auto"`；DashScope 实测会拒绝命名 custom choice 和包含 custom tool 的 `allowed_tools`，思考模式下也不能依赖 `required`。function-only 请求才可保留 provider 支持的显式 function choice。
-- `parallel_tool_calls=False`，避免写脚本、执行和签发并行发生。
+- 每批调用先整体校验工具类型及身份，再按 provider 返回顺序逐个委托 Agno 执行，保留原生 hooks、调用预算和取消处理。前序调用失败或成功签发后，后续调用只返回匹配原调用身份的未执行回执，避免写脚本、执行和签发互相覆盖；不把普通正文转换成调用。
 - `tool_call_limit=20`，所有工具调用统一计数。
 - 每个 coding task 创建独立 Agent、Toolkit 和 Function 实例，不跨任务复用带 task binding 或可变停止状态的对象。
 - `submit_script` 校验失败时返回结构化诊断并继续当前工具循环；沿用现有 Function post-hook 模式，只在 task 独享的 Function 上、且回执 `ok=true` 时将本次调用标记为 `stop_after_tool_call=True`。
-- Responses 返回包含 ASCII/全角 DSML 工具标记或 `execute_code`/`write_script` Markdown code fence 的 assistant 正文，但没有结构化工具调用时，返回 `report_code_custom_tool_protocol_error`，标记 `retryable=false`；正文不得被解析或执行。
-- Agent 输出普通文本、达到调用上限或正常结束但没有成功签发时，统一返回 `report_code_generation_no_submission`，标记 `retryable=false`。这类失败没有可供下一轮修复的新脚本或诊断，上层不得从零重复生成。
+- Responses 返回包含 ASCII/全角 DSML 工具标记或 `run_snippet`/`write_script` Markdown code fence 的 assistant 正文，但没有结构化工具调用时，返回 `report_code_custom_tool_protocol_error`，标记 `retryable=false`；正文不得被解析或执行。
+- Agent 输出普通文本、达到调用上限或正常结束但没有成功签发时，统一返回 `report_code_generation_no_submission`，标记 `retryable=false`。诊断保留终止原因、调用用量、最近实际工具失败及其是否已解决、源码摘要、执行回执和未完成的图片审查；跳过回执与缺少执行回执的提交错误不得覆盖已有根因。这类失败没有完成签发，上层不得从零重复生成。
+- 使用 Agno Function post-hook 记录真实工具结果；相同源码再次出现相同工具错误时返回修复提示，不增加独立重试上限或硬终止策略。
 
 保留并重构现有 `ReportingCodeOpenAIResponses`：删除“custom 工具必须唯一”、单轮源码直签和 custom 请求后立即结束的限制，将其收敛为通用混合协议适配器。适配器负责：
 
-1. 将内部 `write_script(source)` 和 `execute_code(code)` Function 定义转换为 Responses custom tool 定义；
+1. 将内部 `write_script(source)` 和 `run_snippet(code)` Function 定义转换为 Responses custom tool 定义；
 2. 将 `custom_tool_call.input` 转换为 Agno 工具执行器可消费的内部单字符串参数调用，并将 provider item id、call id 和 custom 类型标记保存在对应消息元数据中；
 3. 根据消息自带的类型标记，将有界工具结果序列化为 `custom_tool_call_output`；普通 Function 结果仍序列化为 `function_call_output`，历史重放和 `previous_response_id` 两种路径使用同一身份映射；
-4. 校验未知 custom 工具、空 input、重复 call identity、协议类型错配，以及正文中的 ASCII/全角 DSML 标记和 `execute_code`/`write_script` Markdown code fence，返回稳定技术错误；
+4. 校验未知 custom 工具、空 input、重复 call identity、协议类型错配，以及正文中的 ASCII/全角 DSML 标记和 `run_snippet`/`write_script` Markdown code fence，返回稳定技术错误；
 5. 保留 Agno 原有工具 hook、`tool_call_limit`、RunContext、指标和停止语义。
 
 每个 task 独享模型适配器实例；工具类型以消息元数据为权威，不得通过进程级可变全局、跨任务 `ContextVar` 或最近一次请求的工具表反推。reasoning/thinking 参数继续由现有模型策略决定，不再为源码提交单独切换成关闭 thinking 的第二阶段模型请求。
@@ -130,15 +131,15 @@ max_source_bytes
 
 #### `write_script(<free-form source>)`
 
-custom input 就是完整源码。工具将其写入绑定的固定 `script_path`，不接受模型提供路径，也不要求 JSON、Markdown 代码围栏或 patch 包装。写入阶段只校验非空文本、UTF-8 字节数、物理行约束和目标路径属性，允许正式 Workspace 暂时保存语法错误或运行失败的中间稿。
+custom input 就是完整源码。工具将其写入绑定的固定 `script_path`，不接受模型提供路径，也不要求 JSON、Markdown 代码围栏或 patch 包装。写入阶段先把 CRLF/CR 统一为 LF，并在缺失时自动补末尾换行，再校验非空文本、UTF-8 字节数、物理行约束和目标路径属性，允许正式 Workspace 暂时保存语法错误或运行失败的中间稿。Coding Agent 脚本容量统一为 4 MiB；数据必须通过 Workspace 路径读取，禁止把 CSV 行、查询结果、DataFrame repr、长数组或大段文本内嵌源码。
 
 使用 Workspace 现有的原子文件替换能力，避免并发读取到半写文件。原子替换使用的同目录临时文件只是文件写入实现细节，不是临时 Workspace，也不承载可恢复草稿。工具返回逻辑路径、SHA-256 和字节数；源码身份变化后，先前的成功执行回执立即失效。
 
-#### `execute_code(<free-form code>)`
+#### `run_snippet(<free-form code>)`
 
 custom input 就是待执行的 Python cell 或以 `%%bash` 开头的 Shell cell。在当前任务 Kernel 中执行该 cell，用于读取数据、试验 API、执行临时计算和检查中间结果。首次调用前由 runtime 将 cwd 设置为当前正式 Workspace root；可视化任务同时设置 `MPLBACKEND=Agg`。
 
-`execute_code` 仍拥有宿主机权限，因此可以直接修改正式 Workspace；模型应优先使用 `write_script` 更新目标脚本，以避免在 Python/Shell cell 中再次嵌套完整源码。无论通过哪个入口修改，`submit_script` 都以当前文件和最近成功执行回执的身份比较为准。
+`run_snippet` 仍拥有宿主机权限，因此可以直接修改正式 Workspace，但只用于短小的数据抽样、环境检查和假设验证。模型必须使用 `write_script` 更新目标脚本，以避免在 Python/Shell cell 中再次嵌套完整源码。无论通过哪个入口修改，`submit_script` 都以当前文件和最近成功执行回执的身份比较为准。分析任务最多调用 4 次，可视化任务最多调用 8 次；超限后返回 `report_code_exploration_budget_exhausted`，且不影响 `write_script`、`run_script`、`submit_script`。工具总额度的最后三个槽位只允许这三个正式交付工具使用；其他工具返回 `report_code_delivery_budget_reserved`，且该拒绝不消耗预留额度。
 
 返回 stdout、stderr、traceback、图片和状态的有界结果。文本诊断合计不超过 8KB，变量类型摘要不超过 2KB，图片沿用 CodeMode 实例级数量和字节上限。工具结果不得包含宿主机 Workspace 绝对路径。
 
@@ -164,9 +165,11 @@ custom input 就是待执行的 Python cell 或以 `%%bash` 开头的 Shell cell
 
 执行失败返回有界 stdout、stderr、traceback、LSP 静态发现和变量类型摘要，Agent 在同一 Responses 工具循环中继续修改。`run_script` 不签发文件，也不终止 Agent。
 
+补充 evidence 在执行成功后进行结构预检，与 Workflow 共用可信身份注入和 Pydantic 校验函数。失败通过有界 `outputValidation` 与修复提示反馈，不撤销成功执行回执或阻断提交；Workflow 保留最终验收及修复耗尽后的降级行为，业务对账仍只产生软告警。预检后再次核对源码和输出身份，确保反馈对应当前执行产物。
+
 ### 4. 直接写正式 Workspace
 
-模型优先通过 `write_script` 创建和修改绑定的目标脚本，也可以在 `execute_code` 的 Python 或 Shell 中直接修改正式 Workspace。数据集、facts、既有脚本和运行产物均使用当前会话 Workspace 的真实相对路径，不再做上传、下载或临时目录映射。
+模型通过 `write_script` 创建和修改绑定的目标脚本，也可以在 `run_snippet` 的 Python 或 Shell 中对正式 Workspace 做少量探索。数据集、facts、既有脚本和运行产物均使用当前会话 Workspace 的真实相对路径，不再做上传、下载或临时目录映射。
 
 这是运行便利性边界，不是安全边界：
 
@@ -310,7 +313,7 @@ report_knowledge_unavailable
 - `generate`/`repair` 两套重复 Agent 配置；
 - 与上述行为绑定的兼容测试。
 
-保留现有 custom tool 定义转换、非流式响应解析和稳定错误归一化中的可复用部分，将其泛化为 `write_script`、`execute_code` 与 function tool 共存的多轮协议适配。保留现有 AST、compile、authorizedPaths、文件大小、物理行和 FileIdentity 校验函数；它们迁移到 `run_script` 与 `submit_script` 的共享 validator。
+保留现有 custom tool 定义转换、非流式响应解析和稳定错误归一化中的可复用部分，将其泛化为 `write_script`、`run_snippet` 与 function tool 共存的多轮协议适配。保留现有 AST、compile、authorizedPaths、文件大小、物理行和 FileIdentity 校验函数；它们迁移到 `run_script` 与 `submit_script` 的共享 validator。
 
 ## 测试计划
 
@@ -322,11 +325,12 @@ report_knowledge_unavailable
 - provider `custom_tool_call` → Agno 内部工具执行 → `custom_tool_call_output` → 下一轮请求的消息形状正确；
 - provider `function_call` → 工具结果 → `function_call_output` → 下一轮请求的消息形状正确；
 - custom 与 function 的 call identity 分别关联正确，未知 custom 名称、空 input 和输出类型错配被稳定拒绝；
-- `write_script` 与 `execute_code` 的 wire format 使用非空源码 Lark grammar；
+- `write_script` 与 `run_snippet` 的 wire format 使用非空源码 Lark grammar；
 - 工具表包含 custom tool 时强制使用 `tool_choice="auto"`；function-only 请求保留 provider 支持的显式 function choice；
 - `parallel_tool_calls=False`；
+- 分析/可视化探索分别在第 5/9 次稳定拒绝；工具总额度最后三个槽位拒绝非交付工具，随后仍能调用 `write_script`、`run_script`、`submit_script`；
 - submit 失败后继续，成功后停止；
-- ASCII/全角 DSML 和 `execute_code`/`write_script` Markdown code fence 只产生不可重试协议错误，正文中的工具名、参数和源码绝不执行；
+- ASCII/全角 DSML 和 `run_snippet`/`write_script` Markdown code fence 只产生不可重试协议错误，正文中的工具名、参数和源码绝不执行；
 - 文本结束、工具上限耗尽或无签发均不可重试，单个 coding task 只调用一次 Agent；
 - 已签发脚本的真实技术失败仍可携带诊断进入后续修复。
 
@@ -377,7 +381,7 @@ report_knowledge_unavailable
 ## 验收标准
 
 - 同一个 Responses API run 能完成“查询知识 → LSP 检查 → 写脚本 → 执行 → 观察错误 → 原地修复 → 再执行 → 签发”。
-- `write_script` 与 `execute_code` 使用 free-form custom tool，其余工具使用 JSON function tool；两类工具在同一非流式多轮 run 中正确共存。
+- `write_script` 与 `run_snippet` 使用 free-form custom tool，其余工具使用 JSON function tool；两类工具在同一非流式多轮 run 中正确共存。
 - free-form custom tool 使用非空源码 Lark grammar；包含 custom tool 的请求使用 `tool_choice="auto"`，所有文本伪调用绝不作为工具调用执行。
 - CodeMode 直接使用当前报表会话正式 Workspace，不存在临时 Workspace 或数据复制。
 - 签发脚本及声明输出的 FileIdentity 必须分别等于该任务最后一次成功执行回执中的源码和输出身份。

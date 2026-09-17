@@ -2890,8 +2890,10 @@ def _reporting_code_reasoning(
 CodeAgentFactory = Callable[[Sequence[Any]], Agent]
 _INTERACTIVE_CODE_INSTRUCTIONS = (
     "在当前正式 Workspace 内迭代脚本；普通文本、Markdown 和代码围栏都不算成功。",
-    "先读取或写入绑定脚本，可用 execute_code 探索；正式结果必须依次成功调用 run_script 和 submit_script。",
-    "write_script 与 execute_code 的 custom input 只包含原始源码或 cell 文本，不得添加 JSON 包装或说明。",
+    "先读取或写入绑定脚本，只能用 run_snippet 做少量探索；正式结果必须依次成功调用 run_script 和 submit_script。",
+    "数据必须留在当前 Workspace：源码只写读取文件的路径、查询逻辑和聚合代码；禁止把 CSV 行、查询结果、DataFrame repr、长数组或大段文本内嵌到 Python 源码。需要大量数据时先用 run_snippet 做有界摘要或把中间结果写入 Workspace 文件，再由正式脚本读取。",
+    "可视化任务必须对 run_script 返回的每个图片输出调用 view_image，全部审查通过后才能调用 submit_script。",
+    "write_script 与 run_snippet 的 custom input 只包含原始源码或 cell 文本，不得添加 JSON 包装或说明。",
     "工具路径和任务身份由服务端绑定；不得猜测、替换或传入其他路径。",
 )
 

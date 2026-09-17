@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from ast import literal_eval
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from agno.models.message import Message
 from agno.models.openai import OpenAIChat, OpenAIResponses
 from agno.run import RunContext
 from agno.tools.function import Function
+from loguru import logger
 from openai.types.responses import Response
 
 from smart_reporting.reporting.agent import create_reporting_code_agent_factory
@@ -114,6 +116,12 @@ def _function_response(index: int, name: str, arguments: dict[str, Any]) -> Resp
             "tools": [],
         }
     )
+
+
+def _batch_response(*responses: Response) -> Response:
+    return responses[0].model_copy(update={
+        "output": [item for response in responses for item in response.output],
+    })
 
 
 def _message_response(text: str) -> Response:
@@ -386,7 +394,7 @@ def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
     model = _code_responses_model()
     tools = model._format_tool_params(
         [],
-        [_function("read_script"), _function("write_script"), _function("execute_code")],
+        [_function("read_script"), _function("write_script"), _function("run_snippet")],
     )
 
     assert tools[0]["type"] == "function"
@@ -406,7 +414,7 @@ def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
 def test_custom_call_round_trip_uses_custom_output() -> None:
     model = _code_responses_model()
     parsed = model._parse_provider_response(
-        _custom_response("execute_code", "print('ok')")
+        _custom_response("run_snippet", "print('ok')")
     )
     call = parsed.tool_calls[0]
 
@@ -432,7 +440,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         store=True,
     )
     call = model._parse_provider_response(
-        _custom_response("execute_code", "print('ok')")
+        _custom_response("run_snippet", "print('ok')")
     ).tool_calls[0]
     messages = _assistant_and_result_messages(call, {"ok": True})
     messages[0].provider_data = {"response_id": "resp-previous"}
@@ -463,7 +471,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
             {
                 "id": "item-1",
                 "call_id": "call-1",
-                "name": "execute_code",
+                "name": "run_snippet",
                 "input": "",
                 "type": "custom_tool_call",
             },
@@ -472,7 +480,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         (
             {
                 "call_id": "call-1",
-                "name": "execute_code",
+                "name": "run_snippet",
                 "input": "print(1)",
                 "type": "custom_tool_call",
             },
@@ -481,7 +489,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         (
             {
                 "id": "item-1",
-                "name": "execute_code",
+                "name": "run_snippet",
                 "input": "print(1)",
                 "type": "custom_tool_call",
             },
@@ -505,7 +513,7 @@ def _synthetic_custom_call_for_replay(
     *,
     item_id: str = "item-1",
     call_id: str = "call-1",
-    name: str = "execute_code",
+    name: str = "run_snippet",
     raw_input: str = "print('ok')",
 ) -> dict[str, Any]:
     argument = "source" if name == "write_script" else "code"
@@ -538,7 +546,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-1",
-                tool_name="execute_code",
+                tool_name="run_snippet",
             ),
             Message(
                 role="assistant",
@@ -552,7 +560,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-1",
-                tool_name="execute_code",
+                tool_name="run_snippet",
             ),
         ],
         _assistant_and_result_messages(
@@ -569,7 +577,7 @@ def _synthetic_custom_call_for_replay(
             {
                 **_synthetic_custom_call_for_replay(),
                 "function": {
-                    "name": "execute_code",
+                    "name": "run_snippet",
                     "arguments": '{"code":"forged"}',
                 },
             },
@@ -583,7 +591,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-wrong",
-                tool_name="execute_code",
+                tool_name="run_snippet",
             ),
         ],
         [
@@ -611,7 +619,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-1",
-                tool_name="execute_code",
+                tool_name="run_snippet",
             )
         ],
         _assistant_and_result_messages(_synthetic_custom_call_for_replay(), {"ok": True})
@@ -620,7 +628,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="duplicate",
                 tool_call_id="call-1",
-                tool_name="execute_code",
+                tool_name="run_snippet",
             )
         ],
         [
@@ -648,32 +656,48 @@ def test_custom_replay_rejects_invalid_history(messages: list[Message]) -> None:
     assert caught.value.details == {"retryable": False}
 
 
-def test_custom_protocol_rejects_multiple_actionable_calls() -> None:
-    response = SimpleNamespace(
-        error=None,
-        output=[
-            {
-                "id": "item-1",
-                "call_id": "call-1",
-                "name": "execute_code",
-                "input": "print(1)",
-                "type": "custom_tool_call",
-            },
-            {
-                "id": "item-2",
-                "call_id": "call-2",
-                "name": "run_script",
-                "arguments": "{}",
-                "type": "function_call",
-            },
-        ],
+def test_custom_protocol_preserves_mixed_batch_order_and_replay() -> None:
+    model = _code_responses_model()
+    response = _batch_response(
+        _function_response(1, "read_script", {}),
+        _custom_response("write_script", SOURCE, 2),
+        _function_response(3, "run_script", {}),
+        _custom_response("run_snippet", "print(1)", 4),
     )
+    parsed = model._parse_provider_response(response)
+    assert [call["function"]["name"] for call in parsed.tool_calls] == [
+        "read_script", "write_script", "run_script", "run_snippet",
+    ]
+    assert parsed.extra["tool_call_ids"] == ["call-1", "call-2", "call-3", "call-4"]
+    messages = [Message(role="assistant", tool_calls=parsed.tool_calls)]
+    messages.extend(
+        _assistant_and_result_messages(call, {"ok": True})[1]
+        for call in parsed.tool_calls
+    )
+    replay = model._format_messages(messages)
+    calls = [item for item in replay if item.get("type") in {"function_call", "custom_tool_call"}]
+    results = [item for item in replay if item.get("type", "").endswith("_output")]
+    assert [item["type"] for item in calls] == [
+        "function_call", "custom_tool_call", "function_call", "custom_tool_call",
+    ]
+    assert [item["type"] for item in results] == [
+        "function_call_output", "custom_tool_call_output",
+        "function_call_output", "custom_tool_call_output",
+    ]
+    assert [item["call_id"] for item in calls] == [item["call_id"] for item in results]
+    assert calls[1]["input"] == SOURCE
+    assert calls[3]["input"] == "print(1)"
 
-    with pytest.raises(ReportingError) as caught:
-        _code_responses_model()._parse_provider_response(response)
 
-    assert caught.value.code == "report_code_custom_tool_protocol_error"
-    assert caught.value.details == {"retryable": False}
+@pytest.mark.parametrize("identity", ["id", "call_id"])
+def test_custom_protocol_rejects_duplicate_batch_identity(identity: str) -> None:
+    first = _custom_response("write_script", SOURCE, 1)
+    second = _function_response(2, "run_script", {})
+    second.output[0] = second.output[0].model_copy(update={
+        identity: getattr(first.output[0], identity),
+    })
+    with pytest.raises(ReportingError, match="身份重复"):
+        _code_responses_model()._parse_provider_response(_batch_response(first, second))
 
 
 def test_function_call_round_trip_stays_function_protocol() -> None:
@@ -747,6 +771,72 @@ def test_code_requests_default_to_auto_tool_choice() -> None:
 
     assert params["parallel_tool_calls"] is False
     assert params["tool_choice"] == "auto"
+
+
+@pytest.mark.anyio
+async def test_code_model_response_emits_request_progress_with_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def provider_invoke(
+        _model: OpenAIResponses, _messages: list[Message], *_args: Any, **_kwargs: Any
+    ) -> SimpleNamespace:
+        return SimpleNamespace(output=[], error=None)
+
+    monkeypatch.setattr(OpenAIResponses, "ainvoke", provider_invoke)
+    model = _code_responses_model()
+    model.configure_code_run([_function("run_script")], max_model_requests=4)
+    monkeypatch.setattr(model, "_project", lambda messages, _args, _kwargs: messages)
+    records: list[dict[str, object]] = []
+    sink_id = logger.add(
+        lambda message: records.append(dict(message.record["extra"])),
+        filter=lambda record: record["extra"].get("reporting_progress")
+        == "code_model_request",
+    )
+    try:
+        await model.ainvoke([])
+        await model.ainvoke([])
+    finally:
+        logger.remove(sink_id)
+
+    assert [
+        {
+            "reporting_progress": item["reporting_progress"],
+            "model_id": item["model_id"],
+            "request_index": item["request_index"],
+            "request_limit": item["request_limit"],
+            "status": item["status"],
+        }
+        for item in records
+    ] == [
+        {
+            "reporting_progress": "code_model_request",
+            "model_id": "test-model",
+            "request_index": 1,
+            "request_limit": 4,
+            "status": "started",
+        },
+        {
+            "reporting_progress": "code_model_request",
+            "model_id": "test-model",
+            "request_index": 1,
+            "request_limit": 4,
+            "status": "completed",
+        },
+        {
+            "reporting_progress": "code_model_request",
+            "model_id": "test-model",
+            "request_index": 2,
+            "request_limit": 4,
+            "status": "started",
+        },
+        {
+            "reporting_progress": "code_model_request",
+            "model_id": "test-model",
+            "request_index": 2,
+            "request_limit": 4,
+            "status": "completed",
+        },
+    ]
 
 
 def test_visualization_single_tool_choice_uses_auto_for_custom_tool(
@@ -834,7 +924,7 @@ async def test_async_streaming_freeform_tools_are_rejected_before_provider_call(
 
     with pytest.raises(ReportingError, match="非流式") as caught:
         _code_responses_model().ainvoke_stream(
-            [], Message(role="assistant", content=""), None, [_function("execute_code")]
+            [], Message(role="assistant", content=""), None, [_function("run_snippet")]
         )
 
     assert caught.value.code == "report_code_streaming_unsupported"
@@ -871,9 +961,9 @@ def test_custom_protocol_rejects_dsml_assistant_text_without_executing_it() -> N
 @pytest.mark.parametrize(
     "text",
     [
-        "```execute_code\nprint('must not run')\n```",
+        "```run_snippet\nprint('must not run')\n```",
         (
-            '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="execute_code">\n'
+            '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="run_snippet">\n'
             '<｜DSML｜parameter name="code" string="true">print(1)</｜DSML｜parameter>\n'
             "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
         ),
@@ -1013,6 +1103,7 @@ async def test_view_image_reuses_visual_review_for_same_sha256(
     )
     reviewed = _visual_receipt(output)
     binding.visual_inspection_receipts[output.path] = reviewed
+    reviewer.review.return_value = reviewed
 
     result = await toolkit.view_image(output.path)
 
@@ -1084,7 +1175,7 @@ async def test_view_image_bounds_visual_reviewer_failures(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("operation", ["write", "run", "restart"])
+@pytest.mark.parametrize("operation", ["write", "restart"])
 async def test_visual_review_state_is_invalidated_by_execution_changes(
     operation: str,
     workspace: HostReportingWorkspace,
@@ -1097,14 +1188,57 @@ async def test_visual_review_state_is_invalidated_by_execution_changes(
 
     if operation == "write":
         await toolkit.write_script(VISUAL_SOURCE)
-    elif operation == "run":
-        await toolkit.run_script()
     else:
         await toolkit.restart_code_mode()
 
     assert binding.execution_receipt is None
     assert binding.visual_inspection_receipts == {}
     assert toolkit.submitted_receipt is None
+
+
+@pytest.mark.anyio
+async def test_successful_visual_rerun_reuses_review_for_unchanged_output(
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime(ToolkitRuntime):
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            await received.awrite_text("task-1", "charts/chart.png", "image")
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, Runtime(), reviewer
+    )
+    reviewed = _visual_receipt(output)
+    binding.visual_inspection_receipts[output.path] = reviewed
+
+    run = await toolkit.run_script()
+    view = await toolkit.view_image(output.path)
+
+    assert run["ok"] is True
+    assert binding.visual_inspection_receipts == {output.path: reviewed}
+    assert view["receipt"]["sha256"] == output.sha256
+    reviewer.review.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_visual_rerun_does_not_reuse_review_requiring_revision(
+    workspace: HostReportingWorkspace,
+) -> None:
+    class Runtime(ToolkitRuntime):
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            await received.awrite_text("task-1", "charts/chart.png", "image")
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, Runtime())
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(
+        output, requires_revision=True
+    )
+
+    run = await toolkit.run_script()
+
+    assert run["ok"] is True
+    assert binding.visual_inspection_receipts == {}
 
 
 @pytest.mark.anyio
@@ -1122,6 +1256,30 @@ async def test_run_and_submit_bind_source_and_declared_outputs(
     assert [item["path"] for item in submitted["executionReceipt"]["outputFiles"]] == [
         "analysis/out.json"
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("print('ok')", "print('ok')\n"),
+        ("print('a')\r\nprint('b')\r", "print('a')\nprint('b')\n"),
+    ],
+)
+async def test_write_script_normalizes_repairable_freeform_text(
+    binding: ReportingCodingTaskBinding,
+    runtime: ToolkitRuntime,
+    source: str,
+    expected: str,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.write_script(source)
+
+    assert result["ok"] is True
+    assert await binding.workspace.aread_text(
+        binding.context.task_id, binding.context.script_path
+    ) == expected
 
 
 @pytest.mark.anyio
@@ -1201,6 +1359,7 @@ async def test_failed_run_clears_old_declared_output_and_receipt(
     runtime: ToolkitRuntime,
 ) -> None:
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script(_valid_source())
     binding.execution_receipt = _receipt()
     await _write_output(binding.workspace, "analysis/out.json")
     runtime.next_cell = _failed_cell("ValueError: bad")
@@ -1208,6 +1367,21 @@ async def test_failed_run_clears_old_declared_output_and_receipt(
     assert result["ok"] is False
     assert binding.execution_receipt is None
     assert not await binding.workspace.apath_exists("task", "analysis/out.json")
+
+
+@pytest.mark.anyio
+async def test_invalid_source_run_preserves_previous_declared_output(
+    binding: ReportingCodingTaskBinding,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script("if True print('broken')\n")
+    await binding.workspace.awrite_text("task", "analysis/out.json", '{"old":true}')
+
+    result = await toolkit.run_script()
+
+    assert result["code"] == "report_code_source_invalid"
+    assert await binding.workspace.aread_text("task", "analysis/out.json") == '{"old":true}'
 
 
 @pytest.mark.anyio
@@ -1429,7 +1603,10 @@ async def test_runner_shuts_down_kernel_on_no_submission(
             _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
         )
     assert caught.value.code == "report_code_generation_no_submission"
-    assert caught.value.details == {"retryable": False}
+    assert caught.value.details["retryable"] is False
+    assert caught.value.details["terminationReason"] == "model_ended_without_submission"
+    assert caught.value.details["lastFailure"] is None
+    assert caught.value.details["completedToolCalls"] == 0
     assert runtime.shutdowns == ["code-task-1"]
 
 
@@ -1536,9 +1713,11 @@ def test_code_agent_factory_creates_fresh_agent_with_custom_input_instructions()
     assert first.tools[0] is not second.tools[0]
     instructions = "\n".join(str(item) for item in first.instructions)
     assert (
-        "write_script 与 execute_code 的 custom input 只包含原始源码或 cell 文本，"
+        "write_script 与 run_snippet 的 custom input 只包含原始源码或 cell 文本，"
         "不得添加 JSON 包装或说明。"
     ) in instructions
+    assert "可视化任务必须对 run_script 返回的每个图片输出调用 view_image" in instructions
+    assert "全部审查通过后才能调用 submit_script" in instructions
     assert "source 参数" not in instructions
     assert "code 参数" not in instructions
 
@@ -1579,7 +1758,7 @@ async def test_interactive_v1_write_fail_fix_run_submit(
     await toolkit.write_script("if True print('broken')\n")
     assert (await toolkit.run_script())["ok"] is False
     await toolkit.write_script(SOURCE)
-    assert (await toolkit.execute_code("print('probe')"))["ok"] is True
+    assert (await toolkit.run_snippet("print('probe')"))["ok"] is True
     assert (await toolkit.run_script())["ok"] is True
     submitted = await toolkit.submit_script()
     assert submitted["ok"] is True
@@ -1589,19 +1768,33 @@ async def test_interactive_v1_write_fail_fix_run_submit(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("batched", [False, True])
 async def test_interactive_v1_end_to_end_responses_loop(
     workspace: HostReportingWorkspace,
+    batched: bool,
 ) -> None:
     responses = [
         _custom_response("write_script", "if True print('broken')\n", 1),
         _function_response(2, "run_script", {}),
-        _custom_response("execute_code", "print('probe')", 3),
+        _custom_response("run_snippet", "print('probe')", 3),
         _custom_response("write_script", SOURCE, 4),
         _function_response(5, "lsp_diagnostics", {}),
         _function_response(6, "search_knowledge", {"query": "脚本规范"}),
         _function_response(7, "run_script", {}),
         _function_response(8, "submit_script", {}),
     ]
+    if batched:
+        responses = [
+            _batch_response(
+                *responses[:2],
+                _custom_response("run_snippet", "print('must not run')", 9),
+            ),
+            _batch_response(*responses[2:6]),
+            _batch_response(
+                *responses[6:],
+                _custom_response("write_script", "raise RuntimeError('must not run')\n", 10),
+            ),
+        ]
 
     class FakeResponsesClient:
         def __init__(self) -> None:
@@ -1691,12 +1884,12 @@ async def test_interactive_v1_end_to_end_responses_loop(
     assert result.execution_receipt.output_files[0].path == "analysis/out.json"
     assert await workspace.aread_text("task-1", "analysis/a.py") == SOURCE
     assert runtime.shutdowns == ["code-task-1"]
-    assert len(client.requests) == 8
+    assert len(client.requests) == (3 if batched else 8)
     assert responses == []
     request_tools = [tool for request in client.requests for tool in request["tools"]]
     assert {tool["type"] for tool in request_tools} == {"custom", "function"}
     assert not any(
-        tool["type"] == "function" and tool["name"] in {"write_script", "execute_code"}
+        tool["type"] == "function" and tool["name"] in {"write_script", "run_snippet"}
         for tool in request_tools
     )
     replay_types = [
@@ -1717,8 +1910,11 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
         _custom_response("write_script", VISUAL_SOURCE, 1),
         _function_response(2, "run_script", {}),
         _function_response(3, "view_image", {"path": "charts/chart.png"}),
+        _function_response(10, "submit_script", {}),
         _custom_response("write_script", REVISED_VISUAL_SOURCE, 4),
+        _function_response(8, "submit_script", {}),
         _function_response(5, "run_script", {}),
+        _function_response(9, "submit_script", {}),
         _function_response(6, "view_image", {"path": "charts/chart.png"}),
         _function_response(7, "submit_script", {}),
     ]
@@ -1813,6 +2009,16 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     assert reviewer.hashes[0] != reviewer.hashes[1]
     assert result.visual_inspection_receipts[0].sha256 == reviewer.hashes[1]
     assert result.visual_inspection_receipts[0].requires_revision is False
+    replay = client.requests[-1]["input"]
+    submissions = {item["call_id"] for item in replay
+                   if item.get("type") == "function_call" and item["name"] == "submit_script"}
+    rejections = [literal_eval(item["output"]) for item in replay
+                  if item.get("type") == "function_call_output" and item["call_id"] in submissions]
+    assert [item["code"] for item in rejections] == [
+        "report_code_visual_revision_required",
+        "report_code_submission_not_executed",
+        "report_code_visual_review_required",
+    ]
     request_history = json.dumps(client.requests, ensure_ascii=False, default=str)
     assert "关键标题完全重叠" in request_history
     assert "image_url" not in request_history

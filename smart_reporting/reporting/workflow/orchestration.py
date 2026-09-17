@@ -128,7 +128,11 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 logger.warning("report_process_activity_start_failed step_id={}", step_id)
         accumulator = _StepModelMetricsAccumulator()
         metrics_token = _STEP_MODEL_METRICS.set(accumulator)
-        logger.info("report_workflow_step_started step_id={}", step_id)
+        logger.bind(
+            reporting_progress="workflow_step",
+            step_id=step_id,
+            status="started",
+        ).info("report_workflow_step_started step_id={}", step_id)
         try:
             result = executor(*args, **kwargs)
             if isawaitable(result):
@@ -139,7 +143,11 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 raise
             failed_metrics = accumulator.snapshot()
             failed_additional = failed_metrics.additional_metrics or {}
-            logger.warning(
+            logger.bind(
+                reporting_progress="workflow_step",
+                step_id=step_id,
+                status="failed",
+            ).warning(
                 "report_workflow_step_failed step_id={} duration_ms={} error_type={} "
                 "request_count={} input_tokens={} output_tokens={} total_tokens={} "
                 "reasoning_tokens={} cache_read_tokens={} cache_write_tokens={} "
@@ -168,7 +176,11 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 metrics = metrics + result.metrics
             metrics.duration = duration
             result.metrics = metrics
-        logger.info(
+        logger.bind(
+            reporting_progress="workflow_step",
+            step_id=step_id,
+            status="completed",
+        ).info(
             "report_workflow_step_completed step_id={} duration_ms={} input_tokens={} "
             "output_tokens={} total_tokens={} reasoning_tokens={} cache_read_tokens={} "
             "cache_write_tokens={} request_count={} time_to_first_token_seconds={}",

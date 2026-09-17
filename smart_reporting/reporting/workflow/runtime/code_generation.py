@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from time import perf_counter
 from typing import Any
@@ -58,16 +58,22 @@ def _bounded_forbidden_path_operations(value: Any) -> list[str]:
 
 def _code_failure_kind(diagnostic: Mapping[str, Any] | None) -> ThinkingFailureKind | None:
     code = diagnostic.get("code") if isinstance(diagnostic, Mapping) else None
-    if code in {"report_python_source_shape_invalid", "report_python_source_path_invalid"}:
+    if code in {
+        "report_python_source_shape_invalid", "report_python_source_path_invalid",
+        "report_code_source_invalid",
+    }:
         return "python_compile_failure"
     if code in {
         "execution_output_error",
+        "report_code_mode_execution_failed",
         "report_analysis_script_failed",
         "report_visualization_script_failed",
     }:
         return "python_execution_failure"
     if code == "report_visualization_review_failed":
         return "visual_review_failure"
+    if code == "report_analysis_evidence_schema_invalid":
+        return "schema_failure"
     return None
 
 
@@ -90,6 +96,7 @@ class ReportingCodeGenerationRunner:
         registry: ReportingCodingTaskRegistry | None = None,
         knowledge_index: ReportingKnowledgeIndex | None = None,
         vision_reviewer: ReportVisionReviewer | None = None,
+        model_metrics_recorder: Callable[[Any, int], None] | None = None,
     ) -> None:
         self.agent_factory = agent_factory
         self.code_mode_runtime = code_mode_runtime
@@ -97,6 +104,7 @@ class ReportingCodeGenerationRunner:
         self.knowledge_index = knowledge_index
         self.lsp_manager = lsp_manager
         self.vision_reviewer = vision_reviewer
+        self.model_metrics_recorder = model_metrics_recorder
 
     async def run(
         self,
@@ -106,6 +114,7 @@ class ReportingCodeGenerationRunner:
         *,
         run_context: RunContext,
         diagnostic: Mapping[str, Any] | None = None,
+        output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]] | None = None,
     ) -> CodeGenerationResult:
         if task_context.task_kind == "visualization" and self.vision_reviewer is None:
             raise ReportingError(
@@ -134,6 +143,7 @@ class ReportingCodeGenerationRunner:
                 knowledge_index=self.knowledge_index,
                 lsp_manager=self.lsp_manager,
                 vision_reviewer=self.vision_reviewer,
+                output_preflight=output_preflight,
             )
             task_payload = asdict(task_context)
             task_payload["workspace_root"] = str(task_context.workspace_root)
@@ -146,7 +156,32 @@ class ReportingCodeGenerationRunner:
             try:
                 agent = self.agent_factory(toolkit.tool_functions)
                 agent.tool_call_limit = min(MAX_TOOL_CALL_LIMIT, requested_tool_call_limit)
-                await agent.arun(self._prompt(payload), run_context=run_context)
+                configure_code_run = getattr(getattr(agent, "model", None), "configure_code_run", None)
+                if isinstance(agent, Agent) and not callable(configure_code_run):
+                    raise ReportingError(
+                        "report_code_model_protocol_missing",
+                        "Coding Agent 模型未配置 Responses free-form 工具协议。",
+                        details={"retryable": False},
+                    )
+                if callable(configure_code_run):
+                    configure_code_run(
+                        toolkit.tool_functions,
+                        max_model_requests=max(4, agent.tool_call_limit + 1),
+                    )
+                run_output = None
+                try:
+                    run_output = await agent.arun(
+                        self._prompt(payload), run_context=run_context
+                    )
+                finally:
+                    request_count_reader = getattr(
+                        getattr(agent, "model", None), "code_run_request_count", None
+                    )
+                    request_count = (
+                        request_count_reader() if callable(request_count_reader) else 0
+                    )
+                    if self.model_metrics_recorder is not None:
+                        self.model_metrics_recorder(run_output, request_count)
                 report_run_error = getattr(
                     getattr(agent, "model", None), "report_run_error", None
                 )
@@ -156,10 +191,26 @@ class ReportingCodeGenerationRunner:
                         raise recorded_error
                 receipt = toolkit.submitted_receipt
                 if receipt is None:
+                    details = await toolkit.submission_diagnostic()
+                    tool_results = sum(
+                        message.role == "tool"
+                        for message in (getattr(run_output, "messages", None) or ())
+                    )
+                    details.update({
+                        "retryable": False,
+                        "toolCallLimit": agent.tool_call_limit,
+                        "toolResultCount": tool_results,
+                        "modelRequests": request_count,
+                        "terminationReason": (
+                            "tool_call_limit_reached"
+                            if tool_results >= agent.tool_call_limit
+                            else "model_ended_without_submission"
+                        ),
+                    })
                     raise ReportingError(
                         "report_code_generation_no_submission",
                         "Coding Agent 未签发成功执行的 Python 脚本。",
-                        details={"retryable": False},
+                        details=details,
                     )
             except ReportingError:
                 raise
@@ -216,6 +267,9 @@ class ReportingCodeGenerationRunner:
         if not isinstance(details, Mapping):
             return result
         safe: dict[str, Any] = {}
+        issue_summary = details.get("issueSummary")
+        if isinstance(issue_summary, str) and issue_summary:
+            safe["issueSummary"] = issue_summary[:MAX_DIAGNOSTIC_OUTPUT_LENGTH]
         path = details.get("path")
         if isinstance(path, str) and 0 < len(path) <= MAX_DIAGNOSTIC_PATH_LENGTH:
             safe["path"] = path

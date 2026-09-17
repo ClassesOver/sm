@@ -1,6 +1,7 @@
 import hashlib
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from agno.run import RunContext
@@ -15,6 +16,8 @@ from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRouter,
 )
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.tools.workspace_adapter import WorkspaceServiceReportingRuntime
+from smart_reporting.reporting.tools.factory import build_reporting_tools
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
 from smart_reporting.reporting.workflow.scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
@@ -22,6 +25,7 @@ from smart_reporting.reporting.workflow.scope import (
 )
 from smart_reporting.runtime.execution import create_execution_context
 from smart_reporting.runtime.settings import AgentSettings
+from smart_reporting.task_execution.execution import TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
 
 SECRET = "0123456789abcdef0123456789abcdef"
@@ -158,11 +162,43 @@ def test_reporting_agent_tools_are_session_scoped_without_duplicate_names(
         (second_tools, second.workspace),
     ):
         assert tools[0] is expected_workspace
-        names = [name for toolkit in tools for name in toolkit.functions]
-        assert len(names) == len(set(names))
-        assert expected_native_names <= set(names)
+        names = {
+            name
+            for toolkit in tools
+            for name in (*toolkit.functions, *toolkit.async_functions)
+        }
+        assert expected_native_names <= names
+        assert "inspect_chart" not in names
         assert "run_python_script" not in names
     assert agent.cache_callables is False
+
+    visualization_context = RunContext(
+        run_id="task-visualization",
+        session_id="task-visualization",
+        user_id="user-1",
+        session_state={},
+        dependencies={
+            "AgentOS 任务执行": {
+                "externalRunId": "task-visualization",
+                "threadId": "workspace-1",
+                "reportingPhase": "analysis",
+                "reportingTaskKind": "visualization_section",
+            }
+        },
+    )
+    visualization_tools = build_reporting_tools(
+        router,
+        object(),
+        state_repository=object(),
+        run_context=visualization_context,
+        vision_reviewer=object(),
+    )
+    visualization_names = {
+        name
+        for toolkit in visualization_tools
+        for name in (*toolkit.functions, *toolkit.async_functions)
+    }
+    assert "inspect_chart" not in visualization_names
 
 
 def _host_workspace(tmp_path: Path) -> HostReportingWorkspace:
@@ -196,6 +232,8 @@ def test_path_mapper_rejects_symlink_parent(tmp_path: Path) -> None:
 
     with pytest.raises(WorkspaceError, match="符号链接"):
         ReportingPathMapper(tmp_path).to_host_path("linked/result.json")
+
+
 
 
 @pytest.mark.anyio
@@ -433,3 +471,77 @@ def test_runtime_resolves_same_host_workspace_after_prepare_run(tmp_path: Path) 
     )
 
     assert first is second
+
+
+@pytest.mark.anyio
+async def test_host_workspace_applies_create_update_and_delete_changes(tmp_path: Path) -> None:
+    workspace = _host_workspace(tmp_path)
+
+    created = await workspace.aapply_changes(
+        "workspace-1",
+        [{"operation": "create", "path": "analysis/script.py", "content": "value = 1\n"}],
+    )
+    assert created["operations"] == 1
+    assert await workspace.aread_text("workspace-1", "analysis/script.py") == "value = 1\n"
+
+    current = created["files"][0]["sha256"]
+    updated = await workspace.aapply_changes(
+        "workspace-1",
+        [
+            {
+                "operation": "update",
+                "path": "analysis/script.py",
+                "content": "value = 2\n",
+                "expected_sha256": current,
+            }
+        ],
+    )
+    assert await workspace.aread_text("workspace-1", "analysis/script.py") == "value = 2\n"
+
+    await workspace.aapply_changes(
+        "workspace-1",
+        [
+            {
+                "operation": "delete",
+                "path": "analysis/script.py",
+                "expected_sha256": updated["files"][0]["sha256"],
+            }
+        ],
+    )
+    assert await workspace.apath_exists("workspace-1", "analysis/script.py") is False
+
+
+@pytest.mark.anyio
+async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path: Path) -> None:
+    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
+    router = ReportingWorkspaceRouter(registry)
+    runtime = WorkspaceServiceReportingRuntime(router, object())
+    scope = SimpleNamespace(
+        external_run_id="report-coding-analysis-1",
+        attempt_no=1,
+        thread_id="workspace-1",
+    )
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+
+    retained = await runtime.bound_tool_result(
+        scope,
+        {"path": "facts/analysis_001.json", "content": "医疗收入"},
+        context,
+        retain=True,
+        preview_bytes=8,
+    )
+
+    assert retained["outputHandle"]
+    assert retained["outputTruncated"] is True
+    handles = context.session_state[TASK_EXECUTION_TOOL_OUTPUT_STATE_KEY]["handles"]
+    stored_path = handles[retained["outputHandle"]]["path"]
+    relative = stored_path.removeprefix("/home/daytona/")
+    assert (registry.get("workspace-1").root / relative).is_file()
+    raw, metadata = await runtime.read_tool_output_resource(
+        retained["outputHandle"],
+        context,
+        _scope=scope,
+    )
+    assert raw.decode("utf-8") == "医疗收入"
+    assert metadata["bytes"] == len("医疗收入".encode())

@@ -2187,6 +2187,7 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
         parent_run_context=RunContext(
             run_id="report-run-1", session_id="report-session-1", session_state={}
         ),
+        model_metrics_recorder=lambda _output, _request_count: None,
     )
 
     assert observed == [
@@ -2646,6 +2647,54 @@ async def test_run_planner_passes_layered_thinking_request(
     )
 
     assert [select_reporting_thinking(request).thinking_budget for request in observed] == expected_budgets
+
+
+@pytest.mark.anyio
+async def test_run_planner_forwards_nonstream_metrics_to_task_settlement(monkeypatch) -> None:
+    content = DataUnderstandingPlan.model_construct()
+    run_output = SimpleNamespace(metrics=SimpleNamespace(total_tokens=30))
+    recorded: list[tuple[object, int]] = []
+
+    class RecordingExecutor:
+        def __init__(self, _agent) -> None:
+            pass
+
+        async def execute(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                content=content,
+                run_output=run_output,
+                model_request_count=2,
+            )
+
+    monkeypatch.setattr(
+        reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor
+    )
+    agent = Agent(
+        id="report-data-understanding-planner",
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        output_schema=DataUnderstandingPlan,
+    )
+    setattr(
+        agent,
+        "_reporting_thinking",
+        ThinkingPolicyConfig(
+            operation="data_understanding",
+            thinking_enabled=True,
+            configured_budget_cap=8192,
+        ),
+    )
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _run_context: {"userId": "user-1"}
+
+    result = await runtime._run_planner(
+        agent,
+        {},
+        SimpleNamespace(run_id="run-1"),
+        model_metrics_recorder=lambda output, count: recorded.append((output, count)),
+    )
+
+    assert result is content
+    assert recorded == [(run_output, 2)]
 
 
 @pytest.mark.anyio

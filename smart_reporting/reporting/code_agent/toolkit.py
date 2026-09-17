@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from collections.abc import Mapping
+import json
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, NoReturn
 from uuid import uuid4
 
 from agno.run import RunContext
 from agno.tools import Function, Toolkit
+from loguru import logger
 
 from ...workspace import WorkspaceError, WorkspaceService
 from ..code_mode import ReportingCodeModeRuntime
@@ -27,6 +29,13 @@ from .lsp_process import ReportingLspProcessManager
 
 MAX_PHYSICAL_LINE_BYTES = 8 * 1024
 MAX_DIAGNOSTIC_BYTES = 8 * 1024
+ANALYSIS_SNIPPET_LIMIT = 4
+VISUALIZATION_SNIPPET_LIMIT = 8
+# 数据属于正式 Workspace；源码中的大字面量通常意味着模型把查询结果直接
+# 粘贴进脚本。阈值保持足够高，避免误伤普通 SQL、配置或少量示例数据。
+MAX_INLINE_LITERAL_BYTES = 32 * 1024
+MAX_INLINE_COLLECTION_ITEMS = 512
+MAX_INLINE_COLLECTION_BYTES = 64 * 1024
 _FORBIDDEN_PATH_CALLS = frozenset(
     {
         "os.chdir",
@@ -71,8 +80,11 @@ def _reject_source(message: str) -> NoReturn:
 
 
 def validate_draft_source(context: ReportingCodingTaskContext, source: Any) -> bytes:
-    if not isinstance(source, str) or not source or "\r" in source or not source.endswith("\n"):
+    if not isinstance(source, str) or not source:
         _reject_source("Python 源码形状无效。")
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
+    if not source.endswith("\n"):
+        source += "\n"
     try:
         raw = source.encode("utf-8")
     except UnicodeEncodeError:
@@ -173,9 +185,59 @@ def _referenced_literal_paths(tree: ast.AST) -> set[str]:
     return paths
 
 
+def _embedded_data_details(tree: ast.AST) -> dict[str, Any] | None:
+    """识别疑似被模型直接嵌入源码的大型数据字面量。
+
+    这里只拦截可静态确认的形状：超大字符串/字节串，或包含大量常量项的
+    列表、元组、集合、字典。真实数据应写入 Workspace，由脚本按路径读取。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            size = len(node.value if isinstance(node.value, bytes) else node.value.encode("utf-8"))
+            if size > MAX_INLINE_LITERAL_BYTES:
+                return {
+                    "kind": "large_literal",
+                    "bytes": size,
+                    "line": node.lineno,
+                    "column": node.col_offset,
+                }
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            continue
+        item_count = len(node.elts) if not isinstance(node, ast.Dict) else len(node.values)
+        if item_count <= MAX_INLINE_COLLECTION_ITEMS:
+            continue
+        literal_bytes = 0
+        for child in ast.walk(node):
+            if isinstance(child, ast.Constant) and isinstance(child.value, (str, bytes, int, float)):
+                value = child.value
+                literal_bytes += len(value if isinstance(value, bytes) else str(value).encode("utf-8"))
+                if literal_bytes > MAX_INLINE_COLLECTION_BYTES:
+                    return {
+                        "kind": "large_collection",
+                        "items": item_count,
+                        "bytes": literal_bytes,
+                        "line": node.lineno,
+                        "column": node.col_offset,
+                    }
+    return None
+
+
+def _reject_embedded_data(tree: ast.AST) -> None:
+    embedded = _embedded_data_details(tree)
+    if embedded is not None:
+        raise ReportingError(
+            "report_code_source_invalid",
+            "源码疑似内嵌大数据；请将数据留在 Workspace，并在脚本中按授权路径读取。",
+            details={"reason": "embedded_data", **embedded},
+        )
+
+
 def compile_script_source(path: str, source: str, authorized_paths: frozenset[str]) -> None:
     try:
         tree = ast.parse(source, filename=path)
+        _reject_embedded_data(tree)
         aliases = _import_aliases(tree)
         forbidden = {
             qualified
@@ -203,7 +265,23 @@ def compile_script_source(path: str, source: str, authorized_paths: frozenset[st
     except ReportingError:
         raise
     except (SyntaxError, TypeError, ValueError) as error:
-        raise ReportingError("report_code_source_invalid", "Python 源码无法编译。") from error
+        details: dict[str, Any] = {"path": path, "errorType": type(error).__name__}
+        if isinstance(error, SyntaxError):
+            details.update(
+                {
+                    "line": error.lineno,
+                    "column": error.offset,
+                    "endLine": error.end_lineno,
+                    "endColumn": error.end_offset,
+                    "sourceLine": (error.text or "").rstrip("\n"),
+                    "reason": error.msg,
+                }
+            )
+        else:
+            details["reason"] = str(error)[:512]
+        raise ReportingError(
+            "report_code_source_invalid", "Python 源码无法编译。", details=details
+        ) from error
 
 
 def validate_script_source(context: ReportingCodingTaskContext, source: str) -> bytes:
@@ -219,22 +297,88 @@ def _cell_field(cell: Any, name: str, default: Any = None) -> Any:
     return getattr(cell, name, default)
 
 
-def _failure(code: str, message: str) -> dict[str, Any]:
-    return {"ok": False, "status": "rejected", "code": code, "message": message}
+def _failure(code: str, message: str, details: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    result = {"ok": False, "status": "rejected", "code": code, "message": message}
+    if details:
+        result["details"] = _safe_diagnostic_details(details)
+    return result
+
+
+def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "path", "line", "column", "endLine", "endColumn", "sourceLine", "reason",
+        "errorType", "retryable", "unsignedPaths", "forbiddenPathOperations",
+        "traceback", "result", "stderr", "stdout", "issueSummary",
+        "used", "limit", "requiredNextTools", "kind", "bytes", "items",
+    )
+    output_fields = {"traceback", "result", "stderr", "stdout"}
+    result: dict[str, Any] = {}
+
+    def bounded_text(value: str, max_bytes: int, *, tail: bool = False) -> str:
+        raw = value.encode("utf-8")
+        if len(raw) <= max_bytes:
+            return value
+        selected = raw[-max_bytes:] if tail else raw[:max_bytes]
+        return selected.decode("utf-8", errors="ignore")
+
+    for key in allowed:
+        value = details.get(key)
+        if key in {"unsignedPaths", "forbiddenPathOperations", "requiredNextTools"}:
+            if isinstance(value, list):
+                result[key] = [bounded_text(str(item), 256) for item in value[:20]]
+        elif key == "retryable":
+            if isinstance(value, bool):
+                result[key] = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[key] = value
+        elif isinstance(value, str) and key not in output_fields:
+            result[key] = bounded_text(value, 2048)
+
+    def encoded_size() -> int:
+        return len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+
+    # 极端元数据也必须满足硬上限；优先保留路径、位置和 retryable。
+    for key in (
+        "forbiddenPathOperations", "unsignedPaths", "sourceLine", "reason",
+        "errorType", "endColumn", "endLine", "column", "line", "path",
+    ):
+        if encoded_size() <= MAX_DIAGNOSTIC_BYTES:
+            break
+        result.pop(key, None)
+
+    def add_tail(key: str, value: str) -> None:
+        result[key] = ""
+        if encoded_size() > MAX_DIAGNOSTIC_BYTES:
+            result.pop(key, None)
+            return
+        raw = value.encode("utf-8")
+        low, high = 0, len(raw)
+        best = ""
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = raw[-middle:].decode("utf-8", errors="ignore") if middle else ""
+            result[key] = candidate
+            if encoded_size() <= MAX_DIAGNOSTIC_BYTES:
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        result[key] = best
+
+    # 按最终 JSON 编码精确分配，优先保留异常和表达式结果。
+    for key in ("traceback", "result", "stderr", "stdout"):
+        value = details.get(key)
+        if isinstance(value, str):
+            add_tail(key, value)
+    return result
 
 
 def _bounded_failure(code: str, cell: Any) -> dict[str, Any]:
-    remaining = MAX_DIAGNOSTIC_BYTES
-    details: dict[str, str] = {}
-    for name in ("stdout", "stderr", "traceback"):
-        value = str(_cell_field(cell, name, "") or "").encode("utf-8")[:remaining]
-        text = value.decode("utf-8", errors="ignore")
-        details[name] = text
-        remaining -= len(text.encode("utf-8"))
-    return {
-        **_failure(code, "Coding Agent 脚本执行失败。"),
-        "details": details,
+    details = {
+        name: str(_cell_field(cell, name, "") or "")
+        for name in ("traceback", "stderr", "stdout")
     }
+    return _failure(code, "Coding Agent 脚本执行失败。", details)
 
 
 def _visual_repair_diagnostic(
@@ -293,6 +437,7 @@ class ReportingCodeModeToolkit(Toolkit):
         lsp_manager: ReportingLspProcessManager,
         knowledge_index: ReportingKnowledgeIndex | None = None,
         vision_reviewer: ReportVisionReviewer | None = None,
+        output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]] | None = None,
     ) -> None:
         self.binding = binding
         self.runtime = runtime
@@ -300,10 +445,25 @@ class ReportingCodeModeToolkit(Toolkit):
         self.vision_reviewer = vision_reviewer
         self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
+        self.output_preflight = output_preflight
+        self.last_tool: str | None = None
+        self.last_failure: dict[str, Any] | None = None
+        self.completed_tool_calls = 0
+        self._snippet_calls = 0
+        self._snippet_limit = (
+            VISUALIZATION_SNIPPET_LIMIT
+            if self.context.task_kind == "visualization"
+            else ANALYSIS_SNIPPET_LIMIT
+        )
+        self._failure_signature: str | None = None
+        self._repeated_failure_count = 0
         tools = [
             Function(
                 name="write_script",
-                description="将完整 Python 源码写入当前任务脚本。",
+                description=(
+                    "将完整 Python 源码写入当前任务脚本。源码应通过 Workspace 路径读取数据，"
+                    "不得内嵌 CSV 行、查询结果或大段数据文本。"
+                ),
                 parameters={
                     "type": "object",
                     "properties": {"source": {"type": "string"}},
@@ -315,8 +475,11 @@ class ReportingCodeModeToolkit(Toolkit):
             ),
             Function(name="read_script", entrypoint=self.read_script),
             Function(
-                name="execute_code",
-                description="在当前交互 Kernel 执行 Python 或 Shell cell。",
+                name="run_snippet",
+                description=(
+                    "执行短小的探索性 Python 或 Shell 代码，用于数据抽样、环境检查和假设验证。"
+                    "不得用于生成最终交付脚本；探索后必须调用 write_script、run_script、submit_script。"
+                ),
                 parameters={
                     "type": "object",
                     "properties": {"code": {"type": "string"}},
@@ -324,7 +487,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     "additionalProperties": False,
                 },
                 strict=True,
-                entrypoint=self.execute_code,
+                entrypoint=self.run_snippet,
             ),
             Function(name="restart_code_mode", entrypoint=self.restart_code_mode),
             Function(name="run_script", entrypoint=self.run_script),
@@ -357,7 +520,6 @@ class ReportingCodeModeToolkit(Toolkit):
                 name="submit_script",
                 entrypoint=self.submit_script,
                 pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_success,
             ),
         ]
         if self.context.task_kind == "visualization":
@@ -397,7 +559,79 @@ class ReportingCodeModeToolkit(Toolkit):
                     entrypoint=self.search_knowledge,
                 )
             )
+        for function in tools:
+            function.post_hook = self._record_tool_result
         super().__init__(name="reporting_code_mode", tools=tools)
+
+    async def _source_sha256(self) -> str | None:
+        try:
+            identity = await self.workspace.ahash_file(self.context.task_id, self.context.script_path)
+        except WorkspaceError:
+            return None
+        return identity["sha256"]
+
+    async def _record_tool_result(self, fc: Any) -> None:
+        """使用 Agno 原生 hook 观测实际调用；未执行的批次回执不会覆盖根因。"""
+        name = fc.function.name
+        self.last_tool = name
+        self.completed_tool_calls += 1
+        if name == "submit_script":
+            _stop_after_success(fc)
+        result = fc.result
+        if isinstance(result, Mapping) and isinstance(result.get("outputValidation"), Mapping):
+            result = result["outputValidation"]
+        if fc.error or (isinstance(result, Mapping) and result.get("ok") is False):
+            payload = result if isinstance(result, Mapping) else {}
+            if (
+                payload.get("code") == "report_code_submission_not_executed"
+                and self.last_failure is not None
+                and not self.last_failure["resolved"]
+            ):
+                return
+            details = payload.get("details")
+            failure = {
+                "tool": name,
+                "sourceSha256": await self._source_sha256(),
+                "code": str(payload.get("code", "tool_error"))[:128],
+                "message": str(fc.error or payload.get("message", ""))[:512],
+                "details": _safe_diagnostic_details(details) if isinstance(details, Mapping) else {},
+            }
+            signature = json.dumps(failure, ensure_ascii=False, sort_keys=True)
+            self._repeated_failure_count = (
+                self._repeated_failure_count + 1 if signature == self._failure_signature else 1
+            )
+            self._failure_signature = signature
+            self.last_failure = {**failure, "resolved": False}
+            if self._repeated_failure_count > 1 and isinstance(result, dict):
+                result["repeatedFailureCount"] = self._repeated_failure_count
+                result["repairHint"] = "相同源码再次出现相同错误；请检查输入与环境，并调整修复方法。"
+                logger.warning(
+                    "report_code_repeated_failure tool={} code={} count={}",
+                    name, failure["code"], self._repeated_failure_count,
+                )
+        elif isinstance(result, Mapping) and result.get("ok") is True:
+            if self.last_failure is not None and self.last_failure["tool"] == name:
+                self.last_failure = {**self.last_failure, "resolved": True}
+                self._failure_signature = None
+                self._repeated_failure_count = 0
+
+    async def submission_diagnostic(self) -> dict[str, Any]:
+        receipt = self.binding.execution_receipt
+        return {
+            "lastTool": self.last_tool,
+            "lastFailure": self.last_failure,
+            "sourceSha256": await self._source_sha256(),
+            "hasExecutionReceipt": receipt is not None,
+            "completedToolCalls": self.completed_tool_calls,
+            "unreviewedOutputPaths": [
+                item.path for item in (receipt.output_files if receipt else ())
+                if self.context.task_kind == "visualization" and (
+                    (review := self.binding.visual_inspection_receipts.get(item.path)) is None
+                    or review.sha256 != item.sha256 or not review.reviewed
+                    or review.visual_review_status != "passed" or review.requires_revision
+                )
+            ],
+        }
 
     @property
     def context(self) -> ReportingCodingTaskContext:
@@ -466,7 +700,14 @@ class ReportingCodeModeToolkit(Toolkit):
         self, source: str, run_context: RunContext | None = None
     ) -> dict[str, Any]:
         del run_context
-        validate_draft_source(self.context, source)
+        source = validate_draft_source(self.context, source).decode("utf-8")
+        try:
+            tree = ast.parse(source, filename=self.context.script_path)
+        except SyntaxError:
+            # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用。
+            pass
+        else:
+            _reject_embedded_data(tree)
         exists = await self.workspace.apath_exists(self.context.task_id, self.context.script_path)
         await self.workspace.awrite_text(
             self.context.task_id,
@@ -481,10 +722,21 @@ class ReportingCodeModeToolkit(Toolkit):
             **await self.workspace.ahash_file(self.context.task_id, self.context.script_path),
         }
 
-    async def execute_code(
+    async def run_snippet(
         self, code: str, run_context: RunContext | None = None
     ) -> dict[str, Any]:
         del run_context
+        if self._snippet_calls >= self._snippet_limit:
+            return _failure(
+                "report_code_exploration_budget_exhausted",
+                "交互探索额度已用尽；请立即更新并运行正式脚本，然后提交交付结果。",
+                {
+                    "used": self._snippet_calls,
+                    "limit": self._snippet_limit,
+                    "requiredNextTools": ["write_script", "run_script", "submit_script"],
+                },
+            )
+        self._snippet_calls += 1
         try:
             cell = await self.runtime.execute(
                 self.context.code_mode_session_id,
@@ -493,14 +745,21 @@ class ReportingCodeModeToolkit(Toolkit):
                 matplotlib_agg=self.context.task_kind == "visualization",
             )
         except ReportingError as error:
-            return _failure(error.code, error.message)
+            return _failure(error.code, error.message, error.details if isinstance(error.details, Mapping) else None)
         if _cell_field(cell, "status") != "ok":
             return _bounded_failure("report_code_mode_execution_failed", cell)
+        outputs = {
+            name: str(_cell_field(cell, name, "") or "")
+            for name in ("result", "stderr", "stdout")
+        }
+        bounded = _safe_diagnostic_details(outputs)
+        truncated = set(_cell_field(cell, "truncated", ()) or ()) & outputs.keys()
+        truncated.update(name for name, value in outputs.items() if bounded.get(name, "") != value)
         return {
             "ok": True,
             "status": "completed",
-            "stdout": _bounded_failure("", cell)["details"]["stdout"],
-            "stderr": _bounded_failure("", cell)["details"]["stderr"],
+            **bounded,
+            "truncated": sorted(truncated),
         }
 
     async def restart_code_mode(self, run_context: RunContext | None = None) -> dict[str, Any]:
@@ -725,11 +984,12 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def run_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
+        previous_visual_reviews = dict(self.binding.visual_inspection_receipts)
         self.binding.clear_execution_state()
         self.submitted_receipt = None
-        await self._clear_declared_outputs()
         try:
             source_before = await self._validated_source_identity()
+            await self._clear_declared_outputs()
             cell = await self.runtime.execute_script_process(
                 self.context.code_mode_session_id,
                 self.workspace,
@@ -751,17 +1011,41 @@ class ReportingCodeModeToolkit(Toolkit):
                 "Coding Agent 脚本不存在。",
             )
         except ReportingError as error:
-            return _failure(error.code, error.message)
+            return _failure(error.code, error.message, error.details if isinstance(error.details, Mapping) else None)
         receipt = ExecutionReceipt(
             runId=uuid4().hex,
             sourceFile=source_after,
             outputFiles=outputs,
         )
         self.binding.execution_receipt = receipt
-        return {
+        output_by_path = {item.path: item for item in outputs}
+        self.binding.visual_inspection_receipts.update(
+            {
+                path: review
+                for path, review in previous_visual_reviews.items()
+                if (
+                    (output := output_by_path.get(path)) is not None
+                    and review.source_path == path
+                    and review.sha256 == output.sha256
+                    and review.reviewed
+                    and review.visual_review_status == "passed"
+                    and not review.requires_revision
+                )
+            }
+        )
+        result = {
             "ok": True,
             "executionReceipt": receipt.model_dump(mode="json", by_alias=True),
         }
+        if self.output_preflight is not None:
+            diagnostic = await self.output_preflight(receipt)
+            await self.require_current_receipt(receipt)
+            if diagnostic is not None:
+                result["outputValidation"] = _failure(
+                    str(diagnostic["code"]), str(diagnostic["message"]), diagnostic.get("details"),
+                )
+                result["repairHint"] = "输出结构校验未通过，请修复后重新执行；最终验收与降级由 Workflow 处理。"
+        return result
 
     async def submit_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
@@ -774,8 +1058,18 @@ class ReportingCodeModeToolkit(Toolkit):
         try:
             source = await self._validated_source_identity()
             outputs = await self._declared_output_identities()
+        except WorkspaceError:
+            return _failure(
+                "report_code_source_missing",
+                "Coding Agent 脚本不存在。",
+                {"path": self.context.script_path},
+            )
         except ReportingError as error:
-            return _failure(error.code, error.message)
+            return _failure(
+                error.code,
+                error.message,
+                error.details if isinstance(error.details, Mapping) else None,
+            )
         if source != receipt.source_file:
             return _failure(
                 "report_code_submission_not_executed",
