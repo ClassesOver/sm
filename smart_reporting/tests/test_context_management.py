@@ -543,6 +543,41 @@ def test_complete_rounds_accepts_responses_call_id_distinct_from_item_id():
     ]
 
 
+def test_complete_rounds_accepts_result_keyed_by_item_id_instead_of_call_id():
+    """结果按 item id（而非 call_id）回填 tool_call_id 时，只取单一身份会把
+    完整轮次误判为不完整并整段丢弃；必须任一身份匹配即视为已完成。"""
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }
+        ],
+    )
+    result = Message(role="tool", tool_call_id="item-1", content="ok")
+
+    assert TaskExecutionContextProjector._complete_rounds([assistant, result]) == [
+        [assistant, result]
+    ]
+
+
+def test_complete_rounds_drops_round_missing_any_call_coverage():
+    """两个调用中只有一个有匹配结果时，整轮仍应被判定为不完整并丢弃。"""
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {"id": "call-a", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "call-b", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+        ],
+    )
+    result = Message(role="tool", tool_call_id="call-a", content="ok")
+
+    assert TaskExecutionContextProjector._complete_rounds([assistant, result]) == []
+
+
 def test_coding_context_projector_rebases_1000_rounds_without_mutating_canonical_history():
     messages = [Message(role="system", content="system"), Message(role="user", content="goal")]
     for index in range(1_000):

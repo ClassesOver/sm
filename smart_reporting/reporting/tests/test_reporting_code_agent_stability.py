@@ -482,6 +482,36 @@ async def test_visualization_last_generation_failure_preserves_original_error():
     assert caught.value is final
 
 
+@pytest.mark.anyio
+async def test_visualization_recoverable_nondegradable_failure_capped_at_max_generate_attempts():
+    """既不在 _NON_RECOVERABLE_CODES 也不在 _DEGRADABLE_CODES 的失败（例如未预见的
+    瞬时错误）必须按 _MAX_GENERATE_ATTEMPTS 独立封顶，不能借用可降级失败更大的重试
+    预算——否则每次都会多烧一次昂贵的模型调用才放弃。"""
+    from smart_reporting.reporting.tests.test_reporting_code_diagnostics import (
+        _visualization_plan,
+    )
+    from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
+        _MAX_GENERATE_ATTEMPTS,
+    )
+
+    recoverable = ReportingError("report_visualization_transient_error", "transient")
+    run_code = AsyncMock(side_effect=[recoverable] * (_MAX_GENERATE_ATTEMPTS + 2))
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=run_code,
+        submit=AsyncMock(),
+    )
+
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            _run_context(),
+        )
+
+    assert caught.value is recoverable
+    assert run_code.await_count == _MAX_GENERATE_ATTEMPTS
+
+
 def test_short_diagnostic_flattens_last_tool_failure_execution_context():
     diagnostic = ReportingCodeGenerationRunner._short_diagnostic(
         {
@@ -504,6 +534,63 @@ def test_short_diagnostic_flattens_last_tool_failure_execution_context():
     assert diagnostic["details"]["toolMessage"] == "script failed"
     assert diagnostic["details"]["stderr"] == "ValueError: bad input"
     assert diagnostic["details"]["traceback"].endswith("ValueError: bad input")
+
+
+def test_short_diagnostic_prefers_pending_output_validation_over_stale_last_failure():
+    """lastFailure 可能已被之后一次无关的探索失败覆盖；仍在阻塞提交的
+    pendingOutputValidation 才是当前真实原因，必须优先展示。"""
+    diagnostic = ReportingCodeGenerationRunner._short_diagnostic(
+        {
+            "code": "report_code_generation_no_submission",
+            "message": "failed",
+            "details": {
+                "lastFailure": {
+                    "code": "report_code_mode_execution_failed",
+                    "message": "unrelated exploration failure",
+                },
+                "pendingOutputValidation": {
+                    "code": "report_analysis_evidence_schema_invalid",
+                    "message": "evidence 结构校验未通过",
+                    "details": {"issueSummary": "字段缺失"},
+                },
+            },
+        }
+    )
+
+    assert diagnostic["details"]["toolCode"] == "report_analysis_evidence_schema_invalid"
+    assert diagnostic["details"]["toolMessage"] == "evidence 结构校验未通过"
+    assert diagnostic["details"]["issueSummary"] == "字段缺失"
+
+
+def test_visualization_repair_diagnostic_prefers_pending_output_validation():
+    """visualization 的 _repair_diagnostic 同样必须优先反映 pendingOutputValidation，
+    而不是可能已过期的 lastFailure。"""
+    from smart_reporting.reporting.tests.test_reporting_code_diagnostics import (
+        _visualization_plan,
+    )
+    from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
+        _repair_diagnostic,
+    )
+
+    error = ReportingError(
+        "report_code_generation_no_submission",
+        "failed",
+        details={
+            "lastFailure": {
+                "code": "report_code_mode_execution_failed",
+                "message": "unrelated exploration failure",
+            },
+            "pendingOutputValidation": {
+                "code": "report_visualization_evidence_schema_invalid",
+                "message": "图表数据契约校验未通过",
+            },
+        },
+    )
+
+    diagnostic = _repair_diagnostic(_visualization_plan(), error, "charts/charts.py")
+
+    assert diagnostic["details"]["toolCode"] == "report_visualization_evidence_schema_invalid"
+    assert diagnostic["details"]["toolMessage"] == "图表数据契约校验未通过"
 
 
 @pytest.mark.anyio

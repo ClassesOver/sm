@@ -344,6 +344,54 @@ async def test_repeated_delivery_reserve_rejection_eventually_consumes_budget() 
 
 
 @pytest.mark.anyio
+async def test_successful_delivery_call_resets_reserve_rejection_escalation() -> None:
+    """一次成功的交付类调用之后，升级计数必须归零，不能让此前的拒绝历史
+    带到下一次预留区拒绝上。"""
+    run_snippet = Function(name="run_snippet", entrypoint=lambda: {"ok": True})
+    run_snippet.process_entrypoint()
+    write_script = Function(name="write_script", entrypoint=lambda: {"ok": True})
+    write_script.process_entrypoint()
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run((run_snippet, write_script), max_model_requests=6, delivery_reserve=3)
+
+    first: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[FunctionCall(function=run_snippet, call_id="first", arguments={})],
+            function_call_results=first,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    assert json.loads(first[0].content)["details"]["escalated"] is False
+
+    delivered: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[FunctionCall(function=write_script, call_id="delivered", arguments={})],
+            function_call_results=delivered,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    assert json.loads(delivered[0].content)["ok"] is True
+
+    second: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[FunctionCall(function=run_snippet, call_id="second", arguments={})],
+            function_call_results=second,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    assert json.loads(second[0].content)["details"]["escalated"] is False
+
+
+@pytest.mark.anyio
 async def test_tool_results_include_budget_and_reserved_view_rejects_current_review() -> None:
     class Owner:
         reviewed = False

@@ -301,6 +301,17 @@ class ReportingCodeGenerationRunner:
                 "toolCode": last_failure.get("code"),
                 "toolMessage": last_failure.get("message"),
             }
+        # pendingOutputValidation 反映当前仍在阻塞提交的真实原因；lastFailure 可能已
+        # 被之后一次无关的探索失败覆盖，所以这里优先于（覆盖）lastFailure 的推断。
+        pending_validation = details.get("pendingOutputValidation")
+        if isinstance(pending_validation, Mapping):
+            nested = pending_validation.get("details")
+            details = {
+                **details,
+                **(nested if isinstance(nested, Mapping) else {}),
+                "toolCode": pending_validation.get("code"),
+                "toolMessage": pending_validation.get("message"),
+            }
         safe: dict[str, Any] = {}
         issue_summary = details.get("issueSummary")
         if isinstance(issue_summary, str) and issue_summary:

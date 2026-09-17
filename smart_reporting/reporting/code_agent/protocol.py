@@ -67,6 +67,10 @@ _DELIVERY_TOOL_NAMES = frozenset(
     {"write_script", "run_script", "submit_script", "view_image"}
 )
 _DELIVERY_TOOL_RESERVE = len(_DELIVERY_TOOL_NAMES)
+# 附加 budget 字段前的防御性上限：跳过明显不是正常工具结果的超大内容，且不让
+# 附加后的消息无界增长（诊断字段自身已按硬上限精确塞满，这里再留一段宽松余量）。
+_ATTACH_BUDGET_MAX_CONTENT_CHARS = 200_000
+_ATTACH_BUDGET_MAX_ENCODED_BYTES = 16 * 1024
 _MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error", default=None
 )
@@ -348,19 +352,27 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     ) -> None:
         budget = cls._budget_payload(used, limit)
         for message in messages:
-            if not isinstance(message.content, str):
+            content = message.content
+            if not isinstance(content, str) or len(content) > _ATTACH_BUDGET_MAX_CONTENT_CHARS:
                 continue
             try:
-                payload = json.loads(message.content)
+                payload = json.loads(content)
             except (TypeError, ValueError):
                 try:
-                    payload = ast.literal_eval(message.content)
-                except (SyntaxError, ValueError):
+                    payload = ast.literal_eval(content)
+                # 深嵌套或畸形文本可能让 ast.literal_eval 抛出比 SyntaxError/ValueError
+                # 更广的异常；宁可跳过附加 budget，也不能让协议层崩溃。
+                except (SyntaxError, ValueError, RecursionError, MemoryError, TypeError):
                     continue
             if not isinstance(payload, dict):
                 continue
             payload["budget"] = budget
-            message.content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            # 诊断字段已按各自硬上限精确塞满；附加 budget 不得让消息整体突破
+            # 一个宽松的兜底上限——找不到安全空间就放弃附加，而不是无界增长。
+            if len(encoded.encode("utf-8")) > _ATTACH_BUDGET_MAX_ENCODED_BYTES:
+                continue
+            message.content = encoded
 
     @staticmethod
     def _is_redundant_visual_review(call: FunctionCall) -> bool:
@@ -760,6 +772,11 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 isinstance(call.result, Mapping) and call.result.get("ok") is False
             )
             result = call.result if isinstance(call.result, Mapping) else {}
+            if tool_name in _DELIVERY_TOOL_NAMES and result.get("ok") is True:
+                # 模型已恢复交付类调用并成功执行；升级计数不应把这次成功前的
+                # 拒绝历史带到下一次预留区拒绝上，否则一次陈旧的拒绝就会让
+                # 后续正常拒绝被误判为升级。
+                self._code_reserve_rejections = 0
             status = (
                 "rejected"
                 if result.get("ok") is False

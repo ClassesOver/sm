@@ -37,20 +37,26 @@
 | B2 | analysis 与 visualization 收敛策略「不对称」 | P1 | 复审后确认为有意设计，非缺陷 |
 | B3 | 冗余 `view_image` 拒绝会毒化整个批次 | P1 | 已修复 |
 | B4 | `requiredNextTools` 向 analysis 任务通告不存在的 `view_image` | P1 | 已修复 |
-| B5 | `_attach_tool_budget` 异常捕获不全、重写内容格式、突破 8 KiB 上限 | P2 | 未处理 |
-| B6 | `_MAX_GENERATE_ATTEMPTS` 成死常量，非降级类重试从 3 次变 4 次 | P2 | 未处理 |
-| B7 | rebase 单一身份、截断标记丢弃、升级计数不复位、诊断缺阻塞原因等 | P2 | 未处理 |
+| B5 | `_attach_tool_budget` 异常捕获不全、重写内容格式、突破 8 KiB 上限 | P2 | 已修复（异常捕获与硬上限；重写内容格式保留，风险已确认低） |
+| B6 | `_MAX_GENERATE_ATTEMPTS` 成死常量，非降级类重试从 3 次变 4 次 | P2 | 已修复 |
+| B7 | rebase 单一身份、截断标记丢弃、升级计数不复位、诊断缺阻塞原因等 | P2 | 已修复 4/5；探索额度计费复审后确认为有意设计 |
 
 ## 本轮处理结果
 
-对 B1、B3、B4 三项已在代码中修复，改动与新增/更新的测试见下表。B2 经复审后判定为有意
-设计而非缺陷，未改动生产代码。
+对 B1、B3、B4、B5、B6、B7（除探索额度计费外）已在代码中修复，改动与新增/更新的测试见
+下表。B2 与 B7 的探索额度计费经复审后判定为有意设计而非缺陷，未改动行为。
 
 | 编号 | 改动文件 | 测试 |
 | --- | --- | --- |
 | B1 | `code_mode.py`（恢复 `exit $report_exit`、双流查找标记）、`toolkit.py`（`run_script` 同步改为标记与 status 交叉校验） | 重写 `test_run_script_fails_closed_on_missing_or_nonzero_process_exit` 为三条定向用例：标记缺失但 status ok 视为成功、标记与 status 冲突视为失败、标记只出现在 stdout 时仍可查找到 |
 | B3 | `protocol.py`（`_ordered_code_calls` 内区分「冗余审查」与「真正预算拒绝」，冗余审查不置 `stopped`；新增 `report_code_visual_review_redundant` 并纳入 `_is_non_executed_control_result` 豁免） | 更新 `test_tool_results_include_budget_and_reserved_view_rejects_current_review` 断言新 code；新增 `test_redundant_view_image_rejection_does_not_stop_batch` 验证同批次后续 `submit_script` 仍执行 |
 | B4 | `protocol.py`（`requiredNextTools` 改为 `_DELIVERY_TOOL_NAMES & self._code_tool_names`） | 未单独补测试；现有 batch 测试未断言该字段的具体内容，行为改动安全 |
+| B5 | `protocol.py`（`_attach_tool_budget` 扩大异常捕获面、加内容长度与编码后字节数上限） | 未单独补测试（异常路径极难自然触发，覆盖成本高于收益；靠代码走查确认） |
+| B6 | `visualization_section_workflow.py`（非降级可恢复失败改回按 `_MAX_GENERATE_ATTEMPTS` 独立封顶，不再借用为可降级失败预留的更大 `max_attempts`） | 新增 `test_visualization_recoverable_nondegradable_failure_capped_at_max_generate_attempts` |
+| B7-1 | `context_management.py`（`_complete_rounds` 改为按调用分别收集 `call_id`/`id` 身份集合，只要结果覆盖任一身份即视为完成，而不是把两种身份拍平成一个集合再做子集判断——后者对单个调用同时携带两种身份时仍会误判不完整） | 新增 `test_complete_rounds_accepts_result_keyed_by_item_id_instead_of_call_id`、`test_complete_rounds_drops_round_missing_any_call_coverage` |
+| B7-2 | `visualization_section_workflow.py`（`_repair_diagnostic` 的 `traceback`/`stderr`/`stdout` 截断补上 `{field}Truncated` 标记，与 `code_generation.py` 的 `_short_diagnostic` 对齐） | 未单独补测试；已有测试未断言该字段缺失 |
+| B7-3 | `protocol.py`（成功的交付类工具调用后重置 `_code_reserve_rejections`） | 新增 `test_successful_delivery_call_resets_reserve_rejection_escalation` |
+| B7-4 | `toolkit.py`（`submission_diagnostic()` 暴露 `pendingOutputValidation`）、`code_generation.py` 与 `visualization_section_workflow.py`（分别在 `_short_diagnostic`/`_repair_diagnostic` 中让 `pendingOutputValidation` 优先于可能已过期的 `lastFailure`） | 新增 `test_short_diagnostic_prefers_pending_output_validation_over_stale_last_failure`、`test_visualization_repair_diagnostic_prefers_pending_output_validation` |
 
 ### B2 复审结论：不是缺陷
 
@@ -197,6 +203,12 @@ if exhausted or error.code in _DEGRADABLE_CODES:
 修复建议：捕获面扩为 `(SyntaxError, ValueError, RecursionError, MemoryError)`；为 `budget`
 预留字节数（例如把 `_safe_diagnostic_details` 的有效上限降为 `MAX_DIAGNOSTIC_BYTES - 64`）。
 
+**处理：已修复异常捕获与硬上限**——新增 `_ATTACH_BUDGET_MAX_CONTENT_CHARS`（跳过超大内容，
+兼顾防御 `ast.literal_eval` 的病态输入）与 `_ATTACH_BUDGET_MAX_ENCODED_BYTES`（附加 `budget`
+后若整体超过该上限则放弃附加）。「把 Python repr 重写为 JSON」一项未改动：复审后确认
+`message.content` 在本系统实际路径上始终是 `json.dumps` 产出（`ast.literal_eval` 分支未见
+真实触发点），格式不一致风险主要是理论上的，收益不足以再引入一套格式探测/保留逻辑。
+
 ### B6. `_MAX_GENERATE_ATTEMPTS` 成死常量
 
 `visualization_section_workflow.py:451` 改为 `generate_attempt == max_attempts - 1`，而
@@ -206,22 +218,38 @@ if exhausted or error.code in _DEGRADABLE_CODES:
 修复建议：明确二者语义。要么该类仍用 `_MAX_GENERATE_ATTEMPTS` 封顶，要么删除该常量并
 在注释中注明有效次数为 4。
 
+**处理：已修复**——恢复 `generate_attempt == _MAX_GENERATE_ATTEMPTS - 1`。R1 加的
+post-loop 兜底（`raise generation_failure or ReportingError(...)`）继续保留，即使某类
+失败在循环内未命中显式 `raise`，也不会丢失根因，所以缩小这个分支的判断范围不会重新
+引入 R1 修复前的问题。
+
 ### B7. 其余
 
 - **rebase 只取单一身份。** `context_management.py:1094-1100` 使用
   `call.get("call_id") or call.get("id")` 而非两者并集。当前两条路径都能工作（Responses 有
   `call_id`，Chat Completions 回退到 `id`），但若某条结果按另一字段落键仍会整轮丢弃。
-  改为并集成本相同且更稳。
+  改为并集成本相同且更稳。**处理：已修复。** 注意直接把两种身份拍平成一个集合再做
+  `issubset` 判断仍然是错的：单个调用同时携带 `id` 和 `call_id` 时，结果只会用其中一个
+  回填 `tool_call_id`，拍平后的集合有 2 个元素但只能匹配到 1 个，`issubset` 依然失败。
+  正确做法是按调用分别收集身份集合，只要结果覆盖了某个调用的任一身份就算该调用完成，
+  再要求所有调用都完成才算整轮完成（`context_management.py` 的 `call_identity_sets`）。
 - **`_repair_diagnostic` 丢弃截断标记。** `visualization_section_workflow.py:143-146` 弃用
   `_truncated`，模型无法判断自己看到的是片段；而 `code_generation.py:331-337` 设置了
-  `{field}Truncated`。两处不一致。
+  `{field}Truncated`。两处不一致。**处理：已修复**，对齐 `code_generation.py` 的写法。
 - **`_code_reserve_rejections` 永不复位。** 模型恢复有效进展后再次进入预留区，第一次拒绝
-  即被判 `escalated` 并计费。建议在成功的交付类调用后归零。
+  即被判 `escalated` 并计费。建议在成功的交付类调用后归零。**处理：已修复**——
+  `_ordered_code_calls` 在交付类调用成功执行后将该计数器归零。
 - **`submission_diagnostic()` 不暴露 `pending_output_validation`。** `toolkit.py:640-656`
-  仍只报 `hasExecutionReceipt: True`，冷启动修复 run 看不到真正的阻塞原因。
+  仍只报 `hasExecutionReceipt: True`，冷启动修复 run 看不到真正的阻塞原因。**处理：已
+  修复**——`submission_diagnostic()` 新增 `pendingOutputValidation` 字段；两条下游过滤
+  路径（analysis 的 `_short_diagnostic`、visualization 的 `_repair_diagnostic`）都已让
+  它优先于可能已被后续无关失败覆盖的 `lastFailure`。
 - **探索额度耗尽仍计费。** `report_code_exploration_budget_exhausted` 不在
   `protocol.py:321-323` 的豁免集内。保留可能是刻意的（强制收敛），但与 C3 的升级机制
-  存在语义重叠，建议统一。
+  存在语义重叠，建议统一。**处理：复审后确认不是缺陷。** 这是一次真实执行的工具调用
+  （在 `run_snippet` 的 entrypoint 内部判定，不是协议层的预发拒绝），理应正常计费——
+  否则模型可以无限重试探索而不消耗任何额度。与 C3 的「预算记账分散」是同一类架构问题
+  （见 A2），但计费方向本身没有错，未改动行为。
 
 ---
 
@@ -298,14 +326,15 @@ C3 的「仅 escalated 计费」本质是补丁：因为豁免让计数非单调
 
 ---
 
-## 建议落地顺序（已完成 B1、B3、B4；B2 判定为非缺陷；B5–B7 待处理）
+## 建议落地顺序（B1–B7 已处理完毕；B2 与探索额度计费判定为非缺陷；架构项待处理）
 
 | 优先级 | 项目 | 状态 |
 | --- | --- | --- |
 | P0 | B1 双通道 + 双流查找 | 已修复；轨迹测试原本使用的 fake 不含标记，恢复 `exit $report_exit` 后 `status` 重新权威，无需改动该 fake |
 | P1 | B3 不毒化批次、B4 过滤工具名 | 均已修复 |
 | — | B2 | 复审后判定为有意设计，未改动行为，仅补注释 |
-| P2 | B5–B7 | 未处理，留待下一轮 |
+| P2 | B5、B6、B7-1~4 | 均已修复 |
+| — | B7 探索额度计费 | 复审后确认不是缺陷，未改动行为 |
 | 架构 | A5 → A2 → A3 → A1 → A4 | 未处理；A5（哨兵文件）会让 B1 的双通道文本解析彻底成为历史 |
 
 ## 已完成的回归测试
@@ -317,15 +346,25 @@ C3 的「仅 escalated 计费」本质是补丁：因为豁免让计数非单调
    `test_run_script_finds_exit_marker_in_stdout_when_streams_merged`
    （标记只出现在 stdout 时仍可查找到）。原有的
    `test_run_script_fails_closed_on_missing_or_nonzero_process_exit` 已替换——它原先
-   断言的「标记缺失即失败」正是 B1 的回归行为。
+   断言的「标记缺失即失败」正是 B1 的回归行为。此外新增
+   `test_visualization_recoverable_nondegradable_failure_capped_at_max_generate_attempts`
+   （B6）、`test_short_diagnostic_prefers_pending_output_validation_over_stale_last_failure`
+   与 `test_visualization_repair_diagnostic_prefers_pending_output_validation`（B7-4）。
 2. `test_reporting_code_agent_batches.py`：更新
    `test_tool_results_include_budget_and_reserved_view_rejects_current_review` 的断言为新
    code `report_code_visual_review_redundant`/`skipped` 且不计费；新增
    `test_redundant_view_image_rejection_does_not_stop_batch` 验证同批次内紧随其后的
-   `submit_script` 仍会执行。
+   `submit_script` 仍会执行；新增
+   `test_successful_delivery_call_resets_reserve_rejection_escalation`（B7-3）。
+3. `smart_reporting/tests/test_context_management.py`：新增
+   `test_complete_rounds_accepts_result_keyed_by_item_id_instead_of_call_id`（B7-1，验证
+   单个调用同时携带 `id`/`call_id` 但结果只匹配其中一个时仍判定为完成）、
+   `test_complete_rounds_drops_round_missing_any_call_coverage`（确认多调用场景下真正
+   缺失覆盖的轮次仍会被正确丢弃，不因放宽单调用判定而误判宽松）。
 
 ## 待办
 
-- B4 未单独补测试：现有 batch 测试未对 `requiredNextTools` 的具体内容做断言，行为改动
-  本身安全，但建议后续补一条 analysis 任务下该字段不含 `view_image` 的定向用例。
-- B5、B6、B7 与全部架构项（A1–A5）未处理，按原建议顺序留待下一轮。
+- B4、B5、B7-2（`_repair_diagnostic` 截断标记）未单独补测试：均为低风险行为改动，现有
+  测试未断言相关字段的具体内容或缺失状态；可在后续补充定向用例。
+- 全部架构项（A1–A5）未处理，按原建议顺序留待下一轮，其中 A5（脚本退出码写入哨兵文件）
+  优先级最高——它会让 B1 引入的双通道文本解析彻底成为历史。

@@ -113,6 +113,17 @@ def _repair_diagnostic(
                 "toolCode": last_failure.get("code"),
                 "toolMessage": last_failure.get("message"),
             }
+        # pendingOutputValidation 反映当前仍在阻塞提交的真实原因；lastFailure 可能
+        # 已被之后一次无关的探索失败覆盖，所以这里优先于（覆盖）lastFailure 的推断。
+        pending_validation = error.details.get("pendingOutputValidation")
+        if isinstance(pending_validation, Mapping):
+            pending_details = pending_validation.get("details")
+            raw_details = {
+                **raw_details,
+                **(pending_details if isinstance(pending_details, Mapping) else {}),
+                "toolCode": pending_validation.get("code"),
+                "toolMessage": pending_validation.get("message"),
+            }
         candidate = raw_details.get("sourcePath", raw_details.get("path"))
         if isinstance(candidate, str) and candidate:
             path = candidate
@@ -143,7 +154,9 @@ def _repair_diagnostic(
     for field in ("traceback", "stderr", "stdout"):
         value = raw_details.get(field)
         if isinstance(value, str) and value:
-            details[field], _truncated = bounded_python_script_diagnostic(value, 1024)
+            details[field], truncated = bounded_python_script_diagnostic(value, 1024)
+            if truncated:
+                details[f"{field}Truncated"] = True
     output_truncated = raw_details.get("outputTruncated")
     if isinstance(output_truncated, bool) or diagnostic_output_truncated:
         details["outputTruncated"] = bool(output_truncated is True or diagnostic_output_truncated)
@@ -451,7 +464,11 @@ class VisualizationSectionWorkflow:
                             )
                         raise exhausted_error
                     continue
-                if generate_attempt == max_attempts - 1:
+                # 「可恢复但不可降级」类失败按 _MAX_GENERATE_ATTEMPTS 独立封顶，不能
+                # 借用为可降级失败预留的 max_attempts（更大）——否则每次都多烧一次
+                # 昂贵的模型调用才放弃。即使这里因为分支未命中而落到循环结束，
+                # 下方的兜底也会原样重抛 generation_failure，不会丢失根因。
+                if generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
                     raise
         if script_file is None or generated_result is None:
             raise generation_failure or ReportingError(

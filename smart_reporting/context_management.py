@@ -1091,22 +1091,33 @@ class TaskExecutionContextProjector:
                 rounds.append([assistant])
                 index += 1
                 continue
-            call_ids = {
-                identity
+            # 每个调用可能同时携带 Responses 的 call_id 和 item id 两种身份
+            # （见 code_agent/protocol.py 的 custom tool 桥接）；结果只会用其中
+            # 一个回填 tool_call_id。按调用分别收集身份集合，只要结果覆盖了该
+            # 调用任一身份即视为已完成，避免因为只取单一身份而把完整轮次误判
+            # 为不完整并整段丢弃。
+            call_identity_sets = [
+                {
+                    identity
+                    for key in ("call_id", "id")
+                    if isinstance(identity := call.get(key), str)
+                }
                 for call in assistant.tool_calls
                 if isinstance(call, dict)
-                if isinstance(
-                    identity := (call.get("call_id") or call.get("id")), str
-                )
+            ]
+            all_identities = {
+                identity for identities in call_identity_sets for identity in identities
             }
             results: list[Message] = []
             cursor = index + 1
             while cursor < len(messages) and messages[cursor].role == "tool":
-                if messages[cursor].tool_call_id in call_ids:
+                if messages[cursor].tool_call_id in all_identities:
                     results.append(messages[cursor])
                 cursor += 1
             result_ids = {message.tool_call_id for message in results}
-            if call_ids and call_ids.issubset(result_ids):
+            if call_identity_sets and all(
+                identities & result_ids for identities in call_identity_sets
+            ):
                 rounds.append([assistant, *results])
             index = cursor
         return rounds

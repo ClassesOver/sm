@@ -653,6 +653,7 @@ class ReportingCodeModeToolkit(Toolkit):
             "sourceSha256": await self._source_sha256(),
             "hasExecutionReceipt": receipt is not None,
             "completedToolCalls": self.completed_tool_calls,
+            "pendingOutputValidation": self.pending_output_validation,
             "unreviewedOutputPaths": [
                 item.path for item in (receipt.output_files if receipt else ())
                 if self.context.task_kind == "visualization" and (
