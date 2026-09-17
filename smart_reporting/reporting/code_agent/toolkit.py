@@ -75,8 +75,8 @@ _PATH_ARGUMENT_KEYWORDS = frozenset(
 )
 
 
-def _reject_source(message: str) -> NoReturn:
-    raise ReportingError("report_code_source_invalid", message)
+def _reject_source(message: str, details: Mapping[str, Any] | None = None) -> NoReturn:
+    raise ReportingError("report_code_source_invalid", message, details=details)
 
 
 def validate_draft_source(context: ReportingCodingTaskContext, source: Any) -> bytes:
@@ -89,10 +89,29 @@ def validate_draft_source(context: ReportingCodingTaskContext, source: Any) -> b
         raw = source.encode("utf-8")
     except UnicodeEncodeError:
         _reject_source("Python 源码必须是有效的 UTF-8 文本。")
-    if len(raw) > context.max_source_bytes or any(
-        len(line.encode("utf-8")) > MAX_PHYSICAL_LINE_BYTES for line in source.split("\n")
-    ):
-        _reject_source("Python 源码超过限制。")
+    if len(raw) > context.max_source_bytes:
+        _reject_source(
+            "Python 源码体积过大。不得把数据内嵌到源码；请将数据保留在 Workspace，"
+            "脚本仅按已授权路径读取并执行聚合。",
+            {
+                "reason": "source_too_large",
+                "actualBytes": len(raw),
+                "limitBytes": context.max_source_bytes,
+            },
+        )
+    for line_number, line in enumerate(source.split("\n"), start=1):
+        line_bytes = len(line.encode("utf-8"))
+        if line_bytes > MAX_PHYSICAL_LINE_BYTES:
+            _reject_source(
+                "Python 源码包含超长物理行，疑似内嵌数据。不得把数据内嵌到源码；"
+                "请将数据保留在 Workspace，脚本仅按已授权路径读取。",
+                {
+                    "reason": "physical_line_too_long",
+                    "line": line_number,
+                    "actualBytes": line_bytes,
+                    "limitBytes": MAX_PHYSICAL_LINE_BYTES,
+                },
+            )
     return raw
 
 
@@ -310,6 +329,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "errorType", "retryable", "unsignedPaths", "forbiddenPathOperations",
         "traceback", "result", "stderr", "stdout", "issueSummary",
         "used", "limit", "requiredNextTools", "kind", "bytes", "items",
+        "actualBytes", "limitBytes", "missingPaths",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -323,7 +343,9 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
 
     for key in allowed:
         value = details.get(key)
-        if key in {"unsignedPaths", "forbiddenPathOperations", "requiredNextTools"}:
+        if key in {
+            "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "missingPaths",
+        }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
         elif key == "retryable":

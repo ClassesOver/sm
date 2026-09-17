@@ -303,24 +303,26 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     """为 Coding Agent 桥接 Responses API function/custom 混合协议。"""
 
     @staticmethod
-    def _is_delivery_budget_rejection(message: Message) -> bool:
-        if not isinstance(message.content, str):
+    def _is_non_executed_control_result(message: Message) -> bool:
+        if message.tool_call_error is not True or not isinstance(message.content, str):
             return False
         try:
             payload = json.loads(message.content)
         except (TypeError, ValueError):
             return False
-        return (
-            isinstance(payload, Mapping)
-            and payload.get("code") == "report_code_delivery_budget_reserved"
-        )
+        if not isinstance(payload, Mapping):
+            return False
+        return (payload.get("code"), payload.get("status")) in {
+            ("report_code_delivery_budget_reserved", "rejected"),
+            ("report_code_batch_stopped", "skipped"),
+        }
 
     @staticmethod
     def _limit_charge_for(results: list[Message], result_store: Any) -> int:
         charged = [
             item
             for item in results
-            if not ReportingCodeOpenAIResponses._is_delivery_budget_rejection(item)
+            if not ReportingCodeOpenAIResponses._is_non_executed_control_result(item)
         ]
         return Model._limit_charge_for(charged, result_store)
 

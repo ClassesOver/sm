@@ -432,6 +432,49 @@ def test_custom_call_round_trip_uses_custom_output() -> None:
     ]
 
 
+def test_custom_call_preserves_single_data_mapping_as_source() -> None:
+    model = _code_responses_model()
+    wrapped = json.dumps({"data": "print('ok')\n"})
+
+    parsed = model._parse_provider_response(
+        _custom_response("run_snippet", wrapped)
+    )
+    call = parsed.tool_calls[0]
+
+    assert json.loads(call["function"]["arguments"]) == {"code": wrapped}
+    replay = model._format_messages(
+        _assistant_and_result_messages(call, {"ok": True})
+    )
+    assert replay[-2]["input"] == wrapped
+
+
+def test_custom_call_preserves_nested_mapping_as_source() -> None:
+    model = _code_responses_model()
+    source = "print('ok')\n"
+    wrapped = json.dumps({"source": json.dumps({"data": source})})
+
+    parsed = model._parse_provider_response(
+        _custom_response("write_script", wrapped)
+    )
+
+    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
+        "source": wrapped
+    }
+
+
+def test_custom_call_preserves_non_wrapper_json_expression() -> None:
+    model = _code_responses_model()
+    expression = '{"first": 1, "second": 2}'
+
+    parsed = model._parse_provider_response(
+        _custom_response("run_snippet", expression)
+    )
+
+    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
+        "code": expression
+    }
+
+
 def test_custom_output_stays_custom_with_previous_response_id() -> None:
     model = ReportingCodeOpenAIResponses(
         id="gpt-5-test",

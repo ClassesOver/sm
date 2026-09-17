@@ -176,7 +176,7 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
     executed: list[str] = []
 
     def tool(name: str) -> Function:
-        def entrypoint(**_kwargs):
+        async def entrypoint(**_kwargs):
             executed.append(name)
             return {"ok": True}
 
@@ -201,9 +201,10 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
             function_calls=[
                 FunctionCall(
                     function=functions["run_snippet"],
-                    call_id="probe",
+                    call_id=f"probe-{index}",
                     arguments={"code": "1 + 1"},
                 )
+                for index in range(4)
             ],
             function_call_results=rejected_results,
             current_function_call_count=17,
@@ -215,7 +216,23 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
     assert json.loads(rejected_results[0].content)["code"] == (
         "report_code_delivery_budget_reserved"
     )
+    assert all(
+        json.loads(result.content)["code"] == "report_code_batch_stopped"
+        for result in rejected_results[1:]
+    )
     assert model._limit_charge_for(rejected_results, None) == 0
+    executed_failure = Message(
+        role="tool",
+        tool_call_error=False,
+        content=json.dumps(
+            {
+                "ok": False,
+                "status": "rejected",
+                "code": "report_code_delivery_budget_reserved",
+            }
+        ),
+    )
+    assert model._limit_charge_for([executed_failure], None) == 1
 
     delivery_results: list[Message] = []
     _ = [

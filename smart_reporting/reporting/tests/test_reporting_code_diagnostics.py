@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,10 +10,12 @@ from agno.run import RunContext
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.toolkit import (
     MAX_DIAGNOSTIC_BYTES,
+    MAX_PHYSICAL_LINE_BYTES,
     ReportingCodeModeToolkit,
     _bounded_failure,
     _failure,
     compile_script_source,
+    validate_draft_source,
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
@@ -47,6 +50,34 @@ def test_compile_error_retains_source_location_and_reason():
     assert details["sourceLine"].strip() == "if True"
     assert details["errorType"] == "SyntaxError"
     assert "expected ':'" in details["reason"]
+
+
+def test_oversized_source_error_directs_model_to_workspace_data():
+    context = SimpleNamespace(max_source_bytes=32)
+
+    with pytest.raises(ReportingError) as caught:
+        validate_draft_source(context, "value = 1\n" * 8)
+
+    assert "Workspace" in caught.value.message
+    assert "不得把数据内嵌到源码" in caught.value.message
+    assert caught.value.details == {
+        "reason": "source_too_large",
+        "actualBytes": 80,
+        "limitBytes": 32,
+    }
+
+
+def test_long_physical_line_error_directs_model_to_workspace_data():
+    context = SimpleNamespace(max_source_bytes=MAX_PHYSICAL_LINE_BYTES * 2)
+    source = "value = '" + ("x" * MAX_PHYSICAL_LINE_BYTES) + "'\n"
+
+    with pytest.raises(ReportingError) as caught:
+        validate_draft_source(context, source)
+
+    assert "Workspace" in caught.value.message
+    assert caught.value.details["reason"] == "physical_line_too_long"
+    assert caught.value.details["line"] == 1
+    assert caught.value.details["limitBytes"] == MAX_PHYSICAL_LINE_BYTES
 
 
 def test_compile_rejects_large_embedded_data_literal_with_workspace_guidance():

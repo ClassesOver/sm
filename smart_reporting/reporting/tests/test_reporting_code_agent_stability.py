@@ -370,6 +370,27 @@ async def test_write_script_accepts_large_workspace_backed_source(workspace):  #
 
 
 @pytest.mark.anyio
+async def test_runner_rejects_missing_authorized_input_before_model_call(workspace):  # noqa: F811
+    context = replace(
+        _task_context(workspace),
+        authorized_read_paths=("datasets/missing.csv",),
+    )
+    agent_factory = AsyncMock()
+    runner = ReportingCodeGenerationRunner(
+        agent_factory,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+    )
+
+    with pytest.raises(ReportingError) as caught:
+        await runner.run(context, workspace, {}, run_context=_run_context())
+
+    assert caught.value.code == "report_code_authorized_input_missing"
+    assert caught.value.details == {"missingPaths": ["datasets/missing.csv"]}
+    agent_factory.assert_not_called()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("model_id", ["deepseek-v4-flash-0731", "qwen3.8-flash"])
 @pytest.mark.parametrize("budget,effort", [(0, None), (2048, "high"), (8192, "max")])
 async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, effort, monkeypatch):

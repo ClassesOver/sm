@@ -121,6 +121,17 @@ class ReportingCodeGenerationRunner:
                 "report_code_visual_reviewer_missing",
                 "章节图表 Coding Agent 未配置独立视觉审查模型。",
             )
+        missing_inputs = [
+            path
+            for path in task_context.authorized_read_paths
+            if not await workspace.apath_exists(task_context.task_id, path)
+        ]
+        if missing_inputs:
+            raise ReportingError(
+                "report_code_authorized_input_missing",
+                "Coding Agent 的授权输入文件不在当前正式 Workspace。",
+                details={"missingPaths": missing_inputs[:20]},
+            )
         requested_tool_call_limit = (
             VISUALIZATION_TOOL_CALL_BASE + len(task_context.declared_output_paths)
             if task_context.task_kind == "visualization"

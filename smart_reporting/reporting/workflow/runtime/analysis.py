@@ -784,15 +784,17 @@ class RuntimeAnalysisMixin:
                             if isinstance(binding, Mapping)
                             else None
                         ) or task_id
+                        parent_scope = self._scope(run_context)
                         task_workspace = self.workspace_for(
-                            run_id=str(task_context.run_id or ""),
-                            session_id=str(task_context.session_id or ""),
-                            user_id=str(task_context.user_id or "") or None,
+                            run_id=str(run_context.run_id or ""),
+                            session_id=str(run_context.session_id or ""),
+                            user_id=str(run_context.user_id or "") or None,
                             dependencies=(
-                                dict(task_context.dependencies)
-                                if isinstance(task_context.dependencies, Mapping)
+                                dict(run_context.dependencies)
+                                if isinstance(run_context.dependencies, Mapping)
                                 else None
                             ),
+                            stored_scope=parent_scope,
                         )
                         declared_outputs = tuple(
                             sorted(chart.source_path for chart in plan.charts)
@@ -2296,15 +2298,17 @@ class RuntimeAnalysisMixin:
             task_id = (
                 binding.get("externalRunId") if isinstance(binding, Mapping) else None
             ) or analysis_id
+            parent_scope = self._scope(parent_run_context)
             task_workspace = self.workspace_for(
-                run_id=str(run_context.run_id or ""),
-                session_id=str(run_context.session_id or ""),
-                user_id=str(run_context.user_id or "") or None,
+                run_id=str(parent_run_context.run_id or ""),
+                session_id=str(parent_run_context.session_id or ""),
+                user_id=str(parent_run_context.user_id or "") or None,
                 dependencies=(
-                    dict(run_context.dependencies)
-                    if isinstance(run_context.dependencies, Mapping)
+                    dict(parent_run_context.dependencies)
+                    if isinstance(parent_run_context.dependencies, Mapping)
                     else None
                 ),
+                stored_scope=parent_scope,
             )
             datasets = task_facts.get("datasets")
             dataset_paths = tuple(

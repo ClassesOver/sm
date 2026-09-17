@@ -16,8 +16,8 @@ from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRouter,
 )
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.tools.workspace_adapter import WorkspaceServiceReportingRuntime
 from smart_reporting.reporting.tools.factory import build_reporting_tools
+from smart_reporting.reporting.tools.workspace_adapter import WorkspaceServiceReportingRuntime
 from smart_reporting.reporting.workflow.runtime.base import _ReportWorkflowRuntimeBase
 from smart_reporting.reporting.workflow.scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
@@ -471,6 +471,55 @@ def test_runtime_resolves_same_host_workspace_after_prepare_run(tmp_path: Path) 
     )
 
     assert first is second
+
+
+@pytest.mark.anyio
+async def test_runtime_resolves_parent_workspace_from_stored_scope_in_child_context(
+    tmp_path: Path,
+) -> None:
+    runtime = object.__new__(_ReportWorkflowRuntimeBase)
+    runtime.workspace_registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    dependencies = {
+        REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+            "externalRunId": "external-run-1",
+            "threadId": "caller-thread-1",
+            "userId": "user-1",
+            "database": "database-1",
+            "companyId": "company-1",
+        }
+    }
+    state = runtime.prepare_run(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies=dependencies,
+    )
+    stored_scope = state[REPORT_WORKFLOW_SCOPE_STATE_KEY]
+    parent = runtime.workspace_for(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies=dependencies,
+        stored_scope=stored_scope,
+    )
+    await parent.awrite_text(
+        parent.identity.workspace_key,
+        "datasets/input.csv",
+        "value\n1\n",
+    )
+
+    child = runtime.workspace_for(
+        run_id="report-run-1",
+        session_id="report-session-1",
+        user_id="user-1",
+        dependencies={"AgentOS 任务执行": {"externalRunId": "child-task"}},
+        stored_scope=stored_scope,
+    )
+
+    assert child is parent
+    assert await child.aread_text(
+        child.identity.workspace_key, "datasets/input.csv"
+    ) == "value\n1\n"
 
 
 @pytest.mark.anyio
