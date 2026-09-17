@@ -83,9 +83,9 @@ def create_execution_context(
             snapshot=False,
             cwd=str(reporting_workspace_registry.root),
             timeout=DEFAULT_TERMINAL_TIMEOUT,
-            max_kernels=max(
-                current_settings.report_analysis_concurrency,
-                current_settings.report_section_concurrency,
+            max_kernels=(
+                current_settings.report_analysis_concurrency
+                + current_settings.report_section_concurrency
             ),
         )
     )

@@ -718,6 +718,7 @@ class RuntimeAnalysisMixin:
                     toolkit = toolkits[0]
                     repair_workspace_key: str | None = None
                     knowledge_index = getattr(self, "knowledge_index", None)
+                    code_runner_instance: ReportingCodeGenerationRunner | None = None
 
                     async def generate_plan(
                         request: Mapping[str, Any], task_context: RunContext
@@ -745,6 +746,7 @@ class RuntimeAnalysisMixin:
                         )
 
                     def code_runner() -> ReportingCodeGenerationRunner:
+                        nonlocal code_runner_instance
                         if self.visualization_code_agent_factory is None:
                             raise ReportingError(
                                 "report_visualization_code_agent_missing",
@@ -755,16 +757,19 @@ class RuntimeAnalysisMixin:
                                 "report_code_mode_runtime_missing",
                                 "章节图表 CodeMode runtime 未配置。",
                             )
-                        return ReportingCodeGenerationRunner(
-                            self.visualization_code_agent_factory,
-                            self.code_mode_runtime,
-                            knowledge_index=knowledge_index,
-                            lsp_manager=getattr(self, "lsp_manager", None),
-                            vision_reviewer=self.vision_reviewer,
-                            model_metrics_recorder=(
-                                invocation.model_metrics_settlement.record_run_output
-                            ),
-                        )
+                        if code_runner_instance is None:
+                            code_runner_instance = ReportingCodeGenerationRunner(
+                                self.visualization_code_agent_factory,
+                                self.code_mode_runtime,
+                                registry=self.coding_task_registry,
+                                knowledge_index=knowledge_index,
+                                lsp_manager=getattr(self, "lsp_manager", None),
+                                vision_reviewer=self.vision_reviewer,
+                                model_metrics_recorder=(
+                                    invocation.model_metrics_settlement.record_run_output
+                                ),
+                            )
+                        return code_runner_instance
 
                     async def run_code(
                         plan: VisualizationPlanDraft,
@@ -2226,6 +2231,7 @@ class RuntimeAnalysisMixin:
             self.code_mode_runtime,
             knowledge_index=getattr(self, "knowledge_index", None),
             lsp_manager=getattr(self, "lsp_manager", None),
+            registry=self.coding_task_registry,
             model_metrics_recorder=model_metrics_recorder,
         )
         repair_workspace_key: str | None = None
@@ -2319,6 +2325,10 @@ class RuntimeAnalysisMixin:
                 )
             ) if isinstance(datasets, (list, tuple)) else ()
             evidence_path = str(task_facts.get("evidencePath") or "")
+            if not evidence_path:
+                raise ReportingError(
+                    "report_phase_contract_invalid", "补充分析缺少 evidencePath。"
+                )
             coding_context = ReportingCodingTaskContext(
                 task_id=str(task_id),
                 task_kind="analysis",

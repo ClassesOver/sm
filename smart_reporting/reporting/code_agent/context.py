@@ -82,8 +82,12 @@ class ReportingCodingTaskBinding:
             )
 
     def clear_execution_state(self) -> None:
-        self.execution_receipt = None
+        self.clear_execution_receipt()
         self.visual_inspection_receipts.clear()
+
+    def clear_execution_receipt(self) -> None:
+        """源码变更只失效执行回执；视觉回执由下次执行按内容哈希过滤。"""
+        self.execution_receipt = None
 
 
 class ReportingCodingTaskRegistry:

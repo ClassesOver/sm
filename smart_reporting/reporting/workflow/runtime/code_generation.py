@@ -35,7 +35,7 @@ MAX_DIAGNOSTIC_OUTPUT_LENGTH = 2000
 MAX_DIAGNOSTIC_PATH_LENGTH = 1024
 MAX_DIAGNOSTIC_UNSIGNED_PATHS = 20
 MAX_DIAGNOSTIC_POSITION = 1_000_000_000
-ANALYSIS_TOOL_CALL_LIMIT = 20
+ANALYSIS_TOOL_CALL_LIMIT = 30
 VISUALIZATION_TOOL_CALL_BASE = 29
 MAX_TOOL_CALL_LIMIT = 140
 
@@ -178,6 +178,11 @@ class ReportingCodeGenerationRunner:
                     configure_code_run(
                         toolkit.tool_functions,
                         max_model_requests=max(4, agent.tool_call_limit + 1),
+                        delivery_reserve=(
+                            3 + len(task_context.declared_output_paths)
+                            if task_context.task_kind == "visualization"
+                            else 3
+                        ),
                     )
                 run_output = None
                 try:
@@ -200,6 +205,9 @@ class ReportingCodeGenerationRunner:
                     recorded_error = report_run_error()
                     if isinstance(recorded_error, Exception):
                         raise recorded_error
+                terminal_failure = getattr(toolkit, "terminal_failure", None)
+                if isinstance(terminal_failure, Exception):
+                    raise terminal_failure
                 receipt = toolkit.submitted_receipt
                 if receipt is None:
                     details = await toolkit.submission_diagnostic()
@@ -228,7 +236,14 @@ class ReportingCodeGenerationRunner:
             except Exception as error:
                 raise self._agent_failure(error) from error
             finally:
-                await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
+                try:
+                    await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
+                except Exception as shutdown_error:
+                    logger.warning(
+                        "report_code_mode_shutdown_failed session_id={} error_type={}",
+                        task_context.code_mode_session_id,
+                        type(shutdown_error).__name__,
+                    )
             await toolkit.require_current_receipt(receipt)
             visual_receipts = tuple(
                 binding.visual_inspection_receipts[path]
@@ -277,6 +292,15 @@ class ReportingCodeGenerationRunner:
         details = diagnostic.get("details")
         if not isinstance(details, Mapping):
             return result
+        last_failure = details.get("lastFailure")
+        if isinstance(last_failure, Mapping):
+            nested = last_failure.get("details")
+            details = {
+                **details,
+                **(nested if isinstance(nested, Mapping) else {}),
+                "toolCode": last_failure.get("code"),
+                "toolMessage": last_failure.get("message"),
+            }
         safe: dict[str, Any] = {}
         issue_summary = details.get("issueSummary")
         if isinstance(issue_summary, str) and issue_summary:
@@ -304,6 +328,18 @@ class ReportingCodeGenerationRunner:
                 output, MAX_DIAGNOSTIC_OUTPUT_LENGTH
             )
             safe["outputTruncated"] = truncated
+        for field in ("traceback", "stderr", "stdout"):
+            value = details.get(field)
+            if isinstance(value, str) and value:
+                safe[field], truncated = bounded_python_script_diagnostic(
+                    value, MAX_DIAGNOSTIC_OUTPUT_LENGTH // 2
+                )
+                if truncated:
+                    safe[f"{field}Truncated"] = True
+        for field in ("toolCode", "toolMessage"):
+            value = details.get(field)
+            if isinstance(value, str) and value:
+                safe[field] = value[:MAX_DIAGNOSTIC_MESSAGE_LENGTH]
         if safe:
             result["details"] = safe
         return result

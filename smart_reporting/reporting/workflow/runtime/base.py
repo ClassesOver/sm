@@ -39,6 +39,7 @@ from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
+from ...code_agent.context import ReportingCodingTaskRegistry
 from ...contract import (
     FIELD_REF_PATTERN,
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
@@ -431,6 +432,7 @@ class _ReportWorkflowRuntimeBase:
         code_mode_runtime: Any | None = None,
         knowledge_index: ReportingKnowledgeIndex | None = None,
         lsp_manager: Any | None = None,
+        coding_task_registry: ReportingCodingTaskRegistry | None = None,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
@@ -471,6 +473,7 @@ class _ReportWorkflowRuntimeBase:
         self.code_mode_runtime = code_mode_runtime
         self.knowledge_index = knowledge_index
         self.lsp_manager = lsp_manager
+        self.coding_task_registry = coding_task_registry or ReportingCodingTaskRegistry()
         self._host_workspaces: dict[str, HostReportingWorkspace] = {}
         self.registry = registry
         self.profiles = profiles

@@ -28,6 +28,7 @@ class _LspState:
     document_versions: dict[str, int] = field(default_factory=dict)
     reader_task: asyncio.Task[None] | None = None
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    document_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = field(default_factory=monotonic)
     active_requests: int = 0
     closed: bool = False
@@ -66,28 +67,15 @@ class ReportingLspProcessManager:
     ) -> tuple[int, list[dict[str, Any]]]:
         state = await self._state(root)
         state.active_requests += 1
+        version = 0
         try:
-            version = state.document_versions.get(uri, 0) + 1
-            state.document_versions[uri] = version
             loop = asyncio.get_running_loop()
             waiter: asyncio.Future[list[dict[str, Any]]] = loop.create_future()
-            state.diagnostics[(uri, version)] = waiter
-            document = {"uri": uri, "version": version, "text": text}
-            if version == 1:
-                await self._notify(
-                    state,
-                    "textDocument/didOpen",
-                    {"textDocument": {**document, "languageId": "python"}},
-                )
-            else:
-                await self._notify(
-                    state,
-                    "textDocument/didChange",
-                    {
-                        "textDocument": {"uri": uri, "version": version},
-                        "contentChanges": [{"text": text}],
-                    },
-                )
+            async with state.document_lock:
+                version = state.document_versions.get(uri, 0) + 1
+                state.document_versions[uri] = version
+                state.diagnostics[(uri, version)] = waiter
+                await self._publish_document(state, uri, text, version)
             try:
                 diagnostics = await asyncio.wait_for(waiter, timeout=self.request_timeout_seconds)
             except (TimeoutError, ReportingLspProcessError) as error:
@@ -98,8 +86,42 @@ class ReportingLspProcessManager:
         return version, diagnostics
 
     async def synchronize_document(self, root: Path, uri: str, text: str) -> int:
-        version, _diagnostics = await self.diagnostics(root, uri, text)
-        return version
+        state = await self._state(root)
+        state.active_requests += 1
+        try:
+            async with state.document_lock:
+                version = state.document_versions.get(uri, 0) + 1
+                state.document_versions[uri] = version
+                await self._publish_document(state, uri, text, version)
+                return version
+        finally:
+            state.active_requests = max(state.active_requests - 1, 0)
+
+    async def _publish_document(
+        self, state: _LspState, uri: str, text: str, version: int
+    ) -> None:
+        if version == 1:
+            await self._notify(
+                state,
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": uri,
+                        "version": version,
+                        "text": text,
+                        "languageId": "python",
+                    }
+                },
+            )
+            return
+        await self._notify(
+            state,
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": text}],
+            },
+        )
 
     async def reap_idle(self) -> None:
         now = monotonic()
@@ -242,7 +264,7 @@ class ReportingLspProcessManager:
         try:
             while message := await self._read_message(state):
                 self._handle_message(state, message)
-        except (ValueError, json.JSONDecodeError) as error:
+        except (ValueError, KeyError, EOFError, json.JSONDecodeError) as error:
             logger.warning(
                 "report_lsp_protocol_failed root={} error_type={}", state.root, type(error).__name__
             )

@@ -524,6 +524,25 @@ def _tool_round(index: int, content: str = "result") -> list[Message]:
     ]
 
 
+def test_complete_rounds_accepts_responses_call_id_distinct_from_item_id():
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }
+        ],
+    )
+    result = Message(role="tool", tool_call_id="call-1", content="ok")
+
+    assert TaskExecutionContextProjector._complete_rounds([assistant, result]) == [
+        [assistant, result]
+    ]
+
+
 def test_coding_context_projector_rebases_1000_rounds_without_mutating_canonical_history():
     messages = [Message(role="system", content="system"), Message(role="user", content="goal")]
     for index in range(1_000):

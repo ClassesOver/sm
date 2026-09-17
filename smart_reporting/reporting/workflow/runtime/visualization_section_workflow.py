@@ -64,6 +64,9 @@ _DEGRADABLE_CODES = frozenset(
         "execution_output_error",
         "report_visualization_script_failed",
         "report_chart_file_missing",
+        "report_code_generation_no_submission",
+        "report_code_model_request_limit",
+        "report_code_generation_rate_limited",
     }
 )
 
@@ -95,7 +98,21 @@ def _repair_diagnostic(
     raw_details: Mapping[str, Any] = {}
     if isinstance(error, ReportingError) and isinstance(error.details, Mapping):
         nested = error.details.get("details")
-        raw_details = {**error.details, **nested} if isinstance(nested, Mapping) else error.details
+        last_failure = error.details.get("lastFailure")
+        failure_details = (
+            last_failure.get("details") if isinstance(last_failure, Mapping) else None
+        )
+        raw_details = {
+            **error.details,
+            **(nested if isinstance(nested, Mapping) else {}),
+            **(failure_details if isinstance(failure_details, Mapping) else {}),
+        }
+        if isinstance(last_failure, Mapping):
+            raw_details = {
+                **raw_details,
+                "toolCode": last_failure.get("code"),
+                "toolMessage": last_failure.get("message"),
+            }
         candidate = raw_details.get("sourcePath", raw_details.get("path"))
         if isinstance(candidate, str) and candidate:
             path = candidate
@@ -123,6 +140,10 @@ def _repair_diagnostic(
         )
     else:
         diagnostic_output_truncated = False
+    for field in ("traceback", "stderr", "stdout"):
+        value = raw_details.get(field)
+        if isinstance(value, str) and value:
+            details[field], _truncated = bounded_python_script_diagnostic(value, 1024)
     output_truncated = raw_details.get("outputTruncated")
     if isinstance(output_truncated, bool) or diagnostic_output_truncated:
         details["outputTruncated"] = bool(output_truncated is True or diagnostic_output_truncated)
@@ -224,7 +245,11 @@ def _repair_task_facts(
 def _is_nonrecoverable(error: Exception) -> bool:
     return isinstance(error, ReportingError) and (
         error.code in _NON_RECOVERABLE_CODES
-        or (isinstance(error.details, Mapping) and error.details.get("retryable") is False)
+        or (
+            isinstance(error.details, Mapping)
+            and error.details.get("retryable") is False
+            and not _is_degradable(error)
+        )
     )
 
 
@@ -426,12 +451,12 @@ class VisualizationSectionWorkflow:
                             )
                         raise exhausted_error
                     continue
-                if generate_attempt == _MAX_GENERATE_ATTEMPTS - 1:
+                if generate_attempt == max_attempts - 1:
                     raise
-        if script_file is None:
-            raise RuntimeError("可视化脚本生成状态不可达")
-        if generated_result is None:
-            raise RuntimeError("可视化执行回执状态不可达")
+        if script_file is None or generated_result is None:
+            raise generation_failure or ReportingError(
+                "report_visualization_section_failed", "可视化脚本生成未产出回执。"
+            )
         output_paths = {item.path for item in generated_result.execution_receipt.output_files}
         if any(chart.source_path not in output_paths for chart in plan.charts):
             raise ReportingError(

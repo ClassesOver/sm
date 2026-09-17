@@ -1092,9 +1092,12 @@ class TaskExecutionContextProjector:
                 index += 1
                 continue
             call_ids = {
-                call.get("id")
+                identity
                 for call in assistant.tool_calls
-                if isinstance(call, dict) and isinstance(call.get("id"), str)
+                if isinstance(call, dict)
+                if isinstance(
+                    identity := (call.get("call_id") or call.get("id")), str
+                )
             }
             results: list[Message] = []
             cursor = index + 1

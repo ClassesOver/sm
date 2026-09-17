@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 from collections.abc import Mapping
@@ -12,6 +13,9 @@ from agno.tools.code import CodeMode
 
 from .host_workspace import HostReportingWorkspace
 from .models import ReportingError
+
+_SCRIPT_EXIT_MARKER = "__REPORT_EXIT__="
+_SCRIPT_EXIT_PATTERN = re.compile(r"__REPORT_EXIT__=(-?\d+)(?:\n|$)")
 
 
 def _cell_field(cell: Any, name: str, default: Any = None) -> Any:
@@ -32,7 +36,21 @@ def _bootstrap_cell(workspace: HostReportingWorkspace, *, matplotlib_agg: bool) 
 
 def _script_process_cell(script_path: str) -> str:
     command = " ".join((shlex.quote(sys.executable), shlex.quote(script_path)))
-    return f"%%bash\n{command}\n"
+    return (
+        "%%bash\n"
+        "set +e\n"
+        f"{command}\n"
+        "report_exit=$?\n"
+        f'echo "{_SCRIPT_EXIT_MARKER}$report_exit" >&2\n'
+    )
+
+
+def script_process_exit_code(cell: Any) -> int | None:
+    stderr = _cell_field(cell, "stderr", "")
+    if not isinstance(stderr, str):
+        return None
+    matches = list(_SCRIPT_EXIT_PATTERN.finditer(stderr))
+    return int(matches[-1].group(1)) if matches else None
 
 
 def create_reporting_code_mode_runtime(
@@ -51,7 +69,7 @@ def create_reporting_code_mode_runtime(
             snapshot=False,
             cwd=str(workspace_root),
             timeout=timeout,
-            max_kernels=max(analysis_concurrency, section_concurrency),
+            max_kernels=analysis_concurrency + section_concurrency,
         )
     )
 
@@ -129,7 +147,8 @@ class ReportingCodeModeRuntime:
                 matplotlib_agg=matplotlib_agg,
             )
             status = _cell_field(cell, "status")
-            if status != "ok":
+            exit_code = script_process_exit_code(cell)
+            if status != "ok" or exit_code is None or exit_code != 0:
                 details = {
                     "sessionId": session_id,
                     "scriptPath": normalized,
@@ -137,6 +156,7 @@ class ReportingCodeModeRuntime:
                     "stdout": _cell_field(cell, "stdout", "") or "",
                     "stderr": _cell_field(cell, "stderr", "") or "",
                     "traceback": _cell_field(cell, "traceback"),
+                    "exitCode": exit_code,
                 }
                 raise ReportingError(
                     "report_code_mode_execution_failed",
@@ -180,4 +200,8 @@ class ReportingCodeModeRuntime:
         await self.code_mode.ashutdown()
 
 
-__all__ = ["ReportingCodeModeRuntime", "create_reporting_code_mode_runtime"]
+__all__ = [
+    "ReportingCodeModeRuntime",
+    "create_reporting_code_mode_runtime",
+    "script_process_exit_code",
+]

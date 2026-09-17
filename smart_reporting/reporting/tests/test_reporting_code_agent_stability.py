@@ -36,6 +36,9 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
     ReportingCodeGenerationRunner,
     _code_failure_kind,
 )
+from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
+    VisualizationSectionWorkflow,
+)
 
 
 @pytest.mark.parametrize("code,expected", [
@@ -80,7 +83,7 @@ async def test_no_submission_reports_actual_failure_and_usage(workspace, exhaust
                 "source": "if True print('broken')\n",
             }).aexecute()
             await FunctionCall(function=self.tools["run_script"], arguments={}).aexecute()
-            return SimpleNamespace(messages=[Message(role="tool", content="skipped")] * (20 if exhausted else 2))
+            return SimpleNamespace(messages=[Message(role="tool", content="skipped")] * (30 if exhausted else 2))
 
     runner = ReportingCodeGenerationRunner(Agent, ToolkitRuntime(), ReportingLspProcessManager())
     with pytest.raises(ReportingError) as caught:
@@ -116,7 +119,7 @@ def test_shared_evidence_validator_uses_trusted_identity_and_allows_semantic_war
 
 
 @pytest.mark.anyio
-async def test_evidence_preflight_provides_feedback_without_blocking_workflow_handoff(binding):  # noqa: F811
+async def test_evidence_preflight_blocks_workflow_handoff_until_repaired(binding):  # noqa: F811
     from pydantic import ValidationError
 
     from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
@@ -146,12 +149,13 @@ async def test_evidence_preflight_provides_feedback_without_blocking_workflow_ha
     call = FunctionCall(function=functions["run_script"], arguments={})
     await call.aexecute()
     result = call.result
-    assert result["ok"] is True
+    assert result["ok"] is False
     diagnostic = result["outputValidation"]
     assert diagnostic["code"] == "report_analysis_evidence_schema_invalid"
     assert "findings" in diagnostic["details"]["issueSummary"]
     assert toolkit.last_failure["code"] == diagnostic["code"]
-    assert (await toolkit.submit_script())["ok"] is True
+    submission = await toolkit.submit_script()
+    assert submission["code"] == "report_code_output_validation_pending"
 
 
 @pytest.mark.anyio
@@ -388,6 +392,109 @@ async def test_runner_rejects_missing_authorized_input_before_model_call(workspa
     assert caught.value.code == "report_code_authorized_input_missing"
     assert caught.value.details == {"missingPaths": ["datasets/missing.csv"]}
     agent_factory.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stderr", ["", "boom\n__REPORT_EXIT__=7\n"])
+async def test_run_script_fails_closed_on_missing_or_nonzero_process_exit(
+    binding, stderr  # noqa: F811
+):
+    runtime = SimpleNamespace(
+        execute_script_process=AsyncMock(
+            return_value=SimpleNamespace(
+                status="ok", stdout="", stderr=stderr, traceback=None
+            )
+        )
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script(SOURCE)
+
+    result = await toolkit.run_script()
+
+    assert result["ok"] is False
+    assert result["code"] == "report_code_mode_execution_failed"
+
+
+@pytest.mark.anyio
+async def test_visualization_last_generation_failure_preserves_original_error():
+    from smart_reporting.reporting.tests.test_reporting_code_diagnostics import (
+        _visualization_plan,
+    )
+
+    degradable = ReportingError("report_chart_file_missing", "missing")
+    final = ReportingError("report_code_generation_agent_failed", "provider failed")
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=AsyncMock(side_effect=[degradable, degradable, degradable, final]),
+        submit=AsyncMock(),
+    )
+
+    with pytest.raises(ReportingError) as caught:
+        await workflow.run(
+            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            _run_context(),
+        )
+
+    assert caught.value is final
+
+
+def test_short_diagnostic_flattens_last_tool_failure_execution_context():
+    diagnostic = ReportingCodeGenerationRunner._short_diagnostic(
+        {
+            "code": "report_code_generation_no_submission",
+            "message": "failed",
+            "details": {
+                "lastFailure": {
+                    "code": "report_code_mode_execution_failed",
+                    "message": "script failed",
+                    "details": {
+                        "stderr": "ValueError: bad input",
+                        "traceback": "frame\nValueError: bad input",
+                    },
+                }
+            },
+        }
+    )
+
+    assert diagnostic["details"]["toolCode"] == "report_code_mode_execution_failed"
+    assert diagnostic["details"]["toolMessage"] == "script failed"
+    assert diagnostic["details"]["stderr"] == "ValueError: bad input"
+    assert diagnostic["details"]["traceback"].endswith("ValueError: bad input")
+
+
+@pytest.mark.anyio
+async def test_runner_raises_terminal_tool_failure_after_agno_converts_exception(workspace):  # noqa: F811
+    class Agent:
+        def __init__(self, tools):
+            self.tools = {tool.name: tool for tool in tools}
+
+        async def arun(self, *_args, **_kwargs):
+            await FunctionCall(
+                function=self.tools["write_script"], arguments={"source": SOURCE}
+            ).aexecute()
+            await FunctionCall(function=self.tools["run_script"], arguments={}).aexecute()
+            return SimpleNamespace(messages=[])
+
+    async def mutate_output(receipt):
+        await workspace.awrite_text(
+            "task-1", receipt.output_files[0].path, '{"changed":true}', overwrite=True
+        )
+        return None
+
+    runner = ReportingCodeGenerationRunner(
+        Agent, ToolkitRuntime(), ReportingLspProcessManager()
+    )
+
+    with pytest.raises(ReportingError) as caught:
+        await runner.run(
+            _task_context(workspace),
+            workspace,
+            {},
+            run_context=_run_context(),
+            output_preflight=mutate_output,
+        )
+
+    assert caught.value.code == "report_phase_artifact_changed"
 
 
 @pytest.mark.anyio

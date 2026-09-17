@@ -336,7 +336,9 @@ class ToolkitRuntime:
             cell, self.next_cell = self.next_cell, None
             return cell
         await workspace.awrite_text("task-1", "analysis/out.json", "{}")
-        return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+        return SimpleNamespace(
+            status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None
+        )
 
     async def shutdown(self, session_id: str) -> None:
         self.shutdowns.append(session_id)
@@ -1219,7 +1221,7 @@ async def test_view_image_bounds_visual_reviewer_failures(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["write", "restart"])
-async def test_visual_review_state_is_invalidated_by_execution_changes(
+async def test_visual_review_state_is_retained_until_next_execution(
     operation: str,
     workspace: HostReportingWorkspace,
     runtime: ToolkitRuntime,
@@ -1235,7 +1237,7 @@ async def test_visual_review_state_is_invalidated_by_execution_changes(
         await toolkit.restart_code_mode()
 
     assert binding.execution_receipt is None
-    assert binding.visual_inspection_receipts == {}
+    assert binding.visual_inspection_receipts == {output.path: _visual_receipt(output)}
     assert toolkit.submitted_receipt is None
 
 
@@ -1246,7 +1248,7 @@ async def test_successful_visual_rerun_reuses_review_for_unchanged_output(
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "charts/chart.png", "image")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
     reviewer = AsyncMock(spec=ReportVisionReviewer)
     binding, toolkit, output = await _prepared_visualization_toolkit(
@@ -1255,6 +1257,7 @@ async def test_successful_visual_rerun_reuses_review_for_unchanged_output(
     reviewed = _visual_receipt(output)
     binding.visual_inspection_receipts[output.path] = reviewed
 
+    await toolkit.write_script("print('updated source')\n")
     run = await toolkit.run_script()
     view = await toolkit.view_image(output.path)
 
@@ -1271,7 +1274,7 @@ async def test_visual_rerun_does_not_reuse_review_requiring_revision(
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "charts/chart.png", "image")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
     binding, toolkit, output = await _prepared_visualization_toolkit(workspace, Runtime())
     binding.visual_inspection_receipts[output.path] = _visual_receipt(
@@ -1438,7 +1441,7 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1471,7 +1474,7 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
     assert len(created) == 1
     assert result.script_file.path == "analysis/a.py"
     assert result.execution_receipt.output_files[0].path == "analysis/out.json"
-    assert created[0].tool_call_limit == 20
+    assert created[0].tool_call_limit == 30
     assert created[0].model.parallel_tool_calls is False
 
 
@@ -1504,7 +1507,7 @@ async def test_runner_vision_uses_exact_reviewer_dynamic_budget_and_sorted_recei
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             for path in output_paths:
                 await received.awrite_text("task-1", path, path)
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1791,7 +1794,7 @@ async def test_interactive_v1_write_fail_fix_run_submit(
             await received.awrite_text(
                 "task-1", "analysis/out.json", "{}", overwrite=exists
             )
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, _session_id):
             return None
@@ -1873,7 +1876,7 @@ async def test_interactive_v1_end_to_end_responses_loop(
             if "broken" in source:
                 return _failed_cell("SyntaxError: invalid syntax")
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1986,7 +1989,7 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
             source = await received.aread_text("task-1", "analysis/chart.py")
             content = b"image-v2" if "image-v2" in source else b"image-v1"
             await received.awrite_bytes("task-1", "charts/chart.png", content)
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2089,7 +2092,7 @@ async def test_visual_reviewer_failure_releases_task_resources(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_bytes("task-1", "charts/chart.png", b"image")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2151,7 +2154,7 @@ async def test_interactive_v1_releases_all_task_resources(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+            return SimpleNamespace(status="ok", stdout="", stderr="__REPORT_EXIT__=0\n", traceback=None)
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)

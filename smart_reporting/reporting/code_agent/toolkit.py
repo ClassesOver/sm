@@ -14,7 +14,7 @@ from agno.tools import Function, Toolkit
 from loguru import logger
 
 from ...workspace import WorkspaceError, WorkspaceService
-from ..code_mode import ReportingCodeModeRuntime
+from ..code_mode import ReportingCodeModeRuntime, script_process_exit_code
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
 from ..vision import ReportVisionReviewer
@@ -329,7 +329,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "errorType", "retryable", "unsignedPaths", "forbiddenPathOperations",
         "traceback", "result", "stderr", "stdout", "issueSummary",
         "used", "limit", "requiredNextTools", "kind", "bytes", "items",
-        "actualBytes", "limitBytes", "missingPaths",
+        "actualBytes", "limitBytes", "missingPaths", "exitCode", "escalated",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -348,7 +348,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
-        elif key == "retryable":
+        elif key in {"retryable", "escalated"}:
             if isinstance(value, bool):
                 result[key] = value
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -368,12 +368,12 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
             break
         result.pop(key, None)
 
-    def add_tail(key: str, value: str) -> None:
+    def add_tail(key: str, value: str, max_bytes: int) -> None:
         result[key] = ""
         if encoded_size() > MAX_DIAGNOSTIC_BYTES:
             result.pop(key, None)
             return
-        raw = value.encode("utf-8")
+        raw = value.encode("utf-8")[-max_bytes:]
         low, high = 0, len(raw)
         best = ""
         while low <= high:
@@ -387,11 +387,17 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
                 high = middle - 1
         result[key] = best
 
-    # 按最终 JSON 编码精确分配，优先保留异常和表达式结果。
-    for key in ("traceback", "result", "stderr", "stdout"):
+    # 为 stderr 保留最大份额，避免深 traceback 把真正根因完全挤掉。
+    output_budgets = {
+        "stderr": 3 * 1024,
+        "traceback": 2 * 1024,
+        "stdout": 1536,
+        "result": 1024,
+    }
+    for key in ("stderr", "traceback", "stdout", "result"):
         value = details.get(key)
         if isinstance(value, str):
-            add_tail(key, value)
+            add_tail(key, value, output_budgets[key])
     return result
 
 
@@ -468,6 +474,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
         self.output_preflight = output_preflight
+        self.pending_output_validation: dict[str, Any] | None = None
+        self.terminal_failure: ReportingError | None = None
         self.last_tool: str | None = None
         self.last_failure: dict[str, Any] | None = None
         self.completed_tool_calls = 0
@@ -667,6 +675,27 @@ class ReportingCodeModeToolkit(Toolkit):
     def tool_functions(self) -> tuple[Function, ...]:
         return tuple([*self.functions.values(), *self.async_functions.values()])
 
+    def has_current_visual_review(self, path: str) -> bool:
+        """供协议预算门禁判断指定图片是否已经完成当前内容审查。"""
+        try:
+            path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+        except WorkspaceError:
+            return False
+        execution = self.binding.execution_receipt
+        if execution is None:
+            return False
+        output = next((item for item in execution.output_files if item.path == path), None)
+        review = self.binding.visual_inspection_receipts.get(path)
+        return bool(
+            output is not None
+            and review is not None
+            and review.source_path == path
+            and review.sha256 == output.sha256
+            and review.reviewed
+            and review.visual_review_status == "passed"
+            and not review.requires_revision
+        )
+
     async def read_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
         if not await self.workspace.apath_exists(self.context.task_id, self.context.script_path):
@@ -737,8 +766,9 @@ class ReportingCodeModeToolkit(Toolkit):
             source,
             overwrite=exists,
         )
-        self.binding.clear_execution_state()
+        self.binding.clear_execution_receipt()
         self.submitted_receipt = None
+        self.pending_output_validation = None
         return {
             "ok": True,
             **await self.workspace.ahash_file(self.context.task_id, self.context.script_path),
@@ -786,8 +816,9 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def restart_code_mode(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
-        self.binding.clear_execution_state()
+        self.binding.clear_execution_receipt()
         self.submitted_receipt = None
+        self.pending_output_validation = None
         await self.runtime.shutdown(self.context.code_mode_session_id)
         return {"ok": True}
 
@@ -1009,6 +1040,7 @@ class ReportingCodeModeToolkit(Toolkit):
         previous_visual_reviews = dict(self.binding.visual_inspection_receipts)
         self.binding.clear_execution_state()
         self.submitted_receipt = None
+        self.pending_output_validation = None
         try:
             source_before = await self._validated_source_identity()
             await self._clear_declared_outputs()
@@ -1020,6 +1052,19 @@ class ReportingCodeModeToolkit(Toolkit):
             )
             if _cell_field(cell, "status") != "ok":
                 return _bounded_failure("report_code_mode_execution_failed", cell)
+            exit_code = script_process_exit_code(cell)
+            if exit_code is None or exit_code != 0:
+                details: dict[str, Any] = {
+                    name: str(_cell_field(cell, name, "") or "")
+                    for name in ("traceback", "stderr", "stdout")
+                }
+                if exit_code is not None:
+                    details["exitCode"] = exit_code
+                return _failure(
+                    "report_code_mode_execution_failed",
+                    "Coding Agent 脚本子进程未正常退出。",
+                    details,
+                )
             source_after = await self._validated_source_identity()
             if source_after != source_before:
                 return _failure(
@@ -1063,14 +1108,24 @@ class ReportingCodeModeToolkit(Toolkit):
             diagnostic = await self.output_preflight(receipt)
             await self.require_current_receipt(receipt)
             if diagnostic is not None:
-                result["outputValidation"] = _failure(
+                self.pending_output_validation = _failure(
                     str(diagnostic["code"]), str(diagnostic["message"]), diagnostic.get("details"),
                 )
+                result["outputValidation"] = self.pending_output_validation
+                result["ok"] = False
                 result["repairHint"] = "输出结构校验未通过，请修复后重新执行；最终验收与降级由 Workflow 处理。"
+            else:
+                self.pending_output_validation = None
         return result
 
     async def submit_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
+        if self.pending_output_validation is not None:
+            return _failure(
+                "report_code_output_validation_pending",
+                "最近一次执行的输出结构校验未通过；请修复并重新执行后再提交。",
+                self.pending_output_validation.get("details"),
+            )
         receipt = self.binding.execution_receipt
         if receipt is None:
             return _failure(
@@ -1143,15 +1198,19 @@ class ReportingCodeModeToolkit(Toolkit):
             source = await self._validated_source_identity()
             outputs = await self._declared_output_identities()
         except (ReportingError, WorkspaceError) as error:
-            raise ReportingError(
-                "report_phase_artifact_changed",
-                "Coding Agent 签发产物在阶段交接前发生变化。",
-            ) from error
-        if source != receipt.source_file or outputs != receipt.output_files:
-            raise ReportingError(
+            terminal = ReportingError(
                 "report_phase_artifact_changed",
                 "Coding Agent 签发产物在阶段交接前发生变化。",
             )
+            self.terminal_failure = terminal
+            raise terminal from error
+        if source != receipt.source_file or outputs != receipt.output_files:
+            terminal = ReportingError(
+                "report_phase_artifact_changed",
+                "Coding Agent 签发产物在阶段交接前发生变化。",
+            )
+            self.terminal_failure = terminal
+            raise terminal
 
 
 __all__ = [

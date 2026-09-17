@@ -13,6 +13,7 @@ from .agent import (
     create_reporting_generator_agent,
     create_reporting_phase_agent,
 )
+from .code_agent.context import ReportingCodingTaskRegistry
 from .data_source import load_configured_report_source_registry
 from .delivery.publishing import (
     ReportArtifactPersistenceService,
@@ -118,6 +119,7 @@ def create_report_runtime(
         if settings.report_enable_vision
         else None
     )
+    coding_task_registry = ReportingCodingTaskRegistry()
     task_runner = ReportingTaskCoordinator(
         task_repository,
         TaskExecutionKernel(context.workspace_service, task_repository),
@@ -142,6 +144,7 @@ def create_report_runtime(
         code_mode_runtime=code_mode_runtime,
         knowledge_index=knowledge_index,
         lsp_manager=lsp_manager,
+        coding_task_registry=coding_task_registry,
         registry=load_configured_report_source_registry(settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,

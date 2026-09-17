@@ -47,6 +47,13 @@ _NON_RECOVERABLE_CODES = frozenset(
         "report_phase_artifact_changed",
     }
 )
+_DEGRADABLE_CODES = frozenset(
+    {
+        "report_code_generation_no_submission",
+        "report_code_model_request_limit",
+        "report_code_generation_rate_limited",
+    }
+)
 _STAGE_NAMES = (
     "read-facts",
     "plan-evidence",
@@ -795,7 +802,9 @@ class AnalysisItemWorkflow:
                 )
         except ReportingError as error:
             if error.code in _NON_RECOVERABLE_CODES or (
-                isinstance(error.details, Mapping) and error.details.get("retryable") is False
+                isinstance(error.details, Mapping)
+                and error.details.get("retryable") is False
+                and error.code not in _DEGRADABLE_CODES
             ):
                 raise
             state.failure = error
@@ -806,7 +815,7 @@ class AnalysisItemWorkflow:
             ) or (
                 state.script_file is not None and state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS
             )
-            if exhausted:
+            if exhausted or error.code in _DEGRADABLE_CODES:
                 return self._abandon_supplement(state)
             state.statuses["execute-script"] = "retrying"
             return StepOutput(content={"status": "retry", "code": error.code})

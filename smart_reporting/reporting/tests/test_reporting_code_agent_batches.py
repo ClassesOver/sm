@@ -192,7 +192,9 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
     for function in functions.values():
         function.process_entrypoint()
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    model.configure_code_run(tuple(functions.values()), max_model_requests=4)
+    model.configure_code_run(
+        tuple(functions.values()), max_model_requests=4, delivery_reserve=3
+    )
     rejected_results: list[Message] = []
 
     _ = [
@@ -249,3 +251,153 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
     ]
 
     assert executed == ["write_script", "run_script", "submit_script"]
+
+
+@pytest.mark.anyio
+async def test_visual_delivery_reserve_includes_each_image_review() -> None:
+    executed: list[str] = []
+
+    def tool(name: str) -> Function:
+        async def entrypoint(**_kwargs):
+            executed.append(name)
+            return {"ok": True}
+
+        function = Function(name=name, entrypoint=entrypoint)
+        function.process_entrypoint()
+        return function
+
+    functions = {
+        name: tool(name)
+        for name in (
+            "run_snippet",
+            "write_script",
+            "run_script",
+            "view_image",
+            "submit_script",
+        )
+    }
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run(
+        tuple(functions.values()), max_model_requests=6, delivery_reserve=5
+    )
+    results: list[Message] = []
+
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[
+                FunctionCall(function=functions[name], call_id=name, arguments={})
+                for name in (
+                    "write_script",
+                    "run_script",
+                    "view_image",
+                    "view_image",
+                    "submit_script",
+                )
+            ],
+            function_call_results=results,
+            current_function_call_count=15,
+            function_call_limit=20,
+        )
+    ]
+
+    assert executed == [
+        "write_script",
+        "run_script",
+        "view_image",
+        "view_image",
+        "submit_script",
+    ]
+
+
+@pytest.mark.anyio
+async def test_repeated_delivery_reserve_rejection_eventually_consumes_budget() -> None:
+    function = Function(name="run_snippet", entrypoint=lambda: {"ok": True})
+    function.process_entrypoint()
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run((function,), max_model_requests=4, delivery_reserve=3)
+
+    first: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[FunctionCall(function=function, call_id="first", arguments={})],
+            function_call_results=first,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    second: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[FunctionCall(function=function, call_id="second", arguments={})],
+            function_call_results=second,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+
+    assert model._limit_charge_for(first, None) == 0
+    assert model._limit_charge_for(second, None) == 1
+    assert json.loads(second[0].content)["details"]["escalated"] is True
+
+
+@pytest.mark.anyio
+async def test_tool_results_include_budget_and_reserved_view_rejects_current_review() -> None:
+    class Owner:
+        reviewed = False
+
+        def has_current_visual_review(self, path: str) -> bool:
+            return self.reviewed and path == "charts/chart.png"
+
+        async def view_image(self, path: str) -> dict[str, object]:
+            return {"ok": True, "path": path}
+
+    owner = Owner()
+    function = Function(name="view_image", entrypoint=owner.view_image)
+    function.process_entrypoint()
+    function.source_toolkit = owner
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run((function,), max_model_requests=4, delivery_reserve=3)
+
+    allowed: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[
+                FunctionCall(
+                    function=function,
+                    call_id="unreviewed",
+                    arguments={"path": "charts/chart.png"},
+                )
+            ],
+            function_call_results=allowed,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    allowed_payload = json.loads(allowed[0].content)
+    assert allowed_payload["ok"] is True
+    assert allowed_payload["budget"] == {"used": 18, "limit": 20, "remaining": 2}
+
+    owner.reviewed = True
+    rejected: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[
+                FunctionCall(
+                    function=function,
+                    call_id="reviewed",
+                    arguments={"path": "charts/chart.png"},
+                )
+            ],
+            function_call_results=rejected,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    rejected_payload = json.loads(rejected[0].content)
+    assert rejected_payload["code"] == "report_code_delivery_budget_reserved"
+    assert rejected_payload["budget"] == {"used": 17, "limit": 20, "remaining": 3}

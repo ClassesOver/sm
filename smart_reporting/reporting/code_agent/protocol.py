@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator, Mapping
@@ -62,7 +63,9 @@ _PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 128 * 1024
 _SECTION_OUTPUT_TOKEN_LIMIT = 32 * 1024
-_DELIVERY_TOOL_NAMES = frozenset({"write_script", "run_script", "submit_script"})
+_DELIVERY_TOOL_NAMES = frozenset(
+    {"write_script", "run_script", "submit_script", "view_image"}
+)
 _DELIVERY_TOOL_RESERVE = len(_DELIVERY_TOOL_NAMES)
 _MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error", default=None
@@ -312,6 +315,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return False
         if not isinstance(payload, Mapping):
             return False
+        details = payload.get("details")
+        if isinstance(details, Mapping) and details.get("escalated") is True:
+            return False
         return (payload.get("code"), payload.get("status")) in {
             ("report_code_delivery_budget_reserved", "rejected"),
             ("report_code_batch_stopped", "skipped"),
@@ -326,7 +332,54 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         ]
         return Model._limit_charge_for(charged, result_store)
 
-    def configure_code_run(self, tools: Any, *, max_model_requests: int) -> None:
+    @staticmethod
+    def _budget_payload(used: int, limit: int) -> dict[str, int]:
+        bounded_used = min(limit, max(0, used))
+        return {
+            "used": bounded_used,
+            "limit": limit,
+            "remaining": max(0, limit - bounded_used),
+        }
+
+    @classmethod
+    def _attach_tool_budget(
+        cls, messages: list[Message], *, used: int, limit: int
+    ) -> None:
+        budget = cls._budget_payload(used, limit)
+        for message in messages:
+            if not isinstance(message.content, str):
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                try:
+                    payload = ast.literal_eval(message.content)
+                except (SyntaxError, ValueError):
+                    continue
+            if not isinstance(payload, dict):
+                continue
+            payload["budget"] = budget
+            message.content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _is_redundant_visual_review(call: FunctionCall) -> bool:
+        if call.function.name != "view_image" or not isinstance(call.arguments, Mapping):
+            return False
+        path = call.arguments.get("path")
+        entrypoint = getattr(call.function, "entrypoint", None)
+        owner = getattr(call.function, "source_toolkit", None) or getattr(
+            entrypoint, "__self__", None
+        )
+        checker = getattr(owner, "has_current_visual_review", None)
+        return isinstance(path, str) and callable(checker) and checker(path) is True
+
+    def configure_code_run(
+        self,
+        tools: Any,
+        *,
+        max_model_requests: int,
+        delivery_reserve: int | None = None,
+    ) -> None:
         """绑定本任务实际 Function 范围；浅复制模型共享同一任务请求计数。"""
         names = [report_model_tool_name(tool) for tool in tools]
         if not names or any(not name for name in names) or len(set(names)) != len(names):
@@ -335,6 +388,16 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             raise ValueError("max_model_requests must be a positive integer")
         self._code_tool_names = frozenset(names)
         self._code_request_budget = {"limit": max_model_requests, "used": 0}
+        if delivery_reserve is not None and (
+            isinstance(delivery_reserve, bool)
+            or not isinstance(delivery_reserve, int)
+            or delivery_reserve < 1
+        ):
+            raise ValueError("delivery_reserve must be a positive integer")
+        self._code_delivery_reserve = (
+            delivery_reserve if delivery_reserve is not None else _DELIVERY_TOOL_RESERVE
+        )
+        self._code_reserve_rejections = 0
 
     def _consume_code_request(self) -> None:
         budget = getattr(self, "_code_request_budget", None)
@@ -565,7 +628,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         for call in function_calls:
             tool_name = call.function.name
             if stopped:
-                results.append(Message(
+                skipped = Message(
                     role=self.tool_message_role,
                     tool_call_id=call.call_id,
                     tool_name=call.function.name,
@@ -577,7 +640,12 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         "code": "report_code_batch_stopped",
                         "message": "前序工具失败或任务已提交；本次调用未执行。",
                     }, ensure_ascii=False),
-                ))
+                )
+                if function_call_limit is not None:
+                    self._attach_tool_budget(
+                        [skipped], used=current_count, limit=function_call_limit
+                    )
+                results.append(skipped)
                 logger.bind(
                     reporting_progress="code_tool",
                     tool_name=tool_name,
@@ -588,10 +656,19 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             if (
                 getattr(self, "_code_tool_names", None) is not None
                 and function_call_limit is not None
-                and tool_name not in _DELIVERY_TOOL_NAMES
-                and current_count >= function_call_limit - _DELIVERY_TOOL_RESERVE
+                and (
+                    tool_name not in _DELIVERY_TOOL_NAMES
+                    or self._is_redundant_visual_review(call)
+                )
+                and current_count
+                >= function_call_limit
+                - getattr(self, "_code_delivery_reserve", _DELIVERY_TOOL_RESERVE)
             ):
-                results.append(Message(
+                self._code_reserve_rejections = (
+                    getattr(self, "_code_reserve_rejections", 0) + 1
+                )
+                escalated = self._code_reserve_rejections >= 2
+                rejected = Message(
                     role=self.tool_message_role,
                     tool_call_id=call.call_id,
                     tool_name=tool_name,
@@ -601,14 +678,25 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         "ok": False,
                         "status": "rejected",
                         "code": "report_code_delivery_budget_reserved",
-                        "message": "剩余工具调用额度仅供正式脚本写入、运行和提交。",
+                        "message": (
+                            "剩余额度仅供交付；请立即调用 write_script、run_script、"
+                            "view_image 或 submit_script，不要再调用探索工具。"
+                            if escalated
+                            else "剩余工具调用额度仅供正式脚本写入、运行、审查和提交。"
+                        ),
                         "details": {
                             "used": current_count,
                             "limit": function_call_limit,
                             "requiredNextTools": sorted(_DELIVERY_TOOL_NAMES),
+                            "escalated": escalated,
                         },
                     }, ensure_ascii=False),
-                ))
+                )
+                charged_count = current_count + (1 if escalated else 0)
+                self._attach_tool_budget(
+                    [rejected], used=charged_count, limit=function_call_limit
+                )
+                results.append(rejected)
                 stopped = True
                 logger.bind(
                     reporting_progress="code_tool",
@@ -626,6 +714,14 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             yield call, current_count
             completed = results[start:]
             current_count += self._limit_charge_for(completed, result_store)
+            if function_call_limit is not None:
+                if isinstance(call.result, dict):
+                    call.result["budget"] = self._budget_payload(
+                        current_count, function_call_limit
+                    )
+                self._attach_tool_budget(
+                    completed, used=current_count, limit=function_call_limit
+                )
             stopped = any(item.stop_after_tool_call or item.tool_call_error for item in completed)
             stopped = stopped or (
                 isinstance(call.result, Mapping) and call.result.get("ok") is False

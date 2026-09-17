@@ -200,7 +200,7 @@ async def test_submit_missing_source_returns_repairable_failure(  # noqa: F811
 
 
 @pytest.mark.anyio
-async def test_analysis_no_submission_propagates_technical_failure():
+async def test_analysis_no_submission_degrades_supplemental_evidence():
     error = ReportingError("report_code_generation_no_submission", "failed",
                            details={"retryable": False})
     workflow = AnalysisItemWorkflow(
@@ -212,13 +212,15 @@ async def test_analysis_no_submission_propagates_technical_failure():
         decision=AnalysisEvidenceDecision(requiresSupplementalEvidence=True,
                                          reason="missing", missingFacts=("trend",)),
     )
-    with pytest.raises(ReportingError) as caught:
-        await workflow._execute_script(state, RunContext(run_id="run", session_id="session"))
-    assert caught.value is error
+    result = await workflow._execute_script(
+        state, RunContext(run_id="run", session_id="session")
+    )
+    assert result.content["status"] == "degraded"
+    assert state.supplement_abandoned is True
 
 
 @pytest.mark.anyio
-async def test_visualization_no_submission_propagates_technical_failure():
+async def test_visualization_no_submission_degrades_after_repair_budget():
     error = ReportingError("report_code_generation_no_submission", "failed",
                            details={"retryable": False})
     workflow = VisualizationSectionWorkflow(
@@ -226,7 +228,10 @@ async def test_visualization_no_submission_propagates_technical_failure():
         run_code=AsyncMock(side_effect=error), submit=AsyncMock(),
         degrade=AsyncMock(return_value={"status": "accepted"}),
     )
-    with pytest.raises(ReportingError) as caught:
-        await workflow.run({"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
-                           RunContext(run_id="run", session_id="session"))
-    assert caught.value is error
+    result = await workflow.run(
+        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        RunContext(run_id="run", session_id="session"),
+    )
+    assert result.status == "degraded"
+    assert workflow.run_code.await_count == 4
+    workflow.degrade.assert_awaited_once()
