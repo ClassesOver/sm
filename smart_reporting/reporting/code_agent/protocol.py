@@ -321,6 +321,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         return (payload.get("code"), payload.get("status")) in {
             ("report_code_delivery_budget_reserved", "rejected"),
             ("report_code_batch_stopped", "skipped"),
+            ("report_code_visual_review_redundant", "skipped"),
         }
 
     @staticmethod
@@ -653,17 +654,46 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     code="report_code_batch_stopped",
                 ).info("report_code_tool_progress tool_name={} status=skipped", tool_name)
                 continue
+            is_redundant_review = self._is_redundant_visual_review(call)
             if (
                 getattr(self, "_code_tool_names", None) is not None
                 and function_call_limit is not None
-                and (
-                    tool_name not in _DELIVERY_TOOL_NAMES
-                    or self._is_redundant_visual_review(call)
-                )
+                and (tool_name not in _DELIVERY_TOOL_NAMES or is_redundant_review)
                 and current_count
                 >= function_call_limit
                 - getattr(self, "_code_delivery_reserve", _DELIVERY_TOOL_RESERVE)
             ):
+                # 冗余的 view_image（图片已通过当前内容的审查）不是预算耗尽，只是
+                # 一次浪费的调用；跳过它但不终止本批次，避免连带丢弃同批次里其他
+                # 未审查的 view_image 或 submit_script。
+                if is_redundant_review and tool_name in _DELIVERY_TOOL_NAMES:
+                    skipped_redundant = Message(
+                        role=self.tool_message_role,
+                        tool_call_id=call.call_id,
+                        tool_name=tool_name,
+                        tool_args=call.arguments,
+                        tool_call_error=True,
+                        content=json.dumps({
+                            "ok": False,
+                            "status": "skipped",
+                            "code": "report_code_visual_review_redundant",
+                            "message": "该图片内容已通过当前审查，无需再次调用 view_image。",
+                        }, ensure_ascii=False),
+                    )
+                    if function_call_limit is not None:
+                        self._attach_tool_budget(
+                            [skipped_redundant], used=current_count, limit=function_call_limit
+                        )
+                    results.append(skipped_redundant)
+                    logger.bind(
+                        reporting_progress="code_tool",
+                        tool_name=tool_name,
+                        status="skipped",
+                        code="report_code_visual_review_redundant",
+                    ).info(
+                        "report_code_tool_progress tool_name={} status=skipped", tool_name
+                    )
+                    continue
                 self._code_reserve_rejections = (
                     getattr(self, "_code_reserve_rejections", 0) + 1
                 )
@@ -687,7 +717,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         "details": {
                             "used": current_count,
                             "limit": function_call_limit,
-                            "requiredNextTools": sorted(_DELIVERY_TOOL_NAMES),
+                            "requiredNextTools": sorted(
+                                _DELIVERY_TOOL_NAMES
+                                & (getattr(self, "_code_tool_names", None) or frozenset())
+                            ),
                             "escalated": escalated,
                         },
                     }, ensure_ascii=False),

@@ -815,6 +815,11 @@ class AnalysisItemWorkflow:
             ) or (
                 state.script_file is not None and state.repair_count >= MAX_ANALYSIS_SCRIPT_REPAIRS
             )
+            # 补充 evidence 是可选增强；_abandon_supplement 只是退回确定性事实
+            # 的软告警，不是致命失败。可降级 code 首次出现即放弃，避免为一份
+            # 可选产物再烧一轮全新工具预算——与 VisualizationSectionWorkflow 对
+            # 必需图表先重试再降级的策略不同，是故意的不对称（见
+            # test_analysis_v1_degrades_after_no_submission）。
             if exhausted or error.code in _DEGRADABLE_CODES:
                 return self._abandon_supplement(state)
             state.statuses["execute-script"] = "retrying"

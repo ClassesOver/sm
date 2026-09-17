@@ -42,15 +42,22 @@ def _script_process_cell(script_path: str) -> str:
         f"{command}\n"
         "report_exit=$?\n"
         f'echo "{_SCRIPT_EXIT_MARKER}$report_exit" >&2\n'
+        # 恢复 cell 自身的退出码通道：标记只是交叉校验，失败判定不得只依赖
+        # 可能被截断或与 stdout 合并的 stderr 文本。
+        "exit $report_exit\n"
     )
 
 
 def script_process_exit_code(cell: Any) -> int | None:
-    stderr = _cell_field(cell, "stderr", "")
-    if not isinstance(stderr, str):
-        return None
-    matches = list(_SCRIPT_EXIT_PATTERN.finditer(stderr))
-    return int(matches[-1].group(1)) if matches else None
+    """在 stderr 和 stdout 两个流中查找退出码标记；截断或流合并都不应致命。"""
+    for name in ("stderr", "stdout"):
+        text = _cell_field(cell, name, "")
+        if not isinstance(text, str):
+            continue
+        matches = list(_SCRIPT_EXIT_PATTERN.finditer(text))
+        if matches:
+            return int(matches[-1].group(1))
+    return None
 
 
 def create_reporting_code_mode_runtime(
@@ -148,7 +155,10 @@ class ReportingCodeModeRuntime:
             )
             status = _cell_field(cell, "status")
             exit_code = script_process_exit_code(cell)
-            if status != "ok" or exit_code is None or exit_code != 0:
+            # cell 自身的退出码通道（由 `exit $report_exit` 恢复）是权威失败信号；
+            # stderr/stdout 标记只用于交叉校验，缺失标记（截断或流合并）不得让
+            # 已经成功的 status 被误判为失败。
+            if status != "ok" or (exit_code is not None and exit_code != 0):
                 details = {
                     "sessionId": session_id,
                     "scriptPath": normalized,

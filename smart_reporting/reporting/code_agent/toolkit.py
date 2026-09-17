@@ -1052,14 +1052,16 @@ class ReportingCodeModeToolkit(Toolkit):
             )
             if _cell_field(cell, "status") != "ok":
                 return _bounded_failure("report_code_mode_execution_failed", cell)
+            # cell 自身的退出码通道（由 `exit $report_exit` 恢复）是权威失败信号；
+            # stderr/stdout 标记只用于交叉校验。标记缺失（截断或流合并）不得让已经
+            # 成功的 status 被误判为失败，只有标记与 status 明确不一致时才拒绝。
             exit_code = script_process_exit_code(cell)
-            if exit_code is None or exit_code != 0:
+            if exit_code is not None and exit_code != 0:
                 details: dict[str, Any] = {
                     name: str(_cell_field(cell, name, "") or "")
                     for name in ("traceback", "stderr", "stdout")
                 }
-                if exit_code is not None:
-                    details["exitCode"] = exit_code
+                details["exitCode"] = exit_code
                 return _failure(
                     "report_code_mode_execution_failed",
                     "Coding Agent 脚本子进程未正常退出。",

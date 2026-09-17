@@ -399,5 +399,63 @@ async def test_tool_results_include_budget_and_reserved_view_rejects_current_rev
         )
     ]
     rejected_payload = json.loads(rejected[0].content)
-    assert rejected_payload["code"] == "report_code_delivery_budget_reserved"
-    assert rejected_payload["budget"] == {"used": 17, "limit": 20, "remaining": 3}
+    # 冗余的 view_image（图片已通过当前内容审查）不是预算耗尽，只是浪费的调用；
+    # 必须区别于真正的预留门禁拒绝，并且不计费。
+    assert rejected_payload["code"] == "report_code_visual_review_redundant"
+    assert rejected_payload["status"] == "skipped"
+    assert model._limit_charge_for(rejected, None) == 0
+
+
+@pytest.mark.anyio
+async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
+    class Owner:
+        def has_current_visual_review(self, path: str) -> bool:
+            return path == "charts/reviewed.png"
+
+        async def view_image(self, path: str) -> dict[str, object]:
+            return {"ok": True, "path": path}
+
+    owner = Owner()
+    view_image = Function(name="view_image", entrypoint=owner.view_image)
+    view_image.process_entrypoint()
+    view_image.source_toolkit = owner
+
+    executed: list[str] = []
+
+    async def submit_entrypoint() -> dict[str, object]:
+        executed.append("submit_script")
+        return {"ok": True}
+
+    submit_script = Function(name="submit_script", entrypoint=submit_entrypoint)
+    submit_script.process_entrypoint()
+
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run(
+        (view_image, submit_script), max_model_requests=4, delivery_reserve=2
+    )
+
+    results: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[
+                FunctionCall(
+                    function=view_image,
+                    call_id="redundant",
+                    arguments={"path": "charts/reviewed.png"},
+                ),
+                FunctionCall(function=submit_script, call_id="submit", arguments={}),
+            ],
+            function_call_results=results,
+            current_function_call_count=18,
+            function_call_limit=20,
+        )
+    ]
+
+    # 冗余拒绝之后，同批次内真正需要执行的 submit_script 必须继续执行，
+    # 不能被当作批次终止的失败信号误伤。
+    assert executed == ["submit_script"]
+    assert [json.loads(item.content).get("code") for item in results] == [
+        "report_code_visual_review_redundant",
+        None,
+    ]
