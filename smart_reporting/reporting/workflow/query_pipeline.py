@@ -235,6 +235,13 @@ def project_measure_semantics_to_query_outputs(
         )
     origins_by_output: dict[str, set[tuple[str, str, str]]] = {}
     output_names: dict[str, str] = {}
+
+    def _unquote_identifier(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "`"}:
+            return value[1:-1]
+        return value
+
     try:
         for projection in statement.selects:
             output_name = str(projection.alias_or_name)
@@ -258,7 +265,7 @@ def project_measure_semantics_to_query_outputs(
                     (
                         str(node.expression.db or "").casefold(),
                         str(node.expression.name).casefold(),
-                        node.name.rsplit(".", 1)[-1].casefold(),
+                        _unquote_identifier(node.name.rsplit(".", 1)[-1]).casefold(),
                     )
                 )
     except SqlglotError as error:

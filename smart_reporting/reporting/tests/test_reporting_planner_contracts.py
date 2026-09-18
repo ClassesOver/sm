@@ -3139,6 +3139,39 @@ def test_measure_semantics_follow_cte_projection_alias() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            "SELECT `data_date`, SUM(`indicator_value`) AS `indicator_value` "
+            "FROM `rj`.`dwd_hdc_income_summary_view` "
+            "GROUP BY `data_date`"
+        ),
+        (
+            "WITH `agg` AS ("
+            "SELECT `data_date`, SUM(`indicator_value`) AS `measure_val` "
+            "FROM `rj`.`dwd_hdc_income_summary_view` GROUP BY `data_date`"
+            ") SELECT `data_date`, `measure_val` AS `indicator_value` FROM `agg`"
+        ),
+    ],
+)
+def test_measure_semantics_follow_backtick_quoted_projection_alias(sql: str) -> None:
+    query = ApprovedQuery(
+        requirementId="req_income",
+        sourceId="rj",
+        sql=sql,
+        sqlHash=normalized_sql_hash(sql),
+    )
+    semantic = reporting_contract.MeasureSemantic(
+        fieldRef="rj.rj.dwd_hdc_income_summary_view.indicator_value",
+        aggregation="sum",
+    )
+
+    projected = project_measure_semantics_to_query_outputs(query, (semantic,))
+
+    assert projected[0]["datasetField"] == "indicator_value"
+
+
 @pytest.mark.anyio
 async def test_structured_executor_retries_planner_schema_with_layered_budget(monkeypatch) -> None:
     attempts = 0
