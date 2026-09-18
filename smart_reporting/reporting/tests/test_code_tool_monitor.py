@@ -1,4 +1,4 @@
-"""工具监控通过 Agno 原生执行链输出 INFO。"""
+"""工具监控通过 Agno 原生执行链输出 DEBUG。"""
 
 import pytest
 from agno.tools.function import FunctionCall
@@ -27,7 +27,7 @@ async def test_tool_calls_log_start_result_and_exception(binding):  # noqa: F811
         logger.remove(sink)
     events = [r for r in records if 'code_monitor_tool' in r['message']]
     assert len(events) == 4
-    assert all(r['level'].name == 'INFO' for r in events)
+    assert all(r['level'].name == 'DEBUG' for r in events)
     assert 'status=started' in events[0]['message']
     assert 'call_id=read-1' in events[0]['message']
     assert 'status=completed' in events[1]['message']

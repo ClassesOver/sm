@@ -44,14 +44,17 @@ class CodeModeSource:
     @staticmethod
     async def _snapshot(mode: Any) -> list[Target]:
         targets = []
-        for session_id, session in mode._sessions.items():
-            if session.km is None or session.kc is None:
+        # list() 先取原子快照：宿主事件循环可能并发增删 session，
+        # 快照线程直接迭代 items 会触发 dict changed size。
+        for session_id, session in list(mode._sessions.items()):
+            km = session.km
+            if km is None or session.kc is None:
                 continue
-            connection = session.km.get_connection_info()
+            connection = km.get_connection_info()
             targets.append(Target(
                 id=f"{id(mode):x}:{session_id}", label=str(session_id),
                 connection=connection,
-                generation=f"{session.generation}:{session.km.connection_file}",
+                generation=f"{session.generation}:{km.connection_file}",
                 busy=session.lock.locked(),
             ))
         return targets

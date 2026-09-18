@@ -63,6 +63,206 @@ def test_subscription_failure_is_bounded_and_isolated(monkeypatch, failure):
     asyncio.run(scenario())
 
 
+def test_concurrent_reconcile_attaches_each_target_once(monkeypatch):
+    from types import SimpleNamespace
+
+    import jupyter_client
+
+    from smart_reporting.code_monitor import service
+
+    clients = []
+
+    class Client:
+        def __init__(self):
+            self.stopped = False
+            self.shell_channel = self.hb_channel = SimpleNamespace(stop=lambda: None)
+            clients.append(self)
+
+        def load_connection_info(self, connection):
+            pass
+
+        def start_channels(self, **kwargs):
+            pass
+
+        async def wait_for_ready(self, timeout):
+            await asyncio.sleep(0.05)
+
+        async def get_iopub_msg(self, timeout):
+            await asyncio.Event().wait()
+
+        def stop_channels(self):
+            self.stopped = True
+
+    monkeypatch.setattr(jupyter_client, "AsyncKernelClient", Client)
+
+    async def scenario():
+        monitor = service.CodeMonitor()
+        targets = [service.Target("good", "good", {})]
+        try:
+            await asyncio.gather(
+                monitor.reconcile(targets, wait_for_ready=True),
+                monitor.reconcile(targets, wait_for_ready=True),
+            )
+            assert len(clients) == 1
+            assert set(monitor.clients) == {"good"}
+        finally:
+            await monitor.aclose()
+        assert clients[0].stopped
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_aclose_is_safe(monkeypatch):
+    from types import SimpleNamespace
+
+    import jupyter_client
+
+    from smart_reporting.code_monitor import service
+
+    class Client:
+        def __init__(self):
+            self.shell_channel = self.hb_channel = SimpleNamespace(stop=lambda: None)
+
+        def load_connection_info(self, connection):
+            pass
+
+        def start_channels(self, **kwargs):
+            pass
+
+        async def wait_for_ready(self, timeout):
+            pass
+
+        async def get_iopub_msg(self, timeout):
+            await asyncio.Event().wait()
+
+        def stop_channels(self):
+            pass
+
+    monkeypatch.setattr(jupyter_client, "AsyncKernelClient", Client)
+
+    async def scenario():
+        monitor = service.CodeMonitor()
+        await monitor.reconcile([service.Target("good", "good", {})], wait_for_ready=True)
+        await asyncio.gather(monitor.aclose(), monitor.aclose())
+        assert not monitor.clients
+        assert monitor.states["good"].status == "disconnected"
+
+    asyncio.run(scenario())
+
+
+def test_subscription_failure_notice_survives_failed_reattach(monkeypatch):
+    from types import SimpleNamespace
+
+    import jupyter_client
+
+    from smart_reporting.code_monitor import service
+
+    class FailingReaderClient:
+        def __init__(self):
+            self.shell_channel = self.hb_channel = SimpleNamespace(stop=lambda: None)
+
+        def load_connection_info(self, connection):
+            pass
+
+        def start_channels(self, **kwargs):
+            pass
+
+        async def wait_for_ready(self, timeout):
+            pass
+
+        async def get_iopub_msg(self, timeout):
+            raise RuntimeError("subscription broken")
+
+        def stop_channels(self):
+            pass
+
+    class FailingAttachClient:
+        def __init__(self):
+            self.shell_channel = self.hb_channel = SimpleNamespace(stop=lambda: None)
+
+        def load_connection_info(self, connection):
+            raise RuntimeError("attach broken")
+
+        def start_channels(self, **kwargs):
+            pass
+
+        def stop_channels(self):
+            pass
+
+    calls = {"count": 0}
+
+    def factory():
+        calls["count"] += 1
+        return (FailingReaderClient if calls["count"] == 1 else FailingAttachClient)()
+
+    monkeypatch.setattr(jupyter_client, "AsyncKernelClient", factory)
+
+    async def scenario():
+        monitor = service.CodeMonitor()
+        target = service.Target("k", "k", {})
+        try:
+            await monitor.reconcile([target], wait_for_ready=True)
+            for _ in range(100):
+                if monitor._readers["k"].done():
+                    break
+                await asyncio.sleep(0.001)
+            assert monitor.states["k"].notice == "订阅中断，等待重新连接。"
+            await monitor.reconcile([target], wait_for_ready=True)
+            assert monitor.states["k"].notice == "订阅中断，等待重新连接。"
+            assert not monitor.clients
+        finally:
+            await monitor.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_source_snapshot_tolerates_concurrent_session_mutation():
+    import concurrent.futures
+    from types import SimpleNamespace
+
+    from smart_reporting.code_monitor.agno import CodeModeSource
+
+    def drive(coro):
+        # 快照协程不含 await，在“快照线程”内同步驱动到完成。
+        future = concurrent.futures.Future()
+        try:
+            coro.send(None)
+        except StopIteration as stop:
+            future.set_result(stop.value)
+        except BaseException as error:
+            future.set_exception(error)
+        return future
+
+    stub = type("CodeMode", (), {})
+    stub.__module__ = "agno.tools.code"
+
+    class Session:
+        def __init__(self, mode, name):
+            self.km = SimpleNamespace(
+                connection_file=f"/tmp/{name}.json",
+                get_connection_info=lambda: mode.grow(),
+            )
+            self.kc = object()
+            self.generation = "1"
+            self.lock = SimpleNamespace(locked=lambda: False)
+
+    class Mode(stub):
+        def __init__(self):
+            self._sessions = {"s1": Session(self, "s1")}
+            self._runner = SimpleNamespace(started=True, submit=drive)
+
+        def grow(self):
+            # 模拟宿主事件循环在快照迭代期间注册新 session。
+            self._sessions.setdefault("s2", Session(self, "s2"))
+            return {"ip": "127.0.0.1"}
+
+    async def scenario():
+        targets = await CodeModeSource(Mode())()
+        assert [target.label for target in targets] == ["s1"]
+
+    asyncio.run(scenario())
+
+
 def message(kind, parent="cell-1", **content):
     return {"header": {"msg_type": kind}, "parent_header": {"msg_id": parent},
             "content": content}
