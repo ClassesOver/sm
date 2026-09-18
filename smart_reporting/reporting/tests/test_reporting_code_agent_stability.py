@@ -160,6 +160,67 @@ async def test_evidence_preflight_blocks_workflow_handoff_until_repaired(binding
 
 
 @pytest.mark.anyio
+async def test_preflight_failure_blocks_submission_instead_of_passing(binding):  # noqa: F811
+    """预检自身抛错时不得默认放行；未获得结论等于未通过。"""
+
+    calls = 0
+
+    async def preflight(receipt):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("validator exploded")
+
+    toolkit = ReportingCodeModeToolkit(
+        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight,
+    )
+    await toolkit.write_script(SOURCE)
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    call = FunctionCall(function=functions["run_script"], arguments={})
+    await call.aexecute()
+    result = call.result
+    assert calls == 1
+    assert result["ok"] is False
+    assert result["outputValidation"]["code"] == "report_code_output_validation_unavailable"
+    assert result["outputValidation"]["details"]["errorType"] == "RuntimeError"
+    assert result["outputValidation"]["details"]["reason"] == "validator exploded"
+    assert binding.output_validation.status == "unavailable"
+    assert toolkit.last_failure["code"] == "report_code_output_validation_unavailable"
+    assert (await toolkit.submit_script())["code"] == "report_code_output_validation_pending"
+
+    # 预检恢复正常后成功执行一次，阻塞必须被解除。
+    async def healthy_preflight(receipt):
+        return None
+
+    toolkit.output_preflight = healthy_preflight
+    await FunctionCall(function=functions["run_script"], arguments={}).aexecute()
+    assert (await toolkit.submit_script())["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_stale_validation_failure_blocks_current_run_submission(binding):  # noqa: F811
+    """当前执行没有匹配的通过结论时必须 fail-closed。"""
+
+    async def preflight(receipt):
+        return {"code": "report_analysis_evidence_schema_invalid", "message": "结构未通过"}
+
+    toolkit = ReportingCodeModeToolkit(
+        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight,
+    )
+    await toolkit.write_script(SOURCE)
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    await FunctionCall(function=functions["run_script"], arguments={}).aexecute()
+    assert toolkit.pending_output_validation is not None
+
+    # 伪造一个属于别次执行的失败结论：当前回执没有通过结论，仍须阻塞。
+    binding.output_validation = replace(binding.output_validation, run_id="other-run")
+    assert toolkit.pending_output_validation is not None
+    assert binding.output_validation.blocking is True
+    submission = await toolkit.submit_script()
+    assert submission["code"] == "report_code_output_validation_pending"
+    assert submission["details"]["status"] == "failed"
+
+
+@pytest.mark.anyio
 async def test_skipped_batch_calls_do_not_overwrite_failure(binding):  # noqa: F811
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     functions = {tool.name: tool for tool in toolkit.tool_functions}
@@ -197,6 +258,33 @@ async def test_preflight_cannot_accept_changed_output(binding):  # noqa: F811
     await toolkit.write_script(SOURCE)
     with pytest.raises(ReportingError, match="report_phase_artifact_changed"):
         await toolkit.run_script()
+    assert (await toolkit.submit_script())["ok"] is False
+
+
+@pytest.mark.anyio
+async def test_preflight_exception_cannot_hide_changed_output(binding):  # noqa: F811
+    async def preflight(receipt):
+        await binding.workspace.awrite_text(
+            binding.context.task_id,
+            receipt.output_files[0].path,
+            '{"changed": true}',
+            overwrite=True,
+        )
+        raise OSError("validator unavailable")
+
+    toolkit = ReportingCodeModeToolkit(
+        binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        output_preflight=preflight,
+    )
+    await toolkit.write_script(SOURCE)
+
+    with pytest.raises(ReportingError) as caught:
+        await toolkit.run_script()
+
+    assert caught.value.code == "report_phase_artifact_changed"
+    assert toolkit.terminal_failure is caught.value
     assert (await toolkit.submit_script())["ok"] is False
 
 
@@ -411,6 +499,8 @@ async def test_run_script_accepts_structured_zero_exit_code(
     result = await toolkit.run_script()
 
     assert result["ok"] is True
+    assert binding.output_validation.status == "not_required"
+    assert binding.output_validation.run_id == result["executionReceipt"]["runId"]
 
 
 @pytest.mark.anyio

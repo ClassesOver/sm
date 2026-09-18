@@ -20,7 +20,10 @@ from ..models import ReportingError
 from ..vision import ReportVisionReviewer
 from ..workflow.checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .context import (
+    OUTPUT_VALIDATION_UNAVAILABLE,
     ExecutionReceipt,
+    OutputValidationState,
+    OutputValidationStatus,
     ReportingCodingTaskBinding,
     ReportingCodingTaskContext,
 )
@@ -330,6 +333,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "traceback", "result", "stderr", "stdout", "issueSummary",
         "used", "limit", "requiredNextTools", "kind", "bytes", "items",
         "actualBytes", "limitBytes", "missingPaths", "exitCode", "escalated",
+        "status", "validationRunId", "executionRunId",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -474,7 +478,6 @@ class ReportingCodeModeToolkit(Toolkit):
         self.lsp = ReportingWorkspaceLsp(binding, lsp_manager)
         self.submitted_receipt: ExecutionReceipt | None = None
         self.output_preflight = output_preflight
-        self.pending_output_validation: dict[str, Any] | None = None
         self.terminal_failure: ReportingError | None = None
         self.last_tool: str | None = None
         self.last_failure: dict[str, Any] | None = None
@@ -669,6 +672,44 @@ class ReportingCodeModeToolkit(Toolkit):
         return self.binding.context
 
     @property
+    def pending_output_validation(self) -> dict[str, Any] | None:
+        """预检结论只对签发它的执行有效；当前执行缺少通过结论时阻塞提交。"""
+
+        receipt = self.binding.execution_receipt
+        if receipt is None:
+            return None
+        validation = self.binding.output_validation
+        diagnostic = validation.current_diagnostic(receipt.run_id)
+        if diagnostic is not None:
+            return diagnostic
+        if self.output_preflight is None or (
+            validation.status == "passed" and validation.run_id == receipt.run_id
+        ):
+            return None
+        return _failure(
+            str(OUTPUT_VALIDATION_UNAVAILABLE["code"]),
+            str(OUTPUT_VALIDATION_UNAVAILABLE["message"]),
+            {
+                "status": validation.status,
+                "validationRunId": validation.run_id,
+                "executionRunId": receipt.run_id,
+            },
+        )
+
+    def _set_output_validation(
+        self,
+        status: OutputValidationStatus,
+        *,
+        diagnostic: Mapping[str, Any] | None = None,
+    ) -> None:
+        receipt = self.binding.execution_receipt
+        self.binding.output_validation = OutputValidationState.for_run(
+            status,
+            receipt.run_id if receipt is not None else None,
+            diagnostic,
+        )
+
+    @property
     def workspace(self):
         return self.binding.workspace
 
@@ -769,7 +810,6 @@ class ReportingCodeModeToolkit(Toolkit):
         )
         self.binding.clear_execution_receipt()
         self.submitted_receipt = None
-        self.pending_output_validation = None
         return {
             "ok": True,
             **await self.workspace.ahash_file(self.context.task_id, self.context.script_path),
@@ -819,7 +859,6 @@ class ReportingCodeModeToolkit(Toolkit):
         del run_context
         self.binding.clear_execution_receipt()
         self.submitted_receipt = None
-        self.pending_output_validation = None
         await self.runtime.shutdown(self.context.code_mode_session_id)
         return {"ok": True}
 
@@ -1041,7 +1080,6 @@ class ReportingCodeModeToolkit(Toolkit):
         previous_visual_reviews = dict(self.binding.visual_inspection_receipts)
         self.binding.clear_execution_state()
         self.submitted_receipt = None
-        self.pending_output_validation = None
         try:
             source_before = await self._validated_source_identity()
             await self._clear_declared_outputs()
@@ -1112,33 +1150,67 @@ class ReportingCodeModeToolkit(Toolkit):
             "ok": True,
             "executionReceipt": receipt.model_dump(mode="json", by_alias=True),
         }
-        if self.output_preflight is not None:
-            diagnostic = await self.output_preflight(receipt)
+        if self.output_preflight is None:
+            self._set_output_validation("not_required")
+        else:
+            # 预检本身失败时不能默认放行：未获得结论等于未通过，必须阻塞提交。
+            self._set_output_validation("checking")
+            try:
+                diagnostic = await self.output_preflight(receipt)
+            except Exception as error:  # noqa: BLE001 - 预检异常必须降级为阻塞状态
+                self._set_output_validation(
+                    "unavailable",
+                    diagnostic=_failure(
+                        str(OUTPUT_VALIDATION_UNAVAILABLE["code"]),
+                        str(OUTPUT_VALIDATION_UNAVAILABLE["message"]),
+                        {
+                            "errorType": type(error).__name__,
+                            "reason": str(error)[:512],
+                        },
+                    ),
+                )
+                logger.warning(
+                    "report_code_output_preflight_failed error_type={}",
+                    type(error).__name__,
+                )
+                # 即使预检自身异常，产物身份门禁仍优先；不得把篡改降级成
+                # 可重试的 validation unavailable。
+                await self.require_current_receipt(receipt)
+                result["outputValidation"] = self.pending_output_validation
+                result["ok"] = False
+                result["repairHint"] = "输出结构预检不可用，请重新执行脚本；最终验收由 Workflow 处理。"
+                return result
             await self.require_current_receipt(receipt)
             if diagnostic is not None:
-                self.pending_output_validation = _failure(
-                    str(diagnostic["code"]), str(diagnostic["message"]), diagnostic.get("details"),
+                self._set_output_validation(
+                    "failed",
+                    diagnostic=_failure(
+                        str(diagnostic["code"]),
+                        str(diagnostic["message"]),
+                        diagnostic.get("details"),
+                    ),
                 )
                 result["outputValidation"] = self.pending_output_validation
                 result["ok"] = False
                 result["repairHint"] = "输出结构校验未通过，请修复后重新执行；最终验收与降级由 Workflow 处理。"
             else:
-                self.pending_output_validation = None
+                self._set_output_validation("passed")
         return result
 
     async def submit_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
-        if self.pending_output_validation is not None:
-            return _failure(
-                "report_code_output_validation_pending",
-                "最近一次执行的输出结构校验未通过；请修复并重新执行后再提交。",
-                self.pending_output_validation.get("details"),
-            )
         receipt = self.binding.execution_receipt
         if receipt is None:
             return _failure(
                 "report_code_submission_not_executed",
                 "当前脚本内容尚未成功执行。",
+            )
+        blocking = self.pending_output_validation
+        if blocking is not None:
+            return _failure(
+                "report_code_output_validation_pending",
+                "最近一次执行的输出结构校验未通过；请修复并重新执行后再提交。",
+                blocking.get("details"),
             )
         try:
             source = await self._validated_source_identity()

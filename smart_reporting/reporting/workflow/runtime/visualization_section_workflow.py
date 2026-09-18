@@ -502,19 +502,26 @@ class VisualizationSectionWorkflow:
                         thinking_enabled=self.thinking_enabled,
                     )
                 )
-                with bind_reporting_thinking(repair_decision):
-                    repaired = await self.run_code(
-                        plan,
-                        run_context,
-                        diagnostic=diagnostic,
-                        task_facts=_repair_task_facts(
+                try:
+                    with bind_reporting_thinking(repair_decision):
+                        repaired = await self.run_code(
                             plan,
-                            error,
-                            script_path,
-                            payload=payload,
-                            repair_attempt=execution_repairs,
-                        ),
-                    )
+                            run_context,
+                            diagnostic=diagnostic,
+                            task_facts=_repair_task_facts(
+                                plan,
+                                error,
+                                script_path,
+                                payload=payload,
+                                repair_attempt=execution_repairs,
+                            ),
+                        )
+                except Exception as repair_error:  # noqa: BLE001 - 回注统一恢复策略
+                    # 修复调用本身也属于本轮执行修复。把它送回循环入口，由同一
+                    # fatal/retry_then_degrade 策略、计数器和降级出口处理，不能从
+                    # except 分支直接逃逸。
+                    pending_repair_error = repair_error
+                    continue
                 repaired_file = _ensure_script_identity(repaired, script_path)
                 successful_repair = (
                     repaired.visual_repair_diagnostic or diagnostic,

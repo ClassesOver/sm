@@ -244,6 +244,70 @@ async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_re
 
 
 @pytest.mark.anyio
+async def test_visualization_v1_repair_exception_uses_shared_degrade_policy() -> None:
+    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    plan = VisualizationPlanDraft(charts=(chart,))
+    script = FileIdentity(path="charts/charts.py", size=8, sha256="a" * 64)
+    chart_file = FileIdentity(path=chart.source_path, size=9, sha256="b" * 64)
+    inspection = ChartVisualInspectionReceipt(
+        sourcePath=chart.source_path,
+        sha256=chart_file.sha256,
+        inspectionMode="vision",
+        visualReviewStatus="passed",
+        modelId="vision-1",
+        reviewed=True,
+        requiresRevision=False,
+        summary="通过",
+    )
+    calls = {"run": 0, "submit": 0, "degrade": 0}
+
+    async def run_code(*_: object, **__: object) -> CodeGenerationResult:
+        calls["run"] += 1
+        if calls["run"] > 1:
+            raise ReportingError(
+                "report_code_generation_no_submission",
+                "修复调用没有提交结果",
+            )
+        return CodeGenerationResult(
+            script_file=script,
+            execution_receipt=ExecutionReceipt(
+                runId="run-1", sourceFile=script, outputFiles=(chart_file,)
+            ),
+            visual_inspection_receipts=(inspection,),
+        )
+
+    async def submit(*_: object, **__: object) -> dict[str, str]:
+        calls["submit"] += 1
+        return {
+            "status": "rejected",
+            "code": "report_code_generation_no_submission",
+            "message": "需要修复",
+        }
+
+    async def degrade(error: Exception, _context: RunContext) -> dict[str, str]:
+        calls["degrade"] += 1
+        assert isinstance(error, ReportingError)
+        assert error.code == "report_code_generation_no_submission"
+        assert error.details["executionRepairCount"] == 3
+        return {"status": "accepted"}
+
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(plan),
+        run_code=run_code,
+        submit=submit,
+        degrade=degrade,
+    )
+    result = await workflow.run(
+        {"visualizationWorkspace": {"scriptPath": script.path}},
+        RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result.status == "degraded"
+    assert result.recovery_used is True
+    assert calls == {"run": 4, "submit": 1, "degrade": 1}
+
+
+@pytest.mark.anyio
 async def test_visualization_v1_zero_chart_plan_skips_coding() -> None:
     calls = {"run": 0, "submit": 0}
 

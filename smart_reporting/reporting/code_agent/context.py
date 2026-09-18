@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,11 +59,68 @@ class ExecutionReceipt(StrictModel):
     output_files: tuple[FileIdentity, ...] = Field(alias="outputFiles", max_length=100)
 
 
+OutputValidationStatus = Literal[
+    "not_checked", "checking", "not_required", "passed", "failed", "unavailable"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class OutputValidationState:
+    """预检结果只对指定执行回执有效；没有失败记录不等于已经通过。
+
+    状态是唯一事实来源：``run_id`` 必须指向当前执行回执。旧结果本身不再作为
+    当前诊断，但也不能充当当前执行的通过结论。
+    """
+
+    status: OutputValidationStatus = "not_checked"
+    run_id: str | None = None
+    diagnostic: dict[str, Any] | None = None
+
+    @property
+    def blocking(self) -> bool:
+        """预检尚未给出可用结论时，提交必须被阻塞。"""
+
+        return self.status in {"failed", "unavailable", "checking"}
+
+    def current_diagnostic(self, run_id: str | None) -> dict[str, Any] | None:
+        """返回仍然对 ``run_id`` 生效的阻塞诊断，否则返回 None。
+
+        ``checking`` 之类没有携带诊断的中间态也必须返回可展示的阻塞原因，
+        否则调用方按 ``None`` 判空就会把未完成的校验当成通过。
+        """
+
+        if run_id is None or self.run_id != run_id or not self.blocking:
+            return None
+        return self.diagnostic if self.diagnostic is not None else dict(OUTPUT_VALIDATION_UNAVAILABLE)
+
+    @classmethod
+    def for_run(
+        cls,
+        status: OutputValidationStatus,
+        run_id: str | None,
+        diagnostic: Mapping[str, Any] | None = None,
+    ) -> OutputValidationState:
+        return cls(
+            status=status,
+            run_id=run_id,
+            diagnostic=dict(diagnostic) if diagnostic is not None else None,
+        )
+
+
+#: 预检未能给出结论（抛错）时的诊断；此时必须阻塞提交而不是放行。
+OUTPUT_VALIDATION_UNAVAILABLE: dict[str, Any] = {
+    "ok": False,
+    "code": "report_code_output_validation_unavailable",
+    "message": "输出结构预检不可用；请重新执行脚本后再提交。",
+}
+
+
 @dataclass(slots=True)
 class ReportingCodingTaskBinding:
     context: ReportingCodingTaskContext
     workspace: HostReportingWorkspace
     execution_receipt: ExecutionReceipt | None = None
+    output_validation: OutputValidationState = field(default_factory=OutputValidationState)
     visual_inspection_receipts: dict[str, ChartVisualInspectionReceipt] = field(
         default_factory=dict
     )
@@ -88,6 +145,7 @@ class ReportingCodingTaskBinding:
     def clear_execution_receipt(self) -> None:
         """源码变更只失效执行回执；视觉回执由下次执行按内容哈希过滤。"""
         self.execution_receipt = None
+        self.output_validation = OutputValidationState()
 
 
 class ReportingCodingTaskRegistry:
@@ -128,6 +186,9 @@ class ReportingCodingTaskRegistry:
 
 __all__ = [
     "ExecutionReceipt",
+    "OUTPUT_VALIDATION_UNAVAILABLE",
+    "OutputValidationState",
+    "OutputValidationStatus",
     "ReportingCodingTaskBinding",
     "ReportingCodingTaskContext",
     "ReportingCodingTaskRegistry",
