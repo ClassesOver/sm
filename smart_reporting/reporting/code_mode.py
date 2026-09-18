@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 import sys
 from collections.abc import Mapping
@@ -13,6 +14,8 @@ from uuid import uuid4
 from agno.tools.code import CodeMode
 from loguru import logger
 
+from ..code_monitor.agno import CodeModeSource
+from ..code_monitor.service import CodeMonitor
 from ..workspace import WorkspaceError
 from .host_workspace import HostReportingWorkspace
 from .models import ReportingError
@@ -46,7 +49,7 @@ def _bootstrap_cell(workspace: HostReportingWorkspace, *, matplotlib_agg: bool) 
 
 
 def _script_process_cell(script_path: str, exit_receipt_path: str) -> str:
-    command = " ".join((shlex.quote(sys.executable), shlex.quote(script_path)))
+    command = " ".join((shlex.quote(sys.executable), "-u", shlex.quote(script_path)))
     return (
         "%%bash\n"
         "set +e\n"
@@ -95,6 +98,16 @@ class ReportingCodeModeRuntime:
     def __init__(self, code_mode: CodeMode) -> None:
         self.code_mode = code_mode
         self._logged_connections: dict[str, tuple[str, Any]] = {}
+        self._monitor = CodeMonitor(log_streams=True)
+        self._monitor_source = CodeModeSource(code_mode)
+        self._monitor_lock = asyncio.Lock()
+
+    async def _sync_monitor(self) -> None:
+        async with self._monitor_lock:
+            try:
+                await self._monitor.reconcile(await self._monitor_source(), wait_for_ready=True)
+            except Exception as error:
+                logger.warning("report_code_mode_monitor_failed error_type={}", type(error).__name__)
 
     def _log_connection(self, session_id: str) -> None:
         # Agno 暂无公开连接查询接口；仅在此处只读访问，不改变 kernel 生命周期。
@@ -151,6 +164,7 @@ class ReportingCodeModeRuntime:
                 },
             )
         self._log_connection(session_id)
+        await self._sync_monitor()
 
     async def execute(
         self,
@@ -270,11 +284,15 @@ class ReportingCodeModeRuntime:
 
     async def shutdown(self, session_id: str) -> None:
         await self.code_mode.ashutdown(session_id)
+        await self._sync_monitor()
         self._logged_connections.pop(session_id, None)
 
     async def aclose(self) -> None:
-        await self.code_mode.ashutdown()
-        self._logged_connections.clear()
+        try:
+            await self.code_mode.ashutdown()
+        finally:
+            await self._monitor.aclose()
+            self._logged_connections.clear()
 
 
 __all__ = [
