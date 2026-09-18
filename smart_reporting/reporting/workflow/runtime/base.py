@@ -729,6 +729,7 @@ class _ReportWorkflowRuntimeBase:
                 "每张表只使用该 periodRole 的完整精确期间并按共同粒度预聚合",
                 "每个查询块的非聚合 SELECT 列和 GROUP BY 列必须逐项等于 grainColumns；只能额外 SELECT 聚合后的 measureColumns，不得把 dimensionColumns 全量带入",
                 "多表 requirement 必须为每张表建立独立聚合 CTE，再按完整 relations.joinColumns 连接 CTE；禁止直接连接基础表",
+                '目标数据库是 StarRocks；字段和表标识符使用反引号或裸名称，禁止使用双引号包裹标识符（例如 t."column"）；字符串值仍使用单引号',
                 (
                     "queryExecutionModes 中标记 row_preserving_conflict_probe 的 requirement "
                     "必须直接 SELECT 全部 grainColumns 和原始 measureColumns，不得使用聚合函数、"

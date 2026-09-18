@@ -34,6 +34,13 @@ def validate_starrocks_read_only_sql(
     statement = statements[0]
     if not isinstance(statement, (exp.Select, exp.Union, exp.Intersect, exp.Except)):
         raise ReportingError("read_only_sql_required", "只允许 SELECT 或只读 CTE。")
+    # sqlglot 的 MySQL 解析模式会把 t."column" 解析成列节点下的字符串字面量；
+    # StarRocks 不接受这种标识符写法，必须在数据库执行前拒绝，避免确定性运行时失败。
+    if any(
+        isinstance(column.this, exp.Literal) and column.this.is_string
+        for column in statement.find_all(exp.Column)
+    ):
+        raise ReportingError("invalid_sql", "字段引用不能使用字符串引号，请使用 StarRocks 反引号。")
     forbidden = tuple(
         item
         for name in (
