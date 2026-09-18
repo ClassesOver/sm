@@ -13,6 +13,7 @@ from agno.run import RunContext
 from agno.tools import Function, Toolkit
 from loguru import logger
 
+from ...code_monitor.tools import log_tool_event
 from ...workspace import WorkspaceError, WorkspaceService
 from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
@@ -552,7 +553,6 @@ class ReportingCodeModeToolkit(Toolkit):
             Function(
                 name="submit_script",
                 entrypoint=self.submit_script,
-                pre_hook=_reset_stop_after_tool_call,
             ),
         ]
         if self.context.task_kind == "visualization":
@@ -593,6 +593,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 )
             )
         for function in tools:
+            function.pre_hook = self._record_tool_start
             function.post_hook = self._record_tool_result
         super().__init__(name="reporting_code_mode", tools=tools)
 
@@ -602,6 +603,15 @@ class ReportingCodeModeToolkit(Toolkit):
         except WorkspaceError:
             return None
         return identity["sha256"]
+
+    def _record_tool_start(self, fc: Any) -> None:
+        if fc.function.name == "submit_script":
+            _reset_stop_after_tool_call(fc)
+        log_tool_event(
+            session_id=self.context.code_mode_session_id,
+            call_id=fc.call_id, tool=fc.function.name,
+            status="started", payload=fc.arguments,
+        )
 
     async def _record_tool_result(self, fc: Any) -> None:
         """使用 Agno 原生 hook 观测实际调用；未执行的批次回执不会覆盖根因。"""
@@ -613,6 +623,13 @@ class ReportingCodeModeToolkit(Toolkit):
         result = fc.result
         if isinstance(result, Mapping) and isinstance(result.get("outputValidation"), Mapping):
             result = result["outputValidation"]
+        failed = bool(fc.error or (isinstance(result, Mapping) and result.get("ok") is False))
+        log_tool_event(
+            session_id=self.context.code_mode_session_id,
+            call_id=fc.call_id, tool=name,
+            status="failed" if failed else "completed",
+            payload={"result": fc.result, "error": fc.error},
+        )
         if fc.error or (isinstance(result, Mapping) and result.get("ok") is False):
             payload = result if isinstance(result, Mapping) else {}
             if (
