@@ -94,6 +94,33 @@ class ReportingCodeModeRuntime:
 
     def __init__(self, code_mode: CodeMode) -> None:
         self.code_mode = code_mode
+        self._logged_connections: dict[str, tuple[str, Any]] = {}
+
+    def _log_connection(self, session_id: str) -> None:
+        # Agno 暂无公开连接查询接口；仅在此处只读访问，不改变 kernel 生命周期。
+        sessions = getattr(self.code_mode, "_sessions", None)
+        if not isinstance(sessions, Mapping):
+            return
+        for expired in list(self._logged_connections):
+            if expired not in sessions:
+                self._logged_connections.pop(expired, None)
+        session = sessions.get(session_id)
+        manager = getattr(session, "km", None)
+        path = getattr(manager, "connection_file", None)
+        if not isinstance(path, str) or not path:
+            return
+        connection = (path, getattr(session, "generation", None))
+        if self._logged_connections.get(session_id) == connection:
+            return
+        command = shlex.join([
+            "jupyter", "qtconsole", "--existing", path,
+            "--ConsoleWidget.include_other_output=True",
+        ])
+        logger.info(
+            "report_code_mode_connection session_id={} connection_file={} qtconsole_command={}",
+            session_id, path, command,
+        )
+        self._logged_connections[session_id] = connection
 
     async def _bootstrap(
         self,
@@ -123,6 +150,7 @@ class ReportingCodeModeRuntime:
                     "traceback": _cell_field(result, "traceback"),
                 },
             )
+        self._log_connection(session_id)
 
     async def execute(
         self,
@@ -242,9 +270,11 @@ class ReportingCodeModeRuntime:
 
     async def shutdown(self, session_id: str) -> None:
         await self.code_mode.ashutdown(session_id)
+        self._logged_connections.pop(session_id, None)
 
     async def aclose(self) -> None:
         await self.code_mode.ashutdown()
+        self._logged_connections.clear()
 
 
 __all__ = [

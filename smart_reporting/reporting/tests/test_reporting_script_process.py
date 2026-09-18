@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from loguru import logger
 
 from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
 from smart_reporting.reporting.models import ReportingError
@@ -38,6 +39,46 @@ class ShellCodeMode:
         # Deliberately discard both streams, as CodeMode truncation may do.
         return SimpleNamespace(status="ok" if process.returncode == 0 else "error",
                                stdout="", stderr="", traceback=None)
+
+
+@pytest.mark.anyio
+async def test_connection_log_precedes_execution_and_refreshes_after_restart(workspace):  # noqa: F811
+    records = []
+    path = "/tmp/kernel debug.json"
+
+    class ObservableCodeMode(ShellCodeMode):
+        def __init__(self):
+            super().__init__(workspace.identity.root)
+            self._sessions = {"task": SimpleNamespace(
+                km=SimpleNamespace(connection_file=path, key="must-not-be-logged"),
+                generation=1,
+            )}
+
+        async def arun(self, session_id, code):
+            if code == "business()":
+                assert any("report_code_mode_connection" in row for row in records)
+            return SimpleNamespace(status="ok")
+
+    code_mode = ObservableCodeMode()
+    runtime = ReportingCodeModeRuntime(code_mode)
+    sink = logger.add(lambda message: records.append(str(message)), format="{message}")
+    try:
+        await runtime.execute("task", workspace, "business()")
+        await runtime.execute("task", workspace, "business()")
+        rows = [row for row in records if "report_code_mode_connection" in row]
+        assert len(rows) == 1
+        command = rows[0].split("qtconsole_command=", 1)[1].strip()
+        assert shlex.split(command) == [
+            "jupyter", "qtconsole", "--existing", path,
+            "--ConsoleWidget.include_other_output=True",
+        ]
+        assert "session_id=task" in rows[0]
+        assert "must-not-be-logged" not in rows[0]
+        code_mode._sessions["task"].generation = 2
+        await runtime.execute("task", workspace, "business()")
+        assert len([row for row in records if "report_code_mode_connection" in row]) == 2
+    finally:
+        logger.remove(sink)
 
 
 @pytest.mark.anyio
