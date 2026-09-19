@@ -275,6 +275,8 @@ class ChartVisualInspectionReceipt(StrictModel):
 class AnalysisChart(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_file: FileIdentity = Field(alias="sourceFile")
+    renderer: Literal["matplotlib", "plotly"] = "matplotlib"
+    interactive_file: FileIdentity | None = Field(default=None, alias="interactiveFile")
     title: str = Field(min_length=1, max_length=200)
     alt_text: str = Field(alias="altText", min_length=1, max_length=200)
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
@@ -300,6 +302,12 @@ class AnalysisChart(StrictModel):
 
     @model_validator(mode="after")
     def validate_semantics(self) -> AnalysisChart:
+        if (self.renderer == "plotly") != (self.interactive_file is not None):
+            raise ValueError("Plotly 图表必须且仅能绑定 interactiveFile")
+        if self.interactive_file is not None and not self.interactive_file.path.endswith(
+            ".plotly.json"
+        ):
+            raise ValueError("interactiveFile 必须是 .plotly.json 文件")
         if self.comparison_type != "none" and not self.comparison_period:
             raise ValueError("比较图表必须声明 comparisonPeriod")
         if self.comparability == "reference_only" and self.comparison_type in {"yoy", "mom"}:

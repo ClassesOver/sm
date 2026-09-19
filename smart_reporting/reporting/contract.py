@@ -130,6 +130,9 @@ class ReportRequestEnvelope(StrictModel):
     comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
         default=("yoy",), alias="comparisonRoles", max_length=2
     )
+    visualization_mode: Literal["auto", "static", "interactive"] = Field(
+        default="auto", alias="visualizationMode"
+    )
     file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
 
     @field_validator("report_goal")
