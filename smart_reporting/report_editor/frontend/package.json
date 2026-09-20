@@ -14,10 +14,12 @@
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "diff": "^8.0.4",
-    "lucide": "^1.46.0"
+    "lucide": "^1.46.0",
+    "plotly.js-dist-min": "^3.3.1"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
+    "@types/plotly.js": "^3.0.7",
     "jsdom": "^27.4.0",
     "playwright": "^1.55.0",
     "typescript": "^5.9.3",

@@ -282,6 +282,43 @@ async def test_editor_document_api_binds_cookie_to_report_revision() -> None:
 
 
 @pytest.mark.anyio
+async def test_editor_api_exposes_registered_interactive_chart_and_hardened_json() -> None:
+    repository = InMemoryReportEditorRepository()
+    grants = ReportEditorGrantService(repository, secret="s" * 32)
+    raw, _expires_at = await grants.issue(_context())
+    image_path = "reports/revision-1/chart.png"
+    spec_path = "reports/revision-1/chart.plotly.json"
+
+    class Editor:
+        async def context_for_session(self, _session):
+            return _context()
+
+        async def read_document(self, _context):
+            return SimpleNamespace(path="reports/revision-1/report.md", markdown="![收入](chart.png)", sha256="a" * 64)
+
+        async def interactive_charts(self, _context):
+            return {image_path: spec_path}
+
+        async def read_asset(self, _context, path):
+            assert path == spec_path
+            return b'{"data":[{"type":"bar"}]}', "application/json"
+
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=Editor(), cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        loaded = await client.get("/reports/v1/editor/report-1/1/api/document")
+        resource = await client.get(f"/reports/v1/editor/report-1/1/asset/{spec_path}")
+
+    assert loaded.json()["interactiveCharts"] == {image_path: spec_path}
+    assert resource.status_code == 200
+    assert resource.headers["content-type"].startswith("application/json")
+    assert resource.headers["cache-control"] == "private, no-store"
+    assert resource.headers["x-content-type-options"] == "nosniff"
+    assert resource.headers["content-security-policy"] == "default-src 'none'"
+
+
+@pytest.mark.anyio
 async def test_editor_page_requires_session_and_sets_restrictive_csp(tmp_path: Path) -> None:
     static = tmp_path / "static"
     static.mkdir()
@@ -366,6 +403,52 @@ async def test_editor_serves_only_unchanged_images_registered_by_current_job(
     await workspace.awrite_bytes(scope.workspace_key, image_path, b"changed", overwrite=True)
     with pytest.raises(ReportingError, match="变化"):
         await service.read_asset(context, image_path)
+
+
+@pytest.mark.anyio
+async def test_editor_serves_only_registered_unchanged_plotly_spec(tmp_path: Path) -> None:
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    spec_path = "reports/revision-1/chart-001.plotly.json"
+    image_path = "reports/revision-1/chart-001.png"
+    spec = b'{"data":[{"type":"bar","x":[1],"y":[2]}]}'
+    await workspace.awrite_bytes(scope.workspace_key, spec_path, spec)
+    context = _context().model_copy(
+        update={
+            "job": {
+                "jobId": "job-1",
+                "render": {"images": []},
+                "interactiveCharts": {
+                    image_path: {
+                        "path": spec_path,
+                        "size": len(spec),
+                        "sha256": hashlib.sha256(spec).hexdigest(),
+                    }
+                },
+            }
+        }
+    )
+    state = SimpleNamespace(
+        payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}}
+    )
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),
+        workspace_registry=registry,
+        workspace=workspace,
+    )
+
+    content, media_type = await service.read_asset(context, spec_path)
+    assert content == spec
+    assert media_type == "application/json"
+    assert (await service.read_asset(context, "chart-001.plotly.json"))[0] == spec
+    assert await service.interactive_charts(context) == {image_path: spec_path}
+    with pytest.raises(ReportingError, match="不存在"):
+        await service.read_asset(context, "reports/revision-1/other.plotly.json")
+    await workspace.awrite_bytes(scope.workspace_key, spec_path, b"changed", overwrite=True)
+    with pytest.raises(ReportingError, match="变化"):
+        await service.read_asset(context, spec_path)
 
 
 @pytest.mark.anyio

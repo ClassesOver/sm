@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
@@ -29,6 +30,7 @@ class ArtifactFile(StrictModel):
         "text/markdown",
         "image/png",
         "image/jpeg",
+        "application/vnd.plotly.v1+json",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ] = Field(alias="mediaType")
@@ -49,6 +51,8 @@ class ArtifactFile(StrictModel):
 class ChartArtifact(ArtifactFile):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
+    renderer: Literal["matplotlib", "plotly"] = "matplotlib"
+    interactive_spec: ArtifactFile | None = Field(default=None, alias="interactiveSpec")
     source_policy: SourcePolicy | None = Field(default=None, alias="sourcePolicy")
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
@@ -56,6 +60,14 @@ class ChartArtifact(ArtifactFile):
     def validate_image(self) -> ChartArtifact:
         if not self.media_type.startswith("image/"):
             raise ValueError("图表产物必须是图片")
+        if (self.renderer == "plotly") != (self.interactive_spec is not None):
+            raise ValueError("Plotly 图表必须且仅能绑定交互规格")
+        if self.interactive_spec is not None and (
+            self.interactive_spec.media_type != "application/vnd.plotly.v1+json"
+            or self.interactive_spec.path
+            != PurePosixPath(self.path).with_suffix(".plotly.json").as_posix()
+        ):
+            raise ValueError("Plotly 交互规格必须与静态图同目录同名")
         if len(set(self.dataset_ids)) != len(self.dataset_ids):
             raise ValueError("图表数据集引用不能重复")
         return self
@@ -100,7 +112,11 @@ class ReportArtifactManifest(StrictModel):
         chart_ids = [item.chart_id for item in self.charts]
         table_ids = [item.table_id for item in self.tables]
         citation_ids = [item.citation_id for item in self.citations]
-        paths = [self.markdown.path, *(item.path for item in self.charts)]
+        paths = [
+            self.markdown.path,
+            *(item.path for item in self.charts),
+            *(item.interactive_spec.path for item in self.charts if item.interactive_spec),
+        ]
         if len(chart_ids) != len(set(chart_ids)):
             raise ValueError("chartId 不能重复")
         if len(table_ids) != len(set(table_ids)):
@@ -182,6 +198,7 @@ def build_authoritative_manifest(
     markdown_path: str,
     markdown: str,
     accepted_artifacts: list[dict[str, Any]],
+    interactive_charts: Mapping[str, str] | None = None,
     lineage: tuple[DatasetLineage, ...],
     sections: tuple[str, ...],
     section_numbers: tuple[str, ...],
@@ -218,14 +235,25 @@ def build_authoritative_manifest(
         for path in extra_paths
         if PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg"}
     }
-    if submitted_images != extra_paths or not set(image_bindings).issubset(submitted_images):
+    companions = dict(interactive_charts or {})
+    if (
+        set(companions) - set(image_bindings)
+        or len(set(companions.values())) != len(companions)
+        or any(
+            spec_path != PurePosixPath(image_path).with_suffix(".plotly.json").as_posix()
+            for image_path, spec_path in companions.items()
+        )
+        or extra_paths != submitted_images | set(companions.values())
+        or not set(image_bindings).issubset(submitted_images)
+    ):
         raise ReportingError(
             "report_artifact_acceptance_incomplete",
-            "正式产物回执必须包含 Markdown 引用的全部图表，且不能包含非图片附加产物。",
+            "正式产物回执必须包含 Markdown 图片及其已登记的 Plotly 规格。",
         )
 
     charts: list[ChartArtifact] = []
     for index, path in enumerate(sorted(image_bindings), start=1):
+        spec_path = companions.get(path)
         charts.append(
             ChartArtifact(
                 path=path,
@@ -234,6 +262,17 @@ def build_authoritative_manifest(
                 sha256=_artifact_sha256(artifacts[path]),
                 chartId=f"chart_{index:03d}",
                 datasetIds=image_bindings[path],
+                renderer="plotly" if spec_path else "matplotlib",
+                interactiveSpec=(
+                    ArtifactFile(
+                        path=spec_path,
+                        mediaType="application/vnd.plotly.v1+json",
+                        size=_artifact_size(artifacts[spec_path]),
+                        sha256=_artifact_sha256(artifacts[spec_path]),
+                    )
+                    if spec_path
+                    else None
+                ),
             )
         )
     return ReportArtifactManifest(

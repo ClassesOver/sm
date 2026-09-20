@@ -211,6 +211,13 @@ class RuntimeVisualizationMixin:
             await self._ensure_visualization_script_settled(scope)
             output_root = self._chart_output_root(phase_contract)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
+            if phase_contract.get("visualizationMode") == "static" and any(
+                item.renderer != "matplotlib" for item in parsed
+            ):
+                raise ReportingError(
+                    "report_visualization_section_invalid",
+                    "静态模式只允许提交 Matplotlib 图表。",
+                )
             serialized_charts = [
                 _serialized_chart_registration(registration) for registration in parsed
             ]

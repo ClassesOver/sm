@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from smart_reporting.reporting.code_agent.context import ExecutionReceipt
 from smart_reporting.reporting.contract import ReportRequestEnvelope
 from smart_reporting.reporting.delivery.draft_v1 import ReportChartRegistration
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisChart,
     ChartVisualInspectionReceipt,
@@ -17,6 +18,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     ChartDraft,
     VisualizationPlanDraft,
 )
+from smart_reporting.reporting.workflow.runtime.sections import _analysis_chart_from_registration
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     _validated_visual_receipts,
 )
@@ -164,3 +166,32 @@ def test_plotly_visual_review_only_requires_raster_receipt() -> None:
     )
 
     assert len(_validated_visual_receipts(result, VisualizationPlanDraft(charts=(chart,)))) == 1
+
+
+def test_analysis_freeze_binds_plotly_identity_without_leaking_source_paths() -> None:
+    registration = _chart_payload(
+        renderer="plotly",
+        interactivePath="analysis/charts/income.plotly.json",
+    )
+    chart = _analysis_chart_from_registration(
+        registration,
+        {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64},
+        {"path": "analysis/charts/income.plotly.json", "size": 20, "sha256": "b" * 64},
+    )
+
+    assert chart.interactive_file is not None
+    assert chart.interactive_file.path == "analysis/charts/income.plotly.json"
+    assert "interactivePath" not in chart.model_dump(by_alias=True)
+
+
+def test_analysis_freeze_rejects_missing_plotly_identity() -> None:
+    registration = _chart_payload(
+        renderer="plotly",
+        interactivePath="analysis/charts/income.plotly.json",
+    )
+    with pytest.raises(ReportingError, match="交互文件"):
+        _analysis_chart_from_registration(
+            registration,
+            {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64},
+            None,
+        )

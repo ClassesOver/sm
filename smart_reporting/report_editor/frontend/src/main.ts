@@ -291,6 +291,10 @@ try {
     })
   })
   await crepe.create()
+  if (documentState.interactiveCharts && Object.keys(documentState.interactiveCharts).length) {
+    const { createInteractiveCharts } = await import('./interactive-charts')
+    void createInteractiveCharts(shell.editor, documentState.interactiveCharts, basePath).refresh()
+  }
   loadState.hide()
   showEditorOnboarding(root, basePath)
   const [

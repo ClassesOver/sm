@@ -251,6 +251,38 @@ async def test_section_visualization_persists_plotly_companion_identity() -> Non
 
 
 @pytest.mark.anyio
+async def test_static_visualization_mode_rejects_plotly_registration_before_file_inspection() -> None:
+    toolkit = _toolkit()
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationMode": "static",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    toolkit.runtime.workspace = SimpleNamespace(
+        inspect_chart_file=AsyncMock(), inspect_plotly_file=AsyncMock()
+    )
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[{
+            "chartId": "income", "renderer": "plotly",
+            "sourcePath": "analysis/charts/section_001/income.png",
+            "interactivePath": "analysis/charts/section_001/income.plotly.json",
+            "title": "收入趋势", "altText": "收入趋势图",
+            "citationIds": ["citation-1"], "metricCodes": ["income"],
+            "currentPeriod": "2026-01", "sourceDatasetId": "dataset-1",
+            "aggregationGrain": "month",
+        }],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+    assert result["ok"] is False
+    toolkit.runtime.workspace.inspect_chart_file.assert_not_awaited()
+    toolkit._apply_durable_command.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_section_visualization_warns_and_keeps_unfrozen_dataset_chart() -> None:
     chart = {
         "chartId": "income",

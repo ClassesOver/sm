@@ -95,8 +95,10 @@ PDF/Word 渲染与验收，然后返回新的下载链接和编辑链接。`[[se
 专注模式、移动端“更多”菜单、PDF/Word 导出设置以及安全的导出链接复制。历史恢复只写入当前 draft，
 不会覆盖已发布 revision。
 
-当前限制：图表仍以已发布 job 登记的 PNG/JPEG 资源为准；暂不支持 Plotly.js、任意 JavaScript 或编辑器内
-图片上传。导出设置通过受控 job context 传递，PDF/Word 渲染器仍以现有 reporting 页面契约为最终验收依据。
+可视化偏好支持 `auto`（逐图选择，默认）、`static`（Matplotlib）和 `interactive`（优先 Plotly）。
+Plotly 图保留已登记的 PNG/JPEG 静态图，并在编辑器页面懒加载本地 Plotly.js；交互资源失败时显示静态图。
+PDF/Word 仍只使用静态图，不接受任意 JavaScript 或编辑器内图片上传。导出设置通过受控 job context 传递，
+PDF/Word 渲染器仍以现有 reporting 页面契约为最终验收依据。
 
 ## CLI
 

@@ -1046,19 +1046,8 @@ async def test_analysis_python_source_gate_enforces_signed_source_size_boundary(
 @pytest.mark.parametrize(
     "source",
     [
-        "import plotly.express as px\npx.bar(x=[1], y=[2])\n",
-        (
-            "import matplotlib\n"
-            "import matplotlib.pyplot as plt\n"
-            "matplotlib.use('Agg')\n"
-            "plt.savefig('analysis/charts/s1/chart.png')\n"
-        ),
-        (
-            "import matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import matplotlib.pyplot as plt\n"
-            "figure.write_image('analysis/charts/s1/chart.png')\n"
-        ),
+        "x = run_python_script\nprint(x)\n",
+        "x = submit_visualization_charts\nprint(x)\n",
         (
             "import matplotlib\n"
             "matplotlib.use('Agg')\n"
@@ -1088,6 +1077,28 @@ async def test_visualization_python_source_gate_enforces_rendering_policy(source
         )
 
     assert caught.value.code == "report_python_source_shape_invalid"
+
+
+@pytest.mark.anyio
+async def test_visualization_python_source_accepts_plotly_and_matplotlib_fallback() -> None:
+    path = "analysis/charts/s1/charts.py"
+    harness = object.__new__(RuntimeAnalysisMixin)
+    harness._phase_parameters = lambda *_args: (
+        {}, {"taskKind": "visualization_section", "visualizationWorkspace": {"scriptPath": path}}
+    )
+    source = (
+        "import plotly.graph_objects as go\n"
+        "import matplotlib\nmatplotlib.use('Agg')\n"
+        "import matplotlib.pyplot as plt\n"
+        "fig = go.Figure(data=[go.Bar(x=[1], y=[2])])\n"
+        "fig.write_json('analysis/charts/s1/chart.plotly.json')\n"
+        "plt.savefig('analysis/charts/s1/chart.png')\n"
+    )
+    await harness._preflight_analysis_python_write(
+        scope=SimpleNamespace(thread_id="thread-1"),
+        tool_name="apply_analysis_patch",
+        canonical={"operations": [{"operation": "create", "path": path, "content": source}]},
+    )
 
 
 @pytest.mark.anyio

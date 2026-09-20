@@ -292,8 +292,11 @@ class ReportEditorService:
 
     async def read_asset(self, expected: ReportEditorContext, path: str) -> tuple[bytes, str]:
         context = await self._restore(expected)
+        if "/" not in path and path not in {".", ".."}:
+            path = str(PurePosixPath(context.markdown_path).parent / path)
         render = context.job.get("render")
         images = render.get("images") if isinstance(render, dict) else None
+        interactive = context.job.get("interactiveCharts")
         registered = (
             next(
                 (item for item in images if isinstance(item, dict) and item.get("path") == path),
@@ -302,16 +305,40 @@ class ReportEditorService:
             if isinstance(images, list)
             else None
         )
+        if registered is None and isinstance(interactive, dict) and path.endswith(".plotly.json"):
+            registered = next(
+                (
+                    item
+                    for item in interactive.values()
+                    if isinstance(item, dict) and item.get("path") == path
+                ),
+                None,
+            )
         if not isinstance(registered, dict):
-            raise ReportingError("report_editor_asset_missing", "报告图片不存在。")
+            raise ReportingError("report_editor_asset_missing", "报告资源不存在。")
         content, media_type = await self.workspace.afile_bytes(context.scope["threadId"], path)
-        if media_type not in {"image/png", "image/jpeg"}:
-            raise ReportingError("report_editor_asset_invalid", "报告图片格式无效。")
+        if media_type not in {"image/png", "image/jpeg"} and not (
+            path.endswith(".plotly.json") and media_type == "application/json"
+        ):
+            raise ReportingError("report_editor_asset_invalid", "报告资源格式无效。")
         if len(content) != registered.get("size") or hashlib.sha256(
             content
         ).hexdigest() != registered.get("sha256"):
-            raise ReportingError("report_editor_asset_changed", "报告图片已变化。")
+            raise ReportingError("report_editor_asset_changed", "报告资源已变化。")
         return content, media_type
+
+    async def interactive_charts(self, expected: ReportEditorContext) -> dict[str, str]:
+        context = await self._restore(expected)
+        interactive = context.job.get("interactiveCharts")
+        if not isinstance(interactive, dict):
+            return {}
+        return {
+            image_path: item["path"]
+            for image_path, item in interactive.items()
+            if isinstance(image_path, str)
+            and isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+        }
 
     async def save_draft(
         self,

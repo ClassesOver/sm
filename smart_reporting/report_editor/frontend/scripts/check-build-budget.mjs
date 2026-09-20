@@ -6,12 +6,14 @@ const KIB = 1024
 const limits = {
   entry: 180 * KIB,
   milkdown: 700 * KIB,
+  plotly: 5 * 1024 * KIB,
   other: 250 * KIB,
 }
 
 function limitFor(file) {
   const name = file.split('/').at(-1) ?? file
   if (name.startsWith('milkdown-')) return limits.milkdown
+  if (name.startsWith('plotly.min-')) return limits.plotly
   if (name.startsWith('index-')) return limits.entry
   return limits.other
 }

@@ -91,6 +91,42 @@ from .phase_models import (
 from .publication import _accepted_artifacts_match_manifest
 from .section_workflow import SectionWorkflow
 
+
+def _archived_interactive_path(image_path: str) -> str:
+    return PurePosixPath(image_path).with_suffix(".plotly.json").as_posix()
+
+
+def _analysis_chart_from_registration(
+    raw_chart: Mapping[str, Any],
+    source_file: Mapping[str, Any],
+    interactive_file: Mapping[str, Any] | None,
+) -> AnalysisChart:
+    interactive_path = raw_chart.get("interactivePath")
+    if interactive_path is not None and (
+        interactive_file is None or interactive_file.get("path") != interactive_path
+    ):
+        raise ReportingError(
+            "report_phase_artifact_changed", "Plotly 图表缺少匹配的交互文件身份。"
+        )
+    payload = {
+        key: value
+        for key, value in raw_chart.items()
+        if key not in {"sourcePath", "interactivePath"}
+    }
+    payload["sourceFile"] = dict(source_file)
+    if interactive_file is not None:
+        payload["interactiveFile"] = dict(interactive_file)
+    payload["visualInspectionReceipt"] = ChartVisualInspectionReceipt(
+        sourcePath=str(source_file["path"]),
+        sha256=str(source_file["sha256"]),
+        inspectionMode="deterministic",
+        visualReviewStatus="not_run",
+        inspectorId="deterministic-raster-inspector-v1",
+        reviewed=True,
+        requiresRevision=False,
+    ).model_dump(mode="json", by_alias=True)
+    return AnalysisChart.model_validate(payload)
+
 _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET = 64 * 1024
 _SECTION_BLOCK_PAYLOAD_TOKEN_NUMERATOR = 3
 _SECTION_BLOCK_PAYLOAD_TOKEN_DENOMINATOR = 4
@@ -1981,6 +2017,8 @@ class RuntimeSectionsMixin:
         )
         chart_by_id = {item.chart_id: item for item in checkpoint.evidence_manifest.charts}
         chart_files: list[FileIdentity] = []
+        interactive_files: list[FileIdentity] = []
+        interactive_charts: dict[str, str] = {}
         for chart_id in referenced_chart_ids:
             chart = chart_by_id[chart_id]
             content = await self._read_identity_bytes(
@@ -1991,6 +2029,18 @@ class RuntimeSectionsMixin:
                     scope["threadId"], destination_by_chart[chart_id], content
                 )
             )
+            if chart.interactive_file is not None:
+                spec_content = await self._read_identity_bytes(
+                    scope["threadId"], chart.interactive_file, max_bytes=2 * 1024 * 1024
+                )
+                image_path = destination_by_chart[chart_id]
+                spec_path = _archived_interactive_path(image_path)
+                interactive_files.append(
+                    await self._write_immutable_artifact(
+                        scope["threadId"], spec_path, spec_content
+                    )
+                )
+                interactive_charts[image_path] = spec_path
         if tuple(item.path for item in chart_files) != rendered.chart_paths:
             raise ReportingError(
                 "report_draft_chart_path_invalid", "服务端图表归档路径与 Markdown 装配结果不一致。"
@@ -2001,6 +2051,7 @@ class RuntimeSectionsMixin:
         accepted_artifacts = [
             markdown_file.model_dump(mode="json", by_alias=True),
             *(item.model_dump(mode="json", by_alias=True) for item in chart_files),
+            *(item.model_dump(mode="json", by_alias=True) for item in interactive_files),
         ]
         analysis_task_id = next(
             (
@@ -2017,6 +2068,7 @@ class RuntimeSectionsMixin:
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,
+            interactive_charts=interactive_charts,
             markdown_path=markdown_path,
             lineage=lineage,
             source_warnings=source_warnings,
@@ -2041,7 +2093,7 @@ class RuntimeSectionsMixin:
             warnings=warning_values,
             last_error=None,
             files=self._merge_checkpoint_files(
-                checkpoint.files, markdown_file, *chart_files, manifest_file
+                checkpoint.files, markdown_file, *chart_files, *interactive_files, manifest_file
             ),
             trace=(
                 *checkpoint.trace,
@@ -2155,6 +2207,7 @@ class RuntimeSectionsMixin:
                 if selected_section_codes is None or section.code in selected_section_codes
             )
             file_by_path: dict[str, Mapping[str, Any]] = {}
+            interactive_by_path: dict[str, Mapping[str, Any]] = {}
             for section in ordered_sections:
                 section_payload = visualization_sections.get(section.code)
                 if not isinstance(section_payload, Mapping):
@@ -2162,6 +2215,9 @@ class RuntimeSectionsMixin:
                 for raw_file in section_payload.get("files", ()):
                     if isinstance(raw_file, Mapping) and isinstance(raw_file.get("path"), str):
                         file_by_path[raw_file["path"]] = raw_file
+                for raw_file in section_payload.get("interactiveFiles", ()):
+                    if isinstance(raw_file, Mapping) and isinstance(raw_file.get("path"), str):
+                        interactive_by_path[raw_file["path"]] = raw_file
             for section in ordered_sections:
                 section_payload = visualization_sections.get(section.code)
                 if not isinstance(section_payload, Mapping):
@@ -2175,31 +2231,11 @@ class RuntimeSectionsMixin:
                     source_file = file_by_path.get(source_path)
                     if source_file is None:
                         continue
-                    inspection = ChartVisualInspectionReceipt(
-                        sourcePath=source_path,
-                        sha256=str(source_file.get("sha256", "")),
-                        inspectionMode="deterministic",
-                        visualReviewStatus="not_run",
-                        inspectorId="deterministic-raster-inspector-v1",
-                        reviewed=True,
-                        requiresRevision=False,
-                    )
                     chart_values.append(
-                        AnalysisChart.model_validate(
-                            {
-                                # sourcePath 仅是 visualizationSections 内部索引键；
-                                # AnalysisChart 的稳定契约以带哈希的 sourceFile 表达文件身份。
-                                # 不得把内部索引字段带入 extra=forbid 的最终分析产物。
-                                **{
-                                    key: value
-                                    for key, value in raw_chart.items()
-                                    if key != "sourcePath"
-                                },
-                                "sourceFile": dict(source_file),
-                                "visualInspectionReceipt": inspection.model_dump(
-                                    mode="json", by_alias=True
-                                ),
-                            }
+                        _analysis_chart_from_registration(
+                            raw_chart,
+                            source_file,
+                            interactive_by_path.get(raw_chart.get("interactivePath")),
                         )
                     )
         warnings.extend(

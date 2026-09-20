@@ -49,8 +49,10 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "不得补零。",
     "修复 execution_output_error 时必须修正原始数据读取或解码错误，不得仅删除失败代码、"
     "吞掉异常或补默认数据。",
-    "绘图只能使用 Matplotlib；在导入 matplotlib.pyplot 前调用 "
-    'matplotlib.use("Agg")，并使用 fig.savefig(...) 写入签发路径。',
+    "按 visualizationMode 选择 Matplotlib 或 Plotly；每张图都必须生成签发路径的 PNG/JPEG 静态图，"
+    "Plotly 图还必须生成签发路径的 .plotly.json。"
+    "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 使用 fig.write_json()，"
+    "不要依赖未提供的 Kaleido 或 fig.write_image()。",
     "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
 )
 

@@ -3,6 +3,7 @@ export interface ReportDocument {
   markdown: string
   sha256: string
   csrfToken?: string
+  interactiveCharts?: Record<string, string>
 }
 
 export interface ExportResult {

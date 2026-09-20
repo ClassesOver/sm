@@ -59,6 +59,18 @@ from .base import (
 )
 
 
+def _editor_interactive_charts(manifest: ReportArtifactManifest) -> dict[str, dict[str, Any]]:
+    return {
+        chart.path: {
+            "path": chart.interactive_spec.path,
+            "size": chart.interactive_spec.size,
+            "sha256": chart.interactive_spec.sha256,
+        }
+        for chart in manifest.charts
+        if chart.interactive_spec is not None
+    }
+
+
 def evaluate_publication_semantics(
     *,
     evidence_manifest: AnalysisEvidenceManifest,
@@ -655,7 +667,9 @@ class RuntimePublicationMixin:
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
         try:
-            ReportArtifactManifest.model_validate(state[REPORT_ARTIFACTS_STATE_KEY]["draft"])
+            manifest = ReportArtifactManifest.model_validate(
+                state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
+            )
         except Exception as error:
             raise ReportingError(
                 "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
@@ -664,6 +678,9 @@ class RuntimePublicationMixin:
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
+        interactive_charts = _editor_interactive_charts(manifest)
+        if interactive_charts:
+            editor_job = {**editor_job, "interactiveCharts": interactive_charts}
         return StepOutput(
             content={
                 "status": "validated",
@@ -693,6 +710,7 @@ class RuntimePublicationMixin:
         manifest_path: str,
         *,
         accepted_artifacts: list[dict[str, Any]],
+        interactive_charts: Mapping[str, str] | None = None,
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
         revision: int,
@@ -768,6 +786,7 @@ class RuntimePublicationMixin:
                 markdown_path=markdown_path,
                 markdown=markdown_bytes.decode("utf-8"),
                 accepted_artifacts=current_artifacts,
+                interactive_charts=interactive_charts,
                 lineage=lineage,
                 sections=tuple(
                     section.code for section in _frozen_outline(self._state(run_context)).sections
@@ -996,7 +1015,11 @@ def _accepted_artifacts_match_manifest(
     }
     if len(accepted) != len(accepted_artifacts):
         return False
-    declared = [manifest.markdown, *manifest.charts]
+    declared = [
+        manifest.markdown,
+        *manifest.charts,
+        *(chart.interactive_spec for chart in manifest.charts if chart.interactive_spec),
+    ]
     declared_paths = {item.path for item in declared}
     extra_paths = set(accepted) - declared_paths
     if manifest_path in accepted or any(

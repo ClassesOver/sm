@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import plotly.graph_objects as go
 import pytest
 
 from smart_reporting.reporting.models import ReportingError
@@ -38,6 +39,23 @@ async def test_plotly_artifact_accepts_bounded_figure_json() -> None:
     assert result["mediaType"] == "application/vnd.plotly.v1+json"
     assert result["traceCount"] == 1
     assert len(result["sha256"]) == 64
+
+
+@pytest.mark.anyio
+async def test_plotly_python_to_json_output_is_accepted() -> None:
+    figure = go.Figure(data=[go.Bar(x=["一月", "二月"], y=[10, 12])])
+    service = SimpleNamespace(
+        normalize_path=lambda path, **_kwargs: (path, None),
+        read_limited_regular_file=AsyncMock(return_value=figure.to_json().encode()),
+    )
+
+    result = await inspect_report_plotly_file(
+        service,
+        thread_id="thread-1",
+        path="analysis/charts/income.plotly.json",
+    )
+
+    assert result["traceCount"] == 1
 
 
 @pytest.mark.anyio

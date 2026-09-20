@@ -1282,6 +1282,15 @@ button {
   cursor: zoom-in;
 }
 
+#report-editor .ProseMirror img.interactive-chart-fallback {
+  visibility: hidden;
+}
+
+.interactive-chart {
+  position: absolute;
+  z-index: 1;
+}
+
 .image-preview {
   position: fixed;
   z-index: 100;

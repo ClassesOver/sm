@@ -139,7 +139,7 @@ def create_report_editor_router(
         )
         async def read_report_document(
             report_id: str, revision: int, request: Request
-        ) -> dict[str, str]:
+        ) -> dict[str, Any]:
             raw_session, context = await _read_context(
                 grants, editor, request, report_id=report_id, revision=revision
             )
@@ -147,12 +147,17 @@ def create_report_editor_router(
                 document = await editor.read_document(context)
             except ReportingError as error:
                 _editor_http_error(error)
-            return {
+            result: dict[str, Any] = {
                 "path": document.path,
                 "markdown": document.markdown,
                 "sha256": document.sha256,
                 "csrfToken": grants.csrf_token(raw_session),
             }
+            chart_reader = getattr(editor, "interactive_charts", None)
+            interactive_charts = await chart_reader(context) if callable(chart_reader) else {}
+            if interactive_charts:
+                result["interactiveCharts"] = interactive_charts
+            return result
 
         @router.get(
             "/reports/v1/editor/{report_id}/{revision}/asset/{asset_path:path}",

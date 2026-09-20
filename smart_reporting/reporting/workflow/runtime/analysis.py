@@ -617,13 +617,17 @@ class RuntimeAnalysisMixin:
             )
             script_path = f"{root}/charts.py"
             try:
-                report_goal = self._envelope(run_context).report_goal
+                envelope = self._envelope(run_context)
+                report_goal = envelope.report_goal
+                visualization_mode = envelope.visualization_mode
             except ReportingError:
                 report_goal = ""
+                visualization_mode = "auto"
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_section",
                 "reportGoal": report_goal,
+                "visualizationMode": visualization_mode,
                 "sectionCode": section_code,
                 "section": section.model_dump(mode="json", by_alias=True),
                 "sectionGoal": {
@@ -661,6 +665,7 @@ class RuntimeAnalysisMixin:
                     "analysisIds": list(section.analysis_ids),
                     "allowedDatasetIds": list(allowed_dataset_ids),
                     "visualInspectionMode": context["visual_inspection_mode"],
+                    "visualizationMode": visualization_mode,
                     "visualizationRecovery": _visualization_recovery_required(last_error),
                     **section_budget,
                     **_visualization_retry_usage(last_error),
@@ -829,6 +834,7 @@ class RuntimeAnalysisMixin:
                         )
                         repair_workspace_key = coding_context.workspace_key
                         facts_payload = {
+                            "visualizationMode": visualization_mode,
                             "visualizationFacts": facts,
                             "visualizationWorkspace": instruction_payload[
                                 "visualizationWorkspace"
