@@ -288,12 +288,16 @@ def _validated_visual_receipts(
         raise ReportingError("report_phase_artifact_changed", "图表签发回执包含重复路径。")
     outputs = {item.path: item for item in result.execution_receipt.output_files}
     expected_paths = {chart.source_path for chart in plan.charts}
+    expected_outputs = expected_paths | {
+        chart.interactive_path for chart in plan.charts if chart.interactive_path is not None
+    }
     receipts = {item.source_path: item for item in result.visual_inspection_receipts}
-    if set(receipts) != expected_paths or set(outputs) != expected_paths:
+    if set(receipts) != expected_paths or set(outputs) != expected_outputs:
         raise ReportingError(
             "report_phase_artifact_changed", "图表视觉回执与签发输出不一致。"
         )
-    for path, output in outputs.items():
+    for path in expected_paths:
+        output = outputs[path]
         receipt = receipts[path]
         if (
             receipt.sha256 != output.sha256

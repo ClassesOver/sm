@@ -199,6 +199,58 @@ async def test_section_visualization_requires_signed_visual_receipt() -> None:
 
 
 @pytest.mark.anyio
+async def test_section_visualization_persists_plotly_companion_identity() -> None:
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "renderer": "plotly",
+        "interactivePath": "analysis/charts/section_001/income.plotly.json",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    toolkit = _toolkit()
+    toolkit.runtime.workspace = SimpleNamespace(
+        inspect_chart_file=AsyncMock(
+            return_value={
+                "sourcePath": chart["sourcePath"],
+                "size": 10,
+                "sha256": "a" * 64,
+            }
+        ),
+        inspect_plotly_file=AsyncMock(
+            return_value={
+                "sourcePath": chart["interactivePath"],
+                "size": 20,
+                "sha256": "b" * 64,
+                "mediaType": "application/vnd.plotly.v1+json",
+            }
+        ),
+    )
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+        visual_receipts=(_visual_receipt(chart["sourcePath"]),),
+    )
+
+    assert result["ok"] is True
+    payload = toolkit._apply_durable_command.await_args_list[0].kwargs["payload"]
+    assert payload["interactiveFiles"] == [
+        {
+            "path": chart["interactivePath"],
+            "size": 20,
+            "sha256": "b" * 64,
+        }
+    ]
+
+
+@pytest.mark.anyio
 async def test_section_visualization_warns_and_keeps_unfrozen_dataset_chart() -> None:
     chart = {
         "chartId": "income",

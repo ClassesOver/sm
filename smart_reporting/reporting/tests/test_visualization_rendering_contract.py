@@ -3,10 +3,23 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from smart_reporting.reporting.code_agent.context import ExecutionReceipt
 from smart_reporting.reporting.contract import ReportRequestEnvelope
 from smart_reporting.reporting.delivery.draft_v1 import ReportChartRegistration
-from smart_reporting.reporting.workflow.checkpoint import AnalysisChart
-from smart_reporting.reporting.workflow.runtime.phase_models import ChartDraft
+from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisChart,
+    ChartVisualInspectionReceipt,
+    FileIdentity,
+)
+from smart_reporting.reporting.workflow.runtime.analysis import _visualization_output_paths
+from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
+from smart_reporting.reporting.workflow.runtime.phase_models import (
+    ChartDraft,
+    VisualizationPlanDraft,
+)
+from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
+    _validated_visual_receipts,
+)
 
 
 def _request(**overrides: object) -> ReportRequestEnvelope:
@@ -108,3 +121,46 @@ def test_analysis_chart_preserves_plotly_companion_identity() -> None:
     assert chart.renderer == "plotly"
     assert chart.interactive_file is not None
     assert chart.interactive_file.sha256 == "b" * 64
+
+
+def test_visualization_task_signs_both_plotly_outputs() -> None:
+    chart = ChartDraft.model_validate(
+        _chart_payload(
+            renderer="plotly",
+            interactivePath="analysis/charts/income.plotly.json",
+        )
+    )
+
+    assert _visualization_output_paths(VisualizationPlanDraft(charts=(chart,))) == (
+        "analysis/charts/income.plotly.json",
+        "analysis/charts/income.png",
+    )
+
+
+def test_plotly_visual_review_only_requires_raster_receipt() -> None:
+    chart = ChartDraft.model_validate(
+        _chart_payload(
+            renderer="plotly",
+            interactivePath="analysis/charts/income.plotly.json",
+        )
+    )
+    image = FileIdentity(path=chart.source_path, size=10, sha256="a" * 64)
+    companion = FileIdentity(path=chart.interactive_path, size=20, sha256="b" * 64)
+    script = FileIdentity(path="analysis/charts/chart.py", size=5, sha256="c" * 64)
+    result = CodeGenerationResult(
+        script_file=script,
+        execution_receipt=ExecutionReceipt(
+            runId="run-1", sourceFile=script, outputFiles=(image, companion)
+        ),
+        visual_inspection_receipts=(
+            ChartVisualInspectionReceipt(
+                sourcePath=image.path,
+                sha256=image.sha256,
+                modelId="vision-1",
+                reviewed=True,
+                requiresRevision=False,
+            ),
+        ),
+    )
+
+    assert len(_validated_visual_receipts(result, VisualizationPlanDraft(charts=(chart,)))) == 1

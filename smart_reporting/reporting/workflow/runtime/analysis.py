@@ -293,6 +293,17 @@ def _visualization_instruction_theme() -> dict[str, Any]:
     }
 
 
+def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            path
+            for chart in plan.charts
+            for path in (chart.source_path, chart.interactive_path)
+            if path is not None
+        )
+    )
+
+
 def _analysis_item_dataset_inputs(
     handles: Sequence[DatasetHandle],
     contexts: Sequence[DatasetAnalysisContext],
@@ -801,9 +812,7 @@ class RuntimeAnalysisMixin:
                             ),
                             stored_scope=parent_scope,
                         )
-                        declared_outputs = tuple(
-                            sorted(chart.source_path for chart in plan.charts)
-                        )
+                        declared_outputs = _visualization_output_paths(plan)
                         coding_context = ReportingCodingTaskContext(
                             task_id=str(coding_task_id),
                             task_kind="visualization",

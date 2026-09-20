@@ -30,6 +30,27 @@ MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
 REPORT_RUNTIME_TIMEOUT_SECONDS = 600
 MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
+MAX_REPORT_PLOTLY_BYTES = 2 * 1024 * 1024
+MAX_REPORT_PLOTLY_TRACES = 100
+MAX_REPORT_PLOTLY_DEPTH = 20
+MAX_REPORT_PLOTLY_NODES = 200_000
+_PLOTLY_TRACE_TYPES = frozenset(
+    {
+        "bar",
+        "box",
+        "funnel",
+        "heatmap",
+        "histogram",
+        "indicator",
+        "pie",
+        "scatter",
+        "scattergl",
+        "violin",
+        "waterfall",
+    }
+)
+_PLOTLY_FORBIDDEN_KEYS = frozenset({"src", "source", "mapboxaccesstoken"})
+_PLOTLY_FORBIDDEN_STRING_MARKERS = ("http://", "https://", "javascript:", "data:")
 
 
 def _report_runtime_package() -> tuple[bytes, str]:
@@ -105,6 +126,89 @@ async def inspect_report_chart_file(
         "extension": extension,
         "width": width,
         "height": height,
+    }
+
+
+def _inspect_plotly_value(value: Any, *, depth: int = 0) -> int:
+    if depth > MAX_REPORT_PLOTLY_DEPTH:
+        raise ReportingError("report_plotly_source_invalid", "Plotly JSON 嵌套层级过深。")
+    if isinstance(value, dict):
+        nodes = 1
+        for raw_key, child in value.items():
+            normalized = str(raw_key).lower()
+            if (
+                not isinstance(raw_key, str)
+                or normalized in _PLOTLY_FORBIDDEN_KEYS
+                or normalized.startswith("on")
+            ):
+                raise ReportingError("report_plotly_source_invalid", "Plotly JSON 包含禁止字段。")
+            nodes += _inspect_plotly_value(child, depth=depth + 1)
+        return nodes
+    if isinstance(value, list):
+        return 1 + sum(
+            _inspect_plotly_value(item, depth=depth + 1) for item in value
+        )
+    if isinstance(value, str):
+        normalized_value = value.lower()
+        if (
+            any(marker in normalized_value for marker in _PLOTLY_FORBIDDEN_STRING_MARKERS)
+            or normalized_value.startswith("//")
+            or "<" in value
+            or ">" in value
+        ):
+            raise ReportingError("report_plotly_source_invalid", "Plotly JSON 包含外部或可执行内容。")
+    return 1
+
+
+def _reject_plotly_nonfinite(value: str) -> None:
+    raise ValueError(f"Plotly JSON 不允许 {value}")
+
+
+async def inspect_report_plotly_file(
+    service: Any,
+    *,
+    thread_id: str,
+    path: str,
+) -> dict[str, Any]:
+    source_path = service.normalize_path(path, allow_root=False)[0]
+    if not source_path.endswith(".plotly.json"):
+        raise ReportingError("report_plotly_source_invalid", "Plotly 规格必须使用 .plotly.json 扩展名。")
+    try:
+        content = await service.read_limited_regular_file(
+            thread_id, source_path, max_bytes=MAX_REPORT_PLOTLY_BYTES
+        )
+    except WorkspaceError as error:
+        raise ReportingError(
+            "report_plotly_file_missing",
+            "Plotly JSON 不存在或超过 2 MiB。",
+            details={"sourcePath": source_path},
+        ) from error
+    try:
+        payload = json.loads(content, parse_constant=_reject_plotly_nonfinite)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+        raise ReportingError("report_plotly_source_invalid", "Plotly JSON 无法解析。") from error
+    if not isinstance(payload, dict) or set(payload) - {"data", "layout", "config"}:
+        raise ReportingError("report_plotly_source_invalid", "Plotly JSON 顶层结构无效。")
+    data = payload.get("data")
+    if not isinstance(data, list) or not 1 <= len(data) <= MAX_REPORT_PLOTLY_TRACES:
+        raise ReportingError("report_plotly_source_invalid", "Plotly JSON trace 数量无效。")
+    if any(
+        not isinstance(trace, dict) or trace.get("type") not in _PLOTLY_TRACE_TYPES
+        for trace in data
+    ):
+        raise ReportingError("report_plotly_source_invalid", "Plotly JSON 包含不支持的 trace。")
+    if "layout" in payload and not isinstance(payload["layout"], dict):
+        raise ReportingError("report_plotly_source_invalid", "Plotly layout 必须是对象。")
+    if "config" in payload and not isinstance(payload["config"], dict):
+        raise ReportingError("report_plotly_source_invalid", "Plotly config 必须是对象。")
+    if _inspect_plotly_value(payload) > MAX_REPORT_PLOTLY_NODES:
+        raise ReportingError("report_plotly_source_invalid", "Plotly JSON 复杂度超过上限。")
+    return {
+        "sourcePath": source_path,
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "mediaType": "application/vnd.plotly.v1+json",
+        "traceCount": len(data),
     }
 
 

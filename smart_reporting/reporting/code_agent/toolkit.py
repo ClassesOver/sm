@@ -676,7 +676,9 @@ class ReportingCodeModeToolkit(Toolkit):
             "pendingOutputValidation": self.pending_output_validation,
             "unreviewedOutputPaths": [
                 item.path for item in (receipt.output_files if receipt else ())
-                if self.context.task_kind == "visualization" and (
+                if self.context.task_kind == "visualization"
+                and not item.path.endswith(".plotly.json")
+                and (
                     (review := self.binding.visual_inspection_receipts.get(item.path)) is None
                     or review.sha256 != item.sha256 or not review.reviewed
                     or review.visual_review_status != "passed" or review.requires_revision
@@ -1255,7 +1257,11 @@ class ReportingCodeModeToolkit(Toolkit):
                 "脚本输出在执行后发生变化。",
             )
         if self.context.task_kind == "visualization":
-            output_by_path = {item.path: item for item in receipt.output_files}
+            output_by_path = {
+                item.path: item
+                for item in receipt.output_files
+                if not item.path.endswith(".plotly.json")
+            }
             reviews = self.binding.visual_inspection_receipts
             if set(reviews) != set(output_by_path):
                 return _failure(

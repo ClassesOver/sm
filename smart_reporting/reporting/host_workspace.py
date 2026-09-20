@@ -339,6 +339,11 @@ class HostReportingWorkspace:
 
         return await inspect_report_chart_file(self, thread_id=thread_id, path=path)
 
+    async def inspect_plotly_file(self, thread_id: str, path: str) -> dict[str, Any]:
+        from .workspace import inspect_report_plotly_file
+
+        return await inspect_report_plotly_file(self, thread_id=thread_id, path=path)
+
     async def aapply_changes(
         self, thread_id: str, changes: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -637,6 +642,9 @@ class ReportingWorkspaceRouter:
 
     async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
         return await self.workspace(thread_id).inspect_chart_file(thread_id, path)
+
+    async def inspect_plotly_file(self, thread_id: str, path: str) -> dict[str, Any]:
+        return await self.workspace(thread_id).inspect_plotly_file(thread_id, path)
 
     async def aview_image(self, thread_id: str, path: str) -> ToolResult:
         return await self.workspace(thread_id).aview_image(thread_id, path)
