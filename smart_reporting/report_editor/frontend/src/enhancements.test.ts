@@ -143,25 +143,96 @@ describe('report editor enhancements', () => {
     expect(more.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('moves focus into mobile actions and restores it when Escape closes them', () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    root.innerHTML = `<button id="more" aria-expanded="false">更多</button><div class="secondary-actions"><button id="search">搜索</button><button>历史</button></div>`
+    const more = document.querySelector<HTMLButtonElement>('#more')!
+    const search = document.querySelector<HTMLButtonElement>('#search')!
+    createMoreActionsController(root, more)
+
+    more.click()
+    expect(document.activeElement).toBe(search)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(document.activeElement).toBe(more)
+  })
+
+  it('does not steal focus back after choosing a mobile action', () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    root.innerHTML = `<button id="more" aria-expanded="false">更多</button><div class="secondary-actions"><button id="search">搜索</button></div>`
+    const more = document.querySelector<HTMLButtonElement>('#more')!
+    const search = document.querySelector<HTMLButtonElement>('#search')!
+    createMoreActionsController(root, more)
+
+    more.click()
+    search.focus()
+    search.click()
+
+    expect(root.classList).not.toContain('more-actions-open')
+    expect(document.activeElement).toBe(search)
+  })
+
   it('opens and closes a static image preview', () => {
     const preview = createImagePreview(document.querySelector<HTMLElement>('#editor')!)
     document.querySelector<HTMLImageElement>('#editor img')!.click()
 
     expect(preview.dialog.hidden).toBe(false)
     expect(preview.dialog.querySelector('img')?.getAttribute('src')).toBe('chart.png')
+    expect(document.activeElement).toBe(preview.dialog.querySelector('.image-preview-close'))
+    expect(preview.dialog.getAttribute('role')).toBe('dialog')
+    expect(preview.dialog.getAttribute('aria-modal')).toBe('true')
+    expect(preview.dialog.getAttribute('aria-label')).toBe('图片预览')
+    expect(preview.close.title).toBe('关闭图片预览')
 
     preview.close.click()
     expect(preview.dialog.hidden).toBe(true)
   })
 
+  it('opens image previews from the keyboard and restores image focus', () => {
+    const source = document.querySelector<HTMLImageElement>('#editor img')!
+    const preview = createImagePreview(document.querySelector<HTMLElement>('#editor')!)
+
+    expect(source.tabIndex).toBe(0)
+    source.focus()
+    source.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+
+    expect(preview.dialog.hidden).toBe(false)
+    preview.close.click()
+    expect(document.activeElement).toBe(source)
+  })
+
+  it('prepares newly rendered images while excluding interactive chart fallbacks', async () => {
+    const editor = document.querySelector<HTMLElement>('#editor')!
+    const fallback = document.createElement('img')
+    fallback.className = 'interactive-chart-fallback'
+    editor.append(fallback)
+    const preview = createImagePreview(editor)
+    const added = document.createElement('img')
+    added.src = 'new-chart.png'
+    added.alt = '新增趋势'
+    editor.append(added)
+
+    await vi.waitFor(() => expect(added.tabIndex).toBe(0))
+    expect(fallback.tabIndex).toBe(-1)
+    added.focus()
+    added.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+
+    expect(preview.dialog.hidden).toBe(false)
+    expect(preview.dialog.querySelector('img')?.getAttribute('src')).toBe('new-chart.png')
+  })
+
   it('enters focus mode with a shortcut and exits with Escape', () => {
     const root = document.querySelector<HTMLElement>('#app')!
+    const editor = document.createElement('textarea')
+    root.append(editor)
     createFocusModeController(root)
+    editor.focus()
 
     window.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, shiftKey: true }),
     )
     expect(root.classList).toContain('focus-mode')
+    expect(document.activeElement).toBe(editor)
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     expect(root.classList).not.toContain('focus-mode')
@@ -170,13 +241,25 @@ describe('report editor enhancements', () => {
   it('toggles focus mode from visible controls', () => {
     const root = document.querySelector<HTMLElement>('#app')!
     const toggle = document.createElement('button')
+    toggle.innerHTML = '<span>专注</span>'
     const exit = document.createElement('button')
+    root.append(toggle, exit)
     createFocusModeController(root, toggle, exit)
+    toggle.focus()
     toggle.click()
     expect(root.classList).toContain('focus-mode')
+    expect(document.activeElement).toBe(exit)
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.getAttribute('aria-label')).toBe('退出专注模式')
+    expect(toggle.title).toBe('退出专注模式')
+    expect(toggle.querySelector('span')?.textContent).toBe('退出专注')
+    expect(exit.title).toBe('退出专注模式')
     exit.click()
     expect(root.classList).not.toContain('focus-mode')
+    expect(document.activeElement).toBe(toggle)
+    expect(toggle.getAttribute('aria-label')).toBe('进入专注模式')
+    expect(toggle.title).toBe('专注模式')
+    expect(toggle.querySelector('span')?.textContent).toBe('专注')
   })
 
   it('shows export links without navigating away', () => {
@@ -193,7 +276,7 @@ describe('report editor enhancements', () => {
     expect(panel.dialog.querySelector<HTMLAnchorElement>('[data-format="pdf"]')?.href).toContain(
       '/pdf',
     )
-    expect(panel.dialog.textContent).toContain('Revision 2')
+    expect(panel.dialog.textContent).toContain('版本 2')
     expect(panel.dialog.textContent).toContain('运营报告.pdf · 1.5 KB')
     expect(panel.dialog.textContent).toContain('运营报告.docx · 2 KB')
     expect(panel.dialog.textContent).toContain('请求编号：01995f3d-7bd2-7000-8000-000000000001')
@@ -222,6 +305,20 @@ describe('report editor enhancements', () => {
     panel.dialog.querySelector<HTMLButtonElement>('[data-copy="pdf"]')!.click()
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('/pdf'))
     expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('PDF 链接已复制')
+  })
+
+  it('clears copy feedback when showing a new export result', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const panel = createExportPanel()
+    panel.show({ revision: 2, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' } })
+
+    panel.dialog.querySelector<HTMLButtonElement>('[data-copy="pdf"]')!.click()
+    await vi.waitFor(() => expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('PDF 链接已复制'))
+
+    panel.show({ revision: 3, pdf: { downloadUrl: '/pdf-3' }, word: { downloadUrl: '/word-3' } })
+
+    expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('')
   })
 
   it('closes the export result panel with Escape', () => {

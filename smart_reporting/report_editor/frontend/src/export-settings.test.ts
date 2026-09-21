@@ -48,4 +48,17 @@ describe('createExportSettingsPanel', () => {
     expect(panel.dialog.hidden).toBe(true)
     expect(document.activeElement).toBe(opener)
   })
+
+  it('closes from the shared modal backdrop and restores the opener', () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const panel = createExportSettingsPanel(document.body)
+    panel.open()
+
+    panel.dialog.click()
+
+    expect(panel.dialog.hidden).toBe(true)
+    expect(document.activeElement).toBe(opener)
+  })
 })

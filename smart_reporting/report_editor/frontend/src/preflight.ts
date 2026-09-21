@@ -1,4 +1,4 @@
-import { installFocusTrap } from './focus-trap'
+import { createModal } from './modal'
 
 export interface PreflightWarning { code: string; label: string; target?: string }
 export function reportPreflight(markdown: string, editor: HTMLElement): PreflightWarning[] {
@@ -15,26 +15,26 @@ export function reportPreflight(markdown: string, editor: HTMLElement): Prefligh
 }
 
 export function showPreflightPanel(root: HTMLElement, warnings: PreflightWarning[], onContinue: (proceed: boolean) => void) {
-  const panel = document.createElement('section')
-  panel.className = 'preflight-panel'
-  panel.setAttribute('role', 'dialog')
-  panel.setAttribute('aria-modal', 'true')
-  panel.innerHTML = `<div class="preflight-card"><button type="button" data-preflight="close" aria-label="关闭导出检查">×</button><h2>导出前提示</h2><p>发现以下问题，建议先处理；也可以继续导出。</p><ul>${warnings.map((warning) => `<li><button type="button" data-preflight-target="${warning.target ?? ''}">${warning.label}</button></li>`).join('')}</ul><div class="preflight-actions"><button type="button" data-preflight="cancel">返回编辑</button><button type="button" data-preflight="continue">仍然导出</button></div></div>`
-  root.append(panel)
+  let closePanel: () => void = () => {}
+  const modal = createModal({
+    root,
+    overlayClass: 'preflight-panel',
+    cardClass: 'preflight-card',
+    closeLabel: '关闭导出检查',
+    labelledBy: 'preflight-title',
+    onRequestClose: () => closePanel(),
+    content: `<h2 id="preflight-title">导出前提示</h2><p>发现以下问题，建议先处理；也可以继续导出。</p><ul>${warnings.map((warning) => `<li><button type="button" class="ui-button ui-button--quiet" data-preflight-target="${warning.target ?? ''}">${warning.label}</button></li>`).join('')}</ul><div class="preflight-actions"><button type="button" class="ui-button ui-button--secondary" data-preflight="cancel">返回编辑</button><button type="button" class="ui-button ui-button--primary" data-preflight="continue">仍然导出</button></div>`,
+  })
+  const panel = modal.overlay
+  modal.closeButton!.dataset.preflight = 'close'
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  const uninstallFocusTrap = installFocusTrap(panel)
   const close = (proceed: boolean) => {
-    window.removeEventListener('keydown', onKeyDown)
-    uninstallFocusTrap()
-    panel.remove()
+    modal.remove()
     opener?.focus()
     onContinue(proceed)
   }
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') close(false)
-  }
-  window.addEventListener('keydown', onKeyDown)
-  panel.querySelector<HTMLButtonElement>('[data-preflight="close"]')?.focus()
+  closePanel = () => close(false)
+  modal.open(modal.closeButton)
   panel.querySelectorAll<HTMLButtonElement>('[data-preflight="close"], [data-preflight="cancel"]').forEach((button) => button.addEventListener('click', () => close(false)))
   panel.querySelector<HTMLButtonElement>('[data-preflight="continue"]')!.addEventListener('click', () => close(true))
   panel.querySelectorAll<HTMLButtonElement>('[data-preflight-target]').forEach((button) => button.addEventListener('click', () => {

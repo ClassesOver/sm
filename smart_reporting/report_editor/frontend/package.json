@@ -14,6 +14,7 @@
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "diff": "^8.0.4",
+    "diff2html": "^3.4.56",
     "lucide": "^1.46.0",
     "plotly.js-dist-min": "^3.3.1"
   },

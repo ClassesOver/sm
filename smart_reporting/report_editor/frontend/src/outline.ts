@@ -86,15 +86,45 @@ export function createOutlineController({
 
   setCollapsed(initialCollapsed ?? container.classList.contains('is-collapsed'))
 
-  toggle.addEventListener('click', () =>
-    setCollapsed(!container.classList.contains('is-collapsed'), true),
+  const collapseAndRestoreFocus = () => {
+    setCollapsed(true, true)
+    toggle.focus()
+  }
+
+  container.querySelector<HTMLButtonElement>('.outline-close')?.addEventListener(
+    'click',
+    collapseAndRestoreFocus,
   )
 
+  toggle.addEventListener('click', () => {
+    const collapsed = !container.classList.contains('is-collapsed')
+    setCollapsed(collapsed, true)
+    if (!collapsed && window.innerWidth <= 768) {
+      list.querySelector<HTMLButtonElement>('.outline-link')?.focus()
+    }
+  })
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || container.classList.contains('is-collapsed') || window.innerWidth > 768) return
+    event.preventDefault()
+    collapseAndRestoreFocus()
+  })
+
   const setActive = (index: number) => {
-    list.querySelectorAll('.outline-link').forEach((item, itemIndex) => {
-      if (itemIndex === index) item.setAttribute('aria-current', 'location')
+    const links = list.querySelectorAll<HTMLElement>('.outline-link')
+    links.forEach((item, itemIndex) => {
+      if (itemIndex === index) {
+        item.setAttribute('aria-current', 'location')
+      }
       else item.removeAttribute('aria-current')
     })
+    const activeLink = links[index]
+    if (activeLink && window.innerWidth > 768) {
+      const listRect = list.getBoundingClientRect()
+      const activeRect = activeLink.getBoundingClientRect()
+      if (activeRect.top < listRect.top) list.scrollTop -= listRect.top - activeRect.top
+      else if (activeRect.bottom > listRect.bottom) list.scrollTop += activeRect.bottom - listRect.bottom
+    }
     const active = currentItems[index]
     if (active) onActive?.(active)
   }
@@ -120,6 +150,7 @@ export function createOutlineController({
           button.draggable = Boolean(getMarkdown && replaceMarkdown)
           button.className = `outline-link level-${Math.min(3, Math.max(1, item.level))}`
           button.textContent = item.text || '未命名章节'
+          button.title = button.textContent
           button.addEventListener('click', () => {
             setActive(index)
             const headings = editor.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')
@@ -135,7 +166,10 @@ export function createOutlineController({
                 window.matchMedia('(prefers-reduced-motion: reduce)').matches
               target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
             }
-            if (window.innerWidth <= 768) setCollapsed(true)
+            if (window.innerWidth <= 768) {
+              setCollapsed(true)
+              toggle.focus()
+            }
           })
           button.addEventListener('keydown', (event) => {
             if (!getMarkdown || !replaceMarkdown || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return

@@ -41,7 +41,7 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
   const panel = document.createElement('section')
   panel.className = 'search-panel'
   panel.hidden = true
-  panel.innerHTML = `<input class="search-query" aria-label="搜索文本" placeholder="搜索报告内容"><span class="search-count" aria-live="polite">0 个匹配</span><button type="button" data-search="prev">↑</button><button type="button" data-search="next">↓</button><input class="search-replacement" aria-label="替换为" placeholder="替换为"><button type="button" data-search="replace">替换</button><button type="button" data-search="all">全部替换</button><button type="button" data-search="close" aria-label="关闭搜索">×</button>`
+  panel.innerHTML = `<input class="search-query" aria-label="搜索文本" placeholder="搜索报告内容"><span class="search-count" aria-live="polite">0 个匹配</span><button type="button" data-search="prev" aria-label="上一个匹配" title="上一个匹配" disabled>↑</button><button type="button" data-search="next" aria-label="下一个匹配" title="下一个匹配" disabled>↓</button><input class="search-replacement" aria-label="替换为" placeholder="替换为"><button type="button" data-search="replace" disabled>替换</button><button type="button" data-search="all" disabled>全部替换</button><button type="button" data-search="close" aria-label="关闭搜索" title="关闭搜索">×</button>`
   const metadata = root.querySelector('.report-meta')
   if (metadata) metadata.after(panel)
   else root.prepend(panel)
@@ -93,6 +93,8 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
     }
     current = Math.min(current, Math.max(0, matches.length - 1))
     count.textContent = matches.length ? `${current + 1} / ${matches.length} 个匹配` : '0 个匹配'
+    panel.querySelectorAll<HTMLButtonElement>('[data-search="prev"], [data-search="next"], [data-search="replace"], [data-search="all"]')
+      .forEach((button) => { button.disabled = matches.length === 0 })
     if (setQuery) setQuery(query.value, replacement.value)
     else highlight()
   }
@@ -115,18 +117,20 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
     opener = null
   }
   const open = () => {
-    if (panel.hidden) {
+    const wasHidden = panel.hidden
+    if (wasHidden) {
       opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     }
     panel.hidden = false
     query.focus()
+    if (!wasHidden) query.select()
     refresh()
   }
   panel.addEventListener('click', (event) => {
     const action = (event.target as HTMLElement).dataset.search
     if (action === 'close') close()
-    if (action === 'prev') move(-1)
-    if (action === 'next') move(1)
+    if (action === 'prev') { move(-1); query.focus() }
+    if (action === 'next') { move(1); query.focus() }
     if (action === 'replace' && query.value && matches.length) {
       const text = getText()
       const start = matches[current]

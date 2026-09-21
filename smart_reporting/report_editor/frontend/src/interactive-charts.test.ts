@@ -37,6 +37,27 @@ it('keeps the image visible when loading or rendering fails', async () => {
   controller.destroy()
 })
 
+it('repositions an active chart when preceding editor content changes', async () => {
+  const editor = document.querySelector<HTMLElement>('#editor')!
+  const image = editor.querySelector('img')!
+  let top = 40
+  image.getBoundingClientRect = () => ({ left: 20, top, width: 300, height: 180, right: 320, bottom: top + 180, x: 20, y: top, toJSON: () => ({}) })
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const controller = createInteractiveCharts(editor, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ type: 'bar' }] }) }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  await controller.refresh()
+  const overlay = document.querySelector<HTMLElement>('.interactive-chart')!
+  expect(overlay.style.top).toBe('40px')
+
+  top = 120
+  editor.prepend(document.createElement('p'))
+  await vi.waitFor(() => expect(overlay.style.top).toBe('120px'))
+  expect(plot.newPlot).toHaveBeenCalledOnce()
+  controller.destroy()
+})
+
 it('matches the relative image reference emitted by the Markdown renderer', async () => {
   const image = document.querySelector<HTMLImageElement>('#editor img')!
   image.src = `${basePath}/asset/chart.png`

@@ -21,6 +21,88 @@ describe('createHistoryController', () => {
     expect(document.querySelector('.diff-removed')?.textContent).toBe('- 旧内容')
   })
 
+  it('renders the comparison with the diff2html side-by-side view', () => {
+    const controller = createHistoryController(document.body)
+    controller.record('Revision 1', '# 摘要\n旧内容')
+    controller.record('Revision 2', '# 摘要\n新内容')
+    controller.open()
+
+    document.querySelector<HTMLButtonElement>('.history-item:last-child')!.click()
+
+    expect(document.querySelector('.history-diff .d2h-wrapper')).not.toBeNull()
+    expect(document.querySelector('.history-diff .d2h-file-side-diff')).not.toBeNull()
+  })
+
+  it('keeps version selection and diff preview in separate stable panes', () => {
+    const controller = createHistoryController(document.body)
+    controller.record('版本 1', '# 摘要\n旧内容')
+    controller.record('版本 2', '# 摘要\n新内容')
+    controller.open()
+
+    expect(document.querySelector('.history-index')).not.toBeNull()
+    expect(document.querySelector('.history-preview')).not.toBeNull()
+    expect(document.querySelector<HTMLElement>('.history-preview-empty')?.hidden).toBe(false)
+
+    const items = document.querySelectorAll<HTMLButtonElement>('.history-item')
+    items[1]!.click()
+
+    expect(items[0]!.getAttribute('aria-pressed')).toBe('false')
+    expect(items[1]!.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector<HTMLElement>('.history-preview-empty')?.hidden).toBe(true)
+    expect(document.querySelector<HTMLElement>('.history-preview-content')?.hidden).toBe(false)
+    expect(document.querySelector('.history-preview-label')?.textContent).toBe('版本 2')
+  })
+
+  it('compares any two selected revisions side by side', () => {
+    const controller = createHistoryController(document.body)
+    controller.record('版本 1', '# 摘要\n旧内容')
+    controller.record('版本 2', '# 摘要\n中间内容')
+    controller.record('版本 3', '# 摘要\n新内容')
+    controller.open()
+
+    document.querySelector<HTMLButtonElement>('.history-item:last-child')!.click()
+    const base = document.querySelector<HTMLSelectElement>('.history-base-select')!
+    const comparison = document.querySelector<HTMLSelectElement>('.history-compare-select')!
+    base.value = '0'
+    base.dispatchEvent(new Event('change'))
+
+    expect(comparison.value).toBe('2')
+    expect(document.querySelector('.history-diff-before')?.textContent).toContain('旧内容')
+    expect(document.querySelector('.history-diff-after')?.textContent).toContain('新内容')
+    expect(document.querySelector('.history-diff')?.textContent).not.toContain('中间内容')
+  })
+
+  it('aligns inserted lines with an empty row in the base revision', () => {
+    const controller = createHistoryController(document.body)
+    controller.record('版本 1', '# 标题\n第一段')
+    controller.record('版本 2', '# 标题\n新增段\n第一段')
+    controller.open()
+
+    document.querySelector<HTMLButtonElement>('.history-item:last-child')!.click()
+    const beforeRows = document.querySelectorAll('.history-diff-before .history-diff-row')
+    const afterRows = document.querySelectorAll('.history-diff-after .history-diff-row')
+    const added = document.querySelector('.history-diff-after .diff-added')?.closest('.history-diff-row')
+
+    expect(beforeRows).toHaveLength(afterRows.length)
+    expect(added).not.toBeNull()
+    expect(beforeRows[Array.from(afterRows).indexOf(added!)]?.classList).toContain('diff-empty')
+  })
+
+  it('synchronizes vertical scrolling between comparison panes', () => {
+    const controller = createHistoryController(document.body)
+    controller.record('版本 1', '# 标题\n旧内容')
+    controller.record('版本 2', '# 标题\n新内容')
+    controller.open()
+    document.querySelector<HTMLButtonElement>('.history-item:last-child')!.click()
+    const before = document.querySelector<HTMLElement>('.history-diff-before')!
+    const after = document.querySelector<HTMLElement>('.history-diff-after')!
+
+    before.scrollTop = 72
+    before.dispatchEvent(new Event('scroll'))
+
+    expect(after.scrollTop).toBe(72)
+  })
+
   it('keeps an isolated insertion local to one diff hunk', () => {
     const controller = createHistoryController(document.body)
     controller.record('Revision 1', '# 标题\n第一段\n第二段')
@@ -117,7 +199,7 @@ describe('createHistoryController', () => {
     const source = document.querySelector<HTMLSelectElement>('.history-source-filter')!
     source.value = 'manual'
     source.dispatchEvent(new Event('change'))
-    await vi.waitFor(() => expect(document.querySelector('.history-item strong')?.textContent).toBe('Revision 35'))
+    await vi.waitFor(() => expect(document.querySelector('.history-item strong')?.textContent).toBe('版本 35'))
   })
 
   it('loads every matching revision exactly once across server pages', async () => {
@@ -133,11 +215,11 @@ describe('createHistoryController', () => {
     const loadPage = createPersistedHistoryLoader(fetchPage, 1)
 
     const first = await loadPage(0, { source: 'manual', date: '' })
-    expect(first.items.map((item) => item.label)).toEqual(['Revision 5'])
+    expect(first.items.map((item) => item.label)).toEqual(['版本 5'])
     expect(first.total).toBe(2)
     expect(first.hasMore).toBe(true)
     const second = await loadPage(1, { source: 'manual', date: '' })
-    expect(second.items.map((item) => item.label)).toEqual(['Revision 25'])
+    expect(second.items.map((item) => item.label)).toEqual(['版本 25'])
     expect(second.hasMore).toBe(false)
   })
 

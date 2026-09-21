@@ -7,7 +7,6 @@ export interface EditorShell {
   viewToggle: HTMLButtonElement
   search: HTMLButtonElement
   history: HTMLButtonElement
-  templates: HTMLButtonElement
   more: HTMLButtonElement
   shortcuts: HTMLButtonElement
   focus: HTMLButtonElement
@@ -47,8 +46,6 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
             aria-pressed="true" title="切换 A4/宽屏"><i data-lucide="maximize-2" aria-hidden="true"></i><span>A4</span></button>
           <button type="button" data-action="search" aria-label="搜索和替换" title="搜索和替换"><i data-lucide="search" aria-hidden="true"></i><span>搜索</span></button>
           <button type="button" data-action="history" aria-label="版本历史" title="版本历史"><i data-lucide="history" aria-hidden="true"></i><span>历史</span></button>
-          <button type="button" data-action="templates" aria-label="报告模板" title="报告模板"><i data-lucide="layout-template" aria-hidden="true"></i><span>模板</span></button>
-          <button type="button" data-action="shortcuts" aria-label="快捷键帮助" title="快捷键帮助"><i data-lucide="keyboard" aria-hidden="true"></i><span>快捷键</span></button>
           <button type="button" data-action="focus" aria-label="进入专注模式" aria-pressed="false" title="专注模式"><i data-lucide="focus" aria-hidden="true"></i><span>专注</span></button>
         </div>
         <button type="button" data-action="more" aria-label="更多操作"
@@ -66,32 +63,28 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
           <i data-lucide="file-text" aria-hidden="true"></i><span>Word</span>
         </button></div>
         <button type="button" class="is-subtle toolbar-settings" data-action="export-settings" aria-label="导出设置" title="导出设置"><i data-lucide="settings-2" aria-hidden="true"></i><span>设置</span></button>
+        <button type="button" class="is-subtle toolbar-shortcuts" data-action="shortcuts" aria-label="快捷键帮助" title="快捷键帮助"><i data-lucide="keyboard" aria-hidden="true"></i><span>快捷键</span></button>
       </nav>
       <span class="reading-progress" role="progressbar" aria-label="报告阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></span>
     </header>
     <div class="report-meta" aria-label="编辑状态说明">
-      <span>内容格式：Markdown</span>
-      <span class="meta-dot">·</span>
-      <span>自动保存已开启</span>
-      <span class="meta-dot">·</span>
       <span class="current-section">当前位置：报告开头</span>
       <span class="meta-spacer"></span>
       <span class="doc-metrics" aria-live="polite">0 字 · 0 段 · 阅读 0 分钟</span>
       <span class="meta-dot">·</span>
       <span class="structure-status">结构检查中</span>
-      <span class="meta-dot">·</span>
-      <span class="network-status">网络已连接</span>
-      <span class="meta-dot">·</span>
-      <span class="image-quality-status">图片检查中</span>
-      <span class="meta-dot">·</span>
-      <span class="focus-hint">专注模式：⌘/Ctrl + Shift + F</span>
-      <span class="meta-dot">·</span>
-      <span>可导出 PDF / Word</span>
+      <span class="network-status" hidden>网络已连接</span>
+      <span class="image-quality-status" hidden>图片检查中</span>
     </div>
     <div class="report-workspace">
       <aside id="report-outline" class="report-outline${mode === 'compact' ? ' is-collapsed' : ''}"
         aria-label="报告目录">
-        <div class="outline-heading"><span>目录</span></div>
+        <div class="outline-heading">
+          <span>目录</span>
+          <button type="button" class="outline-close" aria-label="关闭目录" title="关闭目录">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
         <nav class="outline-list" aria-label="章节导航"></nav>
       </aside>
       <section class="editor-surface" aria-label="报告正文">
@@ -113,7 +106,6 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
     viewToggle: required<HTMLButtonElement>('[data-action="view"]'),
     search: required<HTMLButtonElement>('[data-action="search"]'),
     history: required<HTMLButtonElement>('[data-action="history"]'),
-    templates: required<HTMLButtonElement>('[data-action="templates"]'),
     more: required<HTMLButtonElement>('[data-action="more"]'),
     shortcuts: required<HTMLButtonElement>('[data-action="shortcuts"]'),
     focus: required<HTMLButtonElement>('[data-action="focus"]'),

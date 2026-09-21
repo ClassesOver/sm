@@ -7,6 +7,10 @@ const port = Number(process.env.REPORT_EDITOR_FIXTURE_PORT ?? 4173)
 const root = new URL('../../static/', import.meta.url).pathname
 const editorPath = '/reports/v1/editor/fixture-report/1'
 let markdown = '# 医院整体运营情况分析报告\n\n## 核心结论\n\n用于浏览器布局回归。\n'
+const history = [
+  { revision: 1, markdown: '# 医院整体运营情况分析报告\n\n## 核心结论\n\n初始版本。\n', source: 'published', createdAt: '2026-09-20T08:30:00+08:00', note: '初始发布' },
+  { revision: 2, markdown: '# 医院整体运营情况分析报告\n\n## 核心结论\n\n补充运营数据。\n', source: 'manual', createdAt: '2026-09-21T09:15:00+08:00', note: '运营数据复核' },
+]
 const digest = () => createHash('sha256').update(markdown).digest('hex')
 const pdf = Buffer.from('%PDF-1.7\n%%EOF\n')
 const word = Buffer.from('PK\u0003\u0004fixture-docx')
@@ -89,7 +93,27 @@ const server = http.createServer(async (request, response) => {
     return
   }
   if (request.method === 'GET' && url.pathname === `${editorPath}/api/history`) {
-    json(response, { items: [] })
+    const limit = Number(url.searchParams.get('limit') ?? 20)
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    const items = history.slice(offset, offset + limit).map(({ markdown: _markdown, ...item }) => ({
+      ...item,
+      sha256: createHash('sha256').update(history.find((entry) => entry.revision === item.revision)?.markdown ?? '').digest('hex'),
+    }))
+    json(response, { items, total: history.length, hasMore: offset + items.length < history.length })
+    return
+  }
+  if (request.method === 'GET' && url.pathname.startsWith(`${editorPath}/api/history/`)) {
+    const revision = Number(url.pathname.split('/').at(-1))
+    const item = history.find((entry) => entry.revision === revision)
+    if (!item) {
+      response.writeHead(404)
+      response.end()
+      return
+    }
+    json(response, {
+      ...item,
+      sha256: createHash('sha256').update(item.markdown).digest('hex'),
+    })
     return
   }
   const prefix = '/reports/v1/editor/assets/'

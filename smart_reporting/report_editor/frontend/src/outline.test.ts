@@ -25,7 +25,10 @@ describe('createOutlineController', () => {
   beforeEach(() => {
     document.body.innerHTML = `
       <button id="toggle" aria-expanded="true"></button>
-      <aside id="outline"><nav class="outline-list"></nav></aside>
+      <aside id="outline">
+        <div class="outline-heading"><span>目录</span><button type="button" class="outline-close">关闭</button></div>
+        <nav class="outline-list"></nav>
+      </aside>
       <div id="editor"><h1>摘要</h1><h2>经营情况</h2></div>
     `
   })
@@ -47,6 +50,7 @@ describe('createOutlineController', () => {
 
     expect(document.querySelectorAll('.outline-link')).toHaveLength(2)
     expect(document.querySelectorAll('.outline-link')[1].classList).toContain('level-2')
+    expect(document.querySelectorAll<HTMLButtonElement>('.outline-link')[1].title).toBe('经营情况')
     expect(heading.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
   })
 
@@ -199,5 +203,110 @@ describe('createOutlineController', () => {
 
     expect(heading.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' })
     vi.unstubAllGlobals()
+  })
+
+  it('focuses the first chapter when the mobile outline opens', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const container = document.querySelector<HTMLElement>('#outline')!
+    container.classList.add('is-collapsed')
+    const toggle = document.querySelector<HTMLButtonElement>('#toggle')!
+    const controller = createOutlineController({
+      container,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle,
+    })
+    controller.update([
+      { id: 'summary', level: 1, text: '摘要' },
+      { id: 'operation', level: 2, text: '经营情况' },
+    ])
+
+    toggle.click()
+
+    expect(document.activeElement).toBe(document.querySelector('.outline-link'))
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+  })
+
+  it('returns focus to the outline toggle after selecting a mobile chapter', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const container = document.querySelector<HTMLElement>('#outline')!
+    const toggle = document.querySelector<HTMLButtonElement>('#toggle')!
+    const controller = createOutlineController({
+      container,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle,
+    })
+    controller.update([{ id: 'summary', level: 1, text: '摘要' }])
+    toggle.click()
+    document.querySelector<HTMLButtonElement>('.outline-link')!.click()
+
+    expect(container.classList).toContain('is-collapsed')
+    expect(document.activeElement).toBe(toggle)
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+  })
+
+  it('closes the mobile outline with Escape and restores toggle focus', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const container = document.querySelector<HTMLElement>('#outline')!
+    container.classList.add('is-collapsed')
+    const toggle = document.querySelector<HTMLButtonElement>('#toggle')!
+    const controller = createOutlineController({
+      container,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle,
+    })
+    controller.update([{ id: 'summary', level: 1, text: '摘要' }])
+    toggle.click()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+
+    expect(container.classList).toContain('is-collapsed')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(toggle)
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+  })
+
+  it('closes the mobile outline with its visible control and restores toggle focus', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const container = document.querySelector<HTMLElement>('#outline')!
+    container.classList.add('is-collapsed')
+    const toggle = document.querySelector<HTMLButtonElement>('#toggle')!
+    const controller = createOutlineController({
+      container,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle,
+    })
+    controller.update([{ id: 'summary', level: 1, text: '摘要' }])
+    toggle.click()
+
+    document.querySelector<HTMLButtonElement>('.outline-close')!.click()
+
+    expect(container.classList).toContain('is-collapsed')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(toggle)
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+  })
+
+  it('keeps the active chapter visible inside a long desktop outline', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    const container = document.querySelector<HTMLElement>('#outline')!
+    const controller = createOutlineController({
+      container,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle: document.querySelector<HTMLButtonElement>('#toggle')!,
+    })
+    controller.update([
+      { id: 'summary', level: 1, text: '摘要' },
+      { id: 'operation', level: 1, text: '经营情况' },
+      { id: 'risk', level: 1, text: '风险提示' },
+    ])
+    const list = container.querySelector<HTMLElement>('.outline-list')!
+    const active = list.querySelectorAll<HTMLButtonElement>('.outline-link')[2]
+    list.scrollTop = 40
+    list.getBoundingClientRect = () => ({ top: 100, bottom: 300 } as DOMRect)
+    active.getBoundingClientRect = () => ({ top: 320, bottom: 350 } as DOMRect)
+
+    controller.setActive(2)
+
+    expect(list.scrollTop).toBe(90)
   })
 })

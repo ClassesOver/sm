@@ -12,15 +12,6 @@ import '@milkdown/crepe/theme/common/diff.css'
 import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
-import { CrepeBuilder } from '@milkdown/crepe/builder'
-import { ai } from '@milkdown/crepe/feature/ai'
-import { blockEdit } from '@milkdown/crepe/feature/block-edit'
-import { cursor } from '@milkdown/crepe/feature/cursor'
-import { linkTooltip } from '@milkdown/crepe/feature/link-tooltip'
-import { listItem } from '@milkdown/crepe/feature/list-item'
-import { placeholder } from '@milkdown/crepe/feature/placeholder'
-import { table } from '@milkdown/crepe/feature/table'
-import { toolbar } from '@milkdown/crepe/feature/toolbar'
 import { outline } from '@milkdown/kit/utils'
 import { replaceAll } from '@milkdown/kit/utils'
 import {
@@ -30,13 +21,13 @@ import {
   Focus,
   History,
   Keyboard,
-  LayoutTemplate,
   Maximize2,
   MoreHorizontal,
   PanelLeft,
   Save,
   Search,
   Settings2,
+  X,
 } from 'lucide'
 
 import { ReportEditorApiError, ReportEditorClient } from './api'
@@ -65,8 +56,9 @@ import { toolbarMode } from './viewport'
 import { createLoadStatePanel } from './load-state'
 import { createSaveStateTracker, type SaveStateTracker } from './save-state'
 import { createTelemetryReporter } from './telemetry'
-import { showEditorOnboarding } from './onboarding'
 import { reportPreflight, showPreflightPanel } from './preflight'
+import { editorChineseLocale, formatRevisionLabel } from './localization'
+import { createReportEditor } from './editor-features'
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('report editor root is missing')
@@ -119,7 +111,7 @@ const revisionLabel = root.querySelector<HTMLElement>('.revision-label')
 const metricsLabel = root.querySelector<HTMLElement>('.doc-metrics')
 const structureLabel = root.querySelector<HTMLElement>('.structure-status')
 const imageQualityLabel = root.querySelector<HTMLElement>('.image-quality-status')
-if (revisionLabel) revisionLabel.textContent = `Revision ${revision}`
+if (revisionLabel) revisionLabel.textContent = formatRevisionLabel(revision)
 createIcons({
   icons: {
     FileDown,
@@ -127,13 +119,13 @@ createIcons({
     Focus,
     History,
     Keyboard,
-    LayoutTemplate,
     Maximize2,
     MoreHorizontal,
     PanelLeft,
     Save,
     Search,
     Settings2,
+    X,
   },
 })
 
@@ -234,41 +226,21 @@ try {
   lastSavedMarkdown = documentState.markdown
   currentMarkdown = documentState.markdown
   saveState = createSaveStateTracker(documentState.markdown)
-  const crepe = new CrepeBuilder({
-    root: shell.editor,
-    defaultValue: documentState.markdown,
-  })
-    .addFeature(cursor)
-    .addFeature(listItem)
-    .addFeature(linkTooltip)
-    .addFeature(blockEdit)
-    .addFeature(placeholder, { text: '开始编辑报告...' })
-    .addFeature(toolbar)
-    .addFeature(table)
-    .addFeature(ai, {
+  const crepe = createReportEditor(
+    shell.editor,
+    documentState.markdown,
+    {
+      ...editorChineseLocale.ai,
       provider: selectionAIProvider(client),
       buildAISuggestions: configureSelectionAISuggestions,
       diffReviewOnEnd: true,
-      suggestionsHeaderLabel: '选择改写方式',
-      listboxLabel: 'AI 改写方式',
-      streamingIndicator: {
-        fallbackLabel: '正在改写',
-        cancelHint: '按 Esc 取消',
-      },
-      diff: {
-        acceptLabel: '接受',
-        rejectLabel: '拒绝',
-      },
-      diffActions: {
-        retryLabel: '重试',
-        rejectAllLabel: '全部拒绝',
-        acceptAllLabel: '全部接受',
-      },
       onError: () => status('AI 改写失败', 'error'),
-    })
+    },
+  )
   crepe.editor.use(protocolMarkerPlugin)
   getEditorMarkdown = () => crepe.getMarkdown()
   replaceEditorMarkdown = (markdown) => crepe.editor.action(replaceAll(markdown))
+  await crepe.create()
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, markdown) => {
       if (metricsLabel) metricsLabel.textContent = documentMetrics(markdown)
@@ -290,13 +262,11 @@ try {
       saveTimer = window.setTimeout(saveInBackground, 800)
     })
   })
-  await crepe.create()
   if (documentState.interactiveCharts && Object.keys(documentState.interactiveCharts).length) {
     const { createInteractiveCharts } = await import('./interactive-charts')
     void createInteractiveCharts(shell.editor, documentState.interactiveCharts, basePath).refresh()
   }
   loadState.hide()
-  showEditorOnboarding(root, basePath)
   const [
     { createSearchController },
     { createHistoryController, createPersistedHistoryLoader },
@@ -321,18 +291,6 @@ try {
     createPersistedHistoryLoader((limit, offset) => client.historyPage(limit, offset)),
   )
   shell.history.addEventListener('click', () => historyController.open())
-  let templatePanelPromise: Promise<{ open(): void }> | null = null
-  shell.templates.addEventListener('click', async () => {
-    templatePanelPromise ??= import('./templates').then(({ createTemplatePanel }) =>
-      createTemplatePanel(
-        root,
-        () => crepe.getMarkdown(),
-        (markdown) => crepe.editor.action(replaceAll(markdown)),
-      ),
-    )
-    const panel = await templatePanelPromise
-    panel.open()
-  })
   draftController = createLocalDraftController(
     root,
     `smart-reporting-editor:${basePath}`,
@@ -340,7 +298,7 @@ try {
   )
   draftController.offer(documentState.markdown)
   if (metricsLabel) metricsLabel.textContent = documentMetrics(documentState.markdown)
-  historyController.record(`Revision ${revision} · 初始版本`, documentState.markdown)
+  historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
   window.addEventListener(
@@ -378,7 +336,11 @@ try {
     const savingMarkdown = markdown
     savePromise = client
       .save(savingMarkdown, sha256)
-      .then((saved) => {
+      .then(async (saved) => {
+        const remainingFeedbackTime = 320 - (performance.now() - saveStartedAt)
+        if (remainingFeedbackTime > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, remainingFeedbackTime))
+        }
         sha256 = saved.sha256
         lastSavedMarkdown = savingMarkdown
         saveState?.saved(savingMarkdown)

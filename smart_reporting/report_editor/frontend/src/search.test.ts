@@ -31,6 +31,24 @@ describe('createSearchController', () => {
     expect(count.textContent).toBe('1 / 2 个匹配')
   })
 
+  it('enables result actions only when the query has matches', () => {
+    createSearchController({ root, getText: () => markdown, replaceText })
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    const actions = ['prev', 'next', 'replace', 'all'].map(
+      (action) => root.querySelector<HTMLButtonElement>(`[data-search="${action}"]`)!,
+    )
+
+    expect(actions.every((button) => button.disabled)).toBe(true)
+
+    query.value = '不存在'
+    query.dispatchEvent(new Event('input'))
+    expect(actions.every((button) => button.disabled)).toBe(true)
+
+    query.value = '收入'
+    query.dispatchEvent(new Event('input'))
+    expect(actions.every((button) => !button.disabled)).toBe(true)
+  })
+
   it('replaces the current match and all remaining matches', () => {
     const controller = createSearchController({ root, getText: () => markdown, replaceText })
     controller.open()
@@ -85,6 +103,19 @@ describe('createSearchController', () => {
     expect(root.querySelector('.search-count')?.textContent).toBe('2 / 2 个匹配')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     expect(controller.panel.hidden).toBe(true)
+  })
+
+  it('selects the existing query when the search shortcut is used again', () => {
+    const controller = createSearchController({ root, getText: () => markdown, replaceText })
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    query.value = '收入'
+    query.setSelectionRange(query.value.length, query.value.length)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }))
+
+    expect(query.selectionStart).toBe(0)
+    expect(query.selectionEnd).toBe(query.value.length)
   })
 
   it('places the search panel below the sticky toolbar metadata', () => {
@@ -152,5 +183,23 @@ describe('createSearchController', () => {
     expect(setQuery).toHaveBeenCalledWith('收入', '')
     root.querySelector<HTMLButtonElement>('[data-search="next"]')!.click()
     expect(navigate).toHaveBeenCalledWith('next')
+  })
+
+  it('labels navigation controls and keeps the query focused while browsing matches', () => {
+    const controller = createSearchController({ root, getText: () => markdown, replaceText })
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    query.value = '收入'
+    query.dispatchEvent(new Event('input'))
+
+    expect(root.querySelector<HTMLButtonElement>('[data-search="prev"]')?.getAttribute('aria-label')).toBe('上一个匹配')
+    expect(root.querySelector<HTMLButtonElement>('[data-search="next"]')?.getAttribute('aria-label')).toBe('下一个匹配')
+    expect(root.querySelector<HTMLButtonElement>('[data-search="prev"]')?.title).toBe('上一个匹配')
+    expect(root.querySelector<HTMLButtonElement>('[data-search="next"]')?.title).toBe('下一个匹配')
+    expect(root.querySelector<HTMLButtonElement>('[data-search="close"]')?.title).toBe('关闭搜索')
+    root.querySelector<HTMLButtonElement>('[data-search="next"]')!.click()
+
+    expect(document.activeElement).toBe(query)
+    expect(controller.panel.hidden).toBe(false)
   })
 })

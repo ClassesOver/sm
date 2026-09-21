@@ -1,4 +1,5 @@
-import { installFocusTrap } from './focus-trap'
+import { createModal } from './modal'
+import { formatRevisionLabel } from './localization'
 import { readStorage, writeStorage } from './storage'
 
 type EditorPreferences = { view: 'wide' | 'a4'; outlineCollapsed: boolean }
@@ -51,19 +52,23 @@ export function createEditorPreferenceController(root: HTMLElement, toggle: HTML
 }
 
 export function createMoreActionsController(root: HTMLElement, toggle: HTMLButtonElement) {
-  const close = () => {
+  const close = (restoreFocus = false) => {
     root.classList.remove('more-actions-open')
     toggle.setAttribute('aria-expanded', 'false')
+    if (restoreFocus) toggle.focus()
   }
   toggle.addEventListener('click', (event) => {
     event.stopPropagation()
     const expanded = root.classList.toggle('more-actions-open')
     toggle.setAttribute('aria-expanded', String(expanded))
+    if (expanded) {
+      root.querySelector<HTMLButtonElement>('.secondary-actions button:not([disabled])')?.focus()
+    }
   })
-  root.querySelector('.secondary-actions')?.addEventListener('click', close)
-  document.addEventListener('click', close)
+  root.querySelector('.secondary-actions')?.addEventListener('click', () => close())
+  document.addEventListener('click', () => close())
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') close()
+    if (event.key === 'Escape' && root.classList.contains('more-actions-open')) close(true)
   })
   return { close }
 }
@@ -113,10 +118,32 @@ export function createFocusModeController(
   toggle?: HTMLButtonElement,
   exit?: HTMLButtonElement,
 ) {
+  let previousFocus: HTMLElement | null = null
   const setFocus = (enabled: boolean) => {
+    const focusExit = enabled && Boolean(exit && document.activeElement === toggle)
+    if (enabled && !root.classList.contains('focus-mode')) {
+      const active = document.activeElement
+      previousFocus = active instanceof HTMLElement && active !== document.body ? active : null
+    }
     root.classList.toggle('focus-mode', enabled)
-    toggle?.setAttribute('aria-pressed', String(enabled))
+    if (toggle) {
+      toggle.setAttribute('aria-pressed', String(enabled))
+      toggle.setAttribute('aria-label', enabled ? '退出专注模式' : '进入专注模式')
+      toggle.title = enabled ? '退出专注模式' : '专注模式'
+      const label = toggle.querySelector('span')
+      if (label) label.textContent = enabled ? '退出专注' : '专注'
+    }
+    if (exit) {
+      exit.setAttribute('aria-label', '退出专注模式')
+      exit.title = '退出专注模式'
+      if (focusExit) exit.focus()
+    }
+    if (!enabled) {
+      previousFocus?.focus()
+      previousFocus = null
+    }
   }
+  setFocus(root.classList.contains('focus-mode'))
   toggle?.addEventListener('click', () => setFocus(!root.classList.contains('focus-mode')))
   exit?.addEventListener('click', () => setFocus(false))
   const listener = (event: KeyboardEvent) => {
@@ -132,22 +159,29 @@ export function createFocusModeController(
 }
 
 export function createImagePreview(editor: HTMLElement) {
-  const dialog = document.createElement('div')
-  dialog.className = 'image-preview'
-  dialog.hidden = true
-  dialog.innerHTML = `
-    <button type="button" class="image-preview-close" aria-label="关闭图片预览">×</button>
+  const modal = createModal({ root: document.body, overlayClass: 'image-preview', closeClass: 'image-preview-close', closeLabel: '关闭图片预览', label: '图片预览', variant: 'media', content: `
     <figure><img alt=""><figcaption></figcaption></figure>
-  `
-  document.body.append(dialog)
-  installFocusTrap(dialog)
+  ` })
+  const dialog = modal.overlay
   const image = dialog.querySelector<HTMLImageElement>('img')!
   const caption = dialog.querySelector<HTMLElement>('figcaption')!
-  const close = dialog.querySelector<HTMLButtonElement>('.image-preview-close')!
+  const close = modal.closeButton!
   let opener: HTMLElement | null = null
+  const isPreviewable = (target: EventTarget | null): target is HTMLImageElement =>
+    target instanceof HTMLImageElement && !target.classList.contains('interactive-chart-fallback')
+  const prepareImage = (target: HTMLImageElement) => {
+    if (isPreviewable(target)) target.tabIndex = 0
+  }
+  const show = (target: HTMLImageElement) => {
+    opener = target
+    image.src = target.getAttribute('src') ?? ''
+    image.alt = target.alt
+    caption.textContent = target.alt
+    caption.hidden = !target.alt
+    modal.open(close)
+  }
   const hide = () => {
-    dialog.hidden = true
-    opener?.focus()
+    modal.close()
     opener = null
   }
   close.addEventListener('click', hide)
@@ -157,15 +191,20 @@ export function createImagePreview(editor: HTMLElement) {
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !dialog.hidden) hide()
   })
+  editor.querySelectorAll<HTMLImageElement>('img').forEach(prepareImage)
+  new MutationObserver((records) => {
+    records.forEach((record) => record.addedNodes.forEach((node) => {
+      if (node instanceof HTMLImageElement) prepareImage(node)
+      else if (node instanceof Element) node.querySelectorAll<HTMLImageElement>('img').forEach(prepareImage)
+    }))
+  }).observe(editor, { childList: true, subtree: true })
   editor.addEventListener('click', (event) => {
-    const target = event.target
-    if (!(target instanceof HTMLImageElement)) return
-    opener = target
-    image.src = target.getAttribute('src') ?? ''
-    image.alt = target.alt
-    caption.textContent = target.alt
-    caption.hidden = !target.alt
-    dialog.hidden = false
+    if (isPreviewable(event.target)) show(event.target)
+  })
+  editor.addEventListener('keydown', (event) => {
+    if (!isPreviewable(event.target) || (event.key !== 'Enter' && event.key !== ' ')) return
+    event.preventDefault()
+    show(event.target)
   })
   return { dialog, close }
 }
@@ -192,12 +231,7 @@ function exportArtifactLabel(
 }
 
 export function createExportPanel() {
-  const dialog = document.createElement('div')
-  dialog.className = 'export-panel'
-  dialog.hidden = true
-  dialog.innerHTML = `
-    <section class="export-panel-card" role="dialog" aria-modal="true" aria-labelledby="export-title">
-      <button type="button" class="export-panel-close" aria-label="关闭导出结果">×</button>
+  const modal = createModal({ root: document.body, overlayClass: 'export-panel', cardClass: 'export-panel-card', closeClass: 'export-panel-close', closeLabel: '关闭导出结果', labelledBy: 'export-title', content: `
       <div class="export-success-mark" aria-hidden="true">✓</div>
       <h2 id="export-title">导出完成</h2>
       <p class="export-revision"></p>
@@ -209,24 +243,9 @@ export function createExportPanel() {
       </div>
       <p class="export-request-id"></p>
       <p class="export-copy-status" aria-live="polite"></p>
-    </section>
-  `
-  document.body.append(dialog)
-  installFocusTrap(dialog)
-  const close = dialog.querySelector<HTMLButtonElement>('.export-panel-close')!
-  let opener: HTMLElement | null = null
-  const hide = () => {
-    dialog.hidden = true
-    opener?.focus()
-    opener = null
-  }
-  close.addEventListener('click', hide)
-  dialog.addEventListener('click', (event) => {
-    if (event.target === dialog) hide()
-  })
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !dialog.hidden) hide()
-  })
+  ` })
+  const dialog = modal.overlay
+  const close = modal.closeButton!
   dialog.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((button) => {
     button.addEventListener('click', async () => {
       const format = button.dataset.copy as 'pdf' | 'word'
@@ -244,11 +263,10 @@ export function createExportPanel() {
     dialog,
     close,
     show(result: ExportPanelResult, preferredFormat: 'pdf' | 'word' = 'pdf') {
-      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
       dialog.querySelector<HTMLElement>('#export-title')!.textContent =
         `${preferredFormat === 'pdf' ? 'PDF' : 'Word'} 导出完成`
       dialog.querySelector<HTMLElement>('.export-revision')!.textContent =
-        `Revision ${result.revision} 已生成`
+        `${formatRevisionLabel(result.revision)} 已生成`
       const pdf = dialog.querySelector<HTMLAnchorElement>('[data-format="pdf"]')!
       const word = dialog.querySelector<HTMLAnchorElement>('[data-format="word"]')!
       pdf.href = result.pdf.downloadUrl
@@ -260,13 +278,13 @@ export function createExportPanel() {
       const requestId = dialog.querySelector<HTMLElement>('.export-request-id')!
       requestId.textContent = result.requestId ? `请求编号：${result.requestId}` : ''
       requestId.hidden = !result.requestId
+      dialog.querySelector<HTMLElement>('.export-copy-status')!.textContent = ''
       pdf.classList.toggle('is-primary', preferredFormat === 'pdf')
       word.classList.toggle('is-primary', preferredFormat === 'word')
       const editor = dialog.querySelector<HTMLAnchorElement>('[data-format="editor"]')!
       editor.hidden = !result.editor?.openUrl
       if (result.editor?.openUrl) editor.href = result.editor.openUrl
-      dialog.hidden = false
-      close.focus()
+      modal.open(close)
     },
   }
 }

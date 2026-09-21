@@ -61,6 +61,7 @@ export function createInteractiveCharts(
     const images = new Set(root.querySelectorAll<HTMLImageElement>('img'))
     for (const image of active.keys()) {
       if (!images.has(image)) cleanup(image)
+      else position(image, active.get(image)!.node)
     }
     await Promise.all(Array.from(images, async (image) => {
       if (active.has(image) || pending.has(image) || failed.has(image)) return
