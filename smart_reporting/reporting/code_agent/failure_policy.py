@@ -27,6 +27,9 @@ _FATAL = FailurePolicy("fatal", "fatal")
 _DEGRADE = FailurePolicy("retry_then_degrade", "retry_then_degrade")
 _COMPILE = FailurePolicy(thinking="python_compile_failure")
 POLICIES = MappingProxyType({
+    # Provider 返回未声明或类型不匹配的工具调用属于协议层故障；重试同一
+    # 工具上下文不会修复 wire 类型，必须停止并保留原始声明诊断。
+    "report_code_custom_tool_protocol_error": _FATAL,
     "report_coding_task_conflict": _FATAL,
     "report_code_mode_runtime_missing": _FATAL,
     "report_workspace_unavailable": _FATAL,

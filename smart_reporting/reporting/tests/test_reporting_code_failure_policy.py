@@ -26,6 +26,12 @@ def test_identity_failure_cannot_be_downgraded(task):
     assert recovery_for(error, task) == "fatal"
 
 
+@pytest.mark.parametrize("task", ["analysis", "visualization"])
+def test_tool_protocol_mismatch_stops_without_retry(task):
+    error = ReportingError("report_code_custom_tool_protocol_error", "type mismatch")
+    assert recovery_for(error, task) == "fatal"
+
+
 def test_task_specific_recovery_and_thinking_share_policy():
     error = ReportingError("execution_output_error", "failed")
     assert recovery_for(error, "analysis") == "retry"
