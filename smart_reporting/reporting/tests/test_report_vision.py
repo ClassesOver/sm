@@ -22,8 +22,11 @@ async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None
                 images=[Image(content=content, mime_type="image/png", format="png")],
             )
 
+    prompts: list[str] = []
+
     class Agent:
-        async def arun(self, _prompt: str, *, images: list[Image]):
+        async def arun(self, prompt: str, *, images: list[Image]):
+            prompts.append(prompt)
             assert images[0].content == content
             return SimpleNamespace(
                 content={
@@ -45,6 +48,7 @@ async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None
 
     assert result["reviewed"] is True
     assert result["sha256"]
+    assert prompts == ["请按审查规则检查这张图片并返回结构化审查结果。"]
 
 
 @pytest.mark.anyio
