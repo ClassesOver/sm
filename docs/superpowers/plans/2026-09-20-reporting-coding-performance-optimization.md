@@ -24,6 +24,8 @@
 
 **视觉提示去重单图探针：** 在同一图片 SHA、同一视觉模型 `qwen3.6-flash` 下，仅比较完整 user 规则与短 user 指令；baseline `1263` 字节、`3414` input tokens、`4.826s`，candidate `69` 字节、`3165` input tokens、`2.783s`。两次均 `reasoning_tokens=0`、无 critical 缺陷，但返回的 warning 文本不同，因此只记录为输入/耗时改善信号，不宣称视觉质量等价或稳定收益；后续仍以逐图质量和总流程指标验收。视觉提示回归测试已锁定短 user 指令。
 
+**缺失产物失败回执修正：** `report_code_declared_output_missing` 现在明确说明“声明产物不存在，不代表脚本不存在”，并指示根据 `details.path` 使用 `edit_script` 局部修复后再 `run_script`，禁止调用 `write_script` 整段重写。未声明工具调用仍由协议层 fail-closed 拒绝；该修正减少工具语义歧义，不宣称能保证模型不再返回错误工具。
+
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）
