@@ -1735,6 +1735,9 @@ class ReportingCodeModeToolkit(Toolkit):
             if isinstance(error, ReportingError) and error.code in {
                 "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
             }:
+                logger.warning(
+                    "report_code_visual_file_rejected path={} code={}", source_path, error.code,
+                )
                 return _failure(
                     error.code,
                     "图片未通过本地检查；局部修复生成该图片的代码，再运行和审查。",

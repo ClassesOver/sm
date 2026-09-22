@@ -133,6 +133,7 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
     reviews = [
         item.path for item in (receipt.output_files if receipt and valid else ())
         if binding.context.task_kind == "visualization"
+        and not item.path.endswith(".plotly.json")
         and not toolkit.has_current_visual_review(item.path)
     ]
     visual_failures = [

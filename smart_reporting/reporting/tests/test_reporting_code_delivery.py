@@ -38,6 +38,24 @@ from smart_reporting.workspace import WorkspaceError
 
 
 @pytest.mark.anyio
+async def test_plotly_sidecar_is_not_scheduled_for_visual_review(workspace):  # noqa: F811
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime(),
+    )
+    sidecar = output.model_copy(update={"path": "charts/chart.plotly.json"})
+    task_binding.execution_receipt = task_binding.execution_receipt.model_copy(
+        update={"output_files": (output, sidecar)},
+    )
+    toolkit._declared_output_identities = AsyncMock(return_value=(output, sidecar))
+    await toolkit.refresh_delivery_state()
+    assert toolkit.delivery_state()["nextReviewPaths"] == [output.path]
+    task_binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
+    await toolkit.refresh_delivery_state()
+    assert toolkit.delivery_state()["nextReviewPaths"] == []
+    assert toolkit.delivery_state()["nextTools"] == ["submit_script"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("code", [
     "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
     "report_code_visual_review_unavailable",
