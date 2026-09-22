@@ -22,6 +22,8 @@
 
 **严格 Coding-only 对照能力：** 回放脚本新增 `--freeze-coding`，可在一次真实 candidate planner 后固化实际 Coding payload、授权输入身份、benchmark manifest SHA、variant 和指令 SHA；后续用 `--coding-only-payload` 跳过 planner，仅重复 Coding。candidate 与 legacy 均保留严格的基础 payload、输入路径/大小/SHA、脚本身份校验；candidate 必须携带动态 `codingRequirements`，不得回退到 `evidenceDecision`。结果额外记录 `codingPayloadSha256` 和 `instructionsSha256`，用于证明同一输入对照。定向回放测试 `55 passed`，Ruff 与 `git diff --check` 通过。该能力只解决后续同输入配对测量，不把历史不同输入样本追认成严格 A/B，也不证明 planner 输出来源的密码学真实性。
 
+**视觉提示去重单图探针：** 在同一图片 SHA、同一视觉模型 `qwen3.6-flash` 下，仅比较完整 user 规则与短 user 指令；baseline `1263` 字节、`3414` input tokens、`4.826s`，candidate `69` 字节、`3165` input tokens、`2.783s`。两次均 `reasoning_tokens=0`、无 critical 缺陷，但返回的 warning 文本不同，因此只记录为输入/耗时改善信号，不宣称视觉质量等价或稳定收益；后续仍以逐图质量和总流程指标验收。视觉提示回归测试已锁定短 user 指令。
+
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）
