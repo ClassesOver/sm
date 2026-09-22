@@ -26,6 +26,8 @@
 
 **缺失产物失败回执修正：** `report_code_declared_output_missing` 现在明确说明“声明产物不存在，不代表脚本不存在”，并指示根据 `details.path` 使用 `edit_script` 局部修复后再 `run_script`，禁止调用 `write_script` 整段重写。未声明工具调用仍由协议层 fail-closed 拒绝；该修正减少工具语义歧义，不宣称能保证模型不再返回错误工具。
 
+**严格同输入 Coding-only 重放：** 使用 candidate planner + Coding 首次回放固化 `/tmp/reporting-r7-analysis-candidate-frozen-20260922`，随后以相同 `codingPayloadSha256=5b6c84e9af2bb302c6b4bac776ed7f06559df72391f9a4e2ef8a17adafa627f1` 和指令 SHA 做 Coding-only 重放。首次样本 Coding `232.166s / 19,074 reasoning tokens`，重放 `456.673s / 37,490 reasoning tokens`；两次均一次 `write_script → run_script → submit_script`、首次运行成功，重放 cached tokens 为 `9,216`。同输入仍出现显著 provider 长尾，说明缓存命中和动态 requirements 不能保证 reasoning 稳定下降；不追加盲目重放，也不把单次收益写成 P95 改善。
+
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）
