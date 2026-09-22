@@ -13,7 +13,7 @@ from agno.models.openai import OpenAIChat, OpenAIResponses
 from ..integrations.model_config import reasoning_transport_fields
 from ..model_routing import TaskComplexity, log_thinking_selection
 
-ReportingReasoningEffort = Literal["high", "max"]
+ReportingReasoningEffort = Literal["low", "high", "max"]
 ThinkingOperation = Literal[
     "request_normalization",
     "domain_resolution",
@@ -196,7 +196,9 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
         budget_source[request.complexity] if isinstance(budget_source, dict) else budget_source
     )
     budget = initial_budget
-    effort: ReportingReasoningEffort = "high"
+    effort: ReportingReasoningEffort = (
+        "low" if request.operation in {"analysis_script", "visualization_script"} else "high"
+    )
     reason = "initial_policy" if budget else "initial_off"
 
     recovery = _RECOVERY_THINKING_BUDGETS.get(request.operation, {}).get(

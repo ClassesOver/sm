@@ -4,7 +4,7 @@
 
 **唯一核心目标：** 减少分析与可视化 Coding 的 reasoning 时间及长尾，并降低包含上游规划在内的任务总耗时；保留首轮 reasoning、首次成功率、精准局部 patch 和报表质量。章节任务范围、输入压缩、计划字段、缓存和 effort 都只是实现手段，不以输入更短、首个工具更早返回或架构重构本身作为成功标准。
 
-**最新执行约束（2026-09-22）：** 用户明确仅使用 `reasoning.effort=high`，后续不开展 medium/low/off 对照。已确认误启动的 medium 回放进程退出，未产生结果文件，不计入性能样本。优化集中在 high 下的任务输入与重复推理。
+**最新执行约束（2026-09-22）：** 用户在 low 诊断后明确要求 Coding 默认 low，取代此前仅用 high 的要求。生产 `analysis_script` 与 `visualization_script` 默认 `reasoning.effort=low`，思考保持开启；已有编译、执行及视觉失败恢复策略仍升级 high，planner 和其他阶段保持原策略。Responses 保留 summary 和 parallel_tool_calls，不添加 thinking_budget。阶段策略测试 55 passed，Responses wire 测试 8 passed，Ruff 通过。历史 high 样本保留；low 诊断不是严格单变量 A/B，不据此宣称稳定收益。
 
 **输入精简实验结论：** 曾尝试首轮省略 `outputContract.example`，保留 schema、rules、全部业务事实与任务 actions。high 回放 `/tmp/reporting-analysis-high-noexample-20260922.json` 首轮仍为 `577.237s / 42,445 reasoning tokens`，总 Coding `587.808s / 42,715 reasoning tokens`，虽一次通过但相较目标没有性能收益；示例仅减少约 278 字节，不能解决长推理。因此已撤销该改动，避免削弱输出契约的示例参照。后续不再做类似表面删提示实验，转向动态 `codingRequirements` 是否能减少模型自行规划的单变量评估。
 
@@ -28,7 +28,9 @@
 
 **严格同输入 Coding-only 重放：** 使用 candidate planner + Coding 首次回放固化 `/tmp/reporting-r7-analysis-candidate-frozen-20260922`，随后以相同 `codingPayloadSha256=5b6c84e9af2bb302c6b4bac776ed7f06559df72391f9a4e2ef8a17adafa627f1` 和指令 SHA 做 Coding-only 重放。首次样本 Coding `232.166s / 19,074 reasoning tokens`，重放 `456.673s / 37,490 reasoning tokens`；两次均一次 `write_script → run_script → submit_script`、首次运行成功，重放 cached tokens 为 `9,216`。同输入仍出现显著 provider 长尾，说明缓存命中和动态 requirements 不能保证 reasoning 稳定下降；不追加盲目重放，也不把单次收益写成 P95 改善。
 
-**同输入脚本复杂度漂移：** 两次 Coding 均使用相同 payload/instructions，慢样本的首轮 `write_script` 可见工具参数约 `42,165` tokens、`37,419` reasoning，快样本约 `21,660`/`19,021`；慢样本额外生成日期正则解析、更多校验和比较输出。两者都一次通过，说明当前动态 `codingRequirements` 约束业务目标但未约束实现粒度，模型可自行选择复杂实现，导致首轮生成长度和 reasoning 长尾显著漂移。不能通过固定字段或主题消除该漂移；后续若优化，应由 planner 产生可校验的最小实现步骤，并以同输入质量门禁验证。
+**同输入脚本复杂度漂移（口径修正）：** 慢样本首轮总 output tokens 为 42,165，其中 reasoning 37,419、可见输出 4,746；快样本分别为 21,660、19,021、2,639。总 output tokens 不能当作工具参数长度。慢样本包含更多日期解析、校验和比较输出，但仅两次观察不能证明代码复杂度导致 reasoning 长尾。后续只按证据评估签发计算范围的歧义，不新增未经验证的规划字段或固定主题算法。
+
+**DeepSeek 官方参数核对与 low 诊断：** 官方 Responses 文档确认 `reasoning.effort` 支持 `none/low/high/max`，思考模式默认 high；`thinking_budget` 不属于 Responses 参数；工具调用思考模式要求后续请求完整回传 reasoning 内容；`parallel_tool_calls` 在 DeepSeek Responses 中被忽略且始终开启。当前实际回放 endpoint 为 DashScope，保留已验证的 custom tool wire 适配，不直接套用 DeepSeek 官方对 custom 工具名称的限制。使用同一 candidate payload 做 low 诊断（该次仍带未提交的 requirements 文案实验，故不作严格 A/B）：Coding `75.771s / 3,383 reasoning tokens`，首轮 `69.042s / 3,377`，一次成功；high 生产默认保持不变。
 
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 

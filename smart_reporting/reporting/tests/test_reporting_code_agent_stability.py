@@ -850,7 +850,7 @@ async def test_runner_raises_terminal_tool_failure_after_agno_converts_exception
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("model_id", ["deepseek-v4-flash-0731", "qwen3.8-flash"])
-@pytest.mark.parametrize("budget,effort", [(0, None), (2048, "high"), (8192, "max")])
+@pytest.mark.parametrize("budget,effort", [(0, None), (2048, "low"), (2048, "high"), (8192, "max")])
 async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, effort, monkeypatch):
     requests = []
 

@@ -104,7 +104,8 @@ def test_initial_thinking_budget_matrix(operation: str, complexity: str, budget:
 
     assert decision.thinking_budget == budget
     assert decision.enabled is (budget > 0)
-    assert decision.reasoning_effort == ("high" if budget else None)
+    expected_effort = "low" if operation in {"analysis_script", "visualization_script"} else "high"
+    assert decision.reasoning_effort == (expected_effort if budget else None)
     assert decision.reason == ("initial_policy" if budget else "initial_off")
 
 
