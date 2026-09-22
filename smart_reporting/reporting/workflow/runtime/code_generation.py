@@ -267,6 +267,7 @@ class ReportingCodeGenerationRunner:
             input_components: dict[str, dict[str, int | str]] = {}
             terminal_failure_code: str | None = None
             host_tool_results = 0
+            compact_continuation_applied = False
 
             def record_coding_metrics() -> None:
                 nonlocal metric_recorded
@@ -362,6 +363,8 @@ class ReportingCodeGenerationRunner:
                         else "unknown"
                     ),
                 )
+                sample["compactContinuationEnabled"] = self.compact_continuation
+                sample["compactContinuationApplied"] = compact_continuation_applied
                 logger.info(
                     "report_code_coding_metrics task_id={} sample={}",
                     task_context.task_id,
@@ -458,7 +461,7 @@ class ReportingCodeGenerationRunner:
                 request_count_reader = getattr(model, "code_run_request_count", None)
                 request_count = 0
                 run_output = None
-                for attempt in range(3 if self.compact_continuation else 2):
+                for attempt in range(2):
                     previous_requests = request_count
                     previous_output = run_output
                     run_output = None
@@ -470,39 +473,21 @@ class ReportingCodeGenerationRunner:
                                 )
                         else:
                             if self.compact_continuation:
-                                # 阶段边界只携带宿主当前状态，不复用上一轮的 provider history。
-                                agent = self.agent_factory(toolkit.tool_functions)
-                                agent.tool_call_limit = model_tool_limit
-                                compact_model = getattr(agent, "model", None)
-                                configure_compact = getattr(
-                                    compact_model, "configure_code_run", None
-                                )
-                                if callable(configure_compact):
-                                    configure_compact(
-                                        toolkit.tool_functions,
-                                        max_model_requests=max(4, model_tool_limit + 1),
-                                        redundant_call_check=toolkit.has_current_visual_review,
-                                        delivery_state_reader=toolkit.delivery_state,
-                                        delivery_reserve=(
-                                            3 + len(task_context.declared_output_paths)
-                                            if task_context.task_kind == "visualization"
-                                            else 3
-                                        ),
-                                    )
-                                model = compact_model
-                                request_count_reader = getattr(
-                                    model, "code_run_request_count", None
-                                )
-                                request_count = 0
+                                # 新 run 不载入历史；复用模型以保留任务预算和逐请求指标。
+                                compact_continuation_applied = True
                                 with self._trace_task_context(task_context):
                                     run_output = await agent.arun(
                                         self._prompt(
                                             {
                                                 "instruction": "继续当前交付阶段，只处理尚未完成的动作并调用 submit_script。",
+                                                "task": task_payload,
+                                                "facts": self._repair_task_facts(task_facts),
+                                                "diagnostic": payload["diagnostic"],
                                                 "delivery": toolkit.delivery_state(),
                                             }
                                         ),
                                         run_context=run_context,
+                                        add_history_to_context=False,
                                     )
                             else:
                                 with self._trace_task_context(task_context):
@@ -515,13 +500,8 @@ class ReportingCodeGenerationRunner:
                                         run_context=run_context,
                                     )
                     finally:
-                        current_request_count = (
-                            request_count_reader() if callable(request_count_reader) else 0
-                        )
                         request_count = (
-                            previous_requests + current_request_count
-                            if attempt > 0 and self.compact_continuation
-                            else current_request_count
+                            request_count_reader() if callable(request_count_reader) else 0
                         )
                         recordable_output = run_output
                         request_metrics_reader = getattr(
@@ -571,7 +551,7 @@ class ReportingCodeGenerationRunner:
                     if isinstance(toolkit.terminal_failure, Exception):
                         raise toolkit.terminal_failure
                     if (
-                        (attempt > 0 and not self.compact_continuation)
+                        attempt > 0
                         or toolkit.submitted_receipt is not None
                         or not isinstance(agent, Agent)
                         or getattr(run_output, "status", None) != RunStatus.completed

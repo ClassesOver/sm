@@ -159,7 +159,7 @@ async def test_native_continuation_keeps_execution_and_request_budget(workspace,
 
 
 @pytest.mark.anyio
-async def test_compact_continuation_rebuilds_agent_without_provider_history(workspace, monkeypatch):  # noqa: F811
+async def test_compact_continuation_starts_run_without_history_and_preserves_metrics(workspace, monkeypatch):  # noqa: F811
     first = _batch_response(
         _custom_response("write_script", SOURCE, 1),
         _function_response(2, "run_script", {}),
@@ -186,18 +186,31 @@ async def test_compact_continuation_rebuilds_agent_without_provider_history(work
         pytest.fail("compact continuation 不得复用 Agno provider history")
 
     monkeypatch.setattr(Agent, "acontinue_run", forbidden_continue)
+    metrics, outputs = [], []
     result = await ReportingCodeGenerationRunner(
         make_agent,
         ToolkitRuntime(),
         ReportingLspProcessManager(),
         compact_continuation=True,
+        coding_metrics_recorder=metrics.append,
+        model_metrics_recorder=lambda output, count: outputs.append((output, count)),
     ).run(_task_context(workspace), workspace, {}, run_context=_run_context())
 
     assert result.execution_receipt.source_file.path == "analysis/a.py"
-    assert len(agents) == 2
+    assert len(agents) == 1
+    assert agents[0].tool_call_limit == 28
+    assert agents[0].model.code_run_tool_count() == 3
+    assert metrics[0]["modelRequests"] == 3
+    assert metrics[0]["compactContinuationEnabled"] is True
+    assert metrics[0]["compactContinuationApplied"] is True
+    assert len(metrics[0]["modelRequestMetrics"]) == 3
+    assert metrics[0]["firstWriteRequestIndex"] == 1
+    assert [count for _, count in outputs] == [2, 1]
+    assert len(outputs[-1][0]._reporting_request_metrics) == 1
     assert len(client.requests) == 3
     assert not any(
-        item.get("type") == "function_call_output" for item in client.requests[-1]["input"]
+        item.get("type") in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
+        for item in client.requests[-1]["input"]
     )
 
 
@@ -232,7 +245,8 @@ async def test_unfinished_or_failed_runs_are_not_continued(workspace, status, mo
 
 
 @pytest.mark.anyio
-async def test_continuation_batch_cannot_exceed_original_tool_limit(workspace, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("compact", [False, True])
+async def test_continuation_batch_cannot_exceed_original_tool_limit(workspace, monkeypatch, compact):  # noqa: F811
     monkeypatch.setattr(code_generation, "ANALYSIS_TOOL_CALL_LIMIT", 3)
     client = _ResponsesClient([
         _batch_response(_custom_response("write_script", SOURCE, 1), _function_response(2, "run_script", {})),
@@ -250,7 +264,7 @@ async def test_continuation_batch_cannot_exceed_original_tool_limit(workspace, m
     runtime = ToolkitRuntime()
     runtime.next_cell = _failed_cell("ValueError: repair required")
     with pytest.raises(ReportingError, match="report_code_generation_no_submission") as caught:
-        await ReportingCodeGenerationRunner(make_agent, runtime, ReportingLspProcessManager()).run(
+        await ReportingCodeGenerationRunner(make_agent, runtime, ReportingLspProcessManager(), compact_continuation=compact).run(
             _task_context(workspace), workspace, {}, run_context=_run_context())
     assert agents[0].model.code_run_tool_count() == 3
     assert caught.value.details["toolCallLimit"] == 3

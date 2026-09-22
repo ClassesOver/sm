@@ -1317,6 +1317,7 @@ async def main(
             )
             result_payload = {
                 "status": "passed",
+                "compactContinuation": compact_continuation,
                 "seconds": round(perf_counter() - started, 3),
                 "workspace": str(root),
                 "modelMetrics": model_metrics,
@@ -1377,6 +1378,7 @@ async def main(
                 failure_payload["benchmarkMode"] = coding_only_link.benchmark_mode
                 failure_payload["variant"] = benchmark_variant.value
             failure_payload["firstRunFailureArtifact"] = first_failure_artifact or "unknown"
+            failure_payload["compactContinuation"] = compact_continuation
             write_replay_result(output_path, failure_payload)
             return 1
         finally:
@@ -1404,6 +1406,7 @@ async def main(
         if coding_only_link is not None:
             failure_payload["benchmarkMode"] = coding_only_link.benchmark_mode
             failure_payload["variant"] = benchmark_variant.value
+        failure_payload["compactContinuation"] = compact_continuation
         write_replay_result(output_path, failure_payload)
         return 1
 
@@ -1437,7 +1440,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--compact-continuation",
         action="store_true",
-        help="benchmark-only：修复阶段重建短会话，不复用上一轮 provider history。",
+        help="benchmark-only：模型提前结束且未提交时，新 run 省略上一轮 history。",
     )
     parser.add_argument("--variant", choices=("legacy", "candidate"))
     parser.add_argument(
