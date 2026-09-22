@@ -1021,6 +1021,35 @@ def test_find_task_payload_selects_requested_coding_stage():
     ] == {"task_kind": "visualization"}
 
 
+@pytest.mark.parametrize("drift", [False, True])
+def test_load_task_restores_responses_message_with_same_span_metadata(monkeypatch, drift):
+    from unittest.mock import MagicMock
+
+    task = {"task_kind": "visualization", "script_path": "charts/a.py"}
+    payload = {"task": task, "facts": {"example": 1}}
+    host = {**task, "workspace_root": "/tmp/original"}
+    if drift:
+        host["script_path"] = "charts/other.py"
+    attributes = {
+        "input.value": json.dumps({"messages": [
+            {"role": "assistant", "content": "not a task"},
+            {"role": "user", "content": json.dumps(payload)},
+        ]}),
+        "metadata": json.dumps({"reportingCodingTaskContext": host}),
+    }
+    connection = MagicMock()
+    connection.__enter__.return_value.execute.return_value = [(attributes,)]
+    monkeypatch.setattr(replay_visualization_task.psycopg, "connect", lambda *_: connection)
+    monkeypatch.setattr(replay_visualization_task, "psycopg_db_url", lambda: "test")
+    if drift:
+        with pytest.raises(ValueError, match="模型 task 与宿主"):
+            replay_visualization_task.load_task("run", "visualization")
+    else:
+        assert replay_visualization_task.load_task("run", "visualization") == {
+            **payload, "task": host,
+        }
+
+
 def _trace_span(
     agent_id,
     input_payload,

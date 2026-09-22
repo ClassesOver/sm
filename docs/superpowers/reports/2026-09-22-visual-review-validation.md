@@ -54,3 +54,17 @@
 `report_code_custom_tool_protocol_error` 已归类为 Coding 任务致命协议错误。该错误表示 provider 返回的工具名称或 wire 类型与当前声明不一致，继续使用相同上下文重试不会修复类型，反而会重复消耗模型请求。现在首次出现即停止并保留诊断；不会把 function 调用放宽为 custom，也不会解析 assistant 正文中的伪调用。
 
 协议策略定向测试通过；真实回放仍需在后续复验中确认请求次数明显下降。
+
+## 真实 candidate 回放结果
+
+使用冻结 v1 payload（不是 v2 benchmark manifest）完成一次真实可视化 Coding 回放：
+
+- 结果：`status=passed`。
+- 总耗时：`552.446s`。
+- Coding 请求：28 次；工具调用 33 次。
+- reasoning tokens：30,486；输入 920,268 tokens；缓存读取 699,392 tokens。
+- 工具计数：`write_script=1`、`run_script=8`、`edit_script=13`、`read_script=4`、`view_image=6`、`submit_script=1`。
+- 视觉审查耗时：20,146ms。
+- 最终提交成功，未出现 `report_code_custom_tool_protocol_error`。
+
+该结果证明回放提取器和协议致命停止策略可完成一次真实任务，但没有达到性能目标：失败后的运行与局部 patch 往返仍然过多，且第一次 `run_script` 后重复修复耗时较长。下一步应基于该回放的每个失败码压缩修复上下文和阶段状态，不能只增加工具预算。

@@ -768,7 +768,8 @@ def _trace_coding_payload(
         return payload
     model_task = payload.get("task")
     if not isinstance(model_task, Mapping) or any(
-        host_task.get(key) != value for key, value in model_task.items()
+        key not in host_task or host_task.get(key) != value
+        for key, value in model_task.items()
     ):
         raise ValueError("Coding trace 的模型 task 与宿主 task context 不一致")
     restored = deepcopy(payload)
@@ -987,11 +988,29 @@ def load_task(run_id, task_kind: str):
             "AND attributes->>'input.value' LIKE %s ORDER BY start_time LIMIT 300",
             (f"%{run_id}%",),
         )
-        candidates = []
         for (attributes,) in rows:
-            raw = json.loads(attributes["input.value"])
-            candidates.append({"messages": raw.get("messages", [])})
-    return find_task_payload(candidates, task_kind)
+            if not isinstance(attributes, Mapping):
+                continue
+            metadata = _trace_json_value(attributes, "metadata")
+            if not isinstance(metadata, Mapping) or not isinstance(
+                metadata.get(REPORTING_CODING_TASK_CONTEXT_METADATA_KEY), Mapping
+            ):
+                continue
+            request = _trace_json_value(attributes, "input.value")
+            if request is None:
+                continue
+            try:
+                payload = find_task_payload([request], task_kind)
+            except ValueError:
+                continue
+            restored = _trace_coding_payload({
+                **attributes, "input.value": json.dumps(payload, ensure_ascii=False),
+            })
+            if not restored or not restored["task"].get("workspace_root"):
+                raise ValueError("Coding trace 的宿主 task context 缺少 workspace_root")
+            # 与原入口一致，选择按时间排序的首个目标任务；一个 run 可以有多个章节和修复任务。
+            return restored
+    raise ValueError(f"没有找到包含宿主 task context 的 {task_kind} Coding 任务输入")
 
 
 def load_trace_spans(trace_id: str) -> list[dict[str, Any]]:
