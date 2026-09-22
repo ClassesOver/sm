@@ -422,7 +422,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "errorType", "retryable", "unsignedPaths", "forbiddenPathOperations",
         "traceback", "result", "stderr", "stdout", "issueSummary",
         "used", "limit", "requiredNextTools", "nextTools", "kind", "bytes", "items",
-        "actualBytes", "limitBytes", "missingPaths", "exitCode", "escalated",
+        "actualBytes", "limitBytes", "missingPaths", "presentPaths", "exitCode", "escalated",
         "status", "validationRunId", "executionRunId", "sourceSha256",
         "currentSha256", "expectedSha256", "action", "readRange",
         "sourceExcerpt", "sourceStartLine", "sourceEndLine", "errorLine", "blockIndex",
@@ -441,7 +441,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
     for key in allowed:
         value = details.get(key)
         if key in {
-            "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths",
+            "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths", "presentPaths",
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
@@ -1151,6 +1151,14 @@ class ReportingCodeModeToolkit(Toolkit):
                 # 草稿未写入时 sourceSha256 不变；必须比较本次输入，避免把修订误判为原样重试。
                 input_text = json.dumps(fc.arguments, ensure_ascii=False, sort_keys=True)
                 signature += hashlib.sha256(input_text.encode("utf-8")).hexdigest()
+            elif name == "edit_script" and failure["code"] in {
+                "report_code_script_edit_invalid",
+                "report_code_script_edit_not_local",
+            }:
+                # edit_script 的诊断通常只有源码身份和块错误；把原始 patch 纳入签名，
+                # 这样只有同一源码上的同一无效 patch 才会触发终止，不会误杀已修改的修复。
+                input_text = json.dumps(fc.arguments, ensure_ascii=False, sort_keys=True)
+                signature += hashlib.sha256(input_text.encode("utf-8")).hexdigest()
             self._repeated_failure_count = (
                 self._repeated_failure_count + 1 if signature == self._failure_signature else 1
             )
@@ -1177,6 +1185,31 @@ class ReportingCodeModeToolkit(Toolkit):
                         },
                     )
                     fc.function.stop_after_tool_call = True
+            if (
+                name == "edit_script"
+                and failure["code"] in {
+                    "report_code_script_edit_invalid",
+                    "report_code_script_edit_not_local",
+                }
+                and self._repeated_failure_count >= 2
+                and isinstance(result, dict)
+            ):
+                self.terminal_failure = ReportingError(
+                    failure["code"],
+                    "相同源码上的相同 edit_script 补丁连续两次失败，已停止本次 Coding Agent。",
+                    details={
+                        "recovery": "retry_then_degrade",
+                        "stopReason": "repeated_identical_patch",
+                        "sourceSha256": failure["sourceSha256"],
+                        "nextTools": ["read_script", "edit_script"],
+                    },
+                )
+                result["repeatedFailureCount"] = self._repeated_failure_count
+                result["repairHint"] = (
+                    "相同补丁已连续失败两次；本轮已停止。下一轮先 read_script 获取当前源码，"
+                    "再生成更小的局部 SEARCH/REPLACE 补丁。"
+                )
+                fc.function.stop_after_tool_call = True
             if self._repeated_failure_count > 1 and isinstance(result, dict):
                 result["repeatedFailureCount"] = self._repeated_failure_count
                 result.setdefault("repairHint", "相同源码再次出现相同错误；请检查输入与环境，并调整修复方法。")
@@ -1892,17 +1925,26 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def _declared_output_identities(self) -> tuple[FileIdentity, ...]:
         identities: list[FileIdentity] = []
+        missing_paths: list[str] = []
         for path in self.context.declared_output_paths:
             try:
                 value = await self.workspace.ahash_file(self.context.task_id, path)
-            except WorkspaceError as error:
-                raise ReportingError(
-                    "report_code_declared_output_missing",
-                    "声明产物不存在，不代表脚本不存在。检查 details.path 对应的写出逻辑，"
-                    "使用 edit_script 局部修复现有脚本，再 run_script；不得调用 write_script 整段重写。",
-                    details={"path": path},
-                ) from error
+            except WorkspaceError:
+                missing_paths.append(path)
+                continue
             identities.append(FileIdentity.model_validate(value))
+        if missing_paths:
+            present_paths = [item.path for item in identities]
+            raise ReportingError(
+                "report_code_declared_output_missing",
+                "声明产物不存在，不代表脚本不存在。检查缺失路径对应的写出逻辑，"
+                "使用 edit_script 局部修复现有脚本，再 run_script；不得调用 write_script 整段重写。",
+                details={
+                    "path": missing_paths[0],
+                    "missingPaths": missing_paths[:20],
+                    "presentPaths": present_paths[:20],
+                },
+            )
         return tuple(identities)
 
     async def run_script(self, run_context: RunContext | None = None) -> dict[str, Any]:

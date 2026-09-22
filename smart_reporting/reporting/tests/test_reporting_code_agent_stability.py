@@ -73,6 +73,56 @@ async def test_repeated_failure_warns_and_success_marks_diagnostic_resolved(bind
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("failure_kind", ["invalid", "not_local"])
+async def test_identical_edit_failure_stops_after_second_attempt(binding, failure_kind):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
+    written = await toolkit.write_script(SOURCE)
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    sha = written["sourceSha256"]
+    if failure_kind == "invalid":
+        patch = "not an edit patch"
+    else:
+        saved = written["savedSource"] or SOURCE
+        patch = (
+            f"*** Begin Edit\n*** SHA256: {sha}\n"
+            f"<<<<<<< SEARCH\n{saved}\n=======\n\n>>>>>>> REPLACE\n"
+            "*** End Edit\n"
+        )
+    function = functions["edit_script"]
+    for index in range(2):
+        call = FunctionCall(
+            function=function,
+            call_id=f"edit-failure-{failure_kind}-{index}",
+            arguments={"patch": patch},
+        )
+        assert await call.aexecute()
+        assert call.result["ok"] is False
+        if index == 0:
+            assert toolkit.terminal_failure is None
+            assert function.stop_after_tool_call is False
+        else:
+            assert toolkit.terminal_failure is not None
+            assert toolkit.terminal_failure.code == call.result["code"]
+            assert toolkit.terminal_failure.details["stopReason"] == "repeated_identical_patch"
+            assert call.result["repeatedFailureCount"] == 2
+            assert function.stop_after_tool_call is True
+
+
+@pytest.mark.anyio
+async def test_changed_edit_patch_does_not_trigger_identical_patch_stop(binding):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
+    await toolkit.write_script(SOURCE)
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    function = functions["edit_script"]
+    for patch in ("bad patch one", "bad patch two"):
+        call = FunctionCall(function=function, arguments={"patch": patch})
+        assert await call.aexecute()
+        assert call.result["code"] == "report_code_script_edit_invalid"
+        assert function.stop_after_tool_call is False
+        assert toolkit.terminal_failure is None
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("exhausted", [False, True])
 async def test_no_submission_reports_actual_failure_and_usage(workspace, exhausted):  # noqa: F811
     class Agent:

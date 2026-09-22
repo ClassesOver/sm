@@ -1063,6 +1063,7 @@ class RuntimeAnalysisMixin:
                                 lsp_manager=getattr(self, "lsp_manager", None),
                                 vision_reviewer=self.vision_reviewer,
                                 model_metrics_recorder=coding_metrics_recorder,
+                                compact_continuation=True,
                             )
                         return code_runner_instance
 
@@ -2613,6 +2614,7 @@ class RuntimeAnalysisMixin:
             lsp_manager=getattr(self, "lsp_manager", None),
             registry=self.coding_task_registry,
             model_metrics_recorder=coding_metrics_recorder,
+            compact_continuation=True,
         )
         repair_workspace_key: str | None = None
         knowledge_index = getattr(self, "knowledge_index", None)

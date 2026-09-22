@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -37,6 +38,7 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     VisualizationSectionWorkflow,
 )
+from smart_reporting.workspace import WorkspaceError
 
 
 @pytest.fixture
@@ -394,6 +396,29 @@ async def test_submit_missing_output_retains_its_path(binding, runtime):  # noqa
     result = await toolkit.submit_script()
     assert result["code"] == "report_code_declared_output_missing"
     assert result["details"]["path"] == "analysis/out.json"
+    assert result["details"]["missingPaths"] == ["analysis/out.json"]
+    assert result["details"]["presentPaths"] == []
+
+
+@pytest.mark.anyio
+async def test_declared_outputs_report_all_missing_paths_without_runtime(binding):  # noqa: F811
+    binding.context = replace(
+        binding.context,
+        declared_output_paths=("analysis/a.json", "analysis/b.json"),
+        authorized_write_paths=(*binding.context.authorized_write_paths, "analysis/a.json", "analysis/b.json"),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, AsyncMock(), ReportingLspProcessManager())
+    binding.workspace.ahash_file = AsyncMock(side_effect=WorkspaceError("missing"))
+
+    with pytest.raises(ReportingError) as caught:
+        await toolkit._declared_output_identities()
+
+    assert caught.value.code == "report_code_declared_output_missing"
+    assert caught.value.details == {
+        "path": "analysis/a.json",
+        "missingPaths": ["analysis/a.json", "analysis/b.json"],
+        "presentPaths": [],
+    }
 
 
 @pytest.mark.anyio
