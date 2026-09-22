@@ -1156,6 +1156,8 @@ class ReportingCodeModeToolkit(Toolkit):
             )
             self._failure_signature = signature
             self.last_failure = {**failure, "resolved": False}
+            if self.terminal_failure is not None:
+                fc.function.stop_after_tool_call = True
             if failure["code"] == "report_code_input_wrapped" and isinstance(result, dict):
                 result["repairHint"] = (
                     f"重新调用 {name}，input 第一行写 # Python，真实换行后填写源码。"
@@ -1667,6 +1669,8 @@ class ReportingCodeModeToolkit(Toolkit):
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
+        if detail not in {"high", "original"}:
+            return _failure("report_code_visual_detail_invalid", "detail 必须是 high 或 original。")
         try:
             source_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
         except WorkspaceError:
@@ -1717,10 +1721,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 "receipt": _visual_review_model_receipt(cached),
             }
         if self.vision_reviewer is None:
-            return _failure(
-                "report_code_visual_review_unavailable",
-                "独立视觉审查暂不可用，请稍后重试。",
-            )
+            return self._visual_review_unavailable(source_path, None)
         review_started_at = perf_counter()
         try:
             reviewed = ChartVisualInspectionReceipt.model_validate(
@@ -1730,11 +1731,16 @@ class ReportingCodeModeToolkit(Toolkit):
                     detail=detail,
                 )
             )
-        except Exception:
-            return _failure(
-                "report_code_visual_review_unavailable",
-                "独立视觉审查暂不可用，请稍后重试。",
-            )
+        except Exception as error:
+            if isinstance(error, ReportingError) and error.code in {
+                "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
+            }:
+                return _failure(
+                    error.code,
+                    "图片未通过本地检查；局部修复生成该图片的代码，再运行和审查。",
+                    details={"path": source_path, "reason": error.code},
+                )
+            return self._visual_review_unavailable(source_path, error)
         finally:
             self.visual_review_duration_ms += max(
                 0, round((perf_counter() - review_started_at) * 1000)
@@ -1768,6 +1774,23 @@ class ReportingCodeModeToolkit(Toolkit):
             "ok": True,
             "receipt": _visual_review_model_receipt(reviewed),
         }
+
+    def _visual_review_unavailable(self, path: str, error: Exception | None) -> dict[str, Any]:
+        error_type = type(error).__name__ if error is not None else "ReviewerMissing"
+        cause = error.__cause__ if error is not None else None
+        logger.warning(
+            "report_code_visual_review_unavailable path={} error_type={} cause_type={}",
+            path, error_type, type(cause).__name__ if cause is not None else "-",
+        )
+        self.terminal_failure = ReportingError(
+            "report_code_visual_review_unavailable",
+            "独立视觉审查不可用，已停止当前 Coding 任务；未通过审查的图片不能提交。",
+            details={"path": path, "errorType": error_type, "retryable": False},
+        )
+        return _failure(
+            self.terminal_failure.code, str(self.terminal_failure),
+            details=self.terminal_failure.details,
+        )
 
     async def lsp_diagnostics(
         self,

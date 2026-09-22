@@ -7,6 +7,17 @@ from agno.tools.function import ToolResult
 from smart_reporting.reporting.vision import ReportVisionReviewer
 
 
+def test_visual_model_disables_thinking():
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(
+            report_vision_model="vision-model", openai_base_url="https://example.com/v1",
+            openai_api_key="test", model_timeout_seconds=30, debug=False,
+        ),
+        None,
+    )
+    assert reviewer._new_agent().model.extra_body == {"enable_thinking": False}
+
+
 @pytest.mark.anyio
 async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None:
     content = b"\x89PNG\r\n\x1a\ncontent"

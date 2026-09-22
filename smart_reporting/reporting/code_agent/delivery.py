@@ -99,7 +99,7 @@ def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> dict[str, Any]:
             key: str(details[key])[-limit:]
             for key, limit in (("reason", 256), ("errorType", 128), ("line", 12), ("column", 12),
                                ("traceback", 1024), ("stderr", 512), ("issueSummary", 1024),
-                               ("sourceSha256", 64), ("sourceExcerpt", 1800),
+                               ("path", 1024), ("sourceSha256", 64), ("sourceExcerpt", 1800),
                                ("sourceStartLine", 12), ("sourceEndLine", 12), ("errorLine", 12))
             if isinstance(details, Mapping) and details.get(key) is not None
         },
@@ -146,7 +146,9 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
     if failure and (failure["resolved"] or failure["sourceSha256"] != source_hash):
         failure = None
     submitted = valid and toolkit.submitted_receipt == receipt
-    if submitted:
+    if toolkit.terminal_failure is not None:
+        next_tools, action = [], "当前任务已停止；保留失败诊断，不能提交未通过审查的图片。"
+    elif submitted:
         next_tools, action = [], "当前产物已提交。"
     elif source_hash is None:
         next_tools, action = ["write_script"], "写入绑定脚本，然后运行。"
@@ -162,6 +164,12 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
             action = "结合最近失败诊断用 edit_script 局部修复现有脚本，再 run_script；write_script 不可用，不要整段重写或原样重复失败操作。"
         else:
             next_tools, action = ["run_script"], "当前源码或输出尚无有效执行回执，运行绑定脚本。"
+    elif failure and failure["tool"] == "view_image" and failure["code"] in {
+        "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
+        "report_code_visual_output_changed",
+    }:
+        next_tools = ["read_script", "edit_script", "run_script"]
+        action = "根据图片检查失败诊断局部修复现有脚本，再运行并审查；不要重复查看未修复的图片。"
     elif visual_failures:
         next_tools = ["read_script", "edit_script", "run_script"]
         action = "根据 visualFailures 修复脚本后重新运行并审查新图片；重复查看当前图片只会返回缓存结论。"

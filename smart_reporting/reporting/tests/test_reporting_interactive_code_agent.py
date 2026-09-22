@@ -1590,6 +1590,9 @@ async def test_view_image_bounds_visual_reviewer_failures(
 
     assert result["code"] == "report_code_visual_review_unavailable"
     assert "provider secret response" not in str(result)
+    assert toolkit.terminal_failure is not None
+    assert toolkit.terminal_failure.details["retryable"] is False
+    assert not toolkit.binding.visual_inspection_receipts
 
 
 @pytest.mark.anyio

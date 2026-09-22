@@ -18,6 +18,7 @@ from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcess
 from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.code_mode import ScriptProcessResult
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_reporting_code_edit import edit_patch
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
     SOURCE,
@@ -34,6 +35,35 @@ from smart_reporting.reporting.workflow.checkpoint import (
     ChartVisualInspectionReceipt,
 )
 from smart_reporting.workspace import WorkspaceError
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("code", [
+    "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
+    "report_code_visual_review_unavailable",
+])
+async def test_visual_check_failure_routes_repair_or_stops(workspace, code):  # noqa: F811
+    reviewer = AsyncMock()
+    reviewer.review.side_effect = ReportingError(code, "private provider body")
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime(), reviewer,
+    )
+    function = next(tool for tool in toolkit.tool_functions if tool.name == "view_image")
+    call = FunctionCall(function=function, arguments={"path": output.path})
+    await call.aexecute()
+    await toolkit.refresh_delivery_state()
+    state = toolkit.delivery_state()
+    assert call.result["code"] == code
+    assert "private provider body" not in str(call.result)
+    assert not task_binding.visual_inspection_receipts
+    if code == "report_code_visual_review_unavailable":
+        assert function.stop_after_tool_call
+        assert toolkit.terminal_failure is not None
+        assert state["nextTools"] == []
+    else:
+        assert toolkit.terminal_failure is None
+        assert state["nextTools"] == ["read_script", "edit_script", "run_script"]
+        assert state["lastFailure"]["details"]["path"] == output.path
 
 
 def test_visual_failures_merge_identical_issues_across_paths():
