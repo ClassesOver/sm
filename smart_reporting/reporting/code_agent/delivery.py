@@ -160,11 +160,11 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
         else:
             next_tools, action = ["run_script"], "输出结构预检未获得可用结论，重新运行后检查结果。"
     elif not valid:
+        next_tools = ["read_script", "edit_script", "run_script"]
         if failure and failure["tool"] in {"write_script", "edit_script", "run_script"}:
-            next_tools = ["read_script", "edit_script", "run_script"]
             action = "结合最近失败诊断用 edit_script 局部修复现有脚本，再 run_script；write_script 不可用，不要整段重写或原样重复失败操作。"
         else:
-            next_tools, action = ["run_script"], "当前源码或输出尚无有效执行回执，运行绑定脚本。"
+            action = "当前源码或输出尚无有效执行回执；修改已完成时直接 run_script。若仍需修改，可读取并继续精确局部编辑；不能整段重写，运行通过前不能提交。"
     elif failure and failure["tool"] == "view_image" and failure["code"] in {
         "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
         "report_code_visual_output_changed",

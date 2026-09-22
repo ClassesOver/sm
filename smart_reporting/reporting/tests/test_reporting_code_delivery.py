@@ -250,7 +250,7 @@ async def test_delivery_state_tracks_write_run_submit_and_invalidates_edit(bindi
     assert toolkit.delivery_state()["nextTools"] == ["write_script"]
     await FunctionCall(function=functions["write_script"], arguments={"source": SOURCE}).aexecute()
     assert toolkit.first_script_success is True
-    assert toolkit.delivery_state()["nextTools"] == ["run_script"]
+    assert toolkit.delivery_state()["nextTools"] == ["read_script", "edit_script", "run_script"]
     await FunctionCall(function=functions["run_script"], arguments={}).aexecute()
     assert toolkit.first_run_success is True
     state = toolkit.delivery_state()
@@ -259,7 +259,7 @@ async def test_delivery_state_tracks_write_run_submit_and_invalidates_edit(bindi
     assert state["script"]["sha256"] == binding.execution_receipt.source_file.sha256
     await FunctionCall(function=functions["write_script"], arguments={"source": SOURCE + "\n# changed"}).aexecute()
     assert toolkit.delivery_state()["execution"] is None
-    assert toolkit.delivery_state()["nextTools"] == ["run_script"]
+    assert toolkit.delivery_state()["nextTools"] == ["read_script", "edit_script", "run_script"]
     await FunctionCall(function=functions["run_script"], arguments={}).aexecute()
     await FunctionCall(function=functions["submit_script"], arguments={}).aexecute()
     assert toolkit.delivery_state()["submitted"] is True
@@ -269,6 +269,36 @@ async def test_delivery_state_tracks_write_run_submit_and_invalidates_edit(bindi
         "run_script": 2,
         "submit_script": 1,
     }
+
+
+@pytest.mark.anyio
+async def test_successive_patches_remain_declared_until_execution(binding):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    write = FunctionCall(function=functions["write_script"], arguments={"source": SOURCE})
+    await write.aexecute()
+    model = ReportingCodeOpenAIResponses(id="test", api_key="test")
+    model.configure_code_run(
+        toolkit.tool_functions, max_model_requests=10,
+        delivery_state_reader=toolkit.delivery_state,
+    )
+    for old, new in [('write_text("{}")', 'write_text("{ }")'),
+                     ('write_text("{ }")', 'write_text("{  }")')]:
+        read = FunctionCall(function=functions["read_script"], arguments={})
+        await read.aexecute()
+        patch = edit_patch(read.result["source"], old, new)
+        edit = FunctionCall(function=functions["edit_script"], arguments={"patch": patch})
+        await edit.aexecute()
+        assert edit.result["ok"] is True
+        params = model.get_request_params(messages=[], tools=toolkit.tool_functions)
+        assert {tool["name"]: tool["type"] for tool in params["tools"]} == {
+            "read_script": "function", "edit_script": "custom", "run_script": "function",
+        }
+        assert params["parallel_tool_calls"] is True
+    run = FunctionCall(function=functions["run_script"], arguments={})
+    await run.aexecute()
+    assert run.result["ok"] is True
+    assert toolkit.delivery_state()["nextTools"] == ["submit_script"]
 
 
 @pytest.mark.anyio
@@ -389,7 +419,7 @@ async def test_delivery_feedback_tracks_visual_receipts_and_changed_output(works
     await workspace.awrite_text(task_binding.context.task_id, output.path, "changed", overwrite=True)
     await toolkit.refresh_delivery_state()
     assert toolkit.delivery_state()["execution"]["valid"] is False
-    assert toolkit.delivery_state()["nextTools"] == ["run_script"]
+    assert toolkit.delivery_state()["nextTools"] == ["read_script", "edit_script", "run_script"]
 
 
 @pytest.mark.anyio
