@@ -593,7 +593,7 @@ def link_coding_only_benchmark(
     *,
     variant: BenchmarkVariant,
 ) -> CodingOnlyBenchmarkLink:
-    """联结 v2 冻结配置与已签名的 legacy analysis Coding payload。"""
+    """联结 v2 冻结配置与已签名的 analysis Coding payload。"""
 
     benchmark_manifest, benchmark_payloads = validate_frozen_planner_coding_bundle(
         benchmark_bundle_dir.resolve()
@@ -603,8 +603,6 @@ def link_coding_only_benchmark(
         "taskKind"
     ) != "analysis":
         raise ValueError("Coding-only benchmark 首版仅支持 analysis")
-    if variant is not BenchmarkVariant.LEGACY:
-        raise ValueError("Coding-only benchmark 首版仅支持 legacy variant")
     if replay_manifest.get("version") != 1:
         raise ValueError("Coding-only payload 必须来自 version 1 replay bundle")
 
@@ -614,14 +612,24 @@ def link_coding_only_benchmark(
     facts = payload.get("facts")
     if not isinstance(facts, dict):
         raise ValueError("Coding-only payload 缺少 facts 对象")
-    decision = LegacyAnalysisEvidenceDecision.model_validate(
-        facts.get("evidenceDecision")
-    )
-    if not decision.requires_supplemental_evidence:
-        raise ValueError("Coding-only payload 必须要求 supplemental evidence")
-
     base_payload = deepcopy(payload)
-    base_payload["facts"].pop("evidenceDecision")
+    if variant is BenchmarkVariant.LEGACY:
+        decision = LegacyAnalysisEvidenceDecision.model_validate(
+            facts.get("evidenceDecision")
+        )
+        if not decision.requires_supplemental_evidence:
+            raise ValueError("Coding-only payload 必须要求 supplemental evidence")
+        base_payload["facts"].pop("evidenceDecision")
+    else:
+        origin = replay_manifest.get("plannerOrigin", {})
+        expected_source = hashlib.sha256(
+            (benchmark_bundle_dir / "manifest.json").read_bytes()
+        ).hexdigest()
+        if not isinstance(origin, dict) or origin.get("variant") != variant.value or origin.get("benchmarkManifestSha256") != expected_source:
+            raise ValueError("candidate Coding-only 缺少匹配的 planner 冻结身份")
+        if not facts.get("codingRequirements") or "evidenceDecision" in facts:
+            raise ValueError("candidate Coding-only 缺少 codingRequirements")
+        base_payload["facts"].pop("codingRequirements")
     benchmark_payload = benchmark_payloads["executionContext"].get("codingPayload")
     if base_payload != benchmark_payload:
         raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
@@ -670,6 +678,30 @@ def replay_instructions(
             else _ANALYSIS_CODE_LEGACY_INSTRUCTIONS
         )
     raise ValueError(f"不支持的 Coding 回放任务类型：{task_kind}")
+
+
+def freeze_planner_coding_payload(
+    payload: dict[str, Any],
+    bundle_dir: Path,
+    benchmark_bundle_dir: Path,
+    variant: BenchmarkVariant,
+) -> dict[str, object]:
+    """固化实际 planner 输出；后续 Coding-only 重放不再次执行 planner。"""
+    manifest = prepare_replay_bundle(payload, bundle_dir, None)
+    manifest["plannerOrigin"] = {
+        "variant": variant.value,
+        "benchmarkManifestSha256": hashlib.sha256(
+            (benchmark_bundle_dir / "manifest.json").read_bytes()
+        ).hexdigest(),
+        "instructionsSha256": hashlib.sha256(json.dumps(
+            replay_instructions(payload["task"]["task_kind"], variant=variant),
+            ensure_ascii=False,
+        ).encode()).hexdigest(),
+    }
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return manifest
 
 
 def analysis_evidence_diagnostic(
@@ -1000,6 +1032,7 @@ async def main(
     coding_only_payload_path: Path | None = None,
     wall_timeout_seconds: float | None = None,
     compact_continuation: bool = False,
+    freeze_coding_dir: Path | None = None,
 ) -> int:
     configure_application_logging(debug=False)
     if benchmark_extract_dir is not None:
@@ -1223,6 +1256,12 @@ async def main(
             )
             payload = normalize_replay_payload(payload)
         payload["task"]["workspace_root"] = str(root)
+        if freeze_coding_dir is not None:
+            if benchmark_bundle_dir is None or coding_only_link is not None:
+                raise ValueError("freeze-coding 必须执行 benchmark planner")
+            freeze_planner_coding_payload(
+                payload, freeze_coding_dir.resolve(), benchmark_bundle_dir.resolve(), benchmark_variant
+            )
         task = ReportingCodingTaskContext(**payload["task"])
         prepare_replay_files(root, task, initial_script_path)
         workspace = HostReportingWorkspace(
@@ -1318,6 +1357,14 @@ async def main(
             result_payload = {
                 "status": "passed",
                 "compactContinuation": compact_continuation,
+                "codingPayloadSha256": hashlib.sha256(json.dumps(
+                    {**payload, "task": {**payload["task"], "workspace_root": "workspace"}},
+                    ensure_ascii=False, sort_keys=True,
+                ).encode()).hexdigest(),
+                "instructionsSha256": hashlib.sha256(json.dumps(
+                    replay_instructions(task.task_kind, variant=benchmark_variant),
+                    ensure_ascii=False,
+                ).encode()).hexdigest(),
                 "seconds": round(perf_counter() - started, 3),
                 "workspace": str(root),
                 "modelMetrics": model_metrics,
@@ -1446,8 +1493,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--coding-only-payload",
         type=Path,
-        help="使用已签名 v1 analysis payload 跳过 planner，仅执行 legacy Coding。",
+        help="使用已签名 analysis payload 跳过 planner；candidate 须来自 --freeze-coding。",
     )
+    parser.add_argument("--freeze-coding", type=Path, help="保存实际 planner 输出为 Coding-only bundle。")
     parser.add_argument("--coding-payload", type=Path)
     parser.add_argument("--acceptance", type=Path)
     parser.add_argument("--model-config", type=Path)
@@ -1476,8 +1524,8 @@ if __name__ == "__main__":
         parser.error("--variant 只能与 --benchmark-bundle 一起使用")
     if args.coding_only_payload is not None and args.benchmark_bundle is None:
         parser.error("--coding-only-payload 必须与 --benchmark-bundle 一起使用")
-    if args.coding_only_payload is not None and args.variant != "legacy":
-        parser.error("--coding-only-payload 首版只支持 --variant legacy")
+    if args.freeze_coding is not None and (args.benchmark_bundle is None or args.coding_only_payload is not None):
+        parser.error("--freeze-coding 必须与执行 planner 的 --benchmark-bundle 一起使用")
     if args.benchmark_bundle is not None and args.prepare_only is not None:
         parser.error("--benchmark-bundle 不支持 --prepare-only")
     benchmark_prepare_inputs = (
@@ -1530,4 +1578,5 @@ if __name__ == "__main__":
         args.coding_only_payload,
         args.wall_timeout_seconds,
         args.compact_continuation,
+        args.freeze_coding,
     )))

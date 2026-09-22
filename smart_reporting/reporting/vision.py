@@ -185,7 +185,7 @@ class ReportVisionReviewer:
         digest = hashlib.sha256(source.content).hexdigest()
         try:
             response = await self._new_agent().arun(
-                _REPORT_VISION_PROMPT,
+                "请按审查规则检查这张图片并返回结构化审查结果。",
                 images=[image],
             )
             assessment = ReportVisionAssessment.model_validate(response.content)

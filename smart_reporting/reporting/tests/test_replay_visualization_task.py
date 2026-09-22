@@ -354,7 +354,7 @@ async def test_main_validates_frozen_payload_and_loads_signed_seed(tmp_path, mon
         assert await replay_visualization_task.main(*args) == 0
 
 
-def _prepare_linked_analysis_bundles(tmp_path):
+def _prepare_linked_analysis_bundles(tmp_path, *, candidate=False):
     source = tmp_path / "source"
     dataset = source / "datasets/current.csv"
     dataset.parent.mkdir(parents=True)
@@ -380,11 +380,18 @@ def _prepare_linked_analysis_bundles(tmp_path):
         model_config=model_config,
     )
     coding_only_bundle = tmp_path / "coding-only"
-    replay_visualization_task.prepare_replay_bundle(
-        _analysis_benchmark_payload(source, dataset, include_decision=True),
-        coding_only_bundle,
-        None,
-    )
+    payload = _analysis_benchmark_payload(source, dataset, include_decision=True)
+    if candidate:
+        payload["facts"].pop("evidenceDecision")
+        payload["facts"]["codingRequirements"] = [{
+            "datasetId": "current", "fields": ["income"],
+            "calculation": "计算合计", "outputName": "total",
+        }]
+        replay_visualization_task.freeze_planner_coding_payload(
+            payload, coding_only_bundle, benchmark_bundle, BenchmarkVariant.CANDIDATE
+        )
+    else:
+        replay_visualization_task.prepare_replay_bundle(payload, coding_only_bundle, None)
     return benchmark_bundle, coding_only_bundle / "payload.json", model_config
 
 
@@ -444,11 +451,12 @@ def test_coding_only_link_rejects_extra_unsigned_input_identity(tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("candidate", [False, True])
 async def test_coding_only_benchmark_skips_planner_and_labels_result(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, candidate
 ):
     benchmark_bundle, coding_only_payload, expected_model_config = (
-        _prepare_linked_analysis_bundles(tmp_path)
+        _prepare_linked_analysis_bundles(tmp_path, candidate=candidate)
     )
     output_path = tmp_path / "result.json"
     seen = {}
@@ -521,14 +529,14 @@ async def test_coding_only_benchmark_skips_planner_and_labels_result(
         None,
         None,
         benchmark_bundle_dir=benchmark_bundle,
-        benchmark_variant=BenchmarkVariant.LEGACY,
+        benchmark_variant=BenchmarkVariant.CANDIDATE if candidate else BenchmarkVariant.LEGACY,
         coding_only_payload_path=coding_only_payload,
     )
 
     saved = json.loads(output_path.read_text(encoding="utf-8"))
     assert result == 0
     assert saved["benchmarkMode"] == "coding-only"
-    assert saved["variant"] == "legacy"
+    assert saved["variant"] == ("candidate" if candidate else "legacy")
     assert saved["requestMetrics"] == []
     artifact = saved["firstRunFailureArtifact"]
     content = Path(artifact["path"]).read_bytes()
@@ -538,8 +546,30 @@ async def test_coding_only_benchmark_skips_planner_and_labels_result(
     assert "failed-source" not in output_path.read_text(encoding="utf-8")
     assert "plannerMetrics" not in saved
     assert seen["modelConfig"]["benchmark_model_config"] == expected_model_config
-    assert seen["instructions"] == replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
-    assert seen["facts"]["evidenceDecision"]["requiresSupplementalEvidence"] is True
+    if candidate:
+        assert seen["instructions"] == replay_visualization_task._ANALYSIS_CODE_INSTRUCTIONS
+        assert seen["facts"]["codingRequirements"][0]["outputName"] == "total"
+    else:
+        assert seen["instructions"] == replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
+        assert seen["facts"]["evidenceDecision"]["requiresSupplementalEvidence"] is True
+
+
+@pytest.mark.parametrize("change", ["origin", "payload", "input"])
+def test_candidate_coding_only_rejects_frozen_identity_drift(tmp_path, change):
+    benchmark, payload_path, _ = _prepare_linked_analysis_bundles(tmp_path, candidate=True)
+    if change == "origin":
+        manifest_path = payload_path.parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["plannerOrigin"]["benchmarkManifestSha256"] = "changed"
+        manifest_path.write_text(json.dumps(manifest))
+    elif change == "payload":
+        payload_path.write_text(payload_path.read_text() + " ")
+    else:
+        (payload_path.parent / "workspace/datasets/current.csv").write_text("income\n999\n")
+    with pytest.raises(ValueError, match="身份"):
+        replay_visualization_task.link_coding_only_benchmark(
+            benchmark, payload_path, variant=BenchmarkVariant.CANDIDATE
+        )
 
 
 @pytest.mark.anyio
@@ -1265,7 +1295,10 @@ def test_extract_analysis_trace_restores_host_identity_and_rejects_context_drift
             "report-analysis-script-writer",
             {
                 "task": model_task,
-                "facts": {"currentAnalysis": planner_request["currentAnalysis"]},
+                "facts": {
+                    "currentAnalysis": planner_request["currentAnalysis"],
+                    "datasets": planner_request["datasets"],
+                },
             },
             host_task_context=host_task,
             span_id="coding-1",

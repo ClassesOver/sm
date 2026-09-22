@@ -20,6 +20,8 @@
 
 **可视化 critical-only high 验证：** 已修复 `_visual_review_model_receipt()` 的可选建议泄漏：未关联 critical issue 的 `suggestions` 保留完整审计回执，不再发送给 Coding 模型。定向交付测试 `30 passed`。使用 `/tmp/reporting-visualization-v2-Pfuhj1/repair/payload.json` 和 manifest 自动加载 seed，在 `high/summary=auto/enable_thinking=true/parallel_tool_calls=true` 下真实回放 `/tmp/reporting-visual-high-critical-only-20260922.json`：6 张图批量审查后一次 `read_script → edit_script`，再运行并提交；`firstPatchApplied=true`、`firstRepairSuccess=true`、`criticalVisualDefect=false`，Coding `191.400s / 9,830 reasoning tokens`，8 次 `view_image` 审查耗时 `34.621s`。最大请求为 edit 轮 `9,166 reasoning tokens`，说明视觉阶段剩余主要瓶颈是局部修复推理；本样本无同版本未修复回执的严格 A/B，不能宣称固定降幅。
 
+**严格 Coding-only 对照能力：** 回放脚本新增 `--freeze-coding`，可在一次真实 candidate planner 后固化实际 Coding payload、授权输入身份、benchmark manifest SHA、variant 和指令 SHA；后续用 `--coding-only-payload` 跳过 planner，仅重复 Coding。candidate 与 legacy 均保留严格的基础 payload、输入路径/大小/SHA、脚本身份校验；candidate 必须携带动态 `codingRequirements`，不得回退到 `evidenceDecision`。结果额外记录 `codingPayloadSha256` 和 `instructionsSha256`，用于证明同一输入对照。定向回放测试 `55 passed`，Ruff 与 `git diff --check` 通过。该能力只解决后续同输入配对测量，不把历史不同输入样本追认成严格 A/B，也不证明 planner 输出来源的密码学真实性。
+
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）
