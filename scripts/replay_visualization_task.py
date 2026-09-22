@@ -999,6 +999,7 @@ async def main(
     benchmark_extract_dir: Path | None = None,
     coding_only_payload_path: Path | None = None,
     wall_timeout_seconds: float | None = None,
+    compact_continuation: bool = False,
 ) -> int:
     configure_application_logging(debug=False)
     if benchmark_extract_dir is not None:
@@ -1268,6 +1269,7 @@ async def main(
             }),
             coding_metrics_recorder=coding_metrics.append,
             failure_artifact_recorder=record_failure_artifact,
+            compact_continuation=compact_continuation,
         )
         output_preflight = None
         if task.task_kind == "analysis":
@@ -1432,6 +1434,11 @@ if __name__ == "__main__":
         type=float,
         help="可选的整轮 planner/Coding wall-timeout；默认不设置，不改变生产请求超时。",
     )
+    parser.add_argument(
+        "--compact-continuation",
+        action="store_true",
+        help="benchmark-only：修复阶段重建短会话，不复用上一轮 provider history。",
+    )
     parser.add_argument("--variant", choices=("legacy", "candidate"))
     parser.add_argument(
         "--coding-only-payload",
@@ -1519,4 +1526,5 @@ if __name__ == "__main__":
         args.extract_benchmark,
         args.coding_only_payload,
         args.wall_timeout_seconds,
+        args.compact_continuation,
     )))

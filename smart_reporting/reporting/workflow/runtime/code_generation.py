@@ -183,6 +183,7 @@ class ReportingCodeGenerationRunner:
         model_metrics_recorder: Callable[[Any, int], None] | None = None,
         coding_metrics_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         failure_artifact_recorder: Callable[[Mapping[str, Any]], None] | None = None,
+        compact_continuation: bool = False,
     ) -> None:
         self.agent_factory = agent_factory
         self.code_mode_runtime = code_mode_runtime
@@ -193,6 +194,7 @@ class ReportingCodeGenerationRunner:
         self.model_metrics_recorder = model_metrics_recorder
         self.coding_metrics_recorder = coding_metrics_recorder
         self.failure_artifact_recorder = failure_artifact_recorder
+        self.compact_continuation = compact_continuation
 
     async def run(
         self,
@@ -456,7 +458,7 @@ class ReportingCodeGenerationRunner:
                 request_count_reader = getattr(model, "code_run_request_count", None)
                 request_count = 0
                 run_output = None
-                for attempt in range(2):
+                for attempt in range(3 if self.compact_continuation else 2):
                     previous_requests = request_count
                     previous_output = run_output
                     run_output = None
@@ -467,17 +469,60 @@ class ReportingCodeGenerationRunner:
                                     self._prompt(payload), run_context=run_context
                                 )
                         else:
-                            with self._trace_task_context(task_context):
-                                run_output = await agent.acontinue_run(
-                                    run_response=previous_output,
-                                    input=self._prompt({
-                                        "instruction": "任务尚未提交，请根据当前交付状态完成剩余步骤并调用 submit_script。",
-                                        "delivery": toolkit.delivery_state(),
-                                    }),
-                                    run_context=run_context,
+                            if self.compact_continuation:
+                                # 阶段边界只携带宿主当前状态，不复用上一轮的 provider history。
+                                agent = self.agent_factory(toolkit.tool_functions)
+                                agent.tool_call_limit = model_tool_limit
+                                compact_model = getattr(agent, "model", None)
+                                configure_compact = getattr(
+                                    compact_model, "configure_code_run", None
                                 )
+                                if callable(configure_compact):
+                                    configure_compact(
+                                        toolkit.tool_functions,
+                                        max_model_requests=max(4, model_tool_limit + 1),
+                                        redundant_call_check=toolkit.has_current_visual_review,
+                                        delivery_state_reader=toolkit.delivery_state,
+                                        delivery_reserve=(
+                                            3 + len(task_context.declared_output_paths)
+                                            if task_context.task_kind == "visualization"
+                                            else 3
+                                        ),
+                                    )
+                                model = compact_model
+                                request_count_reader = getattr(
+                                    model, "code_run_request_count", None
+                                )
+                                request_count = 0
+                                with self._trace_task_context(task_context):
+                                    run_output = await agent.arun(
+                                        self._prompt(
+                                            {
+                                                "instruction": "继续当前交付阶段，只处理尚未完成的动作并调用 submit_script。",
+                                                "delivery": toolkit.delivery_state(),
+                                            }
+                                        ),
+                                        run_context=run_context,
+                                    )
+                            else:
+                                with self._trace_task_context(task_context):
+                                    run_output = await agent.acontinue_run(
+                                        run_response=previous_output,
+                                        input=self._prompt({
+                                            "instruction": "任务尚未提交，请根据当前交付状态完成剩余步骤并调用 submit_script。",
+                                            "delivery": toolkit.delivery_state(),
+                                        }),
+                                        run_context=run_context,
+                                    )
                     finally:
-                        request_count = request_count_reader() if callable(request_count_reader) else 0
+                        current_request_count = (
+                            request_count_reader() if callable(request_count_reader) else 0
+                        )
+                        request_count = (
+                            previous_requests + current_request_count
+                            if attempt > 0 and self.compact_continuation
+                            else current_request_count
+                        )
                         recordable_output = run_output
                         request_metrics_reader = getattr(
                             model, "code_run_request_metrics", None
@@ -526,7 +571,7 @@ class ReportingCodeGenerationRunner:
                     if isinstance(toolkit.terminal_failure, Exception):
                         raise toolkit.terminal_failure
                     if (
-                        attempt > 0
+                        (attempt > 0 and not self.compact_continuation)
                         or toolkit.submitted_receipt is not None
                         or not isinstance(agent, Agent)
                         or getattr(run_output, "status", None) != RunStatus.completed

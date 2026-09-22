@@ -158,6 +158,49 @@ async def test_native_continuation_keeps_execution_and_request_budget(workspace,
     assert runtime.runs == 1
 
 
+@pytest.mark.anyio
+async def test_compact_continuation_rebuilds_agent_without_provider_history(workspace, monkeypatch):  # noqa: F811
+    first = _batch_response(
+        _custom_response("write_script", SOURCE, 1),
+        _function_response(2, "run_script", {}),
+    )
+    client = _ResponsesClient([
+        first,
+        _message_response("已完成"),
+        _function_response(3, "submit_script", {}),
+    ])
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test", api_key="test"), name="compact-continue-test"
+    )
+    agents = []
+
+    def make_agent(tools):
+        agent = factory(tools)
+        agent.model.async_client = client
+        agents.append(agent)
+        return agent
+
+    from agno.agent import Agent
+
+    async def forbidden_continue(*args, **kwargs):
+        pytest.fail("compact continuation 不得复用 Agno provider history")
+
+    monkeypatch.setattr(Agent, "acontinue_run", forbidden_continue)
+    result = await ReportingCodeGenerationRunner(
+        make_agent,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        compact_continuation=True,
+    ).run(_task_context(workspace), workspace, {}, run_context=_run_context())
+
+    assert result.execution_receipt.source_file.path == "analysis/a.py"
+    assert len(agents) == 2
+    assert len(client.requests) == 3
+    assert not any(
+        item.get("type") == "function_call_output" for item in client.requests[-1]["input"]
+    )
+
+
 @pytest.mark.parametrize("requests,tools", [(4, 0), (0, 3)])
 def test_continuation_cannot_claim_exhausted_budget(requests, tools):
     budget = CodeBudget(request_limit=4, reserve=1, requests=requests, tool_calls=tools)
