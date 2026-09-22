@@ -113,6 +113,7 @@ class ReportingCodeGenerationRunner:
             "repairAttempt",
             "existingFacts",
             "codingRequirements",
+            "evidenceDecision",
             "outputContract",
             "visualizationDataContract",
             "missingCharts",
@@ -134,15 +135,28 @@ class ReportingCodeGenerationRunner:
             }
         datasets = task_facts.get("datasets")
         if isinstance(datasets, list):
-            projected["datasets"] = [
-                {
+            projected_datasets = []
+            for item in datasets:
+                if not isinstance(item, Mapping):
+                    continue
+                projected_item = {
                     key: item[key]
                     for key in ("datasetId", "path", "columns")
                     if key in item
                 }
-                for item in datasets
-                if isinstance(item, Mapping)
-            ]
+                provenance = item.get("provenance")
+                if isinstance(provenance, Mapping):
+                    period_roles = provenance.get("periodRoles")
+                    if isinstance(period_roles, list):
+                        projected_item["provenance"] = {
+                            "periodRoles": [
+                                role
+                                for role in period_roles
+                                if isinstance(role, str)
+                            ]
+                        }
+                projected_datasets.append(projected_item)
+            projected["datasets"] = projected_datasets
         return projected
 
     @staticmethod

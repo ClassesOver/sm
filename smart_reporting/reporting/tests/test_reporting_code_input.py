@@ -12,9 +12,6 @@ from lark import Lark, UnexpectedInput
 
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
-from smart_reporting.reporting.workflow.runtime.code_generation import (
-    ReportingCodeGenerationRunner,
-)
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
     _assistant_and_result_messages,
     _code_responses_model,
@@ -22,6 +19,9 @@ from smart_reporting.reporting.tests.test_reporting_interactive_code_agent impor
     _receipt,
     binding,  # noqa: F401
     workspace,  # noqa: F401
+)
+from smart_reporting.reporting.workflow.runtime.code_generation import (
+    ReportingCodeGenerationRunner,
 )
 
 
@@ -131,12 +131,18 @@ def test_repair_facts_drop_repeated_visual_plan_but_keep_patch_contract():
         "visualizationWorkspace": {"root": "/tmp/workspace"},
         "scriptPath": "charts/charts.py",
         "existingFacts": {"analysisId": "analysis-1", "total": 10},
+        "evidenceDecision": {
+            "requiresSupplementalEvidence": True,
+            "reason": "缺少签发事实",
+            "missingFacts": ["构成", "同比"],
+        },
         "codingRequirements": [{"datasetId": "dataset-1", "fields": ["income"]}],
         "datasets": [
             {
                 "datasetId": "dataset-1",
                 "path": "data/income.csv",
                 "columns": ["income", "period"],
+                "provenance": {"periodRoles": ["current"], "sqlHash": "secret"},
                 "rows": [{"period": "2025", "income": 10}] * 1000,
             }
         ],
@@ -150,12 +156,14 @@ def test_repair_facts_drop_repeated_visual_plan_but_keep_patch_contract():
     assert "visualizationWorkspace" not in projected
     assert projected["scriptPath"] == "charts/charts.py"
     assert projected["existingFacts"] == facts["existingFacts"]
+    assert projected["evidenceDecision"] == facts["evidenceDecision"]
     assert projected["codingRequirements"] == facts["codingRequirements"]
     assert projected["datasets"] == [
         {
             "datasetId": "dataset-1",
             "path": "data/income.csv",
             "columns": ["income", "period"],
+            "provenance": {"periodRoles": ["current"]},
         }
     ]
     assert len(json.dumps(projected, ensure_ascii=False).encode()) < len(
