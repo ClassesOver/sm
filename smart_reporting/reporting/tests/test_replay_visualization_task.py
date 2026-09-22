@@ -645,7 +645,7 @@ def test_replay_failure_preserves_diagnostic_metrics_and_workspace(tmp_path):
     build_replay_failure = replay_visualization_task.build_replay_failure
     error = ReportingError(
         "report_code_declared_output_missing",
-        "Coding Agent 声明输出不存在。",
+        "声明产物不存在，不代表脚本不存在。检查 details.path 对应的写出逻辑，使用 edit_script 局部修复现有脚本，再 run_script；不得调用 write_script 整段重写。",
         details={"path": "analysis/chart-006.png", "nextTools": ["edit_script"]},
     )
 
@@ -667,7 +667,7 @@ def test_replay_failure_preserves_diagnostic_metrics_and_workspace(tmp_path):
         "failure": {
             "type": "ReportingError",
             "code": "report_code_declared_output_missing",
-            "message": "Coding Agent 声明输出不存在。",
+            "message": "声明产物不存在，不代表脚本不存在。检查 details.path 对应的写出逻辑，使用 edit_script 局部修复现有脚本，再 run_script；不得调用 write_script 整段重写。",
             "details": {"path": "analysis/chart-006.png", "nextTools": ["edit_script"]},
         },
     }
