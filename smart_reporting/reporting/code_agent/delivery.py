@@ -47,13 +47,8 @@ def _visual_review_model_receipt(
         )
         return result
     result["criticalIssues"] = critical_issues
-    if (
-        receipt.issues
-        and not receipt.warnings
-        and len(critical_issues) == len(receipt.issues)
-        and receipt.suggestions
-    ):
-        result["suggestions"] = list(receipt.suggestions)
+    # suggestions 是独立的可选改进，没有 issue 关联；即使全部 issues
+    # 都是 critical，也不能证明这些建议属于必需修复。完整内容保留在审计回执。
     return result
 
 

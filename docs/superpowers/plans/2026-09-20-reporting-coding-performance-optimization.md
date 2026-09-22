@@ -18,6 +18,8 @@
 
 **收尾校正：** warning 样本实际有 9 项 reconciliation（上文 10 项为旧样本数），均为 true；独立复算为 754 个数值/null 检查，类别覆盖另行核对。其 planner 耗时 `69.414s`、reasoning `5,573`，加 Coding 后总回放 `308.259s`、累计 reasoning `24,990`，不能仅以 Coding 的 `238.797s / 19,417` 宣称整个流程已达到 300 秒/20k 目标。两次 candidate 回放重新运行了 planner，facts 指纹不同；warning 提示效果也不是严格单变量证据。保留性能改善信号，跨主题稳定性和同版本配对仍待验证。
 
+**可视化 critical-only high 验证：** 已修复 `_visual_review_model_receipt()` 的可选建议泄漏：未关联 critical issue 的 `suggestions` 保留完整审计回执，不再发送给 Coding 模型。定向交付测试 `30 passed`。使用 `/tmp/reporting-visualization-v2-Pfuhj1/repair/payload.json` 和 manifest 自动加载 seed，在 `high/summary=auto/enable_thinking=true/parallel_tool_calls=true` 下真实回放 `/tmp/reporting-visual-high-critical-only-20260922.json`：6 张图批量审查后一次 `read_script → edit_script`，再运行并提交；`firstPatchApplied=true`、`firstRepairSuccess=true`、`criticalVisualDefect=false`，Coding `191.400s / 9,830 reasoning tokens`，8 次 `view_image` 审查耗时 `34.621s`。最大请求为 edit 轮 `9,166 reasoning tokens`，说明视觉阶段剩余主要瓶颈是局部修复推理；本样本无同版本未修复回执的严格 A/B，不能宣称固定降幅。
+
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）

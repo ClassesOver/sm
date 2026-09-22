@@ -133,7 +133,7 @@ def test_visual_review_model_receipt_keeps_only_critical_issues() -> None:
     }
 
 
-def test_visual_review_model_receipt_keeps_suggestions_when_all_issues_are_critical() -> None:
+def test_visual_review_model_receipt_hides_unlinked_suggestions_for_critical_issues() -> None:
     receipt = ChartVisualInspectionReceipt(
         sourcePath="charts/a.png",
         sha256="a" * 64,
@@ -149,12 +149,13 @@ def test_visual_review_model_receipt_keeps_suggestions_when_all_issues_are_criti
                 description="关键标签无法辨认。",
             ),
         ),
-        suggestions=("移动关键标签并重新审查。",),
+        suggestions=("移动关键标签并重新审查。", "可选改进：更换配色和字体。"),
     )
 
-    assert _visual_review_model_receipt(receipt)["suggestions"] == [
-        "移动关键标签并重新审查。"
-    ]
+    projected = _visual_review_model_receipt(receipt)
+    assert "suggestions" not in projected
+    assert projected["criticalIssues"][0]["description"] == "关键标签无法辨认。"
+    assert receipt.suggestions == ("移动关键标签并重新审查。", "可选改进：更换配色和字体。")
 
 
 def test_visual_review_model_receipt_hides_suggestions_when_independent_warnings_exist() -> None:
