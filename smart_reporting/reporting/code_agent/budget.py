@@ -10,6 +10,18 @@ class CodeBudget:
     reserve: int
     requests: int = 0
     rejections: int = 0
+    tool_calls: int = 0
+    custom_inputs: int = 0
+    invalid_custom_inputs: int = 0
+    protocol_violations: int = 0
+    continued: bool = False
+
+    def claim_continuation(self, tool_limit: int) -> int | None:
+        remaining = tool_limit - self.tool_calls
+        if self.continued or self.requests >= self.request_limit or remaining <= 0:
+            return None
+        self.continued = True
+        return remaining
 
     def consume_request(self) -> bool:
         if self.requests >= self.request_limit:
@@ -26,6 +38,19 @@ class CodeBudget:
 
     def delivery_succeeded(self) -> None:
         self.rejections = 0
+
+    def record_custom_input(self, *, protocol_correct: bool) -> None:
+        self.custom_inputs += 1
+        if not protocol_correct:
+            self.invalid_custom_inputs += 1
+
+    def record_protocol_violation(self) -> None:
+        self.protocol_violations += 1
+
+    def raw_protocol_correct(self) -> bool | str:
+        if self.custom_inputs == 0 and self.protocol_violations == 0:
+            return "unknown"
+        return self.invalid_custom_inputs == 0 and self.protocol_violations == 0
 
     @staticmethod
     def exempt(payload: Mapping) -> bool:

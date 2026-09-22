@@ -10,13 +10,13 @@ from agno.run import RunContext
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.toolkit import (
     MAX_DIAGNOSTIC_BYTES,
-    MAX_PHYSICAL_LINE_BYTES,
     ReportingCodeModeToolkit,
     _bounded_failure,
     _failure,
     compile_script_source,
     validate_draft_source,
 )
+from smart_reporting.reporting.code_mode import ScriptProcessResult
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
     SOURCE,
@@ -24,7 +24,10 @@ from smart_reporting.reporting.tests.test_reporting_interactive_code_agent impor
     runtime,  # noqa: F401
     workspace,  # noqa: F401
 )
-from smart_reporting.reporting.tests.test_reporting_repair_knowledge import _visualization_plan
+from smart_reporting.reporting.tests.test_reporting_repair_knowledge import (
+    _visualization_payload,
+    _visualization_plan,
+)
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS,
     AnalysisEvidenceDecision,
@@ -53,14 +56,173 @@ def test_compile_error_retains_source_location_and_reason():
     assert "expected ':'" in details["reason"]
 
 
-def test_oversized_source_error_directs_model_to_workspace_data():
+def test_analysis_script_facts_reuse_compact_existing_fact_baseline():
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        run_code=AsyncMock(),
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        complete=AsyncMock(),
+    )
+    state = _AnalysisItemState(
+        instruction={
+            "currentAnalysis": {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset-1"],
+            },
+            "deterministicFacts": {
+                "analysisId": "analysis_001",
+                "metrics": [
+                    {
+                        "datasetId": "dataset-1",
+                        "field": "income",
+                        "aggregation": "sum",
+                        "unit": "元",
+                        "formula": "sum(income)",
+                        "total": 120.0,
+                        "periodValues": [{"period": "2025-01", "value": 120.0}],
+                        "topGroups": [{"group": "A", "value": 120.0}],
+                    }
+                ],
+                "reconciliations": [
+                    {
+                        "code": "income_check",
+                        "leftTotal": 120.0,
+                        "rightTotal": 100.0,
+                        "difference": 20.0,
+                        "passed": False,
+                    }
+                ],
+            },
+            "datasets": [
+                {
+                    "datasetId": "dataset-1",
+                    "path": "data/current.csv",
+                    "columns": ["income"],
+                }
+            ],
+            "analysisOutputRoot": "analysis/analysis_001",
+        },
+        decision=AnalysisEvidenceDecision(
+            requiresSupplementalEvidence=True,
+            reason="需要分项对账",
+            missingFacts=("分项构成",),
+            codingRequirements=(
+                {
+                    "datasetId": "dataset-1",
+                    "fields": ["income"],
+                    "calculation": "计算收入分项并与总量对账",
+                    "outputName": "income_components",
+                },
+            ),
+        ),
+    )
+
+    facts = workflow._script_task_facts(state)
+
+    assert facts["existingFacts"]["analysisId"] == "analysis_001"
+    assert facts["existingFacts"]["metrics"] == [
+        {
+            "datasetId": "dataset-1",
+            "field": "income",
+            "aggregation": "sum",
+            "unit": "元",
+            "formula": "sum(income)",
+            "total": 120.0,
+        }
+    ]
+    assert facts["existingFacts"]["reconciliations"][0]["passed"] is False
+    assert "periodValues" not in facts["existingFacts"]["metrics"][0]
+    assert "topGroups" not in facts["existingFacts"]["metrics"][0]
+
+
+def test_analysis_script_facts_keep_dataset_identity_nulls_and_period_roles():
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=AsyncMock(),
+        run_code=AsyncMock(),
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        complete=AsyncMock(),
+    )
+    state = _AnalysisItemState(
+        instruction={
+            "currentAnalysis": {
+                "analysisId": "analysis_002",
+                "datasetIds": ["current", "baseline"],
+            },
+            "deterministicFacts": {
+                "analysisId": "analysis_002",
+                "metrics": [
+                    {
+                        "datasetId": "current",
+                        "field": "amount",
+                        "periodRoles": ["current"],
+                        "nullableFields": ["amount"],
+                        "total": 10.0,
+                    },
+                    {
+                        "datasetId": "baseline",
+                        "field": "amount",
+                        "periodRoles": ["yoy"],
+                        "nullableFields": ["amount"],
+                        "total": None,
+                    },
+                ],
+                "comparisons": [{
+                    "currentDatasetId": "current",
+                    "baselineDatasetId": "baseline",
+                    "currentTotal": 10.0,
+                    "baselineTotal": None,
+                    "changeRate": None,
+                }],
+                "reconciliations": [{"name": "total", "passed": False}],
+            },
+            "datasets": [
+                {"datasetId": "current", "path": "data/current.csv", "columns": ["amount"]},
+                {"datasetId": "baseline", "path": "data/baseline.csv", "columns": ["amount"]},
+            ],
+            "analysisOutputRoot": "analysis/analysis_002",
+        },
+        decision=AnalysisEvidenceDecision(
+            requiresSupplementalEvidence=True,
+            reason="需要分项对账",
+            missingFacts=("同期分项",),
+            codingRequirements=(
+                {
+                    "datasetId": "current",
+                    "fields": ["amount"],
+                    "calculation": "计算当前期间分项",
+                    "outputName": "current_components",
+                },
+                {
+                    "datasetId": "baseline",
+                    "fields": ["amount"],
+                    "calculation": "计算同期分项",
+                    "outputName": "baseline_components",
+                },
+            ),
+        ),
+    )
+
+    existing = workflow._script_task_facts(state)["existingFacts"]
+
+    assert [item["datasetId"] for item in existing["metrics"]] == [
+        "current", "baseline"
+    ]
+    assert existing["metrics"][1]["total"] is None
+    assert existing["metrics"][0]["periodRoles"] == ["current"]
+    assert existing["metrics"][1]["periodRoles"] == ["yoy"]
+    assert existing["comparisons"][0]["baselineTotal"] is None
+    assert existing["reconciliations"] == [{"name": "total", "passed": False}]
+
+
+def test_oversized_source_error_reports_size_limit():
     context = SimpleNamespace(max_source_bytes=32)
 
     with pytest.raises(ReportingError) as caught:
         validate_draft_source(context, "value = 1\n" * 8)
 
-    assert "Workspace" in caught.value.message
-    assert "不得把数据内嵌到源码" in caught.value.message
+    assert caught.value.code == "report_code_source_invalid"
     assert caught.value.details == {
         "reason": "source_too_large",
         "actualBytes": 80,
@@ -68,17 +230,11 @@ def test_oversized_source_error_directs_model_to_workspace_data():
     }
 
 
-def test_long_physical_line_error_directs_model_to_workspace_data():
-    context = SimpleNamespace(max_source_bytes=MAX_PHYSICAL_LINE_BYTES * 2)
-    source = "value = '" + ("x" * MAX_PHYSICAL_LINE_BYTES) + "'\n"
+def test_long_physical_line_is_preserved_below_total_size_limit():
+    context = SimpleNamespace(max_source_bytes=16 * 1024)
+    source = "value = '" + ("x" * 9000) + "'\n"
 
-    with pytest.raises(ReportingError) as caught:
-        validate_draft_source(context, source)
-
-    assert "Workspace" in caught.value.message
-    assert caught.value.details["reason"] == "physical_line_too_long"
-    assert caught.value.details["line"] == 1
-    assert caught.value.details["limitBytes"] == MAX_PHYSICAL_LINE_BYTES
+    assert validate_draft_source(context, source) == source.encode("utf-8")
 
 
 def test_compile_rejects_large_embedded_data_literal_with_workspace_guidance():
@@ -109,10 +265,10 @@ async def test_write_script_rejects_large_embedded_data_before_workspace_write(
     chunks = [repr("1,100\n" * 500) for _ in range(20)]
     source = "rows = (\n" + "\n".join(chunks) + "\n)\n"
 
-    with pytest.raises(ReportingError) as caught:
-        await toolkit.write_script(source)
+    result = await toolkit.write_script(source)
 
-    assert caught.value.details["reason"] == "embedded_data"
+    assert result["ok"] is False
+    assert result["details"]["reason"] == "embedded_data"
     assert not await binding.workspace.apath_exists("task-1", "analysis/a.py")
 
 
@@ -168,9 +324,65 @@ async def test_run_script_returns_repairable_path_and_syntax_diagnostics(
     await toolkit.write_script("if True\n    pass\n")
     result = await toolkit.run_script()
     assert result["details"]["line"] == 1
-    await toolkit.write_script("open('unsigned.csv')\n")
+    # 路径策略在 write 阶段即拒绝（与 run_script 同一契约），不再等到执行。
+    write_result = await toolkit.write_script("open('unsigned.csv')\n")
+    assert write_result["ok"] is False
+    assert write_result["code"] == "report_python_source_path_invalid"
+    assert write_result["details"]["unsignedPaths"] == ["unsigned.csv"]
+    # 未保存的草稿不会执行；run_script 仍报告上一份草稿的语法错误。
     result = await toolkit.run_script()
-    assert result["details"]["unsignedPaths"] == ["unsigned.csv"]
+    assert result["details"]["line"] == 1
+
+
+@pytest.mark.anyio
+async def test_run_script_forwards_structured_variable_summary_without_guessing(
+    binding,  # noqa: F811
+):
+    cell = SimpleNamespace(
+        status="error",
+        stdout="",
+        stderr="",
+        traceback='File "analysis/a.py", line 1\nTypeError: bad',
+        truncated=[],
+        variableSummary={"current_income": {"type": "int", "value": "120"}},
+    )
+    runtime = SimpleNamespace(  # noqa: F811
+        execute_script_process=AsyncMock(
+            return_value=ScriptProcessResult(cell=cell, exit_code=1)
+        )
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script("raise TypeError('bad')\n")
+
+    result = await toolkit.run_script()
+
+    assert result["details"]["variableSummary"] == {
+        "current_income": {"type": "int", "value": "120"}
+    }
+    assert result["details"]["errorType"] == "TypeError"
+
+
+@pytest.mark.anyio
+async def test_run_script_marks_variable_summary_unknown_when_runtime_does_not_expose_locals(
+    binding,  # noqa: F811
+):
+    cell = SimpleNamespace(
+        status="error", stdout="", stderr="", traceback="TypeError: bad", truncated=[]
+    )
+    runtime = SimpleNamespace(  # noqa: F811
+        execute_script_process=AsyncMock(
+            return_value=ScriptProcessResult(cell=cell, exit_code=1)
+        )
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script("raise TypeError('bad')\n")
+
+    result = await toolkit.run_script()
+
+    assert result["details"]["variableSummary"] == {
+        "status": "unknown",
+        "reason": "runtime_did_not_expose_locals",
+    }
 
 
 @pytest.mark.anyio
@@ -213,9 +425,22 @@ async def test_analysis_no_submission_degrades_supplemental_evidence():
         summarize=AsyncMock(), read_file=AsyncMock(), complete=AsyncMock(),
     )
     state = _AnalysisItemState(
-        instruction={"analysisOutputRoot": "evidence/analysis_001"},
+        instruction={
+            "analysisOutputRoot": "evidence/analysis_001",
+            "currentAnalysis": {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset_1"],
+            },
+            "datasets": [{"datasetId": "dataset_1", "columns": ["trend"]}],
+        },
         decision=AnalysisEvidenceDecision(requiresSupplementalEvidence=True,
-                                         reason="missing", missingFacts=("trend",)),
+                                         reason="missing", missingFacts=("trend",),
+                                         codingRequirements=({
+                                             "datasetId": "dataset_1",
+                                             "fields": ["trend"],
+                                             "calculation": "计算趋势",
+                                             "outputName": "trend",
+                                         },)),
     )
     run_context = RunContext(run_id="run", session_id="session")
     for attempt in range(1, MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS):
@@ -238,7 +463,7 @@ async def test_visualization_no_submission_degrades_after_repair_budget():
         degrade=AsyncMock(return_value={"status": "accepted"}),
     )
     result = await workflow.run(
-        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        _visualization_payload(),
         RunContext(run_id="run", session_id="session"),
     )
     assert result.status == "degraded"

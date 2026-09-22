@@ -15,7 +15,7 @@ from smart_reporting.reporting.workflow.runtime.visualization_section_workflow i
 @pytest.mark.anyio
 async def test_escalated_batch_receipts_share_updated_budget_and_available_tools():
     functions = [Function(name=name, entrypoint=lambda: {"ok": True})
-                 for name in ("run_snippet", "run_script", "submit_script")]
+                 for name in ("run", "run_script", "submit_script")]
     for function in functions:
         function.process_entrypoint()
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")

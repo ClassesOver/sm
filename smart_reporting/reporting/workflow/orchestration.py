@@ -5,7 +5,7 @@ from contextvars import ContextVar
 from functools import wraps
 from inspect import isawaitable
 from threading import Lock
-from time import perf_counter
+from time import perf_counter, time
 from typing import Any
 
 from agno.db.base import BaseDb
@@ -42,6 +42,9 @@ class _StepModelMetricsAccumulator:
 _STEP_MODEL_METRICS: ContextVar[_StepModelMetricsAccumulator | None] = ContextVar(
     "reporting_step_model_metrics", default=None
 )
+_PLANNER_REQUEST_RECORDER: ContextVar[PlannerRequestRecorder | None] = ContextVar(
+    "reporting_planner_request_recorder", default=None
+)
 _TOKEN_METRIC_FIELDS = (
     "input_tokens",
     "output_tokens",
@@ -52,12 +55,197 @@ _TOKEN_METRIC_FIELDS = (
 )
 
 
+class PlannerRequestRecorder:
+    """记录 planner 到 provider 的逐请求生命周期，不保存 prompt 或源码。"""
+
+    def __init__(
+        self, planner_id: str, model_id: str,
+        *, sink: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.planner_id = planner_id
+        self.model_id = model_id
+        self.requests: list[dict[str, Any]] = []
+        self.sink = sink
+        self._started_clock = 0.0
+
+    def begin(self) -> dict[str, Any]:
+        self._started_clock = perf_counter()
+        request = {
+            "requestIndex": len(self.requests) + 1,
+            "plannerId": self.planner_id,
+            "model": self.model_id,
+            "providerRequestId": "unknown",
+            "startedAt": int(time() * 1000),
+            "durationMs": "unknown",
+            "inputTokens": "unknown",
+            "outputTokens": "unknown",
+            "reasoningTokens": "unknown",
+            "cacheReadTokens": "unknown",
+            "reasoningEffort": "unknown",
+            "reasoningSummary": "unknown",
+            "requestParams": {},
+            "status": "started",
+        }
+        self.requests.append(request)
+        if self.sink is not None:
+            self.sink.append(request)
+            del self.sink[:-128]
+        logger.bind(
+            reporting_progress="planner_provider_request",
+            planner_id=self.planner_id,
+            model_id=self.model_id,
+            request_index=request["requestIndex"],
+            status="started",
+        ).info(
+            "report_planner_provider_request_started planner_id={} model_id={} request_index={}",
+            self.planner_id,
+            self.model_id,
+            request["requestIndex"],
+        )
+        return request
+
+    def attach_request_params(self, params: Mapping[str, Any]) -> None:
+        if not self.requests or self.requests[-1].get("status") != "started":
+            return
+        allowed = (
+            "reasoning_effort",
+            "reasoning_summary",
+            "max_tokens",
+            "max_completion_tokens",
+            "parallel_tool_calls",
+            "tool_choice",
+        )
+        snapshot = {
+            key: params[key]
+            for key in allowed
+            if key in params and isinstance(params[key], (str, int, float, bool, type(None)))
+        }
+        extra_body = params.get("extra_body")
+        if isinstance(extra_body, Mapping):
+            snapshot["extra_body_keys"] = sorted(str(key) for key in extra_body)
+            for key in ("enable_thinking", "thinking_budget"):
+                value = extra_body.get(key)
+                if isinstance(value, (str, int, float, bool, type(None))):
+                    snapshot[key] = value
+        self.requests[-1]["requestParams"] = snapshot
+        self.requests[-1]["reasoningEffort"] = snapshot.get("reasoning_effort", "unknown")
+        self.requests[-1]["reasoningSummary"] = snapshot.get("reasoning_summary", "unknown")
+
+    def attach_model_config(self, model: Any) -> None:
+        if not self.requests or self.requests[-1].get("status") != "started":
+            return
+        self.requests[-1]["model"] = getattr(model, "id", self.model_id)
+        request_params = self.requests[-1].setdefault("requestParams", {})
+        if not isinstance(request_params, dict):
+            request_params = {}
+            self.requests[-1]["requestParams"] = request_params
+        for source, target in (
+            ("reasoning_effort", "reasoning_effort"),
+            ("_reporting_reasoning_summary", "reasoning_summary"),
+            ("max_tokens", "max_tokens"),
+            ("max_completion_tokens", "max_completion_tokens"),
+            ("parallel_tool_calls", "parallel_tool_calls"),
+            ("tool_choice", "tool_choice"),
+        ):
+            value = getattr(model, source, None)
+            if isinstance(value, (str, int, float, bool, type(None))):
+                request_params[target] = value
+        self.requests[-1]["reasoningEffort"] = request_params.get(
+            "reasoning_effort", "unknown"
+        )
+        self.requests[-1]["reasoningSummary"] = request_params.get(
+            "reasoning_summary", "unknown"
+        )
+
+    def finish(self, response: Any = None, error: BaseException | None = None) -> None:
+        if not self.requests or self.requests[-1].get("status") != "started":
+            return
+        request = self.requests[-1]
+        if error is not None and not isinstance(error, Exception):
+            request["censored"] = True
+            request["interruptionType"] = type(error).__name__
+            return
+        request["durationMs"] = max(0, round((perf_counter() - self._started_clock) * 1000))
+        if error is not None:
+            request.update({"status": "failed", "errorType": type(error).__name__})
+            logger.bind(
+                reporting_progress="planner_provider_request",
+                planner_id=self.planner_id,
+                model_id=self.model_id,
+                request_index=request["requestIndex"],
+                duration_ms=request["durationMs"],
+                status="failed",
+                error_type=type(error).__name__,
+            ).warning(
+                "report_planner_provider_request_failed planner_id={} model_id={} request_index={} duration_ms={} error_type={}",
+                self.planner_id,
+                self.model_id,
+                request["requestIndex"],
+                request["durationMs"],
+                type(error).__name__,
+            )
+            return
+        usage = getattr(response, "response_usage", None)
+        for field, attr in (
+            ("inputTokens", "input_tokens"),
+            ("outputTokens", "output_tokens"),
+            ("reasoningTokens", "reasoning_tokens"),
+            ("cacheReadTokens", "cache_read_tokens"),
+        ):
+            value = getattr(usage, attr, None) if usage is not None else None
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                request[field] = value
+        provider_data = getattr(response, "provider_data", None)
+        response_id = (
+            provider_data.get("id") if isinstance(provider_data, Mapping)
+            else getattr(response, "id", None)
+        )
+        if isinstance(response_id, str) and response_id:
+            request["providerRequestId"] = response_id[:256]
+        request["status"] = "completed"
+        logger.bind(
+            reporting_progress="planner_provider_request",
+            planner_id=self.planner_id,
+            model_id=self.model_id,
+            request_index=request["requestIndex"],
+            duration_ms=request["durationMs"],
+            status="completed",
+            provider_request_id=request["providerRequestId"],
+            input_tokens=request["inputTokens"],
+            output_tokens=request["outputTokens"],
+            reasoning_tokens=request["reasoningTokens"],
+            cache_read_tokens=request["cacheReadTokens"],
+        ).info(
+            "report_planner_provider_request_completed planner_id={} model_id={} request_index={} duration_ms={} input_tokens={} output_tokens={} reasoning_tokens={} cache_read_tokens={}",
+            self.planner_id,
+            self.model_id,
+            request["requestIndex"],
+            request["durationMs"],
+            request["inputTokens"],
+            request["outputTokens"],
+            request["reasoningTokens"],
+            request["cacheReadTokens"],
+        )
+
+
+def bind_planner_request_recorder(recorder: PlannerRequestRecorder):
+    return _PLANNER_REQUEST_RECORDER.set(recorder)
+
+
+def reset_planner_request_recorder(token: Any) -> None:
+    _PLANNER_REQUEST_RECORDER.reset(token)
+
+
+def current_planner_request_recorder() -> PlannerRequestRecorder | None:
+    return _PLANNER_REQUEST_RECORDER.get()
+
+
 def _requires_request_review(output: StepOutput) -> bool:
     content = output.content
     return isinstance(content, dict) and bool(content.get("clarificationQuestion"))
 
 
-def record_step_model_metrics(value: Any) -> None:
+def record_step_model_metrics(value: Any, request_count: int | None = None) -> None:
     """把步骤内部模型调用的 usage 汇总到当前异步步骤上下文。"""
     current = _STEP_MODEL_METRICS.get()
     if current is None or value is None:
@@ -76,13 +264,20 @@ def record_step_model_metrics(value: Any) -> None:
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)
     additional_metrics: dict[str, int | float] = {}
+    if isinstance(request_count, int) and not isinstance(request_count, bool) and request_count >= 0:
+        additional_metrics["request_count"] = request_count
     for alias, field in (
         ("requestCount", "request_count"),
         ("timeToFirstTokenSeconds", "time_to_first_token_seconds"),
     ):
-        metric = value.get(alias) if isinstance(value, Mapping) else None
+        additional = getattr(value, "additional_metrics", None)
+        metric = (
+            value.get(alias)
+            if isinstance(value, Mapping)
+            else (additional.get(field) if isinstance(additional, Mapping) else None)
+        )
         if isinstance(metric, int | float) and not isinstance(metric, bool) and metric >= 0:
-            additional_metrics[field] = metric
+            additional_metrics.setdefault(field, metric)
     if additional_metrics:
         incoming.additional_metrics = additional_metrics
     current.add(incoming)

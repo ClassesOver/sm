@@ -53,17 +53,19 @@ PROFILE_GENERATION_TIMEOUT_SECONDS = 5 * 60
 
 
 async def _run_profile_job(profile_job: Any, limiter: anyio.CapacityLimiter) -> Any:
-    try:
-        with anyio.fail_after(PROFILE_GENERATION_TIMEOUT_SECONDS):
-            return await anyio.to_thread.run_sync(
-                profile_job,
-                abandon_on_cancel=True,
-                limiter=limiter,
-            )
-    except TimeoutError as error:
-        raise ReportingError(
-            "report_analysis_profile_timeout", "CSV 数据集画像生成超时。"
-        ) from error
+    # 串行排队不消耗当前数据集的计算预算。
+    async with limiter:
+        try:
+            with anyio.fail_after(PROFILE_GENERATION_TIMEOUT_SECONDS):
+                return await anyio.to_thread.run_sync(
+                    profile_job,
+                    abandon_on_cancel=True,
+                    limiter=anyio.CapacityLimiter(1),
+                )
+        except TimeoutError as error:
+            raise ReportingError(
+                "report_analysis_profile_timeout", "CSV 数据集画像生成超时。"
+            ) from error
 
 
 class RuntimeDatasetsMixin:

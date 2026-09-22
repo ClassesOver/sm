@@ -54,6 +54,8 @@ class ManagedReportingWorkflow(Workflow):
     """执行仍由 Agno 负责，只在 Run 前后管理 Reporting 独占资源。"""
 
     def __init__(self, *, lifecycle: ReportingWorkflowLifecycle, **kwargs: Any) -> None:
+        if kwargs.get("name") is None:
+            kwargs["name"] = kwargs.get("id") or "reporting"
         super().__init__(**kwargs)
         self.lifecycle = lifecycle
 

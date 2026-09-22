@@ -116,6 +116,83 @@ def test_entire_batch_is_validated_before_tools_can_execute():
         model._parse_provider_response(response)
 
 
+def test_mixed_custom_function_custom_response_preserves_provider_order():
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(tools, max_model_requests=2)
+    model.get_request_params(messages=[], tools=tools)
+    response = _batch_response(
+        _custom_response("write_script", "# Python\nprint(1)\n", 1),
+        _function_response(2, "run_script", {}),
+        _custom_response("write_script", "# Python\nprint(2)\n", 3),
+    )
+
+    parsed = model._parse_provider_response(response)
+
+    assert [call["function"]["name"] for call in parsed.tool_calls] == [
+        "write_script", "run_script", "write_script",
+    ]
+    assert [call["call_id"] for call in parsed.tool_calls] == [
+        "call-1", "call-2", "call-3",
+    ]
+
+
+@pytest.mark.anyio
+async def test_mixed_batch_failure_executes_once_and_replays_skipped_ids():
+    executed: list[str] = []
+
+    async def write_script(**_kwargs):
+        executed.append("write_script")
+        return {"ok": False, "code": "rejected"}
+
+    async def run_script(**_kwargs):
+        executed.append("run_script")
+        return {"ok": True}
+
+    write = Function(name="write_script", entrypoint=write_script)
+    run = Function(name="run_script", entrypoint=run_script)
+    for function in (write, run):
+        function.process_entrypoint()
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run((write, run), max_model_requests=2)
+    model.get_request_params(messages=[], tools=(write, run))
+    parsed = model._parse_provider_response(_batch_response(
+        _custom_response("write_script", "# Python\nprint(1)\n", 1),
+        _function_response(2, "run_script", {}),
+        _custom_response("write_script", "# Python\nprint(2)\n", 3),
+    ))
+    assert [
+        item.get("provider_data", {}).get("reporting_wire_type")
+        for item in parsed.tool_calls
+    ] == ["custom", None, "custom"]
+    calls = []
+    for item in parsed.tool_calls:
+        name = item["function"]["name"]
+        arguments = json.loads(item["function"]["arguments"])
+        calls.append(FunctionCall(
+            function=write if name == "write_script" else run,
+            call_id=item["call_id"],
+            arguments=arguments,
+        ))
+    results: list[Message] = []
+
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=calls,
+            function_call_results=results,
+            current_function_call_count=0,
+            function_call_limit=3,
+        )
+    ]
+
+    assert executed == ["write_script"]
+    assert [result.tool_call_id for result in results] == [
+        "call-1", "call-2", "call-3",
+    ]
+    assert all(json.loads(result.content)["status"] == "skipped" for result in results[1:])
+
+
 @pytest.mark.anyio
 async def test_async_tool_execution_emits_safe_progress_and_path() -> None:
     async def write_script() -> dict[str, object]:
@@ -188,7 +265,7 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
 
     functions = {
         name: tool(name)
-        for name in ("run_snippet", "write_script", "run_script", "submit_script")
+        for name in ("run", "write_script", "run_script", "submit_script")
     }
     for function in functions.values():
         function.process_entrypoint()
@@ -203,7 +280,7 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
         async for event in model.arun_function_calls(
             function_calls=[
                 FunctionCall(
-                    function=functions["run_snippet"],
+                    function=functions["run"],
                     call_id=f"probe-{index}",
                     arguments={"code": "1 + 1"},
                 )
@@ -255,6 +332,76 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
 
 
 @pytest.mark.anyio
+async def test_reserved_budget_allows_and_recommends_required_source_read() -> None:
+    executed: list[str] = []
+
+    def tool(name: str) -> Function:
+        async def entrypoint(**_kwargs):
+            executed.append(name)
+            return {"ok": True}
+
+        function = Function(name=name, entrypoint=entrypoint)
+        function.process_entrypoint()
+        return function
+
+    functions = {
+        name: tool(name)
+        for name in ("run", "read_script", "edit_script", "run_script")
+    }
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    model.configure_code_run(
+        tuple(functions.values()),
+        max_model_requests=4,
+        delivery_reserve=3,
+        delivery_state_reader=lambda: {
+            "nextTools": ["read_script", "edit_script", "run_script"]
+        },
+    )
+    rejected: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[
+                FunctionCall(
+                    function=functions["run"],
+                    call_id="exploration",
+                    arguments={},
+                )
+            ],
+            function_call_results=rejected,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+    rejected_payload = json.loads(rejected[0].content)
+    assert rejected_payload["details"]["requiredNextTools"] == [
+        "edit_script",
+        "read_script",
+        "run_script",
+    ]
+
+    results: list[Message] = []
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=[
+                FunctionCall(
+                    function=functions["read_script"],
+                    call_id="required-read",
+                    arguments={},
+                )
+            ],
+            function_call_results=results,
+            current_function_call_count=17,
+            function_call_limit=20,
+        )
+    ]
+
+    assert executed == ["read_script"]
+    assert literal_eval(results[0].content)["ok"] is True
+
+
+@pytest.mark.anyio
 async def test_visual_delivery_reserve_includes_each_image_review() -> None:
     executed: list[str] = []
 
@@ -270,7 +417,7 @@ async def test_visual_delivery_reserve_includes_each_image_review() -> None:
     functions = {
         name: tool(name)
         for name in (
-            "run_snippet",
+            "run",
             "write_script",
             "run_script",
             "view_image",
@@ -313,7 +460,7 @@ async def test_visual_delivery_reserve_includes_each_image_review() -> None:
 
 @pytest.mark.anyio
 async def test_repeated_delivery_reserve_rejection_eventually_consumes_budget() -> None:
-    function = Function(name="run_snippet", entrypoint=lambda: {"ok": True})
+    function = Function(name="run", entrypoint=lambda: {"ok": True})
     function.process_entrypoint()
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     model.configure_code_run((function,), max_model_requests=4, delivery_reserve=3)
@@ -348,18 +495,18 @@ async def test_repeated_delivery_reserve_rejection_eventually_consumes_budget() 
 async def test_successful_delivery_call_resets_reserve_rejection_escalation() -> None:
     """一次成功的交付类调用之后，升级计数必须归零，不能让此前的拒绝历史
     带到下一次预留区拒绝上。"""
-    run_snippet = Function(name="run_snippet", entrypoint=lambda: {"ok": True})
-    run_snippet.process_entrypoint()
+    run = Function(name="run", entrypoint=lambda: {"ok": True})
+    run.process_entrypoint()
     write_script = Function(name="write_script", entrypoint=lambda: {"ok": True})
     write_script.process_entrypoint()
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    model.configure_code_run((run_snippet, write_script), max_model_requests=6, delivery_reserve=3)
+    model.configure_code_run((run, write_script), max_model_requests=6, delivery_reserve=3)
 
     first: list[Message] = []
     _ = [
         event
         async for event in model.arun_function_calls(
-            function_calls=[FunctionCall(function=run_snippet, call_id="first", arguments={})],
+            function_calls=[FunctionCall(function=run, call_id="first", arguments={})],
             function_call_results=first,
             current_function_call_count=17,
             function_call_limit=20,
@@ -385,7 +532,7 @@ async def test_successful_delivery_call_resets_reserve_rejection_escalation() ->
     _ = [
         event
         async for event in model.arun_function_calls(
-            function_calls=[FunctionCall(function=run_snippet, call_id="second", arguments={})],
+            function_calls=[FunctionCall(function=run, call_id="second", arguments={})],
             function_call_results=second,
             current_function_call_count=17,
             function_call_limit=20,

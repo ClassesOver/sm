@@ -174,6 +174,36 @@ def _block_validation_feedback(markdown: str, error: ReportingError) -> str:
     return "".join(segments)
 
 
+class ChartDataBinding(StrictModel):
+    analysis_id: str = Field(alias="analysisId", min_length=1, max_length=128)
+    fact_path: str = Field(alias="factPath", min_length=1, max_length=1024)
+    data_path: str = Field(alias="dataPath", min_length=1, max_length=512)
+    fields: tuple[str, ...] = Field(min_length=1, max_length=100)
+    role: str = Field(min_length=1, max_length=200)
+
+    @field_validator("fact_path")
+    @classmethod
+    def validate_fact_path(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
+            raise ValueError("图表事实路径必须是安全工作区相对路径")
+        return path.as_posix()
+
+    @field_validator("analysis_id", "data_path", "role")
+    @classmethod
+    def validate_nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("图表数据绑定文本不能为空")
+        return value
+
+    @field_validator("fields")
+    @classmethod
+    def validate_fields(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item.strip() for item in value) or len(value) != len(set(value)):
+            raise ValueError("图表数据绑定字段必须非空且不能重复")
+        return value
+
+
 class ChartDraft(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
@@ -202,6 +232,10 @@ class ChartDraft(StrictModel):
     source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
+    visual_form: str = Field(alias="visualForm", min_length=1, max_length=200)
+    data_bindings: tuple[ChartDataBinding, ...] = Field(
+        alias="dataBindings", min_length=1, max_length=100
+    )
 
     @field_validator("title", "alt_text")
     @classmethod
@@ -266,6 +300,18 @@ class ChartDraft(StrictModel):
             raise ValueError("reference_only 图表不得声明严格同比或环比")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("图表 citationIds 不能重复")
+        binding_keys = [
+            (
+                item.analysis_id,
+                item.fact_path,
+                item.data_path,
+                item.fields,
+                item.role,
+            )
+            for item in self.data_bindings
+        ]
+        if len(binding_keys) != len(set(binding_keys)):
+            raise ValueError("图表 dataBindings 不能重复")
         return self
 
 

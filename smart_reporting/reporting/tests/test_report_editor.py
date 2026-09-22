@@ -747,6 +747,10 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     )
     await workspace.awrite_bytes(scope.workspace_key, "reports/revision-1/report.pdf", b"old-pdf")
     await workspace.awrite_bytes(scope.workspace_key, "reports/revision-1/report.docx", b"old-word")
+    image = b"chart-image"
+    spec = b'{"data":[{"type":"bar","x":[1],"y":[2]}]}'
+    await workspace.awrite_bytes(scope.workspace_key, "reports/revision-1/chart-001.png", image)
+    await workspace.awrite_bytes(scope.workspace_key, "reports/revision-1/chart-001.plotly.json", spec)
     job = {
         "jobId": job_id,
         "_threadBinding": hashlib.sha256(scope.workspace_key.encode()).hexdigest(),
@@ -773,7 +777,18 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
                 "size": 8,
                 "sha256": hashlib.sha256(b"old-word").hexdigest(),
             },
-            "images": [],
+            "images": [{
+                "path": "reports/revision-1/chart-001.png",
+                "size": len(image),
+                "sha256": hashlib.sha256(image).hexdigest(),
+            }],
+        },
+        "interactiveCharts": {
+            "reports/revision-1/chart-001.png": {
+                "path": "reports/revision-1/chart-001.plotly.json",
+                "size": len(spec),
+                "sha256": hashlib.sha256(spec).hexdigest(),
+            }
         },
         "validation": {"ok": True},
     }
@@ -894,6 +909,16 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     next_context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
     assert next_context.markdown_path == "reports/revision-2/report.md"
     assert next_context.job["render"]["pdf"]["path"] == "reports/revision-2/report.pdf"
+    assert next_context.job["render"]["images"] == [{
+        "path": "reports/revision-2/chart-001.png",
+        "size": len(image),
+        "sha256": hashlib.sha256(image).hexdigest(),
+    }]
+    assert await service.interactive_charts(next_context) == {
+        "reports/revision-2/chart-001.png": "reports/revision-2/chart-001.plotly.json"
+    }
+    assert (await service.read_asset(next_context, "chart-001.png"))[0] == image
+    assert (await service.read_asset(next_context, "chart-001.plotly.json"))[0] == spec
 
 
 @pytest.mark.anyio

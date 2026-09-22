@@ -41,6 +41,17 @@ class FakeWorkspace:
             self.cleanup_stopped.set()
 
 
+class FakeCloseable:
+    def __init__(self, error=None):
+        self.close_calls = 0
+        self.error = error
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self.error is not None:
+            raise self.error
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -145,6 +156,43 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
         assert workspace.close_calls == 0
     assert workspace.close_calls == 1
     assert workspace.cleanup_stopped.is_set()
+
+
+@pytest.mark.anyio
+async def test_application_lifespan_closes_all_reporting_resources_after_error(monkeypatch):
+    captured = {}
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            captured.update(values)
+
+        def get_app(self):
+            return captured["base_app"]
+
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
+    workspace = FakeWorkspace("lifespan")
+    runtime_error = RuntimeError("runtime close failed")
+    runtime = FakeCloseable(runtime_error)
+    lsp_manager = FakeCloseable()
+    context = ApplicationContext(
+        AgentSettings.from_environment({}, load_env_file=False),
+        workspace,
+        FakeAgent(),
+        FakeWorkflow(),
+        reporting_code_mode_runtime=runtime,
+        reporting_lsp_process_manager=lsp_manager,
+    )
+
+    create_agentos_app(context, FastAPI())
+    with pytest.raises(RuntimeError, match="runtime close failed") as raised:
+        async with captured["lifespan"](FastAPI()):
+            await asyncio.wait_for(workspace.cleanup_started.wait(), timeout=0.1)
+
+    assert raised.value is runtime_error
+    assert workspace.cleanup_stopped.is_set()
+    assert runtime.close_calls == 1
+    assert lsp_manager.close_calls == 1
+    assert workspace.close_calls == 1
 
 
 @pytest.mark.anyio

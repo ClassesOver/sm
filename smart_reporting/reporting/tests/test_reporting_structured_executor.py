@@ -106,6 +106,14 @@ async def test_structured_executor_extracts_complete_json_object_from_model_prea
                 "sourceDatasetId": "dataset_001",
                 "aggregationGrain": "month",
                 "comparability": "strict",
+                "visualForm": "按月折线图",
+                "dataBindings": [{
+                    "analysisId": "analysis_001",
+                    "factPath": "facts/analysis_001.json",
+                    "dataPath": "metrics[0].periodValues",
+                    "fields": ["period", "value"],
+                    "role": "月度趋势",
+                }],
             }
         ],
         "warnings": [],
@@ -310,6 +318,26 @@ def test_reporting_agno_parser_recovers_later_complete_plan_object(
     assert not any("Validation failed on merged data" in warning for warning in warnings)
 
 
+def test_visualization_generator_explains_renderer_selection_for_each_mode() -> None:
+    agent = create_reporting_generator_agent(
+        model=OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost"),
+        output_schema=VisualizationPlanDraft,
+        name="reporting-visualization-generator",
+    )
+    instructions = "\n".join(agent.instructions)
+
+    for mode in ("static", "interactive", "auto"):
+        assert f"visualizationMode={mode}" in instructions
+    assert "renderer=matplotlib" in instructions
+    assert "renderer=plotly" in instructions
+    assert "interactivePath" in instructions
+    assert "sourcePath" in instructions
+    assert "visualForm" in instructions
+    assert "dataBindings" in instructions
+    assert "dataDescriptors" in instructions
+    assert "不得自行生成 factPath、dataPath 或 fields" in instructions
+
+
 def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
     model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
     agent = create_reporting_generator_agent(
@@ -332,6 +360,14 @@ def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
                     "sourceDatasetId": "dataset_001",
                     "aggregationGrain": "month",
                     "comparability": "strict",
+                    "visualForm": "按月折线图",
+                    "dataBindings": [{
+                        "analysisId": "analysis_001",
+                        "factPath": "facts/analysis_001.json",
+                        "dataPath": "metrics[0].periodValues",
+                        "fields": ["period", "value"],
+                        "role": "月度趋势",
+                    }],
                 }
             ],
             "warnings": [],

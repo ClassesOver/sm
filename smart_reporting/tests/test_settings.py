@@ -5,6 +5,8 @@ import pytest
 from smart_reporting.reporting.agent import _report_model
 from smart_reporting.runtime.settings import (
     DEFAULT_AGENT_DB_URL,
+    DEFAULT_MPLCONFIGDIR,
+    DEFAULT_REPORTING_HOST_WORKSPACE_ROOT,
     DEFAULT_WORKSPACE_SNAPSHOT,
     AgentSettings,
 )
@@ -12,14 +14,18 @@ from smart_reporting.runtime.settings import (
 
 def settings(values=None, **overrides):
     environ = {} if values is None else values
-    environ.setdefault("REPORTING_HOST_WORKSPACE_ROOT", "/tmp/smart-reporting-test-workspaces")
     environ.update(overrides)
     return AgentSettings.from_environment(environ, load_env_file=False)
 
 
 def test_settings_defaults():
-    current = settings()
+    environ: dict[str, str] = {}
+
+    current = settings(environ)
+
     assert current.env_file == ".env"
+    assert environ["MPLCONFIGDIR"] == DEFAULT_MPLCONFIGDIR
+    assert current.reporting_host_workspace_root == DEFAULT_REPORTING_HOST_WORKSPACE_ROOT
     assert current.port == 7777
     assert current.workers == 1
     assert current.log_file_path is None
@@ -68,6 +74,20 @@ def test_settings_defaults():
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
     assert current.report_public_base_url is None
+
+
+def test_runtime_directory_defaults_allow_environment_overrides(tmp_path: Path) -> None:
+    matplotlib_root = tmp_path / "matplotlib"
+    workspace_root = tmp_path / "reporting-workspaces"
+    environ = {
+        "MPLCONFIGDIR": str(matplotlib_root),
+        "REPORTING_HOST_WORKSPACE_ROOT": str(workspace_root),
+    }
+
+    current = settings(environ)
+
+    assert environ["MPLCONFIGDIR"] == str(matplotlib_root)
+    assert current.reporting_host_workspace_root == str(workspace_root)
 
 
 def test_agent_feature_flags_can_be_disabled():

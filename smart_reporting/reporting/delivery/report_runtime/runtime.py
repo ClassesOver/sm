@@ -225,7 +225,7 @@ class ReportRuntime:
             )
             if output.parent != word_output.parent:
                 raise ReportFailure("PDF 和 Word 必须发布到同一 revision 目录")
-            temporary = _temporary_pdf_path(temporary_path)
+            temporary = _temporary_pdf_path(self.workspace, temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
 
@@ -438,7 +438,7 @@ class ReportRuntime:
             blank_pages: list[int] = []
             missing_page_layout: list[int] = []
             rendered_image_count = 0
-            temp_path = _validation_directory(temporary_directory)
+            temp_path = _validation_directory(self.workspace, temporary_directory)
             with _cleanup_directory(temp_path):
                 prefix = temp_path / "page"
                 try:

@@ -164,6 +164,7 @@ from ...profile import (
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...vision import ReportVisionReviewer
 from ...workspace import WorkspaceReportService
+from ..benchmark_variants import BenchmarkPlannerSpec, LegacyAnalysisEvidenceDecision
 from ..checkpoint import (
     AnalysisArtifact,
     AnalysisChart,
@@ -191,7 +192,13 @@ from ..execution import (
     MAX_REPORT_INSTRUCTION_BYTES,
     ReportingTaskCoordinator,
 )
-from ..orchestration import create_reporting_workflow, record_step_model_metrics
+from ..orchestration import (
+    PlannerRequestRecorder,
+    bind_planner_request_recorder,
+    create_reporting_workflow,
+    record_step_model_metrics,
+    reset_planner_request_recorder,
+)
 from ..query_pipeline import (
     ApprovedQuery,
     DatasetLineage,
@@ -260,6 +267,7 @@ REPORT_OUTLINE_HASH_STATE_KEY = "report_outline_hash"
 REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY = "report_document_generated_date"
 REPORT_WORKFLOW_RESULT_STATE_KEY = "report_workflow_result"
 REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
+REPORT_PLANNER_REQUEST_METRICS_STATE_KEY = "planner_request_metrics"
 # 每个章节/分析项的 fresh retry 上限；模型未调用工具、工具拒绝或验收失败都必须
 # 重新创建上下文，最多三次，避免单次模型异常直接拖垮整条报表链路。
 MAX_REPORT_SECTION_PHASE_ATTEMPTS = 3
@@ -409,6 +417,50 @@ OUTLINE_SECTION_COUNT_INSTRUCTION = (
     "必须优先遵守 reportGoal 中明确的章节数量约束（例如‘一个章节’）；"
     "该约束高于按 analysisId 拆分章节的默认组织方式，所有相关 analysisId 应合并到"
     "不超过用户指定数量的章节中。用户未指定数量时才按分析计划动态拆分。"
+)
+
+
+_ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION = (
+    "existingFacts 是当前分析项已确认的紧凑事实和对账基准；直接复用，不重复计算已确定总量，"
+    "也不得把业务对账差异强行改成相等。"
+)
+
+_ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
+    "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
+    "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
+    "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得改用 currentAnalysis.fields、其他 Dataset 字段或为了验证假设读取未签发数据。",
+    "evidencePath 的 JSON 结构、null、行编码和对账语义以 outputContract 为准；analysisId 和 datasetIds 由固定 Workflow 注入，脚本不得输出。",
+    "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
+    "脚本不得访问网络、环境变量、数据库、工作区其他路径或启动子进程。",
+    "readReceipt 存在时只修复该受信脚本，不改变原始事实缺口或签发路径。",
+    "diagnostic 是服务端结构化失败事实；必须逐项读取 code、message 和 details.path，修正导致执行或 evidence 校验失败的代码。",
+)
+
+_ANALYSIS_CODE_LEGACY_INSTRUCTIONS = (
+    "只实现 evidenceDecision.missingFacts 所需计算；currentAnalysis.actions 是背景，不额外扩展分析目标。",
+    "签发数据无法提供的缺失期间或字段如实写入 warnings；继续完成可计算缺口，不推算缺失数据，不设计额外数据获取或通用兼容框架。",
+    _ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION,
+    *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,
+)
+
+_ANALYSIS_CODE_INSTRUCTIONS = (
+    "只针对 codingRequirements 生成一个最小 Python 脚本；事实缺口已由上游决定，不得重新判断。",
+    "逐项使用 codingRequirements 中已签发的 datasetId、fields、calculation 和 outputName；不得重新选择数据集、字段或计算目标。",
+    _ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION,
+    *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,
+)
+
+_ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS = (
+    "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+    "只返回 requiresSupplementalEvidence、reason、missingFacts，不得生成 script 或任何代码。",
+    "固定事实足够时 missingFacts 必须是空数组，不得为了探索数据而声明缺口。",
+)
+
+_ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
+    "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
+    "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
+    "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
+    "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
 )
 
 
@@ -649,17 +701,13 @@ class _ReportWorkflowRuntimeBase:
         self._analysis_evidence_agent = self._planning_agent(
             reporting_agent_template,
             "report-analysis-evidence-planner",
-            AnalysisEvidenceDecision,
+            LegacyAnalysisEvidenceDecision,
             thinking_policy=ThinkingPolicyConfig(
                 operation="analysis_evidence",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
             ),
-            stage_instructions=(
-                "先对照 currentAnalysis 的管理问题与 deterministicFacts，只有缺少回答该问题的必需构成、归因或对比事实时才设置 requiresSupplementalEvidence=true。",
-                "只返回 requiresSupplementalEvidence、reason、missingFacts，不得生成 script 或任何代码。",
-                "固定事实足够时 missingFacts 必须为空数组，不得为了探索数据而声明缺口。",
-            ),
+            stage_instructions=_ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS,
         )
         from ...agent import create_reporting_code_agent_factory
 
@@ -676,23 +724,9 @@ class _ReportWorkflowRuntimeBase:
         self._analysis_script_agent_factory = create_reporting_code_agent_factory(
             model=analysis_code_model,
             name="report-analysis-script-writer",
+            task_kind="analysis",
             role="只根据签发事实缺口生成或修复补证 Python 脚本。",
-            instructions=(
-                "只针对 evidenceDecision.missingFacts 生成一个最小 Python 脚本；不得重新判断事实缺口。",
-                "脚本只能读取 datasets 中签发的 CSV path，并只写入输入给定的 evidencePath。",
-                "必须逐字使用 datasets[].path 和 evidencePath；不得使用 __file__、cwd 或 .. 目录回退重新推导路径。",
-                "使用单向线性数据流；所有后续读取的局部变量必须在进入条件分支前初始化，并确保每个分支都赋值。",
-                "每个 CSV 只能使用同一 datasets[] 项声明的 columns；不得把 currentAnalysis.fields 或其他 Dataset 的字段用于该 CSV。",
-                "evidencePath 必须写为 JSON 对象，且只含 findings、reconciliations、warnings；"
-                "analysisId 和 datasetIds 由固定 Workflow 注入，脚本不得输出 analysisId 或 datasetIds；"
-                "findings 至少一项，reconciliations 至少一项且每项含 name 和 passed。",
-                "表格型 finding 必须使用 name、columns、rows 列式结构：columns 只声明一次字段名，rows 使用等长值数组；不得输出重复字段名的对象行数组。",
-                "写入 evidencePath 时必须使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑编码；不得使用 indent，且不得删减任何已计算事实。",
-                "构成分析必须计算分项合计与总量差异，对账成功才把 passed 写为 true；不得猜测、补齐或替换缺失值。",
-                "脚本不得访问网络、环境变量、数据库、工作区其他路径或启动子进程。",
-                "readReceipt 存在时只修复该受信脚本，不改变原始事实缺口或签发路径。",
-                "diagnostic 是服务端结构化失败事实；必须逐项读取 code、message 和 details.path，修正导致执行或 evidence 校验失败的代码。",
-            ),
+            instructions=_ANALYSIS_CODE_LEGACY_INSTRUCTIONS,
         )
         self._analysis_summary_agent = self._planning_agent(
             reporting_agent_template,
@@ -811,6 +845,23 @@ class _ReportWorkflowRuntimeBase:
         agent.num_history_runs = None
         setattr(agent, "_reporting_thinking", thinking_policy)
         return agent
+
+    @staticmethod
+    def _benchmark_planning_agent(
+        planner: Agent,
+        spec: BenchmarkPlannerSpec,
+        *,
+        thinking_policy: ThinkingPolicyConfig,
+    ) -> Agent:
+        """按冻结 benchmark spec 在首次请求前创建 planner 副本。"""
+
+        return _ReportWorkflowRuntimeBase._planning_agent(
+            planner,
+            f"benchmark-{spec.task_kind}-{spec.variant.value}-planner",
+            spec.output_schema,
+            thinking_policy=thinking_policy,
+            stage_instructions=spec.instructions,
+        )
 
     def workflow(self):
         async def finalize_publication(
@@ -943,6 +994,22 @@ class _ReportWorkflowRuntimeBase:
         serialized_payload = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":"), default=str
         )
+        planner_recorder = PlannerRequestRecorder(
+            planner_id=str(getattr(agent, "id", "unknown")),
+            model_id=str(getattr(getattr(agent, "model", None), "id", "unknown")),
+            sink=self._state(run_context).setdefault(REPORT_PLANNER_REQUEST_METRICS_STATE_KEY, []),
+        )
+        loguru_logger.bind(
+            reporting_progress="planner",
+            planner_id=planner_recorder.planner_id,
+            model_id=planner_recorder.model_id,
+            status="started",
+        ).info(
+            "report_planner_started planner_id={} model_id={}",
+            planner_recorder.planner_id,
+            planner_recorder.model_id,
+        )
+        recorder_token = bind_planner_request_recorder(planner_recorder)
         try:
             structured = await ReportingStructuredOutputExecutor(agent).execute(
                 serialized_payload,
@@ -964,13 +1031,26 @@ class _ReportWorkflowRuntimeBase:
             ) from error
         except ReportingError:
             raise
+        finally:
+            reset_planner_request_recorder(recorder_token)
+            loguru_logger.bind(
+                reporting_progress="planner",
+                planner_id=planner_recorder.planner_id,
+                model_id=planner_recorder.model_id,
+                provider_request_count=len(planner_recorder.requests),
+            ).info(
+                "report_planner_observation_saved planner_id={} model_id={} provider_request_count={}",
+                planner_recorder.planner_id,
+                planner_recorder.model_id,
+                len(planner_recorder.requests),
+            )
         output = structured.run_output
         content = structured.content
         metrics = getattr(output, "metrics", None)
         if model_metrics_recorder is not None:
             model_metrics_recorder(output, structured.model_request_count)
         else:
-            record_step_model_metrics(metrics)
+            record_step_model_metrics(metrics, structured.model_request_count)
         schema = agent.output_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             raise ReportingError("report_planner_invalid", "报表规划器缺少结构化输出。")

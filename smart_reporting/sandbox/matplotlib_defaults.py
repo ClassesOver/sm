@@ -1,3 +1,6 @@
+import runpy
+import sys
+
 MATPLOTLIBRC_CONTENT = """backend: Agg
 font.family: sans-serif
 font.sans-serif: Noto Sans CJK SC, DejaVu Sans
@@ -93,3 +96,17 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
         "        RuntimeWarning,\n"
         "    )\n"
     )
+
+
+def run_reporting_script(script_path: str, runtime_root: str) -> None:
+    """在正式脚本进程内应用 Matplotlib 默认值后执行签发脚本。"""
+
+    namespace: dict[str, object] = {}
+    bootstrap = matplotlib_bootstrap(runtime_root)
+    exec(compile(bootstrap, "<matplotlib-bootstrap>", "exec"), namespace)
+    previous_argv = sys.argv
+    sys.argv = [script_path]
+    try:
+        runpy.run_path(script_path, run_name="__main__")
+    finally:
+        sys.argv = previous_argv

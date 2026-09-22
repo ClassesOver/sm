@@ -13,6 +13,8 @@ from fastmcp.server.auth import AuthProvider
 
 from ..async_utils import complete_cleanup
 from ..quality_warnings.service import QualityWarningService
+from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
+from ..reporting.code_mode import ReportingCodeModeRuntime
 from ..workspace import WorkspaceService
 from .database import AgentDatabase
 from .settings import AgentSettings
@@ -28,6 +30,8 @@ class ApplicationContext:
     quality_warning_service: QualityWarningService | None = None
     mcp_config: MCPServerConfig | None = None
     mcp_auth: AuthProvider | None = None
+    reporting_code_mode_runtime: ReportingCodeModeRuntime | None = None
+    reporting_lsp_process_manager: ReportingLspProcessManager | None = None
 
 
 def create_agentos_app(
@@ -43,6 +47,7 @@ def create_agentos_app(
         try:
             yield
         finally:
+            first_error: BaseException | None = None
             for task in tasks:
                 task.cancel()
             for task in tasks:
@@ -50,7 +55,23 @@ def create_agentos_app(
                     await complete_cleanup(task)
                 except asyncio.CancelledError:
                     pass
-            await context.workspace_service.aclose()
+                except BaseException as error:
+                    if first_error is None:
+                        first_error = error
+            for resource in (
+                context.reporting_code_mode_runtime,
+                context.reporting_lsp_process_manager,
+                context.workspace_service,
+            ):
+                if resource is None:
+                    continue
+                try:
+                    await resource.aclose()
+                except BaseException as error:
+                    if first_error is None:
+                        first_error = error
+            if first_error is not None:
+                raise first_error
 
     agent_os = AgentOS(
         name="开发智能体服务",

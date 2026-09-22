@@ -32,6 +32,15 @@ def test_reporting_runtime_image_includes_git_patch_kernel() -> None:
     assert "git" in system_dependencies.split()
 
 
+def test_reporting_runtime_image_owns_directory_defaults() -> None:
+    repository_root = Path(__file__).parents[2]
+    dockerfile = (repository_root / "Dockerfile").read_text(encoding="utf-8")
+    runtime_environment = dockerfile.split("ENV AGENT_OS_HOST=0.0.0.0", maxsplit=1)[1]
+
+    assert "MPLCONFIGDIR=/tmp/reporting-matplotlib" in runtime_environment
+    assert "REPORTING_HOST_WORKSPACE_ROOT=/tmp/smart-reporting-workspaces" in runtime_environment
+
+
 def test_reporting_compose_only_exposes_daytona_sdk_url():
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(

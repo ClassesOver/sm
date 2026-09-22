@@ -6,6 +6,7 @@ from smart_reporting.runtime.execution import (
     ExecutionContext,
     close_execution_resources,
     configure_execution_tracing,
+    create_execution_context,
 )
 from smart_reporting.runtime.settings import AgentSettings
 
@@ -16,6 +17,54 @@ class _Client:
 
     async def aclose(self):
         self.closed += 1
+
+
+def test_create_execution_context_uses_reporting_code_mode_factory_configuration(
+    tmp_path, monkeypatch
+):
+    settings = AgentSettings.from_environment(
+        {
+            "REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path),
+            "AGENT_REPORT_ANALYSIS_CONCURRENCY": "2",
+            "AGENT_REPORT_SECTION_CONCURRENCY": "3",
+        },
+        load_env_file=False,
+    )
+    database = SimpleNamespace(async_db=object(), sync_db=object())
+    runtime = object()
+    calls = []
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.AsyncSandboxRegistry",
+        lambda _database: object(),
+    )
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.create_sandbox_provider",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "smart_reporting.runtime.execution.create_reporting_code_mode_runtime",
+        lambda root, **values: calls.append((root, values)) or runtime,
+        raising=False,
+    )
+
+    context = create_execution_context(
+        settings,
+        database_factory=lambda _url: database,
+        tracing_configurer=lambda *_args, **_kwargs: None,
+        workspace_factory=lambda **_kwargs: object(),
+    )
+
+    assert context.reporting_code_mode_runtime is runtime
+    assert calls == [
+        (
+            tmp_path,
+            {
+                "analysis_concurrency": 2,
+                "section_concurrency": 3,
+                "timeout": 900,
+            },
+        )
+    ]
 
 
 def test_configure_execution_tracing使用同步数据库和批处理():

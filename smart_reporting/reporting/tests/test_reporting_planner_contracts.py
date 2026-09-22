@@ -76,6 +76,9 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
 )
 from smart_reporting.reporting.structured_output import ReportingStructuredOutputExecutor
+from smart_reporting.reporting.workflow.benchmark_variants import (
+    LegacyAnalysisEvidenceDecision,
+)
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
@@ -98,6 +101,7 @@ from smart_reporting.reporting.workflow.runtime import datasets as reporting_dat
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
 from smart_reporting.reporting.workflow.runtime import sections as reporting_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
+    RuntimeAnalysisMixin,
     _analysis_item_complexity,
     _analysis_item_dataset_inputs,
     _analysis_item_output_root,
@@ -1486,6 +1490,26 @@ async def test_profile_job_runs_in_current_process_worker_thread() -> None:
 
 
 @pytest.mark.anyio
+async def test_profile_job_queue_wait_does_not_consume_execution_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(reporting_datasets, "PROFILE_GENERATION_TIMEOUT_SECONDS", 0.01)
+    limiter = anyio.CapacityLimiter(1)
+    borrower = object()
+    await limiter.acquire_on_behalf_of(borrower)
+    results = []
+
+    async def run_queued():
+        results.append(await reporting_datasets._run_profile_job(lambda: 42, limiter))
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(run_queued)
+        try:
+            await anyio.sleep(0.05)
+        finally:
+            limiter.release_on_behalf_of(borrower)
+    assert results == [42]
+
+
+@pytest.mark.anyio
 async def test_profile_job_enforces_wall_clock_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2056,6 +2080,12 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
             requiresSupplementalEvidence=True,
             reason="缺少构成",
             missingFacts=("构成",),
+            codingRequirements=({
+                "datasetId": "dataset_001",
+                "fields": ["income"],
+                "calculation": "计算收入构成",
+                "outputName": "income_components",
+            },),
         )
 
     class CapturingCodeAgent:
@@ -2101,7 +2131,13 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
             planner_payload = {
                 "currentAnalysis": {"analysisId": "analysis_001"},
                 "deterministicFacts": {"analysisId": "analysis_001", "metrics": []},
-                "datasets": [{"datasetId": "dataset_001", "path": "datasets/data.csv"}],
+                "datasets": [
+                    {
+                        "datasetId": "dataset_001",
+                        "path": "datasets/data.csv",
+                        "columns": ["income"],
+                    }
+                ],
                 "analysisOutputRoot": "evidence/analysis_001",
                 "scriptPath": "evidence/analysis_001/supplement.py",
                 "evidencePath": "evidence/analysis_001/supplement.json",
@@ -2112,7 +2148,10 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
                 script_path=script_path,
                 task_facts={
                     **planner_payload,
-                    "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
+                    "codingRequirements": [
+                        item.model_dump(mode="json", by_alias=True)
+                        for item in decision.coding_requirements
+                    ],
                 },
                 diagnostic=None,
                 run_context=task_context,
@@ -2199,10 +2238,26 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
     assert set(planner_requests[0]) == {
         "currentAnalysis",
         "deterministicFacts",
+        "datasets",
         "analysisBlock",
     }
+    assert planner_requests[0]["datasets"] == [
+        {
+            "datasetId": "dataset_001",
+            "path": "datasets/data.csv",
+            "columns": ["income"],
+        }
+    ]
     assert len(planner_requests) == 2
-    assert code_prompts[0]["facts"]["evidenceDecision"]["missingFacts"] == ["构成"]
+    assert code_prompts[0]["facts"]["codingRequirements"] == [
+        {
+            "datasetId": "dataset_001",
+            "fields": ["income"],
+            "calculation": "计算收入构成",
+            "outputName": "income_components",
+        }
+    ]
+    assert "evidenceDecision" not in code_prompts[0]["facts"]
     assert code_prompts[1]["scriptPath"] == script_path
     assert code_prompts[1]["facts"]["taskFacts"] == {
         "missingFacts": ["构成"],
@@ -2509,13 +2564,50 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
     assert runtime._analysis_script_agent.reasoning_model is not None
     assert runtime._analysis_script_agent.reasoning_agent is not None
     assert any(
-        "只含 findings、reconciliations、warnings" in instruction
-        and "不得输出 analysisId 或 datasetIds" in instruction
+        "以 outputContract 为准" in instruction
+        and "analysisId 和 datasetIds" in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
     assert all(
         "32000" not in instruction and "240 行" not in instruction
         for instruction in runtime._analysis_script_agent.instructions
+    )
+
+
+def test_runtime_defaults_analysis_evidence_planner_to_legacy_contract() -> None:
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(),
+        reporting_agent_template=Agent(
+            model=ReportingPhaseOpenAIChat(
+                id="deepseek-v4-flash-0731",
+                api_key="test",
+                reasoning_effort="high",
+                extra_body={"enable_thinking": True},
+            )
+        ),
+        task_runner=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_enable_thinking=True,
+        planner_thinking_budget=8192,
+        state_repository=SimpleNamespace(),
+    )
+
+    assert runtime._analysis_evidence_agent.output_schema is LegacyAnalysisEvidenceDecision
+    assert any(
+        "missingFacts" in instruction
+        for instruction in runtime._analysis_evidence_agent.instructions
+    )
+    assert all(
+        "codingRequirements" not in instruction
+        for instruction in runtime._analysis_evidence_agent.instructions
+    )
+    assert (
+        inspect.signature(RuntimeAnalysisMixin._execute_analysis_item_workflow)
+        .parameters["evidence_output_type"]
+        .default
+        is LegacyAnalysisEvidenceDecision
     )
     analysis_instructions = "\n".join(runtime._analysis_agent.instructions)
     assert "根 JSON 必须是对象且只能包含 analyses 和 requirements" in analysis_instructions

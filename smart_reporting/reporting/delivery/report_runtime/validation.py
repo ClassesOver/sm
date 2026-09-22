@@ -73,19 +73,12 @@ def _word_output_path(workspace: Path, value: str) -> Path:
     return path
 
 
-def _temporary_pdf_path(value: str) -> Path:
-    if not isinstance(value, str) or not value.startswith("/tmp/workspace-report-"):
+def _temporary_pdf_path(workspace: Path, value: str) -> Path:
+    relative = _relative_path(value, ".pdf")
+    if relative.name != "render.pdf":
         raise ReportFailure("PDF 临时路径无效")
-    path = Path(value)
-    if path.name != "render.pdf" or path.parent.parent != Path("/tmp"):
-        raise ReportFailure("PDF 临时路径无效")
-    if path.parent.is_symlink() or path.exists() or path.is_symlink():
-        raise ReportFailure("PDF 临时路径已经存在")
-    try:
-        path.parent.mkdir(mode=0o700)
-    except FileExistsError as error:
-        raise ReportFailure("PDF 临时路径已经存在") from error
-    return path
+    directory = _create_temporary_directory(workspace, relative.parent.as_posix(), "-render")
+    return directory / relative.name
 
 
 def _temporary_docx_path(pdf_path: Path) -> Path:
@@ -95,19 +88,29 @@ def _temporary_docx_path(pdf_path: Path) -> Path:
     return path
 
 
-def _validation_directory(value: str) -> Path:
-    if not isinstance(value, str) or not value.startswith("/tmp/workspace-report-"):
-        raise ReportFailure("PDF 验收临时路径无效")
-    path = Path(value)
-    if path.parent != Path("/tmp") or not path.name.endswith("-validate"):
-        raise ReportFailure("PDF 验收临时路径无效")
+def _create_temporary_directory(workspace: Path, value: str, suffix: str) -> Path:
+    relative = _relative_path(value)
+    if (
+        len(relative.parts) != 2
+        or relative.parts[0] != ".reporting-tmp"
+        or not relative.name.startswith("workspace-report-")
+        or not relative.name.endswith(suffix)
+    ):
+        raise ReportFailure("报表临时路径无效")
+    path = workspace.joinpath(*relative.parts)
+    _reject_symlinks(workspace, path)
     if path.exists() or path.is_symlink():
-        raise ReportFailure("PDF 验收临时路径已经存在")
+        raise ReportFailure("报表临时路径已经存在")
     try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
         path.mkdir(mode=0o700)
     except FileExistsError as error:
-        raise ReportFailure("PDF 验收临时路径已经存在") from error
+        raise ReportFailure("报表临时路径已经存在") from error
     return path
+
+
+def _validation_directory(workspace: Path, value: str) -> Path:
+    return _create_temporary_directory(workspace, value, "-validate")
 
 
 @contextmanager

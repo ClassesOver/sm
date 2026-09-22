@@ -29,14 +29,22 @@ from .workflow.repository import ReportingStateRepository
 from .workflow.runtime import ReportWorkflowRuntime
 from .workflow.runtime.phase_models import SectionDecisionOutput, VisualizationPlanDraft
 
-_VISUALIZATION_CODE_INSTRUCTIONS = (
+_VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "只能修改 visualizationWorkspace.scriptPath 签发的唯一 Python 文件。",
-    "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径；"
-    "不得使用 __file__、cwd 或目录探测重新推导路径。",
+    "收到视觉审查的 critical 问题后，只修改与该问题直接相关的局部代码；禁止插入临时诊断、raise、打印、探针数据或改写无关数据读取。",
+    "warning、info 和已通过图片不触发修复；不要为了验证假设重新生成整段脚本或改变未被指出的图表。",
+    "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径。",
     "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据。",
+    "百分比标签必须区分小数比率和百分数：例如增减额/基数为 0.0619 时显示 6.19%，"
+    "不能直接拼接 %；已乘过 100 的百分数不得再次乘 100。以源字段说明及分子分母核对单位。",
+    "source descriptor 的 metricIndex、findingIndex 是源文件数组的零基下标，不是数组元素内的字段。"
+    "按 dataPath 从源文件根读取，例如 findingIndex=2、dataPath=findings[2] 对应 "
+    'source["findings"][2]；只读取 descriptor.fields 声明的元素字段。',
     "source descriptor 声明 rowEncoding=columns_rows 时，每个 row 都是与 columns 按位置对应的列表；"
     "必须先校验行列长度一致，再用 dict(zip(columns, row)) 解码，禁止把 row 当作字典使用"
     '或写 row["字段名"]。',
+    "source descriptor 若声明 nullableFields，字段中的 null 是源数据的合法不可用值；"
+    "必须保留并显式标注不可计算或无数据，禁止用 0、空字符串或常数替换。",
     "字段缺失、行列不一致、类型不符或数值转换失败时必须显式抛出异常；"
     "禁止使用 .get(..., 0)、or 0、except 后赋 0 等默认值掩盖解析失败。",
     "只有冻结 facts 中的真实数据全零时才允许绘制全零系列；真实全零或恒定序列必须保留"
@@ -54,6 +62,16 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 使用 fig.write_json()，"
     "不要依赖未提供的 Kaleido 或 fig.write_image()。",
     "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
+)
+
+_VISUALIZATION_CODE_LEGACY_INSTRUCTIONS = _VISUALIZATION_CODE_COMMON_INSTRUCTIONS
+
+_VISUALIZATION_CODE_INSTRUCTIONS = (
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[:2],
+    "逐图直接实现 visualizationPlan.charts[].visualForm 和 dataBindings；只从 binding.factPath"
+    "读取 binding.dataPath，并只使用 binding.fields。不得重新选择数据源、字段或图型；"
+    "函数组织、布局细节和同章脚本组织由当前实现决定。",
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[2:],
 )
 
 
@@ -103,6 +121,7 @@ def create_report_runtime(
     visualization_code_agent_factory = create_reporting_code_agent_factory(
         model=reporting_agent_template.model,
         name="reporting-visualization-code-agent",
+        task_kind="visualization",
         role="只为冻结图表计划签发可视化脚本。",
         instructions=_VISUALIZATION_CODE_INSTRUCTIONS,
     )

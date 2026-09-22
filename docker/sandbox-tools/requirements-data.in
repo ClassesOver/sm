@@ -4,7 +4,7 @@ defusedxml
 h5py
 jsonlines
 msgpack
-pandas
+pandas==2.3.3
 pyreadstat
 sqlalchemy
 sqlglot
@@ -29,7 +29,8 @@ json-repair
 jsonschema
 networkx
 orjson
-polars
+polars==1.43.2
+numpy==2.3.5
 py7zr
 pyarrow
 python-frontmatter

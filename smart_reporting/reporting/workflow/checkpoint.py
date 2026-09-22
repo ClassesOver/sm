@@ -218,7 +218,7 @@ class ChartVisualInspectionIssue(StrictModel):
         "missing_units",
         "misleading",
     ]
-    severity: Literal["warning", "critical"]
+    severity: Literal["info", "warning", "critical"]
     description: str = Field(min_length=1, max_length=500)
 
 

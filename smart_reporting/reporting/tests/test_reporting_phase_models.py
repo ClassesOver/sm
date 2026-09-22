@@ -28,6 +28,16 @@ def _chart(path: str = "report/charts/chart-001.png") -> ChartDraft:
         currentPeriod="2026-08",
         sourceDatasetId="dataset_001",
         aggregationGrain="month",
+        visualForm="按月折线图",
+        dataBindings=(
+            {
+                "analysisId": "analysis_001",
+                "factPath": "facts/analysis_001.json",
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+                "role": "月度趋势",
+            },
+        ),
     )
 
 
@@ -38,6 +48,8 @@ def test_visualization_plan_accepts_bound_chart_metadata_and_warnings() -> None:
     assert plan.charts[0].model_dump(mode="json", by_alias=True) == {
         "chartId": "chart_001",
         "sourcePath": "report/charts/chart-001.png",
+        "renderer": "matplotlib",
+        "interactivePath": None,
         "title": "收入趋势",
         "altText": "收入按月趋势",
         "citationIds": ["citation_001"],
@@ -48,6 +60,16 @@ def test_visualization_plan_accepts_bound_chart_metadata_and_warnings() -> None:
         "sourceDatasetId": "dataset_001",
         "aggregationGrain": "month",
         "comparability": "strict",
+        "visualForm": "按月折线图",
+        "dataBindings": [
+            {
+                "analysisId": "analysis_001",
+                "factPath": "facts/analysis_001.json",
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+                "role": "月度趋势",
+            }
+        ],
     }
     assert plan.warnings == ("数据仅供参考",)
 
@@ -85,6 +107,32 @@ def test_visualization_plan_rejects_duplicate_chart_identity() -> None:
 def test_chart_draft_rejects_unsafe_source_path(path: str) -> None:
     with pytest.raises(ValidationError):
         _chart(path)
+
+
+@pytest.mark.parametrize("field", ["visualForm", "dataBindings"])
+def test_chart_draft_requires_visual_form_and_data_bindings(field: str) -> None:
+    payload = _chart().model_dump(mode="json", by_alias=True)
+    payload.pop(field)
+
+    with pytest.raises(ValidationError):
+        ChartDraft.model_validate(payload)
+
+
+def test_chart_draft_rejects_duplicate_data_binding() -> None:
+    payload = _chart().model_dump(mode="json", by_alias=True)
+    payload["dataBindings"] *= 2
+
+    with pytest.raises(ValidationError):
+        ChartDraft.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["fields", "role"])
+def test_chart_draft_rejects_empty_data_binding_values(field: str) -> None:
+    payload = _chart().model_dump(mode="json", by_alias=True)
+    payload["dataBindings"][0][field] = [] if field == "fields" else ""
+
+    with pytest.raises(ValidationError):
+        ChartDraft.model_validate(payload)
 
 
 def test_section_decision_is_a_render_or_rework_union() -> None:

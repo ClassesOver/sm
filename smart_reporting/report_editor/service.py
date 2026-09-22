@@ -595,6 +595,12 @@ class ReportEditorService:
             next_job = stored_jobs.get(context.job_id) if isinstance(stored_jobs, dict) else None
             if not isinstance(next_job, dict):
                 raise ReportingError("report_editor_job_invalid", "报告编辑 job 状态无效。")
+            await self._copy_revision_assets(
+                scope.workspace_key,
+                next_job,
+                source_root=PurePosixPath(context.markdown_path).parent,
+                target_root=PurePosixPath(markdown_path).parent,
+            )
             next_context = ReportEditorContext(
                 reportId=context.report_id,
                 revision=next_revision,
@@ -655,6 +661,53 @@ class ReportEditorService:
             editor_raw_grant=raw_editor,
             editor_expires_at=editor_expires_at,
         )
+
+    async def _copy_revision_assets(
+        self,
+        thread_id: str,
+        job: dict[str, Any],
+        *,
+        source_root: PurePosixPath,
+        target_root: PurePosixPath,
+    ) -> None:
+        copied: dict[str, str] = {}
+
+        async def copy_identity(identity: dict[str, Any]) -> None:
+            source = identity.get("path")
+            if not isinstance(source, str):
+                return
+            try:
+                relative = PurePosixPath(source).relative_to(source_root)
+            except ValueError:
+                return
+            target = (target_root / relative).as_posix()
+            if source not in copied:
+                content, _media_type = await self.workspace.afile_bytes(thread_id, source)
+                if len(content) != identity.get("size") or not secrets.compare_digest(
+                    hashlib.sha256(content).hexdigest(), str(identity.get("sha256", ""))
+                ):
+                    raise ReportingError("report_editor_asset_changed", "报告资源已变化。")
+                await self.workspace.awrite_bytes(thread_id, target, content)
+                copied[source] = target
+            identity["path"] = copied[source]
+
+        render = job.get("render")
+        images = render.get("images") if isinstance(render, dict) else None
+        if isinstance(images, list):
+            for image in images:
+                if isinstance(image, dict):
+                    await copy_identity(image)
+
+        interactive = job.get("interactiveCharts")
+        if isinstance(interactive, dict):
+            migrated: dict[str, Any] = {}
+            for image_path, identity in interactive.items():
+                if not isinstance(image_path, str):
+                    continue
+                if isinstance(identity, dict):
+                    await copy_identity(identity)
+                migrated[copied.get(image_path, image_path)] = identity
+            job["interactiveCharts"] = migrated
 
     @staticmethod
     async def _cleanup_export_revision(

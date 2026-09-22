@@ -534,6 +534,8 @@ application_context = ApplicationContext(
         allowed_hosts=list(settings.reporting_mcp_allowed_hosts),
     ),
     mcp_auth=CapabilityTokenVerifier(settings.workspace_hmac_secret),
+    reporting_code_mode_runtime=reporting_code_mode_runtime,
+    reporting_lsp_process_manager=reporting_lsp_process_manager,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

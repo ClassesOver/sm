@@ -12,6 +12,7 @@ from agno.run import RunContext
 
 from smart_reporting.reporting.delivery.report_runtime import cli as runtime_cli
 from smart_reporting.reporting.delivery.report_runtime import runtime as runtime_module
+from smart_reporting.reporting.delivery.report_runtime import docx as docx_module
 from smart_reporting.reporting.delivery.report_runtime.docx import (
     _WORD_PAGE_FIELDS,
     _fit_image_dimensions,
@@ -26,8 +27,83 @@ from smart_reporting.reporting.delivery.report_runtime.pdf import (
     _apply_pdf_page_decorations,
     _page_number_context,
 )
+from smart_reporting.reporting.delivery.report_runtime.validation import (
+    ReportFailure,
+    _temporary_pdf_path,
+    _validation_directory,
+)
 from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
 from smart_reporting.workspace import WorkspaceError
+
+def test_render_docx_uses_libreoffice_when_pandoc_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "render.docx"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(docx_module.shutil, "which", lambda name: "/usr/bin/libreoffice" if name == "libreoffice" else None)
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        Path(command[command.index("--outdir") + 1], output.name).write_bytes(b"PK\x03\x04fake-docx")
+        return type("Completed", (), {"returncode": 0})()
+    monkeypatch.setattr(docx_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(docx_module, "_postprocess_docx", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(docx_module, "_validate_docx_structure", lambda *_args, **_kwargs: {})
+
+    result = docx_module._render_docx(
+        "<html><body>报告</body></html>",
+        source_parent=tmp_path,
+        output=output,
+        context={"sections": [], "headingNumbers": []},
+        layout={},
+    )
+
+    assert result == {}
+    assert calls and calls[0][0] == "/usr/bin/libreoffice"
+    assert calls[0][1].startswith("-env:UserInstallation=file://")
+    assert calls[0][2:6] == ["--headless", "--convert-to", "docx:MS Word 2007 XML", "--outdir"]
+    assert "--outdir" in calls[0]
+    assert output.is_file()
+
+
+
+@pytest.mark.parametrize("kind", ["render", "validate"])
+def test_report_temporary_paths_are_private_workspace_directories(tmp_path: Path, kind: str):
+    relative = f".reporting-tmp/workspace-report-test-{kind}"
+    create = _temporary_pdf_path if kind == "render" else _validation_directory
+    value = relative + "/render.pdf" if kind == "render" else relative
+    path = create(tmp_path, value)
+    directory = path.parent if kind == "render" else path
+    assert directory == tmp_path / relative
+    assert directory.is_dir()
+    assert directory.stat().st_mode & 0o777 == 0o700
+    with pytest.raises(ReportFailure):
+        create(tmp_path, value)
+
+
+@pytest.mark.parametrize("kind", ["render", "validate"])
+@pytest.mark.parametrize("prefix", ["/tmp", "../outside", "reports", ".reporting-tmp/nested"])
+def test_report_temporary_paths_reject_unscoped_directories(tmp_path: Path, kind: str, prefix: str):
+    create = _temporary_pdf_path if kind == "render" else _validation_directory
+    value = f"{prefix}/workspace-report-test-{kind}"
+    if kind == "render":
+        value += "/render.pdf"
+    with pytest.raises(ReportFailure):
+        create(tmp_path, value)
+
+
+@pytest.mark.parametrize("kind", ["render", "validate"])
+def test_report_temporary_paths_reject_symlink_root(tmp_path: Path, kind: str):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / ".reporting-tmp").symlink_to(outside, target_is_directory=True)
+    create = _temporary_pdf_path if kind == "render" else _validation_directory
+    value = f".reporting-tmp/workspace-report-test-{kind}"
+    if kind == "render":
+        value += "/render.pdf"
+    with pytest.raises(ReportFailure):
+        create(tmp_path, value)
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -106,7 +182,7 @@ def test_cli_forwards_only_pdf_and_word_output_paths(
             [
                 "render_markdown",
                 '{"job": {}, "markdown_path": "report.md", "output_path": "report.pdf", '
-                '"temporary_path": "/tmp/workspace-report-test/render.pdf", '
+                '"temporary_path": ".reporting-tmp/workspace-report-test-render/render.pdf", '
                 '"word_output_path": "report.docx"}',
             ]
         )
@@ -168,13 +244,13 @@ def test_render_markdown_returns_only_pdf_and_word_artifact_identity(
         lambda *_args, **_kwargs: pytest.fail("私有 /tmp 与 workspace 之间不得使用 rename"),
     )
 
-    temporary_root = Path(f"/tmp/workspace-report-{uuid.uuid4().hex}")
+    temporary_root = tmp_path / ".reporting-tmp" / f"workspace-report-{uuid.uuid4().hex}-render"
     try:
         result = runtime_module.ReportRuntime(tmp_path).render_markdown(
             state,
             "report.md",
             "revision/report.pdf",
-            str(temporary_root / "render.pdf"),
+            str((temporary_root / "render.pdf").relative_to(tmp_path)),
         )
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)

@@ -28,7 +28,10 @@ class ReportingWorkspaceLsp:
     async def diagnostics(
         self, path: str | None = None, *, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
-        path, source, sha = await self._source(path)
+        loaded = await self._source(path)
+        if isinstance(loaded, dict):
+            return loaded
+        path, source, sha = loaded
         if failure := self._expected(expected_source_sha256, sha):
             return failure
         try:
@@ -42,7 +45,10 @@ class ReportingWorkspaceLsp:
     async def hover(
         self, path: str, *, line: int, character: int, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
-        path, source, sha = await self._source(path)
+        loaded = await self._source(path)
+        if isinstance(loaded, dict):
+            return loaded
+        path, source, sha = loaded
         if failure := self._expected(expected_source_sha256, sha):
             return failure
         value = await self._request(path, source, "textDocument/hover", line, character, sha)
@@ -70,7 +76,10 @@ class ReportingWorkspaceLsp:
     async def document_symbols(
         self, path: str, *, expected_source_sha256: str | None = None
     ) -> dict[str, Any]:
-        path, source, sha = await self._source(path)
+        loaded = await self._source(path)
+        if isinstance(loaded, dict):
+            return loaded
+        path, source, sha = loaded
         if failure := self._expected(expected_source_sha256, sha):
             return failure
         value = await self._request(path, source, "textDocument/documentSymbol", None, None, sha)
@@ -104,7 +113,10 @@ class ReportingWorkspaceLsp:
     async def _locations(
         self, path: str, line: int, character: int, expected: str | None, method: str
     ) -> dict[str, Any]:
-        path, source, sha = await self._source(path)
+        loaded = await self._source(path)
+        if isinstance(loaded, dict):
+            return loaded
+        path, source, sha = loaded
         if failure := self._expected(expected, sha):
             return failure
         value = await self._request(path, source, method, line, character, sha)
@@ -131,7 +143,7 @@ class ReportingWorkspaceLsp:
         except ReportingLspProcessError:
             return self._unavailable(path, sha)
 
-    async def _source(self, path: str | None) -> tuple[str, str, str]:
+    async def _source(self, path: str | None) -> tuple[str, str, str] | dict[str, Any]:
         path = self.binding.context.script_path if path is None else self._path(path)
         if not path.endswith(".py"):
             raise ReportingError("report_lsp_invalid_request", "LSP 仅支持 Python 文件。")
@@ -141,6 +153,14 @@ class ReportingWorkspaceLsp:
             )
             return path, raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
         except (WorkspaceError, UnicodeDecodeError) as error:
+            # 首轮脚本可能尚不存在；返回可恢复回执，避免误启动 LSP。
+            if isinstance(error.__cause__, FileNotFoundError):
+                return {
+                    "ok": False,
+                    "code": "report_lsp_file_missing",
+                    "message": "绑定脚本尚不存在，请先调用 write_script。",
+                    "details": {"path": path, "nextTools": ["write_script"]},
+                }
             raise ReportingError(
                 "report_lsp_file_invalid", "LSP 读取工作区 Python 文件失败。"
             ) from error

@@ -213,6 +213,21 @@ async def test_timed_workflow_step_aggregates_metrics_from_concurrent_child_task
     }
 
 
+@pytest.mark.anyio
+async def test_timed_workflow_step_keeps_explicit_planner_request_count() -> None:
+    async def succeed() -> StepOutput:
+        record_step_model_metrics(
+            {"inputTokens": 100, "outputTokens": 10},
+            request_count=2,
+        )
+        return StepOutput(content="done")
+
+    output = await _timed_step_executor(succeed, step_id="generate-analysis-plan")()
+
+    assert output.metrics is not None
+    assert output.metrics.additional_metrics == {"request_count": 2}
+
+
 def test_report_input_parsing_is_shared_with_agentos() -> None:
     assert parse_report_input("生成 2025 年运营报告") == {
         "version": "1",

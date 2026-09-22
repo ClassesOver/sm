@@ -330,11 +330,11 @@ async def test_evidence_repair_prompt_retains_bounded_field_diagnostic(workspace
 
 
 @pytest.mark.anyio
-async def test_run_snippet_returns_expression_value(binding):  # noqa: F811
+async def test_run_returns_expression_value(binding):  # noqa: F811
     runtime = SimpleNamespace(execute=AsyncMock(return_value=CellResult(result="2")))
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
 
-    result = await toolkit.run_snippet("1 + 1")
+    result = await toolkit.run("1 + 1")
 
     assert result["ok"] is True
     assert result["result"] == "2"
@@ -344,7 +344,161 @@ async def test_run_snippet_returns_expression_value(binding):  # noqa: F811
 
 
 @pytest.mark.anyio
-async def test_run_snippet_bounds_output_and_preserves_truncation(binding):  # noqa: F811
+async def test_run_returns_bounded_exploration_variable_types(binding):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute=AsyncMock(return_value=CellResult(result="loaded")),
+        exploration_variables=AsyncMock(
+            return_value={"df1": "DataFrame", "count": "int"}
+        ),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("df1 = load()")
+
+    assert result["explorationVariables"] == {"count": "int", "df1": "DataFrame"}
+    runtime.exploration_variables.assert_awaited_once_with(
+        binding.context.code_mode_session_id
+    )
+
+
+@pytest.mark.anyio
+async def test_run_failure_returns_exploration_types_without_values(binding):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=CellResult(status="error", traceback="NameError: missing")
+        ),
+        exploration_variables=AsyncMock(return_value={"df1": "DataFrame"}),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("missing")
+
+    assert result["ok"] is False
+    assert result["details"]["explorationVariables"] == {"df1": "DataFrame"}
+    assert "value" not in json.dumps(result["details"]["explorationVariables"])
+
+
+@pytest.mark.anyio
+async def test_run_aborted_cell_skips_exploration_and_requires_restart(binding):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute=AsyncMock(return_value=CellResult(status="aborted", traceback="cancelled")),
+        exploration_variables=AsyncMock(return_value={"df1": "DataFrame"}),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("long_running_cell()")
+
+    assert result["ok"] is False
+    assert result["details"]["nextTools"] == ["restart_code_mode"]
+    assert "explorationVariables" not in result["details"]
+    runtime.exploration_variables.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_run_kernel_busy_error_skips_exploration_and_requires_restart(binding):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=ReportingError(
+                "report_code_mode_execution_failed",
+                "CodeMode 执行失败。",
+                details={"errorType": "KernelBusyError"},
+            )
+        ),
+        exploration_variables=AsyncMock(return_value={"df1": "DataFrame"}),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("next_cell()")
+
+    assert result["ok"] is False
+    assert result["details"]["nextTools"] == ["restart_code_mode"]
+    assert "explorationVariables" not in result["details"]
+    runtime.exploration_variables.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_run_transport_failure_returns_exploration_variable_types(binding):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=ReportingError(
+                "report_code_mode_execution_failed",
+                "CodeMode 执行失败。",
+                details={"errorType": "KernelDiedError"},
+            )
+        ),
+        exploration_variables=AsyncMock(return_value={"df1": "DataFrame"}),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("df1")
+
+    assert result["ok"] is False
+    assert result["details"]["explorationVariables"] == {"df1": "DataFrame"}
+
+
+@pytest.mark.anyio
+async def test_run_variable_query_failure_does_not_replace_success(binding):  # noqa: F811
+    runtime = SimpleNamespace(
+        execute=AsyncMock(return_value=CellResult(result="42")),
+        exploration_variables=AsyncMock(side_effect=RuntimeError("private failure")),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("40 + 2")
+
+    assert result["ok"] is True
+    assert result["result"] == "42"
+    assert "explorationVariables" not in result
+    assert "private failure" not in json.dumps(result)
+
+
+@pytest.mark.anyio
+async def test_run_bounds_and_filters_exploration_variable_types(binding):  # noqa: F811
+    variables = {
+        "_private": "secret",
+        **{f"value_{'x' * 100}_{index:02d}": "x" * 200 for index in range(40)},
+        "not-valid": "str",
+    }
+    runtime = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=CellResult(result="loaded" * 5000, stdout="rows" * 5000)
+        ),
+        exploration_variables=AsyncMock(return_value=variables),
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.run("value_00 = load()")
+
+    summary = result["explorationVariables"]
+    assert len(summary) == 32
+    assert list(summary) == sorted(summary)
+    assert "_private" not in summary
+    assert "not-valid" not in summary
+    assert all(len(value.encode("utf-8")) <= 128 for value in summary.values())
+    diagnostics = {
+        key: result[key]
+        for key in ("result", "stdout", "stderr", "explorationVariables")
+        if key in result
+    }
+    assert len(json.dumps(diagnostics, ensure_ascii=False).encode()) <= MAX_DIAGNOSTIC_BYTES
+
+
+@pytest.mark.anyio
+async def test_restart_code_mode_reports_exploration_variables_cleared(binding):  # noqa: F811
+    runtime = SimpleNamespace(shutdown=AsyncMock())
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+
+    result = await toolkit.restart_code_mode()
+
+    assert result == {
+        "ok": True,
+        "explorationVariables": {},
+        "variablesCleared": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_run_bounds_output_and_preserves_truncation(binding):  # noqa: F811
     cell = CellResult(
         result=("表格\\\"\n" * 5000) + "last row",
         stdout="noise" * 5000,
@@ -354,7 +508,7 @@ async def test_run_snippet_bounds_output_and_preserves_truncation(binding):  # n
     runtime = SimpleNamespace(execute=AsyncMock(return_value=cell))
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
 
-    result = await toolkit.run_snippet("df")
+    result = await toolkit.run("df")
 
     assert result["ok"] is True
     assert result["result"].endswith("last row")
@@ -364,33 +518,20 @@ async def test_run_snippet_bounds_output_and_preserves_truncation(binding):  # n
 
 
 @pytest.mark.anyio
-async def test_analysis_run_snippet_budget_preserves_formal_delivery(binding):  # noqa: F811
+async def test_analysis_run_has_no_separate_budget(binding):  # noqa: F811
     runtime = ToolkitRuntime()
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
 
-    for _ in range(4):
-        assert (await toolkit.run_snippet("1 + 1"))["ok"] is True
+    for _ in range(10):
+        assert (await toolkit.run("1 + 1"))["ok"] is True
 
-    rejected = await toolkit.run_snippet("1 + 1")
-
-    assert rejected == {
-        "ok": False,
-        "status": "rejected",
-        "code": "report_code_exploration_budget_exhausted",
-        "message": "交互探索额度已用尽；请立即更新并运行正式脚本，然后提交交付结果。",
-        "details": {
-            "used": 4,
-            "limit": 4,
-            "requiredNextTools": ["write_script", "run_script", "submit_script"],
-        },
-    }
     assert (await toolkit.write_script(SOURCE))["ok"] is True
     assert (await toolkit.run_script())["ok"] is True
     assert (await toolkit.submit_script())["ok"] is True
 
 
 @pytest.mark.anyio
-async def test_visualization_run_snippet_budget_is_eight(workspace):  # noqa: F811
+async def test_visualization_run_has_no_separate_budget(workspace):  # noqa: F811
     from smart_reporting.reporting.code_agent.context import ReportingCodingTaskBinding
 
     runtime = ToolkitRuntime()
@@ -401,18 +542,12 @@ async def test_visualization_run_snippet_budget_is_eight(workspace):  # noqa: F8
         visual_binding, runtime, ReportingLspProcessManager()
     )
 
-    for _ in range(8):
-        assert (await toolkit.run_snippet("1 + 1"))["ok"] is True
-
-    rejected = await toolkit.run_snippet("1 + 1")
-
-    assert rejected["code"] == "report_code_exploration_budget_exhausted"
-    assert rejected["details"]["used"] == 8
-    assert rejected["details"]["limit"] == 8
+    for _ in range(10):
+        assert (await toolkit.run("1 + 1"))["ok"] is True
 
 
 @pytest.mark.anyio
-async def test_run_snippet_budget_stops_remaining_batch_but_allows_next_delivery(
+async def test_run_batch_exceeds_former_exploration_limit(
     binding,  # noqa: F811
 ):
     runtime = SimpleNamespace(execute=AsyncMock(return_value=CellResult(result="ok")))
@@ -420,7 +555,7 @@ async def test_run_snippet_budget_stops_remaining_batch_but_allows_next_delivery
     functions = {tool.name: tool for tool in toolkit.tool_functions}
     calls = [
         FunctionCall(
-            function=functions["run_snippet"],
+            function=functions["run"],
             call_id=f"snippet-{index}",
             arguments={"code": "1 + 1"},
         )
@@ -439,11 +574,9 @@ async def test_run_snippet_budget_stops_remaining_batch_but_allows_next_delivery
         )
     ]
 
-    assert runtime.execute.await_count == 4
-    assert literal_eval(results[4].content)["code"] == (
-        "report_code_exploration_budget_exhausted"
-    )
-    assert json.loads(results[5].content)["status"] == "skipped"
+    assert runtime.execute.await_count == 6
+    assert len(results) == 6
+    assert all(literal_eval(result.content)["ok"] for result in results)
     assert (await toolkit.write_script(SOURCE))["ok"] is True
 
 
@@ -542,6 +675,7 @@ async def test_run_script_rejects_missing_structured_exit_receipt(
         "status": "rejected",
         "code": "report_code_exit_receipt_invalid",
         "message": "Coding Agent 脚本退出码回执缺失或无效。",
+        "details": {"nextTools": ["read_script", "edit_script", "run_script"]},
     }
 
 
@@ -724,7 +858,11 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
         requests.append(json.loads(request.content))
         return httpx.Response(200, json={
             "id": "resp-1", "created_at": 0, "model": model_id,
-            "object": "response", "status": "completed", "output": [],
+            "object": "response", "status": "completed", "output": [
+                {"id": "rs-summary", "type": "reasoning", "summary": [
+                    {"type": "summary_text", "text": "先检查输入，再执行脚本。"},
+                ]},
+            ],
             "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
         })
 
@@ -735,6 +873,7 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
     client._platform = "Linux"
     model = ReportingCodeOpenAIResponses(
         id=model_id, api_key="test", async_client=client,
+        base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/api/v2",
         extra_body={"enable_thinking": True, "thinking_budget": 4096},
         reasoning_effort="high", reasoning={"effort": "high"}, temperature=0.2,
     )
@@ -746,25 +885,92 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
     tools = [Function(name="write_script", parameters={"type": "object", "properties": {}})]
     try:
         with bind_reporting_thinking(decision):
-            await model.aresponse([Message(role="user", content="write")], tools=tools)
+            response = await model.aresponse([Message(role="user", content="write")], tools=tools)
+            assert response.reasoning_content == "先检查输入，再执行脚本。"
         await model.aresponse([Message(role="user", content="next task")], tools=tools)
     finally:
         await client.close()
 
     selected, original = requests
     assert selected["enable_thinking"] is (budget > 0)
+    assert "thinking_budget" not in selected
     if budget:
-        assert selected["thinking_budget"] == budget
         expected_effort = "xhigh" if effort == "max" and model_id.startswith("qwen") else effort
         assert selected["reasoning"]["effort"] == expected_effort
+        assert selected["reasoning"]["effort"] == expected_effort
+        assert selected["reasoning"]["summary"] == "auto"
     else:
-        assert "thinking_budget" not in selected
-        assert "effort" not in selected.get("reasoning", {})
+        assert selected["reasoning"]["effort"] == "none"
+        assert "summary" not in selected.get("reasoning", {})
     assert selected["temperature"] == 0.2
     assert selected["tools"][0]["type"] == "custom"
     assert selected["tool_choice"] == "auto"
     assert original["enable_thinking"] is True
-    assert original["thinking_budget"] == 4096
-    assert original["reasoning"]["effort"] == "high"
+    assert "thinking_budget" not in original
+    assert original["reasoning"] == {"effort": "high", "summary": "auto"}
     assert model.extra_body == {"enable_thinking": True, "thinking_budget": 4096}
     assert model.reasoning == {"effort": "high"}
+
+
+@pytest.mark.parametrize(
+    "base_url,extra_body,expected_extra_body",
+    [
+        (
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v2",
+            {"enable_thinking": True, "thinking_budget": 4096},
+            {"enable_thinking": True},
+        ),
+        (
+            "http://localhost:8000/v1",
+            {"chat_template_kwargs": {}, "thinking_budget": 4096},
+            {"chat_template_kwargs": {"enable_thinking": True}},
+        ),
+        (
+            "https://api.openai.com/v1",
+            {"enable_thinking": True, "thinking_budget": 4096},
+            None,
+        ),
+    ],
+)
+def test_responses_thinking_transport_is_projected_per_provider(
+    base_url, extra_body, expected_extra_body
+):
+    model = ReportingCodeOpenAIResponses(
+        id="reasoning-model",
+        api_key="test",
+        base_url=base_url,
+        extra_body=extra_body,
+        reasoning_effort="high",
+        reasoning={"effort": "high", "summary": "detailed"},
+    )
+
+    params = model._phase_request_model([]).get_request_params()
+
+    assert params.get("extra_body") == expected_extra_body
+    assert params["reasoning"] == {"effort": "high", "summary": "detailed"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("large_output", [False, True])
+async def test_run_script_missing_output_preserves_execution_diagnostics(binding, large_output):  # noqa: F811
+    stdout = ("输出\n" * 10000 if large_output else "computed result")
+    cell = CellResult(stdout=stdout, stderr="warning", truncated=["stderr"])
+    runtime = SimpleNamespace(
+        execute_script_process=AsyncMock(return_value=ScriptProcessResult(cell=cell, exit_code=0))
+    )
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script("print('computed result')\n")
+
+    result = await toolkit.run_script()
+
+    assert result["code"] == "report_code_declared_output_missing"
+    details = result["details"]
+    assert details["path"] == "analysis/out.json"
+    assert details["exitCode"] == 0
+    assert details["stderr"] == "warning"
+    assert details["stdout"]
+    assert result["truncated"] == (["stderr", "stdout"] if large_output else ["stderr"])
+    assert len(json.dumps(details, ensure_ascii=False).encode()) <= MAX_DIAGNOSTIC_BYTES
+    if not large_output:
+        assert details["stdout"] == stdout
+    assert toolkit.binding.execution_receipt is None

@@ -8,6 +8,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -22,6 +23,8 @@ from .models import ReportingError
 
 _SCRIPT_EXIT_DIRECTORY = ".reporting-exits"
 _SCRIPT_EXIT_RECEIPT_MAX_BYTES = 16
+_MATPLOTLIB_RUNTIME_DIRECTORY = ".reporting-matplotlib"
+_EXPLORATION_VARIABLES_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -48,8 +51,24 @@ def _bootstrap_cell(workspace: HostReportingWorkspace, *, matplotlib_agg: bool) 
     return "\n".join(lines)
 
 
-def _script_process_cell(script_path: str, exit_receipt_path: str) -> str:
-    command = " ".join((shlex.quote(sys.executable), "-u", shlex.quote(script_path)))
+def _script_process_cell(
+    script_path: str,
+    exit_receipt_path: str,
+    *,
+    matplotlib_root: str | None = None,
+) -> str:
+    command_parts = [sys.executable, "-u"]
+    if matplotlib_root is None:
+        command_parts.append(script_path)
+    else:
+        package_import_root = str(Path(__file__).resolve().parents[2])
+        runner = (
+            f"import sys;sys.path.insert(0, {package_import_root!r});"
+            "from smart_reporting.sandbox.matplotlib_defaults import run_reporting_script;"
+            f"run_reporting_script({script_path!r}, {matplotlib_root!r})"
+        )
+        command_parts.extend(("-c", runner))
+    command = shlex.join(command_parts)
     return (
         "%%bash\n"
         "set +e\n"
@@ -101,13 +120,29 @@ class ReportingCodeModeRuntime:
         self._monitor = CodeMonitor(log_streams=True)
         self._monitor_source = CodeModeSource(code_mode)
         self._monitor_lock = asyncio.Lock()
+        self._execution_spans: dict[str, dict[str, list[int]]] = {}
 
-    async def _sync_monitor(self) -> None:
+    def _record_execution_span(self, session_id: str, name: str, started: float) -> None:
+        elapsed = max(0, round((perf_counter() - started) * 1000))
+        values = self._execution_spans.setdefault(session_id, {}).setdefault(name, [])
+        values.append(elapsed)
+        if len(values) > 64:
+            del values[:-64]
+
+    def drain_execution_spans(self, session_id: str) -> dict[str, list[int]] | str:
+        spans = self._execution_spans.pop(session_id, None)
+        return "unknown" if spans is None else {name: list(values) for name, values in spans.items()}
+
+    async def _sync_monitor(self, session_id: str | None = None) -> None:
+        started = perf_counter()
         async with self._monitor_lock:
             try:
                 await self._monitor.reconcile(await self._monitor_source(), wait_for_ready=True)
             except Exception as error:
                 logger.warning("report_code_mode_monitor_failed error_type={}", type(error).__name__)
+            finally:
+                if session_id is not None:
+                    self._record_execution_span(session_id, "monitor", started)
 
     def _log_connection(self, session_id: str) -> None:
         # Agno 暂无公开连接查询接口；仅在此处只读访问，不改变 kernel 生命周期。
@@ -142,6 +177,7 @@ class ReportingCodeModeRuntime:
         *,
         matplotlib_agg: bool,
     ) -> None:
+        started = perf_counter()
         try:
             result = await self.code_mode.arun(
                 session_id,
@@ -153,6 +189,8 @@ class ReportingCodeModeRuntime:
                 "CodeMode 工作区初始化失败。",
                 details={"sessionId": session_id, "errorType": type(error).__name__},
             ) from error
+        finally:
+            self._record_execution_span(session_id, "bootstrap", started)
         if _cell_field(result, "status") != "ok":
             raise ReportingError(
                 "report_code_mode_bootstrap_failed",
@@ -164,7 +202,7 @@ class ReportingCodeModeRuntime:
                 },
             )
         self._log_connection(session_id)
-        await self._sync_monitor()
+        await self._sync_monitor(session_id)
 
     async def execute(
         self,
@@ -175,6 +213,7 @@ class ReportingCodeModeRuntime:
         matplotlib_agg: bool = False,
     ) -> Any:
         await self._bootstrap(session_id, workspace, matplotlib_agg=matplotlib_agg)
+        started = perf_counter()
         try:
             return await self.code_mode.arun(session_id, code)
         except Exception as error:
@@ -183,6 +222,28 @@ class ReportingCodeModeRuntime:
                 "CodeMode 执行失败。",
                 details={"sessionId": session_id, "errorType": type(error).__name__},
             ) from error
+        finally:
+            self._record_execution_span(session_id, "cell", started)
+
+    async def exploration_variables(self, session_id: str) -> dict[str, str]:
+        """通过 Agno 公开接口读取当前探索 kernel 的变量名和类型。"""
+
+        try:
+            return await asyncio.wait_for(
+                self.code_mode.avariables(session_id),
+                timeout=_EXPLORATION_VARIABLES_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "report_code_mode_variables_timeout session_id={}", session_id
+            )
+        except Exception as error:
+            logger.warning(
+                "report_code_mode_variables_failed session_id={} error_type={}",
+                session_id,
+                type(error).__name__,
+            )
+        return {}
 
     async def execute_script(
         self,
@@ -252,9 +313,22 @@ class ReportingCodeModeRuntime:
         await workspace.aensure_directory(session_id, _SCRIPT_EXIT_DIRECTORY)
         await self._bootstrap(session_id, workspace, matplotlib_agg=matplotlib_agg)
         try:
+            started = perf_counter()
             try:
                 cell = await self.code_mode.arun(
-                    session_id, _script_process_cell(normalized, receipt_host_path)
+                    session_id,
+                    _script_process_cell(
+                        normalized,
+                        receipt_host_path,
+                        matplotlib_root=(
+                            str(
+                                workspace.identity.root
+                                / _MATPLOTLIB_RUNTIME_DIRECTORY
+                            )
+                            if matplotlib_agg
+                            else None
+                        ),
+                    ),
                 )
             except Exception as error:
                 raise ReportingError(
@@ -262,6 +336,8 @@ class ReportingCodeModeRuntime:
                     "CodeMode 脚本执行失败。",
                     details={"sessionId": session_id, "errorType": type(error).__name__},
                 ) from error
+            finally:
+                self._record_execution_span(session_id, "script", started)
             try:
                 raw_receipt = await workspace.read_limited_regular_file(
                     session_id,
@@ -283,8 +359,12 @@ class ReportingCodeModeRuntime:
                 )
 
     async def shutdown(self, session_id: str) -> None:
-        await self.code_mode.ashutdown(session_id)
-        await self._sync_monitor()
+        started = perf_counter()
+        try:
+            await self.code_mode.ashutdown(session_id)
+        finally:
+            self._record_execution_span(session_id, "shutdown", started)
+        await self._sync_monitor(session_id)
         self._logged_connections.pop(session_id, None)
 
     async def aclose(self) -> None:
@@ -293,6 +373,7 @@ class ReportingCodeModeRuntime:
         finally:
             await self._monitor.aclose()
             self._logged_connections.clear()
+            self._execution_spans.clear()
 
 
 __all__ = [

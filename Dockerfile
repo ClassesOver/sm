@@ -42,17 +42,30 @@ COPY --from=uv-source /uv /uvx /bin/
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk git \
+    && apt-get install -y --no-install-recommends \
+        fontconfig fonts-liberation fonts-noto-cjk git \
+        libcairo2 libmagic1 libpango-1.0-0 libpangoft2-1.0-0 shared-mime-info \
+        graphviz librsvg2-bin pandoc poppler-utils qpdf \
+        libreoffice-calc libreoffice-impress libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
 RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
+RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do command -v "$tool" || exit 1; done \
+    && /app/.venv/bin/python -c "import docx, matplotlib, pypandoc, pypdf, scipy, seaborn, statsmodels, sympy, tabulate, adjustText, altair, bokeh, plotnine, pygal, graphviz, PIL, xlsxwriter, odf, pptx, reportlab, pdfplumber, pymupdf, pikepdf, cairosvg, bs4, jinja2, pyarrow, duckdb; from weasyprint import HTML"
+
 COPY smart_reporting ./smart_reporting
+COPY docker/sandbox-tools/matplotlibrc /etc/reporting/matplotlibrc
 COPY --from=report-editor-frontend /build/static ./smart_reporting/report_editor/static
 
 ENV AGENT_OS_HOST=0.0.0.0 \
+    MPLCONFIGDIR=/tmp/reporting-matplotlib \
+    MPLBACKEND=Agg \
+    MATPLOTLIBRC=/etc/reporting/matplotlibrc \
+    REPORTING_HOST_WORKSPACE_ROOT=/tmp/smart-reporting-workspaces \
+    SAL_USE_VCLPLUGIN=svp \
     AGENT_OS_PORT=7777 \
     AGENT_OS_WORKERS=1 \
     AGENT_OS_RELOAD=false \

@@ -12,6 +12,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     ChartVisualInspectionReceipt,
     FileIdentity,
 )
+from smart_reporting.reporting.workflow.runtime import analysis as runtime_analysis
 from smart_reporting.reporting.workflow.runtime.analysis import _visualization_output_paths
 from smart_reporting.reporting.workflow.runtime.code_generation import CodeGenerationResult
 from smart_reporting.reporting.workflow.runtime.phase_models import (
@@ -49,6 +50,20 @@ def _chart_payload(**overrides: object) -> dict[str, object]:
     }
 
 
+def _draft_payload(**overrides: object) -> dict[str, object]:
+    return {
+        **_chart_payload(**overrides),
+        "visualForm": "按月折线图",
+        "dataBindings": [{
+            "analysisId": "analysis_001",
+            "factPath": "facts/analysis_001.json",
+            "dataPath": "metrics[0].periodValues",
+            "fields": ["period", "value"],
+            "role": "月度趋势",
+        }],
+    }
+
+
 def test_report_request_visualization_mode_defaults_to_auto_and_serializes_override() -> None:
     assert _request().visualization_mode == "auto"
     assert _request(visualizationMode="interactive").model_dump(by_alias=True)[
@@ -57,7 +72,7 @@ def test_report_request_visualization_mode_defaults_to_auto_and_serializes_overr
 
 
 def test_legacy_chart_payload_defaults_to_matplotlib() -> None:
-    draft = ChartDraft.model_validate(_chart_payload())
+    draft = ChartDraft.model_validate(_draft_payload())
     registration = ReportChartRegistration.model_validate(_chart_payload())
 
     assert draft.renderer == "matplotlib"
@@ -127,7 +142,7 @@ def test_analysis_chart_preserves_plotly_companion_identity() -> None:
 
 def test_visualization_task_signs_both_plotly_outputs() -> None:
     chart = ChartDraft.model_validate(
-        _chart_payload(
+        _draft_payload(
             renderer="plotly",
             interactivePath="analysis/charts/income.plotly.json",
         )
@@ -139,9 +154,19 @@ def test_visualization_task_signs_both_plotly_outputs() -> None:
     )
 
 
+def test_visualization_registration_drops_coding_only_plan_fields() -> None:
+    chart = ChartDraft.model_validate(_draft_payload())
+
+    payload = runtime_analysis._visualization_registration_payload(chart)
+
+    assert "visualForm" not in payload
+    assert "dataBindings" not in payload
+    assert ReportChartRegistration.model_validate(payload).chart_id == "income-trend"
+
+
 def test_plotly_visual_review_only_requires_raster_receipt() -> None:
     chart = ChartDraft.model_validate(
-        _chart_payload(
+        _draft_payload(
             renderer="plotly",
             interactivePath="analysis/charts/income.plotly.json",
         )

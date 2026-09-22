@@ -56,9 +56,31 @@ def _visualization_plan() -> VisualizationPlanDraft:
                 currentPeriod="2026-08",
                 sourceDatasetId="dataset_001",
                 aggregationGrain="month",
+                visualForm="按月折线图",
+                dataBindings=({
+                    "analysisId": "analysis_001",
+                    "factPath": "facts/analysis_001.json",
+                    "dataPath": "metrics[0].periodValues",
+                    "fields": ["period", "value"],
+                    "role": "月度趋势",
+                },),
             ),
         )
     )
+
+
+def _visualization_payload() -> dict[str, object]:
+    return {
+        "visualizationWorkspace": {"scriptPath": "charts/charts.py"},
+        "visualizationFacts": [{
+            "analysisId": "analysis_001",
+            "factFile": {"path": "facts/analysis_001.json"},
+            "dataDescriptors": [{
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+            }],
+        }],
+    }
 
 
 def _result(
@@ -109,7 +131,7 @@ async def test_visualization_records_only_accepted_repair_after_domain_submissio
     )
 
     result = await workflow.run(
-        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        _visualization_payload(),
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -138,7 +160,7 @@ async def test_visualization_does_not_record_first_generation() -> None:
     )
 
     result = await workflow.run(
-        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        _visualization_payload(),
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -163,7 +185,7 @@ async def test_visualization_does_not_record_repair_when_domain_submission_rejec
 
     with pytest.raises(ReportingError, match="not_accepted"):
         await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            _visualization_payload(),
             RunContext(run_id="run-1", session_id="session-1"),
         )
 
@@ -185,7 +207,7 @@ async def test_visualization_records_in_run_visual_repair_only_after_accepted_su
     )
 
     result = await workflow.run(
-        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        _visualization_payload(),
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -209,7 +231,7 @@ async def test_visualization_does_not_record_in_run_visual_repair_when_submissio
 
     with pytest.raises(ReportingError, match="not_accepted"):
         await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            _visualization_payload(),
             RunContext(run_id="run-1", session_id="session-1"),
         )
 

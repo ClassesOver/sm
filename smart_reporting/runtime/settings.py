@@ -14,6 +14,8 @@ DEFAULT_MODEL_STRONG_ID = "deepseek-v4-flash-0731"
 DEFAULT_REPORT_VISION_MODEL_ID = "qwen3.6-flash"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 900
 DEFAULT_WORKSPACE_SNAPSHOT = "sandbox-tools"
+DEFAULT_MPLCONFIGDIR = "/tmp/reporting-matplotlib"
+DEFAULT_REPORTING_HOST_WORKSPACE_ROOT = "/tmp/smart-reporting-workspaces"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_AGENT_DB_URL = "postgresql+psycopg://odoo@127.0.0.1:55432/dev"
 DEFAULT_CORS_ORIGINS = (
@@ -310,6 +312,11 @@ class AgentSettings:
             for key, value in dotenv_values(env_file).items():
                 if value is not None and key not in values:
                     values[key] = value
+        values.setdefault("MPLCONFIGDIR", DEFAULT_MPLCONFIGDIR)
+        values.setdefault(
+            "REPORTING_HOST_WORKSPACE_ROOT",
+            DEFAULT_REPORTING_HOST_WORKSPACE_ROOT,
+        )
         origins = tuple(
             origin.strip()
             for origin in values.get("AGENTOS_CORS_ORIGINS", ",".join(DEFAULT_CORS_ORIGINS)).split(
@@ -363,7 +370,7 @@ class AgentSettings:
         from ..reporting.host_workspace import validate_host_workspace_root
 
         reporting_host_workspace_root = str(
-            validate_host_workspace_root(values.get("REPORTING_HOST_WORKSPACE_ROOT", ""))
+            validate_host_workspace_root(values["REPORTING_HOST_WORKSPACE_ROOT"])
         )
         sandbox = _sandbox_configuration(values)
         model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))

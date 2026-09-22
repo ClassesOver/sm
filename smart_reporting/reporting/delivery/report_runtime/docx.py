@@ -6,13 +6,17 @@ import html
 import os
 import shutil
 import subprocess
+import tempfile
 import zipfile
+import uuid
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from string import Formatter
 from typing import Any
 from xml.etree import ElementTree
+
+from loguru import logger
 
 from .markdown import _WORD_MARKERS, REPORT_VISUAL_THEME, format_heading_label
 from .pdf import MAX_PDF_PAGES, _formatted_page_text, _page_number_context
@@ -40,13 +44,19 @@ def _render_docx(
     layout: dict[str, str],
 ) -> dict[str, Any]:
     pandoc = shutil.which("pandoc")
-    if pandoc is None:
-        raise ReportFailure("Word 渲染命令 Pandoc 不可用")
+    conversion_root: Path | None = None
     html_path = output.with_suffix(".html")
+    converted_output = output
+    if pandoc is None:
+        # LibreOffice 在当前运行环境不能把 docx 直接写入宿主 Workspace；
+        # 使用私有临时目录转换，再以受控 copy 写入目标文件。
+        conversion_root = Path(tempfile.mkdtemp(prefix="reporting-docx-"))
+        html_path = conversion_root / output.with_suffix(".html").name
+        converted_output = conversion_root / output.name
     html_path.write_text(html_document, encoding="utf-8")
     try:
-        process = subprocess.run(
-            [
+        if pandoc is not None:
+            command = [
                 pandoc,
                 "--from=html",
                 "--to=docx",
@@ -54,17 +64,46 @@ def _render_docx(
                 "--output",
                 str(output),
                 str(html_path),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ]
+        else:
+            libreoffice = shutil.which("libreoffice") or shutil.which("soffice")
+            if libreoffice is None:
+                raise ReportFailure("Word 渲染需要 Pandoc 或 LibreOffice")
+            command = [
+                libreoffice,
+                f"-env:UserInstallation=file://{output.parent / ('.libreoffice-profile-' + uuid.uuid4().hex)}",
+                "--headless",
+                "--convert-to",
+                "docx:MS Word 2007 XML",
+                "--outdir",
+                str(conversion_root),
+                str(html_path),
+            ]
+        process = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=DOCX_RENDER_TIMEOUT_SECONDS,
             check=False,
             cwd=source_parent,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
+        if conversion_root is not None:
+            shutil.rmtree(conversion_root, ignore_errors=True)
         raise ReportFailure("Word 渲染失败或超时") from error
+    if conversion_root is not None and process.returncode == 0 and converted_output.is_file():
+        shutil.copyfile(converted_output, output)
+        shutil.rmtree(conversion_root, ignore_errors=True)
     if process.returncode != 0 or not output.is_file():
-        raise ReportFailure("Word 渲染失败")
+        logger.warning(
+            "report_docx_render_failed returncode={} output_exists={} stderr={} stdout={}",
+            process.returncode,
+            output.is_file(),
+            (process.stderr or b"").decode(errors="replace")[-1000:],
+            (process.stdout or b"").decode(errors="replace")[-500:],
+        )
+        stderr = (process.stderr or b"").decode(errors="replace").strip()
+        raise ReportFailure(f"Word 渲染失败：{stderr[-500:]}")
     _postprocess_docx(output, context=context, layout=layout)
     return _validate_docx_structure(
         output,

@@ -62,14 +62,23 @@ HttpOnly、SameSite=Strict 的编辑会话 Cookie，并重定向到不含 token 
 
 分析补证和可视化脚本使用单一交互式 Coding Agent，在当前正式 Reporting Workspace 内多轮执行：
 
-- `write_script` 和 `run_snippet` 通过 Responses API free-form custom tool 接收原始源码或探索性代码片段；
+- `write_script` 和 `run` 通过 Responses API free-form custom tool 接收原始源码或探索性代码片段；
+- `write_script` 在宿主机使用 Ruff（Python 3.12、100 列）格式化合法源码后保存，返回 `formatted`、`warnings` 和保存内容的哈希；语法错误草稿或格式化失败时保留原稿，源码总大小和 AST 大字面量检查仍生效，单行长度不作为拒绝条件；路径策略（未授权字面量路径、目录推导调用、`__file__`）与 `run_script` 同一契约，在写入阶段即拒绝；
 - `read_script`、`restart_code_mode`、`run_script` 和 `submit_script` 使用普通 function tool；
 - 每个 coding task 独享 Agent、Toolkit、任务绑定和 CodeMode session，不创建临时 Workspace；
 - 可按当前 Workspace 检索项目文档、规范和已验收成功的修复知识；
 - LSP 工具通过当前 Workspace 的 `python-lsp-server` stdio 进程提供诊断、hover、定义、引用和文档符号，请求可携带 `expectedSourceSha256` 做版本门禁；
 - `submit_script` 只接受最近一次成功执行且脚本/声明输出哈希未变化的执行回执。
 
-正式脚本必须经过 `write_script → run_script → submit_script`；探索性 `run_snippet` 不会直接产生阶段交接回执。
+正式 Python 脚本只能通过 `write_script` 写入，并必须经过 `write_script → run_script → submit_script`；探索性 `run` 不会保存或替代正式脚本，也不会直接产生阶段交接回执。
+
+`run` 在 Agno CodeMode 的任务级持久 Python 会话执行原始 cell，支持表达式结果和
+以 `%%bash` 为第一行的 Bash cell，跨调用保留 Python 变量与导入；它不提供 JavaScript 工具编排。
+原始 Bash 命令不能直接当 Python cell 传入；需要把命令放在 `%%bash` 后，或使用正式脚本的
+`run_script`。`run` 与 `write_script`
+会在执行或保存前拒绝整个输入为单字段 `data` / `code` / `source` 且内部为可识别代码的
+包装（包括嵌套包装），返回 `report_code_input_wrapped`，提示重新发送原始代码。
+普通字典数据仍可使用；协议层保留原始 custom 输入用于回放，不自动解包执行。
 
 Knowledge 索引位于 `REPORTING_HOST_WORKSPACE_ROOT/knowledge/index.sqlite3`，动态修复只在领域验收成功后记录，并按 Workspace 隔离。LSP 进程由执行上下文统一管理，进程不可用时仅返回软告警。
 
@@ -107,6 +116,29 @@ Reporting CLI：
 ```bash
 AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
 ```
+
+宿主运行 CLI 时先使用 `uv sync --frozen` 安装 `uv.lock` 中的依赖。Debian/Ubuntu 的系统渲染依赖
+与根目录 `Dockerfile` 保持一致：
+
+```bash
+sudo apt-get install -y fontconfig fonts-liberation fonts-noto-cjk \
+  libcairo2 libmagic1 libpango-1.0-0 libpangoft2-1.0-0 shared-mime-info \
+  graphviz librsvg2-bin pandoc poppler-utils qpdf \
+  libreoffice-calc libreoffice-impress libreoffice-writer
+```
+
+`pypandoc` 不附带 Pandoc 可执行文件。启动前确认 `pandoc`、`soffice`、`pdftoppm` 和 `pdfinfo`
+均在 PATH 中。宿主与 sandbox 共用的图表、文档依赖已在 `pyproject.toml` 和
+`docker/sandbox-tools/requirements-*.in` 中约束；更新时同时重建对应锁文件。
+当前 profiling 依赖仍要求 pandas `<3`，因此两侧保持 pandas 2.3.3、NumPy 2.3.5。
+项目还预装统计分析、绘图和格式处理库，包括 SciPy、statsmodels、SymPy、Seaborn、
+adjustText、Altair、Bokeh、Plotnine、PyArrow、DuckDB、XlsxWriter、python-pptx、
+ReportLab、pdfplumber、PyMuPDF、pikepdf 和 CairoSVG；宿主与应用镜像使用同一 `uv.lock`。
+Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在实际执行出错时诊断依赖，
+避免每个分析任务重复查询包版本或字体。分析并发度和 thinking 策略不因此改变。
+宿主绘图可设置 `MATPLOTLIBRC="$PWD/docker/sandbox-tools/matplotlibrc"`，复用镜像的 Agg
+后端与 Noto CJK 默认字体。`MPLCONFIGDIR` 默认使用 `/tmp/reporting-matplotlib`，
+`REPORTING_HOST_WORKSPACE_ROOT` 默认使用 `/tmp/smart-reporting-workspaces`；两者均可由环境变量覆盖。
 
 服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、PDF/Word 双格式
 验收和发布。

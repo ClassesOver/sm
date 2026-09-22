@@ -5,7 +5,6 @@ import hashlib
 import json
 import re
 import shlex
-from ast import literal_eval
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +12,8 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+import tiktoken
+from agno.metrics import MessageMetrics
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat, OpenAIResponses
 from agno.run import RunContext
@@ -21,6 +22,7 @@ from loguru import logger
 from openai.types.responses import Response
 
 from smart_reporting.reporting.agent import create_reporting_code_agent_factory
+from smart_reporting.reporting.bootstrap import _VISUALIZATION_CODE_INSTRUCTIONS
 from smart_reporting.reporting.code_agent import protocol as code_protocol
 from smart_reporting.reporting.code_agent.context import (
     ExecutionReceipt,
@@ -39,9 +41,12 @@ from smart_reporting.reporting.host_workspace import (
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.reporting.workflow.checkpoint import (
+    ChartVisualInspectionIssue,
     ChartVisualInspectionReceipt,
     FileIdentity,
 )
+from smart_reporting.reporting.workflow.runtime import code_generation
+from smart_reporting.reporting.workflow.runtime.base import _ANALYSIS_CODE_INSTRUCTIONS
 from smart_reporting.reporting.workflow.runtime.code_generation import (
     CodeGenerationResult,
     ReportingCodeGenerationRunner,
@@ -49,9 +54,10 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
 from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
 
 SOURCE = "from pathlib import Path\nPath('analysis/out.json').write_text('{}')\n"
+FORMATTED_SOURCE = 'from pathlib import Path\n\nPath("analysis/out.json").write_text("{}")\n'
 VISUAL_SOURCE = "from pathlib import Path\nPath('charts/chart.png').write_bytes(b'image')\n"
-REVISED_VISUAL_SOURCE = (
-    "from pathlib import Path\nPath('charts/chart.png').write_bytes(b'image-v2')\n"
+FORMATTED_VISUAL_SOURCE = (
+    'from pathlib import Path\n\nPath("charts/chart.png").write_bytes(b"image")\n'
 )
 
 
@@ -400,27 +406,22 @@ def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
     model = _code_responses_model()
     tools = model._format_tool_params(
         [],
-        [_function("read_script"), _function("write_script"), _function("run_snippet")],
+        [_function("read_script"), _function("write_script"), _function("run")],
     )
 
     assert tools[0]["type"] == "function"
-    assert tools[1] == {
-        "type": "custom",
-        "name": "write_script",
-        "description": "write_script",
-        "format": {
-            "type": "grammar",
-            "syntax": "lark",
-            "definition": "start: SOURCE\nSOURCE: /[\\s\\S]+/",
-        },
-    }
+    assert tools[1]["type"] == "custom"
+    assert tools[1]["name"] == "write_script"
+    assert tools[1]["format"]["type"] == "grammar"
+    assert tools[1]["format"]["syntax"] == "lark"
+    assert "parameters" not in tools[1]
     assert tools[2]["type"] == "custom"
 
 
 def test_custom_call_round_trip_uses_custom_output() -> None:
     model = _code_responses_model()
     parsed = model._parse_provider_response(
-        _custom_response("run_snippet", "print('ok')")
+        _custom_response("run", "print('ok')")
     )
     call = parsed.tool_calls[0]
 
@@ -438,20 +439,54 @@ def test_custom_call_round_trip_uses_custom_output() -> None:
     ]
 
 
-def test_custom_call_preserves_single_data_mapping_as_source() -> None:
+@pytest.mark.parametrize("name,argument", [("run", "code"), ("write_script", "source")])
+def test_custom_call_normalizes_provider_data_envelope(name: str, argument: str) -> None:
     model = _code_responses_model()
-    wrapped = json.dumps({"data": "print('ok')\n"})
+    source = "# Python\nprint('ok')\n"
+    wrapped = json.dumps({"data": source})
 
     parsed = model._parse_provider_response(
-        _custom_response("run_snippet", wrapped)
+        _custom_response(name, wrapped)
     )
     call = parsed.tool_calls[0]
 
-    assert json.loads(call["function"]["arguments"]) == {"code": wrapped}
+    assert json.loads(call["function"]["arguments"]) == {argument: source}
+    assert call["provider_data"] == {
+        "reporting_wire_type": "custom",
+        "raw_input": source,
+        "provider_input_normalized": "data_envelope",
+    }
     replay = model._format_messages(
         _assistant_and_result_messages(call, {"ok": True})
     )
-    assert replay[-2]["input"] == wrapped
+    assert replay[-2]["input"] == source
+
+
+def test_code_run_raw_protocol_metric_detects_any_normalized_custom_input() -> None:
+    model = _code_responses_model()
+    tools = [Function(name="write_script")]
+    model.configure_code_run(tools, max_model_requests=4)
+    model.get_request_params(messages=[], tools=tools)
+    source = "# Python\nprint('ok')\n"
+
+    model._parse_provider_response(_custom_response("write_script", source, 1))
+    assert model.code_run_raw_protocol_correct() is True
+
+    model._parse_provider_response(
+        _custom_response("write_script", json.dumps({"data": source}), 2)
+    )
+    assert model.code_run_raw_protocol_correct() is False
+
+
+def test_custom_call_preserves_plain_data_mapping_as_source() -> None:
+    model = _code_responses_model()
+    wrapped = json.dumps({"data": "销售额"})
+
+    parsed = model._parse_provider_response(_custom_response("run", wrapped))
+
+    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
+        "code": wrapped
+    }
 
 
 def test_custom_call_preserves_nested_mapping_as_source() -> None:
@@ -473,7 +508,7 @@ def test_custom_call_preserves_non_wrapper_json_expression() -> None:
     expression = '{"first": 1, "second": 2}'
 
     parsed = model._parse_provider_response(
-        _custom_response("run_snippet", expression)
+        _custom_response("run", expression)
     )
 
     assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
@@ -489,7 +524,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         store=True,
     )
     call = model._parse_provider_response(
-        _custom_response("run_snippet", "print('ok')")
+        _custom_response("run", "print('ok')")
     ).tool_calls[0]
     messages = _assistant_and_result_messages(call, {"ok": True})
     messages[0].provider_data = {"response_id": "resp-previous"}
@@ -520,7 +555,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
             {
                 "id": "item-1",
                 "call_id": "call-1",
-                "name": "run_snippet",
+                "name": "run",
                 "input": "",
                 "type": "custom_tool_call",
             },
@@ -529,7 +564,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         (
             {
                 "call_id": "call-1",
-                "name": "run_snippet",
+                "name": "run",
                 "input": "print(1)",
                 "type": "custom_tool_call",
             },
@@ -538,7 +573,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         (
             {
                 "id": "item-1",
-                "name": "run_snippet",
+                "name": "run",
                 "input": "print(1)",
                 "type": "custom_tool_call",
             },
@@ -562,7 +597,7 @@ def _synthetic_custom_call_for_replay(
     *,
     item_id: str = "item-1",
     call_id: str = "call-1",
-    name: str = "run_snippet",
+    name: str = "run",
     raw_input: str = "print('ok')",
 ) -> dict[str, Any]:
     argument = "source" if name == "write_script" else "code"
@@ -595,7 +630,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-1",
-                tool_name="run_snippet",
+                tool_name="run",
             ),
             Message(
                 role="assistant",
@@ -609,7 +644,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-1",
-                tool_name="run_snippet",
+                tool_name="run",
             ),
         ],
         _assistant_and_result_messages(
@@ -626,7 +661,7 @@ def _synthetic_custom_call_for_replay(
             {
                 **_synthetic_custom_call_for_replay(),
                 "function": {
-                    "name": "run_snippet",
+                    "name": "run",
                     "arguments": '{"code":"forged"}',
                 },
             },
@@ -640,7 +675,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-wrong",
-                tool_name="run_snippet",
+                tool_name="run",
             ),
         ],
         [
@@ -668,7 +703,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="ok",
                 tool_call_id="call-1",
-                tool_name="run_snippet",
+                tool_name="run",
             )
         ],
         _assistant_and_result_messages(_synthetic_custom_call_for_replay(), {"ok": True})
@@ -677,7 +712,7 @@ def _synthetic_custom_call_for_replay(
                 role="tool",
                 content="duplicate",
                 tool_call_id="call-1",
-                tool_name="run_snippet",
+                tool_name="run",
             )
         ],
         [
@@ -711,11 +746,11 @@ def test_custom_protocol_preserves_mixed_batch_order_and_replay() -> None:
         _function_response(1, "read_script", {}),
         _custom_response("write_script", SOURCE, 2),
         _function_response(3, "run_script", {}),
-        _custom_response("run_snippet", "print(1)", 4),
+        _custom_response("run", "print(1)", 4),
     )
     parsed = model._parse_provider_response(response)
     assert [call["function"]["name"] for call in parsed.tool_calls] == [
-        "read_script", "write_script", "run_script", "run_snippet",
+        "read_script", "write_script", "run_script", "run",
     ]
     assert parsed.extra["tool_call_ids"] == ["call-1", "call-2", "call-3", "call-4"]
     messages = [Message(role="assistant", tool_calls=parsed.tool_calls)]
@@ -797,7 +832,7 @@ def test_request_with_custom_tool_forces_auto_choice() -> None:
         tool_choice={"type": "custom", "name": "write_script"},
     )
 
-    assert params["parallel_tool_calls"] is False
+    assert params["parallel_tool_calls"] is True
     assert params["tool_choice"] == "auto"
 
 
@@ -818,8 +853,85 @@ def test_code_requests_default_to_auto_tool_choice() -> None:
         tools=[_function("write_script"), _function("run_script")],
     )
 
-    assert params["parallel_tool_calls"] is False
+    assert params["parallel_tool_calls"] is True
     assert params["tool_choice"] == "auto"
+
+
+def test_code_request_projection_records_final_prefix_fingerprints() -> None:
+    model = _code_responses_model()
+    model._code_request_metrics = [{"status": "started", "requestParams": {}}]
+    model.get_request_params(
+        messages=[
+            Message(role="system", content="stable-system"),
+            Message(role="user", content="dynamic-task"),
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "result",
+                "schema": {"type": "object", "properties": {}},
+                "strict": True,
+            },
+        },
+        tools=[_function("run_script")],
+    )
+    expected = {
+        "model": "test-model",
+        "reasoningEffort": "unknown",
+        "reasoningSummary": "unknown",
+        "enableThinking": "unknown",
+        "enableThinkingLocation": "omitted",
+        "maxOutputTokens": "unknown",
+        "parallelToolCalls": True,
+        "toolChoice": "auto",
+        "extraBodyKeys": [],
+        "systemPrefixSha256": "7891eaae9e4d51e08d65af72db059d118bb2837ae8b74ee99d9eaa819ffaa302",
+        "systemPrefixBytes": 48,
+        "toolDeclarationsSha256": "0bd6752f120b0cb8dd6344012ad8c49ce33b00abb12eed1490fb8f73f5aee281",
+        "toolDeclarationsBytes": 115,
+        "schemaSha256": "0da85c7fc4faab0c8ebac1ff63adca7210346c9f993c536ef956b39b0061549a",
+        "schemaBytes": 95,
+    }
+    assert model._code_last_request_params == expected
+    assert model.code_run_request_metrics()[0]["requestParams"] == expected
+
+
+def test_code_request_projection_uses_previous_response_wire_messages() -> None:
+    model = ReportingCodeOpenAIResponses(
+        id="gpt-5-test",
+        api_key="test-key",
+        base_url="http://localhost",
+        store=True,
+    )
+    messages = [
+        Message(role="system", content="prior-system"),
+        Message(
+            role="assistant",
+            content="prior-answer",
+            provider_data={"response_id": "resp-previous"},
+        ),
+        Message(role="user", content="continue"),
+    ]
+    model._code_request_metrics = [{"status": "started", "requestParams": {}}]
+
+    params = model.get_request_params(messages=messages, tools=[])
+
+    assert params["previous_response_id"] == "resp-previous"
+    assert model._format_messages(messages) == [
+        {"role": "user", "content": "continue"}
+    ]
+    assert model._code_last_request_params["systemPrefixSha256"] == "unknown"
+    assert model._code_last_request_params["systemPrefixBytes"] == "unknown"
+    assert model.code_run_request_metrics()[0]["requestParams"] == (
+        model._code_last_request_params
+    )
+
+
+def test_empty_request_fingerprint_is_unknown() -> None:
+    assert ReportingCodeOpenAIResponses._request_fingerprint({}) == (
+        "unknown",
+        "unknown",
+    )
 
 
 @pytest.mark.anyio
@@ -829,7 +941,18 @@ async def test_code_model_response_emits_request_progress_with_budget(
     async def provider_invoke(
         _model: OpenAIResponses, _messages: list[Message], *_args: Any, **_kwargs: Any
     ) -> SimpleNamespace:
-        return SimpleNamespace(output=[], error=None)
+        return SimpleNamespace(
+            output=[],
+            error=None,
+            response_usage=MessageMetrics(
+                input_tokens=120,
+                output_tokens=50,
+                total_tokens=170,
+                reasoning_tokens=30,
+                cache_read_tokens=80,
+                time_to_first_token=0.25,
+            ),
+        )
 
     monkeypatch.setattr(OpenAIResponses, "ainvoke", provider_invoke)
     model = _code_responses_model()
@@ -854,6 +977,18 @@ async def test_code_model_response_emits_request_progress_with_budget(
             "request_index": item["request_index"],
             "request_limit": item["request_limit"],
             "status": item["status"],
+            **(
+                {
+                    "input_tokens": item["input_tokens"],
+                    "output_tokens": item["output_tokens"],
+                    "reasoning_tokens": item["reasoning_tokens"],
+                    "visible_output_tokens": item["visible_output_tokens"],
+                    "cache_read_tokens": item["cache_read_tokens"],
+                    "time_to_first_token_seconds": item["time_to_first_token_seconds"],
+                }
+                if item["status"] == "completed"
+                else {}
+            ),
         }
         for item in records
     ] == [
@@ -870,6 +1005,12 @@ async def test_code_model_response_emits_request_progress_with_budget(
             "request_index": 1,
             "request_limit": 4,
             "status": "completed",
+            "input_tokens": 120,
+            "output_tokens": 50,
+            "reasoning_tokens": 30,
+            "visible_output_tokens": 20,
+            "cache_read_tokens": 80,
+            "time_to_first_token_seconds": 0.25,
         },
         {
             "reporting_progress": "code_model_request",
@@ -884,7 +1025,134 @@ async def test_code_model_response_emits_request_progress_with_budget(
             "request_index": 2,
             "request_limit": 4,
             "status": "completed",
+            "input_tokens": 120,
+            "output_tokens": 50,
+            "reasoning_tokens": 30,
+            "visible_output_tokens": 20,
+            "cache_read_tokens": 80,
+            "time_to_first_token_seconds": 0.25,
         },
+    ]
+
+
+@pytest.mark.anyio
+async def test_code_model_keeps_bounded_request_metrics_for_task_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        (
+            SimpleNamespace(
+                response_usage=MessageMetrics(
+                    input_tokens=120,
+                    output_tokens=50,
+                    reasoning_tokens=30,
+                    cache_read_tokens=80,
+                ),
+                tool_calls=[
+                    {
+                        "id": "item-1",
+                        "call_id": "call-1",
+                        "type": "function",
+                        "function": {"name": "write_script", "arguments": "{}"},
+                    }
+                ],
+            ),
+            SimpleNamespace(response_usage=None, tool_calls=[]),
+        )
+    )
+
+    async def provider_invoke(
+        _model: OpenAIResponses, _messages: list[Message], *_args: Any, **_kwargs: Any
+    ) -> SimpleNamespace:
+        return next(responses)
+
+    monkeypatch.setattr(OpenAIResponses, "ainvoke", provider_invoke)
+    model = _code_responses_model()
+    model.configure_code_run([_function("write_script")], max_model_requests=4)
+    monkeypatch.setattr(model, "_project", lambda messages, _args, _kwargs: messages)
+
+    await model.ainvoke([])
+    await model.ainvoke([])
+
+    metrics = model.code_run_request_metrics()
+    assert len(metrics) == 2
+    assert metrics[0] == {
+        "requestIndex": 1,
+        "providerRequestId": "unknown",
+        "durationMs": metrics[0]["durationMs"],
+        "inputTokens": 120,
+        "outputTokens": 50,
+        "reasoningTokens": 30,
+        "visibleOutputTokens": 20,
+        "cacheReadTokens": 80,
+        "timeToFirstTokenSeconds": "unknown",
+        "toolNames": ["write_script"],
+        "toolCalls": [{"id": "call-1", "name": "write_script"}],
+        "toolCallCount": 1,
+        "requestParams": {},
+        "status": "completed",
+    }
+    assert isinstance(metrics[0]["durationMs"], int)
+    assert metrics[0]["durationMs"] >= 0
+    assert metrics[1] == {
+        "requestIndex": 2,
+        "providerRequestId": "unknown",
+        "durationMs": metrics[1]["durationMs"],
+        "inputTokens": "unknown",
+        "outputTokens": "unknown",
+        "reasoningTokens": "unknown",
+        "visibleOutputTokens": "unknown",
+        "cacheReadTokens": "unknown",
+        "timeToFirstTokenSeconds": "unknown",
+        "toolNames": [],
+        "toolCalls": [],
+        "toolCallCount": 0,
+        "requestParams": {},
+        "status": "completed",
+    }
+
+
+@pytest.mark.anyio
+async def test_code_model_keeps_started_metric_when_provider_request_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+
+    async def provider_invoke(
+        _model: OpenAIResponses, _messages: list[Message], *_args: Any, **_kwargs: Any
+    ) -> SimpleNamespace:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(OpenAIResponses, "ainvoke", provider_invoke)
+    model = _code_responses_model()
+    model.configure_code_run([_function("write_script")], max_model_requests=4)
+    monkeypatch.setattr(model, "_project", lambda messages, _args, _kwargs: messages)
+
+    request = asyncio.create_task(model.ainvoke([]))
+    await entered.wait()
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+
+    assert model.code_run_request_metrics() == [
+        {
+            "requestIndex": 1,
+            "providerRequestId": "unknown",
+            "durationMs": "unknown",
+            "inputTokens": "unknown",
+            "outputTokens": "unknown",
+            "reasoningTokens": "unknown",
+            "visibleOutputTokens": "unknown",
+            "cacheReadTokens": "unknown",
+            "timeToFirstTokenSeconds": "unknown",
+            "toolNames": [],
+            "toolCalls": [],
+            "toolCallCount": 0,
+            "requestParams": {},
+            "status": "started",
+        }
     ]
 
 
@@ -973,7 +1241,7 @@ async def test_async_streaming_freeform_tools_are_rejected_before_provider_call(
 
     with pytest.raises(ReportingError, match="非流式") as caught:
         _code_responses_model().ainvoke_stream(
-            [], Message(role="assistant", content=""), None, [_function("run_snippet")]
+            [], Message(role="assistant", content=""), None, [_function("run")]
         )
 
     assert caught.value.code == "report_code_streaming_unsupported"
@@ -1010,9 +1278,9 @@ def test_custom_protocol_rejects_dsml_assistant_text_without_executing_it() -> N
 @pytest.mark.parametrize(
     "text",
     [
-        "```run_snippet\nprint('must not run')\n```",
+        "```run\nprint('must not run')\n```",
         (
-            '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="run_snippet">\n'
+            '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="run">\n'
             '<｜DSML｜parameter name="code" string="true">print(1)</｜DSML｜parameter>\n'
             "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
         ),
@@ -1129,16 +1397,38 @@ async def test_view_image_returns_and_stores_structured_visual_review(
     binding, toolkit, output = await _prepared_visualization_toolkit(
         workspace, runtime, reviewer
     )
-    reviewed = _visual_receipt(output)
+    reviewed = _visual_receipt(output).model_copy(
+        update={
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="missing_units",
+                    severity="warning",
+                    description="纵轴单位可以更明确。",
+                ),
+            ),
+            "summary": "图表可交付，但仍有非阻断优化项。",
+            "warnings": ("单位说明可优化。",),
+            "suggestions": ("补充纵轴单位。",),
+        }
+    )
     reviewer.review.return_value = reviewed
 
     result = await toolkit.view_image("charts/chart.png", detail="original")
 
     assert result == {
         "ok": True,
-        "receipt": reviewed.model_dump(mode="json", by_alias=True),
+        "receipt": {
+            "sourcePath": output.path,
+            "sha256": output.sha256,
+            "visualReviewStatus": "passed",
+            "reviewed": True,
+            "requiresRevision": False,
+            "warningCount": 1,
+            "message": "非阻断问题已记录，无需修改。",
+        },
     }
     assert binding.visual_inspection_receipts == {"charts/chart.png": reviewed}
+    assert toolkit.visual_review_duration_ms >= 0
     reviewer.review.assert_awaited_once_with(
         workspace.identity.workspace_key,
         "charts/chart.png",
@@ -1155,14 +1445,88 @@ async def test_view_image_reuses_visual_review_for_same_sha256(
     binding, toolkit, output = await _prepared_visualization_toolkit(
         workspace, runtime, reviewer
     )
-    reviewed = _visual_receipt(output)
+    reviewed = _visual_receipt(output).model_copy(
+        update={
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="missing_units",
+                    severity="warning",
+                    description="缓存中的 warning 不得返回模型。",
+                ),
+            ),
+            "warnings": ("缓存 warning 文本",),
+            "suggestions": ("缓存 suggestion 文本",),
+        }
+    )
     binding.visual_inspection_receipts[output.path] = reviewed
     reviewer.review.return_value = reviewed
 
     result = await toolkit.view_image(output.path)
 
-    assert result["receipt"]["sha256"] == output.sha256
+    assert result["receipt"] == {
+        "sourcePath": output.path,
+        "sha256": output.sha256,
+        "visualReviewStatus": "passed",
+        "reviewed": True,
+        "requiresRevision": False,
+        "warningCount": 1,
+        "message": "非阻断问题已记录，无需修改。",
+    }
     reviewer.review.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_view_image_returns_only_critical_repair_context(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+    reviewed = _visual_receipt(output, requires_revision=True).model_copy(
+        update={
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="text_overlap",
+                    severity="critical",
+                    description="体检中心标签与数值完全重叠。",
+                ),
+                ChartVisualInspectionIssue(
+                    category="missing_units",
+                    severity="warning",
+                    description="纵轴单位可以更明确。",
+                ),
+            ),
+            "summary": "包含 critical 和 warning。",
+            "warnings": ("非阻断 warning 文本",),
+            "suggestions": ("可能只对应 warning 的全局建议",),
+        }
+    )
+    reviewer.review.return_value = reviewed
+
+    result = await toolkit.view_image(output.path)
+
+    assert result == {
+        "ok": True,
+        "receipt": {
+            "sourcePath": output.path,
+            "sha256": output.sha256,
+            "visualReviewStatus": "passed",
+            "reviewed": True,
+            "requiresRevision": True,
+            "criticalIssues": [
+                {
+                    "category": "text_overlap",
+                    "severity": "critical",
+                    "description": "体检中心标签与数值完全重叠。",
+                }
+            ],
+        },
+    }
+    assert binding.visual_inspection_receipts[output.path] == reviewed
+    assert "纵轴单位" not in str(result)
+    assert "全局建议" not in str(result)
 
 
 @pytest.mark.anyio
@@ -1317,8 +1681,8 @@ async def test_run_and_submit_bind_source_and_declared_outputs(
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("print('ok')", "print('ok')\n"),
-        ("print('a')\r\nprint('b')\r", "print('a')\nprint('b')\n"),
+        ("print('ok')", 'print("ok")\n'),
+        ("print('a')\r\nprint('b')\r", 'print("a")\nprint("b")\n'),
     ],
 )
 async def test_write_script_normalizes_repairable_freeform_text(
@@ -1485,6 +1849,70 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
     assert result.execution_receipt.output_files[0].path == "analysis/out.json"
     assert created[0].tool_call_limit == 30
     assert created[0].model.parallel_tool_calls is False
+
+
+def test_runner_binds_full_host_task_context_to_trace_metadata(
+    workspace: HostReportingWorkspace,
+    monkeypatch,
+) -> None:
+    traced_metadata = []
+
+    class TraceMetadata:
+        def __init__(self, metadata: dict[str, Any]) -> None:
+            self.metadata = metadata
+
+        def __enter__(self) -> None:
+            traced_metadata.append(self.metadata)
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        code_generation,
+        "using_metadata",
+        lambda metadata: TraceMetadata(metadata),
+    )
+
+    with ReportingCodeGenerationRunner._trace_task_context(_task_context(workspace)):
+        pass
+
+    assert traced_metadata == [
+        {
+            "reportingCodingTaskContext": {
+                "task_id": "task-1",
+                "task_kind": "analysis",
+                "code_mode_session_id": "code-task-1",
+                "workspace_key": workspace.identity.workspace_key,
+                "workspace_root": str(workspace.identity.root),
+                "script_path": "analysis/a.py",
+                "authorized_read_paths": [],
+                "authorized_write_paths": ["analysis/a.py", "analysis/out.json"],
+                "declared_output_paths": ["analysis/out.json"],
+                "max_source_bytes": 128 * 1024,
+            }
+        }
+    ]
+
+
+def test_runner_projects_only_model_visible_task_fields(
+    workspace: HostReportingWorkspace,
+) -> None:
+    context = _task_context(workspace)
+
+    payload = ReportingCodeGenerationRunner._model_task_payload(context)
+
+    assert payload == {
+        "task_kind": "analysis",
+        "script_path": "analysis/a.py",
+        "authorized_read_paths": [],
+        "authorized_write_paths": ["analysis/a.py", "analysis/out.json"],
+        "declared_output_paths": ["analysis/out.json"],
+        "max_source_bytes": 128 * 1024,
+    }
+    assert context.task_id == "task-1"
+    assert context.code_mode_session_id == "code-task-1"
+    assert context.workspace_key == workspace.identity.workspace_key
+    assert context.workspace_root == workspace.identity.root
 
 
 @pytest.mark.anyio
@@ -1765,16 +2193,83 @@ def test_code_agent_factory_creates_fresh_agent_with_custom_input_instructions()
     second = factory([_function("read_script")])
     assert first is not second
     assert first.model is not second.model
+    assert first.model.parallel_tool_calls is True
     assert first.tools[0] is not second.tools[0]
     instructions = "\n".join(str(item) for item in first.instructions)
-    assert (
-        "write_script 与 run_snippet 的 custom input 只包含原始源码或 cell 文本，"
-        "不得添加 JSON 包装或说明。"
-    ) in instructions
-    assert "可视化任务必须对 run_script 返回的每个图片输出调用 view_image" in instructions
-    assert "全部审查通过后才能调用 submit_script" in instructions
+    assert "REPORTING_CODE_DELIVERY_STATE.nextTools" in instructions
+    assert "当前工具声明" in instructions
+    assert "首轮思考聚焦实现、边界条件与正确性" in instructions
+    assert "不重复推导已给事实" in instructions
+    assert "对 run_script 返回的每个图片输出调用 view_image" in instructions
+    assert "全部审查后再 submit_script" in instructions
+    assert "custom input" not in instructions
+    assert "JSON 包装" not in instructions
+    assert "Markdown 围栏" not in instructions
     assert "source 参数" not in instructions
     assert "code 参数" not in instructions
+
+
+def test_code_agent_factory_projects_only_task_specific_common_instructions() -> None:
+    model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
+    analysis = create_reporting_code_agent_factory(
+        model=model,
+        name="analysis-code-agent",
+        task_kind="analysis",
+    )([_function("write_script")])
+    visualization = create_reporting_code_agent_factory(
+        model=model,
+        name="visualization-code-agent",
+        task_kind="visualization",
+    )([_function("write_script")])
+
+    analysis_instructions = "\n".join(str(item) for item in analysis.instructions)
+    visualization_instructions = "\n".join(
+        str(item) for item in visualization.instructions
+    )
+    assert "view_image" not in analysis_instructions
+    assert "中文图表字体" not in analysis_instructions
+    assert "期间计算" in analysis_instructions
+    assert "view_image" in visualization_instructions
+    assert "中文图表字体" in visualization_instructions
+    assert "期间计算" not in visualization_instructions
+    assert analysis.__dict__["_reporting_instruction_components"] == {
+        "common": tuple(analysis.instructions),
+        "stage": (),
+    }
+
+
+def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget() -> None:
+    model = OpenAIChat(id="test-model", api_key="test-key", base_url="http://localhost")
+    agents = {
+        "analysis": create_reporting_code_agent_factory(
+            model=model,
+            name="analysis-code-agent",
+            task_kind="analysis",
+            instructions=_ANALYSIS_CODE_INSTRUCTIONS,
+        )([]),
+        "visualization": create_reporting_code_agent_factory(
+            model=model,
+            name="visualization-code-agent",
+            task_kind="visualization",
+            instructions=_VISUALIZATION_CODE_INSTRUCTIONS,
+        )([]),
+    }
+    budgets = {
+        "analysis": {"bytes": 3_100, "cl100k_tokens": 940},
+        "visualization": {"bytes": 4_500, "cl100k_tokens": 1_400},
+    }
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+
+    for task_kind, agent in agents.items():
+        instructions = "\n".join(str(item) for item in agent.instructions)
+        assert len(instructions.encode("utf-8")) <= budgets[task_kind]["bytes"]
+        assert len(tokenizer.encode(instructions)) <= budgets[task_kind]["cl100k_tokens"]
+        assert "REPORTING_CODE_DELIVERY_STATE.nextTools" in instructions
+        assert "脚本不存在时" not in instructions
+        assert "JSON 信封" not in instructions
+        assert "Markdown 围栏" not in instructions
+        assert instructions.count("cwd") == 1
+        assert instructions.count("__file__") == 1
 
 
 def test_interactive_runner_exposes_only_run_public_entrypoint() -> None:
@@ -1813,7 +2308,7 @@ async def test_interactive_v1_write_fail_fix_run_submit(
     await toolkit.write_script("if True print('broken')\n")
     assert (await toolkit.run_script())["ok"] is False
     await toolkit.write_script(SOURCE)
-    assert (await toolkit.run_snippet("print('probe')"))["ok"] is True
+    assert (await toolkit.run("print('probe')"))["ok"] is True
     assert (await toolkit.run_script())["ok"] is True
     submitted = await toolkit.submit_script()
     assert submitted["ok"] is True
@@ -1828,11 +2323,22 @@ async def test_interactive_v1_end_to_end_responses_loop(
     workspace: HostReportingWorkspace,
     batched: bool,
 ) -> None:
+    broken_source = FORMATTED_SOURCE.replace('write_text("{}")', 'write_text("{}"')
+    repair_patch = (
+        "*** Begin Edit\n"
+        f"*** SHA256: {hashlib.sha256(broken_source.encode()).hexdigest()}\n"
+        "<<<<<<< SEARCH\n"
+        'write_text("{}"\n'
+        "=======\n"
+        'write_text("{}")\n'
+        ">>>>>>> REPLACE\n"
+        "*** End Edit"
+    )
     responses = [
-        _custom_response("write_script", "if True print('broken')\n", 1),
+        _custom_response("write_script", broken_source, 1),
         _function_response(2, "run_script", {}),
-        _custom_response("run_snippet", "print('probe')", 3),
-        _custom_response("write_script", SOURCE, 4),
+        _custom_response("run", "print('probe')", 3),
+        _custom_response("edit_script", repair_patch, 4),
         _function_response(5, "lsp_diagnostics", {}),
         _function_response(6, "search_knowledge", {"query": "脚本规范"}),
         _function_response(7, "run_script", {}),
@@ -1842,13 +2348,13 @@ async def test_interactive_v1_end_to_end_responses_loop(
         responses = [
             _batch_response(
                 *responses[:2],
-                _custom_response("run_snippet", "print('must not run')", 9),
+                _custom_response("run", "print('must not run')", 9),
             ),
             _batch_response(*responses[2:6]),
-            _batch_response(
-                *responses[6:],
-                _custom_response("write_script", "raise RuntimeError('must not run')\n", 10),
-            ),
+                _batch_response(
+                    *responses[6:],
+                    _custom_response("run", "print('must not run')", 10),
+                ),
         ]
 
     class FakeResponsesClient:
@@ -1881,9 +2387,6 @@ async def test_interactive_v1_end_to_end_responses_loop(
             )
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
-            source = await received.aread_text("task-1", "analysis/a.py")
-            if "broken" in source:
-                return ScriptProcessResult(_failed_cell("SyntaxError: invalid syntax"), 1)
             await received.awrite_text("task-1", "analysis/out.json", "{}")
             return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
@@ -1908,7 +2411,7 @@ async def test_interactive_v1_end_to_end_responses_loop(
         async def diagnostics(self, root: Path, uri: str, text: str):
             assert root == workspace.identity.root
             assert uri.endswith("/analysis/a.py")
-            assert text == SOURCE
+            assert text == FORMATTED_SOURCE
             return 1, []
 
     client = FakeResponsesClient()
@@ -1937,14 +2440,14 @@ async def test_interactive_v1_end_to_end_responses_loop(
 
     assert result.script_file == result.execution_receipt.source_file
     assert result.execution_receipt.output_files[0].path == "analysis/out.json"
-    assert await workspace.aread_text("task-1", "analysis/a.py") == SOURCE
+    assert await workspace.aread_text("task-1", "analysis/a.py") == FORMATTED_SOURCE
     assert runtime.shutdowns == ["code-task-1"]
     assert len(client.requests) == (3 if batched else 8)
     assert responses == []
     request_tools = [tool for request in client.requests for tool in request["tools"]]
     assert {tool["type"] for tool in request_tools} == {"custom", "function"}
     assert not any(
-        tool["type"] == "function" and tool["name"] in {"write_script", "run_snippet"}
+        tool["type"] == "function" and tool["name"] in {"write_script", "run"}
         for tool in request_tools
     )
     replay_types = [
@@ -1961,15 +2464,22 @@ async def test_interactive_v1_end_to_end_responses_loop(
 async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     workspace: HostReportingWorkspace,
 ) -> None:
+    visual_patch = (
+        "*** Begin Edit\n"
+        f"*** SHA256: {hashlib.sha256(FORMATTED_VISUAL_SOURCE.encode()).hexdigest()}\n"
+        "<<<<<<< SEARCH\n"
+        'b"image"\n'
+        "=======\n"
+        'b"image-v2"\n'
+        ">>>>>>> REPLACE\n"
+        "*** End Edit"
+    )
     responses = [
         _custom_response("write_script", VISUAL_SOURCE, 1),
         _function_response(2, "run_script", {}),
         _function_response(3, "view_image", {"path": "charts/chart.png"}),
-        _function_response(10, "submit_script", {}),
-        _custom_response("write_script", REVISED_VISUAL_SOURCE, 4),
-        _function_response(8, "submit_script", {}),
+        _custom_response("edit_script", visual_patch, 4),
         _function_response(5, "run_script", {}),
-        _function_response(9, "submit_script", {}),
         _function_response(6, "view_image", {"path": "charts/chart.png"}),
         _function_response(7, "submit_script", {}),
     ]
@@ -2027,10 +2537,25 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
                         "severity": "critical",
                         "description": "关键标题完全重叠，无法辨认。",
                     },
+                    {
+                        "category": "missing_units",
+                        "severity": "warning",
+                        "description": "wire warning 不得进入后续模型输入。",
+                    },
                 )
                 if requires_revision
                 else (),
-                summary="需要修订。" if requires_revision else "图表清晰。",
+                summary=(
+                    "wire summary 不得进入后续模型输入。"
+                    if requires_revision
+                    else "图表清晰。"
+                ),
+                warnings=("wire warnings 不得进入后续模型输入。",)
+                if requires_revision
+                else (),
+                suggestions=("wire suggestion 不得进入后续模型输入。",)
+                if requires_revision
+                else (),
             )
 
     client = FakeResponsesClient()
@@ -2047,12 +2572,14 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     runtime = Runtime()
     reviewer = Reviewer()
     registry = ReportingCodingTaskRegistry()
+    coding_metrics: list[dict[str, Any]] = []
     result = await ReportingCodeGenerationRunner(
         agent_factory,
         runtime,
         ReportingLspProcessManager(),
         registry=registry,
         vision_reviewer=reviewer,
+        coding_metrics_recorder=coding_metrics.append,
     ).run(
         _visualization_task_context(workspace),
         workspace,
@@ -2064,22 +2591,17 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     assert reviewer.hashes[0] != reviewer.hashes[1]
     assert result.visual_inspection_receipts[0].sha256 == reviewer.hashes[1]
     assert result.visual_inspection_receipts[0].requires_revision is False
-    replay = client.requests[-1]["input"]
-    submissions = {item["call_id"] for item in replay
-                   if item.get("type") == "function_call" and item["name"] == "submit_script"}
-    rejections = [literal_eval(item["output"]) for item in replay
-                  if item.get("type") == "function_call_output" and item["call_id"] in submissions]
-    assert [item["code"] for item in rejections] == [
-        "report_code_visual_revision_required",
-        "report_code_submission_not_executed",
-        "report_code_visual_review_required",
-    ]
+    assert coding_metrics[0]["firstRepairSuccess"] is True
     request_history = json.dumps(client.requests, ensure_ascii=False, default=str)
     assert "关键标题完全重叠" in request_history
+    assert "wire warning" not in request_history
+    assert "wire summary" not in request_history
+    assert "wire suggestion" not in request_history
     assert "image_url" not in request_history
     assert "data:image" not in request_history
     request_tools = [tool for request in client.requests for tool in request["tools"]]
     assert any(tool["type"] == "custom" and tool["name"] == "write_script" for tool in request_tools)
+    assert any(tool["type"] == "custom" and tool["name"] == "edit_script" for tool in request_tools)
     assert not any(
         tool["type"] == "function" and tool["name"] == "write_script"
         for tool in request_tools

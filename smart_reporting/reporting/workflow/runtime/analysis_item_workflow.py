@@ -28,6 +28,11 @@ from ...code_agent.context import ExecutionReceipt
 from ...code_agent.failure_policy import recovery_for
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...models import ReportingError
+from ..benchmark_variants import (
+    BenchmarkProjection,
+    BenchmarkVariant,
+    LegacyAnalysisEvidenceDecision,
+)
 from ..checkpoint import FileIdentity
 from .code_generation import CodeGenerationResult
 
@@ -38,6 +43,13 @@ DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
+_EXISTING_FACT_COLLECTIONS = (
+    "metrics",
+    "derivedMetrics",
+    "comparisons",
+    "reconciliations",
+)
+_EXISTING_FACT_DETAIL_KEYS = frozenset({"periodValues", "topGroups", "bottomGroups"})
 _STAGE_NAMES = (
     "read-facts",
     "plan-evidence",
@@ -45,6 +57,34 @@ _STAGE_NAMES = (
     "validate-evidence",
     "complete-analysis",
 )
+
+
+def _compact_existing_facts(value: Any) -> dict[str, Any] | None:
+    """保留补证计算所需基准，去掉已在原 facts 中保存的长序列和分组明细。"""
+
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, Any] = {}
+    analysis_id = value.get("analysisId")
+    if isinstance(analysis_id, str) and analysis_id:
+        result["analysisId"] = analysis_id
+    for key in _EXISTING_FACT_COLLECTIONS:
+        collection = value.get(key)
+        if not isinstance(collection, (list, tuple)):
+            continue
+        result[key] = [
+            {
+                item_key: item_value
+                for item_key, item_value in item.items()
+                if item_key not in _EXISTING_FACT_DETAIL_KEYS
+            }
+            for item in collection
+            if isinstance(item, Mapping)
+        ]
+    warnings = value.get("warnings")
+    if isinstance(warnings, (list, tuple)):
+        result["warnings"] = [item for item in warnings if isinstance(item, str)]
+    return result or None
 
 
 def _validation_issue_summary(error: ValidationError) -> str:
@@ -64,29 +104,21 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
     for key in ("analysisId", "datasetIds"):
         schema["properties"].pop(key)
     schema["required"] = ["findings", "reconciliations", "warnings"]
+    schema["properties"]["reconciliations"]["items"].update({
+        "properties": {
+            "name": {"type": "string", "minLength": 1, "pattern": r"\S"},
+            "passed": {"type": "boolean"},
+        },
+        "required": ["name", "passed"],
+    })
     return {
         "format": "json",
-        "requiredRootKeys": ["findings", "reconciliations", "warnings"],
-        "additionalRootKeys": False,
         "schema": schema,
         "rules": [
-            "仅写 findings、reconciliations、warnings；analysisId、datasetIds 由服务端注入。",
-            "findings 为非空对象数组；表格明细使用 columns + rows，不得使用对象行数组。",
-            "表格 columns 为不重复的非空字符串数组；每个 rows 行均为数组，长度与 columns 一致。",
-            "表格数值不得含 NaN 或无穷大；缺失值使用 JSON null。",
-            "reconciliations 为非空对象数组；每项包含非空 name 与布尔 passed，不得用字符串代替布尔值。",
+            "表格 finding 使用 columns + rows 行编码；columns 不重复，每个 rows 行与 columns 等长；数值不得为 NaN 或无穷大，缺失值使用 JSON null。",
             "业务对账不通过时如实写 passed=false，并在 warnings 中说明；这是软告警，不是结构错误。",
-            "warnings 使用字符串数组，无告警时写 []。",
-            "example 仅示意格式；发现、金额与对账结论必须来自当前任务真实数据，不得照抄示例。",
+            "使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，不得使用 indent 或删减已计算事实。",
         ],
-        "example": {
-            "findings": [{
-                "name": "收入对账示例", "columns": ["项目", "金额"],
-                "rows": [["明细合计", 100.0], ["账面合计", 120.0]],
-            }],
-            "reconciliations": [{"name": "明细与账面对账", "passed": False}],
-            "warnings": ["示例金额存在差异，应按实际数据填报。"],
-        },
     }
 
 
@@ -120,12 +152,31 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
+class AnalysisCodingRequirement(_StrictModel):
+    """补证 Coding 已由 evidence planner 决定的最小计算要求。"""
+
+    dataset_id: str = Field(alias="datasetId", min_length=1, max_length=256)
+    fields: tuple[str, ...] = Field(min_length=1, max_length=100)
+    calculation: str = Field(min_length=1, max_length=2_000)
+    output_name: str = Field(alias="outputName", min_length=1, max_length=128)
+
+    @field_validator("fields")
+    @classmethod
+    def validate_unique_fields(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item.strip() for item in value) or len(value) != len(set(value)):
+            raise ValueError("补证计算字段必须非空且不能重复")
+        return value
+
+
 class AnalysisEvidenceDecision(_StrictModel):
     """只判断固定事实是否存在必要缺口，不承载代码。"""
 
     requires_supplemental_evidence: bool = Field(alias="requiresSupplementalEvidence")
     reason: str = Field(min_length=1, max_length=2_000)
     missing_facts: tuple[str, ...] = Field(alias="missingFacts", max_length=20)
+    coding_requirements: tuple[AnalysisCodingRequirement, ...] = Field(
+        alias="codingRequirements", max_length=20
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -143,7 +194,13 @@ class AnalysisEvidenceDecision(_StrictModel):
             and "missingFacts" not in value
             and "missing_facts" not in value
         ):
-            return {**value, "missingFacts": []}
+            value = {**value, "missingFacts": []}
+        if (
+            requires_supplement is False
+            and "codingRequirements" not in value
+            and "coding_requirements" not in value
+        ):
+            value = {**value, "codingRequirements": []}
         return value
 
     @model_validator(mode="after")
@@ -152,7 +209,70 @@ class AnalysisEvidenceDecision(_StrictModel):
             raise ValueError("需要补充 evidence 时必须明确事实缺口")
         if not self.requires_supplemental_evidence and self.missing_facts:
             raise ValueError("固定事实足够时不得声明事实缺口")
+        if self.requires_supplemental_evidence and not self.coding_requirements:
+            raise ValueError("需要补充 evidence 时必须明确 Coding 计算要求")
+        if not self.requires_supplemental_evidence and self.coding_requirements:
+            raise ValueError("固定事实足够时不得声明 Coding 计算要求")
+        output_names = [item.output_name for item in self.coding_requirements]
+        if len(output_names) != len(set(output_names)):
+            raise ValueError("补证 Coding 输出名称不能重复")
         return self
+
+
+EvidenceDecision = AnalysisEvidenceDecision | LegacyAnalysisEvidenceDecision
+
+
+def _validate_coding_requirements(
+    decision: EvidenceDecision, datasets: Any, current_analysis: Any
+) -> None:
+    if isinstance(decision, LegacyAnalysisEvidenceDecision):
+        return
+    if not decision.requires_supplemental_evidence:
+        return
+    dataset_columns: dict[str, frozenset[str]] = {}
+    if isinstance(datasets, (list, tuple)):
+        for dataset in datasets:
+            if not isinstance(dataset, Mapping):
+                continue
+            dataset_id = dataset.get("datasetId")
+            columns = dataset.get("columns")
+            if (
+                isinstance(dataset_id, str)
+                and dataset_id
+                and isinstance(columns, (list, tuple))
+                and all(isinstance(column, str) and column for column in columns)
+            ):
+                dataset_columns[dataset_id] = frozenset(columns)
+    authorized_dataset_ids = frozenset(
+        item
+        for item in (
+            current_analysis.get("datasetIds", ())
+            if isinstance(current_analysis, Mapping)
+            else ()
+        )
+        if isinstance(item, str) and item
+    )
+    for requirement in decision.coding_requirements:
+        allowed_columns = dataset_columns.get(requirement.dataset_id)
+        missing_fields = (
+            sorted(set(requirement.fields) - allowed_columns)
+            if allowed_columns is not None
+            else list(requirement.fields)
+        )
+        if (
+            requirement.dataset_id not in authorized_dataset_ids
+            or allowed_columns is None
+            or missing_fields
+        ):
+            raise ReportingError(
+                "report_analysis_evidence_decision_invalid",
+                "补证 Coding 要求引用了未签发的 Dataset 或字段。",
+                details={
+                    "datasetId": requirement.dataset_id,
+                    "missingFields": missing_fields,
+                    "outputName": requirement.output_name,
+                },
+            )
 
 
 class AnalysisSummaryDraft(_StrictModel):
@@ -429,7 +549,7 @@ def _project_analysis_summary_payload(
     )
 
 
-DecideEvidence = Callable[[Mapping[str, Any]], Awaitable[AnalysisEvidenceDecision]]
+DecideEvidence = Callable[[Mapping[str, Any]], Awaitable[EvidenceDecision]]
 RunAnalysisCode = Callable[..., Awaitable[CodeGenerationResult]]
 Summarize = Callable[[Mapping[str, Any]], Awaitable[AnalysisSummaryDraft]]
 ToolCall = Callable[..., Awaitable[dict[str, Any]]]
@@ -448,7 +568,7 @@ class _AnalysisItemState:
         default_factory=lambda: {name: "pending" for name in _STAGE_NAMES}
     )
     facts: DeterministicAnalysisBundle | None = None
-    decision: AnalysisEvidenceDecision | None = None
+    decision: EvidenceDecision | None = None
     evidence: SupplementalEvidence | None = None
     evidence_file: FileIdentity | None = None
     recovery: _DurableAnalysisCompletion | None = None
@@ -475,6 +595,7 @@ class AnalysisItemWorkflow:
         complete: ToolCall,
         record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
         | None = None,
+        benchmark_projection: BenchmarkProjection | None = None,
     ) -> None:
         self.decide_evidence = decide_evidence
         self.run_code = run_code
@@ -482,6 +603,7 @@ class AnalysisItemWorkflow:
         self.read_file = read_file
         self.complete = complete
         self.record_successful_repair = record_successful_repair
+        self.benchmark_projection = benchmark_projection
 
     async def run(
         self, instruction: Mapping[str, Any], run_context: RunContext
@@ -721,7 +843,7 @@ class AnalysisItemWorkflow:
                     "已冻结完成 payload 与当前分析项身份不一致。",
                 )
             state.recovery = durable
-            state.decision = AnalysisEvidenceDecision(
+            state.decision = LegacyAnalysisEvidenceDecision(
                 requiresSupplementalEvidence=False,
                 reason="durable_completion_recovery",
                 missingFacts=(),
@@ -731,8 +853,14 @@ class AnalysisItemWorkflow:
         payload = {
             "currentAnalysis": state.instruction.get("currentAnalysis"),
             "deterministicFacts": self._model_facts(state),
+            "datasets": state.instruction.get("datasets", []),
         }
         decision = await self.decide_evidence(payload)
+        _validate_coding_requirements(
+            decision,
+            state.instruction.get("datasets"),
+            state.instruction.get("currentAnalysis"),
+        )
         state.decision = decision
         state.failure = None
         state.statuses["plan-evidence"] = "completed"
@@ -758,7 +886,9 @@ class AnalysisItemWorkflow:
             diagnostic = self._repair_error(state.failure)
             generated = await self.run_code(
                 script_path=script_path,
-                task_facts=self._script_task_facts(state),
+                task_facts=self._script_task_facts(
+                    state, benchmark_projection=self.benchmark_projection
+                ),
                 diagnostic=diagnostic,
                 run_context=run_context,
             )
@@ -803,21 +933,59 @@ class AnalysisItemWorkflow:
         state.statuses["execute-script"] = "completed"
         return StepOutput(content={"status": "executed", "scriptPath": script_path})
 
-    def _script_task_facts(self, state: _AnalysisItemState) -> dict[str, Any]:
+    def _script_task_facts(
+        self,
+        state: _AnalysisItemState,
+        *,
+        benchmark_projection: BenchmarkProjection | None = None,
+    ) -> dict[str, Any]:
         decision = state.decision
         if decision is None:
             raise ReportingError(
                 "report_analysis_evidence_decision_invalid", "补充 evidence 决策缺失。"
             )
-        return {
-            "currentAnalysis": state.instruction.get("currentAnalysis"),
-            "evidenceDecision": decision.model_dump(mode="json", by_alias=True),
+        _validate_coding_requirements(
+            decision,
+            state.instruction.get("datasets"),
+            state.instruction.get("currentAnalysis"),
+        )
+        current_analysis = state.instruction.get("currentAnalysis")
+        existing_facts = _compact_existing_facts(
+            state.instruction.get("deterministicFacts")
+        )
+        if (
+            existing_facts is not None
+            and isinstance(current_analysis, Mapping)
+            and existing_facts.get("analysisId") != current_analysis.get("analysisId")
+        ):
+            raise ReportingError(
+                "report_analysis_facts_invalid",
+                "补证脚本的既有事实与当前分析项身份不一致。",
+            )
+        projection = benchmark_projection or self.benchmark_projection or BenchmarkProjection.for_variant(
+            BenchmarkVariant.LEGACY
+        )
+        facts = {
+            "currentAnalysis": current_analysis,
+            **({"existingFacts": existing_facts} if existing_facts is not None else {}),
             "datasets": state.instruction.get("datasets", []),
             "analysisOutputRoot": state.instruction.get("analysisOutputRoot"),
             "scriptPath": self._script_path(state),
             "evidencePath": self._evidence_path(state),
             "outputContract": supplemental_evidence_output_contract(),
         }
+        if not projection.include_analysis_requirements:
+            facts["evidenceDecision"] = {
+                "requiresSupplementalEvidence": decision.requires_supplemental_evidence,
+                "reason": decision.reason,
+                "missingFacts": list(decision.missing_facts),
+            }
+        elif isinstance(decision, AnalysisEvidenceDecision):
+            facts["codingRequirements"] = [
+                item.model_dump(mode="json", by_alias=True)
+                for item in decision.coding_requirements
+            ]
+        return facts
 
     @staticmethod
     def _signed_script_file(result: CodeGenerationResult, script_path: str) -> FileIdentity:

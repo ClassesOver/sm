@@ -65,18 +65,64 @@ async def test_analysis_v1_workflow_executes_signed_code_and_completes_once() ->
         read_file=read_file,
         complete=complete,
     )
-    instruction = {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]}
+    instruction = {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]}
     result = await workflow.run(instruction, RunContext(run_id="run-1", session_id="session-1"))
     assert result.stage_statuses == tuple((name, "completed") for name in ("read-facts", "plan-evidence", "execute-script", "validate-evidence", "complete-analysis"))
     assert calls.count("run_code") == 1
 
 
 async def _decision() -> AnalysisEvidenceDecision:
-    return AnalysisEvidenceDecision(requiresSupplementalEvidence=True, reason="缺少收入", missingFacts=("收入",))
+    return AnalysisEvidenceDecision(
+        requiresSupplementalEvidence=True,
+        reason="缺少收入",
+        missingFacts=("收入",),
+        codingRequirements=({
+            "datasetId": "dataset_1",
+            "fields": ["income"],
+            "calculation": "汇总收入",
+            "outputName": "income",
+        },),
+    )
 
 
 async def _summary() -> AnalysisSummaryDraft:
     return AnalysisSummaryDraft(summary="完成", warnings=())
+
+
+def _chart() -> ChartDraft:
+    return ChartDraft(
+        chartId="chart_001",
+        sourcePath="charts/chart.png",
+        title="收入趋势",
+        altText="收入趋势图",
+        citationIds=("cite_1",),
+        metricCodes=("revenue",),
+        currentPeriod="2026-08",
+        sourceDatasetId="dataset_1",
+        aggregationGrain="month",
+        visualForm="按月折线图",
+        dataBindings=({
+            "analysisId": "analysis_001",
+            "factPath": "facts/analysis_001.json",
+            "dataPath": "metrics[0].periodValues",
+            "fields": ["period", "value"],
+            "role": "月度趋势",
+        },),
+    )
+
+
+def _visualization_payload(script_path: str = "charts/charts.py") -> dict[str, object]:
+    return {
+        "visualizationWorkspace": {"scriptPath": script_path},
+        "visualizationFacts": [{
+            "analysisId": "analysis_001",
+            "factFile": {"path": "facts/analysis_001.json"},
+            "dataDescriptors": [{
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+            }],
+        }],
+    }
 
 
 @pytest.mark.anyio
@@ -113,7 +159,7 @@ async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -
         return {"status": "accepted", "taskFinished": True}
 
     workflow = AnalysisItemWorkflow(decide_evidence=lambda _payload: _decision(), run_code=run_code, summarize=lambda _payload: _summary(), read_file=read_file, complete=accepted)
-    await workflow.run({"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]}, RunContext(run_id="run-1", session_id="session-1"))
+    await workflow.run({"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]}, RunContext(run_id="run-1", session_id="session-1"))
 
     assert len(diagnostics) == 2
     assert diagnostics[0] is None
@@ -153,7 +199,7 @@ async def test_analysis_v1_degrades_after_no_submission() -> None:
         complete=complete,
     )
     await workflow.run(
-        {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]},
+        {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]},
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -197,7 +243,7 @@ async def test_analysis_v1_fails_closed_on_protocol_error() -> None:
     )
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
-            {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1"}]},
+            {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]},
             RunContext(run_id="run-1", session_id="session-1"),
         )
 
@@ -207,7 +253,7 @@ async def test_analysis_v1_fails_closed_on_protocol_error() -> None:
 
 @pytest.mark.anyio
 async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_reexecution() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     plan = VisualizationPlanDraft(charts=(chart,))
     script = FileIdentity(path="charts/charts.py", size=8, sha256="a" * 64)
     chart_file = FileIdentity(path=chart.source_path, size=9, sha256="b" * 64)
@@ -238,14 +284,14 @@ async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_re
         return {"status": "accepted"}
 
     workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=submit)
-    result = await workflow.run({"visualizationWorkspace": {"scriptPath": script.path}}, RunContext(run_id="run-1", session_id="session-1"))
+    result = await workflow.run(_visualization_payload(script.path), RunContext(run_id="run-1", session_id="session-1"))
     assert result.status == "accepted"
     assert calls == {"run": 1, "submit": 1}
 
 
 @pytest.mark.anyio
 async def test_visualization_v1_repair_exception_uses_shared_degrade_policy() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     plan = VisualizationPlanDraft(charts=(chart,))
     script = FileIdentity(path="charts/charts.py", size=8, sha256="a" * 64)
     chart_file = FileIdentity(path=chart.source_path, size=9, sha256="b" * 64)
@@ -298,7 +344,7 @@ async def test_visualization_v1_repair_exception_uses_shared_degrade_policy() ->
         degrade=degrade,
     )
     result = await workflow.run(
-        {"visualizationWorkspace": {"scriptPath": script.path}},
+        _visualization_payload(script.path),
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -333,7 +379,7 @@ async def test_visualization_v1_zero_chart_plan_skips_coding() -> None:
 
 @pytest.mark.anyio
 async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     plan = VisualizationPlanDraft(charts=(chart,))
     script = FileIdentity(path="charts/charts.py", size=8, sha256="a" * 64)
 
@@ -352,7 +398,7 @@ async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
     )
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": script.path}},
+            _visualization_payload(script.path),
             RunContext(run_id="run-1", session_id="session-1"),
         )
 
@@ -361,7 +407,7 @@ async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
 
 @pytest.mark.anyio
 async def test_visualization_v1_does_not_retry_nonrecoverable_coding_failure() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     calls = {"run": 0, "degrade": 0}
 
     async def run_code(*_: object, **__: object) -> CodeGenerationResult:
@@ -380,7 +426,7 @@ async def test_visualization_v1_does_not_retry_nonrecoverable_coding_failure() -
     )
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            _visualization_payload(),
             RunContext(run_id="run-1", session_id="session-1"),
         )
 
@@ -390,7 +436,7 @@ async def test_visualization_v1_does_not_retry_nonrecoverable_coding_failure() -
 
 @pytest.mark.anyio
 async def test_visualization_v1_degrades_after_execution_repairs_exhausted() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     diagnostics: list[object] = []
     repair_attempts: list[int] = []
 
@@ -415,7 +461,7 @@ async def test_visualization_v1_degrades_after_execution_repairs_exhausted() -> 
         degrade=degrade,
     )
     result = await workflow.run(
-        {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+        _visualization_payload(),
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -429,7 +475,7 @@ async def test_visualization_v1_degrades_after_execution_repairs_exhausted() -> 
 
 @pytest.mark.anyio
 async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     plan = VisualizationPlanDraft(charts=(chart,))
     script_path = "charts/charts.py"
     script = FileIdentity(path=script_path, size=1, sha256="a" * 64)
@@ -463,7 +509,7 @@ async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
     workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=accepted)
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": script_path}},
+            _visualization_payload(script_path),
             RunContext(run_id="run-1", session_id="session-1"),
         )
 
@@ -473,7 +519,7 @@ async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
 
 @pytest.mark.anyio
 async def test_visualization_v1_degrades_after_code_agent_no_submission() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     plan = VisualizationPlanDraft(charts=(chart,))
     run_count = 0
 
@@ -494,7 +540,7 @@ async def test_visualization_v1_degrades_after_code_agent_no_submission() -> Non
         return {"status": "accepted"}
 
     workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=lambda *_: _accepted(), degrade=degrade)
-    result = await workflow.run({"visualizationWorkspace": {"scriptPath": "charts/charts.py"}}, RunContext(run_id="run-1", session_id="session-1"))
+    result = await workflow.run(_visualization_payload(), RunContext(run_id="run-1", session_id="session-1"))
 
     assert result.status == "degraded"
     assert run_count == 4
@@ -503,7 +549,7 @@ async def test_visualization_v1_degrades_after_code_agent_no_submission() -> Non
 
 @pytest.mark.anyio
 async def test_visualization_v1_fails_closed_on_protocol_error() -> None:
-    chart = ChartDraft(chartId="chart_001", sourcePath="charts/chart.png", title="收入趋势", altText="收入趋势图", citationIds=("cite_1",), metricCodes=("revenue",), currentPeriod="2026-08", sourceDatasetId="dataset_1", aggregationGrain="month")
+    chart = _chart()
     protocol_error = ReportingError(
         "report_code_custom_tool_protocol_error",
         "Coding Agent 将工具调用写入了 assistant 正文。",
@@ -527,7 +573,7 @@ async def test_visualization_v1_fails_closed_on_protocol_error() -> None:
     )
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
+            _visualization_payload(),
             RunContext(run_id="run-1", session_id="session-1"),
         )
 

@@ -6,10 +6,10 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
-from agno.tools.code import CodeMode
 
 from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
 from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
+from ..reporting.code_mode import create_reporting_code_mode_runtime
 from ..reporting.host_workspace import ReportingWorkspaceRegistry
 from ..reporting.knowledge import ReportingKnowledgeIndex
 from ..sandbox.factory import create_sandbox_provider
@@ -74,20 +74,11 @@ def create_execution_context(
         current_settings.reporting_host_workspace_root,
         secret=current_settings.workspace_hmac_secret,
     )
-    from ..reporting.code_mode import ReportingCodeModeRuntime
-
-    reporting_code_mode_runtime = ReportingCodeModeRuntime(
-        CodeMode(
-            allow_shell=True,
-            allow_restart=True,
-            snapshot=False,
-            cwd=str(reporting_workspace_registry.root),
-            timeout=DEFAULT_TERMINAL_TIMEOUT,
-            max_kernels=(
-                current_settings.report_analysis_concurrency
-                + current_settings.report_section_concurrency
-            ),
-        )
+    reporting_code_mode_runtime = create_reporting_code_mode_runtime(
+        reporting_workspace_registry.root,
+        analysis_concurrency=current_settings.report_analysis_concurrency,
+        section_concurrency=current_settings.report_section_concurrency,
+        timeout=DEFAULT_TERMINAL_TIMEOUT,
     )
     reporting_knowledge_index = ReportingKnowledgeIndex(reporting_workspace_registry.root)
     reporting_lsp_process_manager = ReportingLspProcessManager()

@@ -144,6 +144,7 @@ from .structured_output.wire_schema import (
 from .tools import build_reporting_tools
 from .vision import ReportVisionReviewer
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
+from .workflow.orchestration import current_planner_request_recorder
 from .workflow.repository import ReportingStateRepository
 
 _REPORT_FACADE_TOOL_NAMES = frozenset(
@@ -1827,6 +1828,9 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             or not isinstance(response_format, dict)
             or not isinstance(json_schema, dict)
         ):
+            planner_recorder = current_planner_request_recorder()
+            if planner_recorder is not None:
+                planner_recorder.attach_request_params(params)
             return params
         # Agent.output_schema 继续是领域 Pydantic 模型；这里只替换发往兼容端点的
         # wire schema。响应回到进程后必须先由同一 contract 解码，再执行领域校验。
@@ -1844,6 +1848,9 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 None,
             ),
         ).debug("report_structured_wire_schema_applied")
+        planner_recorder = current_planner_request_recorder()
+        if planner_recorder is not None:
+            planner_recorder.attach_request_params(params)
         return params
 
     def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
@@ -1976,12 +1983,23 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         request_model = self._phase_request_model(messages)
         kwargs = self._phase_request_kwargs(messages, kwargs)
         self._clear_report_run_error()
+        planner_recorder = current_planner_request_recorder()
+        if planner_recorder is not None:
+            planner_recorder.begin()
+            planner_recorder.attach_model_config(request_model)
         try:
             response = ProjectedOpenAIChat.response(request_model, messages, *args, **kwargs)
             self._clear_report_run_error()
+            planner_recorder = current_planner_request_recorder()
+            if planner_recorder is not None:
+                planner_recorder.finish(response=response)
             return self._validated_reporting_response(request_model, response)
-        except Exception as error:
-            self._record_report_run_error(error)
+        except BaseException as error:
+            planner_recorder = current_planner_request_recorder()
+            if planner_recorder is not None:
+                planner_recorder.finish(error=error)
+            if isinstance(error, Exception):
+                self._record_report_run_error(error)
             raise
 
     async def aresponse(
@@ -1993,6 +2011,10 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         request_model = self._phase_request_model(messages)
         kwargs = self._phase_request_kwargs(messages, kwargs)
         self._clear_report_run_error()
+        planner_recorder = current_planner_request_recorder()
+        if planner_recorder is not None:
+            planner_recorder.begin()
+            planner_recorder.attach_model_config(request_model)
         try:
             response = await ProjectedOpenAIChat.aresponse(
                 request_model,
@@ -2006,11 +2028,21 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 # Agent retry 边界重新抛普通异常；只记录原领域错误，交给 Task runner
                 # 在本次 Agno run 正常停止后恢复，确保不会产生同 run continuation。
                 self._record_report_run_error(cast(Exception, terminal_error))
+                planner_recorder = current_planner_request_recorder()
+                if planner_recorder is not None:
+                    planner_recorder.finish(response=response)
                 return self._validated_reporting_response(request_model, response)
             self._clear_report_run_error()
+            planner_recorder = current_planner_request_recorder()
+            if planner_recorder is not None:
+                planner_recorder.finish(response=response)
             return self._validated_reporting_response(request_model, response)
-        except Exception as error:
-            self._record_report_run_error(error)
+        except BaseException as error:
+            planner_recorder = current_planner_request_recorder()
+            if planner_recorder is not None:
+                planner_recorder.finish(error=error)
+            if isinstance(error, Exception):
+                self._record_report_run_error(error)
             raise
 
     def response_stream(
@@ -2678,7 +2710,12 @@ def create_reporting_phase_agent(
 
 
 def create_reporting_generator_agent(
-    *, model: Any, output_schema: type[Any], name: str, role: str | None = None
+    *,
+    model: Any,
+    output_schema: type[Any],
+    name: str,
+    role: str | None = None,
+    stage_instructions: tuple[str, ...] = (),
 ) -> Agent:
     """创建固定阶段的无工具结构化候选生成器。
 
@@ -2692,7 +2729,11 @@ def create_reporting_generator_agent(
         "所有必填顶层字段必须各出现一次；不得把 schema 顶层字段只写入其他字段。",
         "长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
     ]
-    if getattr(output_schema, "__name__", "") == "VisualizationPlanDraft":
+    output_schema_name = getattr(output_schema, "__name__", "")
+    if output_schema_name in {
+        "VisualizationPlanDraft",
+        "LegacyVisualizationPlanDraft",
+    }:
         instructions.append(
             "每个 charts[].sourcePath 必须是 visualizationWorkspace.chartOutputRoot 下带 "
             ".png、.jpg 或 .jpeg 后缀的具体文件。"
@@ -2701,7 +2742,27 @@ def create_reporting_generator_agent(
             "每个 charts[].sourceDatasetId 必须逐字复制 allowedDatasetIds 中的一个值，不得使用"
             "数据集名称、文件名或自行生成的标识。"
         )
-    elif getattr(output_schema, "__name__", "") == "SectionDecisionOutput":
+        if output_schema_name == "VisualizationPlanDraft":
+            instructions.append(
+                "每张图必须声明简短 visualForm 和至少一个 dataBindings；每个 binding 的 "
+                "analysisId、factPath、dataPath、fields 必须逐字复制 visualizationFacts 中同一 "
+                "dataDescriptors 项及其所属事实文件，不得自行生成 factPath、dataPath 或 fields。"
+            )
+            instructions.append(
+                "dataBindings[].role 只说明该数据在图中的业务用途；不要在 visualForm 或 role 中"
+                "定义配色、尺寸、标注坐标或绘图库 API。"
+            )
+        instructions.append(
+            "按输入中的 visualizationMode 选择每张图的 renderer："
+            "visualizationMode=static 时全部使用 renderer=matplotlib 且不得声明 interactivePath；"
+            "visualizationMode=interactive 时优先使用 renderer=plotly，仅当 Plotly 不适合该表达时才使用 Matplotlib；"
+            "visualizationMode=auto 时逐图选择，探索、悬浮明细或缩放场景优先 Plotly，复杂静态标注等场景可使用 Matplotlib。"
+        )
+        instructions.append(
+            "renderer=plotly 时必须同时声明静态图片 sourcePath 和同一图表的 .plotly.json interactivePath；"
+            "renderer=matplotlib 时只声明静态图片 sourcePath。"
+        )
+    elif output_schema_name == "SectionDecisionOutput":
         instructions[1] = (
             "根 JSON 必须直接包含 kind（render 或 rework）及该分支字段；不得输出 render/rework 单键包装对象。"
         )
@@ -2709,6 +2770,7 @@ def create_reporting_generator_agent(
             "必须遵循受信 executionDirective：明确证据充足或禁止返工时只能返回 render；"
             "明确缺少必要证据并要求返工时只能返回 rework。"
         )
+    instructions.extend(stage_instructions)
     return Agent(
         id=name,
         name=name,
@@ -2747,7 +2809,9 @@ def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
         role_map=dict(model.role_map or OPENAI_COMPATIBLE_ROLE_MAP),
         store=model.store,
         metadata=model.metadata,
-        parallel_tool_calls=False,
+        # 对齐 Codex：允许一次模型响应声明多个工具调用；Reporting 协议会整体校验
+        # 后按 provider 返回顺序执行，parallel_tool_calls 不承担顺序保证。
+        parallel_tool_calls=True,
         # 源码签发追求确定性输出以压低文本前导概率；部署显式配置的采样参数优先。
         temperature=model.temperature if model.temperature is not None else 0.0,
         top_p=model.top_p,
@@ -2760,6 +2824,7 @@ def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
         # 仅作为进程内 thinking profile 输入；单次请求副本会清空该字段，
         # get_request_params 也会移除 Responses reasoning 对象。
         reasoning_effort=model.reasoning_effort,
+        reasoning_summary=getattr(model, "_reporting_reasoning_summary", None),
         retries=model.retries,
         delay_between_retries=model.delay_between_retries,
         exponential_backoff=model.exponential_backoff,
@@ -2888,13 +2953,27 @@ def _reporting_code_reasoning(
 
 
 CodeAgentFactory = Callable[[Sequence[Any]], Agent]
+
+_CODE_COMMON_INSTRUCTIONS = (
+    "在当前正式 Workspace 内迭代并签发脚本；普通文本不算交付。",
+    "冻结 facts、字段口径和输出契约均已确认；首轮思考聚焦实现、边界条件与正确性，不重复推导已给事实。只有实现所需信息缺失或矛盾时才做一次有界核对。",
+    "遵循 REPORTING_CODE_DELIVERY_STATE.nextTools 与当前工具声明，只调用当前开放工具。",
+    "数据留在 Workspace；源码读取签发路径并计算，不内嵌 CSV 行、查询结果、DataFrame repr、长数组或大段文本。",
+    "工具路径和任务身份由服务端绑定；逐字使用任务提供的授权路径，不从 cwd、__file__、.. 或目录探测推导路径，不创建未授权目录。",
+    "已有字段、source descriptor 和聚合目标时直接实现；只有文件结构确实不明确时才用一次有界探索核对必要字段和少量样本。",
+)
+_ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
+    "期间计算优先使用冻结事实声明的 periodField 并显式解析实际格式；斜杠日期不猜日月顺序，同比只聚合两侧共同覆盖月份。",
+)
+_VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
+    "对 run_script 返回的每个图片输出调用 view_image，全部审查后再 submit_script。",
+    "分析与绘图库及中文图表字体由宿主配置；直接使用任务允许的库，不先枚举包、打印版本或测试字体。",
+)
+
 _INTERACTIVE_CODE_INSTRUCTIONS = (
-    "在当前正式 Workspace 内迭代脚本；普通文本、Markdown 和代码围栏都不算成功。",
-    "先读取或写入绑定脚本，只能用 run_snippet 做少量探索；正式结果必须依次成功调用 run_script 和 submit_script。",
-    "数据必须留在当前 Workspace：源码只写读取文件的路径、查询逻辑和聚合代码；禁止把 CSV 行、查询结果、DataFrame repr、长数组或大段文本内嵌到 Python 源码。需要大量数据时先用 run_snippet 做有界摘要或把中间结果写入 Workspace 文件，再由正式脚本读取。",
-    "可视化任务必须对 run_script 返回的每个图片输出调用 view_image，全部审查通过后才能调用 submit_script。",
-    "write_script 与 run_snippet 的 custom input 只包含原始源码或 cell 文本，不得添加 JSON 包装或说明。",
-    "工具路径和任务身份由服务端绑定；不得猜测、替换或传入其他路径。",
+    *_CODE_COMMON_INSTRUCTIONS,
+    *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS,
 )
 
 
@@ -2904,11 +2983,15 @@ def create_reporting_code_agent_factory(
     name: str,
     role: str | None = None,
     instructions: Any = (),
+    task_kind: str | None = None,
+    model_created: Callable[[ReportingCodeOpenAIResponses], None] | None = None,
 ) -> CodeAgentFactory:
     """创建 task 独享的交互式 Coding Agent 工厂。"""
 
     if not isinstance(model, OpenAIChat):
         raise TypeError("Reporting code agent requires OpenAIChat")
+    if task_kind not in {None, "analysis", "visualization"}:
+        raise ValueError("task_kind must be analysis or visualization")
     extra_instructions = (
         (instructions,)
         if isinstance(instructions, str)
@@ -2917,15 +3000,28 @@ def create_reporting_code_agent_factory(
 
     def create(tools: Sequence[Any]) -> Agent:
         code_model = _reporting_code_model(model)
-        code_model.parallel_tool_calls = False
-        return Agent(
+        if model_created is not None:
+            model_created(code_model)
+        common_instructions = (
+            _INTERACTIVE_CODE_INSTRUCTIONS
+            if task_kind is None
+            else (
+                *_CODE_COMMON_INSTRUCTIONS,
+                *(
+                    _ANALYSIS_CODE_COMMON_INSTRUCTIONS
+                    if task_kind == "analysis"
+                    else _VISUALIZATION_CODE_COMMON_INSTRUCTIONS
+                ),
+            )
+        )
+        agent = Agent(
             id=name,
             name=name,
             role=role or "在正式 Workspace 中交互编写并签发 Reporting Python 脚本。",
             model=code_model,
             reasoning_model=None,
             reasoning_agent=None,
-            instructions=[*_INTERACTIVE_CODE_INSTRUCTIONS, *extra_instructions],
+            instructions=[*common_instructions, *extra_instructions],
             output_schema=None,
             parse_response=False,
             structured_outputs=False,
@@ -2945,6 +3041,11 @@ def create_reporting_code_agent_factory(
             markdown=False,
             telemetry=False,
         )
+        agent.__dict__["_reporting_instruction_components"] = {
+            "common": tuple(common_instructions),
+            "stage": extra_instructions,
+        }
+        return agent
 
     return create
 

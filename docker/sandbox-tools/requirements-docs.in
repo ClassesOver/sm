@@ -1,13 +1,14 @@
 # PDF
+pypdf==6.14.2
 fpdf2
 pdfplumber
 pikepdf
 pymupdf
-pypdf
 reportlab
 roman
 rst2pdf
 weasyprint
+numpy==2.3.5
 
 # Excel 与表格
 formulas
@@ -33,12 +34,12 @@ ebooklib
 html5lib
 html2text
 jinja2
-lxml
+lxml==6.1.1
 mammoth
 markdown
 mdit-py-plugins
 premailer
-pypandoc
+pypandoc==1.17
 python-docx
 python-magic
 python-pptx

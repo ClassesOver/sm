@@ -28,6 +28,10 @@ from ...task_execution import (
     TaskSession,
     TaskState,
 )
+from ..code_agent.metrics import (
+    bounded_request_params_snapshot,
+    planner_coding_reasoning_tokens,
+)
 from ..models import ReportingError
 from ..phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
@@ -111,6 +115,11 @@ class _TaskModelMetricsSettlement:
             "requestCount": 0,
             **{alias: 0 for _, alias in _MODEL_TOKEN_FIELDS},
         }
+        self._stage_metrics: dict[str, dict[str, int | float]] = {}
+        self._stage_unknown_fields: dict[str, set[str]] = {}
+        self._stage_agent_roles: dict[str, str] = {}
+        self._stage_request_metrics: dict[str, list[dict[str, Any]]] = {}
+        self._stage_request_metric_keys: dict[str, set[tuple[int | str, str]]] = {}
 
     def record(self, event: Any, *, model_response_index: int | None = None) -> None:
         raw_event = getattr(event, "event", None) or getattr(event, "type", None)
@@ -178,9 +187,166 @@ class _TaskModelMetricsSettlement:
                     self._metrics.get("timeToFirstTokenSeconds", 0) + time_to_first_token
                 )
 
+    def stage_recorder(
+        self, stage: str, *, agent_role: str | None = None
+    ) -> Callable[[Any, int], None]:
+        """返回同时结算 Task 总量和指定阶段用量的 recorder。"""
+
+        if stage not in {"planner", "coding", "summary"}:
+            raise ValueError("stage 必须是 planner、coding 或 summary")
+        if agent_role is not None and (not isinstance(agent_role, str) or not agent_role):
+            raise ValueError("agent_role 必须是非空字符串")
+
+        def record(run_output: Any, request_count: int) -> None:
+            if agent_role is not None:
+                with self._lock:
+                    existing_role = self._stage_agent_roles.setdefault(stage, agent_role)
+                    if existing_role != agent_role:
+                        raise ValueError("同一 stage 不得混入不同 agent_role")
+            self.record_run_output(run_output, request_count)
+            metrics = getattr(run_output, "metrics", None)
+            usage_values = (
+                [getattr(metrics, field, None) for field, _ in _MODEL_TOKEN_FIELDS]
+                if metrics is not None
+                else []
+            )
+            if (
+                request_count > 0
+                and metrics is not None
+                and not any(
+                    isinstance(value, int | float)
+                    and not isinstance(value, bool)
+                    and value > 0
+                    for value in usage_values
+                )
+                and not getattr(metrics, "details", None)
+            ):
+                metrics = None
+            with self._lock:
+                raw_request_metrics = getattr(run_output, "_reporting_request_metrics", None)
+                if isinstance(raw_request_metrics, (list, tuple)):
+                    request_metrics = self._stage_request_metrics.setdefault(stage, [])
+                    request_metric_keys = self._stage_request_metric_keys.setdefault(stage, set())
+                    for item in raw_request_metrics:
+                        if not isinstance(item, Mapping):
+                            continue
+                        request_index = item.get("requestIndex")
+                        provider_request_id = item.get("providerRequestId")
+                        if not (
+                            isinstance(request_index, int | str)
+                            and not isinstance(request_index, bool)
+                            and isinstance(provider_request_id, str)
+                            and provider_request_id
+                        ):
+                            continue
+                        normalized_index: int | str = (
+                            request_index
+                            if (
+                                isinstance(request_index, int)
+                                and request_index >= 0
+                            )
+                            else request_index[:128]
+                            if isinstance(request_index, str)
+                            else "unknown"
+                        )
+                        normalized_provider_id = provider_request_id[:256]
+                        key = (normalized_index, normalized_provider_id)
+                        if key in request_metric_keys:
+                            continue
+                        request_metric_keys.add(key)
+                        duration = item.get("durationMs")
+                        if not (
+                            isinstance(duration, int | float)
+                            and not isinstance(duration, bool)
+                            and duration >= 0
+                        ):
+                            duration = "unknown"
+                        status = item.get("status")
+                        if status not in {"started", "completed", "failed"}:
+                            status = "unknown"
+                        normalized_request = {
+                                "requestIndex": normalized_index,
+                                "providerRequestId": normalized_provider_id,
+                                "durationMs": duration,
+                                "status": status,
+                            }
+                        tool_calls = item.get("toolCalls")
+                        if isinstance(tool_calls, (list, tuple)):
+                            normalized_request["toolCalls"] = [
+                                {
+                                    "id": call.get("id")[:256],
+                                    "name": call.get("name")[:128],
+                                }
+                                for call in tool_calls[:140]
+                                if isinstance(call, Mapping)
+                                and isinstance(call.get("id"), str)
+                                and isinstance(call.get("name"), str)
+                                and call.get("id")
+                                and call.get("name")
+                            ]
+                        tool_call_count = item.get("toolCallCount")
+                        if (
+                            isinstance(tool_call_count, int)
+                            and not isinstance(tool_call_count, bool)
+                            and tool_call_count >= 0
+                        ):
+                            normalized_request["toolCallCount"] = tool_call_count
+                        request_params = bounded_request_params_snapshot(
+                            item.get("requestParams")
+                        )
+                        if request_params is not None:
+                            normalized_request["requestParams"] = request_params
+                        request_metrics.append(normalized_request)
+                stage_metrics = self._stage_metrics.setdefault(
+                    stage,
+                    {
+                        "requestCount": 0,
+                        **{alias: 0 for _, alias in _MODEL_TOKEN_FIELDS},
+                        "modelDurationMs": 0,
+                    },
+                )
+                unknown_fields = self._stage_unknown_fields.setdefault(stage, set())
+                stage_metrics["requestCount"] += request_count
+                for field, alias in _MODEL_TOKEN_FIELDS:
+                    value = getattr(metrics, field, None) if metrics is not None else None
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        stage_metrics[alias] += value
+                    else:
+                        unknown_fields.add(alias)
+                duration = getattr(metrics, "duration", None) if metrics is not None else None
+                if (
+                    isinstance(duration, int | float)
+                    and not isinstance(duration, bool)
+                    and duration >= 0
+                ):
+                    stage_metrics["modelDurationMs"] += round(duration * 1000)
+                else:
+                    unknown_fields.add("modelDurationMs")
+
+        return record
+
     def snapshot(self) -> dict[str, int | float]:
         with self._lock:
             return dict(self._metrics)
+
+    def stage_snapshot(self) -> dict[str, dict[str, int | float | str]]:
+        """返回 planner/Coding 等阶段的可比较用量；缺失值不按零处理。"""
+
+        with self._lock:
+            result: dict[str, dict[str, int | float | str]] = {}
+            for stage, metrics in sorted(self._stage_metrics.items()):
+                stage_result = {
+                    field: "unknown" if field in self._stage_unknown_fields[stage] else value
+                    for field, value in metrics.items()
+                }
+                if stage in self._stage_agent_roles:
+                    stage_result["agentRole"] = self._stage_agent_roles[stage]
+                if stage in self._stage_request_metrics:
+                    stage_result["requestMetrics"] = [
+                        dict(item) for item in self._stage_request_metrics[stage]
+                    ]
+                result[stage] = stage_result
+            return result
 
     def settle(self, *, outcome: str) -> None:
         with self._lock:
@@ -192,7 +358,7 @@ class _TaskModelMetricsSettlement:
         logger.debug(
             "report_worker_model_metrics_settled task_id={} phase_attempt={} agno_run_id={} "
             "outcome={} request_count={} total_tokens={} reasoning_tokens={} "
-            "time_to_first_token_seconds={}",
+            "time_to_first_token_seconds={} stage_metrics={}",
             self.task_id,
             self.phase_attempt,
             self.agno_run_id,
@@ -201,6 +367,7 @@ class _TaskModelMetricsSettlement:
             metrics["totalTokens"],
             metrics["reasoningTokens"],
             metrics.get("timeToFirstTokenSeconds"),
+            self.stage_snapshot(),
         )
 
 
@@ -496,6 +663,7 @@ class ReportingTaskCoordinator:
                 return self._finish_receipt(
                     completed,
                     model_metrics=model_metrics_settlement.snapshot(),
+                    model_metrics_by_stage=model_metrics_settlement.stage_snapshot(),
                     projection_metrics=projection_metrics,
                 )
             except BaseException as error:
@@ -545,6 +713,9 @@ class ReportingTaskCoordinator:
         task: Any,
         *,
         model_metrics: Mapping[str, int | float] | None = None,
+        model_metrics_by_stage: Mapping[
+            str, Mapping[str, int | float | str]
+        ] | None = None,
         projection_metrics: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         receipt = task.finish_receipt
@@ -556,6 +727,14 @@ class ReportingTaskCoordinator:
         result = dict(receipt)
         if model_metrics:
             result["modelMetrics"] = dict(model_metrics)
+        if model_metrics_by_stage:
+            result["modelMetricsByStage"] = {
+                stage: dict(metrics)
+                for stage, metrics in sorted(model_metrics_by_stage.items())
+            }
+            result["plannerCodingReasoningTokens"] = planner_coding_reasoning_tokens(
+                model_metrics_by_stage
+            )
         if projection_metrics is not None:
             result["projectionMetrics"] = dict(projection_metrics)
         return result

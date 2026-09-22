@@ -490,6 +490,7 @@ async def resume_workflow(
     async with _workflow_execution_lock(runtime, run_id):
         return await _resume_workflow_unlocked(
             workflow,
+            runtime=runtime,
             run_id=run_id,
             session_id=session_id,
             user_id=user_id,
@@ -503,6 +504,7 @@ async def resume_workflow(
 async def _resume_workflow_unlocked(
     workflow: Any,
     *,
+    runtime: Any,
     run_id: str,
     session_id: str,
     user_id: str,
@@ -535,6 +537,17 @@ async def _resume_workflow_unlocked(
         REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope,
         REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY: "cli",
     }
+
+    # CLI 恢复通常发生在原进程退出后；宿主 Workspace 注册表是进程内状态，
+    # 必须在继续 Agno checkpoint 前按持久化作用域重新绑定同一会话目录。
+    prepare_run = getattr(runtime, "prepare_run", None)
+    if callable(prepare_run):
+        prepare_run(
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            dependencies=dependencies,
+        )
 
     if status == "running":
         # Agno Workflow 2.8.2 只允许 acontinue_run 接收 PAUSED，但进程被终止时

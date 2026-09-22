@@ -168,6 +168,30 @@ async def test_lsp_rejects_paths_outside_the_workspace(binding: ReportingCodingT
         await ReportingWorkspaceLsp(binding, ReportingLspProcessManager()).document_symbols("../outside.py")
 
 
+async def test_lsp_missing_bound_script_is_recoverable_without_starting_process(
+    binding: ReportingCodingTaskBinding,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
+    started = False
+
+    async def fail_if_started(*_args: object, **_kwargs: object) -> None:
+        nonlocal started
+        started = True
+        raise AssertionError("missing source must not start LSP")
+
+    monkeypatch.setattr(lsp.manager, "diagnostics", fail_if_started)
+    result = await lsp.diagnostics()
+
+    assert result == {
+        "ok": False,
+        "code": "report_lsp_file_missing",
+        "message": "绑定脚本尚不存在，请先调用 write_script。",
+        "details": {"path": "analysis/script.py", "nextTools": ["write_script"]},
+    }
+    assert started is False
+
+
 async def test_lsp_versions_every_snapshot_response_and_rejects_stale_request(
     binding: ReportingCodingTaskBinding,
     monkeypatch: pytest.MonkeyPatch,

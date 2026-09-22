@@ -14,6 +14,7 @@ from agno.tools.code.types import CellResult
 from pydantic import ValidationError
 
 from smart_reporting.reporting.agent import create_reporting_code_agent_factory
+from smart_reporting.reporting.code_agent.formatting import format_python_source
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_mode import ScriptProcessResult
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
@@ -38,6 +39,18 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
 CURRENT_ANALYSIS = {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}
 
 
+def _valid_supplemental_evidence() -> dict[str, object]:
+    return {
+        "findings": [{
+            "name": "收入对账示例",
+            "columns": ["项目", "金额"],
+            "rows": [["明细合计", 100.0], ["账面合计", 120.0]],
+        }],
+        "reconciliations": [{"name": "明细与账面对账", "passed": False}],
+        "warnings": ["示例金额存在差异，应按实际数据填报。"],
+    }
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -45,7 +58,7 @@ def anyio_backend():
 
 def test_output_contract_example_passes_real_validator_with_server_owned_identity():
     contract = supplemental_evidence_output_contract()
-    example = contract["example"]
+    example = _valid_supplemental_evidence()
     evidence = validate_supplemental_evidence(json.dumps(example), CURRENT_ANALYSIS)
     assert evidence.analysis_id == "analysis_001"
     assert evidence.dataset_ids == ("dataset_1",)
@@ -56,9 +69,35 @@ def test_output_contract_example_passes_real_validator_with_server_owned_identit
     assert contract["schema"]["properties"]["findings"]["minItems"] == 1
 
 
+def test_real_validator_accepts_json_null_in_tabular_finding():
+    example = _valid_supplemental_evidence()
+    example["findings"][0]["rows"][0][1] = None
+
+    evidence = validate_supplemental_evidence(
+        json.dumps(example, ensure_ascii=False), CURRENT_ANALYSIS
+    )
+
+    assert evidence.findings[0]["rows"][0][1] is None
+
+
+def test_output_contract_uses_schema_as_structural_authority_with_only_runtime_rules():
+    contract = supplemental_evidence_output_contract()
+    encoded = json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
+
+    assert set(contract) == {"format", "schema", "rules"}
+    assert contract["schema"]["required"] == ["findings", "reconciliations", "warnings"]
+    assert contract["schema"]["additionalProperties"] is False
+    assert len(encoded.encode("utf-8")) <= 1_050
+    rules = "\n".join(contract["rules"])
+    assert "rows" in rules and "columns" in rules
+    assert "JSON null" in rules
+    assert "passed=false" in rules and "软告警" in rules
+    assert "separators=(',', ':')" in rules
+
+
 @pytest.mark.parametrize("invalid", ["row_width", "duplicate_columns", "object_rows", "nonfinite", "passed_string"])
 def test_example_mutations_are_rejected_by_real_custom_validators(invalid):
-    example = supplemental_evidence_output_contract()["example"]
+    example = _valid_supplemental_evidence()
     finding = example["findings"][0]
     if invalid == "row_width":
         finding["rows"][0].append("extra")
@@ -142,16 +181,48 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
             authorized_write_paths=(script_path, evidence_path), declared_output_paths=(evidence_path,),
         )
         source = f"from pathlib import Path\nPath({evidence_path!r}).write_text('{{}}')\n# attempt {len(clients)}\n"
-        responses = [_batch_response(
-            _custom_response("write_script", source, 1), _function_response(2, "run_script", {}),
-        )]
-        if scenario == "repaired":
-            valid = json.dumps(task_facts["outputContract"]["example"], ensure_ascii=False)
-            fixed = f"from pathlib import Path\nPath({evidence_path!r}).write_text({valid!r})\n"
+        script_exists = await workspace.apath_exists("task-1", script_path)
+        if script_exists:
+            current_source = await workspace.aread_text("task-1", script_path)
+            current_sha = hashlib.sha256(current_source.encode()).hexdigest()
+            if scenario == "repaired":
+                valid = json.dumps(_valid_supplemental_evidence(), ensure_ascii=False)
+                old_line = f'Path("{evidence_path}").write_text("{{}}")'
+                new_line = f"Path({evidence_path!r}).write_text({valid!r})"
+            else:
+                old_line = f"# attempt {len(clients) - 1}"
+                new_line = f"# attempt {len(clients)}"
+            patch = (
+                f"*** Begin Edit\n*** SHA256: {current_sha}\n"
+                f"<<<<<<< SEARCH\n{old_line}\n=======\n{new_line}\n"
+                ">>>>>>> REPLACE\n*** End Edit\n"
+            )
+            responses = [_batch_response(
+                _custom_response("edit_script", patch, 3), _function_response(4, "run_script", {}),
+            )]
+        else:
+            responses = [_batch_response(
+                _custom_response("write_script", source, 1),
+                _function_response(2, "run_script", {}),
+            )]
+        if scenario == "repaired" and not script_exists:
+            valid = json.dumps(_valid_supplemental_evidence(), ensure_ascii=False)
+            saved_source = await format_python_source(source)
+            source_sha = hashlib.sha256(saved_source.encode()).hexdigest()
+            old_line = f'Path("{evidence_path}").write_text("{{}}")'
+            new_line = f"Path({evidence_path!r}).write_text({valid!r})"
+            patch = (
+                f"*** Begin Edit\n*** SHA256: {source_sha}\n"
+                f"<<<<<<< SEARCH\n{old_line}\n=======\n{new_line}\n"
+                ">>>>>>> REPLACE\n*** End Edit\n"
+            )
             responses.append(_batch_response(
-                _custom_response("write_script", fixed, 3), _function_response(4, "run_script", {}),
+                _custom_response("edit_script", patch, 3), _function_response(4, "run_script", {}),
             ))
         responses.extend([_function_response(5, "submit_script", {}), _message_response("结束")])
+        if scenario == "degraded":
+            # 仍有预算时允许一次原生补交付；第二次文字结束后才向工作流返回失败。
+            responses.append(_message_response("仍无法完成"))
         client = _ResponsesClient(responses)
         clients.append(client)
         base_factory = create_reporting_code_agent_factory(
@@ -178,7 +249,17 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
               diagnostic=diagnostic, output_preflight=preflight)
 
     async def decide(_payload):
-        return AnalysisEvidenceDecision(requiresSupplementalEvidence=True, reason="需要明细", missingFacts=("明细",))
+        return AnalysisEvidenceDecision(
+            requiresSupplementalEvidence=True,
+            reason="需要明细",
+            missingFacts=("明细",),
+            codingRequirements=({
+                "datasetId": "dataset_1",
+                "fields": ["income"],
+                "calculation": "汇总收入明细",
+                "outputName": "income_details",
+            },),
+        )
 
     async def summarize(payload):
         summaries.append(payload)
@@ -193,7 +274,8 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
     )
     instruction = {
         "currentAnalysisId": "analysis_001", "currentAnalysis": CURRENT_ANALYSIS,
-        "analysisOutputRoot": root, "datasets": [{"datasetId": "dataset_1"}],
+        "analysisOutputRoot": root,
+        "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}],
         "deterministicFactFile": {"path": "facts.json", "size": len(facts.encode()),
                                   "sha256": hashlib.sha256(facts.encode()).hexdigest()},
         "deterministicFacts": json.loads(facts),
@@ -225,11 +307,16 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
         assert any("report_analysis_supplement_abandoned" in item for item in completions[0]["warnings"])
     assert len(runtime.shutdowns) == len(clients)
     for client in clients:
+        if scenario == "degraded":
+            assert len(client.requests) == 4
+            assert not client.pending
         user_message = next(item for item in client.requests[0]["input"] if item.get("role") == "user")
         content = user_message["content"]
         prompt = json.loads(content if isinstance(content, str) else content[0]["text"])
+        output_contract = prompt["facts"]["outputContract"]
+        assert set(output_contract) == {"format", "schema", "rules"}
         example = validate_supplemental_evidence(
-            json.dumps(prompt["facts"]["outputContract"]["example"]), CURRENT_ANALYSIS,
+            json.dumps(_valid_supplemental_evidence()), CURRENT_ANALYSIS,
         )
         assert example.findings[0]["rows"]
         outputs = [item for item in client.requests[1]["input"] if item.get("type") == "function_call_output"]

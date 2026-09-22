@@ -2,13 +2,17 @@
 
 import asyncio
 import shlex
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from loguru import logger
 
-from smart_reporting.reporting.code_mode import ReportingCodeModeRuntime
+from smart_reporting.reporting.code_mode import (
+    ReportingCodeModeRuntime,
+    _script_process_cell,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
     workspace,  # noqa: F401
@@ -39,6 +43,67 @@ class ShellCodeMode:
         # Deliberately discard both streams, as CodeMode truncation may do.
         return SimpleNamespace(status="ok" if process.returncode == 0 else "error",
                                stdout="", stderr="", traceback=None)
+
+
+def test_visualization_shell_wrapper_runs_font_bootstrap_in_script_process(tmp_path):
+    script_path = tmp_path / "chart.py"
+    output_path = tmp_path / "font.txt"
+    receipt_path = tmp_path / "exit.status"
+    script_path.write_text(
+        "from pathlib import Path\n"
+        "from matplotlib import font_manager, rcParams\n"
+        "font = font_manager.findfont('Noto Sans CJK SC', fallback_to_default=False)\n"
+        f"Path({str(output_path)!r}).write_text("
+        "rcParams['font.sans-serif'][0] + '\\n' + font, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    cell = _script_process_cell(
+        str(script_path),
+        str(receipt_path),
+        matplotlib_root=str(tmp_path / "runtime"),
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", cell.removeprefix("%%bash\n")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert receipt_path.read_text(encoding="ascii").strip() == "0"
+    family, font_path = output_path.read_text(encoding="utf-8").splitlines()
+    assert family == "Noto Sans CJK SC"
+    assert font_path.endswith(("NotoSansCJKSC-Regular.otf", "NotoSansCJK-Regular.ttc"))
+
+
+def test_visualization_shell_wrapper_runs_outside_project_cwd(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    output_path = workspace_root / "completed.txt"
+    receipt_path = workspace_root / "exit.status"
+    (workspace_root / "chart.py").write_text(
+        "from pathlib import Path\n"
+        "Path('completed.txt').write_text('ok', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    cell = _script_process_cell(
+        "chart.py",
+        str(receipt_path),
+        matplotlib_root=str(workspace_root / "runtime"),
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", cell.removeprefix("%%bash\n")],
+        cwd=workspace_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output_path.read_text(encoding="utf-8") == "ok"
+    assert receipt_path.read_text(encoding="ascii").strip() == "0"
 
 
 @pytest.mark.anyio
@@ -79,6 +144,30 @@ async def test_connection_log_precedes_execution_and_refreshes_after_restart(wor
         assert len([row for row in records if "report_code_mode_connection" in row]) == 2
     finally:
         logger.remove(sink)
+
+
+def test_runtime_records_and_drains_execution_spans_without_kernel_internals():
+    runtime = ReportingCodeModeRuntime(ShellCodeMode("."))
+    for name in ("bootstrap", "monitor", "cell", "script", "shutdown"):
+        runtime._record_execution_span("span-task", name, 0.0)
+    for _ in range(70):
+        runtime._record_execution_span("span-task", "cell", 0.0)
+
+    spans = runtime.drain_execution_spans("span-task")
+    assert isinstance(spans, dict)
+    assert set(spans) == {"bootstrap", "monitor", "cell", "script", "shutdown"}
+    assert all(
+        isinstance(value, list) and value and all(item >= 0 for item in value)
+        for value in spans.values()
+    )
+    assert len(spans["cell"]) == 64
+    assert runtime.drain_execution_spans("span-task") == "unknown"
+
+    runtime._record_execution_span("other-task", "cell", 0.0)
+    other = runtime.drain_execution_spans("other-task")
+    assert isinstance(other, dict)
+    assert set(other) == {"cell"}
+    assert runtime.drain_execution_spans("span-task") == "unknown"
 
 
 @pytest.mark.anyio
@@ -150,3 +239,61 @@ async def test_real_agno_kernel_receipts_survive_stream_truncation(workspace):  
             assert list((workspace.identity.root / ".reporting-exits").iterdir()) == []
     finally:
         await runtime.aclose()
+
+
+@pytest.mark.anyio
+async def test_real_agno_kernel_exploration_variables_persist_until_shutdown(workspace):  # noqa: F811
+    from agno.tools.code import CodeMode
+
+    runtime = ReportingCodeModeRuntime(CodeMode(
+        snapshot=False,
+        cwd=str(workspace.identity.root),
+        timeout=30,
+        max_kernels=1,
+    ))
+    try:
+        first = await runtime.execute(
+            "exploration-state",
+            workspace,
+            "import pandas as pd\ndf1 = pd.DataFrame({'value': [41]})",
+        )
+        second = await runtime.execute(
+            "exploration-state",
+            workspace,
+            "int(df1['value'].sum()) + 1",
+        )
+
+        assert first.status == "ok"
+        assert second.status == "ok"
+        assert second.result == "42"
+        variables = await runtime.exploration_variables("exploration-state")
+        assert variables["df1"] == "DataFrame"
+        assert variables["pd"] == "module"
+
+        await runtime.shutdown("exploration-state")
+        assert await runtime.exploration_variables("exploration-state") == {}
+    finally:
+        await runtime.aclose()
+
+
+@pytest.mark.anyio
+async def test_exploration_variables_timeout_returns_empty_and_cancels(monkeypatch):
+    class SlowCodeMode:
+        cancelled = False
+
+        async def avariables(self, _session_id):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    code_mode = SlowCodeMode()
+    runtime = ReportingCodeModeRuntime(code_mode)
+    monkeypatch.setattr(
+        "smart_reporting.reporting.code_mode._EXPLORATION_VARIABLES_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    assert await runtime.exploration_variables("busy") == {}
+    assert code_mode.cancelled is True

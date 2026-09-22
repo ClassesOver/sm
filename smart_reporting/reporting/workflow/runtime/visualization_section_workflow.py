@@ -14,6 +14,7 @@ from ...code_agent.failure_policy import recovery_for
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
+from ..benchmark_variants import BenchmarkProjection
 from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
 from .code_generation import (
     CodeGenerationResult,
@@ -37,6 +38,7 @@ class RunVisualizationCode(Protocol):
         *,
         diagnostic: Mapping[str, Any] | None,
         task_facts: Mapping[str, Any] | None = None,
+        benchmark_projection: BenchmarkProjection | None = None,
     ) -> Awaitable[CodeGenerationResult]: ...
 
 
@@ -66,6 +68,88 @@ def _signed_script_path(payload: Mapping[str, Any]) -> str:
     if not isinstance(script_path, str) or not script_path:
         raise ReportingError("report_phase_contract_invalid", "缺少可视化脚本签发路径。")
     return script_path
+
+
+def _visualization_binding_catalog(
+    payload: Mapping[str, Any],
+) -> dict[tuple[str, str, str], frozenset[str]]:
+    facts = payload.get("visualizationFacts")
+    if not isinstance(facts, (list, tuple)):
+        return {}
+    catalog: dict[tuple[str, str, str], frozenset[str]] = {}
+
+    def register(
+        analysis_id: object, source_file: object, descriptors: object
+    ) -> None:
+        path = source_file.get("path") if isinstance(source_file, Mapping) else None
+        if (
+            not isinstance(analysis_id, str)
+            or not analysis_id
+            or not isinstance(path, str)
+            or not path
+            or not isinstance(descriptors, (list, tuple))
+        ):
+            return
+        for descriptor in descriptors:
+            if not isinstance(descriptor, Mapping):
+                continue
+            data_path = descriptor.get("dataPath")
+            fields = descriptor.get("fields")
+            if (
+                not isinstance(data_path, str)
+                or not data_path
+                or not isinstance(fields, (list, tuple))
+                or not fields
+                or any(not isinstance(field, str) or not field for field in fields)
+            ):
+                continue
+            key = (analysis_id, path, data_path)
+            declared_fields = frozenset(fields)
+            if key in catalog and catalog[key] != declared_fields:
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "可视化事实包含冲突的数据绑定描述。",
+                )
+            catalog[key] = declared_fields
+
+    for analysis in facts:
+        if not isinstance(analysis, Mapping):
+            continue
+        analysis_id = analysis.get("analysisId")
+        register(analysis_id, analysis.get("factFile"), analysis.get("dataDescriptors"))
+        sources = analysis.get("supplementalEvidenceSources")
+        if not isinstance(sources, (list, tuple)):
+            continue
+        for source in sources:
+            if isinstance(source, Mapping):
+                register(
+                    analysis_id,
+                    source.get("sourceFile"),
+                    source.get("dataDescriptors"),
+                )
+    return catalog
+
+
+def _validate_visualization_plan_bindings(
+    plan: VisualizationPlanDraft, payload: Mapping[str, Any]
+) -> None:
+    catalog = _visualization_binding_catalog(payload)
+    for chart in plan.charts:
+        for binding in chart.data_bindings:
+            key = (binding.analysis_id, binding.fact_path, binding.data_path)
+            declared_fields = catalog.get(key)
+            if declared_fields is None or not set(binding.fields).issubset(declared_fields):
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "图表数据绑定未逐字引用本轮签发的事实描述。",
+                    details={
+                        "chartId": chart.chart_id,
+                        "analysisId": binding.analysis_id,
+                        "factPath": binding.fact_path,
+                        "dataPath": binding.data_path,
+                        "fields": list(binding.fields),
+                    },
+                )
 
 
 def _repair_diagnostic(
@@ -352,6 +436,7 @@ class VisualizationSectionWorkflow:
         | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
+        benchmark_projection: BenchmarkProjection | None = None,
     ) -> None:
         self.generate_plan = generate_plan
         self.run_code = run_code
@@ -360,11 +445,18 @@ class VisualizationSectionWorkflow:
         self.record_successful_repair = record_successful_repair
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
+        self.benchmark_projection = benchmark_projection
 
     async def run(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         plan = await self.generate_plan(payload, run_context)
+        _validate_visualization_plan_bindings(plan, payload)
+        benchmark_kwargs = (
+            {"benchmark_projection": self.benchmark_projection}
+            if self.benchmark_projection is not None
+            else {}
+        )
         thinking_complexity = _visualization_thinking_complexity(payload)
         if not plan.charts:
             receipt = await self.submit(plan, (), run_context)
@@ -415,6 +507,7 @@ class VisualizationSectionWorkflow:
                             if generation_failure is not None
                             else None
                         ),
+                        **benchmark_kwargs,
                     )
                 script_file = _ensure_script_identity(generated_result, script_path)
                 repair_candidate = generated_result.visual_repair_diagnostic or diagnostic
@@ -519,6 +612,7 @@ class VisualizationSectionWorkflow:
                                 payload=payload,
                                 repair_attempt=execution_repairs,
                             ),
+                            **benchmark_kwargs,
                         )
                 except Exception as repair_error:  # noqa: BLE001 - 回注统一恢复策略
                     # 修复调用本身也属于本轮执行修复。把它送回循环入口，由同一
