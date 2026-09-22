@@ -4,11 +4,27 @@
 
 **唯一核心目标：** 减少分析与可视化 Coding 的 reasoning 时间及长尾，并降低包含上游规划在内的任务总耗时；保留首轮 reasoning、首次成功率、精准局部 patch 和报表质量。章节任务范围、输入压缩、计划字段、缓存和 effort 都只是实现手段，不以输入更短、首个工具更早返回或架构重构本身作为成功标准。
 
+**最新执行约束（2026-09-22）：** 用户明确仅使用 `reasoning.effort=high`，后续不开展 medium/low/off 对照。已确认误启动的 medium 回放进程退出，未产生结果文件，不计入性能样本。优化集中在 high 下的任务输入与重复推理。
+
+**输入精简实验结论：** 曾尝试首轮省略 `outputContract.example`，保留 schema、rules、全部业务事实与任务 actions。high 回放 `/tmp/reporting-analysis-high-noexample-20260922.json` 首轮仍为 `577.237s / 42,445 reasoning tokens`，总 Coding `587.808s / 42,715 reasoning tokens`，虽一次通过但相较目标没有性能收益；示例仅减少约 278 字节，不能解决长推理。因此已撤销该改动，避免削弱输出契约的示例参照。后续不再做类似表面删提示实验，转向动态 `codingRequirements` 是否能减少模型自行规划的单变量评估。
+
+**动态要求 high 对照已完成：** 同一 `/tmp/reporting-r7-analysis-v2`、模型、`high`、summary=auto、enable_thinking=true、parallel_tool_calls=true 下，仅将 evidence planner 输出的动态 `codingRequirements` 投影给 Coding，结果 `/tmp/reporting-analysis-high-candidate-20260922.json`：首轮 `207.725s / 16,395 reasoning tokens`，总 Coding `214.629s / 16,430 reasoning tokens`，`write_script → run_script → submit_script` 一次通过，`rawProtocolCorrect=true`。相对历史 legacy 样本 `577.237s / 42,445` 有明显性能信号，但两者不是严格同版本配对，不将 64.0%/61.4% 作为发布承诺；结论限定为“动态要求显著降低本次 high 样本的首轮推理”。
+
+**生产切换：** evidence planner 默认 schema 改为 `AnalysisEvidenceDecision`，默认指令要求签发 `codingRequirements`；无显式 benchmark projection 时，分析 Coding facts 默认投影动态要求，且脚本 Agent 使用对应的 `codingRequirements` 指令。显式 `BenchmarkVariant.LEGACY` 仍保留给历史回放。动态要求只引用当前授权 dataset、字段、计算说明和输出名，主题、维度与指标仍由当前任务 planner 决定，不固化收入算法。受影响契约测试通过；较大 planner 测试文件仍有既有 `SimpleNamespace` 缺少 `session_state` 的替身阻断，未修改生产代码迁就。
+
+**candidate 质量复核：** warning 指令后的 `/tmp/reporting-analysis-high-candidate-warning-20260922.json` 工作区 `/tmp/reporting-visualization-replay-k0lwm62h` 的两份 CSV 与冻结数据一致；按原始 CSV 独立聚合动态维度和总体结果，核对 `754` 个数值、覆盖集合和 null，全部一致；10 个 reconciliation 全部为 true；日间治疗中心、脑病中心、财务处三类单侧缺失均出现在 warnings。该样本首轮 `231.939s / 19,399 reasoning tokens`，总 Coding `238.797s / 19,417`，仍一次成功；相对 candidate 基线有 provider 波动，但仍保留明显低于 legacy 的信号，不把单次差异当作新收益。
+
 **架构：** 按章节确定 Coding 任务范围，分析与可视化仍是分开的阶段；保留分析项的事实、证据和验收身份。沿用现有每个 Coding task 绑定一份正式脚本的宿主契约，不开展多脚本规划或改造。保留 Agno 负责模型请求、消息回放和工具协议映射；Reporting 宿主负责脚本身份、SHA、patch 原子应用、工具调用校验和交付状态。provider 可以一次返回多个结构化工具调用，宿主先整体校验，再按 provider 返回顺序执行。
+
+**收尾校正：** warning 样本实际有 9 项 reconciliation（上文 10 项为旧样本数），均为 true；独立复算为 754 个数值/null 检查，类别覆盖另行核对。其 planner 耗时 `69.414s`、reasoning `5,573`，加 Coding 后总回放 `308.259s`、累计 reasoning `24,990`，不能仅以 Coding 的 `238.797s / 19,417` 宣称整个流程已达到 300 秒/20k 目标。两次 candidate 回放重新运行了 planner，facts 指纹不同；warning 提示效果也不是严格单变量证据。保留性能改善信号，跨主题稳定性和同版本配对仍待验证。
 
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）
+
+**并行收尾：** 已修复 planner 测试替身与现有执行器接口不一致：运行上下文补 `session_state`，成功结果补 `model_request_count`；原先失败的 5 项定向测试全部通过，未修改生产逻辑。历史阻断记录保留为当时状态，不能再把这 5 项列为当前未解决失败。
+
+**2026-09-22 主题无关性修正：** 通用分析指令不再强制所有同比按月份聚合；期间对齐遵循当前任务的时间粒度和比较窗口。legacy 指令仅在月度同比时要求按月份对齐，保留跨年 YYYYMM 不直接求交集、单侧缺失使用 null 和软告警的约束，并将收入特定措辞“金额”改为“指标”。未新增任务 schema 字段，未改变首轮 reasoning、工具协议或精准 patch 校验。相关指令定向测试 `3 passed`，目标文件 Ruff 通过；本轮没有重复真实模型回放，不能据此认定 reasoning 长尾改善。
 
 本节是后续优化的唯一对照基线。除非明确标记为新的单变量实验，不得把不同模型、不同数据快照、不同章节输入或删失样本混入 B0。
 
@@ -76,6 +92,8 @@
 - 首轮 `137.795s / 11,322 reasoning tokens / 849 visible tokens`，写出的源码仅加载数据、打印概览，并输出“数据加载概览（探索阶段，后续替换）”；收入结构及同比缺口未实现。run_script 通过执行与结构校验后，工具范围收敛为 submit_script。第三次请求耗时 `399.927s / 29,810 reasoning tokens`，返回未声明的 function 型 write_script，宿主正确拒绝，未执行整段重写。
 - 复核 `/tmp/reporting-analysis-semantic-constraints.json` 后纠正原因：第二次 `write_script` 不是模型重复规划，而是首轮源码触发 `report_python_source_path_invalid`，随后以 `85` reasoning tokens 重新写入；该样本的 `firstScriptSuccess=false`、`firstRunSuccess=true`、`rawProtocolCorrect=false`，工具计数为 `write_script=2/run_script=1/submit_script=1`。错误码本身过去未保存 details，不能从 code 猜出具体违规路径。
 - 协议归因纠正：路径错误不会修改 `rawProtocolCorrect`；它独立统计 provider 原始 custom 前缀与工具声明/身份等协议违规。历史样本同时存在路径拒绝与原始协议错误，不能推断两者有因果关系，也不能仅凭 false 判断是哪类信封。新增请求级 `firstToolFailure={toolName,code}`，在现有 Agno 顺序执行批次中记录第一个实际失败，后续跳过调用不覆盖它，后续请求不继承它。指标只保留这两个有界字段，不保存源码或任意 details。真实 Agno Agent + 模拟 provider 的闭环已验证：同一路径拒绝在标准 custom 输入下原始协议为 true，在单层 data 信封下为 false。该改动只补齐观测，不宣称降低 reasoning。
+- 独立数值验收补齐：对 `/tmp/reporting-analysis-semantic-constraints.json` 对应 workspace `/tmp/reporting-visualization-replay-rgpap4_a`，使用标准库 CSV + Decimal 从原始数据复算，未调用生成脚本的筛选、聚合或对账函数。两份 CSV SHA 与冻结 payload 一致；按任务指定的两年 1–11 月窗口直接求和，2025 年为 `11,123,541,503`，2024 年为 `10,475,201,732`。核对总体、11 个月及四个维度的金额、占比、差额、同比和 null，共 `493` 个数值/null 检查无差异（显示值允许两位小数舍入误差），各维度类别集合与原始数据双侧并集一致。上海市高血压研究所上年有 2 行、合计为 0，不是缺失；日间治疗中心、脑病中心上年无行；财务处当年无行、上年 1 行为 `-11,796`，结果 null 均正确。
+- 该样本仍未通过完整质量验收：生成脚本的 `only24 = sorted(set(b24) - set(b24) - set())` 恒为空，遗漏“财务处仅存在于上年”的 warning。数值正确和所有 reconciliations=true 不能证明告警完整。保留原始脚本及 evidence 作为冻结失败证据，不事后修补基线冒充首次成功；后续配对回放同时检查两个方向的缺失类别告警。这是该样本的具体缺陷，不将收入字段或科室名称写入通用生产规则，也不增加模型重试或语义硬门禁。
 - 已收紧 `write_script` 工具描述与路径错误回执：明确 `unsignedPaths` 表示未签发路径、`forbiddenPathOperations` 表示目录推导操作；要求直接使用 task 签发路径，禁止 cwd、`__file__`、父目录拼接和 `os.path.dirname`。路径校验仍是硬失败。定向路径/工具协议测试 `4 passed`，Ruff 和 diff 检查通过。
 - 已将生产 legacy 首句局部替换为明确的完整实现要求：首轮 write_script 实现所有可计算 missingFacts、输出 findings 和对账，禁止探索占位脚本或以字段/行数概览代替业务事实。不增加提示规划轮次、不关闭 reasoning、不扩大工具范围、不增加重试，也不把业务完整性改为硬失败。
 - 待验证：新提示的真实首次完整实现率及累计 reasoning；当前尚无收益证据。后续必须同时核对业务缺口覆盖和结构/执行结果，不能把较短首轮、firstRunSuccess=true 或 schema 通过当作完整交付。本次不继续盲目复跑；下一次单变量实验仅改变上述首句，并使用同一冻结任务。

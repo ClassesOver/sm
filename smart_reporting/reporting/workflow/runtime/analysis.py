@@ -39,6 +39,7 @@ from ..checkpoint import ChartVisualInspectionReceipt, CheckpointRetryUsage
 from ..execution import ReportingTaskInvocation
 from .analysis_item_workflow import (
     MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
+    AnalysisEvidenceDecision,
     AnalysisItemWorkflow,
     AnalysisSummaryDraft,
     EvidenceDecision,
@@ -2556,7 +2557,7 @@ class RuntimeAnalysisMixin:
         summary_model_metrics_recorder: Callable[[Any, int], None] | None = None,
         benchmark_projection: BenchmarkProjection | None = None,
         evidence_planner: Any | None = None,
-        evidence_output_type: type[BaseModel] = LegacyAnalysisEvidenceDecision,
+        evidence_output_type: type[BaseModel] = AnalysisEvidenceDecision,
     ) -> StepOutput:
         """在当前 Task lease 内执行五阶段子流程，工具继续复用现有强契约。"""
 

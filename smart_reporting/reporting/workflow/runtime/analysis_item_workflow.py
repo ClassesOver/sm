@@ -963,7 +963,7 @@ class AnalysisItemWorkflow:
                 "补证脚本的既有事实与当前分析项身份不一致。",
             )
         projection = benchmark_projection or self.benchmark_projection or BenchmarkProjection.for_variant(
-            BenchmarkVariant.LEGACY
+            BenchmarkVariant.CANDIDATE
         )
         facts = {
             "currentAnalysis": current_analysis,

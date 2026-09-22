@@ -164,7 +164,7 @@ from ...profile import (
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...vision import ReportVisionReviewer
 from ...workspace import WorkspaceReportService
-from ..benchmark_variants import BenchmarkPlannerSpec, LegacyAnalysisEvidenceDecision
+from ..benchmark_variants import BenchmarkPlannerSpec
 from ..checkpoint import (
     AnalysisArtifact,
     AnalysisChart,
@@ -438,7 +438,7 @@ _ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
 
 _ANALYSIS_CODE_LEGACY_INSTRUCTIONS = (
     "首轮 write_script 直接实现 evidenceDecision.missingFacts 中所有可计算缺口，输出对应 findings 和对账；currentAnalysis.actions 仅作背景。不得先写探索占位脚本或用行数、字段概览代替待计算的业务事实。",
-    "同比必须按 month（1-12）对齐，不要把包含 year 的 YYYYMM/日期整数直接求交集；分别确认两侧年份后按共同月份计算。某维度只出现在一侧时另一侧金额、占比和同比值写 JSON null，并在 warnings 说明，不得按 0 补齐。",
+    "同比按当前任务的时间粒度和比较窗口对齐可比期间；仅月度同比按 month（1-12）对齐，不把跨年 YYYYMM/日期整数直接求交集；其他粒度不得降为月份。缺失期间在 warnings 说明。某维度只出现在一侧时另一侧指标、占比和同比值写 JSON null，并在 warnings 说明，不得按 0 补齐。",
     "字段、维度、时间字段和指标必须从当前 missingFacts、datasets.columns 及 outputContract 推导；不得假定收入主题、固定字段名或固定维度。",
     "签发数据无法提供的缺失期间或字段如实写入 warnings；继续完成可计算缺口，不推算缺失数据，不设计额外数据获取或通用兼容框架。",
     _ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION,
@@ -448,6 +448,7 @@ _ANALYSIS_CODE_LEGACY_INSTRUCTIONS = (
 _ANALYSIS_CODE_INSTRUCTIONS = (
     "只针对 codingRequirements 生成一个最小 Python 脚本；事实缺口已由上游决定，不得重新判断。",
     "逐项使用 codingRequirements 中已签发的 datasetId、fields、calculation 和 outputName；不得重新选择数据集、字段或计算目标。",
+    "比较按当前任务声明的时间粒度和窗口对齐；任一维度只出现在一侧时，另一侧指标、占比和变化值写 JSON null，并在 warnings 说明，不得按 0 补齐。",
     _ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION,
     *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,
 )
@@ -700,16 +701,17 @@ class _ReportWorkflowRuntimeBase:
                 *HOSPITAL_ANALYSIS_INSTRUCTIONS,
             ),
         )
+        # Coding 首轮需要上游签发的动态计算要求，避免模型再次从 missingFacts 规划字段和算法。
         self._analysis_evidence_agent = self._planning_agent(
             reporting_agent_template,
             "report-analysis-evidence-planner",
-            LegacyAnalysisEvidenceDecision,
+            AnalysisEvidenceDecision,
             thinking_policy=ThinkingPolicyConfig(
                 operation="analysis_evidence",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
             ),
-            stage_instructions=_ANALYSIS_EVIDENCE_LEGACY_INSTRUCTIONS,
+            stage_instructions=_ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS,
         )
         from ...agent import create_reporting_code_agent_factory
 
@@ -728,7 +730,7 @@ class _ReportWorkflowRuntimeBase:
             name="report-analysis-script-writer",
             task_kind="analysis",
             role="只根据签发事实缺口生成或修复补证 Python 脚本。",
-            instructions=_ANALYSIS_CODE_LEGACY_INSTRUCTIONS,
+            instructions=_ANALYSIS_CODE_INSTRUCTIONS,
         )
         self._analysis_summary_agent = self._planning_agent(
             reporting_agent_template,

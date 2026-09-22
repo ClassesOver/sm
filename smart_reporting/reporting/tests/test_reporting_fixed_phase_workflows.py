@@ -231,15 +231,18 @@ def test_analysis_candidate_projection_includes_validated_coding_requirements() 
     assert "evidenceDecision" not in facts
 
 
-def test_analysis_production_projection_defaults_to_legacy_contract() -> None:
+def test_analysis_production_projection_defaults_to_dynamic_requirements() -> None:
     facts = _analysis_workflow()._script_task_facts(_analysis_state_with_requirement())
 
-    assert "codingRequirements" not in facts
-    assert facts["evidenceDecision"] == {
-        "requiresSupplementalEvidence": True,
-        "reason": "需要科室收入构成",
-        "missingFacts": ["科室收入构成"],
-    }
+    assert facts["codingRequirements"] == [
+        {
+            "datasetId": "dataset_001",
+            "fields": ["department", "income"],
+            "calculation": "按科室汇总收入并与收入总量对账",
+            "outputName": "department_income",
+        }
+    ]
+    assert "evidenceDecision" not in facts
 
 
 def test_analysis_legacy_projection_omits_r7_requirements_but_keeps_existing_facts() -> None:

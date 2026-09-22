@@ -76,9 +76,6 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
 )
 from smart_reporting.reporting.structured_output import ReportingStructuredOutputExecutor
-from smart_reporting.reporting.workflow.benchmark_variants import (
-    LegacyAnalysisEvidenceDecision,
-)
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
@@ -183,7 +180,7 @@ async def test_run_planner_maps_typed_context_hard_limit_without_message_matchin
     )
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._scope = lambda _run_context: {"userId": "user-1"}
-    run_context = SimpleNamespace(run_id="run-1")
+    run_context = SimpleNamespace(run_id="run-1", session_state={})
     agent = SimpleNamespace(id="report-test-planner")
     agent._reporting_thinking = ThinkingPolicyConfig(
         operation="data_understanding",
@@ -2574,7 +2571,7 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
     )
 
 
-def test_runtime_defaults_analysis_evidence_planner_to_legacy_contract() -> None:
+def test_runtime_defaults_analysis_evidence_planner_to_dynamic_requirements() -> None:
     runtime = ReportWorkflowRuntime(
         db=SimpleNamespace(),
         reporting_agent_template=Agent(
@@ -2594,20 +2591,24 @@ def test_runtime_defaults_analysis_evidence_planner_to_legacy_contract() -> None
         state_repository=SimpleNamespace(),
     )
 
-    assert runtime._analysis_evidence_agent.output_schema is LegacyAnalysisEvidenceDecision
+    assert runtime._analysis_evidence_agent.output_schema is AnalysisEvidenceDecision
+    coding_agent = runtime._analysis_script_agent_factory([])
+    coding_instructions = "\n".join(coding_agent.instructions)
+    assert "codingRequirements" in coding_instructions
+    assert "evidenceDecision.missingFacts" not in coding_instructions
     assert any(
         "missingFacts" in instruction
         for instruction in runtime._analysis_evidence_agent.instructions
     )
-    assert all(
-        "codingRequirements" not in instruction
+    assert any(
+        "codingRequirements" in instruction
         for instruction in runtime._analysis_evidence_agent.instructions
     )
     assert (
         inspect.signature(RuntimeAnalysisMixin._execute_analysis_item_workflow)
         .parameters["evidence_output_type"]
         .default
-        is LegacyAnalysisEvidenceDecision
+        is AnalysisEvidenceDecision
     )
     analysis_instructions = "\n".join(runtime._analysis_agent.instructions)
     assert "根 JSON 必须是对象且只能包含 analyses 和 requirements" in analysis_instructions
@@ -2708,7 +2709,11 @@ async def test_run_planner_passes_layered_thinking_request(
         async def execute(self, *_args, **kwargs):
             request = kwargs["thinking_request"]
             observed.append(request)
-            return SimpleNamespace(content=content, run_output=SimpleNamespace(metrics=None))
+            return SimpleNamespace(
+                content=content,
+                run_output=SimpleNamespace(metrics=None),
+                model_request_count=1,
+            )
 
     monkeypatch.setattr(reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor)
     agent = Agent(
@@ -2727,7 +2732,7 @@ async def test_run_planner_passes_layered_thinking_request(
     )
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._scope = lambda _run_context: {"userId": "user-1"}
-    run_context = SimpleNamespace(run_id="run-1")
+    run_context = SimpleNamespace(run_id="run-1", session_state={})
 
     await runtime._run_planner(agent, {}, run_context)
     await runtime._run_planner(
@@ -2781,7 +2786,7 @@ async def test_run_planner_forwards_nonstream_metrics_to_task_settlement(monkeyp
     result = await runtime._run_planner(
         agent,
         {},
-        SimpleNamespace(run_id="run-1"),
+        SimpleNamespace(run_id="run-1", session_state={}),
         model_metrics_recorder=lambda output, count: recorded.append((output, count)),
     )
 
@@ -2800,7 +2805,11 @@ async def test_run_planner_honors_disabled_thinking_policy(monkeypatch) -> None:
 
         async def execute(self, *_args, **kwargs):
             observed.append(kwargs["thinking_request"])
-            return SimpleNamespace(content=content, run_output=SimpleNamespace(metrics=None))
+            return SimpleNamespace(
+                content=content,
+                run_output=SimpleNamespace(metrics=None),
+                model_request_count=1,
+            )
 
     monkeypatch.setattr(reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor)
     agent = Agent(
@@ -2820,7 +2829,7 @@ async def test_run_planner_honors_disabled_thinking_policy(monkeypatch) -> None:
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._scope = lambda _run_context: {"userId": "user-1"}
 
-    await runtime._run_planner(agent, {}, SimpleNamespace(run_id="run-1"))
+    await runtime._run_planner(agent, {}, SimpleNamespace(run_id="run-1", session_state={}))
 
     assert select_reporting_thinking(observed[0]).thinking_budget == 0
 

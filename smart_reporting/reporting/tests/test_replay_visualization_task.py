@@ -784,7 +784,9 @@ def test_analysis_legacy_instructions_pin_yoy_alignment_and_missing_dimension_nu
     instructions = "\n".join(
         replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
     )
-    assert "month（1-12）对齐" in instructions
+    assert "当前任务的时间粒度和比较窗口" in instructions
+    assert "仅月度同比按 month（1-12）对齐" in instructions
+    assert "其他粒度不得降为月份" in instructions
     assert "JSON null" in instructions
     assert "不得按 0 补齐" in instructions
     assert "不得假定收入主题、固定字段名或固定维度" in instructions

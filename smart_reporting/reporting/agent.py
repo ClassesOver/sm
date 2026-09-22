@@ -2963,7 +2963,7 @@ _CODE_COMMON_INSTRUCTIONS = (
     "已有字段、source descriptor 和聚合目标时直接实现；只有文件结构确实不明确时才用一次有界探索核对必要字段和少量样本。",
 )
 _ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
-    "期间计算优先使用冻结事实声明的 periodField 并显式解析实际格式；斜杠日期不猜日月顺序，同比只聚合两侧共同覆盖月份。",
+    "期间计算优先使用冻结事实声明的 periodField 并显式解析实际格式；斜杠日期不猜日月顺序，期间对齐遵循当前任务的时间粒度和比较窗口，不默认按月聚合。",
 )
 _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "对 run_script 返回的每个图片输出调用 view_image，全部审查后再 submit_script。",
