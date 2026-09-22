@@ -437,7 +437,8 @@ _ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
 )
 
 _ANALYSIS_CODE_LEGACY_INSTRUCTIONS = (
-    "只实现 evidenceDecision.missingFacts 所需计算；currentAnalysis.actions 是背景，不额外扩展分析目标。",
+    "首轮 write_script 直接实现 evidenceDecision.missingFacts 中所有可计算缺口，输出对应 findings 和对账；currentAnalysis.actions 仅作背景。不得先写探索占位脚本或用行数、字段概览代替待计算的业务事实。",
+    "同比必须按 month（1-12）对齐，不要把包含 year 的 YYYYMM/日期整数直接求交集；分别确认两侧年份后按共同月份计算。某维度只出现在一侧时另一侧金额、占比和同比值写 JSON null，并在 warnings 说明，不得按 0 补齐。",
     "签发数据无法提供的缺失期间或字段如实写入 warnings；继续完成可计算缺口，不推算缺失数据，不设计额外数据获取或通用兼容框架。",
     _ANALYSIS_CODE_EXISTING_FACTS_INSTRUCTION,
     *_ANALYSIS_CODE_COMMON_INSTRUCTIONS,

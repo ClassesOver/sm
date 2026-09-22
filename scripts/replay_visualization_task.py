@@ -665,9 +665,9 @@ def replay_instructions(
         )
     if task_kind == "analysis":
         return (
-            _ANALYSIS_CODE_LEGACY_INSTRUCTIONS
-            if variant is BenchmarkVariant.LEGACY
-            else _ANALYSIS_CODE_INSTRUCTIONS
+            _ANALYSIS_CODE_INSTRUCTIONS
+            if variant is BenchmarkVariant.CANDIDATE
+            else _ANALYSIS_CODE_LEGACY_INSTRUCTIONS
         )
     raise ValueError(f"不支持的 Coding 回放任务类型：{task_kind}")
 

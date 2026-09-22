@@ -761,8 +761,11 @@ def test_replay_instructions_match_production_task_instructions():
         replay_visualization_task._VISUALIZATION_CODE_INSTRUCTIONS
     )
     assert replay_visualization_task.replay_instructions("analysis") == (
-        replay_visualization_task._ANALYSIS_CODE_INSTRUCTIONS
+        replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
     )
+    assert replay_visualization_task.replay_instructions(
+        "analysis", variant=BenchmarkVariant.CANDIDATE
+    ) == replay_visualization_task._ANALYSIS_CODE_INSTRUCTIONS
     assert replay_visualization_task.replay_instructions(
         "analysis", variant=BenchmarkVariant.LEGACY
     ) == replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
@@ -775,6 +778,15 @@ def test_replay_instructions_match_production_task_instructions():
     assert "dataBindings" not in "\n".join(
         replay_visualization_task._VISUALIZATION_CODE_LEGACY_INSTRUCTIONS
     )
+
+
+def test_analysis_legacy_instructions_pin_yoy_alignment_and_missing_dimension_nulls():
+    instructions = "\n".join(
+        replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
+    )
+    assert "month（1-12）对齐" in instructions
+    assert "JSON null" in instructions
+    assert "不得按 0 补齐" in instructions
 
 
 def test_visualization_coding_instructions_bound_repair_to_critical_issue():
