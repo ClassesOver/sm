@@ -502,6 +502,9 @@ async def test_missing_declared_output_includes_matching_source_context(binding)
 
     details = result["details"]
     assert result["code"] == "report_code_declared_output_missing"
+    assert "不代表脚本不存在" in result["message"]
+    assert "edit_script 局部修复" in result["message"]
+    assert "不得调用 write_script" in result["message"]
     assert details["path"] == "analysis/out.json"
     assert details["sourceSha256"] == hashlib.sha256(SOURCE.encode()).hexdigest()
     assert details["sourceExcerpt"] == SOURCE

@@ -159,7 +159,7 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
     elif not valid:
         if failure and failure["tool"] in {"write_script", "edit_script", "run_script"}:
             next_tools = ["read_script", "edit_script", "run_script"]
-            action = "结合最近失败诊断修复脚本，再运行；不要原样重复失败操作。"
+            action = "结合最近失败诊断用 edit_script 局部修复现有脚本，再 run_script；write_script 不可用，不要整段重写或原样重复失败操作。"
         else:
             next_tools, action = ["run_script"], "当前源码或输出尚无有效执行回执，运行绑定脚本。"
     elif visual_failures:

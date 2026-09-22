@@ -1872,7 +1872,8 @@ class ReportingCodeModeToolkit(Toolkit):
             except WorkspaceError as error:
                 raise ReportingError(
                     "report_code_declared_output_missing",
-                    "Coding Agent 声明输出不存在。",
+                    "声明产物不存在，不代表脚本不存在。检查 details.path 对应的写出逻辑，"
+                    "使用 edit_script 局部修复现有脚本，再 run_script；不得调用 write_script 整段重写。",
                     details={"path": path},
                 ) from error
             identities.append(FileIdentity.model_validate(value))
