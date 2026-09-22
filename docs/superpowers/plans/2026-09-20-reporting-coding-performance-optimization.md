@@ -69,6 +69,18 @@
 
 ## 全局约束
 
+### 2026-09-22 首轮基准纠偏与最小提示修正
+
+- 已修复 `replay_instructions("analysis")` 默认错误选择 candidate 指令的问题：未显式选择 candidate 时使用生产 legacy 指令。此前 `/tmp/reporting-compact-analysis.json` 的 v1 facts 仅含 `evidenceDecision.missingFacts`，却被要求执行不存在的 `codingRequirements`；该 329 秒结果只保留为错配探索样本，不作为生产基线或提速证据。显式 candidate 与可视化指令选择保持原契约。定向验证 `5 passed`，Ruff 和 diff 检查通过。
+- 对照 `/tmp/reporting-analysis-legacy-instructions.json`：同一 v1 payload、high/summary=auto/enable_thinking/parallel_tool_calls/max_output_tokens，facts 指纹完全相同；使用修正后的 legacy 指令，Coding 耗时 `542.148s`，3 次请求、`41,142` reasoning tokens，最终协议失败。compact 开关开启但 `compactContinuationApplied=false`。该样本在下述提示修正前启动。
+- 首轮 `137.795s / 11,322 reasoning tokens / 849 visible tokens`，写出的源码仅加载数据、打印概览，并输出“数据加载概览（探索阶段，后续替换）”；收入结构及同比缺口未实现。run_script 通过执行与结构校验后，工具范围收敛为 submit_script。第三次请求耗时 `399.927s / 29,810 reasoning tokens`，返回未声明的 function 型 write_script，宿主正确拒绝，未执行整段重写。
+- 复核 `/tmp/reporting-analysis-semantic-constraints.json` 后纠正原因：第二次 `write_script` 不是模型重复规划，而是首轮源码触发 `report_python_source_path_invalid`，随后以 `85` reasoning tokens 重新写入；该样本的 `firstScriptSuccess=false`、`firstRunSuccess=true`、`rawProtocolCorrect=false`，工具计数为 `write_script=2/run_script=1/submit_script=1`。错误码本身过去未保存 details，不能从 code 猜出具体违规路径。
+- 已收紧 `write_script` 工具描述与路径错误回执：明确 `unsignedPaths` 表示未签发路径、`forbiddenPathOperations` 表示目录推导操作；要求直接使用 task 签发路径，禁止 cwd、`__file__`、父目录拼接和 `os.path.dirname`。路径校验仍是硬失败。定向路径/工具协议测试 `4 passed`，Ruff 和 diff 检查通过。
+- 已将生产 legacy 首句局部替换为明确的完整实现要求：首轮 write_script 实现所有可计算 missingFacts、输出 findings 和对账，禁止探索占位脚本或以字段/行数概览代替业务事实。不增加提示规划轮次、不关闭 reasoning、不扩大工具范围、不增加重试，也不把业务完整性改为硬失败。
+- 待验证：新提示的真实首次完整实现率及累计 reasoning；当前尚无收益证据。后续必须同时核对业务缺口覆盖和结构/执行结果，不能把较短首轮、firstRunSuccess=true 或 schema 通过当作完整交付。本次不继续盲目复跑；下一次单变量实验仅改变上述首句，并使用同一冻结任务。
+
+2026-09-22 首句单变量实验已完成：`/tmp/reporting-analysis-direct-implementation.json`，facts 指纹与上一条完全一致，high/summary/工具配置保持一致，compact 未触发。Coding `475.631s`、5 次请求、`37,555` reasoning tokens；首轮 `387.542s / 32,329 reasoning tokens`，直接生成完整计算脚本，未生成探索占位。首次运行失败：将当期与上年同期的 `year*100+month` 直接求交集，导致不同年份必然无共同月份；一次精准 patch 后运行及提交通过，原始协议正确。最终 evidence 包含总体、门诊/住院、收入类型、院区、科室及月度同比，月份覆盖差异保持软告警。但科室单侧缺失按 0 处理仍与不补齐缺失值约束冲突，未通过业务质量验收。相比上一条失败样本，累计耗时约下降 12.3%、reasoning 约下降 8.7%，但首次写入 reasoning 明显上升；单次样本且质量未达标，不宣称性能优化成立。下一步优先明确同比月份对齐与单侧缺失语义，保持精准 patch 和业务软告警，不增加重试。首句改动保留为待验证修改，尚未提交或认定已推广。
+
 **2026-09-22 宿主预执行样本验收补齐：** 最近 582.529 秒样本的六图文件身份与终态审查回执一致，seed 与首次失败全文快照一致；AST 仅结构图和异常月份图两个函数变化，未整段重写或改金额/同比公式。人工检查终态两张结构图关键文字可辨认，合计分项及异常图密集标签问题仍保留；8 条 warning 不因自动门禁通过而消失。真实首次修复成功率仍未改善。阶段边界历史整理仍待用户确认，未修改生产上下文策略。
 
 **2026-09-22 上下文增长定位（待批准实验，不改生产）：** `_project()` 复用的窗口重建是容量保护。当前 deepseek-v4 已验证窗口为 262144 tokens，输出预留 65536，默认输入 hard cap 196608、0.75 重建阈值约 147456（本地估算，不等于 provider 实际 token 数）；最新续修 provider 输入从 10386 增至 74711，低于该默认阈值，因此不能期待现有容量保护主动消除早期修复历史。工具声明按阶段收敛不等于历史消息已压缩。原始 reasoning item 随保留的完整工具轮次回放，不能任意剪掉 item 内部内容或伪造摘要。

@@ -338,7 +338,9 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
     if forbidden or unsigned:
         raise ReportingError(
             "report_python_source_path_invalid",
-            "脚本使用了未授权路径或目录推导操作。",
+            "源码内使用了未授权路径或目录推导操作；unsignedPaths 是未签发路径，"
+            "forbiddenPathOperations 是禁止的操作。直接使用 task 中签发的完整路径，"
+            "移除目录推导，不要通过 cwd、__file__ 或父目录拼接路径。",
             details={
                 "path": path,
                 "unsignedPaths": sorted(unsigned)[:20],
@@ -680,6 +682,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     "调用时必须直接发送完整 Python 源码文本；语法错误草稿可保存供 LSP 修复。不要发送探索 cell、Bash、"
                     "JSON 对象、JSON 字符串、Markdown 围栏或自然语言。源码应通过 Workspace 路径读取数据，"
                     "不得内嵌 CSV 行、查询结果或大段数据文本。"
+                    "源码中的文件路径必须逐字使用 task 签发路径，不得用 cwd、__file__ 或 os.path.dirname 推导目录。"
                     "输入示例：\n# Python\nimport pandas as pd\nprint(pd.__version__)\n示例结束。"
                     "合法 Python 源码会在本地格式化后保存；返回哈希对应保存内容；若发生格式化，"
                     "savedSource 是实际落盘源码，后续 edit_script 必须以它或 read_script 返回内容为准。"
