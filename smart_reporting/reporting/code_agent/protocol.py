@@ -1003,6 +1003,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     ) -> Iterator[tuple[FunctionCall, int]]:
         """保持 provider 顺序；失败或签发后为剩余调用补齐未执行回执。"""
         stopped = False
+        request_metrics = getattr(self, "_code_request_metrics", [])
+        request_metric = request_metrics[-1] if request_metrics else None
         budget = getattr(self, "_code_budget", None)
         required_delivery_tools = self._required_delivery_tools()
         for call in function_calls:
@@ -1174,6 +1176,20 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             if isinstance(path, str):
                 progress["path"] = path
             code = result.get("code")
+            validation = result.get("outputValidation")
+            failure = validation if isinstance(validation, Mapping) else result
+            if (
+                request_metric is not None
+                and "firstToolFailure" not in request_metric
+                and (failure.get("ok") is False or any(item.tool_call_error for item in completed))
+            ):
+                failure_code = failure.get("code")
+                request_metric["firstToolFailure"] = {
+                    "toolName": tool_name[:128],
+                    "code": failure_code[:128]
+                    if isinstance(failure_code, str) and failure_code
+                    else "tool_error",
+                }
             if isinstance(code, str):
                 progress["code"] = code
             logger.bind(**progress).info(

@@ -452,6 +452,11 @@ def test_coding_metric_sample_replays_bounded_ordered_tool_call_identities_only(
                 ],
                 "toolCallCount": 3,
                 "status": "completed",
+                "firstToolFailure": {
+                    "toolName": "write_script",
+                    "code": "report_python_source_path_invalid",
+                    "details": {"source": "secret-source"},
+                },
             }
         ],
     )
@@ -465,6 +470,60 @@ def test_coding_metric_sample_replays_bounded_ordered_tool_call_identities_only(
     assert request["toolCallCount"] == 3
     assert request["toolNames"] == ["run", "write_script"]
     assert "secret" not in str(request)
+    assert request["firstToolFailure"] == {
+        "toolName": "write_script", "code": "report_python_source_path_invalid",
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrapped):  # noqa: F811
+    from smart_reporting.reporting.agent import create_reporting_code_agent_factory
+    from smart_reporting.reporting.tests.test_reporting_code_agent_trajectories import (
+        _ResponsesClient,
+    )
+    from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
+        SOURCE,
+        ToolkitRuntime,
+        _batch_response,
+        _custom_response,
+    )
+
+    source = '# Python\nimport os\nprint(os.getcwd())\n'
+    if wrapped:
+        source = json.dumps({"data": source})
+    client = _ResponsesClient([
+        _batch_response(
+            _custom_response("write_script", source, 1),
+            _function_response(2, "run_script", {}),
+        ),
+        _batch_response(
+            _custom_response("write_script", "# Python\n" + SOURCE, 3),
+            _function_response(4, "run_script", {}),
+            _function_response(5, "submit_script", {}),
+        ),
+    ])
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test", api_key="test"), name="metric-failure-test",
+    )
+
+    def make_agent(tools):
+        agent = factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    samples = []
+    await ReportingCodeGenerationRunner(
+        make_agent, ToolkitRuntime(), ReportingLspProcessManager(),
+        coding_metrics_recorder=samples.append,
+    ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
+    sample = samples[0]
+    assert sample["rawProtocolCorrect"] is (not wrapped)
+    assert sample["firstScriptFailureCode"] == "report_python_source_path_invalid"
+    assert sample["modelRequestMetrics"][0]["firstToolFailure"] == {
+        "toolName": "write_script", "code": "report_python_source_path_invalid",
+    }
+    assert "firstToolFailure" not in sample["modelRequestMetrics"][1]
 
 
 def test_coding_metric_sample_keeps_bounded_first_run_failure_context():

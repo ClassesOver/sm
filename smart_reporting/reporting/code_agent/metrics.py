@@ -272,6 +272,14 @@ def build_coding_metric_sample(
                 ),
             }
         request_params = bounded_request_params_snapshot(item.get("requestParams"))
+        failure = item.get("firstToolFailure")
+        if isinstance(failure, Mapping):
+            normalized["firstToolFailure"] = {
+                key: failure[key][:128]
+                if isinstance(failure.get(key), str) and failure[key]
+                else "unknown"
+                for key in ("toolName", "code")
+            }
         if request_params is not None:
             normalized["requestParams"] = request_params
         normalized_requests.append(normalized)
