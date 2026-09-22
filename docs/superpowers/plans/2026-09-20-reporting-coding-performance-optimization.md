@@ -28,6 +28,8 @@
 
 **严格同输入 Coding-only 重放：** 使用 candidate planner + Coding 首次回放固化 `/tmp/reporting-r7-analysis-candidate-frozen-20260922`，随后以相同 `codingPayloadSha256=5b6c84e9af2bb302c6b4bac776ed7f06559df72391f9a4e2ef8a17adafa627f1` 和指令 SHA 做 Coding-only 重放。首次样本 Coding `232.166s / 19,074 reasoning tokens`，重放 `456.673s / 37,490 reasoning tokens`；两次均一次 `write_script → run_script → submit_script`、首次运行成功，重放 cached tokens 为 `9,216`。同输入仍出现显著 provider 长尾，说明缓存命中和动态 requirements 不能保证 reasoning 稳定下降；不追加盲目重放，也不把单次收益写成 P95 改善。
 
+**同输入脚本复杂度漂移：** 两次 Coding 均使用相同 payload/instructions，慢样本的首轮 `write_script` 可见工具参数约 `42,165` tokens、`37,419` reasoning，快样本约 `21,660`/`19,021`；慢样本额外生成日期正则解析、更多校验和比较输出。两者都一次通过，说明当前动态 `codingRequirements` 约束业务目标但未约束实现粒度，模型可自行选择复杂实现，导致首轮生成长度和 reasoning 长尾显著漂移。不能通过固定字段或主题消除该漂移；后续若优化，应由 planner 产生可校验的最小实现步骤，并以同输入质量门禁验证。
+
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
 ## B0：当前生产基线（2026-09-22）
