@@ -310,7 +310,9 @@ def profile_csv_dataset(
                         "auto": {"calculate": True},
                         "pearson": {"calculate": True},
                         "spearman": {"calculate": True},
-                        "kendall": {"calculate": True},
+                        # kendall 逐对比较 O(n²) 最慢；数值-数值相关性已由
+                        # pearson/spearman 覆盖，且从未进入 topCorrelations。
+                        "kendall": {"calculate": False},
                         "phi_k": {"calculate": True},
                         "cramers": {"calculate": True},
                     },

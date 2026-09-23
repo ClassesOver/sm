@@ -472,10 +472,12 @@ def test_code_run_raw_protocol_metric_detects_any_normalized_custom_input() -> N
     model._parse_provider_response(_custom_response("write_script", source, 1))
     assert model.code_run_raw_protocol_correct() is True
 
+    # 单层 data 信封：兼容解封执行，不记协议违规，单列 envelope 计数。
     model._parse_provider_response(
         _custom_response("write_script", json.dumps({"data": source}), 2)
     )
-    assert model.code_run_raw_protocol_correct() is False
+    assert model.code_run_raw_protocol_correct() is True
+    assert model.code_run_envelope_normalized_inputs() == 1
 
 
 def test_custom_call_preserves_plain_data_mapping_as_source() -> None:

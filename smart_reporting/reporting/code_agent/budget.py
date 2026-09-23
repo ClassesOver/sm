@@ -13,7 +13,9 @@ class CodeBudget:
     tool_calls: int = 0
     custom_inputs: int = 0
     invalid_custom_inputs: int = 0
+    envelope_normalized_inputs: int = 0
     protocol_violations: int = 0
+    stage_mismatch_rejections: int = 0
     continued: bool = False
 
     def claim_continuation(self, tool_limit: int) -> int | None:
@@ -44,8 +46,19 @@ class CodeBudget:
         if not protocol_correct:
             self.invalid_custom_inputs += 1
 
+    def record_envelope_normalized(self) -> None:
+        # provider 把 free-form 输入包进单层 data 信封：宿主兼容解封执行，不记协议
+        # 违规，单列计数作为 provider 稳定性观测指标（rawProtocolCorrect 只统计真违规）。
+        self.envelope_normalized_inputs += 1
+
     def record_protocol_violation(self) -> None:
         self.protocol_violations += 1
+
+    def record_stage_mismatch_rejection(self) -> None:
+        # 工具在任务集内且 wire 类型正确，只是不在当前交付阶段白名单：这是状态机
+        # 与模型的博弈信号，不是 provider 协议异常；单列计数，不计入
+        # rawProtocolCorrect 的违规口径。
+        self.stage_mismatch_rejections += 1
 
     def raw_protocol_correct(self) -> bool | str:
         if self.custom_inputs == 0 and self.protocol_violations == 0:
@@ -61,6 +74,7 @@ class CodeBudget:
             ("report_code_delivery_budget_reserved", "rejected"),
             ("report_code_batch_stopped", "skipped"),
             ("report_code_visual_review_redundant", "skipped"),
+            ("report_code_stage_tool_unavailable", "rejected"),
         }
 
     @staticmethod

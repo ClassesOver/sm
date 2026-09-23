@@ -177,6 +177,7 @@ def build_coding_metric_sample(
     request_metrics: Iterable[Mapping[str, Any]] | None = None,
     input_components: Mapping[str, Mapping[str, Any]] | None = None,
     raw_protocol_correct: bool | str = "unknown",
+    envelope_normalized_inputs: int | str = "unknown",
     first_script_success: bool | str = "unknown",
     first_script_failure_code: str | None = None,
     first_run_success: bool | str = "unknown",
@@ -354,6 +355,7 @@ def build_coding_metric_sample(
             first_write["reasoningTokens"] if first_write is not None else "unknown"
         ),
         "rawProtocolCorrect": raw_protocol_correct,
+        "envelopeNormalizedInputs": bounded_nonnegative(envelope_normalized_inputs),
         "firstScriptSuccess": first_script_success,
         "firstScriptFailureCode": (
             first_script_failure_code[:128]

@@ -42,6 +42,31 @@ async def test_replay_wall_timeout_is_explicit_and_does_not_retry() -> None:
 
 
 @pytest.mark.anyio
+async def test_replay_heartbeat_reports_current_phase_and_request(monkeypatch) -> None:
+    observed = []
+    stop = asyncio.Event()
+
+    def record(message, *args):
+        observed.append((message, args))
+        stop.set()
+
+    monkeypatch.setattr(replay_visualization_task.logger, "info", record)
+    await replay_visualization_task.emit_replay_heartbeats(
+        stop,
+        lambda: {
+            "phase": "coding",
+            "elapsedSeconds": 30.5,
+            "remainingSeconds": "869.5",
+            "requestIndex": 3,
+            "requestStatus": "started",
+        },
+        interval_seconds=0.001,
+    )
+
+    assert observed[0][1] == ("coding", 30.5, "869.5", 3, "started")
+
+
+@pytest.mark.anyio
 async def test_replay_observed_chat_preserves_started_metric_on_cancellation(
     monkeypatch,
 ) -> None:
@@ -153,6 +178,18 @@ def test_replay_wall_timeout_failure_is_censored() -> None:
 async def test_replay_wall_timeout_preserves_started_request_metric(
     tmp_path, monkeypatch, metrics
 ) -> None:
+    heartbeat_messages = []
+    original_heartbeat = replay_visualization_task.emit_replay_heartbeats
+
+    async def fast_heartbeat(stop, state_reader):
+        await original_heartbeat(stop, state_reader, interval_seconds=0.001)
+
+    def capture_log(message, *args):
+        if message.startswith("report_replay_heartbeat"):
+            heartbeat_messages.append(args)
+
+    monkeypatch.setattr(replay_visualization_task, "emit_replay_heartbeats", fast_heartbeat)
+    monkeypatch.setattr(replay_visualization_task.logger, "info", capture_log)
     source = tmp_path / "source"
     source.mkdir()
     payload_path = tmp_path / "payload.json"
@@ -257,6 +294,7 @@ async def test_replay_wall_timeout_preserves_started_request_metric(
         "reasoningTokens": 20 if metrics is not None else None,
     }]
     assert saved["requestMetrics"][0]["status"] == "started"
+    assert any(args[3:] == (1, "started") for args in heartbeat_messages)
 
 
 def _analysis_benchmark_payload(source, dataset, *, include_decision: bool) -> dict:
@@ -295,6 +333,100 @@ def _analysis_benchmark_payload(source, dataset, *, include_decision: bool) -> d
         },
         "facts": facts,
     }
+
+
+@pytest.mark.anyio
+async def test_replay_runner_setup_failure_cleans_up_heartbeat_and_resources(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    dataset = source / "datasets/current.csv"
+    dataset.parent.mkdir(parents=True)
+    dataset.write_text("income\n100\n", encoding="utf-8")
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(
+        _analysis_benchmark_payload(source, dataset, include_decision=True)
+    ), encoding="utf-8")
+    closed = []
+
+    class Resource:
+        def __init__(self, name):
+            self.name = name
+
+        async def aclose(self):
+            closed.append(self.name)
+
+    def failing_runner(*_args, **_kwargs):
+        raise RuntimeError("runner setup failed")
+
+    monkeypatch.setattr(replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace())
+    monkeypatch.setattr(replay_visualization_task, "build_replay_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_agent_factory", lambda **_kwargs: object())
+    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_mode_runtime", lambda *_args, **_kwargs: Resource("runtime"))
+    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", lambda: Resource("lsp"))
+    monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
+    monkeypatch.setattr(replay_visualization_task, "ReportingCodeGenerationRunner", failing_runner)
+    pending_before = asyncio.all_tasks()
+    output_path = tmp_path / "result.json"
+
+    result = await replay_visualization_task.main(
+        None, payload_path, "analysis", "low", output_path, None, None
+    )
+    pending = asyncio.all_tasks() - pending_before
+    try:
+        assert result == 1
+        assert json.loads(output_path.read_text())["failure"]["message"] == "runner setup failed"
+        assert not pending
+        assert closed == ["runtime", "lsp"]
+    finally:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_replay_disable_flags_mark_coding_model(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    dataset = source / "datasets/current.csv"
+    dataset.parent.mkdir(parents=True)
+    dataset.write_text("income\n100\n", encoding="utf-8")
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(
+        _analysis_benchmark_payload(source, dataset, include_decision=True)
+    ), encoding="utf-8")
+    sentinel = SimpleNamespace()
+    closed = []
+
+    class Resource:
+        def __init__(self, name):
+            self.name = name
+
+        async def aclose(self):
+            closed.append(self.name)
+
+    def fake_factory(**kwargs):
+        kwargs["model_created"](sentinel)
+        return object()
+
+    def failing_runner(*_args, **_kwargs):
+        raise RuntimeError("runner setup failed")
+
+    monkeypatch.setattr(replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace())
+    monkeypatch.setattr(replay_visualization_task, "build_replay_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_agent_factory", fake_factory)
+    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_mode_runtime", lambda *_args, **_kwargs: Resource("runtime"))
+    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", lambda: Resource("lsp"))
+    monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
+    monkeypatch.setattr(replay_visualization_task, "ReportingCodeGenerationRunner", failing_runner)
+
+    result = await replay_visualization_task.main(
+        None, payload_path, "analysis", "low", tmp_path / "result.json", None, None,
+        disable_history_summary=True, disable_metadata_budget=True,
+    )
+
+    assert result == 1
+    assert sentinel._code_disable_history_summary is True
+    assert sentinel._code_disable_metadata_budget is True
 
 
 @pytest.mark.anyio

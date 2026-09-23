@@ -17,6 +17,12 @@ from agno.tools.function import Function, FunctionCall
 from loguru import logger
 from openinference.instrumentation import using_metadata
 
+from ....context_management import (
+    CODING_COMPACTION_INPUT_TOKEN_GATE,
+    CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD,
+    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
+    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+)
 from ...code_agent.context import (
     ExecutionReceipt,
     ReportingCodingTaskContext,
@@ -43,6 +49,56 @@ ANALYSIS_TOOL_CALL_LIMIT = 30
 VISUALIZATION_TOOL_CALL_BASE = 29
 MAX_TOOL_CALL_LIMIT = 140
 REPORTING_CODING_TASK_CONTEXT_METADATA_KEY = "reportingCodingTaskContext"
+# 同一 run 内压缩重连的上限；请求数同时受模型预算 request_limit 约束。
+MAX_RUN_COMPACTION_CONTINUATIONS = 2
+# 与投影层请求前门禁对齐：窗口内任一请求输入达到该阈值即视为历史增长越界。
+RUN_COMPACTION_INPUT_TOKEN_THRESHOLD = min(
+    int(
+        (TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE)
+        * CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD
+    ),
+    CODING_COMPACTION_INPUT_TOKEN_GATE,
+)
+
+
+def _request_metric_tokens(entry: Any) -> int | None:
+    if not isinstance(entry, Mapping):
+        return None
+    value = entry.get("inputTokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _run_compaction_signal(request_metrics: list[Any]) -> tuple[bool, int | str]:
+    """窗口内压缩依据：投影层压缩标记或任一请求输入超过 Coding 专用阈值。"""
+
+    triggered = False
+    tokens: int | str = "unknown"
+    for entry in request_metrics:
+        if not isinstance(entry, Mapping):
+            continue
+        if entry.get("compactionTriggered") is True or entry.get("compaction_triggered") is True:
+            triggered = True
+        value = _request_metric_tokens(entry)
+        if value is not None and value >= RUN_COMPACTION_INPUT_TOKEN_THRESHOLD:
+            triggered = True
+            tokens = value if tokens == "unknown" else max(tokens, value)
+    return triggered, tokens
+
+
+def _observed_truncated_calls(request_metrics: list[Any]) -> int:
+    """消费投影层暴露的截断计数；协议层未暴露时保持 0，不凭空捏造。"""
+
+    total = 0
+    for entry in request_metrics:
+        if not isinstance(entry, Mapping):
+            continue
+        for key in ("truncatedCallCount", "truncated_calls"):
+            value = entry.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                total += value
+    return total
 
 
 def _metric_failure_code(
@@ -282,6 +338,14 @@ class ReportingCodeGenerationRunner:
             terminal_failure_code: str | None = None
             host_tool_results = 0
             compact_continuation_applied = False
+            run_compaction: dict[str, Any] = {
+                "windowId": 0,
+                "triggered": False,
+                "beforeTokens": "unknown",
+                "afterTokens": "unknown",
+                "retainedCallCount": 0,
+                "truncatedCallCount": 0,
+            }
 
             def record_coding_metrics() -> None:
                 nonlocal metric_recorded
@@ -349,6 +413,11 @@ class ReportingCodeGenerationRunner:
                         if callable(raw_protocol_reader)
                         else "unknown"
                     ),
+                    envelope_normalized_inputs=(
+                        envelope_reader()
+                        if callable(envelope_reader := getattr(model, "code_run_envelope_normalized_inputs", None))
+                        else "unknown"
+                    ),
                     first_script_success=getattr(
                         toolkit, "first_script_success", "unknown"
                     ),
@@ -379,6 +448,12 @@ class ReportingCodeGenerationRunner:
                 )
                 sample["compactContinuationEnabled"] = self.compact_continuation
                 sample["compactContinuationApplied"] = compact_continuation_applied
+                sample["compactionTriggered"] = run_compaction["triggered"]
+                sample["compactionBeforeTokens"] = run_compaction["beforeTokens"]
+                sample["compactionAfterTokens"] = run_compaction["afterTokens"]
+                sample["compactionWindowId"] = run_compaction["windowId"]
+                sample["retainedCallCount"] = run_compaction["retainedCallCount"]
+                sample["truncatedCallCount"] = run_compaction["truncatedCallCount"]
                 logger.info(
                     "report_code_coding_metrics task_id={} sample={}",
                     task_context.task_id,
@@ -473,46 +548,57 @@ class ReportingCodeGenerationRunner:
                     )
                 model = getattr(agent, "model", None)
                 request_count_reader = getattr(model, "code_run_request_count", None)
+                tool_count_reader = getattr(model, "code_run_tool_count", None)
                 request_count = 0
                 run_output = None
-                for attempt in range(2):
+                attempt = 0
+                compact_reconnect_summary: dict[str, Any] | None = None
+                while True:
                     previous_requests = request_count
                     previous_output = run_output
                     run_output = None
+                    window_request_metrics: list[Any] = []
                     try:
                         if attempt == 0:
                             with self._trace_task_context(task_context):
                                 run_output = await agent.arun(
                                     self._prompt(payload), run_context=run_context
                                 )
+                        elif self.compact_continuation:
+                            # 新 run 不载入历史；复用模型以保留任务预算和逐请求指标。
+                            compact_continuation_applied = True
+                            delivery = toolkit.delivery_state()
+                            continuation_payload: dict[str, Any] = {
+                                "instruction": "继续当前交付阶段，只处理尚未完成的动作并调用 submit_script。",
+                                "task": task_payload,
+                                "facts": self._repair_task_facts(task_facts),
+                                "diagnostic": payload["diagnostic"],
+                                "delivery": delivery,
+                            }
+                            if compact_reconnect_summary is not None:
+                                continuation_payload["instruction"] = (
+                                    "旧工具历史已压缩为摘要；只依据任务边界、最新 diagnostic、"
+                                    "当前源码 SHA、压缩摘要与交付状态继续未完成的动作，"
+                                    "不要重复已完成的调用，完成后调用 submit_script。"
+                                )
+                                continuation_payload["compaction"] = compact_reconnect_summary
+                            compact_reconnect_summary = None
+                            with self._trace_task_context(task_context):
+                                run_output = await agent.arun(
+                                    self._prompt(continuation_payload),
+                                    run_context=run_context,
+                                    add_history_to_context=False,
+                                )
                         else:
-                            if self.compact_continuation:
-                                # 新 run 不载入历史；复用模型以保留任务预算和逐请求指标。
-                                compact_continuation_applied = True
-                                with self._trace_task_context(task_context):
-                                    run_output = await agent.arun(
-                                        self._prompt(
-                                            {
-                                                "instruction": "继续当前交付阶段，只处理尚未完成的动作并调用 submit_script。",
-                                                "task": task_payload,
-                                                "facts": self._repair_task_facts(task_facts),
-                                                "diagnostic": payload["diagnostic"],
-                                                "delivery": toolkit.delivery_state(),
-                                            }
-                                        ),
-                                        run_context=run_context,
-                                        add_history_to_context=False,
-                                    )
-                            else:
-                                with self._trace_task_context(task_context):
-                                    run_output = await agent.acontinue_run(
-                                        run_response=previous_output,
-                                        input=self._prompt({
-                                            "instruction": "任务尚未提交，请根据当前交付状态完成剩余步骤并调用 submit_script。",
-                                            "delivery": toolkit.delivery_state(),
-                                        }),
-                                        run_context=run_context,
-                                    )
+                            with self._trace_task_context(task_context):
+                                run_output = await agent.acontinue_run(
+                                    run_response=previous_output,
+                                    input=self._prompt({
+                                        "instruction": "任务尚未提交，请根据当前交付状态完成剩余步骤并调用 submit_script。",
+                                        "delivery": toolkit.delivery_state(),
+                                    }),
+                                    run_context=run_context,
+                                )
                     finally:
                         request_count = (
                             request_count_reader() if callable(request_count_reader) else 0
@@ -528,6 +614,7 @@ class ReportingCodeGenerationRunner:
                                 if isinstance(all_request_metrics, list)
                                 else []
                             )
+                            window_request_metrics = list(request_metrics)
                             if run_output is None:
                                 recordable_output = SimpleNamespace(metrics=None)
                             try:
@@ -541,6 +628,12 @@ class ReportingCodeGenerationRunner:
                                     metrics=getattr(run_output, "metrics", None),
                                     _reporting_request_metrics=request_metrics,
                                 )
+                        if run_compaction["triggered"] and run_compaction["afterTokens"] == "unknown":
+                            for entry in window_request_metrics:
+                                observed = _request_metric_tokens(entry)
+                                if observed is not None:
+                                    run_compaction["afterTokens"] = observed
+                                    break
                         if self.model_metrics_recorder is not None:
                             self.model_metrics_recorder(
                                 recordable_output, request_count - previous_requests
@@ -565,26 +658,96 @@ class ReportingCodeGenerationRunner:
                     if isinstance(toolkit.terminal_failure, Exception):
                         raise toolkit.terminal_failure
                     if (
-                        attempt > 0
-                        or toolkit.submitted_receipt is not None
+                        toolkit.submitted_receipt is not None
                         or not isinstance(agent, Agent)
                         or getattr(run_output, "status", None) != RunStatus.completed
                         or getattr(run_output, "active_requirements", ())
                     ):
                         break
-                    remaining = agent.model.claim_delivery_continuation(model_tool_limit)
-                    if remaining is None:
+                    compaction_signal = False
+                    compaction_tokens: int | str = "unknown"
+                    if self.compact_continuation:
+                        compaction_signal, compaction_tokens = _run_compaction_signal(
+                            window_request_metrics
+                        )
+                    if attempt > 0 and not compaction_signal:
+                        # 与既有契约一致：无压缩信号时交付补提交只续一次。
                         break
+                    if (
+                        compaction_signal
+                        and run_compaction["windowId"] >= MAX_RUN_COMPACTION_CONTINUATIONS
+                    ):
+                        break
+                    if attempt == 0:
+                        remaining = agent.model.claim_delivery_continuation(model_tool_limit)
+                        if remaining is None:
+                            break
+                    else:
+                        # 一次性交付额度已消费；压缩重连只复用同一预算的剩余工具数。
+                        # 请求预算同样要在重连前检查：余额不足时干净收尾，不能等到
+                        # arun 内部才抛出 report_code_model_request_limit。
+                        used_tools = (
+                            tool_count_reader() if callable(tool_count_reader) else model_tool_limit
+                        )
+                        remaining = model_tool_limit - used_tools
+                        if remaining <= 0:
+                            break
+                        current_request = getattr(model, "_current_code_request", None)
+                        if callable(current_request):
+                            _, request_limit = current_request()
+                            used_requests = (
+                                request_count_reader() if callable(request_count_reader) else 0
+                            )
+                            if used_requests >= request_limit:
+                                break
                     agent.tool_call_limit = remaining
                     await toolkit.refresh_delivery_state()
-                    logger.info(
-                        "report_code_delivery_continuation task_id={} remaining_tools={} model_requests={}",
-                        task_context.task_id, remaining, request_count,
-                    )
+                    if compaction_signal:
+                        run_compaction["windowId"] += 1
+                        run_compaction["triggered"] = True
+                        if compaction_tokens != "unknown":
+                            run_compaction["beforeTokens"] = compaction_tokens
+                        run_compaction["afterTokens"] = "unknown"
+                        retained = toolkit.tool_call_metrics()
+                        run_compaction["retainedCallCount"] = sum(
+                            value
+                            for value in retained.values()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        )
+                        run_compaction["truncatedCallCount"] += _observed_truncated_calls(
+                            window_request_metrics
+                        )
+                        delivery = toolkit.delivery_state()
+                        script = delivery.get("script")
+                        compact_reconnect_summary = {
+                            "windowId": run_compaction["windowId"],
+                            "reason": "custom_history_input_token_threshold",
+                            "beforeTokens": run_compaction["beforeTokens"],
+                            "sourceSha256": (
+                                script.get("sha256") if isinstance(script, Mapping) else None
+                            ),
+                            "summarizedToolCalls": retained,
+                            "completedToolCalls": getattr(toolkit, "completed_tool_calls", None),
+                            "nextTools": delivery.get("nextTools"),
+                        }
+                        logger.info(
+                            "report_code_run_compaction_reconnect task_id={} window_id={} "
+                            "before_tokens={} retained_calls={} remaining_tools={}",
+                            task_context.task_id,
+                            run_compaction["windowId"],
+                            run_compaction["beforeTokens"],
+                            run_compaction["retainedCallCount"],
+                            remaining,
+                        )
+                    else:
+                        logger.info(
+                            "report_code_delivery_continuation task_id={} remaining_tools={} model_requests={}",
+                            task_context.task_id, remaining, request_count,
+                        )
+                    attempt += 1
                 receipt = toolkit.submitted_receipt
                 if receipt is None:
                     details = await toolkit.submission_diagnostic()
-                    tool_count_reader = getattr(model, "code_run_tool_count", None)
                     tool_results = tool_count_reader() if callable(tool_count_reader) else sum(
                         message.role == "tool" for message in (getattr(run_output, "messages", None) or ())
                     )
@@ -596,6 +759,12 @@ class ReportingCodeGenerationRunner:
                         "providerToolResultCount": tool_results,
                         "hostToolResultCount": host_tool_results,
                         "modelRequests": request_count,
+                        "compactionTriggered": run_compaction["triggered"],
+                        "compactionBeforeTokens": run_compaction["beforeTokens"],
+                        "compactionAfterTokens": run_compaction["afterTokens"],
+                        "compactionWindowId": run_compaction["windowId"],
+                        "retainedCallCount": run_compaction["retainedCallCount"],
+                        "truncatedCallCount": run_compaction["truncatedCallCount"],
                         "terminationReason": (
                             "tool_call_limit_reached"
                             if tool_results >= model_tool_limit

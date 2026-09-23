@@ -404,7 +404,12 @@ def test_legacy_visualization_adapter_rejects_unfrozen_chart_identity() -> None:
         adapt_legacy_visualization_plan(_legacy_visualization_plan(), {})
 
 
-def test_adapted_legacy_visualization_still_runs_full_binding_validation() -> None:
+def test_adapted_legacy_visualization_binding_mismatch_warns_without_raising() -> None:
+    # 2026-09-23 契约变更（用户拍板）：图表绑定与签发事实描述的语义偏差从
+    # report_phase_contract_invalid 硬错误改为 loguru 软告警（对齐 AGENTS.md
+    # "语义业务校验只需要软告警"）；文件访问授权仍由执行层 AST 字面路径白名单硬校验。
+    from loguru import logger
+
     adapted = adapt_legacy_visualization_plan(
         _legacy_visualization_plan(),
         {
@@ -423,7 +428,9 @@ def test_adapted_legacy_visualization_still_runs_full_binding_validation() -> No
         },
     )
 
-    with pytest.raises(ReportingError, match="数据绑定"):
+    records = []
+    sink = logger.add(lambda message: records.append(message.record), level="WARNING")
+    try:
         _validate_visualization_plan_bindings(
             adapted,
             {
@@ -441,6 +448,15 @@ def test_adapted_legacy_visualization_still_runs_full_binding_validation() -> No
                 ]
             },
         )
+    finally:
+        logger.remove(sink)
+
+    events = [r for r in records if "report_visualization_binding_mismatch" in r["message"]]
+    assert len(events) == 1
+    assert events[0]["level"].name == "WARNING"
+    details = events[0]["message"]
+    assert "facts/not-authorized.json" in details
+    assert "chart-1" in details
 
 
 def test_frozen_planner_coding_bundle_keeps_variant_outside_input(tmp_path) -> None:

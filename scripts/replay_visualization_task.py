@@ -24,6 +24,7 @@ import psycopg
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.tools.workspace import Workspace
+from loguru import logger
 from pydantic import ValidationError
 
 from smart_reporting.integrations.model_config import (
@@ -163,6 +164,29 @@ class ReplayWallTimeout(TimeoutError):
     def __init__(self, seconds: float) -> None:
         self.seconds = seconds
         super().__init__(f"replay wall timeout after {seconds:g}s")
+
+
+async def emit_replay_heartbeats(
+    stop: asyncio.Event,
+    state_reader,
+    *,
+    interval_seconds: float = 15.0,
+) -> None:
+    """回放等待期间输出阶段和最新 provider 请求状态。"""
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+        except TimeoutError:
+            state = state_reader()
+            logger.info(
+                "report_replay_heartbeat phase={} elapsed_seconds={:.1f} remaining_seconds={} request_index={} request_status={}",
+                state["phase"],
+                state["elapsedSeconds"],
+                state["remainingSeconds"],
+                state["requestIndex"],
+                state["requestStatus"],
+            )
 
 
 async def run_with_wall_timeout(awaitable, *, seconds: float | None):
@@ -344,7 +368,9 @@ def build_replay_model(
 def replay_model_request_metrics(model: Any) -> list[dict[str, Any]]:
     """读取冻结回放模型的逐 provider 请求指标。"""
 
-    reader = getattr(model, "replay_request_metrics", None)
+    reader = getattr(model, "code_run_request_metrics", None)
+    if not callable(reader):
+        reader = getattr(model, "replay_request_metrics", None)
     return reader() if callable(reader) else []
 
 
@@ -1052,6 +1078,8 @@ async def main(
     wall_timeout_seconds: float | None = None,
     compact_continuation: bool = False,
     freeze_coding_dir: Path | None = None,
+    disable_history_summary: bool = False,
+    disable_metadata_budget: bool = False,
 ) -> int:
     configure_application_logging(debug=False)
     if benchmark_extract_dir is not None:
@@ -1264,15 +1292,43 @@ async def main(
                 benchmark_model_config=model_config,
                 benchmark_stage="planner",
             )
-            payload, _, _ = await run_with_wall_timeout(
-                run_frozen_benchmark_planner(
-                    benchmark_bundle_dir.resolve(),
-                    variant=benchmark_variant,
-                    model=planner_model,
-                    metrics_sink=planner_metrics,
-                ),
-                seconds=remaining_wall_timeout(),
+            planner_heartbeat_stop = asyncio.Event()
+
+            def planner_heartbeat_state() -> dict[str, Any]:
+                request_metrics = replay_model_request_metrics(planner_model)
+                latest = request_metrics[-1] if request_metrics else {}
+                remaining = (
+                    max(0.0, wall_timeout_seconds - (perf_counter() - started))
+                    if wall_timeout_seconds is not None
+                    else None
+                )
+                return {
+                    "phase": phase,
+                    "elapsedSeconds": perf_counter() - started,
+                    "remainingSeconds": (
+                        f"{remaining:.1f}" if remaining is not None else "unbounded"
+                    ),
+                    "requestIndex": latest.get("requestIndex", "unknown"),
+                    "requestStatus": latest.get("status", "idle"),
+                }
+
+            planner_heartbeat_task = asyncio.create_task(
+                emit_replay_heartbeats(planner_heartbeat_stop, planner_heartbeat_state)
             )
+            try:
+                payload, _, _ = await run_with_wall_timeout(
+                    run_frozen_benchmark_planner(
+                        benchmark_bundle_dir.resolve(),
+                        variant=benchmark_variant,
+                        model=planner_model,
+                        metrics_sink=planner_metrics,
+                    ),
+                    seconds=remaining_wall_timeout(),
+                )
+            finally:
+                planner_heartbeat_stop.set()
+                planner_heartbeat_task.cancel()
+                await asyncio.gather(planner_heartbeat_task, return_exceptions=True)
             payload = normalize_replay_payload(payload)
         payload["task"]["workspace_root"] = str(root)
         if freeze_coding_dir is not None:
@@ -1297,6 +1353,11 @@ async def main(
         def capture_coding_model(created_model) -> None:
             nonlocal coding_model
             coding_model = created_model
+            # benchmark 专用开关：只作用于冻结对照，不改变生产默认。
+            if disable_history_summary:
+                created_model._code_disable_history_summary = True
+            if disable_metadata_budget:
+                created_model._code_disable_metadata_budget = True
 
         factory = create_reporting_code_agent_factory(
             model=model,
@@ -1312,52 +1373,76 @@ async def main(
             root, analysis_concurrency=1, section_concurrency=1, timeout=120
         )
         lsp = ReportingLspProcessManager()
+        heartbeat_stop = asyncio.Event()
+
+        def heartbeat_state() -> dict[str, Any]:
+            metrics_source = coding_model or model
+            request_metrics = replay_model_request_metrics(metrics_source)
+            latest = request_metrics[-1] if request_metrics else {}
+            remaining = (
+                max(0.0, wall_timeout_seconds - (perf_counter() - started))
+                if wall_timeout_seconds is not None
+                else None
+            )
+            return {
+                "phase": phase,
+                "elapsedSeconds": perf_counter() - started,
+                "remainingSeconds": (
+                    f"{remaining:.1f}" if remaining is not None else "unbounded"
+                ),
+                "requestIndex": latest.get("requestIndex", "unknown"),
+                "requestStatus": latest.get("status", "idle"),
+            }
+
+        heartbeat_task = asyncio.create_task(
+            emit_replay_heartbeats(heartbeat_stop, heartbeat_state)
+        )
         model_metrics = []
         coding_metrics = []
-        runner = ReportingCodeGenerationRunner(
-            factory,
-            runtime,
-            lsp,
-            vision_reviewer=ReportVisionReviewer(settings, workspace),
-            model_metrics_recorder=lambda output, requests: model_metrics.append({
-                "requests": requests,
-                "inputTokens": getattr(output.metrics, "input_tokens", None),
-                "outputTokens": getattr(output.metrics, "output_tokens", None),
-                "reasoningTokens": getattr(output.metrics, "reasoning_tokens", None),
-            }),
-            coding_metrics_recorder=coding_metrics.append,
-            failure_artifact_recorder=record_failure_artifact,
-            compact_continuation=compact_continuation,
-        )
-        output_preflight = None
-        if task.task_kind == "analysis":
-            current_analysis = payload["facts"].get("currentAnalysis")
-            evidence_path = str(payload["facts"].get("evidencePath") or "")
-
-            async def validate_analysis_output(
-                receipt: ExecutionReceipt,
-            ) -> Mapping[str, object] | None:
-                output = next(
-                    (item for item in receipt.output_files if item.path == evidence_path),
-                    None,
-                )
-                if output is None or not 0 < output.size <= MAX_SUPPLEMENTAL_EVIDENCE_BYTES:
-                    return {
-                        "code": "report_analysis_evidence_too_large",
-                        "message": "补充 evidence 缺失、超过 10 MiB 安全上限或大小无效。",
-                    }
-                content = await workspace.read_limited_regular_file(
-                    task.task_id,
-                    output.path,
-                    max_bytes=MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
-                )
-                return analysis_evidence_diagnostic(
-                    content,
-                    current_analysis if isinstance(current_analysis, Mapping) else {},
-                )
-
-            output_preflight = validate_analysis_output
         try:
+            runner = ReportingCodeGenerationRunner(
+                factory,
+                runtime,
+                lsp,
+                vision_reviewer=ReportVisionReviewer(settings, workspace),
+                model_metrics_recorder=lambda output, requests: model_metrics.append({
+                    "requests": requests,
+                    "inputTokens": getattr(output.metrics, "input_tokens", None),
+                    "outputTokens": getattr(output.metrics, "output_tokens", None),
+                    "reasoningTokens": getattr(output.metrics, "reasoning_tokens", None),
+                }),
+                coding_metrics_recorder=coding_metrics.append,
+                failure_artifact_recorder=record_failure_artifact,
+                compact_continuation=compact_continuation,
+            )
+            output_preflight = None
+            if task.task_kind == "analysis":
+                current_analysis = payload["facts"].get("currentAnalysis")
+                evidence_path = str(payload["facts"].get("evidencePath") or "")
+
+                async def validate_analysis_output(
+                    receipt: ExecutionReceipt,
+                ) -> Mapping[str, object] | None:
+                    output = next(
+                        (item for item in receipt.output_files if item.path == evidence_path),
+                        None,
+                    )
+                    if output is None or not 0 < output.size <= MAX_SUPPLEMENTAL_EVIDENCE_BYTES:
+                        return {
+                            "code": "report_analysis_evidence_too_large",
+                            "message": "补充 evidence 缺失、超过 10 MiB 安全上限或大小无效。",
+                        }
+                    content = await workspace.read_limited_regular_file(
+                        task.task_id,
+                        output.path,
+                        max_bytes=MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
+                    )
+                    return analysis_evidence_diagnostic(
+                        content,
+                        current_analysis if isinstance(current_analysis, Mapping) else {},
+                    )
+
+                output_preflight = validate_analysis_output
             phase = "coding"
             result = await run_with_wall_timeout(
                 runner.run(
@@ -1376,6 +1461,8 @@ async def main(
             result_payload = {
                 "status": "passed",
                 "compactContinuation": compact_continuation,
+                "historySummaryEnabled": not disable_history_summary,
+                "metadataBudgetEnabled": not disable_metadata_budget,
                 "codingPayloadSha256": hashlib.sha256(json.dumps(
                     {**payload, "task": {**payload["task"], "workspace_root": "workspace"}},
                     ensure_ascii=False, sort_keys=True,
@@ -1413,14 +1500,9 @@ async def main(
             write_replay_result(output_path, result_payload)
             return 0
         except Exception as error:
-            request_metrics_reader = getattr(
-                coding_model, "code_run_request_metrics", None
-            )
             coding_request_metrics = replay_model_request_metrics(
                 coding_model or model
             )
-            if not coding_request_metrics and callable(request_metrics_reader):
-                coding_request_metrics = request_metrics_reader()
             failure_payload = build_replay_failure(
                 error,
                 seconds=round(perf_counter() - started, 3),
@@ -1445,9 +1527,14 @@ async def main(
                 failure_payload["variant"] = benchmark_variant.value
             failure_payload["firstRunFailureArtifact"] = first_failure_artifact or "unknown"
             failure_payload["compactContinuation"] = compact_continuation
+            failure_payload["historySummaryEnabled"] = not disable_history_summary
+            failure_payload["metadataBudgetEnabled"] = not disable_metadata_budget
             write_replay_result(output_path, failure_payload)
             return 1
         finally:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
             await runtime.aclose()
             await lsp.aclose()
     except Exception as error:
@@ -1473,6 +1560,8 @@ async def main(
             failure_payload["benchmarkMode"] = coding_only_link.benchmark_mode
             failure_payload["variant"] = benchmark_variant.value
         failure_payload["compactContinuation"] = compact_continuation
+        failure_payload["historySummaryEnabled"] = not disable_history_summary
+        failure_payload["metadataBudgetEnabled"] = not disable_metadata_budget
         write_replay_result(output_path, failure_payload)
         return 1
 
@@ -1507,6 +1596,16 @@ if __name__ == "__main__":
         "--compact-continuation",
         action="store_true",
         help="benchmark-only：模型提前结束且未提交时，新 run 省略上一轮 history。",
+    )
+    parser.add_argument(
+        "--disable-history-summary",
+        action="store_true",
+        help="benchmark-only：关闭请求前确定性历史摘要门禁（构造当前基线组）。",
+    )
+    parser.add_argument(
+        "--disable-metadata-budget",
+        action="store_true",
+        help="benchmark-only：关闭 8 KiB/32 KiB 工具元数据预算（构造仅摘要组）。",
     )
     parser.add_argument("--variant", choices=("legacy", "candidate"))
     parser.add_argument(
@@ -1598,4 +1697,6 @@ if __name__ == "__main__":
         args.wall_timeout_seconds,
         args.compact_continuation,
         args.freeze_coding,
+        disable_history_summary=args.disable_history_summary,
+        disable_metadata_budget=args.disable_metadata_budget,
     )))

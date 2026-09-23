@@ -16,6 +16,7 @@ from loguru import logger
 
 import smart_reporting.context_management as context_management_module
 from smart_reporting.context_management import (
+    CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES,
     COMPRESSIBLE_HISTORY_TOOLS,
     SKILL_PRUNE_MIN_CHARS,
     TASK_EXECUTION_CHECKPOINT_MAX_BYTES,
@@ -577,6 +578,28 @@ def test_complete_rounds_drops_round_missing_any_call_coverage():
     result = Message(role="tool", tool_call_id="call-a", content="ok")
 
     assert TaskExecutionContextProjector._complete_rounds([assistant, result]) == []
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_rebase_keeps_protected_or_incomplete_batch_before_recent_rounds(incomplete):
+    assistant = Message(role="assistant", tool_calls=[
+        {"id": "item-a", "call_id": "call-a", "function": {"name": "read_script", "arguments": "{}"}},
+        {"id": "item-b", "call_id": "call-b", "function": {"name": "run", "arguments": "{}"}},
+    ], provider_data={"reasoning_output": {"id": "rs-protected", "type": "reasoning", "summary": []}})
+    batch = [assistant, Message(role="tool", tool_call_id="call-a", content="current source")]
+    if not incomplete:
+        batch.append(Message(role="tool", tool_call_id="item-b", content="failed"))
+    messages = [Message(role="user", content="task"), *batch,
+                Message(role="assistant", content="x" * 4000),
+                Message(role="assistant", content="recent")]
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=2000,
+        protected_call_ids=frozenset() if incomplete else frozenset({"call-a"}),
+    )
+    retained = [message for message in projected if message.tool_calls or message.role == "tool"]
+    assert [message.model_dump() for message in retained] == [message.model_dump() for message in batch]
+    assert metrics["window_rebased"] is True
+    assert messages[1] is assistant
 
 
 def test_coding_context_projector_rebases_1000_rounds_without_mutating_canonical_history():
@@ -1299,6 +1322,383 @@ def test_coding_context_projector_tracks_old_freeform_custom_history_without_rew
     assert messages[0].tool_calls[0]["provider_data"]["raw_input"] == first_source
 
 
+def _coding_custom_call(call_id: str, name: str, raw_input: str) -> dict[str, Any]:
+    argument = {"write_script": "source", "run": "code", "edit_script": "patch"}[name]
+    return {
+        "id": f"item-{call_id}",
+        "call_id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps({argument: raw_input}, ensure_ascii=False),
+        },
+        "provider_data": {"reporting_wire_type": "custom", "raw_input": raw_input},
+    }
+
+
+def _coding_custom_round(
+    call_id: str, name: str, raw_input: str, result: dict[str, Any] | None
+) -> list[Message]:
+    round_messages = [Message(role="assistant", tool_calls=[_coding_custom_call(call_id, name, raw_input)])]
+    if result is not None:
+        round_messages.append(
+            Message(
+                role="tool",
+                tool_name=name,
+                tool_call_id=call_id,
+                content=json.dumps(result, ensure_ascii=False),
+            )
+        )
+    return round_messages
+
+
+def test_coding_custom_history_compacts_old_completed_calls_at_metadata_budget():
+    old_source = "# Python\n" + ("print('old')\n" * 4000)
+    current_code = "# Python\nprint('current')\n"
+    reasoning = {"id": "rs-1", "type": "reasoning", "summary": [], "encrypted_content": ""}
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round(
+            "call-old",
+            "write_script",
+            old_source,
+            {"ok": True, "sourceSha256": "a" * 64, "stdout": "x" * 500},
+        ),
+        *_coding_custom_round("call-current", "run", current_code, {"ok": True, "exitCode": 0}),
+    ]
+    messages[1].provider_data = {"reasoning_output": reasoning}
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] == 1
+    assert metrics["window_rebased"] is False
+    assert metrics["bytes_before"] > len(old_source.encode())
+    assert 0 < metrics["bytes_after"] < metrics["bytes_before"]
+    assert metrics["metadata_bytes"] == metrics["bytes_after"]
+    assert metrics["metadata_bytes"] <= CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+    assert metrics["compaction_tokens_before"] > metrics["compaction_tokens_after"]
+
+    old_call = projected[1].tool_calls[0]
+    summary = json.loads(old_call["provider_data"]["raw_input"])
+    assert summary == {
+        "marker": "CODING_CUSTOM_HISTORY_SUMMARY",
+        "tool": "write_script",
+        "status": "completed",
+        "code": None,
+        "sourceSha256": "a" * 64,
+        "patchSha256": None,
+        "bytes": len(old_source.encode()),
+        "callId": "call-old",
+        "nextTools": ["run"],
+    }
+    assert json.loads(old_call["function"]["arguments"]) == {
+        "source": old_call["provider_data"]["raw_input"]
+    }
+    assert old_call["id"] == "item-call-old"
+    assert old_call["call_id"] == "call-old"
+    receipt = json.loads(projected[2].content)
+    assert receipt["marker"] == "CODING_CUSTOM_HISTORY_RESULT"
+    assert receipt["status"] == "completed"
+    assert "stdout" not in receipt
+    assert projected[3].tool_calls[0]["provider_data"]["raw_input"] == current_code
+    # canonical 历史与 reasoning item 不变
+    assert messages[1].tool_calls[0]["provider_data"]["raw_input"] == old_source
+    assert messages[1].provider_data == {"reasoning_output": reasoning}
+    assert projected[1].provider_data == {"reasoning_output": reasoning}
+
+
+def test_coding_custom_history_token_gate_triggers_compaction():
+    messages = [Message(role="user", content="task")]
+    edit_patch = "*** Begin Edit\n*** Update\nold\nnew\n"
+    for call_id, name, raw in [
+        ("call-write", "write_script", "# Python\nx = 1\n"),
+        ("call-edit", "edit_script", edit_patch),
+    ]:
+        messages.extend(
+            _coding_custom_round(call_id, name, raw, {"ok": True, "stdout": "y" * 2000})
+        )
+    messages.extend(
+        _coding_custom_round("call-run", "run", "# Python\nprint(x)\n", {"ok": True})
+    )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=1000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] == 2
+    assert metrics["window_rebased"] is False
+    edit_call = projected[3].tool_calls[0]
+    edit_summary = json.loads(edit_call["provider_data"]["raw_input"])
+    assert edit_summary["tool"] == "edit_script"
+    assert edit_summary["patchSha256"] == hashlib.sha256(edit_patch.encode()).hexdigest()
+    assert edit_summary["nextTools"] == ["run"]
+    assert projected[5].tool_calls[0]["provider_data"]["raw_input"] == "# Python\nprint(x)\n"
+
+
+def test_coding_custom_history_respects_protected_call_ids():
+    old_source = "# Python\n" + ("print('old')\n" * 4000)
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round("call-old", "write_script", old_source, {"ok": True}),
+        *_coding_custom_round("call-current", "run", "# Python\nprint(1)\n", {"ok": True}),
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages,
+        model=CountingModel(),
+        hard_cap=500_000,
+        protected_call_ids=frozenset({"call-old"}),
+    )
+
+    assert metrics["history_candidate"] is False
+    assert metrics["compaction_triggered"] is False
+    assert metrics["compacted_calls"] == 0
+    assert projected[1].tool_calls[0]["provider_data"]["raw_input"] == old_source
+
+
+def test_coding_custom_history_compacts_resolved_failure_with_status_and_code():
+    old_source = "# Python\n" + ("print('old')\n" * 4000)
+    failed_code = "# Python\nraise SystemExit(1)\n"
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round("call-write", "write_script", old_source, {"ok": True}),
+        *_coding_custom_round(
+            "call-failed",
+            "run",
+            failed_code,
+            {"ok": False, "exitCode": 1, "stderr": "boom" * 500},
+        ),
+        *_coding_custom_round("call-current", "run", "# Python\nprint(1)\n", {"ok": True}),
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000
+    )
+
+    assert metrics["compacted_calls"] == 2
+    failed_summary = json.loads(projected[3].tool_calls[0]["provider_data"]["raw_input"])
+    assert failed_summary["tool"] == "run"
+    assert failed_summary["status"] == "failed"
+    assert failed_summary["code"] == 1
+    assert failed_summary["sourceSha256"] == hashlib.sha256(failed_code.encode()).hexdigest()
+    failed_receipt = json.loads(projected[4].content)
+    assert failed_receipt["ok"] is False
+    assert failed_receipt["status"] == "failed"
+    assert "stderr" not in failed_receipt
+    assert projected[5].tool_calls[0]["provider_data"]["raw_input"] == "# Python\nprint(1)\n"
+
+
+def test_coding_custom_history_rejects_oversized_result_sha():
+    edit_patch = "*** Begin Edit\n" + ("old\nnew\n" * 5000)
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round(
+            "call-edit",
+            "edit_script",
+            edit_patch,
+            {"ok": True, "sourceSha256": "z" * 300},
+        ),
+        *_coding_custom_round("call-current", "run", "# Python\nprint(1)\n", {"ok": True}),
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000
+    )
+
+    assert metrics["compacted_calls"] == 1
+    summary = json.loads(projected[1].tool_calls[0]["provider_data"]["raw_input"])
+    assert summary["sourceSha256"] is None
+    assert summary["patchSha256"] == hashlib.sha256(edit_patch.encode()).hexdigest()
+    assert (
+        len(json.dumps(summary, ensure_ascii=False).encode())
+        <= 8 * 1024
+    )
+
+
+def test_coding_custom_history_enforces_batch_metadata_budget():
+    messages = [Message(role="user", content="task")]
+    for index in range(90):
+        messages.extend(
+            _coding_custom_round(
+                f"call-{index}",
+                "write_script",
+                "# Python\n" + f"print({index})\n" * 40,
+                {"ok": True, "sourceSha256": "a" * 64},
+            )
+        )
+    messages.extend(
+        _coding_custom_round("call-current", "run", "# Python\nprint(1)\n", {"ok": True})
+    )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=5_000_000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] == 90
+    assert metrics["truncated_calls"] > 0
+    assert metrics["metadata_bytes"] <= CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+    assert metrics["window_rebased"] is False
+    call_ids = {
+        call.get("call_id")
+        for message in projected
+        for call in message.tool_calls or ()
+        if isinstance(call, dict)
+    }
+    assert {f"call-{index}" for index in range(90)} | {"call-current"} <= call_ids
+    for message in projected:
+        if message.role == "tool" and message.tool_name == "write_script":
+            assert json.loads(message.content)["marker"] == "CODING_CUSTOM_HISTORY_RESULT"
+
+
+def test_coding_custom_history_summary_disabled_keeps_baseline_rebase():
+    messages = [Message(role="user", content="task")]
+    edit_patch = "*** Begin Edit\n*** Update\nold\nnew\n"
+    for call_id, name, raw in [
+        ("call-write", "write_script", "# Python\nx = 1\n"),
+        ("call-edit", "edit_script", edit_patch),
+    ]:
+        messages.extend(
+            _coding_custom_round(call_id, name, raw, {"ok": True, "stdout": "y" * 2000})
+        )
+    messages.extend(
+        _coding_custom_round("call-run", "run", "# Python\nprint(x)\n", {"ok": True})
+    )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=1000, history_summary_enabled=False
+    )
+
+    assert metrics["compaction_triggered"] is False
+    assert metrics["compacted_calls"] == 0
+    assert metrics["window_rebased"] is True
+    for message in projected:
+        for call in message.tool_calls or ():
+            if isinstance(call, dict) and isinstance(call.get("provider_data"), dict):
+                assert "CODING_CUSTOM_HISTORY_SUMMARY" not in str(
+                    call["provider_data"].get("raw_input")
+                )
+
+
+def test_coding_custom_history_metadata_budget_disabled_keeps_optional_fields():
+    messages = [Message(role="user", content="task")]
+    for index in range(90):
+        messages.extend(
+            _coding_custom_round(
+                f"call-{index}",
+                "write_script",
+                "# Python\n" + f"print({index})\n" * 40,
+                {"ok": True, "sourceSha256": "a" * 64, "stdout": "y" * 3000},
+            )
+        )
+    messages.extend(
+        _coding_custom_round("call-current", "run", "# Python\nprint(1)\n", {"ok": True})
+    )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=100_000, metadata_budget_enabled=False
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] == 90
+    assert metrics["truncated_calls"] == 0
+    assert metrics["window_rebased"] is False
+    first_call = next(
+        call
+        for message in projected
+        for call in message.tool_calls or ()
+        if isinstance(call, dict) and call.get("call_id") == "call-0"
+    )
+    first_summary = json.loads(first_call["provider_data"]["raw_input"])
+    assert first_summary["sourceSha256"] == "a" * 64
+    assert first_summary["nextTools"] == ["write_script"]
+    first_result = next(
+        message
+        for message in projected
+        if message.role == "tool" and message.tool_call_id == "call-0"
+    )
+    assert "bytes" in json.loads(first_result.content)
+
+
+def test_coding_custom_history_compaction_avoids_window_rebase():
+    messages = [Message(role="user", content="task")]
+    for index, name in enumerate(["write_script", "edit_script", "run"]):
+        raw = (
+            "*** Begin Edit\n*** Update\na\nb\n"
+            if name == "edit_script"
+            else f"# Python\nprint({index})\n"
+        )
+        messages.extend(
+            _coding_custom_round(f"call-{index}", name, raw, {"ok": True, "stdout": "y" * 3000})
+        )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=10_000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["window_rebased"] is False
+    assert metrics["dropped_complete_rounds"] == 0
+    assert metrics["checkpoint_bytes"] == 0
+    call_ids = {
+        call.get("call_id")
+        for message in projected
+        for call in message.tool_calls or ()
+        if isinstance(call, dict)
+    }
+    assert {"call-0", "call-1", "call-2"} <= call_ids
+
+
+def test_rebase_metrics_reflect_metadata_after_dropping_summarized_rounds():
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round(
+            "call-old", "write_script", "# Python\nprint('old')\n", {"ok": True}
+        ),
+        *_coding_custom_round(
+            "call-current", "run", "# Python\nprint('current')\n", {
+                "ok": True, "stdout": "large result " * 6_000
+            }
+        ),
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=100_000
+    )
+
+    actual_metadata_bytes = TaskExecutionContextProjector._coding_custom_history_metadata_bytes(
+        projected
+    )
+    assert metrics["window_rebased"] is True
+    assert metrics["metadata_bytes"] == actual_metadata_bytes
+    assert metrics["bytes_after"] == actual_metadata_bytes
+    assert metrics["metadata_budget_exceeded"] is (
+        actual_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+    )
+
+
+def test_coding_custom_history_skips_calls_without_results():
+    old_source = "# Python\n" + ("print('old')\n" * 4000)
+    pending_code = "# Python\nprint('pending')\n"
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round("call-old", "write_script", old_source, {"ok": True}),
+        *_coding_custom_round("call-pending", "run", pending_code, None),
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] == 1
+    assert projected[3].tool_calls[0]["provider_data"]["raw_input"] == pending_code
+
+
 def test_coding_tool_receipt_preserves_bounded_continuation_state():
     message = Message(
         role="tool",
@@ -1637,3 +2037,94 @@ def test_session_persistence_clears_terminal_but_keeps_paused_reasoning():
 
     assert completed.reasoning_content is None
     assert paused.reasoning_content == "resume state"
+
+
+@pytest.mark.parametrize("summary_enabled,expect_rebase", [(False, True), (True, False)])
+def test_history_summary_disabled_restores_legacy_forced_rebase(summary_enabled, expect_rebase):
+    messages = [Message(role="user", content="task")]
+    for index, name in enumerate(["write_script", "run", "run"]):
+        messages.extend(
+            _coding_custom_round(f"call-{index}", name, f"# Python\nprint({index})\n", {"ok": True})
+        )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages,
+        model=CountingModel(),
+        hard_cap=5_000_000,
+        history_summary_enabled=summary_enabled,
+    )
+
+    assert metrics["compaction_triggered"] is False
+    assert metrics["window_rebased"] is expect_rebase
+
+
+def test_rebase_keeps_trailing_incomplete_batch_after_recent_rounds():
+    trailing_call = Message(
+        role="assistant",
+        tool_calls=[{
+            "id": "item-x",
+            "call_id": "call-x",
+            "function": {"name": "read_script", "arguments": "{}"},
+        }],
+    )
+    recent = Message(role="assistant", content="recent")
+    messages = [
+        Message(role="user", content="task"),
+        Message(role="assistant", content="old " * 2000),
+        recent,
+        trailing_call,
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=2000
+    )
+
+    assert metrics["window_rebased"] is True
+    assert projected.index(recent) < projected.index(trailing_call)
+
+
+def test_coding_custom_history_batch_budget_has_final_fallback():
+    messages = [Message(role="user", content="task")]
+    for index in range(200):
+        messages.extend(
+            _coding_custom_round(
+                f"call-{index}",
+                "write_script",
+                f"# Python\nprint({index})\n",
+                {"ok": True, "stdout": "y" * 3000},
+            )
+        )
+    messages.extend(
+        _coding_custom_round("call-current", "run", "# Python\nprint(1)\n", {"ok": True})
+    )
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    actual_metadata_bytes = sum(
+        len(call["provider_data"]["raw_input"].encode("utf-8"))
+        for message in projected
+        for call in message.tool_calls or ()
+        if isinstance(call, dict)
+        and isinstance(call.get("provider_data"), dict)
+        and "CODING_CUSTOM_HISTORY_SUMMARY" in call["provider_data"].get("raw_input", "")
+    ) + sum(
+        len(str(message.content or "").encode("utf-8"))
+        for message in projected
+        if message.role == "tool" and "CODING_CUSTOM_HISTORY_RESULT" in str(message.content or "")
+    )
+    assert metrics["metadata_bytes"] == actual_metadata_bytes
+    assert metrics["metadata_bytes"] <= CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+    assert metrics["metadata_budget_exceeded"] is False
+    assert metrics["window_rebased"] is True
+    assert metrics["truncated_calls"] > 0
+    call_ids = {
+        call.get("call_id")
+        for message in projected
+        for call in message.tool_calls or ()
+        if isinstance(call, dict)
+    }
+    assert "call-current" in call_ids
+    assert "call-0" not in call_ids

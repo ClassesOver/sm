@@ -288,6 +288,7 @@ def test_coding_metric_sample_keeps_delivery_evidence_and_unknowns_separate():
         "criticalVisualDefect": True,
         "failureCode": "report_code_generation_no_submission",
         "rawProtocolCorrect": "unknown",
+        "envelopeNormalizedInputs": "unknown",
             "firstScriptSuccess": "unknown",
             "firstScriptFailureCode": "unknown",
             "firstRunSuccess": "unknown",
@@ -518,7 +519,10 @@ async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrappe
         coding_metrics_recorder=samples.append,
     ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
     sample = samples[0]
-    assert sample["rawProtocolCorrect"] is (not wrapped)
+    # 2026-09-23 口径变更：单层 data 信封按兼容路径解封执行，不记协议违规，
+    # 单列 envelopeNormalizedInputs；rawProtocolCorrect 只统计真违规。
+    assert sample["rawProtocolCorrect"] is True
+    assert sample["envelopeNormalizedInputs"] == (1 if wrapped else 0)
     assert sample["firstScriptFailureCode"] == "report_python_source_path_invalid"
     assert sample["modelRequestMetrics"][0]["firstToolFailure"] == {
         "toolName": "write_script", "code": "report_python_source_path_invalid",
@@ -1076,3 +1080,49 @@ async def test_runner_records_request_count_when_agent_raises(workspace):  # noq
 
     assert caught.value.code == "report_code_generation_agent_failed"
     assert recorded == [(None, 2)]
+
+
+def test_budget_envelope_normalized_is_not_a_protocol_violation():
+    from smart_reporting.reporting.code_agent.budget import CodeBudget
+
+    budget = CodeBudget(request_limit=4, reserve=0)
+    budget.record_custom_input(protocol_correct=True)
+    budget.record_envelope_normalized()
+    assert budget.raw_protocol_correct() is True
+    assert budget.envelope_normalized_inputs == 1
+    budget.record_custom_input(protocol_correct=False)
+    assert budget.raw_protocol_correct() is False
+    assert budget.envelope_normalized_inputs == 1
+
+
+@pytest.mark.anyio
+async def test_multi_layer_envelope_still_counts_as_protocol_violation(workspace):  # noqa: F811
+    from smart_reporting.reporting.agent import create_reporting_code_agent_factory
+    from smart_reporting.reporting.tests.test_reporting_code_agent_trajectories import (
+        _ResponsesClient,
+    )
+    from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
+        ToolkitRuntime,
+        _custom_response,
+    )
+
+    source = '# Python\nprint(1)\n'
+    wrapped = json.dumps({"data": json.dumps({"data": source})})
+    client = _ResponsesClient([_custom_response("write_script", wrapped, 1)])
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test", api_key="test"), name="envelope-multilayer-test",
+    )
+
+    def make_agent(tools):
+        agent = factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    samples = []
+    with pytest.raises(ReportingError, match="report_code_generation_agent_failed"):
+        await ReportingCodeGenerationRunner(
+            make_agent, ToolkitRuntime(), ReportingLspProcessManager(),
+            coding_metrics_recorder=samples.append,
+        ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
+    assert samples[0]["rawProtocolCorrect"] is False
+    assert samples[0]["envelopeNormalizedInputs"] == 0

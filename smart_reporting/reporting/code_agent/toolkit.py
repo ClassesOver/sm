@@ -1163,7 +1163,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 self._repeated_failure_count + 1 if signature == self._failure_signature else 1
             )
             self._failure_signature = signature
-            self.last_failure = {**failure, "resolved": False}
+            # callId 只标识失败调用身份，不进入签名，避免不同 call id 的相同失败绕过重复检测。
+            call_id = fc.call_id if isinstance(fc.call_id, str) and fc.call_id else "unknown"
+            self.last_failure = {**failure, "callId": call_id[:256], "resolved": False}
             if self.terminal_failure is not None:
                 fc.function.stop_after_tool_call = True
             if failure["code"] == "report_code_input_wrapped" and isinstance(result, dict):
@@ -2168,7 +2170,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 return _failure(
                     "report_code_visual_review_required",
                     "每个当前图片输出都必须完成独立视觉审查。",
-                    {"nextTools": ["view_image"]},
+                    {"nextTools": ["view_image", "submit_script"]},
                 )
             for path, output in output_by_path.items():
                 reviewed = reviews[path]
@@ -2176,7 +2178,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     return _failure(
                         "report_code_visual_review_required",
                         "每个当前图片输出都必须完成独立视觉审查。",
-                        {"nextTools": ["view_image"]},
+                        {"nextTools": ["view_image", "submit_script"]},
                     )
                 if reviewed.sha256 != output.sha256:
                     return _failure(
@@ -2188,7 +2190,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     return _failure(
                         "report_code_visual_review_required",
                         "每个当前图片输出都必须完成独立视觉审查。",
-                        {"nextTools": ["view_image"]},
+                        {"nextTools": ["view_image", "submit_script"]},
                     )
                 if reviewed.requires_revision:
                     return _failure(

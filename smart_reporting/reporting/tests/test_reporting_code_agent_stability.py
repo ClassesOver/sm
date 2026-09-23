@@ -732,6 +732,7 @@ async def test_run_script_rejects_missing_structured_exit_receipt(
 @pytest.mark.anyio
 async def test_visualization_last_generation_failure_preserves_original_error():
     from smart_reporting.reporting.tests.test_reporting_code_diagnostics import (
+        _visualization_payload,
         _visualization_plan,
     )
 
@@ -744,10 +745,7 @@ async def test_visualization_last_generation_failure_preserves_original_error():
     )
 
     with pytest.raises(ReportingError) as caught:
-        await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
-            _run_context(),
-        )
+        await workflow.run(_visualization_payload(), _run_context())
 
     assert caught.value is final
 
@@ -758,6 +756,7 @@ async def test_visualization_recoverable_nondegradable_failure_capped_at_max_gen
     瞬时错误）必须按 _MAX_GENERATE_ATTEMPTS 独立封顶，不能借用可降级失败更大的重试
     预算——否则每次都会多烧一次昂贵的模型调用才放弃。"""
     from smart_reporting.reporting.tests.test_reporting_code_diagnostics import (
+        _visualization_payload,
         _visualization_plan,
     )
     from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
@@ -773,10 +772,7 @@ async def test_visualization_recoverable_nondegradable_failure_capped_at_max_gen
     )
 
     with pytest.raises(ReportingError) as caught:
-        await workflow.run(
-            {"visualizationWorkspace": {"scriptPath": "charts/charts.py"}},
-            _run_context(),
-        )
+        await workflow.run(_visualization_payload(), _run_context())
 
     assert caught.value is recoverable
     assert run_code.await_count == _MAX_GENERATE_ATTEMPTS

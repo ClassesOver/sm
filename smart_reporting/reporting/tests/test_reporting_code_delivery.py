@@ -408,11 +408,23 @@ async def test_delivery_state_survives_rebase_without_parsing_tool_results(bindi
 
 
 @pytest.mark.anyio
+async def test_failure_identity_survives_delivery_without_disabling_repeat_detection(binding):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
+    await toolkit.write_script(SOURCE)
+    function = next(tool for tool in toolkit.tool_functions if tool.name == "edit_script")
+    for call_id in ("failed-one", "failed-two"):
+        call = FunctionCall(function=function, call_id=call_id, arguments={"patch": "invalid"})
+        await call.aexecute()
+        assert toolkit.delivery_state()["lastFailure"]["callId"] == call_id
+    assert toolkit._repeated_failure_count == 2
+
+
+@pytest.mark.anyio
 async def test_delivery_feedback_tracks_visual_receipts_and_changed_output(workspace):  # noqa: F811
     task_binding, toolkit, output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
     await toolkit.refresh_delivery_state()
     assert toolkit.delivery_state()["nextReviewPaths"] == [output.path]
-    assert toolkit.delivery_state()["nextTools"] == ["view_image"]
+    assert toolkit.delivery_state()["nextTools"] == ["view_image", "submit_script"]
     task_binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
     await toolkit.refresh_delivery_state()
     assert toolkit.delivery_state()["nextTools"] == ["submit_script"]

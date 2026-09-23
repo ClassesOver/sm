@@ -6,7 +6,7 @@ import httpx
 import pytest
 from agno.models.message import Message
 from agno.run import RunContext
-from agno.tools.function import Function
+from agno.tools.function import Function, FunctionCall
 from openai import AsyncOpenAI
 from openai.types.responses import Response
 
@@ -129,3 +129,52 @@ async def test_request_budget_stops_before_extra_provider_call(monkeypatch):
         assert len(requests) == 2
     finally:
         await client.close()
+
+
+def test_in_scope_tool_outside_stage_gets_soft_rejection_receipt():
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(
+        tools,
+        max_model_requests=4,
+        delivery_state_reader=lambda: {
+            "nextTools": ["run_script"],
+            "requiredAction": "运行后提交。",
+        },
+    )
+    model.get_request_params(messages=[], tools=tools)
+    response = Response.model_validate({
+        "id": "resp-1", "created_at": 0, "model": "test-model",
+        "object": "response", "status": "completed",
+        "output": [
+            {"id": "item-1", "call_id": "call-1", "type": "custom_tool_call",
+             "name": "write_script", "input": "# Python\nprint(1)\n"},
+            {"id": "item-2", "call_id": "call-2", "type": "function_call",
+             "name": "run_script", "arguments": "{}"},
+        ],
+        "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
+    })
+    parsed = model._parse_provider_response(response)
+
+    # 任务集内且 wire 类型正确、仅不在当前阶段白名单：软拒绝信号，不算协议异常。
+    assert model._code_stage_mismatch_names == frozenset({"write_script"})
+    assert model.code_run_raw_protocol_correct() is True
+    assert len(parsed.tool_calls) == 2
+
+    results: list[Message] = []
+    functions = {tool.name: tool for tool in tools}
+    function_calls = [
+        FunctionCall(
+            function=functions[call["function"]["name"]],
+            call_id=call["call_id"],
+            arguments=json.loads(call["function"].get("arguments") or "{}"),
+        )
+        for call in parsed.tool_calls
+    ]
+    list(model._ordered_code_calls(function_calls, results, 0, None, None))
+    stage_receipt = next(m for m in results if m.tool_name == "write_script")
+    payload = json.loads(stage_receipt.content)
+    assert payload["ok"] is False
+    assert payload["code"] == "report_code_stage_tool_unavailable"
+    assert payload["details"]["nextTools"] == ["run_script"]
+    assert payload["details"]["requiredAction"] == "运行后提交。"

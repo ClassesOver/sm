@@ -139,16 +139,21 @@ def _validate_visualization_plan_bindings(
             key = (binding.analysis_id, binding.fact_path, binding.data_path)
             declared_fields = catalog.get(key)
             if declared_fields is None or not set(binding.fields).issubset(declared_fields):
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "图表数据绑定未逐字引用本轮签发的事实描述。",
-                    details={
-                        "chartId": chart.chart_id,
-                        "analysisId": binding.analysis_id,
-                        "factPath": binding.fact_path,
-                        "dataPath": binding.data_path,
-                        "fields": list(binding.fields),
-                    },
+                # 计划元数据的语义偏差只告警；文件访问授权仍由执行层校验。
+                details = {
+                    "chartId": chart.chart_id,
+                    "analysisId": binding.analysis_id,
+                    "factPath": binding.fact_path,
+                    "dataPath": binding.data_path,
+                    "fields": list(binding.fields),
+                    "declaredFields": (
+                        sorted(declared_fields) if declared_fields is not None else None
+                    ),
+                }
+                logger.bind(details=details).warning(
+                    "report_visualization_binding_mismatch details={} "
+                    "图表数据绑定未逐字引用本轮签发的事实描述，继续执行。",
+                    details,
                 )
 
 

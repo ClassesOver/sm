@@ -266,6 +266,83 @@ def _custom_protocol_error(message: str) -> ReportingError:
     return ReportingError(_CUSTOM_TOOL_PROTOCOL_ERROR, message, details={"retryable": False})
 
 
+def _unresolved_failure_call_ids(state: Mapping[str, Any]) -> frozenset[str]:
+    """交付状态中未解决失败的调用身份；压缩时保护其所在轮次不被删除。"""
+
+    failure = state.get("lastFailure")
+    if not isinstance(failure, Mapping):
+        return frozenset()
+    call_id = failure.get("callId")
+    if not isinstance(call_id, str) or not call_id:
+        return frozenset()
+    return frozenset({call_id})
+
+
+def _read_script_result_stale(message: Message, current_sha: str) -> bool:
+    try:
+        payload = json.loads(str(message.content or ""))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    sha = payload.get("sha256")
+    return isinstance(sha, str) and bool(sha) and sha != current_sha
+
+
+def _filter_read_script_rounds(
+    messages: list[Message], state: Mapping[str, Any]
+) -> tuple[list[Message], frozenset[str]]:
+    """丢弃结果 SHA 已落后于当前脚本的 read_script 单调用轮次。
+
+    返回过滤后的消息与仍代表当前源码身份的 read_script 调用身份；后者需要
+    在压缩时受保护，否则 rebase 只保留最近若干轮时会丢失模型应对照的源码 SHA。
+    多调用批次里的 read_script 有意不参与本过滤：批次内其他调用的结果不携带
+    源码 SHA，无法证明整批结果全部过时，整轮丢弃会破坏 Responses 调用链；
+    这类轮次交给 incomplete batch 保护与最近轮保留兜底，不是遗漏。
+    """
+
+    script = state.get("script")
+    current_sha = script.get("sha256") if isinstance(script, Mapping) else None
+    if not isinstance(current_sha, str) or not current_sha:
+        return messages, frozenset()
+    kept: list[Message] = []
+    current_call_ids: set[str] = set()
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        calls = [call for call in (message.tool_calls or ()) if isinstance(call, dict)]
+        function = calls[0].get("function") if len(calls) == 1 else None
+        if (
+            message.role in {"assistant", "model"}
+            and isinstance(function, dict)
+            and function.get("name") == "read_script"
+        ):
+            identities = {
+                value
+                for key in ("id", "call_id")
+                if isinstance(value := calls[0].get(key), str)
+            }
+            results: list[Message] = []
+            lookahead = index + 1
+            while lookahead < len(messages) and messages[lookahead].role == "tool":
+                if messages[lookahead].tool_call_id in identities:
+                    results.append(messages[lookahead])
+                lookahead += 1
+            # 没有完整结果的批次交给投影层的 incomplete batch 保护；只有能确定
+            # 全部结果都已过时时才整轮丢弃，避免破坏 Responses 调用链。
+            if results and all(
+                _read_script_result_stale(result, current_sha) for result in results
+            ):
+                index = lookahead
+                continue
+            if results and any(
+                not _read_script_result_stale(result, current_sha) for result in results
+            ):
+                current_call_ids.update(identities)
+        kept.append(message)
+        index += 1
+    return kept, frozenset(current_call_ids)
+
 def _contains_textual_tool_marker(output: list[Any]) -> bool:
     for item in output:
         if _field(item, "type") != "message" or _field(item, "role") != "assistant":
@@ -485,6 +562,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         )
         self._code_redundant_review_check = redundant_call_check
         self._code_delivery_state_reader = delivery_state_reader
+        self._code_stage_mismatch_names: frozenset[str] = frozenset()
         self._code_request_metrics: list[dict[str, Any]] = []
 
     def _consume_code_request(self) -> None:
@@ -635,6 +713,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     def code_run_raw_protocol_correct(self) -> bool | str:
         budget = getattr(self, "_code_budget", None)
         return budget.raw_protocol_correct() if budget is not None else "unknown"
+
+    def code_run_envelope_normalized_inputs(self) -> int | str:
+        budget = getattr(self, "_code_budget", None)
+        return budget.envelope_normalized_inputs if budget is not None else "unknown"
 
     def claim_delivery_continuation(self, tool_limit: int) -> int | None:
         budget = getattr(self, "_code_budget", None)
@@ -883,9 +965,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         )
         projected_input = with_reporting_durable_identities(messages)
         state_reader = getattr(self, "_code_delivery_state_reader", None)
+        protected_call_ids: frozenset[str] = frozenset()
         if state_reader is not None:
             state = state_reader()
             if state:
+                protected_call_ids = _unresolved_failure_call_ids(state)
+                projected_input, current_read_ids = _filter_read_script_rounds(
+                    projected_input, state
+                )
+                protected_call_ids = protected_call_ids | current_read_ids
                 # 每轮从绑定状态生成，不依赖历史工具结果的 JSON/repr 格式。
                 projected_input = [*projected_input, Message(
                     role="user", content=json.dumps(state, ensure_ascii=False, separators=(",", ":")),
@@ -896,9 +984,33 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             tools=tools,
             response_format=response_format,
             hard_cap=hard_cap,
+            protected_call_ids=protected_call_ids,
+            # benchmark 专用开关：默认开启，生产路径不设置这两个属性。
+            history_summary_enabled=not getattr(self, "_code_disable_history_summary", False),
+            metadata_budget_enabled=not getattr(self, "_code_disable_metadata_budget", False),
         )
         record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
+        # 有界投影快照：并入随后一次请求的 requestMetric，供 run 级压缩信号与回放诊断。
+        self._code_last_projection_metrics = {
+            "compaction_triggered": metrics.get("compaction_triggered", False),
+            "compacted_calls": metrics.get("compacted_calls", 0),
+            "metadata_bytes": metrics.get("metadata_bytes", 0),
+            "compactable_history_bytes": metrics.get("compactable_history_bytes", 0),
+            "truncated_calls": metrics.get("truncated_calls", 0),
+            "dropped_summaries": metrics.get("dropped_summaries", 0),
+            "metadata_budget_exceeded": metrics.get("metadata_budget_exceeded", False),
+            "compaction_tokens_before": metrics.get("compaction_tokens_before", 0),
+            "compaction_tokens_after": metrics.get("compaction_tokens_after", 0),
+            "projected_estimated_tokens": metrics.get("projected_estimated_tokens", 0),
+            "window_rebased": metrics.get("window_rebased", False),
+            "dropped_complete_rounds": metrics.get("dropped_complete_rounds", 0),
+        }
         return projected
+
+    def _pop_code_projection_metrics(self) -> dict[str, int | bool]:
+        snapshot = getattr(self, "_code_last_projection_metrics", None)
+        self._code_last_projection_metrics = None
+        return dict(snapshot) if isinstance(snapshot, dict) else {}
 
     def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
         # 在协议拒绝之前保存计费事实；不采集源码、工具参数或思考正文。
@@ -918,6 +1030,23 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 metric[key] = value if type(value) is int and value >= 0 else "unknown"
             if type(metric["outputTokens"]) is int and type(metric["reasoningTokens"]) is int:
                 metric["visibleOutputTokens"] = max(0, metric["outputTokens"] - metric["reasoningTokens"])
+            # 估算 vs 实报比值观测：只为校准 0.60 门禁采数据，不改变任何触发逻辑。
+            provider_input = metric.get("inputTokens")
+            estimated_input = metric.get("projected_estimated_tokens")
+            if (
+                type(provider_input) is int
+                and type(estimated_input) is int
+                and estimated_input > 0
+            ):
+                logger.bind(
+                    reporting_progress="code_projection_estimate_ratio",
+                    model_id=self.id,
+                ).debug(
+                    "code_projection_estimate_ratio estimated={} provider={} ratio_percent={}",
+                    estimated_input,
+                    provider_input,
+                    round(provider_input * 100 / estimated_input),
+                )
         if _field(response, "error") is not None:
             return super()._parse_provider_response(response, **kwargs)
         output = _field(response, "output")
@@ -929,33 +1058,55 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         ]
         declarations = getattr(self, "_code_declared_tools", None)
         budget = getattr(self, "_code_budget", None)
+        task_tools = getattr(self, "_code_tool_names", None)
         identities: set[str] = set()
+        stage_mismatch_names: list[str] = []
         for item in actionable:
             name = _field(item, "name")
             kind = "custom" if _field(item, "type") == "custom_tool_call" else "function"
             if declarations is not None and declarations.get(name) != kind:
-                if budget is not None:
-                    budget.record_protocol_violation()
-                logger.warning(
-                    "report_code_tool_declaration_mismatch name={} kind={} declared={}",
-                    str(name)[:128], kind, sorted(declarations),
-                )
-                error = _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
-                error.details.update({
-                    "toolName": str(name)[:128],
-                    "receivedType": kind,
-                    "expectedType": declarations.get(name, "undeclared"),
-                    "declaredTools": dict(declarations),
-                    "itemId": str(_field(item, "id"))[:256],
-                    "callId": str(_field(item, "call_id"))[:256],
-                })
-                raise error
+                # 任务集内、wire 类型与该工具的任务内标准类型一致、只是不在当前交付
+                # 阶段白名单：这是状态机与模型的博弈信号，走软拒绝回执继续本轮（在
+                # _ordered_code_calls 中逐个补回执），不作为 provider 协议异常。
+                # wire 类型错误（如 function 形态的 write_script）仍是硬违规。
+                expected_task_kind = "custom" if name in FREEFORM_TOOL_ARGUMENTS else "function"
+                if (
+                    isinstance(name, str)
+                    and task_tools is not None
+                    and name in task_tools
+                    and kind == expected_task_kind
+                ):
+                    stage_mismatch_names.append(name)
+                    if budget is not None:
+                        budget.record_stage_mismatch_rejection()
+                    logger.warning(
+                        "report_code_stage_tool_unavailable name={} kind={} declared={} required={}",
+                        str(name)[:128], kind, sorted(declarations), sorted(task_tools),
+                    )
+                else:
+                    if budget is not None:
+                        budget.record_protocol_violation()
+                    logger.warning(
+                        "report_code_tool_declaration_mismatch name={} kind={} declared={}",
+                        str(name)[:128], kind, sorted(declarations),
+                    )
+                    error = _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
+                    error.details.update({
+                        "toolName": str(name)[:128],
+                        "receivedType": kind,
+                        "expectedType": declarations.get(name, "undeclared"),
+                        "declaredTools": dict(declarations),
+                        "itemId": str(_field(item, "id"))[:256],
+                        "callId": str(_field(item, "call_id"))[:256],
+                    })
+                    raise error
             call_identities = {_required_id(item, "id"), _required_id(item, "call_id")}
             if identities.intersection(call_identities):
                 if budget is not None:
                     budget.record_protocol_violation()
                 raise _custom_protocol_error("Coding Agent 工具调用身份重复。")
             identities.update(call_identities)
+        self._code_stage_mismatch_names = frozenset(stage_mismatch_names)
         if not actionable and _contains_textual_tool_marker(output):
             if budget is not None:
                 budget.record_protocol_violation()
@@ -966,13 +1117,19 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     continue
                 name = _field(item, "name")
                 raw_input = _field(item, "input")
-                budget.record_custom_input(
-                    protocol_correct=(
-                        isinstance(name, str)
-                        and isinstance(raw_input, str)
-                        and raw_input.startswith(_custom_input_prefixes(name))
-                    )
+                protocol_correct = (
+                    isinstance(name, str)
+                    and isinstance(raw_input, str)
+                    and raw_input.startswith(_custom_input_prefixes(name))
                 )
+                if not protocol_correct and isinstance(name, str) and isinstance(raw_input, str):
+                    # 单层 data 信封按兼容路径解封执行：不算协议违规，单列计数。
+                    _, envelope_normalized = _normalize_provider_custom_input(raw_input, name)
+                    if envelope_normalized:
+                        budget.record_custom_input(protocol_correct=True)
+                        budget.record_envelope_normalized()
+                        continue
+                budget.record_custom_input(protocol_correct=protocol_correct)
         custom_calls = {
             _field(item, "id"): _synthetic_custom_call(item)
             for item in actionable
@@ -1036,6 +1193,55 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 ).info("report_code_tool_progress tool_name={} status=skipped", tool_name)
                 continue
             is_redundant_review = self._is_redundant_visual_review(call)
+            if tool_name in getattr(self, "_code_stage_mismatch_names", frozenset()):
+                # 上一轮校验已判定该调用不在当前交付阶段白名单（但任务集内且
+                # wire 类型正确）：补未执行回执并继续本批次，不消耗任务额度。
+                stage_state_reader = getattr(self, "_code_delivery_state_reader", None)
+                stage_state = (
+                    stage_state_reader() if callable(stage_state_reader) else None
+                )
+                stage_next_tools = (
+                    stage_state.get("nextTools") if isinstance(stage_state, Mapping) else None
+                )
+                stage_mismatch = Message(
+                    role=self.tool_message_role,
+                    tool_call_id=call.call_id,
+                    tool_name=tool_name,
+                    tool_args=call.arguments,
+                    tool_call_error=True,
+                    content=json.dumps({
+                        "ok": False,
+                        "status": "rejected",
+                        "code": "report_code_stage_tool_unavailable",
+                        "message": (
+                            "该工具当前不可用；请按交付状态的 requiredAction 使用 "
+                            "nextTools 中的工具继续。"
+                        ),
+                        "details": {
+                            "nextTools": sorted(
+                                set(stage_next_tools or ())
+                                & (getattr(self, "_code_tool_names", None) or frozenset())
+                            ),
+                            "requiredAction": (
+                                stage_state.get("requiredAction")
+                                if isinstance(stage_state, Mapping)
+                                else None
+                            ),
+                        },
+                    }, ensure_ascii=False),
+                )
+                if function_call_limit is not None:
+                    self._attach_tool_budget(
+                        [stage_mismatch], used=current_count, limit=function_call_limit
+                    )
+                results.append(stage_mismatch)
+                logger.bind(
+                    reporting_progress="code_tool",
+                    tool_name=tool_name,
+                    status="rejected",
+                    code="report_code_stage_tool_unavailable",
+                ).info("report_code_tool_progress tool_name={} status=rejected", tool_name)
+                continue
             if (
                 budget is not None
                 and function_call_limit is not None
@@ -1458,6 +1664,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         messages = phase_filtered_report_messages(messages)
         messages = self._project(messages, args, kwargs)
+        # 同步路径不生成 requestMetric，投影快照在此丢弃，避免错误归属到后续请求。
+        self._code_last_projection_metrics = None
         self._consume_code_request()
         try:
             return super().invoke(messages, *args, **kwargs)
@@ -1487,6 +1695,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             "requestParams": dict(getattr(self, "_code_last_request_params", {})),
             "status": "started",
         }
+        request_metric.update(self._pop_code_projection_metrics())
         getattr(self, "_code_request_metrics", []).append(request_metric)
         logger.bind(
             reporting_progress="code_model_request",

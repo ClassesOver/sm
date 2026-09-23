@@ -37,6 +37,17 @@ TASK_EXECUTION_RECENT_ASSISTANT_TURNS = 2
 TASK_EXECUTION_CHECKPOINT_MAX_BYTES = 32 * 1024
 TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD = 0.75
 TASK_EXECUTION_CONTEXT_REBASE_TARGET = 0.50
+# Coding 专用请求前门禁：低于窗口重建阈值与 provider 硬窗口。达到门禁后先对旧
+# custom 工具调用做确定性摘要（保留 call 身份），只有仍超重建阈值时才整轮丢弃。
+CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD = 0.60
+# 2026-09-23 冻结回放校准：真实样本单请求输入峰值约 30.6K（p75≈20.0K），按比例
+# 派生的门禁（0.60×hard_cap≈118K）永不触发。绝对门禁取样本 p75–p90 下沿，使触发
+# 点落在长修复链后半程；首轮（≤8K）与短任务稳态平台（约 16.5K）不触发，安全下界
+# 18K。小窗口模型仍受比例门禁约束，取两者较小值。
+CODING_COMPACTION_INPUT_TOKEN_GATE = 20_000
+# 对齐 Codex 两级工具元数据预算：单个旧调用摘要 8 KiB，整批旧历史元数据 32 KiB。
+CODING_CUSTOM_HISTORY_SUMMARY_MAX_BYTES = 8 * 1024
+CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES = 32 * 1024
 TASK_EXECUTION_TOOL_BATCH_LIMIT = 10
 TIKTOKEN_O200K_CACHE_KEY = "fb374d419588a4632f3f557e76b4b70aebbca790"
 TIKTOKEN_O200K_SHA256 = "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
@@ -973,6 +984,32 @@ class TaskExecutionContextHardLimitError(RuntimeError):
         self.metrics = dict(metrics)
 
 
+_CODING_CUSTOM_SUMMARY_MARKER = "CODING_CUSTOM_HISTORY_SUMMARY"
+_CODING_CUSTOM_RESULT_MARKER = "CODING_CUSTOM_HISTORY_RESULT"
+
+
+def _coding_custom_result_code(payload: Mapping[str, Any]) -> int | str | None:
+    for key in ("exitCode", "exit_code"):
+        value = payload.get(key)
+        if type(value) is int:
+            return value
+    value = payload.get("code")
+    if isinstance(value, str) and 0 < len(value) <= 128:
+        return value
+    return None
+
+
+def _coding_custom_result_sha(payload: Mapping[str, Any]) -> str | None:
+    candidates = [payload.get("sourceSha256"), payload.get("sha256")]
+    details = payload.get("details")
+    if isinstance(details, Mapping):
+        candidates.append(details.get("sourceSha256"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and 0 < len(candidate) <= 128:
+            return candidate
+    return None
+
+
 class TaskExecutionContextProjector:
     _large_argument_fields = {
         "terminal": frozenset({"command"}),
@@ -1045,15 +1082,17 @@ class TaskExecutionContextProjector:
         )
 
     @classmethod
-    def _compact_coding_custom_history(cls, messages: list[Message]) -> dict[str, int | bool]:
-        """识别可安全丢弃的旧 custom 轮次；不改写 provider wire 原文。"""
+    def _scan_coding_custom_history(
+        cls, messages: list[Message], protected_call_ids: frozenset[str]
+    ) -> list[dict[str, Any]]:
+        """按时间顺序收集 custom 工具调用及其结果；只读，不改写任何消息。"""
 
         results: dict[str, Message] = {}
-        calls: list[tuple[dict[str, Any], str, str, Message | None]] = []
         for message in messages:
             if message.role == "tool" and isinstance(message.tool_call_id, str):
                 results[message.tool_call_id] = message
-        for message in messages:
+        entries: list[dict[str, Any]] = []
+        for index, message in enumerate(messages):
             if message.role not in {"assistant", "model"}:
                 continue
             for call in message.tool_calls or ():
@@ -1062,27 +1101,233 @@ class TaskExecutionContextProjector:
                 provider_data = call.get("provider_data")
                 function = call.get("function")
                 name = function.get("name") if isinstance(function, dict) else None
-                raw_input = provider_data.get("raw_input") if isinstance(provider_data, dict) else None
-                call_id = call.get("call_id") or call.get("id")
+                raw_input = (
+                    provider_data.get("raw_input") if isinstance(provider_data, dict) else None
+                )
                 if (
-                    name not in _CODING_FREEFORM_TOOL_ARGUMENTS
+                    not isinstance(provider_data, dict)
+                    or provider_data.get("reporting_wire_type") != "custom"
+                    or name not in _CODING_FREEFORM_TOOL_ARGUMENTS
                     or not isinstance(raw_input, str)
                     or not raw_input
-                    or not isinstance(call_id, str)
+                    or not isinstance(function, dict)
                 ):
                     continue
-                result = results.get(call_id)
-                if result is None and isinstance(call.get("id"), str):
-                    result = results.get(call["id"])
-                calls.append((call, name, call_id, result))
-        completed_count = sum(result is not None for _call, _name, _call_id, result in calls)
+                identities = {
+                    value
+                    for key in ("call_id", "id")
+                    if isinstance(value := call.get(key), str) and value
+                }
+                if not identities:
+                    continue
+                result = next(
+                    (results[identity] for identity in identities if identity in results), None
+                )
+                entries.append(
+                    {
+                        "index": index,
+                        "call": call,
+                        "function": function,
+                        "name": name,
+                        "raw_input": raw_input,
+                        "call_id": call.get("call_id") or call.get("id"),
+                        "identities": identities,
+                        "result": result,
+                        # 当前调用（最近一次 custom 调用）与交付状态保护身份保留原文。
+                        "compactable": result is not None
+                        and not identities & protected_call_ids,
+                    }
+                )
+        if entries:
+            entries[-1]["compactable"] = False
+        return entries
+
+    @staticmethod
+    def _next_tool_names(messages: list[Message], start: int) -> list[str]:
+        for message in messages[start:]:
+            if message.role in {"assistant", "model"} and message.tool_calls:
+                return [
+                    name
+                    for call in message.tool_calls
+                    if isinstance(call, dict)
+                    and isinstance(call.get("function"), dict)
+                    and isinstance(name := call["function"].get("name"), str)
+                ]
+        return []
+
+    @classmethod
+    def _summarize_coding_custom_history(
+        cls,
+        entries: list[dict[str, Any]],
+        messages: list[Message],
+        *,
+        metadata_budget_enabled: bool = True,
+    ) -> dict[str, int | bool]:
+        """把可压缩的旧 custom 调用改写为固定结构摘要；调用身份与 wire 类型不变。
+
+        摘要字段固定为 tool/status/code/sourceSha256/patchSha256/bytes/callId/
+        nextTools；旧结果改写为只含状态的回执，stdout/stderr 与源码证据只保留在
+        Workspace 与审计文件中。预算降级顺序对齐 Codex：先缩减结果元数据，再缩减
+        旧调用摘要；当前调用与受保护身份已在扫描阶段排除，不参与缩减。
+        """
+
+        built: list[dict[str, Any]] = []
+        for entry in entries:
+            if not entry["compactable"]:
+                continue
+            result = entry["result"]
+            payload = _json_payload(result.content) or {}
+            failed = (
+                result.tool_call_error is True
+                or payload.get("ok") is False
+                or payload.get("error") is not None
+            )
+            argument_sha = hashlib.sha256(entry["raw_input"].encode("utf-8")).hexdigest()
+            result_sha = _coding_custom_result_sha(payload)
+            if entry["name"] == "edit_script":
+                source_sha, patch_sha = result_sha, argument_sha
+            else:
+                source_sha, patch_sha = result_sha or argument_sha, None
+            summary = {
+                "marker": _CODING_CUSTOM_SUMMARY_MARKER,
+                "tool": entry["name"],
+                "status": "failed" if failed else "completed",
+                "code": _coding_custom_result_code(payload),
+                "sourceSha256": source_sha,
+                "patchSha256": patch_sha,
+                "bytes": len(entry["raw_input"].encode("utf-8")),
+                "callId": entry["call_id"],
+                "nextTools": cls._next_tool_names(messages, entry["index"] + 1),
+            }
+            receipt = {
+                "marker": _CODING_CUSTOM_RESULT_MARKER,
+                "tool": entry["name"],
+                "status": summary["status"],
+                "ok": not failed,
+                "bytes": len(str(result.content or "").encode("utf-8")),
+                "callId": entry["call_id"],
+            }
+            built.append({"entry": entry, "summary": summary, "receipt": receipt, "truncated": False})
+
+        def _encoded_size(value: Any) -> int:
+            return len(
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+                    "utf-8"
+                )
+            )
+
+        # 单个旧调用参数摘要上限 8 KiB：超出时按可选字段顺序丢弃。
+        for item in built:
+            if (
+                not metadata_budget_enabled
+                or _encoded_size(item["summary"]) <= CODING_CUSTOM_HISTORY_SUMMARY_MAX_BYTES
+            ):
+                continue
+            item["truncated"] = True
+            for field in ("nextTools", "code", "patchSha256", "sourceSha256"):
+                item["summary"][field] = [] if field == "nextTools" else None
+                if _encoded_size(item["summary"]) <= CODING_CUSTOM_HISTORY_SUMMARY_MAX_BYTES:
+                    break
+
+        def _total_bytes() -> int:
+            return sum(
+                _encoded_size(item["summary"]) + _encoded_size(item["receipt"]) for item in built
+            )
+
+        # 整批旧历史元数据上限 32 KiB：先丢结果元数据，最后才缩减旧调用摘要。
+        if metadata_budget_enabled and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
+            for item in built:
+                if "bytes" in item["receipt"]:
+                    del item["receipt"]["bytes"]
+                    item["truncated"] = True
+        if metadata_budget_enabled and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
+            for item in built:
+                if item["summary"].get("nextTools"):
+                    item["summary"]["nextTools"] = []
+                    item["truncated"] = True
+        if metadata_budget_enabled and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
+            for item in built:
+                for field in ("code", "patchSha256", "sourceSha256"):
+                    if item["summary"].get(field) is not None:
+                        item["summary"][field] = None
+                        item["truncated"] = True
+                if _total_bytes() <= CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
+                    break
+
+        # 最终兜底：降级链走完后仍越界时，从最旧开始把摘要缩减为仅身份字段；
+        # 极端长链下仍越界则丢弃最旧摘要（该调用保留原始 wire），全部如实计数。
+        if metadata_budget_enabled and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
+            for item in built:
+                if _total_bytes() <= CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
+                    break
+                item["summary"] = {
+                    key: item["summary"][key]
+                    for key in ("marker", "tool", "status", "callId")
+                }
+                item["receipt"] = {
+                    key: item["receipt"][key]
+                    for key in ("marker", "tool", "status", "ok", "callId")
+                }
+                item["truncated"] = True
+        metadata_budget_exceeded = (
+            metadata_budget_enabled
+            and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+        )
+
+        bytes_before = 0
+        bytes_after = 0
+        for item in built:
+            entry = item["entry"]
+            result = entry["result"]
+            bytes_before += len(entry["raw_input"].encode("utf-8")) + len(
+                str(result.content or "").encode("utf-8")
+            )
+            summary_json = json.dumps(
+                item["summary"], ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            )
+            receipt_json = json.dumps(
+                item["receipt"], ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            )
+            bytes_after += len(summary_json.encode("utf-8")) + len(receipt_json.encode("utf-8"))
+            entry["call"]["provider_data"]["raw_input"] = summary_json
+            entry["function"]["arguments"] = json.dumps(
+                {_CODING_FREEFORM_TOOL_ARGUMENTS[entry["name"]]: summary_json},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            result.content = receipt_json
+            if result.compressed_content is not None:
+                result.compressed_content = receipt_json
         return {
-            "history_candidate": completed_count > TASK_EXECUTION_RECENT_ASSISTANT_TURNS,
-            "compaction_triggered": False,
-            "compacted_calls": 0,
-            "bytes_before": 0,
-            "bytes_after": 0,
+            "compaction_triggered": bool(built),
+            "compacted_calls": len(built),
+            "bytes_before": bytes_before,
+            "bytes_after": bytes_after,
+            "metadata_bytes": bytes_after,
+            "truncated_calls": sum(item["truncated"] for item in built),
+            "dropped_summaries": 0,
+            "metadata_budget_exceeded": metadata_budget_exceeded,
         }
+
+    @staticmethod
+    def _coding_custom_history_metadata_bytes(messages: list[Message]) -> int:
+        summary_bytes = sum(
+            len(raw_input.encode("utf-8"))
+            for message in messages
+            for call in message.tool_calls or ()
+            if isinstance(call, dict)
+            and isinstance((provider_data := call.get("provider_data")), dict)
+            and isinstance(raw_input := provider_data.get("raw_input"), str)
+            and _CODING_CUSTOM_SUMMARY_MARKER in raw_input
+        )
+        receipt_bytes = sum(
+            len(content.encode("utf-8"))
+            for message in messages
+            if message.role == "tool"
+            and isinstance((content := message.content), str)
+            and _CODING_CUSTOM_RESULT_MARKER in content
+        )
+        return summary_bytes + receipt_bytes
 
     @staticmethod
     def _token_count(
@@ -1100,6 +1345,16 @@ class TaskExecutionContextProjector:
                 type(error).__name__,
             )
             return _fallback_context_token_count(messages, tools, response_format)
+
+    @staticmethod
+    def _token_count_with_stats(
+        messages: list[Message], model: Any, tools: Any = None, response_format: Any = None
+    ) -> tuple[int, int]:
+        """_token_count 的计数版：额外返回本次计数耗时（ms），供投影耗时日志汇总。"""
+
+        started_at = perf_counter()
+        tokens = TaskExecutionContextProjector._token_count(messages, model, tools, response_format)
+        return tokens, duration_ms(started_at)
 
     @staticmethod
     def _composition_metrics(
@@ -1269,9 +1524,26 @@ class TaskExecutionContextProjector:
         tools: Any = None,
         response_format: Any = None,
         hard_cap: int = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
+        protected_call_ids: frozenset[str] = frozenset(),
+        history_summary_enabled: bool = True,
+        metadata_budget_enabled: bool = True,
     ) -> tuple[list[Message], dict[str, int | bool]]:
+        projection_started_at = perf_counter()
+        count_calls = 0
+        count_duration_ms = 0
+
+        def counted_token_count(
+            counted: list[Message],
+        ) -> int:
+            nonlocal count_calls, count_duration_ms
+            tokens, elapsed = cls._token_count_with_stats(
+                counted, counting_model, tools, response_format
+            )
+            count_calls += 1
+            count_duration_ms += elapsed
+            return tokens
+
         projected = deepcopy(messages)
-        custom_history_metrics = cls._compact_coding_custom_history(projected)
         compact_call_ids = {
             message.tool_call_id
             for message in projected
@@ -1294,14 +1566,80 @@ class TaskExecutionContextProjector:
                     continue
                 function["arguments"] = cls._compact_arguments(tool_name, function.get("arguments"))
         counting_model = model or OpenAIChat(id="token-counter")
-        canonical_tokens = cls._token_count(projected, counting_model, tools, response_format)
+        pre_compaction_tokens = counted_token_count(projected)
+        custom_entries = cls._scan_coding_custom_history(projected, protected_call_ids)
+        compactable_metadata_bytes = sum(
+            len(entry["raw_input"].encode("utf-8"))
+            + len(str(entry["result"].content or "").encode("utf-8"))
+            for entry in custom_entries
+            if entry["compactable"]
+        )
+        custom_history_metrics: dict[str, int | bool] = {
+            "history_candidate": any(entry["compactable"] for entry in custom_entries),
+            "compaction_triggered": False,
+            "compacted_calls": 0,
+            "bytes_before": 0,
+            "bytes_after": 0,
+            # 可压缩历史的压缩前原始字节；metadata_bytes 统一为压缩后摘要字节
+            # （未触发时为 0），两条路径口径一致，跨 run 可比较。
+            "compactable_history_bytes": compactable_metadata_bytes,
+            "metadata_bytes": 0,
+            "truncated_calls": 0,
+            "dropped_summaries": 0,
+            "metadata_budget_exceeded": False,
+            "compaction_tokens_before": 0,
+            "compaction_tokens_after": 0,
+        }
+        # 请求前 token 门禁：达到 Coding 专用阈值（低于窗口重建阈值与 provider 硬
+        # 窗口）或旧历史元数据超 32 KiB 预算时，先用确定性摘要替换完整旧历史。
+        coding_history_gate = min(
+            max(1, int(hard_cap * CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD)),
+            CODING_COMPACTION_INPUT_TOKEN_GATE,
+        )
+        canonical_tokens = pre_compaction_tokens
+        if (
+            history_summary_enabled
+            and custom_history_metrics["history_candidate"]
+            and (
+                pre_compaction_tokens >= coding_history_gate
+                or (
+                    metadata_budget_enabled
+                    and compactable_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+                )
+            )
+        ):
+            custom_history_metrics.update(
+                cls._summarize_coding_custom_history(
+                    custom_entries, projected, metadata_budget_enabled=metadata_budget_enabled
+                )
+            )
+            canonical_tokens = counted_token_count(projected)
+            custom_history_metrics["compaction_tokens_before"] = pre_compaction_tokens
+            custom_history_metrics["compaction_tokens_after"] = canonical_tokens
+            logger.info(
+                "coding_custom_history_compacted compacted_calls={} bytes_before={} "
+                "bytes_after={} truncated_calls={} tokens_before={} tokens_after={}",
+                custom_history_metrics["compacted_calls"],
+                custom_history_metrics["bytes_before"],
+                custom_history_metrics["bytes_after"],
+                custom_history_metrics["truncated_calls"],
+                pre_compaction_tokens,
+                canonical_tokens,
+            )
         feedback = cls._runtime_feedback(projected)
         if feedback is not None:
             projected.append(feedback)
         threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
-        projected_tokens = cls._token_count(projected, counting_model, tools, response_format)
+        projected_tokens = counted_token_count(projected)
+        # benchmark 基线语义：摘要关闭时恢复旧行为——只要存在可压缩的已完成 custom
+        # 历史就强制走窗口重建（不因低于阈值而保留完整旧历史），保证 G1 与 B0 生产
+        # 基线同口径。摘要开启时低于门禁则原样保留。
+        legacy_baseline_rebase = (
+            not history_summary_enabled and custom_history_metrics["history_candidate"]
+        )
         if (
-            not custom_history_metrics["history_candidate"]
+            not legacy_baseline_rebase
+            and not custom_history_metrics["metadata_budget_exceeded"]
             and canonical_tokens <= threshold
             and projected_tokens <= hard_cap
         ):
@@ -1317,6 +1655,15 @@ class TaskExecutionContextProjector:
                 **custom_history_metrics,
                 **cls._composition_metrics(messages, projected, tools, response_format),
             }
+            logger.debug(
+                "context_projection_timing window_rebased={} message_count={} "
+                "projection_ms={} count_calls={} count_ms={}",
+                False,
+                len(messages),
+                duration_ms(projection_started_at),
+                count_calls,
+                count_duration_ms,
+            )
             return projected, metrics
 
         system_messages = [message for message in projected if message.role == "system"]
@@ -1339,71 +1686,113 @@ class TaskExecutionContextProjector:
         checkpoint = ContextBudgetController._checkpoint(projected)
         checkpoint_message = Message(role="user", content=checkpoint)
         rounds = cls._complete_rounds(projected)
-        selected_rounds = rounds[-TASK_EXECUTION_RECENT_ASSISTANT_TURNS:]
+
+        protected_round_indexes: set[int] = set()
+        if protected_call_ids:
+            for idx, round_messages in enumerate(rounds):
+                for message in round_messages:
+                    if message.tool_calls:
+                        for call in message.tool_calls:
+                            if not isinstance(call, dict):
+                                continue
+                            call_ids = {
+                                value
+                                for key in ("id", "call_id")
+                                if isinstance(value := call.get(key), str)
+                            }
+                            if call_ids & protected_call_ids:
+                                protected_round_indexes.add(idx)
+                                break
+
+        incomplete_batches: list[list[Message]] = []
+        idx = 0
+        while idx < len(projected):
+            message = projected[idx]
+            if (
+                message.role in {"assistant", "model"}
+                and message.tool_calls
+            ):
+                call_identity_sets = [
+                    {
+                        identity
+                        for key in ("call_id", "id")
+                        if isinstance(identity := call.get(key), str)
+                    }
+                    for call in message.tool_calls
+                    if isinstance(call, dict)
+                ]
+                all_identities = {
+                    identity for identities in call_identity_sets for identity in identities
+                }
+                batch = [message]
+                j = idx + 1
+                while j < len(projected) and projected[j].role == "tool":
+                    if projected[j].tool_call_id in all_identities:
+                        batch.append(projected[j])
+                    j += 1
+                if not (
+                    call_identity_sets
+                    and all(
+                        identities & {m.tool_call_id for m in batch[1:]}
+                        for identities in call_identity_sets
+                    )
+                ):
+                    incomplete_batches.append(batch)
+                idx = j
+            else:
+                idx += 1
+
+        protected_rounds = [
+            round_messages
+            for idx, round_messages in enumerate(rounds)
+            if idx in protected_round_indexes
+        ]
+        recent_start = max(0, len(rounds) - TASK_EXECUTION_RECENT_ASSISTANT_TURNS)
+        recent_rounds = [
+            round_messages
+            for idx, round_messages in enumerate(rounds)
+            if idx >= recent_start and idx not in protected_round_indexes
+        ]
+        selected_rounds = [*protected_rounds, *recent_rounds]
+        # 按原始位置归并 incomplete batch 与保留轮次：尾部 incomplete batch 不得
+        # 被搬到比它更早完成的轮次之前，保持 wire 层时间序。
+        message_positions = {id(message): index for index, message in enumerate(projected)}
+        positioned = [
+            (message_positions.get(id(group[0]), len(projected)), group)
+            for group in [*incomplete_batches, *selected_rounds]
+        ]
+        positioned.sort(key=lambda item: item[0])
         candidate = [*prefix, checkpoint_message]
-        for round_messages in selected_rounds:
-            candidate.extend(round_messages)
+        for _position, group in positioned:
+            candidate.extend(group)
         if feedback is not None:
             candidate.append(feedback)
 
+        final_metadata_bytes = cls._coding_custom_history_metadata_bytes(candidate)
+        custom_history_metrics["metadata_bytes"] = final_metadata_bytes
+        custom_history_metrics["bytes_after"] = final_metadata_bytes
+        custom_history_metrics["metadata_budget_exceeded"] = (
+            metadata_budget_enabled
+            and final_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+        )
+
         target = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_TARGET))
+        deletable_start = len(protected_rounds)
         while (
-            selected_rounds
-            and cls._token_count(candidate, counting_model, tools, response_format) > target
+            len(selected_rounds) > deletable_start
+            and counted_token_count(candidate) > target
         ):
-            removed = selected_rounds.pop(0)
+            removed = selected_rounds.pop(deletable_start)
             start = next(index for index, message in enumerate(candidate) if message is removed[0])
             del candidate[start : start + len(removed)]
-        retained_identities = {
-            identity
-            for message in candidate
-            if message.role in {"assistant", "model"}
-            for call in message.tool_calls or ()
-            if isinstance(call, dict)
-            for identity in (call.get("id"), call.get("call_id"))
-            if isinstance(identity, str)
-        }
-        result_identities = {
-            message.tool_call_id
-            for message in projected
-            if message.role == "tool" and isinstance(message.tool_call_id, str)
-        }
-        dropped_custom_calls: list[dict[str, Any]] = []
-        for message in projected:
-            if message.role not in {"assistant", "model"}:
-                continue
-            for call in message.tool_calls or ():
-                if not isinstance(call, dict):
-                    continue
-                provider_data = call.get("provider_data")
-                function = call.get("function")
-                name = function.get("name") if isinstance(function, dict) else None
-                raw_input = (
-                    provider_data.get("raw_input")
-                    if isinstance(provider_data, dict)
-                    else None
-                )
-                identities = {
-                    value
-                    for value in (call.get("id"), call.get("call_id"))
-                    if isinstance(value, str)
-                }
-                if (
-                    name in _CODING_FREEFORM_TOOL_ARGUMENTS
-                    and isinstance(raw_input, str)
-                    and identities & result_identities
-                    and not identities & retained_identities
-                ):
-                    dropped_custom_calls.append({"raw_input": raw_input})
-        custom_history_metrics = {
-            "compaction_triggered": bool(dropped_custom_calls),
-            "compacted_calls": len(dropped_custom_calls),
-            "bytes_before": sum(
-                len(item["raw_input"].encode("utf-8")) for item in dropped_custom_calls
-            ),
-            "bytes_after": 0,
-        }
-        projected_tokens = cls._token_count(candidate, counting_model, tools, response_format)
+        final_metadata_bytes = cls._coding_custom_history_metadata_bytes(candidate)
+        custom_history_metrics["metadata_bytes"] = final_metadata_bytes
+        custom_history_metrics["bytes_after"] = final_metadata_bytes
+        custom_history_metrics["metadata_budget_exceeded"] = (
+            metadata_budget_enabled
+            and final_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+        )
+        projected_tokens = counted_token_count(candidate)
         if projected_tokens > hard_cap:
             metrics = {
                 "canonical_message_count": len(messages),
@@ -1445,6 +1834,16 @@ class TaskExecutionContextProjector:
             **custom_history_metrics,
             **cls._composition_metrics(messages, candidate, tools, response_format),
         }
+        logger.debug(
+            "context_projection_timing window_rebased={} message_count={} "
+            "projection_ms={} count_calls={} count_ms={} dropped_complete_rounds={}",
+            True,
+            len(messages),
+            duration_ms(projection_started_at),
+            count_calls,
+            count_duration_ms,
+            len(rounds) - len(selected_rounds),
+        )
         return candidate, metrics
 
     @classmethod

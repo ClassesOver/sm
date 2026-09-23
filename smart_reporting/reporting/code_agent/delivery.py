@@ -175,7 +175,7 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
         next_tools = ["read_script", "edit_script", "run_script"]
         action = "根据 visualFailures 修复脚本后重新运行并审查新图片；重复查看当前图片只会返回缓存结论。"
     elif reviews:
-        next_tools, action = ["view_image"], "只审查 nextReviewPaths 中尚未通过的当前图片，然后提交。"
+        next_tools, action = ["view_image", "submit_script"], "只审查 nextReviewPaths 中尚未通过的当前图片；全部通过后直接 submit_script 提交，不要重复运行或查看已通过的图片。"
     else:
         next_tools, action = ["submit_script"], "当前执行与审查已满足提交条件，直接提交，无需重复运行。"
     visual_failure_payloads = []
@@ -202,7 +202,13 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
             _diagnostic_summary(pending) if pending else None
         ),
         "lastFailure": (
-            {"tool": failure["tool"], **_diagnostic_summary(failure)} if failure else None
+            {
+                "tool": failure["tool"],
+                "callId": str(failure.get("callId") or "unknown")[:256],
+                **_diagnostic_summary(failure),
+            }
+            if failure
+            else None
         ),
         "visualFailures": merge_visual_failures(visual_failure_payloads),
         "pendingReviewCount": len(reviews),

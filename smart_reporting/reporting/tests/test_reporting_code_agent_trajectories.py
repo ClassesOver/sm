@@ -87,7 +87,7 @@ def test_output_contract_uses_schema_as_structural_authority_with_only_runtime_r
     assert set(contract) == {"format", "schema", "rules"}
     assert contract["schema"]["required"] == ["findings", "reconciliations", "warnings"]
     assert contract["schema"]["additionalProperties"] is False
-    assert len(encoded.encode("utf-8")) <= 1_050
+    assert len(encoded.encode("utf-8")) <= 1_200
     rules = "\n".join(contract["rules"])
     assert "rows" in rules and "columns" in rules
     assert "JSON null" in rules
@@ -219,10 +219,13 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
             responses.append(_batch_response(
                 _custom_response("edit_script", patch, 3), _function_response(4, "run_script", {}),
             ))
-        responses.extend([_function_response(5, "submit_script", {}), _message_response("结束")])
-        if scenario == "degraded":
-            # 仍有预算时允许一次原生补交付；第二次文字结束后才向工作流返回失败。
-            responses.append(_message_response("仍无法完成"))
+        if scenario == "repaired":
+            responses.extend([_function_response(5, "submit_script", {}), _message_response("结束")])
+        else:
+            # outputValidation 阻断后，交付状态白名单只签发 read_script/edit_script/
+            # run_script，submit_script 不在声明内；模型只能以文字结束，宿主按未提交
+            # 走一次原生补交付延续，第二次文字结束后才向工作流返回失败。
+            responses.extend([_message_response("结束"), _message_response("仍无法完成")])
         client = _ResponsesClient(responses)
         clients.append(client)
         base_factory = create_reporting_code_agent_factory(
@@ -308,7 +311,7 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
     assert len(runtime.shutdowns) == len(clients)
     for client in clients:
         if scenario == "degraded":
-            assert len(client.requests) == 4
+            assert len(client.requests) == 3
             assert not client.pending
         user_message = next(item for item in client.requests[0]["input"] if item.get("role") == "user")
         content = user_message["content"]

@@ -235,7 +235,7 @@ def test_profile_csv历史画像去冗余不改变业务统计(
     )
     profile = profiled.profile
 
-    assert profiled.context.profile_engine_version == "4.19.1"
+    assert profiled.context.profile_engine_version == "4.20.0"
     assert profiled.context.row_count == expected_rows
     assert profiled.context.duplicate_row_count == expected_duplicate_rows
     assert REDUNDANT_PROFILE_KEYS.isdisjoint(profile)
