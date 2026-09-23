@@ -545,8 +545,9 @@ class _ReportWorkflowRuntimeBase:
             raise ValueError("section_concurrency 必须在 1 到 5 之间")
         if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("reporting_execution_mode 必须是 sequential 或 parallel")
-        if planner_reasoning_effort not in {"high", "max"}:
-            raise ValueError("planner_reasoning_effort 必须是 high 或 max")
+        if planner_reasoning_effort not in {"low", "high", "max"}:
+            raise ValueError("planner_reasoning_effort 必须是 low、high 或 max")
+        self._planner_reasoning_effort = planner_reasoning_effort
         if (
             isinstance(planner_thinking_budget, bool)
             or not isinstance(planner_thinking_budget, int)
@@ -569,6 +570,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="request_normalization",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
@@ -595,6 +597,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="data_understanding",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 "只选择完成报告目标所需的数据表",
@@ -622,6 +625,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="measure_semantics",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 "这是待用户审核的候选，不是已确认业务事实；只依据输入 Schema、术语和受限数据画像分类",
@@ -650,6 +654,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="outline_planning",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
@@ -668,6 +673,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="analysis_planning",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
@@ -710,6 +716,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="analysis_evidence",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=_ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS,
         )
@@ -740,6 +747,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="analysis_summary",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 "只回答 currentAnalysis 的原子管理问题，所有数字和结论必须来自 deterministicFacts 或 supplementalEvidence。",
@@ -759,6 +767,7 @@ class _ReportWorkflowRuntimeBase:
                 operation="sql_planning",
                 thinking_enabled=planner_enable_thinking,
                 configured_budget_cap=planner_thinking_budget,
+                reasoning_effort=planner_reasoning_effort,
             ),
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
@@ -985,6 +994,7 @@ class _ReportWorkflowRuntimeBase:
             failure_kind=failure_kind,
             configured_budget_cap=thinking_policy.configured_budget_cap,
             thinking_enabled=thinking_policy.thinking_enabled,
+            reasoning_effort=thinking_policy.reasoning_effort,
         )
         scope = self._scope(run_context)
         block_identity = payload.get("analysisBlock")

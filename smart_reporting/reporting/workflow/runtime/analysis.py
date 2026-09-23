@@ -1018,6 +1018,7 @@ class RuntimeAnalysisMixin:
                             complexity=_visualization_thinking_complexity(request),
                             configured_budget_cap=self._analysis_thinking_budget_cap,
                             thinking_enabled=self._analysis_thinking_enabled,
+                            reasoning_effort=self._planner_reasoning_effort,
                         )
                         output = await ReportingStructuredOutputExecutor(
                             visualization_planner or self.visualization_generator

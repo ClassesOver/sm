@@ -62,11 +62,13 @@ def _temperature(values: MutableMapping[str, str], name: str, default: float) ->
 
 
 def _report_reasoning_effort(
-    values: MutableMapping[str, str], name: str, default: str = "high"
+    values: MutableMapping[str, str],
+    name: str,
+    default: str = "low",
 ) -> str:
     value = values.get(name, default).strip().lower()
-    if value not in {"high", "max"}:
-        raise ValueError(f"{name} 必须是 high 或 max")
+    if value not in {"low", "high", "max"}:
+        raise ValueError(f"{name} 必须是 low、high 或 max")
     return value
 
 
@@ -445,14 +447,16 @@ class AgentSettings:
             ),
             report_phase_temperature=_temperature(values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1),
             report_phase_reasoning_effort=_report_reasoning_effort(
-                values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="high"
+                values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="low"
             ),
             report_phase_thinking_budget=_positive_int(
                 values, "AGENT_REPORT_CODING_THINKING_BUDGET", 8192, maximum=131072
             ),
             report_enable_thinking=_flag(values.get("AGENT_REPORT_ENABLE_THINKING"), default=True),
             report_planner_reasoning_effort=_report_reasoning_effort(
-                values, "AGENT_REPORT_PLANNER_REASONING_EFFORT", default="high"
+                values,
+                "AGENT_REPORT_PLANNER_REASONING_EFFORT",
+                default="high",
             ),
             report_planner_thinking_budget=_positive_int(
                 values, "AGENT_REPORT_PLANNER_THINKING_BUDGET", 8192, maximum=131072

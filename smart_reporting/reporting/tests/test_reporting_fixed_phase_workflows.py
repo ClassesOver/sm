@@ -140,24 +140,42 @@ def _visualization_payload() -> dict[str, object]:
     ],
     ids=("analysis", "fact-path", "data-path", "field"),
 )
-async def test_visualization_workflow_rejects_untrusted_data_binding_before_coding(
+async def test_visualization_workflow_warns_on_data_binding_mismatch_and_continues(
     field: str, value: object
 ) -> None:
     chart_payload = _chart().model_dump(mode="json", by_alias=True)
     chart_payload["dataBindings"][0][field] = value
     plan = VisualizationPlanDraft(charts=(ChartDraft.model_validate(chart_payload),))
-    run_code = AsyncMock(side_effect=AssertionError("无效绑定不得进入 Coding"))
+    code_result = CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt(
+            "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+        ),
+        visual_inspection_receipts=(_inspection(),),
+    )
+    submit = AsyncMock(return_value={"status": "accepted"})
     workflow = VisualizationSectionWorkflow(
         generate_plan=AsyncMock(return_value=plan),
-        run_code=run_code,
-        submit=AsyncMock(),
+        run_code=AsyncMock(return_value=code_result),
+        submit=submit,
     )
 
-    with pytest.raises(ReportingError) as caught:
-        await workflow.run(_visualization_payload(), _context())
+    messages = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        result = await workflow.run(_visualization_payload(), _context())
+    finally:
+        logger.remove(sink_id)
 
-    assert caught.value.code == "report_phase_contract_invalid"
-    run_code.assert_not_awaited()
+    assert result.status == "accepted"
+    assert result.inspections == (_inspection(),)
+    submit.assert_awaited_once_with(plan, (_inspection(),), _context())
+    warnings = [
+        message for message in messages
+        if "report_visualization_binding_mismatch" in str(message)
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].record["extra"]["details"][field] == value
 
 
 def test_analysis_executor_does_not_assemble_report() -> None:
@@ -1226,8 +1244,10 @@ async def test_section_generation_attaches_response_validator_to_plan_stage(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
 async def test_section_generation_plans_then_renders_each_block_serially(
     monkeypatch: pytest.MonkeyPatch,
+    effort: str,
 ) -> None:
     work_item = _section_work_item().model_copy(
         update={
@@ -1336,10 +1356,12 @@ async def test_section_generation_plans_then_renders_each_block_serially(
             attempt=0,
             configured_budget_cap=8192,
             thinking_enabled=True,
+            reasoning_effort=effort,
         ),
     )
 
     assert stages == ["plan", "block-1", "block-2"]
+    assert [item.reasoning_effort for item in decisions] == [effort, None, None]
     assert [
         (item.operation, item.enabled, item.thinking_budget, item.attempt) for item in decisions
     ] == [

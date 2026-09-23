@@ -2638,6 +2638,120 @@ def test_runtime_defaults_analysis_evidence_planner_to_dynamic_requirements() ->
         assert not hasattr(stage.model, "_report_thinking_escalation_fields")
 
 
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+@pytest.mark.anyio
+async def test_runtime_planner_configured_effort_reaches_chat_request(monkeypatch, effort) -> None:
+    from smart_reporting.runtime.settings import AgentSettings
+
+    settings = AgentSettings.from_environment(
+        {"AGENT_REPORT_PLANNER_REASONING_EFFORT": effort}, load_env_file=False
+    )
+    requests = []
+
+    async def fake_aresponse(request_model, *args, **kwargs):
+        requests.append(request_model.get_request_params())
+        return ModelResponse(content=data_understanding().model_dump_json(by_alias=True))
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", fake_aresponse)
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(),
+        reporting_agent_template=Agent(
+            model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+        ),
+        task_runner=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_reasoning_effort=settings.report_planner_reasoning_effort,
+        planner_enable_thinking=settings.report_enable_thinking,
+        state_repository=SimpleNamespace(),
+    )
+    runtime._scope = lambda _context: {"userId": "user-1"}
+    assert runtime._planner_reasoning_effort == effort
+    context = RunContext(run_id="planner-effort-test", session_id="session-1", session_state={})
+
+    await runtime._run_planner(runtime._data_understanding_agent, {}, context)
+    await runtime._run_planner(
+        runtime._data_understanding_agent, {}, context,
+        attempt=1, failure_kind="schema_failure",
+    )
+
+    assert [request["reasoning_effort"] for request in requests] == [effort, "high"]
+    assert all(request["extra_body"]["enable_thinking"] is True for request in requests)
+
+
+@pytest.mark.anyio
+async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
+    from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft
+
+    requests = []
+
+    async def fake_aresponse(request_model, *args, **kwargs):
+        requests.append(request_model.get_request_params())
+        return ModelResponse(content='{"charts":[],"warnings":[]}')
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", fake_aresponse)
+    planner = Agent(
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        output_schema=VisualizationPlanDraft,
+    )
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(), reporting_agent_template=planner,
+        task_runner=SimpleNamespace(
+            repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+            start=AsyncMock(),
+        ),
+        workspace_service=SimpleNamespace(), registry=SimpleNamespace(),
+        profiles=SimpleNamespace(), planner_reasoning_effort="low",
+        planner_enable_thinking=True, state_repository=SimpleNamespace(),
+        visualization_generator=planner,
+    )
+    context = RunContext(run_id="visualization-effort", session_id="session-1", session_state={})
+    checkpoint = SimpleNamespace(trace=(), visualization_section_errors={})
+    runtime._current_reporting_checkpoint = AsyncMock(return_value=checkpoint)
+    runtime._persist_reporting_checkpoint = AsyncMock()
+    runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
+    runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
+    runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
+    runtime._envelope = lambda _context: SimpleNamespace(report_goal="分析收入", visualization_mode="auto")
+    runtime._visualization_section_fact_projection = AsyncMock(return_value={"analysisId": "analysis_001"})
+    runtime.state_repository.get = AsyncMock(side_effect=[
+        SimpleNamespace(payload={"analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}}}),
+        SimpleNamespace(payload={"completedVisualizationSections": ["section_001"]}),
+    ])
+    outline = ReportOutline.model_validate({
+        "reportType": "topic", "title": "收入分析",
+        "sections": [{"code": "section_001", "sectionNumber": "1", "title": "收入", "analysisIds": ["analysis_001"]}],
+    })
+    monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
+    monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [object()])
+
+    async def run_workflow(workflow, payload, run_context):
+        plan = await workflow.generate_plan(payload, run_context)
+        return SimpleNamespace(plan=plan)
+
+    async def run_task(scope, *, executor, **_kwargs):
+        return await executor(SimpleNamespace(
+            scope=scope, run_context=context,
+            model_metrics_settlement=SimpleNamespace(stage_recorder=lambda *_args, **_kwargs: None),
+        ))
+
+    monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", run_workflow)
+    runtime.task_runner.run = run_task
+    identity = FileIdentity(path="facts/analysis.json", size=2, sha256="a" * 64)
+    await runtime._run_visualization_section_task("section_001", context={
+        "run_context": context, "checkpoint": checkpoint, "external_run_id": "run-1",
+        "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
+        "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
+        "validation_context_file": identity,
+    })
+
+    assert len(requests) == 1
+    assert requests[0]["reasoning_effort"] == "low"
+    assert requests[0]["extra_body"]["enable_thinking"] is True
+
+
 @pytest.mark.skip(reason="V1 已将 analysis script agent 改为 task factory")
 def test_runtime_planner_policies_honor_disabled_thinking() -> None:
     runtime = ReportWorkflowRuntime(
@@ -2890,6 +3004,19 @@ def test_qwen_max_reasoning_uses_supported_xhigh_transport() -> None:
     assert model.reasoning_effort == "xhigh"
     assert reporting_thinking_profile_from_model(model) == ReportingThinkingProfile.on(
         reasoning_effort="max",
+        thinking_budget=8192,
+    )
+
+
+def test_shared_phase_model_accepts_low_reasoning_effort() -> None:
+    model = ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    apply_reporting_thinking_profile(
+        model,
+        ReportingThinkingProfile.on(reasoning_effort="low", thinking_budget=8192),
+    )
+
+    assert reporting_thinking_profile_from_model(model) == ReportingThinkingProfile.on(
+        reasoning_effort="low",
         thinking_budget=8192,
     )
 

@@ -103,12 +103,15 @@ class ThinkingPolicyConfig:
     operation: ThinkingOperation
     thinking_enabled: bool
     configured_budget_cap: int
+    reasoning_effort: ReportingReasoningEffort = "high"
 
     def __post_init__(self) -> None:
         if self.operation not in _INITIAL_THINKING_BUDGETS:
             raise ValueError("operation 无效")
         if not isinstance(self.thinking_enabled, bool):
             raise ValueError("thinking_enabled 必须是布尔值")
+        if self.reasoning_effort not in {"low", "high", "max"}:
+            raise ValueError("reasoning_effort 必须是 low、high 或 max")
         if (
             isinstance(self.configured_budget_cap, bool)
             or not isinstance(self.configured_budget_cap, int)
@@ -125,10 +128,13 @@ class ThinkingRequest:
     failure_kind: ThinkingFailureKind | None = None
     configured_budget_cap: int = 8192
     thinking_enabled: bool = True
+    reasoning_effort: ReportingReasoningEffort | None = None
 
     def __post_init__(self) -> None:
         if self.operation not in _INITIAL_THINKING_BUDGETS:
             raise ValueError("operation 无效")
+        if self.reasoning_effort not in {None, "low", "high", "max"}:
+            raise ValueError("reasoning_effort 必须是 low、high 或 max")
         if self.complexity not in _COMPLEXITY_BUDGETS:
             raise ValueError("complexity 无效")
         if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
@@ -196,7 +202,7 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
         budget_source[request.complexity] if isinstance(budget_source, dict) else budget_source
     )
     budget = initial_budget
-    effort: ReportingReasoningEffort = (
+    effort: ReportingReasoningEffort = request.reasoning_effort or (
         "low" if request.operation in {"analysis_script", "visualization_script"} else "high"
     )
     reason = "initial_policy" if budget else "initial_off"
@@ -301,8 +307,8 @@ class ReportingThinkingProfile:
         if not 0 <= self.temperature <= 2:
             raise ValueError("Reporting thinking temperature 必须在 0 到 2 之间")
         if self.enabled:
-            if self.reasoning_effort not in {"high", "max"}:
-                raise ValueError("开启 Reporting thinking 时 reasoning_effort 必须是 high 或 max")
+            if self.reasoning_effort not in {"low", "high", "max"}:
+                raise ValueError("开启 Reporting thinking 时 reasoning_effort 必须是 low、high 或 max")
             if (
                 isinstance(self.thinking_budget, bool)
                 or not isinstance(self.thinking_budget, int)
@@ -380,14 +386,16 @@ def reporting_thinking_profile_from_model(
         else model.reasoning_effort
     )
     budget = extra_body.get("thinking_budget")
-    if raw_effort == "high":
-        effort: ReportingReasoningEffort = "high"
+    if raw_effort == "low":
+        effort: ReportingReasoningEffort = "low"
+    elif raw_effort == "high":
+        effort = "high"
     elif raw_effort == "max" or (
         raw_effort == "xhigh" and str(model.id or "").strip().lower().startswith("qwen")
     ):
         effort = "max"
     else:
-        raise ValueError("Reporting 模型开启 thinking 时缺少 high/max reasoning_effort")
+        raise ValueError("Reporting 模型开启 thinking 时缺少 low/high/max reasoning_effort")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
         raise ValueError("Reporting 模型开启 thinking 时缺少有效 thinking_budget")
     return ReportingThinkingProfile.on(

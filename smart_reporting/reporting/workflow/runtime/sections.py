@@ -771,6 +771,7 @@ def _section_stage_thinking_request(request: ThinkingRequest, stage: str) -> Thi
         failure_kind=request.failure_kind if is_plan else None,
         configured_budget_cap=request.configured_budget_cap,
         thinking_enabled=request.thinking_enabled,
+        reasoning_effort=request.reasoning_effort,
     )
 
 
@@ -1689,6 +1690,7 @@ class RuntimeSectionsMixin:
                                 attempt=0,
                                 configured_budget_cap=self._analysis_thinking_budget_cap,
                                 thinking_enabled=self._analysis_thinking_enabled,
+                                reasoning_effort=self._planner_reasoning_effort,
                             ),
                         )
 
@@ -1727,6 +1729,7 @@ class RuntimeSectionsMixin:
                                 failure_kind=_section_recovery_failure_kind(recovery_diagnostic),
                                 configured_budget_cap=self._analysis_thinking_budget_cap,
                                 thinking_enabled=self._analysis_thinking_enabled,
+                                reasoning_effort=self._planner_reasoning_effort,
                             ),
                             recovery=recovery_diagnostic,
                         )

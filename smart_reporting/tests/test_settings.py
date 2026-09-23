@@ -55,7 +55,7 @@ def test_settings_defaults():
     assert current.model_structured_strict is True
     assert current.report_phase_enable_thinking is True
     assert current.report_phase_temperature == 0.1
-    assert current.report_phase_reasoning_effort == "high"
+    assert current.report_phase_reasoning_effort == "low"
     assert current.report_phase_thinking_budget == 8192
     assert current.report_enable_thinking is True
     assert current.report_planner_reasoning_effort == "high"
@@ -223,10 +223,20 @@ def test_invalid_reporting_phase_reasoning_effort_is_rejected(name):
         "AGENT_REPORT_PLANNER_REASONING_EFFORT",
     ],
 )
-@pytest.mark.parametrize("value", ["minimal", "low", "medium", "xhigh"])
+@pytest.mark.parametrize("value", ["minimal", "medium", "xhigh"])
 def test_reporting_reasoning_effort_only_accepts_deepseek_v4_levels(name, value):
     with pytest.raises(ValueError, match=name):
         settings(**{name: value})
+
+
+def test_reporting_coding_reasoning_effort_accepts_low():
+    current = settings(AGENT_REPORT_CODING_REASONING_EFFORT="low")
+    assert current.report_phase_reasoning_effort == "low"
+
+
+def test_reporting_planner_reasoning_effort_accepts_low():
+    current = settings(AGENT_REPORT_PLANNER_REASONING_EFFORT="low")
+    assert current.report_planner_reasoning_effort == "low"
 
 
 @pytest.mark.parametrize(

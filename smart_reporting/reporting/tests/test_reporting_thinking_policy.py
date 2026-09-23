@@ -7,6 +7,21 @@ from smart_reporting import model_routing
 from smart_reporting.reporting import model_policy
 
 
+@pytest.mark.parametrize(
+    ("operation", "enabled"),
+    [("request_normalization", True), ("outline_planning", True), ("data_understanding", False)],
+)
+def test_configured_low_preserves_thinking_off(operation, enabled) -> None:
+    decision = model_policy.select_reporting_thinking(
+        model_policy.ThinkingRequest(
+            operation=operation, reasoning_effort="low", thinking_enabled=enabled
+        )
+    )
+    assert decision.enabled is False
+    assert decision.reasoning_effort is None
+    assert decision.thinking_budget == 0
+
+
 def test_thinking_policy_api_is_available() -> None:
     assert hasattr(model_policy, "ThinkingRequest")
     assert hasattr(model_policy, "select_reporting_thinking")
