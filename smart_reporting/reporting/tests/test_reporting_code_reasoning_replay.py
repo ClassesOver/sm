@@ -48,6 +48,60 @@ def test_reasoning_survives_tool_projection_and_wire(name, kind):
     assert parsed.provider_data["reasoning_output"] == raw
 
 
+def test_custom_history_rebase_preserves_remaining_freeform_wire():
+    def custom_call(call_id: str, name: str, raw_input: str) -> dict:
+        argument = {"write_script": "source", "run": "code"}[name]
+        return {
+            "id": f"item-{call_id}",
+            "call_id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps({argument: raw_input}, separators=(",", ":")),
+            },
+            "provider_data": {
+                "reporting_wire_type": "custom",
+                "raw_input": raw_input,
+            },
+        }
+
+    messages = [Message(role="user", content="完成任务")]
+    for index, (call_id, name, raw_input) in enumerate(
+        [
+            ("call-1", "write_script", "# Python\nprint('first')\n"),
+            ("call-2", "run", "# Python\nprint('second')\n"),
+            ("call-3", "run", "# Python\nprint('third')\n"),
+        ]
+    ):
+        messages.extend(
+            [
+                Message(role="assistant", tool_calls=[custom_call(call_id, name, raw_input)]),
+                Message(
+                    role="tool",
+                    tool_name=name,
+                    tool_call_id=call_id,
+                    content=json.dumps({"ok": True, "index": index}),
+                ),
+            ]
+        )
+
+    model = ReportingCodeOpenAIResponses(id="test", api_key="test", store=False)
+    model._task_execution_input_token_budget = 50_000
+    model.count_tokens = lambda messages, *args, **kwargs: sum(
+        len(str(message.content)) // 4 + 1 for message in messages
+    )
+    projected = model._project(messages, (), {})
+    wire = [
+        item if isinstance(item, dict) else item.model_dump(exclude_none=True)
+        for item in model._format_messages(projected)
+    ]
+
+    custom_inputs = [item["input"] for item in wire if item.get("type") == "custom_tool_call"]
+    assert custom_inputs == ["# Python\nprint('second')\n", "# Python\nprint('third')\n"]
+    assert [item["call_id"] for item in wire if item.get("type") == "custom_tool_call"] == [
+        "call-2",
+        "call-3",
+    ]
 @pytest.mark.parametrize("model_id,host,enabled", [
     ("deepseek-v4-flash-0731", "token-plan.cn-beijing.maas.aliyuncs.com", True),
     ("qwen3.8-flash", "token-plan.cn-beijing.maas.aliyuncs.com", True),
