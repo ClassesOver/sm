@@ -1,5 +1,7 @@
 # Reporting Thinking Budget Implementation Plan
 
+> **历史计划，2026-09-23 对齐说明：** 本文的“脚本首轮关闭思考”“启用档仅 high/max”等旧要求已被后续决策取代，不再按这些旧要求实施。当前 Coding 默认 low 且首轮开启思考；Workflow planner 支持配置 low/high/max、默认 high；初始 off 阶段和失败恢复策略保留。Responses 不发送 thinking_budget。以 `2026-09-20-reporting-coding-performance-optimization.md` 的当前配置与验收为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 Reporting 的模型能力路由与单次调用 thinking 预算解耦，使数据理解和 SQL 规划首次固定使用 2K、确定性脚本首次关闭 thinking，并仅在明确可恢复失败时有界升级。

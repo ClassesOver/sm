@@ -1,5 +1,7 @@
 # Reporting 思考预算分层设计
 
+> **历史设计，2026-09-23 对齐说明：** 下文保留当时方案，不代表当前 effort 默认值。当前 Coding 默认 low 且首轮开启思考；Workflow planner 支持配置 low/high/max、默认 high；初始 off 阶段及失败恢复 high/max 策略保留。Chat 的阶段预算不得当作 Responses 的参数或硬上限。当前执行与验收以 `../plans/2026-09-20-reporting-coding-performance-optimization.md` 的“当前配置与文档对齐”为准，历史测试数据不重写。
+
 ## 背景
 
 当前 Reporting 将模型能力档位、Durable 任务类型和单次模型调用的 thinking 配置部分耦合。

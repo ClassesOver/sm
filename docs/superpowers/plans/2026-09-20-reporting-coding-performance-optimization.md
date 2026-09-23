@@ -4,7 +4,44 @@
 
 **唯一核心目标：** 减少分析与可视化 Coding 的 reasoning 时间及长尾，并降低包含上游规划在内的任务总耗时；保留首轮 reasoning、首次成功率、精准局部 patch 和报表质量。章节任务范围、输入压缩、计划字段、缓存和 effort 都只是实现手段，不以输入更短、首个工具更早返回或架构重构本身作为成功标准。
 
-**最新执行约束（2026-09-22）：** 用户在 low 诊断后明确要求 Coding 默认 low，取代此前仅用 high 的要求。生产 `analysis_script` 与 `visualization_script` 默认 `reasoning.effort=low`，思考保持开启；已有编译、执行及视觉失败恢复策略仍升级 high，planner 和其他阶段保持原策略。Responses 保留 summary 和 parallel_tool_calls，不添加 thinking_budget。阶段策略测试 55 passed，Responses wire 测试 8 passed，Ruff 通过。历史 high 样本保留；low 诊断不是严格单变量 A/B，不据此宣称稳定收益。
+**最新执行约束（2026-09-23）：** Coding 默认 low，取代此前仅用 high 的要求。生产 `analysis_script` 与 `visualization_script` 默认 `reasoning.effort=low`，思考保持开启；已有编译、执行及视觉失败恢复策略仍升级 high。用户补充允许 planner 使用 low：`AGENT_REPORT_PLANNER_REASONING_EFFORT` 支持 `low/high/max`，未显式设置时仍默认 high，不将“允许 low”解释为强制切换默认值。Responses 保留 `reasoning.summary=auto` 和 `parallel_tool_calls=true`，不添加 `thinking_budget`。此前阶段策略测试 55 passed、Responses wire 测试 8 passed 是历史验证记录，不作为本次 planner low 的验收。历史 high 样本保留；low 诊断不是严格单变量 A/B，不据此宣称稳定收益。
+
+### 当前配置与文档对齐（2026-09-23）
+
+| 配置或阶段 | 当前约定 |
+| --- | --- |
+| Coding | 默认 low；首轮思考保持开启 |
+| `_run_planner` 路径的 Workflow planner | 可配置 low/high/max；默认 high；启用思考的首轮使用配置值 |
+| 请求标准化、提纲等初始 off 阶段 | 保留 off，不因 planner 配置 low 而开启思考 |
+| 失败恢复 | 命中既有恢复条件时仍采用阶段 high/max 策略；不增加重试次数 |
+| Chat budget 与 Responses | 保留既有 Chat 阶段预算逻辑；不把它写成 Responses 参数或已验证的 reasoning token 硬上限 |
+
+### 已落地的 reasoning 长尾控制机制（2026-09-23 汇总）
+
+以下 P0 机制已代码落地并通过定向测试。真实 provider 效果仍需冻结回放的配对 A/B 验证。
+
+| 机制 | 位置 | 作用 | 测试状态 |
+| --- | --- | --- | --- |
+| Coding 默认 `reasoning.effort=low` | `runtime/settings.py`、`model_policy.py` | 减少首轮和常规轮次的推理量 | thinking policy 58 passed + settings 50 passed |
+| Planner effort 可配置 | `base.py`、`settings.py` | 支持 `AGENT_REPORT_PLANNER_REASONING_EFFORT=low` 切换，默认 high | planner contracts 127 passed |
+| Compact continuation | `code_generation.py`、分析/可视化路径均开启 | 修复轮用干净会话重连，不携带完整历史 | code continuation 定向测试通过 |
+| 视觉修复 critical-only 回执 | `code_agent/delivery.py` | 非阻断 warning 不进入修复上下文，减少 patch 范围 | delivery 测试通过 |
+| 修复轮 facts 投影（B1） | `code_generation.py::_repair_task_facts` | 修复轮只保留脚本路径、输出契约、必要 facts | code input 61 passed |
+| 动态 `codingRequirements` | `analysis_item_workflow.py`、默认 candidate | evidence planner 签发计算要求，Coding 直接实现 | fixed phase workflows 测试通过 |
+| 错误回执 AST 函数级定位 | toolkit | 失败时给出函数级修改范围和源码片段 | code diagnostics 测试通过 |
+| 确定性首轮预执行 | `code_generation.py` | 已有脚本先宿主运行一次，省一轮模型请求 | 定向测试通过 |
+| `parallel_tool_calls=true` | protocol、默认开启 | 允许 provider 最大化批量返回工具调用 | mixed call 测试 4 passed |
+| `view_image` 关闭 thinking | `vision.py` | 视觉审查用 Chat + no thinking | vision 集成验证通过 |
+| Context 压缩保护 incomplete batch 与失败身份 | `context_management.py`、`code_agent/protocol.py`、`toolkit.py`、`delivery.py`（2026-09-23 新增） | 部分完成的工具调用批次不被压缩删除；未解决失败 callId 与代表当前源码的 read 轮次受保护，结果 SHA 已过时的 read_script 轮次被丢弃 | context 57 passed + agent projection 35 passed + 失败身份定向 3 passed |
+| 同一 arun 确定性历史摘要与元数据预算 | `context_management.py`（2026-09-23 新增） | 旧 custom 调用改写为固定结构摘要（tool/status/code/SHA/bytes/callId/nextTools），单摘要 8 KiB、整批 32 KiB 两级预算，0.60 token 门禁先于 0.75 窗口重建触发 | context + reasoning replay 77 passed，相邻文件 180 passed |
+| 视觉审查阶段开放 submit_script | `delivery.py`、`toolkit.py`（2026-09-23 新增） | 审查最后一张图后模型可直接提交，省一轮 view_image→submit 的模型往返 | delivery 测试通过 |
+
+如需 planner low，在 `.env` 中设置 `AGENT_REPORT_PLANNER_REASONING_EFFORT=low`；`.env.example` 继续展示默认 high。本轮不自动修改用户的 planner 环境配置。
+
+- 配置链路：环境配置 → runtime 构造校验 → planner 的 `ThinkingPolicyConfig` → 每次调用的 `ThinkingRequest` → 阶段决策 → Chat 请求参数。修复此前构造参数只校验、不参与调用级 effort 决策的问题。本轮覆盖请求标准化、数据理解、指标语义、提纲、分析计划、分析补证、分析摘要与 SQL 规划的八个 Agent；2026-09-23 复核确认可视化规划（`analysis.py`）与章节规划（`sections.py`）的 `ThinkingRequest` 构造路径同样已接入该配置。
+- 验收：配置与请求链路定向测试 17 passed，思考策略回归 58 passed；覆盖 low/high/max 的首轮请求参数、已有 schema 失败恢复，以及初始 off/全局关闭策略。离线测试仅证明参数传递和策略，不证明 provider 已接受或性能改善。
+- 范围边界：可视化规划与章节规划路径已接入同一 planner effort 配置并有请求级定向测试；默认仍为 high，不把“已接入”写成“全部 planner 已切换 low”，真实收益仍待配对回放。
+- 待完成：冻结同一输入，保持 Coding 配置不变，仅改变 planner effort，采集完整成功回放与实际 usage、总耗时、首次成功率；未取得配对样本前，不宣称 planner low 已解决 reasoning 长尾。
 
 **输入精简实验结论：** 曾尝试首轮省略 `outputContract.example`，保留 schema、rules、全部业务事实与任务 actions。high 回放 `/tmp/reporting-analysis-high-noexample-20260922.json` 首轮仍为 `577.237s / 42,445 reasoning tokens`，总 Coding `587.808s / 42,715 reasoning tokens`，虽一次通过但相较目标没有性能收益；示例仅减少约 278 字节，不能解决长推理。因此已撤销该改动，避免削弱输出契约的示例参照。后续不再做类似表面删提示实验，转向动态 `codingRequirements` 是否能减少模型自行规划的单变量评估。
 
@@ -42,7 +79,29 @@
 5. **工具元数据预算。** 对齐 Codex 的两级预算：单个旧工具参数摘要上限 8 KiB，整批 Coding 历史元数据上限 32 KiB。超过预算时优先丢弃已解决结果的 stdout/stderr 和来源证据，最后才缩减旧调用摘要；当前失败和最近源码身份不得丢弃。
 6. **阶段级 effort。** Coding 默认继续 `low` 且首轮保持 thinking；planner、复杂首次规划和明确升级的修复阶段按现有策略运行。`view_image` 保持关闭 thinking。不要用提高/降低 effort 替代上下文压缩，也不要新增 `thinking_budget`。
 
+**2026-09-23 实施状态：** 第 1、2、5 项已在 `context_management.py` 落地（子 agent 实现，主 agent 复核）：`project_with_metrics` 在窗口重建前增加 0.60 token 门禁（`CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD`，取 0.75 重建阈值与 0.50 rebase target 的中位，未经冻结回放校准），命中后先把已完成的旧 `write_script`/`edit_script`/`run` 调用改写为固定结构摘要（`tool/status/code/sourceSha256/patchSha256/bytes/callId/nextTools`，stdout/stderr 与源码证据只留 Workspace），并执行两级元数据预算（单摘要 8 KiB、整批 32 KiB；降级顺序为结果回执 → `nextTools` → 从旧到新削 `code`/SHA）；摘要后回落到 0.75 以下则不再整轮丢弃。当前调用、`protected_call_ids`（未解决失败与当前 read）、incomplete 调用保留原文；call identity、reasoning item 与 canonical 历史不变，wire 仍为原生 `custom_tool_call`。新增 `metadata_bytes`、`truncated_calls`、`compaction_tokens_before/after` metrics。自有测试文件 77 passed，相邻受影响文件 180 passed，ruff 与 diff 检查通过。极端情形（>约 110 个旧调用）下摘要最小体积本身会超 32 KiB，如实记录后交既有 0.75 重建兜底。
+
+**2026-09-23 第 3 项已落地（子 agent 实现）：** `code_generation.py` 的同 run 压缩 continuation 作为现有 `compact_continuation` 开关（默认关闭、生产不传入）的自然扩展：窗口结束后用该窗口逐请求指标评估触发（任一请求 `inputTokens` ≥ 默认 hard cap × 0.60，或防御性消费投影层压缩标记），重连走同一 Agent `arun(add_history_to_context=False)`，任何路径不调用 `acontinue_run`；重连次数封顶 2 次，预算/工具数兜底；payload 含任务边界、`_repair_task_facts`、diagnostic、delivery state 与 `compaction` 块（windowId/beforeTokens/sourceSha256/summarizedToolCalls/nextTools）；验收字段 `compactionTriggered/BeforeTokens/AfterTokens/WindowId/retainedCallCount/truncatedCallCount` 已写入 coding metrics 与失败 details，unknown 语义保持。新增 5 用例 + 定向回归 127 passed；HEAD 既有 4 个 seed 预执行失败经 HEAD 版本对照确认无关。已知缺口：重连只能发生在 arun 交还控制权的边界（单次 arun 内逐请求增长由投影层 0.60 门禁负责）。**第 4 项四组真实对照仍未实施**。
+
+**2026-09-23 接线与门禁校准已完成（主 agent 实施）：** 此前两个缺口均已闭环——
+- 投影 metrics 接线：`protocol._project` 每轮把有界投影快照（`compaction_triggered/compacted_calls/metadata_bytes/truncated_calls/compaction_tokens_before/after/projected_estimated_tokens/window_rebased/dropped_complete_rounds`，全部 int/bool）暂存并在下一次请求的 requestMetric 中一次性消费（同步 invoke 路径丢弃，不错误归属）；run 级压缩信号与 `truncatedCallCount` 的防御性消费自此生效，回放结果 JSON 的逐请求 requestMetrics 也会携带这些字段。边界：阶段 settlement 的 requestMetrics 归一化是白名单（requestIndex/providerRequestId/durationMs/status/toolCalls 等），投影字段不进入 `modelMetricsByStage` 持久化，属有意保持的有界契约。
+- 门禁校准：校准分析（子 agent 只读报告）显示 25 请求样本输入 min 7,816 / 中位 16,252 / p90 21,207 / max 30,640，锯齿缓升且由投影剪枝收敛，**input 与 reasoning 的 Pearson 相关 −0.057（无相关）——压缩解决的是历史体积与协议安全，不能宣称降低 reasoning**；历史最差续修观测 74,711。按比例派生的 0.60×hard_cap≈118K 永不触发。据此新增绝对门禁 `CODING_COMPACTION_INPUT_TOKEN_GATE = 20_000`（取样本 p75–p90 下沿，长修复链后半程触发、首轮与短任务不触发，安全下界 18K、≤16K 否决），实际门禁取 `min(hard_cap × 0.60, 20_000)`，小窗口模型仍受比例约束；`code_generation.py` 的 `RUN_COMPACTION_INPUT_TOKEN_THRESHOLD` 同步为同一值。在该样本上触发率为 7/25（第 15 轮起）。接线与阈值新增 3 个定向用例，合并回归 85 passed，ruff 与 diff 检查通过。20,000 为单一长链样本校准的初始值，需四组对照按首次 patch 应用率与 P50/P95 再微调。
+
 ### Codex 对齐方案的验收标准
+
+**2026-09-23 四组对照战役已完成（25 次真实回放、23 个非删失样本、0 真删失，产物在 `.local/reporting-validation/compaction-ab-20260923/`）。** 执行中修正了两处实验口径：删失判定改为"仅 wall-timeout/无完整结果"（exit 1 + 完整 metrics 记为非删失失败样本）；G1 基线语义修复为 B0 生产的强制 rebase（修复前的 g1-1..3 改记为 `aux-never-compact-*` 辅助样本）。结果与结论：
+
+| 组 | 交付率 | 峰值输入形态 | 备注 |
+| --- | --- | --- | --- |
+| G1 真基线（强制 rebase） | **0/5** | 11–24K 振荡、峰值 ~15–40K | 旧生产行为在本任务上本身脆弱 |
+| G2 仅摘要 | 2/5 | P50 峰值 ~51–59K | |
+| G3 摘要+continuation | 2/5 | 同上 | continuation 零覆盖（见下） |
+| G4 全量 | 2/5 | 峰值最高 144,951 | 元数据预算无可分辨效果 |
+| aux 永不压缩（辅助） | **3/3** | 61–87K | 输入最大却全部通过 |
+
+- **验收逐条对照：** 压缩后下一请求确实只含摘要+当前上下文（字节层 33KB→6–7KB/次、truncated_calls 恒 0，达标）；压缩前后 call_id/工具名/状态/SHA 一致、无伪调用（达标）；质量四指标 G2–G4 相对 G1 不劣化（patch 1–2/5 vs 2/5、首跑 0 vs 0、交付 2/5 vs 0/5、critical 1–2/5 vs 2/5，噪声级，按门槛通过）；四组 ×5 样本已采集（达标）；验收字段齐全（达标）。
+- **但核心结论是否定性能预期：** ① provider 实际输入在摘要组仍线性增长（g2-4：7.8K→109,483，33 次压缩无效），因为 DeepSeek 契约要求的 reasoning 回放与图像 token 不在摘要作用域——**摘要压住了 custom history 字节，压不住 provider 输入**；② 输入大小与交付成败无同向关系（aux 输入最大却 3/3 通过，真基线输入最小却 0/5），与校准报告的 input↔reasoning 无相关结论互证；③ 失败模式（custom_tool_protocol_error×6、model_request_limit×4、script_edit_invalid×3、no_submission×1，四组均有）是模型协议行为长尾，与摘要触发无时间序关联。**因此压缩机制不推广为性能手段，保留为协议安全网（窗口保护、调用链完整性）；性能主线回到首轮重复规划（动态 requirements 方向）与 low 档方差治理。**
+- **战役暴露的口径问题（后续验收采纳）：** continuation 在 10 个 G3/G4 样本中 `compactContinuationApplied` 全 false——所有失败都是错误终止而非"模型干净提前结束"，该特性价值本战役无法评价；`firstRunSuccess` 全 23 样本 false（首跑系统性命中 declared_output_missing 软拒绝），不宜作验收门禁；n=5 且组内方差极大（G1 同组 508s/22K reasoning 到 887s/49K），所有性能数字仅描述性。**`rawProtocolCorrect` 恒 false 已按口径 (c) 修复（2026-09-23）：** 战役量化显示 166 次信封归一化（97% 集中在 edit_script 大 payload、首轮从不出现），其中 17/23 样本的 false 完全由单层 data 信封兼容解封造成，仅 6 个样本有真违规（阶段范围 declaration mismatch，G4 占 3 个——被淹没的真实信号）。现将信封解封从协议违规拆分为独立指标 `envelopeNormalizedInputs`（budget/模型访问器/codingMetrics 透出），`rawProtocolCorrect` 只统计真违规（未声明/类型不符/重复身份/伪调用/多层信封仍记 false）；解封边界不变（仅单层、键恰为 `{"data"}`、内层带合法前缀），不引入 DashScope 会 400 的请求侧加固。测试锁定：metrics 49 passed + interactive/scope 定向通过。
 
 - 同一冻结任务中，连续请求输入 token 不得线性增长到完整源码大小；触发压缩后下一请求必须只包含摘要和当前必要上下文。
 - 压缩前后 `call_id`、工具名、成功/失败状态、源码 SHA 和交付状态一致；不得出现伪工具调用、重复副作用或协议回放错误。
@@ -72,7 +131,7 @@
 
 **同输入脚本复杂度漂移（口径修正）：** 慢样本首轮总 output tokens 为 42,165，其中 reasoning 37,419、可见输出 4,746；快样本分别为 21,660、19,021、2,639。总 output tokens 不能当作工具参数长度。慢样本包含更多日期解析、校验和比较输出，但仅两次观察不能证明代码复杂度导致 reasoning 长尾。后续只按证据评估签发计算范围的歧义，不新增未经验证的规划字段或固定主题算法。
 
-**DeepSeek 官方参数核对与 low 诊断：** 官方 Responses 文档确认 `reasoning.effort` 支持 `none/low/high/max`，思考模式默认 high；`thinking_budget` 不属于 Responses 参数；工具调用思考模式要求后续请求完整回传 reasoning 内容；`parallel_tool_calls` 在 DeepSeek Responses 中被忽略且始终开启。当前实际回放 endpoint 为 DashScope，保留已验证的 custom tool wire 适配，不直接套用 DeepSeek 官方对 custom 工具名称的限制。使用同一 candidate payload 做 low 诊断（该次仍带未提交的 requirements 文案实验，故不作严格 A/B）：Coding `75.771s / 3,383 reasoning tokens`，首轮 `69.042s / 3,377`，一次成功；high 生产默认保持不变。
+**DeepSeek 官方参数核对与 low 诊断：** 官方 Responses 文档确认 `reasoning.effort` 支持 `none/low/high/max`，思考模式默认 high；`thinking_budget` 不属于 Responses 参数；工具调用思考模式要求后续请求完整回传 reasoning 内容；`parallel_tool_calls` 在 DeepSeek Responses 中被忽略且始终开启。当前实际回放 endpoint 为 DashScope，保留已验证的 custom tool wire 适配，不直接套用 DeepSeek 官方对 custom 工具名称的限制。使用同一 candidate payload 做 low 诊断（该次仍带未提交的 requirements 文案实验，故不作严格 A/B）：Coding `75.771s / 3,383 reasoning tokens`，首轮 `69.042s / 3,377`，一次成功。该段原有“high 默认保持不变”结论已被 2026-09-22 用户确认的 Coding 默认 low 决策取代；planner 仍保持 high。
 
 **技术栈：** Python、Agno、Responses API、free-form custom tool、Lark grammar、loguru、pytest、Ruff。
 
@@ -457,7 +516,7 @@ R7.1 的结构契约与定向测试已完成。3 组 high-effort 对照显示 ca
 
 - [x] 先在 `test_reporting_phase_models.py` 写 schema 失败用例，要求每张图具有非空 `visualForm` 和至少一个 binding；拒绝空字段和重复 binding；未知 descriptor 字段由 Coding 前的确定性交叉校验拒绝。保持 renderer、输出路径、标题、期间、citation、metric 和 comparability 的现有行为。
 - [x] 确认现有可视化规划请求携带完整 facts descriptors。由 `analysis.py` 的确定性投影为 metric、derivedMetric、comparison 和 supplemental finding 的每个可绑定 `dataPath` 明确列出 `fields`；生成器指令只能从 descriptor 复制 `analysisId`、事实文件 path、`dataPath` 和 `fields`，不能猜测。
-- [x] 在 `visualization_section_workflow.py` 增加纯确定性交叉校验：`factPath` 必须等于当前分析项 `factFile.path` 或其 `supplementalEvidenceSources[].sourceFile.path`；`dataPath` 必须等于对应 descriptor 声明的路径；`fields` 必须是该 descriptor 显式 `fields` 的非空子集；任何不匹配在 Coding 启动前以契约错误拒绝。
+- [x] 在 `visualization_section_workflow.py` 增加纯确定性交叉校验：`factPath` 必须等于当前分析项 `factFile.path` 或其 `supplementalEvidenceSources[].sourceFile.path`；`dataPath` 必须等于对应 descriptor 声明的路径；`fields` 必须是该 descriptor 显式 `fields` 的非空子集。**2026-09-23 契约变更（用户拍板）：不匹配从 `report_phase_contract_invalid` 硬错误改为 loguru 软告警**（`report_visualization_binding_mismatch`，携带 chartId/绑定身份/declaredFields），对齐 AGENTS.md"语义业务校验只需要软告警"；文件访问授权仍由执行层 AST 字面路径白名单硬校验。契约测试已同步为"不抛出 + 恰好一条 WARNING + 身份可审计"（benchmark_variants 45 passed）。
 - [x] 在 `analysis.py` 保证 `visualization_coding_facts()` 保留 binding 所引用的 descriptor 和文件身份，但不重新加入 summary、warnings、规划叙述或未引用的完整事实数据。计划和 Coding facts 使用相同受信来源，避免模型按标题二次定位；提交注册时剥离 `visualForm` 和 `dataBindings`，不扩展严格交付契约。
 - [x] 更新可视化 Coding 指令：逐图实现 `visualForm` 和 `dataBindings`；Coding 仍自行决定布局细节和函数组织，沿用宿主签发的单脚本身份契约。不得把 `role` 扩展成通用 Vega/Plotly DSL。
 - [x] 定向验证：phase schema、读取路径、渲染注册、V1 workflow 和 repair knowledge 合计 `84 passed`；无效 binding 与生成器指令节点 `5 passed`；目标文件 Ruff、compileall 和 `git diff --check` 通过。
@@ -562,7 +621,7 @@ class BenchmarkPlannerSpec:
 - [x] 生产阶段 recorder 已绑定稳定 `agentRole`：分析 evidence planner/Coding/summary 与可视化 planner/Coding 分开归属；同一 stage 混入不同 role 会在结算前硬失败。阶段仍保留 Agno run 聚合指标，同时 Coding 请求级 provider ID 已通过 `requestMetrics` 持久化；真实 provider A/B 的端到端覆盖仍由下一项负责。
 - [x] 已新增 `smart_reporting/reporting/tests/test_reporting_benchmark_variants.py` 定向契约测试：A/B 的模型、effort、summary、enable_thinking、parallel_tool_calls、输入文件 SHA、单脚本身份和验收条件相同；只允许 schema/instructions/Coding projection 三项变化。测试失败时不得调用 provider。
 - [x] 分析已在契约测试和健康探针通过后串行运行 legacy/candidate；原始请求、阶段 receipt、失败/终止信息和质量结果均落盘。缺失 reasoning 的样本只作协议/质量回归，不进入累计比较。2026-09-21 健康探针在关闭控制改为 `reasoning.effort=none` 后整体 `passed=true`；分析 high-effort A/B 已完成 3 组。
-- [ ] 可视化输入门禁已通过并尝试真实对照；两侧均在 planner 输出路径与授权集合不一致处停止，完整 A/B 未完成。不猜造字段，不修正模型路径来绕过门禁。
+- [ ] 可视化输入门禁已通过并尝试真实对照；两侧均在 planner 输出路径与授权集合不一致处停止，完整 A/B 未完成。不猜造字段，不修正模型路径来绕过门禁。2026-09-23 只读诊断（子 agent）：生产链路签发路径直接由 planner 输出派生，无漂移可能；漂移只发生在冻结 benchmark 门禁（`prepare_benchmark_coding_payload` 的 `_visualization_paths` 含 interactivePath 与冻结 `declared_output_paths` 严格集合相等）。最强假设为 revision-2 未声明 `visualizationMode`，`auto` 模式下 planner 选 plotly 附加 6 个 `.plotly.json` 与纯静态冻结集合不符（revision-3 补 `static` 后两侧即过门禁，方向一致但不能反推旧失败根因）；次强假设为 planner 文件名自由生成（schema 与指令均未要求逐字复制 requiredCharts 路径）。判别标准已明确：`unexpectedPaths` 全为 `.plotly.json` 且 `missingPaths` 为空即确认前者；出现改名 png 对则是后者。差集落盘机制已就位。2026-09-23 真实 planner 判别采样（探针先行、单次串行、candidate、planner 53.0s/3,836 reasoning）：差集为 missingPaths=全部 6 个签发静态 PNG、unexpectedPaths=8 个通用改名 PNG + 1 个 `.plotly.json`——**P1 不满足，P2 符合**（图表全部改名且 6→8 张，身份自由发挥），仅带 P1 弱迹象。边界：新 bundle 无历史 `requiredCharts` 身份约束（旧 prepare.py 丢失、形状未知、未伪造），改名漂移可能是无约束的直接后果，不能据此确认历史 revision-2 失败根因；n=1。新持久冻结输入已建于 `.local/reporting-validation/frozen-visual-v2/`（version 2 bundle、3 份授权 facts 原始字节、validate-only 通过；支持 candidate planner 单变量 A/B 与输出形态重复采样；不支持 legacy variant、不与旧 revision 直接配对）。完整链四组回放仍需先重新定义并审核等价的图表身份约束，否则门禁必然拦截。
 
 **R7.3 定向验证命令：**
 
@@ -598,7 +657,9 @@ class BenchmarkPlannerSpec:
 - [x] 追加 candidate planner 样本在 `4.228s/141 reasoning tokens` 后返回无需补证，按 `report_benchmark_coding_not_required` 门禁停止；该样本不进入 Coding 累计 reasoning 或首次运行率，但作为 planner gate failure 保留，证明 candidate planner 决策稳定性仍未达到推广要求。
 - [x] 同 bundle legacy 配对样本正常进入 Coding（planner `728`、Coding `8,837` reasoning，首次运行成功），candidate 则在 planner gate 停止；该配对仅作为决策稳定性诊断，不改动三组主 A/B 统计。
 - [x] planner replay 指标现在持久化 analysis 决策摘要（`requiresSupplementalEvidence`、`codingRequirementCount`），不保存 reason/missingFacts 原文；后续 gate failure 可直接统计决策分布。
-- [ ] 可视化真实 provider A/B 已尝试但未进入 Coding；新冻结输入见 2026-09-22 报告，路径漂移的具体原因仍待有差集的失败样本确认。单独 legacy planner 后续通过不代表两阶段收益验收。
+- [ ] 可视化真实 provider A/B 已尝试但未进入 Coding；新冻结输入见 2026-09-22 报告，路径漂移的具体原因仍待有差集的失败样本确认。单独 legacy planner 后续通过不代表两阶段收益验收。2026-09-23 只读诊断（子 agent）补充 candidate 修复轮非法 `edit_script` 的根因假设：按时序重建，"仅声明 `run_script`"的轮次要求编辑后的脚本已成功运行且预检未出结论（第 3 次响应应为 `edit_script + run_script` 多调用批次，可离线状态机模拟验证）；模型在该轮仍判断需要修改脚本，而当轮 `edit_script` 不在声明表内、没有 Lark grammar 约束输出形态，provider 退化为通用 `function_call` 类型返回，宿主 fail-closed 拒绝正确。现有证据无法区分模型/网关责任，也不能归因于 candidate 投影（后续同路径续修未复现）；revision-3 的 candidate-result.json 与 revision-2 失败差集随 /tmp bundle 清理无法恢复。2026-09-23 **H1 时序重建已离线确认**（真实 toolkit/delivery/protocol 代码 + 脚本化工具结果的状态机探针，新增 `test_reporting_delivery_state_machine_probe.py` 3 passed）："仅 `run_script`"状态在 4 请求预算内只有"第 3 次响应为 `edit_script + run_script` 同批多调用"一条可达路径；到达该状态后工具声明恰只含 function 型 `run_script`，provider 此时返回 function 型 `edit_script` 必然越界被拒。非法调用剩余问题收敛为可采样统计的拒绝率（无 grammar 约束时 provider 退化形态），不再是未解时序。另查明：旧 bundle 不可恢复（分析缺两份授权 CSV 物理字节，全盘/DB/git 无副本，SHA 已留档，恢复需从 StarRocks 按 facts provenance 重新物化；可视化 trace 提取因旧 planner 缺 `dataDescriptors` 按设计拒绝，prepare.py 路线三项输入全丢，详见 `/tmp/reporting-bundle-params/NOTES.md`）；新持久可视化冻结输入已重建于 `.local/reporting-validation/frozen-visual-v2/`。**2026-09-23 分析 bundle 已恢复：** 两份 CSV 按 facts provenance 从 StarRocks 重新物化（无 ORDER BY 导致 12 个连续块随机排列，用 trace 中三个分析会话的探索输出锁定遭遇序 + sha256 全排列命中逐字节验证，证据链见 `/tmp/reporting-bundle-params/RECOVERY-EVIDENCE.md`），bundle 重建于 `/tmp/reporting-r7-analysis-v2`（及 low 变体）并 validate-only 通过。
+
+**2026-09-23 分析 low 档 requirements 配对（R7.1/R7.3 首个 low 档配对证据）：** 同一 bundle、`deepseek-v4-flash-0731`、Coding low / planner high、summary=auto、enable_thinking=true、parallel_tool_calls=true，legacy/candidate 交替串行各 3 组，6/6 全部交付、零删失（产物 `.local/reporting-validation/requirements-ab-20260923/`）。描述性结果（n=3）：Coding reasoning legacy P50 8,198 vs candidate P50 1,157；planner reasoning legacy 317–379 vs candidate 3,400–5,412（签发 requirements 的约 10 倍拆解开销）；**主指标 planner+coding legacy P50 8,545 vs candidate P50 4,557（约 53%）**，但 candidate-1 长尾 10,448 超过全部 legacy 样本，candidate 方差远大于 legacy；**首次运行率 candidate 3/3 vs legacy 0/3——与 high 档历史形态（candidate 首跑率下降）相反**，low 档下 candidate 在推理和首跑率两面均占优；candidate planner 签发数量 3/2/10 波动大，决策稳定性边界与历史记录一致；rawProtocolCorrect 新口径 6/6=true（信封 legacy×1、candidate×0，不再记违规）。边界：n=3 仅描述性，candidate-1 仅 2 项对账覆盖面偏薄未定性，未做独立数值复算；探针 replay grammar 保真 2/2 未过（provider replay 轮约束退化信号，本次 6 组未产生协议违规）。是否推广 candidate 仍需更多配对样本与独立数值验收。
 
 2026-09-21 CLI 探针记录纠正：已确认后续 20/55/360 秒探针只输入任务正文，遗漏 `/run`，实际停留在输入阶段，不能归为 planner 请求删失或 provider 长尾。更早的 150/300 秒记录也缺少有效提交及请求发出的证据，撤回其 planner 超时归因，全部排除出模型指标。23:07 正确发送 `/run` 后，PTY 正常输出 workflow/provider 日志，请求解析与数据理解分别约 2.3/6.5 秒，step 的 `request_count=1` 已在真实运行中确认。
 
@@ -882,10 +943,12 @@ C1 不抢占 R7/R6 的 reasoning 优化主线；只有现有指标证明 kernel/
 
 - [x] 使用冻结 visualization payload 和临时 workspace，避免影响正式报告；回放失败时保留 workspace，并可通过 `--output` 写出不受控制台日志污染的结构化结果。
 - [x] `scripts/replay_visualization_task.py` 支持 `--payload` 临时 payload、临时 workspace 和显式 `--reasoning-effort`；Responses 路径不再接受 `thinking_budget`。
+- [x] 冻结回放等待期间每 15 秒记录当前 phase、elapsed、remaining、最新 provider request index/status；`--output` 模式不再因 stdout 静默而无法区分长请求与进程异常。心跳只读请求指标，不改变请求参数、重试或 wall timeout。
+- [x] 2026-09-23 使用冻结 visualization payload 做 60 秒观测探针：15/30/45 秒心跳均正常，最终在 61.285 秒写入 `status=timed_out`、`censored=true`，请求快照确认 `reasoningEffort=low`、`reasoningSummary=auto`、`enableThinking=true`、`parallelToolCalls=true`，phase 为 coding；该删失样本只验证配置与监控链路，不计入性能或成功率。
 - [x] 首轮保留 reasoning，比较 `high`、`medium` 和 provider 明确支持的低档配置；不直接把 `off` 设为默认。
 - [ ] 每种配置记录首次脚本通过率、首次 patch 应用率、首次运行成功率、critical 视觉缺陷率、总耗时、P50/P95 reasoning token、成本。
 - [ ] 至少覆盖空值同比、格式化后源码、复杂局部 patch、视觉文字遮挡和工具失败恢复。
-- [x] 已根据 provider usage 比较不同 `reasoning.effort` 的真实推理 token 和耗时：包含分析 high A/B、planner-medium 单变量诊断及可视化 low/medium/high 历史样本；现有证据不支持降低默认 effort。Responses API 的配置和验收均不再使用 `thinking_budget`。
+- [x] 已根据 provider usage 比较不同 `reasoning.effort` 的真实推理 token 和耗时：包含分析 high A/B、planner-medium 单变量诊断及可视化 low/medium/high 历史样本。历史证据不足以单独决定默认档位；2026-09-22 用户随后明确选择 Coding 默认 low、planner 保持 high。Responses API 的配置和验收均不再使用 `thinking_budget`。
 
 `medium-2` 在 1402.453 秒后因宿主观察窗口到期人工终止；样本记录了 `firstScriptSuccess=true`、
 `firstRunSuccess=false`、`firstPatchApplied=true`、`firstRepairSuccess=false`、
@@ -927,7 +990,10 @@ C1 不抢占 R7/R6 的 reasoning 优化主线；只有现有指标证明 kernel/
 - [x] 识别已完成的旧 custom 调用并触发同一投影层的历史重建候选；保留 provider free-form raw input 原文，避免把 JSON 摘要伪装成 `write/run/edit` wire 输入。
 - [x] 双重匹配 custom call 的 `call_id` 与 item `id`，确保 provider 用任一身份回填 tool result 时状态一致；assistant 正文伪工具调用仍不解析。
 - [x] 投影 metrics 记录 `compaction_triggered`、候选调用数和原始字节量；canonical messages 不变。窄测试及 custom replay 手工验证通过。
-- [ ] 真实 provider 回放确认输入 token、reasoning token、首次 patch/运行成功率和视觉质量不下降；未完成前不宣称已降低总耗时。
+- [x] 2026-09-23 补充：`project_with_metrics` 增加 `protected_call_ids` 参数，上下文压缩时保护指定 call_id 所在的 complete round 不被删除；incomplete batch（有调用但未全部返回结果）天然受保护，不依赖额外参数。用于确保当前部分完成的工具调用批次在压缩时不丢失，维护 Responses 调用链完整性。定向测试 `2 passed`，全文件 `57 passed`。
+- [x] 2026-09-23 生产接线：`toolkit` 在 `last_failure` 记录 `callId`（不进入重复检测签名，相同失败更换 call id 仍计数）；delivery 状态 `lastFailure` 投影 `callId`；`protocol._project` 从未解决失败提取 `protected_call_ids` 传入投影层，保护仍代表当前源码 SHA 的 `read_script` 轮次，并整轮丢弃结果 SHA 已过时的单调用 read（无完整结果的批次仍交给 incomplete batch 保护）。此前失败的 3 个定向用例（失败身份 1 个、rebase 保留 2 个）全部转绿；reasoning replay、delivery、context、stability 受影响文件定向回归通过。
+- [x] 2026-09-23 子 agent 修复 base 既有 6 个失败测试（均为测试替身/断言过时，无生产 bug）：stability 2 个改用含匹配事实描述的 `_visualization_payload()` 满足 R7.2 绑定交叉校验；trajectories outputContract 冒烟预算随 R2.1 schema 内联放宽到 1200 字节；evidence feedback 3 个替身改为文字结束 + 原生补交付延续（白名单未签发 submit_script 时的设计行为）。目标文件 67 passed、helper 相关 30 passed。另查明 `test_delivery_feedback_tracks_visual_receipts_and_changed_output` 的"flaky"是共享工作树并行编辑造成的混合状态假象，非测试或生产竞态；`test_reporting_code_continuation.py` 4 个与 `test_interactive_v1_end_to_end_responses_loop` 2 个在干净 HEAD（e82a80f）worktree 上同样失败，属在途工作的既有失败，未由本轮修改引入，留归其所有者处理。
+- [ ] 真实 provider 回放确认输入 token、reasoning token、首次 patch/运行成功率和视觉质量不下降；未完成前不宣称已降低总耗时。2026-09-23 已取得首个完整非删失样本（健康探针先行、单次、未重试）：冻结 `.local/reporting-validation/frozen-visual/payload.json`、Coding low，`/tmp/reporting-projection-low-20260923.json` 为 `passed`，538.9 秒、25 次请求、累计 reasoning 31,293、cacheRead 217,088，`criticalVisualDefect=false`（首轮 X 轴标签裁剪 critical 经修复后六图全过）；但 `firstRunSuccess=false`、`firstPatchApplied=false`、`firstRepairSuccess=false`（9 次 edit 5 次被拒）、`rawProtocolCorrect=false`（provider 5 次 data 信封，宿主兼容解封）。输入 token 在 req18→20 从 30,640 回落到 16,395，与陈旧 read 丢弃设计一致；多次未解决失败后调用链未断裂，与 `protected_call_ids` 一致，但回放路径不持久化 `projectionMetrics`，压缩未触发也无直测，均为间接证据。单样本无配对基线，reasoning 仍高于 20,000 目标，不能宣称性能改善。
 
 该实现只压缩已完成的旧 custom 调用，不限制当前 patch，也不改变 `parallel_tool_calls=True` 或宿主的顺序执行；若历史中没有可安全完成的旧调用，则保持原始 wire 内容。
 
