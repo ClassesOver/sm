@@ -1075,15 +1075,12 @@ class TaskExecutionContextProjector:
                 if result is None and isinstance(call.get("id"), str):
                     result = results.get(call["id"])
                 calls.append((call, name, call_id, result))
-        completed = [entry for entry in calls if entry[3] is not None]
-        old_calls = completed[:-1]
-        bytes_before = sum(
-            len(entry[0]["provider_data"]["raw_input"].encode("utf-8")) for entry in old_calls
-        )
+        completed_count = sum(result is not None for _call, _name, _call_id, result in calls)
         return {
-            "compaction_triggered": bool(old_calls),
-            "compacted_calls": len(old_calls),
-            "bytes_before": bytes_before,
+            "history_candidate": completed_count > TASK_EXECUTION_RECENT_ASSISTANT_TURNS,
+            "compaction_triggered": False,
+            "compacted_calls": 0,
+            "bytes_before": 0,
             "bytes_after": 0,
         }
 
@@ -1304,7 +1301,7 @@ class TaskExecutionContextProjector:
         threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
         projected_tokens = cls._token_count(projected, counting_model, tools, response_format)
         if (
-            not custom_history_metrics["compaction_triggered"]
+            not custom_history_metrics["history_candidate"]
             and canonical_tokens <= threshold
             and projected_tokens <= hard_cap
         ):
@@ -1357,6 +1354,55 @@ class TaskExecutionContextProjector:
             removed = selected_rounds.pop(0)
             start = next(index for index, message in enumerate(candidate) if message is removed[0])
             del candidate[start : start + len(removed)]
+        retained_identities = {
+            identity
+            for message in candidate
+            if message.role in {"assistant", "model"}
+            for call in message.tool_calls or ()
+            if isinstance(call, dict)
+            for identity in (call.get("id"), call.get("call_id"))
+            if isinstance(identity, str)
+        }
+        result_identities = {
+            message.tool_call_id
+            for message in projected
+            if message.role == "tool" and isinstance(message.tool_call_id, str)
+        }
+        dropped_custom_calls: list[dict[str, Any]] = []
+        for message in projected:
+            if message.role not in {"assistant", "model"}:
+                continue
+            for call in message.tool_calls or ():
+                if not isinstance(call, dict):
+                    continue
+                provider_data = call.get("provider_data")
+                function = call.get("function")
+                name = function.get("name") if isinstance(function, dict) else None
+                raw_input = (
+                    provider_data.get("raw_input")
+                    if isinstance(provider_data, dict)
+                    else None
+                )
+                identities = {
+                    value
+                    for value in (call.get("id"), call.get("call_id"))
+                    if isinstance(value, str)
+                }
+                if (
+                    name in _CODING_FREEFORM_TOOL_ARGUMENTS
+                    and isinstance(raw_input, str)
+                    and identities & result_identities
+                    and not identities & retained_identities
+                ):
+                    dropped_custom_calls.append({"raw_input": raw_input})
+        custom_history_metrics = {
+            "compaction_triggered": bool(dropped_custom_calls),
+            "compacted_calls": len(dropped_custom_calls),
+            "bytes_before": sum(
+                len(item["raw_input"].encode("utf-8")) for item in dropped_custom_calls
+            ),
+            "bytes_after": 0,
+        }
         projected_tokens = cls._token_count(candidate, counting_model, tools, response_format)
         if projected_tokens > hard_cap:
             metrics = {

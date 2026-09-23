@@ -1283,8 +1283,8 @@ def test_coding_context_projector_tracks_old_freeform_custom_history_without_rew
         messages, model=CountingModel(), hard_cap=50_000
     )
 
-    assert metrics["compaction_triggered"] is True
-    assert metrics["compacted_calls"] == 1
+    assert metrics["compaction_triggered"] is False
+    assert metrics["compacted_calls"] == 0
     assert any(
         call.get("provider_data", {}).get("raw_input") == first_source
         for message in projected
