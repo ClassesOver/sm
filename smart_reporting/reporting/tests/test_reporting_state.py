@@ -2060,6 +2060,20 @@ def test_context_trace_accepts_new_work_kinds() -> None:
     assert visualization.work_kind == "visualization_section"
 
 
+def test_context_trace_accepts_custom_history_projection_metrics() -> None:
+    trace = ContextTrace.model_validate(
+        {
+            "phase": "analysis",
+            "taskId": "task-1",
+            "customHistoryCompactionCount": 2,
+            "customHistoryBytesBefore": 4096,
+            "customHistoryBytesAfter": 0,
+        }
+    )
+    assert trace.custom_history_compaction_count == 2
+    assert trace.custom_history_bytes_before == 4096
+
+
 @pytest.mark.parametrize("model", [CheckpointError, ContextTrace])
 def test_old_visualization_work_kind_is_rejected(
     model: type[CheckpointError | ContextTrace],

@@ -159,13 +159,18 @@ def record_reporting_projection_metrics(
         ("canonical_estimated_tokens", "maxCanonicalTokens"),
         ("projected_estimated_tokens", "maxProjectedTokens"),
         ("completed_analysis_count", "completedAnalysisCount"),
+    ):
+        value = metrics.get(source)
+        if not isinstance(value, bool) and isinstance(value, int) and value >= 0:
+            current[target] = max(current[target], value)
+    for source, target in (
         ("compacted_calls", "customHistoryCompactionCount"),
         ("bytes_before", "customHistoryBytesBefore"),
         ("bytes_after", "customHistoryBytesAfter"),
     ):
         value = metrics.get(source)
         if not isinstance(value, bool) and isinstance(value, int) and value >= 0:
-            current[target] = max(current[target], value)
+            current[target] += value
     if metrics.get("window_rebased") is True:
         current["rebaseCount"] += 1
     if input_token_hard_cap > 0:
