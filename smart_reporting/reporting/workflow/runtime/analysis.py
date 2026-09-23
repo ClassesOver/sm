@@ -2438,6 +2438,9 @@ class RuntimeAnalysisMixin:
             ("inputTokenHardCap", "input_token_hard_cap"),
             ("completedAnalysisCount", "completed_analysis_count"),
             ("toolEventCount", "tool_event_count"),
+            ("customHistoryCompactionCount", "custom_history_compaction_count"),
+            ("customHistoryBytesBefore", "custom_history_bytes_before"),
+            ("customHistoryBytesAfter", "custom_history_bytes_after"),
         ):
             value = projection_metrics.get(alias)
             if not isinstance(value, bool) and isinstance(value, int) and value >= 0:

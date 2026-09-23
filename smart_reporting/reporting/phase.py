@@ -137,6 +137,9 @@ def capture_reporting_projection_metrics() -> Iterator[dict[str, int]]:
         "modelReasoningTokens": 0,
         "modelCacheReadTokens": 0,
         "modelCacheWriteTokens": 0,
+        "customHistoryCompactionCount": 0,
+        "customHistoryBytesBefore": 0,
+        "customHistoryBytesAfter": 0,
     }
     token = _REPORTING_PROJECTION_METRICS.set(metrics)
     try:
@@ -156,6 +159,9 @@ def record_reporting_projection_metrics(
         ("canonical_estimated_tokens", "maxCanonicalTokens"),
         ("projected_estimated_tokens", "maxProjectedTokens"),
         ("completed_analysis_count", "completedAnalysisCount"),
+        ("compacted_calls", "customHistoryCompactionCount"),
+        ("bytes_before", "customHistoryBytesBefore"),
+        ("bytes_after", "customHistoryBytesAfter"),
     ):
         value = metrics.get(source)
         if not isinstance(value, bool) and isinstance(value, int) and value >= 0:

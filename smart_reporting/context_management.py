@@ -68,6 +68,11 @@ TASK_EXECUTION_TOOL_NAMES = frozenset(
         "view_image",
     }
 )
+_CODING_FREEFORM_TOOL_ARGUMENTS = {
+    "write_script": "source",
+    "run": "code",
+    "edit_script": "patch",
+}
 SUMMARY_METADATA_KEY = "agentos_rolling_summary"
 COMPRESSIBLE_HISTORY_TOOLS = frozenset(
     {
@@ -1039,6 +1044,49 @@ class TaskExecutionContextProjector:
             else raw
         )
 
+    @classmethod
+    def _compact_coding_custom_history(cls, messages: list[Message]) -> dict[str, int | bool]:
+        """识别可安全丢弃的旧 custom 轮次；不改写 provider wire 原文。"""
+
+        results: dict[str, Message] = {}
+        calls: list[tuple[dict[str, Any], str, str, Message | None]] = []
+        for message in messages:
+            if message.role == "tool" and isinstance(message.tool_call_id, str):
+                results[message.tool_call_id] = message
+        for message in messages:
+            if message.role not in {"assistant", "model"}:
+                continue
+            for call in message.tool_calls or ():
+                if not isinstance(call, dict):
+                    continue
+                provider_data = call.get("provider_data")
+                function = call.get("function")
+                name = function.get("name") if isinstance(function, dict) else None
+                raw_input = provider_data.get("raw_input") if isinstance(provider_data, dict) else None
+                call_id = call.get("call_id") or call.get("id")
+                if (
+                    name not in _CODING_FREEFORM_TOOL_ARGUMENTS
+                    or not isinstance(raw_input, str)
+                    or not raw_input
+                    or not isinstance(call_id, str)
+                ):
+                    continue
+                result = results.get(call_id)
+                if result is None and isinstance(call.get("id"), str):
+                    result = results.get(call["id"])
+                calls.append((call, name, call_id, result))
+        completed = [entry for entry in calls if entry[3] is not None]
+        old_calls = completed[:-1]
+        bytes_before = sum(
+            len(entry[0]["provider_data"]["raw_input"].encode("utf-8")) for entry in old_calls
+        )
+        return {
+            "compaction_triggered": bool(old_calls),
+            "compacted_calls": len(old_calls),
+            "bytes_before": bytes_before,
+            "bytes_after": 0,
+        }
+
     @staticmethod
     def _token_count(
         messages: list[Message], model: Any, tools: Any = None, response_format: Any = None
@@ -1226,6 +1274,7 @@ class TaskExecutionContextProjector:
         hard_cap: int = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
     ) -> tuple[list[Message], dict[str, int | bool]]:
         projected = deepcopy(messages)
+        custom_history_metrics = cls._compact_coding_custom_history(projected)
         compact_call_ids = {
             message.tool_call_id
             for message in projected
@@ -1254,7 +1303,11 @@ class TaskExecutionContextProjector:
             projected.append(feedback)
         threshold = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_THRESHOLD))
         projected_tokens = cls._token_count(projected, counting_model, tools, response_format)
-        if canonical_tokens <= threshold and projected_tokens <= hard_cap:
+        if (
+            not custom_history_metrics["compaction_triggered"]
+            and canonical_tokens <= threshold
+            and projected_tokens <= hard_cap
+        ):
             metrics: dict[str, int | bool] = {
                 "canonical_message_count": len(messages),
                 "projected_message_count": len(projected),
@@ -1264,6 +1317,7 @@ class TaskExecutionContextProjector:
                 "checkpoint_bytes": 0,
                 "dropped_complete_rounds": 0,
                 "window_rebased": False,
+                **custom_history_metrics,
                 **cls._composition_metrics(messages, projected, tools, response_format),
             }
             return projected, metrics
@@ -1315,6 +1369,7 @@ class TaskExecutionContextProjector:
                 "checkpoint_bytes": len(checkpoint.encode("utf-8")),
                 "dropped_complete_rounds": len(rounds) - len(selected_rounds),
                 "window_rebased": True,
+                **custom_history_metrics,
                 **cls._composition_metrics(messages, candidate, tools, response_format),
             }
             model_id, host = _model_log_fields(counting_model)
@@ -1341,6 +1396,7 @@ class TaskExecutionContextProjector:
             "checkpoint_bytes": len(checkpoint.encode("utf-8")),
             "dropped_complete_rounds": len(rounds) - len(selected_rounds),
             "window_rebased": True,
+            **custom_history_metrics,
             **cls._composition_metrics(messages, candidate, tools, response_format),
         }
         return candidate, metrics

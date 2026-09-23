@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import requests
@@ -1238,6 +1239,64 @@ def test_coding_context_projector_keeps_uncompressed_latest_mutation_arguments()
     assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
     assert messages[0].tool_calls[0]["function"]["arguments"] == first_args
     assert messages[2].tool_calls[0]["function"]["arguments"] == latest_args
+
+
+def test_coding_context_projector_tracks_old_freeform_custom_history_without_rewriting_wire():
+    first_source = "# Python\n" + ("print('old')\n" * 1200)
+    latest_code = "# Python\nprint('latest')\n"
+    argument_names = {"write_script": "source", "run": "code", "edit_script": "patch"}
+
+    def custom_call(call_id: str, name: str, value: str) -> dict[str, Any]:
+        argument = argument_names[name]
+        return {
+            "id": f"item-{call_id}",
+            "call_id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps({argument: value}, ensure_ascii=False),
+            },
+            "provider_data": {
+                "reporting_wire_type": "custom",
+                "raw_input": value,
+            },
+        }
+
+    messages = [
+        Message(role="assistant", tool_calls=[custom_call("call-old", "write_script", first_source)]),
+        Message(
+            role="tool",
+            tool_name="write_script",
+            tool_call_id="item-call-old",
+            content='{"ok":true,"sha256":"old"}',
+        ),
+        Message(role="assistant", tool_calls=[custom_call("call-latest", "run", latest_code)]),
+        Message(
+            role="tool",
+            tool_name="run",
+            tool_call_id="call-latest",
+            content='{"ok":true}',
+        ),
+    ]
+
+    projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=50_000
+    )
+
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] == 1
+    assert any(
+        call.get("provider_data", {}).get("raw_input") == first_source
+        for message in projected
+        for call in message.tool_calls or ()
+    )
+    assert messages[0].tool_calls[0]["provider_data"]["raw_input"] == first_source
+    assert any(
+        call.get("provider_data", {}).get("raw_input") == latest_code
+        for message in projected
+        for call in message.tool_calls or ()
+    )
+    assert messages[0].tool_calls[0]["provider_data"]["raw_input"] == first_source
 
 
 def test_coding_tool_receipt_preserves_bounded_continuation_state():

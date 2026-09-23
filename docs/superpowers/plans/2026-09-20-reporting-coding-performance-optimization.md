@@ -16,6 +16,48 @@
 
 **架构：** 按章节确定 Coding 任务范围，分析与可视化仍是分开的阶段；保留分析项的事实、证据和验收身份。沿用现有每个 Coding task 绑定一份正式脚本的宿主契约，不开展多脚本规划或改造。保留 Agno 负责模型请求、消息回放和工具协议映射；Reporting 宿主负责脚本身份、SHA、patch 原子应用、工具调用校验和交付状态。provider 可以一次返回多个结构化工具调用，宿主先整体校验，再按 provider 返回顺序执行。
 
+## Codex 源码复核：reasoning 长尾的实际控制机制
+
+2026-09-23 对 `/home/junge/pros/codex/codex-rs` 进行了源码复核。以下结论来自实际源码，不是根据 CLI 表现推测：
+
+| Codex 源码位置 | 已确认机制 | 对本项目的直接含义 |
+| --- | --- | --- |
+| `core/src/session/context_window.rs` | 统计 `active_context_tokens`，按 `model_auto_compact_token_limit` 和完整模型窗口分别判断阈值；支持按完整上下文或 compaction 窗口前缀之后计数 | Coding 请求必须在 provider 调用前测量累计输入，而不是等模型长推理后再处理 |
+| `core/src/compact.rs` | 自动 compaction 以独立任务运行，生成 `ContextCompactionItem`，替换历史后继续原任务；中途 compaction 会重新注入必要初始上下文 | 不能只把 `compact_continuation` 放在外层第二轮；同一 Coding run 也要有阈值触发的精简 continuation |
+| `core/src/compact_token_budget.rs` | 达到 token budget 时可以直接建立新的 context window，不必再次调用模型总结；仍执行 compaction 生命周期和 hooks | 对固定结构的 Coding 历史，可先使用确定性摘要；只有无法安全摘要时才调用摘要模型 |
+| `core/src/session/auto_compact_window.rs`、`core/src/session/mod.rs` | compaction window 有 window id、prefill token、previous/current window 状态，可恢复和审计 | 每次压缩需记录窗口编号、压缩前后 token、源码 SHA、任务状态，避免旧回执混入新窗口 |
+| `protocol/src/models/executed_tool_calls.rs` | 工具调用参数单项有 8 KiB 上限；完整执行元数据有 32 KiB 上限；超限按“结果元数据 → 来源证据 → 调用细节”顺序降级，并可优先保留最近调用 | `write_script/edit_script/read_script/run_script` 的历史正文不能无限回放；需保留当前/最近失败调用原文，旧调用改为 SHA、字节数、状态和 reload hint |
+| `core/src/tools/executed_tool_calls/request_metadata.rs` | 在请求组装阶段统一附加并再次执行元数据预算，工具执行本身与请求预算分离 | 压缩必须发生在 provider 请求组装层，不应改变工具真实执行或交付校验 |
+| `core/src/session/step_settings.rs`、`protocol/src/config_types.rs` | reasoning effort 是独立请求配置，可按会话/阶段覆盖；没有以 `thinking_budget` 作为通用硬上限 | 继续使用 `reasoning.effort` 与 `reasoning.summary`；不引入 Responses 不支持的 `thinking_budget` |
+| `protocol/src/models.rs`、`core/src/compact.rs` | compaction 作为结构化历史项保存，保留响应/工具身份和恢复信息 | 不得删除 reasoning item、custom/function call identity 或伪造工具结果来“压缩”上下文 |
+
+### 源码确认后的实现方案
+
+当前真实回放已经从 `552.446s / 28 requests / 30,486 reasoning tokens` 降到 `423.057s / 20 requests / 25,569 reasoning tokens`，但仍出现单请求 `15,717 reasoning tokens`。原因是现有 compact continuation 只覆盖外层第二次 Agent run；同一 `arun()` 内部的 custom tool 历史仍逐请求增长。后续实现按 Codex 的边界补齐：
+
+1. **请求前 token 门禁。** 在 `smart_reporting/reporting/code_agent/protocol.py` 的 Coding 请求投影完成后，计算当前输入 token 和工具元数据字节数；达到 Coding 专用阈值时，禁止继续携带完整旧历史，先进入压缩流程。阈值必须低于 provider 的硬窗口，初始值通过冻结回放校准，不把模型上下文上限直接当业务阈值。
+2. **确定性历史摘要。** 在 `smart_reporting/reporting/code_agent/protocol.py` 或独立的同目录小模块中，对已完成的旧 custom 工具调用生成固定结构摘要：`tool`、`status`、`code`、`sourceSha256`、`patchSha256`、`bytes`、`callId`、`nextTools`。当前调用、最近一次未解决失败、最新 `read_script` 结果保留原文；旧的完整源码、patch、stdout/stderr 只保留在 Workspace 和审计文件中。
+3. **新窗口 continuation。** 在 `smart_reporting/reporting/workflow/runtime/code_generation.py` 中复用现有 `compact_continuation` 机制，增加“同一 run 内压缩后重新 arun”的状态；新请求只携带任务边界、最新 facts/diagnostic、当前源码 SHA、压缩摘要和 delivery state。不得调用 `acontinue_run` 回放完整旧历史。
+4. **调用身份完整性。** 压缩历史仍保留原 `call_id`、工具名、执行状态和结果匹配关系；前序失败时继续补齐未执行调用的结果，不执行伪造的副作用。Responses reasoning item 只在 provider 要求的调用链中保留，不能简单删除。
+5. **工具元数据预算。** 对齐 Codex 的两级预算：单个旧工具参数摘要上限 8 KiB，整批 Coding 历史元数据上限 32 KiB。超过预算时优先丢弃已解决结果的 stdout/stderr 和来源证据，最后才缩减旧调用摘要；当前失败和最近源码身份不得丢弃。
+6. **阶段级 effort。** Coding 默认继续 `low` 且首轮保持 thinking；planner、复杂首次规划和明确升级的修复阶段按现有策略运行。`view_image` 保持关闭 thinking。不要用提高/降低 effort 替代上下文压缩，也不要新增 `thinking_budget`。
+
+### Codex 对齐方案的验收标准
+
+- 同一冻结任务中，连续请求输入 token 不得线性增长到完整源码大小；触发压缩后下一请求必须只包含摘要和当前必要上下文。
+- 压缩前后 `call_id`、工具名、成功/失败状态、源码 SHA 和交付状态一致；不得出现伪工具调用、重复副作用或协议回放错误。
+- 首次 patch 应用率、首次运行成功率、最终交付成功率和 critical 视觉缺陷率不得下降。
+- 至少比较四组同输入回放：当前基线、仅请求前摘要、摘要加新 continuation、摘要加新 continuation 加元数据预算；每组至少 5 个非删失样本，记录 P50/P95 的总耗时、请求数、输入 token、reasoning token 和压缩次数。
+- 失败时报告 `compactionTriggered`、`compactionBeforeTokens`、`compactionAfterTokens`、`compactionWindowId`、`retainedCallCount` 和 `truncatedCallCount`；未知 usage 保持 `unknown`。
+
+### 不采用的伪对齐方案
+
+- 不把 `reasoning.summary` 当作 reasoning token 上限；它只影响摘要输出。
+- 不把 `parallel_tool_calls=True` 当作执行并行保证；顺序敏感链路仍由宿主串行执行。
+- 不直接删除所有旧消息、reasoning item 或 tool call output；这会破坏 Responses 调用链。
+- 不把 Codex 的远程 compaction 实验接口直接移植到 Agno；先实现本地确定性摘要和已有 runner continuation。
+- 不用更大的 tool/request limit 掩盖上下文增长；预算扩大只会增加长尾。
+
 **收尾校正：** warning 样本实际有 9 项 reconciliation（上文 10 项为旧样本数），均为 true；独立复算为 754 个数值/null 检查，类别覆盖另行核对。其 planner 耗时 `69.414s`、reasoning `5,573`，加 Coding 后总回放 `308.259s`、累计 reasoning `24,990`，不能仅以 Coding 的 `238.797s / 19,417` 宣称整个流程已达到 300 秒/20k 目标。两次 candidate 回放重新运行了 planner，facts 指纹不同；warning 提示效果也不是严格单变量证据。保留性能改善信号，跨主题稳定性和同版本配对仍待验证。
 
 **可视化 critical-only high 验证：** 已修复 `_visual_review_model_receipt()` 的可选建议泄漏：未关联 critical issue 的 `suggestions` 保留完整审计回执，不再发送给 Coding 模型。定向交付测试 `30 passed`。使用 `/tmp/reporting-visualization-v2-Pfuhj1/repair/payload.json` 和 manifest 自动加载 seed，在 `high/summary=auto/enable_thinking=true/parallel_tool_calls=true` 下真实回放 `/tmp/reporting-visual-high-critical-only-20260922.json`：6 张图批量审查后一次 `read_script → edit_script`，再运行并提交；`firstPatchApplied=true`、`firstRepairSuccess=true`、`criticalVisualDefect=false`，Coding `191.400s / 9,830 reasoning tokens`，8 次 `view_image` 审查耗时 `34.621s`。最大请求为 edit 轮 `9,166 reasoning tokens`，说明视觉阶段剩余主要瓶颈是局部修复推理；本样本无同版本未修复回执的严格 A/B，不能宣称固定降幅。
@@ -878,6 +920,16 @@ C1 不抢占 R7/R6 的 reasoning 优化主线；只有现有指标证明 kernel/
 - [ ] 尚无真实 provider 配对数据，不能宣称 reasoning 或总耗时改善。推广前必须在同一 bundle、模型、effort、summary、工具和验收条件下比较 continuation/compact 的 input tokens、reasoning tokens、首次修复成功率和 P95 总耗时。
 
 2026-09-22 真实探索样本：`/tmp/reporting-compact-analysis.json`，输入为 v1 `/tmp/reporting-r6-analysis-bundle.eQ5R4A/payload.json`，启动代码为 `a83118b`，high/summary=auto/enable_thinking=true/parallel_tool_calls=true。Coding `329.197s`，3 次请求、累计 `22,862` reasoning tokens；首轮 write_script `322.023s / 22,832 tokens`，后续 run_script 与 submit_script 分别 `1.828s / 9 tokens`、`2.152s / 21 tokens`；首次运行通过，原始协议正确。模型一次 arun 内完成提交，compact 分支未触发，故不作为压缩收益或修正后实现的验收证据。首轮占 Coding 耗时约 97.8%，输入仅 3,621 tokens；后续输入虽增至约 37k，推理却很短。本样本不支持“历史变长必然造成长推理”的归因。优先级回到首轮任务决策范围；补交付压缩仅保留实验。新回放结果补充 compact 开关及实际触发状态，防止把未触发样本算作实验收益。
+
+### Codex 对齐的同一 `arun` 历史投影（已实现，待真实回放）
+
+- [x] `TaskExecutionContextProjector` 在不修改 canonical Agno history 的前提下，识别已完成的 CodeMode `write_script`、`edit_script`、`run` custom 调用。
+- [x] 识别已完成的旧 custom 调用并触发同一投影层的历史重建候选；保留 provider free-form raw input 原文，避免把 JSON 摘要伪装成 `write/run/edit` wire 输入。
+- [x] 双重匹配 custom call 的 `call_id` 与 item `id`，确保 provider 用任一身份回填 tool result 时状态一致；assistant 正文伪工具调用仍不解析。
+- [x] 投影 metrics 记录 `compaction_triggered`、候选调用数和原始字节量；canonical messages 不变。窄测试及 custom replay 手工验证通过。
+- [ ] 真实 provider 回放确认输入 token、reasoning token、首次 patch/运行成功率和视觉质量不下降；未完成前不宣称已降低总耗时。
+
+该实现只压缩已完成的旧 custom 调用，不限制当前 patch，也不改变 `parallel_tool_calls=True` 或宿主的顺序执行；若历史中没有可安全完成的旧调用，则保持原始 wire 内容。
 
 ## 原任务记录：视觉审查分级
 
