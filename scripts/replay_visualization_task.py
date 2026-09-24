@@ -83,7 +83,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import Visualizatio
 from smart_reporting.runtime.database import psycopg_db_url
 from smart_reporting.runtime.logging import configure_application_logging
 from smart_reporting.runtime.settings import AgentSettings
-from smart_reporting.task_execution import TaskExecutionScope
+from smart_reporting.task_execution import DEFAULT_TERMINAL_TIMEOUT, TaskExecutionScope
 
 
 class ReplayObservedOpenAIChat(OpenAIChat):
@@ -220,6 +220,7 @@ async def run_frozen_benchmark_planner(
         model=model,
         task_kind=manifest.task_kind,
         variant=variant,
+        planner_request=payloads["plannerRequest"],
     )
     coding_payload = payloads["executionContext"].get("codingPayload")
     task = coding_payload.get("task") if isinstance(coding_payload, dict) else None
@@ -306,6 +307,7 @@ async def run_frozen_benchmark_planner(
         execution_context=payloads["executionContext"],
         acceptance=payloads["acceptance"],
         planner_output=planner_output,
+        planner_request=payloads["plannerRequest"],
     )
     return payload, planner_metrics, manifest.model_dump(mode="json", by_alias=True)
 
@@ -1370,7 +1372,10 @@ async def main(
             model_created=capture_coding_model,
         )
         runtime = create_reporting_code_mode_runtime(
-            root, analysis_concurrency=1, section_concurrency=1, timeout=120
+            # 与生产 DEFAULT_TERMINAL_TIMEOUT 对齐；kaleido 真实渲染多图脚本
+            # 单次运行可达数分钟，120s 会让回放无法复现生产行为。
+            root, analysis_concurrency=1, section_concurrency=1,
+            timeout=DEFAULT_TERMINAL_TIMEOUT,
         )
         lsp = ReportingLspProcessManager()
         heartbeat_stop = asyncio.Event()

@@ -2966,7 +2966,8 @@ _ANALYSIS_CODE_COMMON_INSTRUCTIONS = (
     "期间计算优先使用冻结事实声明的 periodField 并显式解析实际格式；斜杠日期不猜日月顺序，期间对齐遵循当前任务的时间粒度和比较窗口，不默认按月聚合。",
 )
 _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
-    "对 run_script 返回的每个图片输出调用 view_image，全部审查后再 submit_script。",
+    "对 run_script 返回的图片输出调用 view_image 审查，全部通过后再 submit_script；"
+    "建议把当前待审图片一次性批量传入 view_image 的 `paths` 数组（超过 5 张宿主会自动分批审查），避免逐张单拆调用。",
     "分析与绘图库及中文图表字体由宿主配置；直接使用任务允许的库，不先枚举包、打印版本或测试字体。",
 )
 

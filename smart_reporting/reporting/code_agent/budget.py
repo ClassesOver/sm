@@ -14,6 +14,7 @@ class CodeBudget:
     custom_inputs: int = 0
     invalid_custom_inputs: int = 0
     envelope_normalized_inputs: int = 0
+    wire_shape_recoveries: int = 0
     protocol_violations: int = 0
     stage_mismatch_rejections: int = 0
     continued: bool = False
@@ -50,6 +51,12 @@ class CodeBudget:
         # provider 把 free-form 输入包进单层 data 信封：宿主兼容解封执行，不记协议
         # 违规，单列计数作为 provider 稳定性观测指标（rawProtocolCorrect 只统计真违规）。
         self.envelope_normalized_inputs += 1
+
+    def record_wire_shape_recovery(self) -> None:
+        # provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回
+        # （candidate-32：function 形态的 write_script）：参数 JSON 完好时还原为
+        # custom 形态继续既有链路。单列计数并设上限，防止 wire 混淆无限循环。
+        self.wire_shape_recoveries += 1
 
     def record_protocol_violation(self) -> None:
         self.protocol_violations += 1

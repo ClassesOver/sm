@@ -11,6 +11,117 @@ from typing import Any
 
 _REQUEST_TOOL_CALL_LIMIT = 140
 
+_FAILURE_DIAGNOSTIC_PATH_LIMIT = 20
+_FAILURE_DIAGNOSTIC_TEXT_LIMIT = 1000
+_FAILURE_DIAGNOSTIC_EXCERPT_LIMIT_BYTES = 1800
+_REQUEST_WARNING_LIMIT = 8
+
+
+def _bounded_request_warnings(
+    warnings: Iterable[Any],
+) -> list[dict[str, Any]]:
+    """请求级软告警（预算闸门/审查熔断）有界投影；仅保留标量 details。"""
+
+    bounded: list[dict[str, Any]] = []
+    for warning in warnings:
+        if len(bounded) >= _REQUEST_WARNING_LIMIT:
+            break
+        if not isinstance(warning, Mapping):
+            continue
+        code = warning.get("code")
+        details = warning.get("details")
+        bounded_details: dict[str, Any] = {}
+        if isinstance(details, Mapping):
+            for key, value in details.items():
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int):
+                    bounded_details[str(key)[:64]] = value
+                elif isinstance(value, str):
+                    bounded_details[str(key)[:64]] = value[:128]
+        entry: dict[str, Any] = {
+            "code": code[:128] if isinstance(code, str) and code else "unknown",
+        }
+        if bounded_details:
+            entry["details"] = bounded_details
+        bounded.append(entry)
+    return bounded
+
+
+def _bounded_source_excerpt(value: Any) -> str | None:
+    """sourceExcerpt 只保留尾部 1800 字节；非字符串或空值直接丢弃。"""
+
+    if not isinstance(value, str) or not value:
+        return None
+    raw = value.encode("utf-8")
+    if len(raw) <= _FAILURE_DIAGNOSTIC_EXCERPT_LIMIT_BYTES:
+        return value
+    return raw[-_FAILURE_DIAGNOSTIC_EXCERPT_LIMIT_BYTES:].decode("utf-8", errors="ignore")
+
+
+def _bounded_edit_region(value: Any) -> dict[str, Any] | None:
+    """readRange/allowedEditRegion 只投影 path/startLine/endLine；形状不完整时丢弃。"""
+
+    if not isinstance(value, Mapping):
+        return None
+    start, end = value.get("startLine"), value.get("endLine")
+    path = value.get("path")
+    if (
+        type(start) is int and type(end) is int and 1 <= start <= end
+        and isinstance(path, str) and path
+    ):
+        return {"path": path[:256], "startLine": start, "endLine": end}
+    return None
+
+
+def bounded_failure_diagnostics(value: Any) -> dict[str, Any]:
+    """从工具失败 details 提取有界诊断白名单；拒绝源码全文、参数等任意内容。"""
+
+    if not isinstance(value, Mapping):
+        return {}
+    diagnostics: dict[str, Any] = {}
+    for key in ("errorType", "path", "reason"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate:
+            diagnostics[key] = candidate[:256]
+    for key in ("errorLine", "exitCode", "used", "limit", "declaredOutputCount",
+                "blockIndex", "actualBytes", "limitBytes"):
+        candidate = value.get(key)
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            diagnostics[key] = candidate
+    for key in (
+        "missingPaths",
+        "presentPaths",
+        "unsignedPaths",
+        "forbiddenPathOperations",
+        "detectedOutputWrites",
+    ):
+        candidate = value.get(key)
+        if isinstance(candidate, (list, tuple)):
+            diagnostics[key] = [
+                item[:256]
+                for item in candidate[:_FAILURE_DIAGNOSTIC_PATH_LIMIT]
+                if isinstance(item, str)
+            ]
+    for key in ("allDeclaredOutputsMissing", "isPlaceholderScript"):
+        candidate = value.get(key)
+        if isinstance(candidate, bool):
+            diagnostics[key] = candidate
+    for source, target in (("stdout", "stdoutTail"), ("stderr", "stderrTail")):
+        candidate = value.get(target)
+        if not (isinstance(candidate, str) and candidate):
+            candidate = value.get(source)
+        if isinstance(candidate, str) and candidate:
+            diagnostics[target] = candidate[-_FAILURE_DIAGNOSTIC_TEXT_LIMIT:]
+    excerpt = _bounded_source_excerpt(value.get("sourceExcerpt"))
+    if excerpt is not None:
+        diagnostics["sourceExcerpt"] = excerpt
+    for key in ("readRange", "allowedEditRegion"):
+        region = _bounded_edit_region(value.get(key))
+        if region is not None:
+            diagnostics[key] = region
+    return diagnostics
+
 
 def _bounded_tool_calls(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, (list, tuple)):
@@ -178,6 +289,7 @@ def build_coding_metric_sample(
     input_components: Mapping[str, Mapping[str, Any]] | None = None,
     raw_protocol_correct: bool | str = "unknown",
     envelope_normalized_inputs: int | str = "unknown",
+    wire_shape_recoveries: int | str = "unknown",
     first_script_success: bool | str = "unknown",
     first_script_failure_code: str | None = None,
     first_run_success: bool | str = "unknown",
@@ -275,12 +387,21 @@ def build_coding_metric_sample(
         request_params = bounded_request_params_snapshot(item.get("requestParams"))
         failure = item.get("firstToolFailure")
         if isinstance(failure, Mapping):
-            normalized["firstToolFailure"] = {
+            normalized_failure = {
                 key: failure[key][:128]
                 if isinstance(failure.get(key), str) and failure[key]
                 else "unknown"
                 for key in ("toolName", "code")
             }
+            diagnostics = bounded_failure_diagnostics(failure.get("diagnostics"))
+            if diagnostics:
+                normalized_failure["diagnostics"] = diagnostics
+            normalized["firstToolFailure"] = normalized_failure
+        warnings = item.get("warnings")
+        if isinstance(warnings, list):
+            bounded_warnings = _bounded_request_warnings(warnings)
+            if bounded_warnings:
+                normalized["warnings"] = bounded_warnings
         if request_params is not None:
             normalized["requestParams"] = request_params
         normalized_requests.append(normalized)
@@ -356,6 +477,7 @@ def build_coding_metric_sample(
         ),
         "rawProtocolCorrect": raw_protocol_correct,
         "envelopeNormalizedInputs": bounded_nonnegative(envelope_normalized_inputs),
+        "wireShapeRecoveries": bounded_nonnegative(wire_shape_recoveries),
         "firstScriptSuccess": first_script_success,
         "firstScriptFailureCode": (
             first_script_failure_code[:128]

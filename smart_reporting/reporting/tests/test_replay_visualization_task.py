@@ -963,6 +963,16 @@ def test_visualization_coding_instructions_bound_repair_to_critical_issue():
     assert "只修改与该问题直接相关的局部代码" in instructions
 
 
+def test_visualization_instructions_forbid_exploration_placeholder_scripts():
+    for variant_instructions in (
+        replay_visualization_task._VISUALIZATION_CODE_INSTRUCTIONS,
+        replay_visualization_task._VISUALIZATION_CODE_LEGACY_INSTRUCTIONS,
+    ):
+        text = "\n".join(variant_instructions)
+        assert "探索占位脚本" in text
+        assert "首轮 write_script 直接完整实现全部图表" in text
+
+
 def test_benchmark_model_config_reaches_code_responses_request() -> None:
     settings = SimpleNamespace(
         model_standard_id="environment-model",
@@ -1776,6 +1786,141 @@ async def test_frozen_benchmark_planner_records_duration_when_planner_fails(
     assert metrics[1]["requests"] == 0
     assert metrics[1]["status"] == "failed"
     assert metrics[1]["durationMs"] >= 0
+
+
+def _install_frozen_visualization_planner(monkeypatch, *, planner_request, declared_outputs):
+    manifest = SimpleNamespace(
+        task_kind="visualization",
+        model_dump=lambda **_kwargs: {"version": 2, "taskKind": "visualization"},
+    )
+    payloads = {
+        "plannerRequest": planner_request,
+        "executionContext": {
+            "codingPayload": {
+                "task": {
+                    "task_id": "task-1",
+                    "task_kind": "visualization",
+                    "declared_output_paths": list(declared_outputs),
+                },
+                "facts": {"visualizationFacts": []},
+            }
+        },
+        "acceptance": {},
+    }
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "validate_frozen_planner_coding_bundle",
+        lambda _path: (manifest, payloads),
+    )
+    captured = {}
+    real_builder = replay_visualization_task.build_benchmark_planner_agent
+
+    def capturing_builder(**kwargs):
+        captured["planner_request"] = kwargs.get("planner_request")
+        spec, agent = real_builder(**kwargs)
+        captured["instructions"] = spec.instructions
+        return spec, agent
+
+    monkeypatch.setattr(
+        replay_visualization_task, "build_benchmark_planner_agent", capturing_builder
+    )
+    return captured
+
+
+def _visualization_executor(chart_path):
+    from smart_reporting.reporting.workflow.runtime.phase_models import (
+        VisualizationPlanDraft,
+    )
+
+    class Executor:
+        def __init__(self, _agent):
+            pass
+
+        async def run(self, _instruction, **kwargs):
+            kwargs["model_metrics_recorder"](
+                SimpleNamespace(
+                    metrics=SimpleNamespace(
+                        input_tokens=10, output_tokens=5, reasoning_tokens=3
+                    )
+                ),
+                1,
+            )
+            return VisualizationPlanDraft.model_validate(
+                _candidate_visualization_plan(chart_path)
+            )
+
+    return Executor
+
+
+@pytest.mark.anyio
+async def test_frozen_visualization_planner_threads_required_charts_to_identity_gate(
+    monkeypatch, tmp_path
+):
+    planner_request = {
+        "sectionCode": "section-1",
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    }
+    captured = _install_frozen_visualization_planner(
+        monkeypatch,
+        planner_request=planner_request,
+        declared_outputs=["charts/chart-1.png"],
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "ReportingStructuredOutputExecutor",
+        _visualization_executor("charts/chart-1.png"),
+    )
+
+    payload, planner_metrics, _ = (
+        await replay_visualization_task.run_frozen_benchmark_planner(
+            tmp_path,
+            variant=BenchmarkVariant.CANDIDATE,
+            model=OpenAIChat(id="benchmark-test"),
+        )
+    )
+
+    assert captured["planner_request"] == planner_request
+    assert any("requiredCharts" in line for line in captured["instructions"])
+    assert payload["facts"]["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+    assert planner_metrics[-1]["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_frozen_visualization_planner_rejects_renamed_chart_via_identity_gate(
+    monkeypatch, tmp_path
+):
+    _install_frozen_visualization_planner(
+        monkeypatch,
+        planner_request={
+            "sectionCode": "section-1",
+            "requiredCharts": [
+                {
+                    "chartId": "chart-1",
+                    "sourcePath": "charts/chart-1.png",
+                    "interactivePath": None,
+                }
+            ],
+        },
+        declared_outputs=["charts/chart-1.png"],
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "ReportingStructuredOutputExecutor",
+        _visualization_executor("charts/renamed.png"),
+    )
+
+    with pytest.raises(ReportingError, match="requiredCharts") as caught:
+        await replay_visualization_task.run_frozen_benchmark_planner(
+            tmp_path,
+            variant=BenchmarkVariant.CANDIDATE,
+            model=OpenAIChat(id="benchmark-test"),
+        )
+
+    assert caught.value.details["missingChartIds"] == []
+    assert caught.value.details["unexpectedChartIds"] == []
+    assert caught.value.details["pathMismatches"] == ["chart-1"]
 
 
 @pytest.mark.anyio

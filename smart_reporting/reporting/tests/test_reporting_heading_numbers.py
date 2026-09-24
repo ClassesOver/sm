@@ -219,6 +219,13 @@ def test_assemble_excludes_duplicate_chart_before_revalidating_later_block_bindi
     assert rendered.markdown.count("revenue.png") == 1
     assert rendered.warnings == (
         {
+            "code": "chart_reference_anchor_missing",
+            "chartId": "chart_001",
+            "sectionCode": "section_001",
+            "blockId": "block_1",
+            "message": "图表 citation 未命中其他正文 block，保持原引用位置渲染。",
+        },
+        {
             "code": "duplicate_chart_reference_excluded",
             "chartId": "chart_001",
             "sectionCode": "section_001",
@@ -226,6 +233,322 @@ def test_assemble_excludes_duplicate_chart_before_revalidating_later_block_bindi
             "message": "同一 chartId 已在前文渲染，重复引用已排除。",
         },
     )
+
+
+def test_assemble_moves_chart_reference_to_first_citation_anchor() -> None:
+    rendered = assemble_report_markdown(
+        ReportDraft(
+            sections=(
+                ReportDraftSection(
+                    sectionCode="section_001",
+                    blocks=(
+                        ReportDraftBlock(
+                            blockId="block_1",
+                            markdown="### 月度趋势\n\n月度收入结论。",
+                            citationIds=("citation_001",),
+                        ),
+                        ReportDraftBlock(
+                            blockId="block_2",
+                            markdown="### 其他结论\n\n补充结论。",
+                            citationIds=("citation_002",),
+                        ),
+                        ReportDraftBlock(
+                            blockId="block_3",
+                            markdown="年度汇总。",
+                            citationIds=("citation_001", "citation_002"),
+                            chartIds=("chart_001",),
+                        ),
+                    ),
+                ),
+            )
+        ),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(
+                code="section_001",
+                sectionNumber="1",
+                title="经营分析",
+                analysisIds=("analysis_001",),
+            ),
+        ),
+        citation_ids=("citation_001", "citation_002"),
+        charts=(
+            ReportChartInput(
+                chartId="chart_001",
+                fileName="monthly.png",
+                title="月度趋势",
+                altText="月度趋势图",
+                citationIds=("citation_001",),
+            ),
+        ),
+    )
+
+    # 模型把 chartId 绑定到 1.2 之后的正文块；citation 交集命中 1.1 的正文，
+    # 图片前移到 1.1 结论之后，先于后续标题出现。
+    assert rendered.markdown.index("monthly.png") > rendered.markdown.index("月度收入结论")
+    assert rendered.markdown.index("monthly.png") < rendered.markdown.index("### 1.2")
+    assert rendered.markdown.count("monthly.png") == 1
+    # 原引用位置只保留正文和自身 citation 标记，不重复插图。
+    assert "年度汇总。[[citation:citation_001]][[citation:citation_002]]" in rendered.markdown
+    assert rendered.auto_fixes == (
+        {
+            "code": "chart_reference_moved_to_anchor",
+            "chartId": "chart_001",
+            "fromSectionCode": "section_001",
+            "fromBlockId": "block_3",
+            "toSectionCode": "section_001",
+            "toBlockId": "block_1",
+        },
+    )
+    assert rendered.warnings == ()
+    assert rendered.chart_paths == ("reports/monthly.png",)
+
+
+def test_assemble_keeps_chart_in_place_with_soft_warning_when_no_citation_anchor() -> None:
+    rendered = assemble_report_markdown(
+        ReportDraft(
+            sections=(
+                ReportDraftSection(
+                    sectionCode="section_001",
+                    blocks=(
+                        ReportDraftBlock(
+                            blockId="block_1",
+                            markdown="收入趋势。",
+                            citationIds=("citation_001",),
+                        ),
+                        ReportDraftBlock(
+                            blockId="block_2",
+                            markdown="补充说明。",
+                            citationIds=("citation_002",),
+                            chartIds=("chart_001",),
+                        ),
+                    ),
+                ),
+            )
+        ),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(
+                code="section_001",
+                sectionNumber="1",
+                title="经营分析",
+                analysisIds=("analysis_001",),
+            ),
+        ),
+        citation_ids=("citation_001", "citation_002"),
+        charts=(
+            ReportChartInput(
+                chartId="chart_001",
+                fileName="detail.png",
+                title="收入明细",
+                altText="收入明细图",
+                citationIds=("citation_002",),
+            ),
+        ),
+    )
+
+    assert rendered.markdown.count("detail.png") == 1
+    assert rendered.markdown.index("detail.png") > rendered.markdown.index("补充说明")
+    assert rendered.warnings == (
+        {
+            "code": "chart_reference_anchor_missing",
+            "chartId": "chart_001",
+            "sectionCode": "section_001",
+            "blockId": "block_2",
+            "message": "图表 citation 未命中其他正文 block，保持原引用位置渲染。",
+        },
+    )
+    assert rendered.auto_fixes == ()
+    assert rendered.chart_paths == ("reports/detail.png",)
+
+
+def test_assemble_renders_moved_chart_once_with_later_duplicate_reference() -> None:
+    rendered = assemble_report_markdown(
+        ReportDraft(
+            sections=(
+                ReportDraftSection(
+                    sectionCode="section_001",
+                    blocks=(
+                        ReportDraftBlock(
+                            blockId="block_1",
+                            markdown="月度收入结论。",
+                            citationIds=("citation_001",),
+                        ),
+                        ReportDraftBlock(
+                            blockId="block_2",
+                            markdown="年度汇总。",
+                            citationIds=("citation_001", "citation_002"),
+                            chartIds=("chart_001",),
+                        ),
+                        ReportDraftBlock(
+                            blockId="block_3",
+                            markdown="补充说明。",
+                            citationIds=("citation_001",),
+                            chartIds=("chart_001",),
+                        ),
+                    ),
+                ),
+            )
+        ),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(
+                code="section_001",
+                sectionNumber="1",
+                title="经营分析",
+                analysisIds=("analysis_001",),
+            ),
+        ),
+        citation_ids=("citation_001", "citation_002"),
+        charts=(
+            ReportChartInput(
+                chartId="chart_001",
+                fileName="monthly.png",
+                title="月度趋势",
+                altText="月度趋势图",
+                citationIds=("citation_001",),
+            ),
+        ),
+    )
+
+    assert rendered.markdown.count("monthly.png") == 1
+    assert rendered.markdown.index("monthly.png") < rendered.markdown.index("年度汇总")
+    assert rendered.auto_fixes == (
+        {
+            "code": "chart_reference_moved_to_anchor",
+            "chartId": "chart_001",
+            "fromSectionCode": "section_001",
+            "fromBlockId": "block_2",
+            "toSectionCode": "section_001",
+            "toBlockId": "block_1",
+        },
+    )
+    assert rendered.warnings == (
+        {
+            "code": "duplicate_chart_reference_excluded",
+            "chartId": "chart_001",
+            "sectionCode": "section_001",
+            "blockId": "block_3",
+            "message": "同一 chartId 已在前文渲染，重复引用已排除。",
+        },
+    )
+
+
+def test_assemble_chart_anchor_stays_within_reference_section() -> None:
+    rendered = assemble_report_markdown(
+        ReportDraft(
+            sections=(
+                ReportDraftSection(
+                    sectionCode="section_001",
+                    blocks=(
+                        ReportDraftBlock(
+                            blockId="block_1",
+                            markdown="收入趋势。",
+                            citationIds=("citation_001",),
+                        ),
+                    ),
+                ),
+                ReportDraftSection(
+                    sectionCode="section_002",
+                    blocks=(
+                        ReportDraftBlock(
+                            blockId="block_2",
+                            markdown="效率结论。",
+                            citationIds=("citation_001",),
+                            chartIds=("chart_001",),
+                        ),
+                    ),
+                ),
+            )
+        ),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(
+                code="section_001",
+                sectionNumber="1",
+                title="经营分析",
+                analysisIds=("analysis_001",),
+            ),
+            ReportSectionDefinition(
+                code="section_002",
+                sectionNumber="2",
+                title="运营效率",
+                analysisIds=("analysis_002",),
+            ),
+        ),
+        citation_ids=("citation_001",),
+        charts=(
+            ReportChartInput(
+                chartId="chart_001",
+                fileName="income.png",
+                title="收入趋势",
+                altText="收入趋势图",
+                citationIds=("citation_001",),
+            ),
+        ),
+    )
+
+    # 前面的章节也命中同一 citation，但锚点只在引用章节内查找，不跨章节移动。
+    assert rendered.markdown.index("income.png") > rendered.markdown.index("## 2. 运营效率")
+    assert rendered.markdown.count("income.png") == 1
+    assert rendered.auto_fixes == ()
+    assert rendered.warnings == (
+        {
+            "code": "chart_reference_anchor_missing",
+            "chartId": "chart_001",
+            "sectionCode": "section_002",
+            "blockId": "block_2",
+            "message": "图表 citation 未命中其他正文 block，保持原引用位置渲染。",
+        },
+    )
+
+
+def test_assemble_keeps_chart_citation_subset_hard_validation() -> None:
+    with pytest.raises(ReportingError) as raised:
+        assemble_report_markdown(
+            ReportDraft(
+                sections=(
+                    ReportDraftSection(
+                        sectionCode="section_001",
+                        blocks=(
+                            ReportDraftBlock(
+                                blockId="block_1",
+                                markdown="收入趋势。",
+                                citationIds=("citation_001",),
+                                chartIds=("chart_001",),
+                            ),
+                        ),
+                    ),
+                )
+            ),
+            expected_title="运营报告",
+            markdown_path="reports/report.md",
+            sections=(
+                ReportSectionDefinition(
+                    code="section_001",
+                    sectionNumber="1",
+                    title="经营分析",
+                    analysisIds=("analysis_001",),
+                ),
+            ),
+            citation_ids=("citation_001", "citation_002"),
+            charts=(
+                ReportChartInput(
+                    chartId="chart_001",
+                    fileName="revenue.png",
+                    title="收入趋势",
+                    altText="收入趋势图",
+                    citationIds=("citation_002",),
+                ),
+            ),
+        )
+
+    # 锚点重排不放宽引用绑定：图表 citation 必须是引用 block citation 的子集。
+    assert raised.value.code == "report_draft_chart_citation_invalid"
 
 
 def test_document_context_and_manifest_share_heading_number_contract() -> None:

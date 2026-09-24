@@ -63,6 +63,40 @@ async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None
 
 
 @pytest.mark.anyio
+async def test_vision_reviewer_heals_schema_conversion_failure_with_raw_json() -> None:
+    """candidate-34：供应商结构化输出转换偶发失败时 content 退化为原始 JSON 字符串，
+    按原文解析继续审查，不判为审查不可用。"""
+    content = b"\x89PNG\r\n\x1a\ncontent"
+
+    class Workspace:
+        async def aview_image(self, _thread_id: str, _path: str) -> ToolResult:
+            return ToolResult(
+                content="loaded",
+                images=[Image(content=content, mime_type="image/png", format="png")],
+            )
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            return SimpleNamespace(
+                content=(
+                    '{"summary": "图表清晰。", "requiresRevision": false, '
+                    '"issues": [], "warnings": [], "suggestions": []}'
+                )
+            )
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),  # type: ignore[arg-type]
+        Workspace(),  # type: ignore[arg-type]
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.review("thread-1", "charts/revenue.png")
+
+    assert result["reviewed"] is True
+    assert result["requiresRevision"] is False
+
+
+@pytest.mark.anyio
 async def test_vision_reviewer_demotes_minor_presentation_issues_to_warnings() -> None:
     content = b"image"
 

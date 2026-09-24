@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from agno.tools import Toolkit
 
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tools.analysis_item import (
     MAX_ANALYSIS_PYTHON_SOURCE_BYTES,
     MAX_VISUALIZATION_SCRIPT_BYTES,
@@ -31,8 +33,9 @@ from smart_reporting.reporting.tools.workspace_adapter import (
 )
 from smart_reporting.reporting.tools.workspace_port import ReportingWorkspaceError
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity
+from smart_reporting.reporting.workspace import MAX_REPORT_PLOTLY_BYTES
 from smart_reporting.task_execution import abuild_workspace_changes
-from smart_reporting.workspace import WorkspaceService
+from smart_reporting.workspace import WorkspaceError, WorkspaceService
 
 
 def test_reporting_toolkit_owns_agno_toolkit_boundary() -> None:
@@ -245,6 +248,63 @@ async def test_reporting_workspace_adapter_supports_async_update_patch_reads() -
             "expected_sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
         }
     ]
+
+
+def _plotly_file_service(content: bytes) -> SimpleNamespace:
+    return SimpleNamespace(
+        normalize_path=WorkspaceService.normalize_path,
+        read_limited_regular_file=AsyncMock(return_value=content),
+    )
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_inspects_plotly_file_identity() -> None:
+    content = json.dumps(
+        {"data": [{"type": "bar", "x": ["一月", "二月"], "y": [10, 12]}]},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    service = _plotly_file_service(content)
+    adapter = ReportingWorkspaceAdapter(service)  # type: ignore[arg-type]
+
+    result = await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
+
+    assert result == {
+        "sourcePath": "analysis/charts/s1/income.plotly.json",
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "mediaType": "application/vnd.plotly.v1+json",
+        "traceCount": 1,
+    }
+    service.read_limited_regular_file.assert_awaited_once_with(
+        "thread-1", "analysis/charts/s1/income.plotly.json", max_bytes=MAX_REPORT_PLOTLY_BYTES
+    )
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_keeps_plotly_missing_failure_code() -> None:
+    service = SimpleNamespace(
+        normalize_path=WorkspaceService.normalize_path,
+        read_limited_regular_file=AsyncMock(
+            side_effect=WorkspaceError("工作区路径不存在，请检查名称后重试。")
+        ),
+    )
+    adapter = ReportingWorkspaceAdapter(service)  # type: ignore[arg-type]
+
+    with pytest.raises(ReportingError) as caught:
+        await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
+
+    assert caught.value.code == "report_plotly_file_missing"
+    assert caught.value.details == {"sourcePath": "analysis/charts/s1/income.plotly.json"}
+
+
+@pytest.mark.anyio
+async def test_reporting_workspace_adapter_keeps_plotly_invalid_failure_code() -> None:
+    adapter = ReportingWorkspaceAdapter(_plotly_file_service(b"not-json"))  # type: ignore[arg-type]
+
+    with pytest.raises(ReportingError) as caught:
+        await adapter.inspect_plotly_file("thread-1", "analysis/charts/s1/income.plotly.json")
+
+    assert caught.value.code == "report_plotly_source_invalid"
 
 
 @pytest.mark.anyio

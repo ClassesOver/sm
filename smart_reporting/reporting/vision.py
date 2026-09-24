@@ -188,7 +188,14 @@ class ReportVisionReviewer:
                 "请按审查规则检查这张图片并返回结构化审查结果。",
                 images=[image],
             )
-            assessment = ReportVisionAssessment.model_validate(response.content)
+            content = response.content
+            if isinstance(content, str):
+                # 供应商结构化输出转换偶发失败但原始 JSON 完好
+                # （candidate-34：schema 转换 WARNING 后 content 退化为原文）：
+                # 按原文解析，不因此判审查不可用。
+                assessment = ReportVisionAssessment.model_validate_json(content)
+            else:
+                assessment = ReportVisionAssessment.model_validate(content)
         except Exception as error:
             # 视觉回执已成为正式图表发布门禁。供应商失败不能伪造 reviewed=true，
             # 也不能把原始异常或供应商响应带回模型上下文。

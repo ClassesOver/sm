@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -490,6 +491,29 @@ def _number_block_headings(
     return "".join(lines), h3_count, h4_count, tuple(headings)
 
 
+@dataclass(frozen=True, slots=True)
+class _ChartRenderPlan:
+    """单张已引用图表的装配渲染计划：图片渲染位置与 citation 锚点命中情况。"""
+
+    reference: tuple[int, int]
+    render: tuple[int, int]
+    render_block_id: str
+    citation_anchor_missing: bool
+
+
+def _chart_citation_block_indexes(
+    blocks: tuple[ReportDraftBlock, ...], chart_citation_ids: tuple[str, ...]
+) -> tuple[int, ...]:
+    """按章节顺序返回 citation 与图表存在交集的正文 block 索引。"""
+
+    chart_citations = frozenset(chart_citation_ids)
+    return tuple(
+        index
+        for index, block in enumerate(blocks)
+        if chart_citations.intersection(block.citation_ids)
+    )
+
+
 def assemble_report_markdown(
     draft: ReportDraft,
     *,
@@ -541,13 +565,41 @@ def assemble_report_markdown(
             auto_fixes.append(auto_fix)
         normalized_charts[chart.chart_id] = (chart, file_name)
 
+    # 模型可能把 chartId 绑定到偏晚的正文 block，导致 PDF 图表滞后于对应结论。
+    # 装配前先按 citation 交集预计算每张图的锚点：优先选同章节内第一个命中的
+    # 正文 block，图片改在锚点渲染，原引用位置只保留 citation 标记；引用 block
+    # 自身的 citation 子集硬校验不变，图表也不会跨章节移动。
+    chart_plans: dict[str, _ChartRenderPlan] = {}
+    for section_index, section in enumerate(draft.sections):
+        for block_index, block in enumerate(section.blocks):
+            for chart_id in block.chart_ids:
+                if chart_id in chart_plans or chart_id not in chart_registry:
+                    continue
+                matched_indexes = _chart_citation_block_indexes(
+                    section.blocks, chart_registry[chart_id].citation_ids
+                )
+                # 引用 block 的 citation 必然覆盖图表 citation，因此首个命中 block
+                # 不会晚于引用位置；未注册 chartId 由渲染循环按原顺序硬校验拒绝。
+                render_index = matched_indexes[0] if matched_indexes else block_index
+                chart_plans[chart_id] = _ChartRenderPlan(
+                    reference=(section_index, block_index),
+                    render=(section_index, render_index),
+                    render_block_id=section.blocks[render_index].block_id,
+                    citation_anchor_missing=not any(
+                        index != block_index for index in matched_indexes
+                    ),
+                )
+    figures_by_render_location: dict[tuple[int, int], list[str]] = {}
+    for chart_id, plan in chart_plans.items():
+        figures_by_render_location.setdefault(plan.render, []).append(chart_id)
+
     referenced_chart_ids: list[str] = []
     rendered_chart_ids: set[str] = set()
-    duplicate_warnings: list[dict[str, Any]] = []
+    chart_warnings: list[dict[str, Any]] = []
     referenced_analysis_ids: list[str] = []
     heading_numbers: list[HeadingNumber] = []
     markdown_parts = [f"# {expected_title}"]
-    for section in draft.sections:
+    for section_index, section in enumerate(draft.sections):
         definition = section_registry[section.section_code]
         # analysisIds 的唯一事实来源是用户批准后冻结的提纲。模型无需在每个正文块
         # 重复提交，也不能通过遗漏或替换 block.analysisIds 改变最终 manifest 绑定。
@@ -622,17 +674,18 @@ def assemble_report_markdown(
                 )
             )
             for chart_id in block.chart_ids:
-                chart, file_name = normalized_charts[chart_id]
-                if chart_id in rendered_chart_ids:
+                chart, _file_name = normalized_charts[chart_id]
+                if chart_plans[chart_id].reference != (section_index, block_index):
                     # 重复引用不能再次写入 Markdown，避免同一图片在多个正文 block 中出现。
-                    duplicate_chart_warning = {
-                        "code": "duplicate_chart_reference_excluded",
-                        "chartId": chart_id,
-                        "sectionCode": definition.code,
-                        "blockId": block.block_id,
-                        "message": "同一 chartId 已在前文渲染，重复引用已排除。",
-                    }
-                    duplicate_warnings.append(duplicate_chart_warning)
+                    chart_warnings.append(
+                        {
+                            "code": "duplicate_chart_reference_excluded",
+                            "chartId": chart_id,
+                            "sectionCode": definition.code,
+                            "blockId": block.block_id,
+                            "message": "同一 chartId 已在前文渲染，重复引用已排除。",
+                        }
+                    )
                     continue
                 if not set(chart.citation_ids).issubset(block.citation_ids):
                     raise ReportingError(
@@ -641,8 +694,34 @@ def assemble_report_markdown(
                         f"正文块 {block.block_id} 的 citation 绑定"
                         f"（{', '.join(block.citation_ids)}）。",
                     )
-                rendered_chart_ids.add(chart_id)
                 referenced_chart_ids.append(chart_id)
+                plan = chart_plans[chart_id]
+                if plan.render != plan.reference:
+                    auto_fixes.append(
+                        {
+                            "code": "chart_reference_moved_to_anchor",
+                            "chartId": chart_id,
+                            "fromSectionCode": definition.code,
+                            "fromBlockId": block.block_id,
+                            "toSectionCode": definition.code,
+                            "toBlockId": plan.render_block_id,
+                        }
+                    )
+                elif plan.citation_anchor_missing:
+                    chart_warnings.append(
+                        {
+                            "code": "chart_reference_anchor_missing",
+                            "chartId": chart_id,
+                            "sectionCode": definition.code,
+                            "blockId": block.block_id,
+                            "message": "图表 citation 未命中其他正文 block，保持原引用位置渲染。",
+                        }
+                    )
+            for chart_id in figures_by_render_location.get((section_index, block_index), ()):
+                if chart_id in rendered_chart_ids:
+                    continue
+                rendered_chart_ids.add(chart_id)
+                chart, file_name = normalized_charts[chart_id]
                 markdown_parts.append(
                     f'![{chart.alt_text}]({file_name} "{chart.title}")'
                     + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
@@ -655,7 +734,7 @@ def assemble_report_markdown(
         raise ReportingError("report_draft_table_missing", "当前报告至少需要一个 Markdown 表格。")
 
     unused = sorted(set(chart_registry) - set(referenced_chart_ids))
-    warnings: list[dict[str, Any]] = list(duplicate_warnings)
+    warnings: list[dict[str, Any]] = list(chart_warnings)
     if unused:
         warnings.append(
             {

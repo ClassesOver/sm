@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -29,16 +30,31 @@ from .runtime.base import (
 )
 from .runtime.phase_models import VisualizationPlanDraft
 
+_VISUALIZATION_BENCHMARK_IDENTITY_INSTRUCTIONS = (
+    "planner 请求中的 requiredCharts 是冻结的图表身份契约：必须逐字使用每项的 "
+    "chartId、sourcePath、interactivePath（null 表示无交互产物）；"
+    "不得新增、删除、改名图表或改动任何路径。",
+)
+
 
 def _identity_projection(payload):
     return payload
 
 
 def build_benchmark_planner_agent(
-    *, model: Any, task_kind: str, variant: BenchmarkVariant
+    *,
+    model: Any,
+    task_kind: str,
+    variant: BenchmarkVariant,
+    planner_request: Mapping[str, Any] | None = None,
 ) -> tuple[BenchmarkPlannerSpec, Any]:
     """在首个 provider 请求前选择冻结 benchmark 的 schema 和指令。"""
 
+    identity_instructions: tuple[str, ...] = ()
+    if isinstance(planner_request, Mapping) and isinstance(
+        planner_request.get("requiredCharts"), list
+    ):
+        identity_instructions = _VISUALIZATION_BENCHMARK_IDENTITY_INSTRUCTIONS
     if task_kind == "analysis":
         spec = build_benchmark_planner_spec(
             task_kind="analysis",
@@ -56,8 +72,8 @@ def build_benchmark_planner_agent(
             variant=variant,
             legacy_output_schema=LegacyVisualizationPlanDraft,
             candidate_output_schema=VisualizationPlanDraft,
-            legacy_instructions=(),
-            candidate_instructions=(),
+            legacy_instructions=identity_instructions,
+            candidate_instructions=identity_instructions,
             legacy_project_coding_facts=_identity_projection,
             candidate_project_coding_facts=_identity_projection,
         )
@@ -81,6 +97,58 @@ def _visualization_paths(plan: VisualizationPlanDraft) -> set[str]:
     }
 
 
+def _validate_required_charts_identity(
+    plan: VisualizationPlanDraft, planner_request: Mapping[str, Any] | None
+) -> None:
+    """planner 签发计划与冻结 requiredCharts 的逐字身份校验（benchmark-only）。
+
+    比 declared_output_paths 集合门禁更强：绑定 chartId ↔ 路径对，改名即拒绝。
+    planner_request 缺 requiredCharts 时不校验（旧 bundle 兼容）。
+    """
+    if not isinstance(planner_request, Mapping):
+        return
+    required = planner_request.get("requiredCharts")
+    if not isinstance(required, list):
+        return
+    for item in required:
+        if (
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("chartId"), str)
+            or not item.get("chartId")
+        ):
+            raise ReportingError(
+                "report_phase_contract_invalid",
+                "requiredCharts 存在畸形条目（缺少非空字符串 chartId），应先修复冻结输入。",
+            )
+    required_by_id = {
+        item["chartId"]: item
+        for item in required
+        if isinstance(item, Mapping) and isinstance(item.get("chartId"), str)
+    }
+    planned_by_id = {chart.chart_id: chart for chart in plan.charts}
+    missing = sorted(set(required_by_id) - set(planned_by_id))
+    unexpected = sorted(set(planned_by_id) - set(required_by_id))
+    mismatches = []
+    for chart_id in sorted(set(required_by_id) & set(planned_by_id)):
+        required_item = required_by_id[chart_id]
+        chart = planned_by_id[chart_id]
+        if (
+            chart.source_path != required_item.get("sourcePath")
+            or chart.interactive_path != required_item.get("interactivePath")
+        ):
+            mismatches.append(chart_id)
+    if missing or unexpected or mismatches:
+        raise ReportingError(
+            "report_phase_contract_invalid",
+            "planner 图表身份与冻结 requiredCharts 不一致。",
+            details={
+                "missingChartIds": missing,
+                "unexpectedChartIds": unexpected,
+                "pathMismatches": mismatches,
+            },
+        )
+
+
 def prepare_benchmark_coding_payload(
     *,
     task_kind: str,
@@ -88,8 +156,13 @@ def prepare_benchmark_coding_payload(
     execution_context: dict[str, Any],
     acceptance: dict[str, Any],
     planner_output: BaseModel,
+    planner_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """生成现有 Coding replay payload；不执行模型、文件或工具调用。"""
+    """生成现有 Coding replay payload；不执行模型、文件或工具调用。
+
+    可视化路径在 declared_output_paths 差集门禁之前先执行 requiredCharts
+    逐字身份校验（planner_request 携带该字段时）；改名或增删图表即拒绝。
+    """
 
     coding_payload = deepcopy(execution_context.get("codingPayload"))
     if not isinstance(coding_payload, dict):
@@ -169,6 +242,8 @@ def prepare_benchmark_coding_payload(
                 "report_phase_contract_invalid", "legacy 可视化验收缺少 decisionsByChartId。"
             )
         plan = adapt_legacy_visualization_plan(planner_output, decisions)
+
+    _validate_required_charts_identity(plan, planner_request)
 
     declared_outputs = task.get("declared_output_paths")
     expected_paths = set(declared_outputs) if isinstance(declared_outputs, (list, tuple)) else set()

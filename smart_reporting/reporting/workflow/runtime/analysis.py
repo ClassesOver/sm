@@ -49,6 +49,7 @@ from .analysis_item_workflow import (
     validate_supplemental_evidence,
 )
 from .base import (
+    _VISUALIZATION_FATAL_ERROR_CODES,
     _VISUALIZATION_RECOVERY_ERROR_CODES,
     MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
     MAX_REPORT_INSTRUCTION_BYTES,
@@ -766,6 +767,8 @@ class RuntimeAnalysisMixin:
         失败按 sectionCode 记入 checkpoint 账本并驱动同章 fresh retry(上限
         MAX_REPORT_SECTION_PHASE_ATTEMPTS);重试章继承已消耗预算并关闭探索
         (visualizationRecovery),已完成章由入口 durable 判定直接跳过。
+        确定性 infra 缺陷(工作区适配缺少协议能力)在记账后立即上抛,不进入
+        fresh retry。
         """
         context = context or self._visualization_context
         _validate_visualization_benchmark_planner(
@@ -1284,6 +1287,13 @@ class RuntimeAnalysisMixin:
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
+                if (
+                    isinstance(error, ReportingError)
+                    and error.code in _VISUALIZATION_FATAL_ERROR_CODES
+                ):
+                    # 确定性 infra 缺陷（如工作区适配缺少协议能力）重跑不可修复；
+                    # 失败已入账后立即上抛，终止同章 fresh attempt 循环。
+                    raise
         assert last_error is not None
         raise last_error
 

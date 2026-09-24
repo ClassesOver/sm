@@ -32,6 +32,16 @@ def test_tool_protocol_mismatch_stops_without_retry(task):
     assert recovery_for(error, task) == "fatal"
 
 
+@pytest.mark.parametrize("task", ["analysis", "visualization"])
+def test_missing_workspace_capability_is_fatal(task):
+    error = ReportingError(
+        "report_workspace_capability_missing",
+        "适配缺少能力",
+        details={"capability": "inspect_plotly_file", "retryable": True},
+    )
+    assert recovery_for(error, task) == "fatal"
+
+
 def test_task_specific_recovery_and_thinking_share_policy():
     error = ReportingError("execution_output_error", "failed")
     assert recovery_for(error, "analysis") == "retry"

@@ -828,6 +828,57 @@ def test_short_diagnostic_prefers_pending_output_validation_over_stale_last_fail
     assert diagnostic["details"]["issueSummary"] == "字段缺失"
 
 
+def test_short_diagnostic_passes_through_edit_anchor_context():
+    diagnostic = ReportingCodeGenerationRunner._short_diagnostic(
+        {
+            "code": "report_code_generation_no_submission",
+            "message": "failed",
+            "details": {
+                "lastFailure": {
+                    "code": "report_code_script_edit_not_found",
+                    "message": "SEARCH 文本在原始脚本中不存在，请重新读取。",
+                    "details": {
+                        "sourceExcerpt": "value = 1\nprint(value)\n",
+                        "sourceStartLine": 1,
+                        "sourceEndLine": 2,
+                        "errorLine": 2,
+                        "readRange": {"path": "analysis/a.py", "startLine": 1, "endLine": 2},
+                        "allowedEditRegion": {"path": "analysis/a.py", "startLine": 1, "endLine": 2},
+                    },
+                }
+            },
+        }
+    )
+
+    details = diagnostic["details"]
+    assert details["sourceExcerpt"] == "value = 1\nprint(value)\n"
+    assert details["sourceStartLine"] == 1
+    assert details["sourceEndLine"] == 2
+    assert details["errorLine"] == 2
+    assert details["readRange"] == {"path": "analysis/a.py", "startLine": 1, "endLine": 2}
+    assert details["allowedEditRegion"] == {"path": "analysis/a.py", "startLine": 1, "endLine": 2}
+
+
+def test_short_diagnostic_bounds_source_excerpt_and_drops_malformed_regions():
+    diagnostic = ReportingCodeGenerationRunner._short_diagnostic(
+        {
+            "code": "report_code_generation_no_submission",
+            "message": "failed",
+            "details": {
+                "sourceExcerpt": "x" * 2048,
+                "readRange": {"path": "analysis/a.py", "startLine": 5, "endLine": 2},
+                "allowedEditRegion": {"path": "analysis/a.py"},
+            },
+        }
+    )
+
+    details = diagnostic["details"]
+    assert len(details["sourceExcerpt"].encode("utf-8")) <= 1800
+    assert details["sourceExcerpt"] == "x" * 1800
+    assert "readRange" not in details
+    assert "allowedEditRegion" not in details
+
+
 def test_visualization_repair_diagnostic_prefers_pending_output_validation():
     """visualization 的 _repair_diagnostic 同样必须优先反映 pendingOutputValidation，
     而不是可能已过期的 lastFailure。"""

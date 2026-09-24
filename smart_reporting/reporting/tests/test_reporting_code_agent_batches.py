@@ -8,6 +8,7 @@ import pytest
 from agno.models.message import Message
 from agno.tools.function import Function, FunctionCall
 from loguru import logger
+from openai.types.responses import Response
 
 from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.code_agent.toolkit import _stop_after_success
@@ -91,15 +92,19 @@ async def test_batch_preserves_order_stopping_and_total_budget(asynchronous, out
     if outcome == "success":
         assert all(not result.tool_call_error for result in results)
     else:
-        skipped_from = 2 if outcome == "limit" else 1
-        for result in results[skipped_from:]:
+        for result in results[2 if outcome == "limit" else 1:]:
             assert result.tool_call_error is True
-            assert json.loads(result.content)["status"] == "skipped"
+            payload = json.loads(result.content)
+            if outcome == "limit":
+                # 限额边界由协议层统一换成编码回执（Agno 裸 tool_call_error 无
+                # code，模型与指标需要明确的终止原因）；首个超限调用与批内后续
+                # 调用同码，都是本轮未执行。
+                assert payload["status"] == "rejected"
+                assert payload["code"] == "report_code_tool_call_limit"
+            else:
+                assert payload["status"] == "skipped"
         if outcome == "submitted":
             assert results[0].stop_after_tool_call is True
-        if outcome == "limit":
-            assert results[1].tool_call_error is True
-            assert "Tool call limit reached" in results[1].content
 
 
 def test_entire_batch_is_validated_before_tools_can_execute():
@@ -114,6 +119,105 @@ def test_entire_batch_is_validated_before_tools_can_execute():
 
     with pytest.raises(ReportingError, match="未声明或类型不匹配"):
         model._parse_provider_response(response)
+
+
+def test_wire_shaped_freedom_call_is_recovered_and_executed():
+    """candidate-32：任务集内 FREEFORM 工具以 function 形态返回时还原为
+    custom 形态继续既有链路（stage 内正常执行），不计协议违规。"""
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(tools, max_model_requests=2)
+    model.get_request_params(messages=[], tools=tools)
+    response = _batch_response(
+        _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
+    )
+
+    parsed = model._parse_provider_response(response)
+
+    assert [call["function"]["name"] for call in parsed.tool_calls] == ["write_script"]
+    assert model._code_budget.wire_shape_recoveries == 1
+    assert model._code_budget.protocol_violations == 0
+    assert model._code_stage_mismatch_names == frozenset()
+
+
+def test_wire_shaped_freedom_call_stage_hidden_gets_soft_rejection():
+    """还原后的调用仍受交付阶段白名单约束：stage 外走软拒绝回执，不执行。"""
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(
+        tools,
+        max_model_requests=2,
+        delivery_state_reader=lambda: {
+            "marker": "REPORTING_CODE_DELIVERY_STATE",
+            "taskKind": "visualization",
+            "script": {"path": "analysis/a.py", "sha256": "a" * 64},
+            "execution": None,
+            "nextTools": ["read_script", "edit_script", "run_script"],
+        },
+    )
+    model.get_request_params(messages=[], tools=tools)
+    response = _batch_response(
+        _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
+    )
+
+    parsed = model._parse_provider_response(response)
+
+    assert [call["function"]["name"] for call in parsed.tool_calls] == ["write_script"]
+    assert model._code_stage_mismatch_names == frozenset({"write_script"})
+    assert model._code_budget.wire_shape_recoveries == 1
+    assert model._code_budget.stage_mismatch_rejections == 1
+    assert model._code_budget.protocol_violations == 0
+
+
+def test_wire_shaped_bare_text_arguments_are_recovered():
+    """candidate-38：grammar 退化更深时模型把 free-form 原文直接作为 function
+    参数（非 JSON 对象）；按输入前缀特征接受原文并还原为 custom 形态。"""
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="edit_script"), Function(name="run_script")]
+    model.configure_code_run(tools, max_model_requests=2)
+    model.get_request_params(messages=[], tools=tools)
+    raw_patch = "*** Begin Edit\n*** SHA256: " + "a" * 64 + "\nrandom\n*** End Edit\n"
+    response = Response.model_validate({
+        "id": "resp-1",
+        "created_at": 0,
+        "model": "test-model",
+        "object": "response",
+        "status": "completed",
+        "tools": [],
+        "output": [
+            {
+                "id": "item-1",
+                "call_id": "call-1",
+                "name": "edit_script",
+                "arguments": raw_patch,
+                "type": "function_call",
+            }
+        ],
+        "parallel_tool_calls": False,
+        "tool_choice": "auto",
+    })
+
+    parsed = model._parse_provider_response(response)
+
+    assert [call["function"]["name"] for call in parsed.tool_calls] == ["edit_script"]
+    assert model._code_budget.wire_shape_recoveries == 1
+    assert model._code_budget.protocol_violations == 0
+
+
+def test_wire_shape_recovery_limit_exhausted_stays_fatal():
+    """恢复计数超限后保持 fail-closed，仍按协议异常终止。"""
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(tools, max_model_requests=2)
+    model.get_request_params(messages=[], tools=tools)
+    model._code_budget.wire_shape_recoveries = 3
+    response = _batch_response(
+        _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
+    )
+
+    with pytest.raises(ReportingError, match="未声明或类型不匹配"):
+        model._parse_provider_response(response)
+    assert model._code_budget.protocol_violations == 1
 
 
 def test_mixed_custom_function_custom_response_preserves_provider_order():

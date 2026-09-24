@@ -12,6 +12,7 @@ from openai.types.responses import ResponseUsage
 
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.metrics import (
+    bounded_failure_diagnostics,
     bounded_request_params_snapshot,
     build_coding_metric_sample,
     group_coding_metrics,
@@ -57,6 +58,17 @@ async def test_rejected_provider_call_keeps_usage_and_safe_identity(
     monkeypatch.setattr(model, "get_async_client", lambda: SimpleNamespace(
         responses=SimpleNamespace(create=AsyncMock(return_value=response)),
     ))
+    if declared_edit:
+        # candidate-32 R1：任务集内 FREEFORM 工具以 function 形态返回时还原为
+        # custom 调用继续链路，不再是协议异常；usage 照常结算，私密输入不进指标。
+        await model.ainvoke([], assistant_message=Message(role="assistant"), tools=tools)
+        metric = model.code_run_request_metrics()[0]
+        assert metric["status"] == "completed"
+        assert metric["providerRequestId"] == "resp-1"
+        assert model._code_budget.wire_shape_recoveries == 1
+        assert model._code_budget.protocol_violations == 0
+        assert "PRIVATE_SOURCE" not in json.dumps(model.code_run_request_metrics())
+        return
     with pytest.raises(ReportingError) as caught:
         await model.ainvoke([], assistant_message=Message(role="assistant"), tools=tools)
 
@@ -72,8 +84,8 @@ async def test_rejected_provider_call_keeps_usage_and_safe_identity(
     assert caught.value.details == {
         "retryable": False,
         "toolName": "edit_script", "receivedType": "function",
-        "expectedType": "custom" if declared_edit else "undeclared",
-        "declaredTools": {"edit_script": "custom"} if declared_edit else {"run_script": "function"},
+        "expectedType": "undeclared",
+        "declaredTools": {"run_script": "function"},
         "itemId": "item-1", "callId": "call-1",
     }
     sample = build_coding_metric_sample(duration_ms=1, request_metrics=[metric])
@@ -289,6 +301,7 @@ def test_coding_metric_sample_keeps_delivery_evidence_and_unknowns_separate():
         "failureCode": "report_code_generation_no_submission",
         "rawProtocolCorrect": "unknown",
         "envelopeNormalizedInputs": "unknown",
+        "wireShapeRecoveries": "unknown",
             "firstScriptSuccess": "unknown",
             "firstScriptFailureCode": "unknown",
             "firstRunSuccess": "unknown",
@@ -476,6 +489,199 @@ def test_coding_metric_sample_replays_bounded_ordered_tool_call_identities_only(
     }
 
 
+def test_coding_metric_sample_keeps_bounded_first_tool_failure_diagnostics():
+    sample = build_coding_metric_sample(
+        duration_ms=1,
+        request_metrics=[
+            {
+                "requestIndex": 1,
+                "providerRequestId": "resp-1",
+                "durationMs": 2,
+                "toolNames": ["run_script"],
+                "toolCalls": [{"id": "call-1", "name": "run_script"}],
+                "toolCallCount": 1,
+                "status": "completed",
+                "firstToolFailure": {
+                    "toolName": "run_script",
+                    "code": "report_code_declared_output_missing",
+                    "diagnostics": {
+                        "path": "analysis/out.json",
+                        "missingPaths": [f"analysis/out-{index}.json" for index in range(30)],
+                        "presentPaths": [],
+                        "unsignedPaths": [f"data/unsigned-{index}.csv" for index in range(25)],
+                        "forbiddenPathOperations": ["os.getcwd"],
+                        "stdoutTail": "s" * 5000,
+                        "errorType": "E" * 300,
+                        "exitCode": 0,
+                        "declaredOutputCount": 17,
+                        "detectedOutputWrites": [f"charts/chart-{index:02d}.png" for index in range(30)],
+                        "source": "secret-source",
+                    },
+                    "details": {"source": "secret-source"},
+                },
+            }
+        ],
+    )
+
+    failure = sample["modelRequestMetrics"][0]["firstToolFailure"]
+    assert failure["toolName"] == "run_script"
+    assert failure["code"] == "report_code_declared_output_missing"
+    diagnostics = failure["diagnostics"]
+    assert diagnostics["path"] == "analysis/out.json"
+    assert len(diagnostics["missingPaths"]) == 20
+    assert diagnostics["presentPaths"] == []
+    assert len(diagnostics["unsignedPaths"]) == 20
+    assert diagnostics["forbiddenPathOperations"] == ["os.getcwd"]
+    assert diagnostics["stdoutTail"] == "s" * 1000
+    assert diagnostics["errorType"] == "E" * 256
+    assert diagnostics["exitCode"] == 0
+    assert diagnostics["declaredOutputCount"] == 17
+    assert len(diagnostics["detectedOutputWrites"]) == 20
+    assert "secret" not in str(failure)
+
+
+def test_coding_metric_sample_keeps_edit_failure_reason_and_block_identity():
+    """candidate-15 观测缺口：edit_script invalid 的 reason/blockIndex/字节数身份必须透出。"""
+    sample = build_coding_metric_sample(
+        duration_ms=1,
+        request_metrics=[
+            {
+                "requestIndex": 1,
+                "status": "completed",
+                "firstToolFailure": {
+                    "toolName": "edit_script",
+                    "code": "report_code_script_edit_invalid",
+                    "diagnostics": {
+                        "reason": "no_valid_blocks",
+                        "blockIndex": 2,
+                        "actualBytes": 131234,
+                        "limitBytes": 65536,
+                        "source": "secret-patch-text",
+                    },
+                },
+            }
+        ],
+    )
+    diagnostics = sample["modelRequestMetrics"][0]["firstToolFailure"]["diagnostics"]
+    assert diagnostics["reason"] == "no_valid_blocks"
+    assert diagnostics["blockIndex"] == 2
+    assert diagnostics["actualBytes"] == 131234
+    assert diagnostics["limitBytes"] == 65536
+    assert "secret" not in str(diagnostics)
+
+
+def test_coding_metric_sample_persists_bounded_edit_context_diagnostics():
+    """candidate-16 观测缺口：edit_script 失败回执的有界源码上下文必须能持久化。"""
+    sample = build_coding_metric_sample(
+        duration_ms=1,
+        request_metrics=[
+            {
+                "requestIndex": 1,
+                "status": "completed",
+                "firstToolFailure": {
+                    "toolName": "edit_script",
+                    "code": "report_code_script_edit_not_found",
+                    "diagnostics": {
+                        "reason": "search_text_not_found",
+                        "sourceExcerpt": "x" * 2000 + "TAIL",
+                        "sourceStartLine": 3,
+                        "sourceEndLine": 30,
+                        "errorLine": 12,
+                        "readRange": {
+                            "path": "analysis/a.py",
+                            "startLine": 3,
+                            "endLine": 30,
+                            "source": "secret-full-source",
+                        },
+                        "allowedEditRegion": {
+                            "path": "analysis/a.py",
+                            "startLine": 1,
+                            "endLine": 40,
+                            "source": "secret-full-source",
+                        },
+                        "forbiddenEditRegions": [{"path": "analysis/a.py"}],
+                        "source": "secret-full-source",
+                    },
+                },
+            }
+        ],
+    )
+
+    diagnostics = sample["modelRequestMetrics"][0]["firstToolFailure"]["diagnostics"]
+    assert diagnostics["sourceExcerpt"] == "x" * 1796 + "TAIL"
+    assert len(diagnostics["sourceExcerpt"].encode("utf-8")) == 1800
+    assert diagnostics["readRange"] == {"path": "analysis/a.py", "startLine": 3, "endLine": 30}
+    assert diagnostics["allowedEditRegion"] == {
+        "path": "analysis/a.py", "startLine": 1, "endLine": 40,
+    }
+    assert "sourceStartLine" not in diagnostics
+    assert "forbiddenEditRegions" not in diagnostics
+    assert "secret" not in str(diagnostics)
+
+
+def test_bounded_failure_diagnostics_trims_source_excerpt_tail_to_byte_limit():
+    # 1801 字节输入的尾部 1800 字节从首个多字节字符中间开始，
+    # 残缺字节按 UTF-8 解码丢弃，结果不超过 1800 字节。
+    diagnostics = bounded_failure_diagnostics({"sourceExcerpt": "中" * 600 + "a"})
+
+    assert diagnostics == {"sourceExcerpt": "中" * 599 + "a"}
+    assert len(diagnostics["sourceExcerpt"].encode("utf-8")) == 1798
+
+
+def test_bounded_failure_diagnostics_keeps_excerpt_within_limit_unchanged():
+    excerpt = "中" * 600
+
+    assert bounded_failure_diagnostics({"sourceExcerpt": excerpt}) == {
+        "sourceExcerpt": excerpt
+    }
+
+
+@pytest.mark.parametrize("excerpt", [None, 123, "", ["line"], {"code": 1}])
+def test_bounded_failure_diagnostics_drops_malformed_excerpt(excerpt):
+    assert bounded_failure_diagnostics({"sourceExcerpt": excerpt}) == {}
+
+
+@pytest.mark.parametrize("region", [
+    "analysis/a.py",
+    None,
+    42,
+    ["analysis/a.py", 1, 5],
+    {},
+    {"path": "analysis/a.py"},
+    {"path": "analysis/a.py", "startLine": 5},
+    {"path": "analysis/a.py", "startLine": 10, "endLine": 5},
+    {"path": "analysis/a.py", "startLine": 0, "endLine": 5},
+    {"path": "analysis/a.py", "startLine": True, "endLine": 5},
+    {"path": "analysis/a.py", "startLine": 1.0, "endLine": 5},
+    {"path": "analysis/a.py", "startLine": "1", "endLine": 5},
+    {"path": "", "startLine": 1, "endLine": 5},
+    {"path": 42, "startLine": 1, "endLine": 5},
+    {"startLine": 1, "endLine": 5},
+])
+def test_bounded_failure_diagnostics_drops_malformed_regions(region):
+    for key in ("readRange", "allowedEditRegion"):
+        assert bounded_failure_diagnostics({key: region}) == {}
+
+
+def test_bounded_failure_diagnostics_projects_only_safe_region_fields():
+    diagnostics = bounded_failure_diagnostics({
+        "readRange": {
+            "path": "a" * 300,
+            "startLine": 2,
+            "endLine": 9,
+            "source": "secret-full-source",
+            "sha256": "b" * 64,
+            "extra": {"nested": "secret"},
+        },
+        "allowedEditRegion": {"path": "charts/a.png", "startLine": 1, "endLine": 12},
+    })
+
+    assert diagnostics == {
+        "readRange": {"path": "a" * 256, "startLine": 2, "endLine": 9},
+        "allowedEditRegion": {"path": "charts/a.png", "startLine": 1, "endLine": 12},
+    }
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("wrapped", [False, True])
 async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrapped):  # noqa: F811
@@ -525,9 +731,148 @@ async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrappe
     assert sample["envelopeNormalizedInputs"] == (1 if wrapped else 0)
     assert sample["firstScriptFailureCode"] == "report_python_source_path_invalid"
     assert sample["modelRequestMetrics"][0]["firstToolFailure"] == {
-        "toolName": "write_script", "code": "report_python_source_path_invalid",
+        "toolName": "write_script",
+        "code": "report_python_source_path_invalid",
+        "diagnostics": {
+            "path": "analysis/a.py",
+            "unsignedPaths": [],
+            "forbiddenPathOperations": ["os.getcwd"],
+        },
     }
     assert "firstToolFailure" not in sample["modelRequestMetrics"][1]
+
+
+@pytest.mark.anyio
+async def test_declared_output_missing_records_bounded_diagnostics(workspace):  # noqa: F811
+    from smart_reporting.reporting.agent import create_reporting_code_agent_factory
+    from smart_reporting.reporting.code_mode import ScriptProcessResult
+    from smart_reporting.reporting.tests.test_reporting_code_agent_trajectories import (
+        _ResponsesClient,
+    )
+    from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
+        SOURCE,
+        _batch_response,
+        _custom_response,
+    )
+
+    class MissingThenOkRuntime:
+        def __init__(self) -> None:
+            self.runs = 0
+
+        async def execute(self, _session_id, _workspace, _code, **_kwargs):
+            return SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
+
+        async def execute_script_process(self, _session_id, received, _path, **_kwargs):
+            self.runs += 1
+            if self.runs > 1:
+                await received.awrite_text("task-1", "analysis/out.json", "{}")
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="done\n", stderr="", traceback=None), 0
+            )
+
+        async def shutdown(self, _session_id):
+            return None
+
+    client = _ResponsesClient([
+        _batch_response(
+            _custom_response("write_script", "# Python\n" + SOURCE, 1),
+            _function_response(2, "run_script", {}),
+        ),
+        _batch_response(
+            _function_response(3, "run_script", {}),
+            _function_response(4, "submit_script", {}),
+        ),
+        # run_script 成功前 submit_script 不在声明表内，同批调用会被阶段门禁拒绝，
+        # 需要第三轮按交付状态单独提交。
+        _batch_response(
+            _function_response(5, "submit_script", {}),
+        ),
+    ])
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test", api_key="test"), name="missing-output-test",
+    )
+
+    def make_agent(tools):
+        agent = factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    samples = []
+    await ReportingCodeGenerationRunner(
+        make_agent, MissingThenOkRuntime(), ReportingLspProcessManager(),
+        coding_metrics_recorder=samples.append,
+    ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
+    sample = samples[0]
+    failure = sample["modelRequestMetrics"][0]["firstToolFailure"]
+    assert failure["toolName"] == "run_script"
+    assert failure["code"] == "report_code_declared_output_missing"
+    assert failure["diagnostics"] == {
+        "path": "analysis/out.json",
+        "errorLine": 4,
+        "exitCode": 0,
+        "missingPaths": ["analysis/out.json"],
+        "presentPaths": [],
+        "stdoutTail": "done\n",
+        "allDeclaredOutputsMissing": True,
+        "sourceExcerpt": '# Python\nfrom pathlib import Path\n\nPath("analysis/out.json").write_text("{}")\n',
+        "allowedEditRegion": {"path": "analysis/a.py", "startLine": 1, "endLine": 4},
+    }
+    # 零产物场景首跑即打开重写闸门，第二轮 run_script 写出产物后同批 submit_script
+    # 即可成功，整个 runner 只需要 2 个 model request。
+    assert len(sample["modelRequestMetrics"]) == 2
+    assert "firstToolFailure" not in sample["modelRequestMetrics"][1]
+
+
+@pytest.mark.anyio
+async def test_tool_call_limit_rejection_is_coded(workspace, monkeypatch):  # noqa: F811
+    from smart_reporting.reporting.agent import create_reporting_code_agent_factory
+    from smart_reporting.reporting.tests.test_reporting_code_agent_trajectories import (
+        _ResponsesClient,
+    )
+    from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
+        SOURCE,
+        ToolkitRuntime,
+        _batch_response,
+        _custom_response,
+        _message_response,
+    )
+    from smart_reporting.reporting.workflow.runtime import code_generation
+
+    monkeypatch.setattr(code_generation, "ANALYSIS_TOOL_CALL_LIMIT", 2)
+    client = _ResponsesClient([
+        _batch_response(
+            _custom_response("write_script", "# Python\n" + SOURCE, 1),
+            _function_response(2, "run_script", {}),
+        ),
+        _batch_response(
+            _function_response(3, "run_script", {}),
+        ),
+        _message_response("结束"),
+    ])
+    factory = create_reporting_code_agent_factory(
+        model=OpenAIChat(id="test", api_key="test"), name="tool-limit-test",
+    )
+
+    def make_agent(tools):
+        agent = factory(tools)
+        agent.model.async_client = client
+        return agent
+
+    samples = []
+    with pytest.raises(ReportingError):
+        await ReportingCodeGenerationRunner(
+            make_agent, ToolkitRuntime(), ReportingLspProcessManager(),
+            coding_metrics_recorder=samples.append,
+        ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
+    sample = samples[0]
+    # 超限调用在执行前被宿主拦截，回执与指标都携带明确 code，
+    # 不再是 Agno 硬限额的裸 tool_error。
+    assert sample["modelRequestMetrics"][1]["firstToolFailure"] == {
+        "toolName": "run_script",
+        "code": "report_code_tool_call_limit",
+        "diagnostics": {"used": 2, "limit": 2},
+    }
+    assert sample["toolCounts"] == {"run_script": 1, "write_script": 1}
 
 
 def test_coding_metric_sample_keeps_bounded_first_run_failure_context():
@@ -913,7 +1258,7 @@ async def test_runner_records_metrics_before_no_submission(workspace, protocol_e
         output.metrics = RunMetrics()
 
     class Model:
-        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None, delivery_state_reader=None):
+        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None, delivery_state_reader=None, tool_call_limit=None, visual_budget_gate_safety_margin=2):
             # 30 次工具调用后仍需允许一次模型终止响应。
             assert max_model_requests == 31
             assert delivery_state_reader()["nextTools"] == ["write_script"]
@@ -1048,7 +1393,7 @@ async def test_runner_records_request_count_when_agent_raises(workspace):  # noq
     recorded: list[tuple[object, int]] = []
 
     class Model:
-        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None, delivery_state_reader=None):
+        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None, delivery_state_reader=None, tool_call_limit=None, visual_budget_gate_safety_margin=2):
             assert max_model_requests == 31
             assert delivery_state_reader()["nextTools"] == ["write_script"]
 

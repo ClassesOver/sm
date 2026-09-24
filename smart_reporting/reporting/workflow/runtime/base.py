@@ -284,6 +284,11 @@ _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
     }
 )
 
+# 确定性 infra 缺陷（工作区适配缺少协议能力）重试不可修复；章节 fresh attempt
+# 循环必须在记账后立即上抛，避免整段 planner + Coding 反复重放。只收录该类
+# 缺陷的显式错误码，不把其他 fatal 策略码一并引入循环行为变化。
+_VISUALIZATION_FATAL_ERROR_CODES = frozenset({"report_workspace_capability_missing"})
+
 
 _JSON_FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
 _VISIBLE_MACHINE_SCALAR_KEYS = frozenset(

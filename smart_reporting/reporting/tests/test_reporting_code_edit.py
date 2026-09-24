@@ -30,6 +30,69 @@ def edit_patch(source, old, new):
     return multi_edit_patch(source, [(old, new)])
 
 
+@pytest.mark.parametrize("case,reason", [
+    ("bad_sha", "missing_envelope"),
+    ("missing_blocks", "no_valid_blocks"),
+    ("trailing", "trailing_text"),
+    ("oversized", "oversized_patch"),
+    ("wrapped", "missing_envelope"),
+])
+def test_parse_edit_patch_invalid_reports_bounded_reason(case, reason):
+    """candidate-15 观测缺口：edit_script invalid 失败必须带可归因的 reason。"""
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    source = "# keep\nvalue = 1\n"
+    patch = edit_patch(source, "value = 1", "value = 2")
+    if case == "bad_sha":
+        patch = patch.replace(hashlib.sha256(source.encode()).hexdigest(), "not-a-sha")
+    elif case == "missing_blocks":
+        patch = (
+            "*** Begin Edit\n*** SHA256: " + hashlib.sha256(source.encode()).hexdigest()
+            + "\nrandom text without edit markers\n*** End Edit\n"
+        )
+    elif case == "trailing":
+        patch += "\n解释"
+    elif case == "oversized":
+        patch = edit_patch(source, "value = 1", "x" * (2 * 64 * 1024 + 512))
+    elif case == "wrapped":
+        patch = json.dumps({"data": patch})
+    with pytest.raises(ReportingError) as caught:
+        parse_edit_patch(patch, 64 * 1024)
+    assert caught.value.code == "report_code_script_edit_invalid"
+    assert caught.value.details.get("reason") == reason
+    assert caught.value.details.get("nextTools") == ["read_script", "edit_script"]
+    # patch 原文不得进入 details；oversized 分支只报字节数身份。
+    assert "value = 2" not in json.dumps(caught.value.details, ensure_ascii=False)
+    if case == "oversized":
+        assert caught.value.details.get("actualBytes") == len(patch.encode("utf-8"))
+        assert caught.value.details.get("limitBytes") == 64 * 1024
+
+
+def test_parse_edit_patch_invalid_message_contains_copyable_template():
+    """candidate-27/28 早停族：失败消息必须附可逐行复制的信封模板。"""
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    source = "# keep\nvalue = 1\n"
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    patch = (
+        "*** Begin Edit\n*** SHA256: " + digest
+        + "\n*** Update File: charts.py\n- value = 1\n+ value = 2\n*** End Edit\n"
+    )
+    with pytest.raises(ReportingError) as caught:
+        parse_edit_patch(patch, 64 * 1024)
+    assert caught.value.details.get("reason") == "no_valid_blocks"
+    message = caught.value.message
+    assert len(message) <= 512
+    for marker in (
+        "*** Begin Edit\\n*** SHA256: ",
+        "<<<<<<< SEARCH\\n",
+        "\\n=======\\n",
+        "\\n>>>>>>> REPLACE\\n",
+        "*** End Edit",
+    ):
+        assert marker in message
+
+
 def multi_edit_patch(source, edits):
     digest = hashlib.sha256(source.encode()).hexdigest()
     return f"*** Begin Edit\n*** SHA256: {digest}\n" + "".join(
@@ -371,3 +434,99 @@ async def test_failed_edit_keeps_repair_tools_available(toolkit, script):  # noq
     assert await fc.aexecute()
     assert fc.result["code"] == "report_code_script_edit_not_found"
     assert toolkit.delivery_state()["nextTools"] == ["read_script", "edit_script", "run_script"]
+
+
+@pytest.mark.anyio
+async def test_edit_not_found_receipt_carries_bounded_anchor_context(toolkit, script):  # noqa: F811
+    # 整块 SEARCH 不存在，但首行仍是源码锚点：回执附有界 excerpt，可直接重试。
+    source = "# keep\nvalue = 1\nprint(value)\n"
+    script["source"] = source
+    result = await toolkit.edit_script(
+        edit_patch(source, "value = 1\nprint(value)\nmissing", "value = 2")
+    )
+    assert result["code"] == "report_code_script_edit_not_found"
+    details = result["details"]
+    assert details["blockIndex"] == 1
+    assert details["sourceSha256"] == hashlib.sha256(source.encode()).hexdigest()
+    assert details["sourceExcerpt"] == source
+    assert details["sourceStartLine"] == 1
+    assert details["sourceEndLine"] == 3
+    assert details["errorLine"] == 2
+    assert details["allowedEditRegion"] == {
+        "path": toolkit.context.script_path, "startLine": 1, "endLine": 3,
+    }
+    assert "readRange" not in details
+    assert details["nextTools"] == ["edit_script", "run_script"]
+    assert script["writes"] == 0
+
+
+@pytest.mark.anyio
+async def test_edit_ambiguous_receipt_anchors_first_occurrence(toolkit, script):  # noqa: F811
+    script["source"] = "# keep\nvalue = 1\nprint(value)\nvalue = 1\n"
+    source = script["source"]
+    result = await toolkit.edit_script(edit_patch(source, "value = 1", "value = 2"))
+    assert result["code"] == "report_code_script_edit_ambiguous"
+    details = result["details"]
+    assert details["errorLine"] == 2
+    assert details["sourceStartLine"] == 1
+    assert details["sourceEndLine"] == 4
+    assert details["sourceExcerpt"] == source
+    assert details["sourceSha256"] == hashlib.sha256(source.encode()).hexdigest()
+
+
+@pytest.mark.anyio
+async def test_edit_failure_without_anchor_falls_back_to_full_read_range(toolkit, script):  # noqa: F811
+    source = script["source"]
+    result = await toolkit.edit_script(edit_patch(source, "value=1", "value = 2"))
+    assert result["code"] == "report_code_script_edit_not_found"
+    details = result["details"]
+    assert "sourceExcerpt" not in details
+    assert "sourceSha256" not in details
+    assert details["readRange"] == {
+        "path": toolkit.context.script_path, "startLine": 1, "endLine": 3,
+    }
+    assert details["nextTools"] == ["read_script", "edit_script"]
+    assert script["writes"] == 0
+
+
+@pytest.mark.anyio
+async def test_edit_can_retry_directly_from_failure_receipt_without_read(toolkit, script):  # noqa: F811
+    # 长修复循环压缩的关键路径：模型仅凭失败回执的 excerpt + sourceSha256
+    # 修正 SEARCH 并直接重试，中间不需要再 read_script。
+    source = "# keep\nvalue = 1\nprint(value)\n"
+    script["source"] = source
+    failed = await toolkit.edit_script(
+        edit_patch(source, "value = 1\nprint(total)", "value = 2")
+    )
+    assert failed["code"] == "report_code_script_edit_not_found"
+    details = failed["details"]
+    assert details["sourceExcerpt"] == source
+    assert details["sourceSha256"] == hashlib.sha256(source.encode()).hexdigest()
+
+    retry = await toolkit.edit_script(
+        edit_patch(details["sourceExcerpt"], "value = 1", "value = 2")
+    )
+
+    assert retry["ok"] is True
+    assert script["source"] == "# keep\nvalue = 2\nprint(value)\n"
+    assert script["writes"] == 1
+
+
+@pytest.mark.anyio
+async def test_edit_conflict_receipt_completes_read_range_and_keeps_anchor_excerpt(toolkit, script):  # noqa: F811
+    source = script["source"]
+    result = await toolkit.edit_script(edit_patch("stale source", "value = 1", "value = 2"))
+    assert result["code"] == "report_code_script_edit_conflict"
+    details = result["details"]
+    assert details["currentSha256"] == hashlib.sha256(source.encode()).hexdigest()
+    assert details["expectedSha256"] == hashlib.sha256(b"stale source").hexdigest()
+    assert details["action"] == "read_script"
+    assert details["readRange"] == {
+        "path": toolkit.context.script_path, "startLine": 1, "endLine": 3,
+    }
+    # SEARCH 首行仍命中当前源码：excerpt + sourceSha256 可支撑直接重试。
+    assert details["sourceSha256"] == details["currentSha256"]
+    assert details["sourceExcerpt"] == source
+    assert details["errorLine"] == 2
+    assert details["nextTools"] == ["read_script", "edit_script"]
+    assert script["writes"] == 0

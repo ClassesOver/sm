@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import json
+import os
 import re
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
@@ -32,7 +34,11 @@ from .context import (
     ReportingCodingTaskBinding,
     ReportingCodingTaskContext,
 )
-from .delivery import _visual_review_model_receipt, build_delivery_state
+from .delivery import (
+    SOURCE_EXCERPT_MAX_BYTES,
+    _visual_review_model_receipt,
+    build_delivery_state,
+)
 from .edit_patch import apply_edit_blocks, parse_edit_patch
 from .formatting import format_python_source
 from .lsp import ReportingWorkspaceLsp
@@ -84,6 +90,62 @@ _PATH_ARGUMENT_METHODS = frozenset(
 _PATH_ARGUMENT_KEYWORDS = frozenset(
     {"file", "filename", "filepath_or_buffer", "fname", "path", "path_or_buf"}
 )
+
+# 占位脚本（零产物探索脚本）的启发式标识：遍历文件系统、打印 facts/supplement 结构，
+# 且不包含任何产物写出调用。检测到后应在 declared_output_missing 时直接打开重写闸门。
+_PLACEHOLDER_EXPLORATION_CALLS = frozenset(
+    {
+        "os.walk",
+        "os.listdir",
+        "os.scandir",
+        "glob.glob",
+        "glob.iglob",
+        "pathlib.Path.cwd",
+        "os.getcwd",
+    }
+)
+_PLACEHOLDER_OUTPUT_METHODS = frozenset(
+    {
+        "savefig",
+        "to_csv",
+        "to_excel",
+        "to_json",
+        "to_parquet",
+        "to_pickle",
+        "write_text",
+        "write_bytes",
+        "write_image",
+        "write_html",
+        "write_json",
+    }
+)
+_PLACEHOLDER_OUTPUT_CALLS = frozenset(
+    {
+        "plotly.offline.plot",
+        "plotly.io.write_image",
+        "plotly.io.write_html",
+        "plotly.io.write_json",
+    }
+)
+
+# 声明产物写出调用的静态识别（write_script/edit_script 结构预检与软告警共用）。
+_OUTPUT_WRITE_METHODS = _PLACEHOLDER_OUTPUT_METHODS
+_OUTPUT_WRITE_CALLS = _PLACEHOLDER_OUTPUT_CALLS
+# 这些方法名在 pathlib/plotly 中都出现，但路径位置不同：
+# Path("charts/a.png").write_bytes(...) 的路径在 receiver 上；
+# fig.write_image("charts/a.png") 的路径在第一个位置参数上。
+# 静态分析无法区分 receiver 是 Path 还是 Figure，两个位置都尝试解析。
+_PATH_OWNER_WRITE_METHODS = frozenset(
+    {"write_text", "write_bytes", "write_image", "write_html", "write_json"}
+)
+_DECLARED_OUTPUT_REVIEW_CHUNK_SIZE = 5
+
+# 连续局部编辑失败且无成功运行达到该阈值时，交付状态放行一次 write_script
+# 整段重写（真实回放 candidate-3：占位脚本 + 禁止重写 = 预算空转死局）。
+REWRITE_GATE_EDIT_FAILURES = 2
+# 对齐 codex 熔断语义：连续（非累计）要求修订的视觉审查轮次达到该阈值时，
+# 剩余 critical 问题降级为软告警并收敛到 submit_script，避免视觉修复循环耗尽预算。
+VISUALIZATION_CRITICAL_REVIEW_ROUNDS_LIMIT = 3
 
 
 def _reject_source(message: str, details: Mapping[str, Any] | None = None) -> NoReturn:
@@ -272,6 +334,142 @@ def _referenced_literal_paths(tree: ast.AST) -> set[str]:
     return paths
 
 
+def _resolved_path_literal(
+    node: ast.AST,
+    aliases: Mapping[str, str],
+    bindings: Mapping[str, str] | Mapping[str, ast.AST],
+    seen: frozenset[str] = frozenset(),
+) -> str | None:
+    if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
+        return _resolved_path_literal(
+            bindings[node.id], aliases, bindings, seen | {node.id}
+        )
+    literal = _literal_string(node, bindings)
+    if literal is not None:
+        return literal
+    if isinstance(node, ast.Call):
+        qualified_name = _qualified_name(node.func, aliases)
+        if qualified_name == "pathlib.Path" and node.args:
+            return _literal_string(node.args[0], bindings)
+        if qualified_name == "os.path.join" and not node.keywords:
+            parts = [_literal_string(argument, bindings) for argument in node.args]
+            if parts and all(part is not None for part in parts):
+                return os.path.join(*parts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        # pathlib 斜杠拼接：Path("charts") / "a.png"；左侧是 os.path.join
+        # 解析出的 POSIX 路径时也按同风格拼接。
+        left = _resolved_path_literal(node.left, aliases, bindings, seen)
+        right = _literal_string(node.right, bindings)
+        if left is not None and right is not None:
+            return f"{left.rstrip('/')}/{right}"
+    return None
+
+
+def _all_referenced_literal_paths(tree: ast.AST) -> set[str]:
+    paths = _referenced_literal_paths(tree)
+    aliases = _import_aliases(tree)
+    bindings = _literal_bindings(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _qualified_name(node.func, aliases) != "os.path.join":
+            continue
+        parts = [_literal_string(argument, bindings) for argument in node.args]
+        if parts and all(part is not None for part in parts):
+            paths.add(os.path.join(*parts))
+    return paths
+
+
+def _declared_output_literals(tree: ast.AST, declared_paths: frozenset[str]) -> set[str]:
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    literals |= _all_referenced_literal_paths(tree)
+    aliases = _import_aliases(tree)
+    bindings = _literal_bindings(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            resolved = _resolved_path_literal(node, aliases, bindings)
+            if resolved is not None:
+                literals.add(resolved)
+    return literals & set(declared_paths)
+
+
+def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) -> set[str]:
+    aliases = _import_aliases(tree)
+    bindings = _literal_bindings(tree)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        qualified_name = _qualified_name(node.func, aliases)
+        if qualified_name is None:
+            continue
+        method_name = qualified_name.rsplit(".", 1)[-1]
+        path_node: ast.AST | None = None
+        if qualified_name in _OUTPUT_WRITE_CALLS or method_name in _OUTPUT_WRITE_METHODS:
+            if method_name in _PATH_OWNER_WRITE_METHODS and isinstance(node.func, ast.Attribute):
+                resolved = _resolved_path_literal(node.func.value, aliases, bindings)
+                if resolved in declared_paths:
+                    found.add(resolved)
+                # 继续尝试第一个位置参数（plotly 的 fig.write_image 风格）。
+            arguments = list(node.args[:1])
+            arguments.extend(
+                keyword.value
+                for keyword in node.keywords
+                if keyword.arg in _PATH_ARGUMENT_KEYWORDS
+            )
+            path_node = arguments[0] if arguments else None
+            if path_node is None:
+                continue
+        elif qualified_name in {"open", "io.open"} and node.args:
+            mode_node = (
+                node.args[1]
+                if len(node.args) > 1
+                else next(
+                    (keyword.value for keyword in node.keywords if keyword.arg == "mode"),
+                    None,
+                )
+            )
+            mode = _literal_string(mode_node, bindings) if mode_node is not None else None
+            if mode and any(char in mode for char in "wax+"):
+                path_node = node.args[0]
+        if path_node is None:
+            continue
+        resolved = _resolved_path_literal(path_node, aliases, bindings)
+        if resolved in declared_paths:
+            found.add(resolved)
+    return found
+
+
+def _reject_output_write_contract(tree: ast.Module, declared_paths: tuple[str, ...]) -> None:
+    declared = frozenset(declared_paths)
+    if not declared:
+        return
+    if _declared_output_literals(tree, declared):
+        return
+    raise ReportingError(
+        "report_code_script_no_output_write",
+        "脚本未引用任何声明产物路径，疑似占位/探索脚本；必须在脚本中真实写出全部声明产物。",
+        details={"declaredOutputCount": len(declared), "detectedOutputWrites": []},
+    )
+
+
+def _output_write_warning(tree: ast.Module, declared_paths: tuple[str, ...]) -> dict[str, str] | None:
+    declared = frozenset(declared_paths)
+    if not declared or not _declared_output_literals(tree, declared):
+        return None
+    if _declared_output_write_paths(tree, declared):
+        return None
+    return {
+        "code": "report_code_script_output_write_unverified",
+        "reason": "no_resolvable_output_write",
+        "message": "脚本引用了声明产物路径，但宿主未能静态确认写出调用；请确保运行后会真实写出全部声明产物。",
+    }
+
+
 def _embedded_data_details(tree: ast.AST) -> dict[str, Any] | None:
     """识别疑似被模型直接嵌入源码的大型数据字面量。
 
@@ -321,20 +519,502 @@ def _reject_embedded_data(tree: ast.AST) -> None:
         )
 
 
+# candidate-18/19 长修复循环的形态：模型无视指令写出 navigate/read_rows 这类
+# 通用动态路径解析器，运行期对 facts 做 cur[key] 触发 KeyError。这里只在
+# “path/data_path 参数 + 对该参数的解析调用 + 解析结果驱动的下标访问”三者
+# 同时命中时才拒绝，避免误伤普通数据处理函数。
+_DYNAMIC_PATH_PARAMETER_NAMES = frozenset({"path", "data_path"})
+_DYNAMIC_PATH_SPLIT_METHODS = frozenset({"split", "rsplit"})
+_DYNAMIC_PATH_REGEX_CALLS = frozenset({"re.fullmatch", "re.match", "re.search"})
+
+
+def _function_parameter_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    args = func.args
+    names = [item.arg for item in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    if args.vararg is not None:
+        names.append(args.vararg.arg)
+    if args.kwarg is not None:
+        names.append(args.kwarg.arg)
+    return names
+
+
+def _loaded_names(node: ast.AST) -> set[str]:
+    return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
+
+
+def _bound_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            names.extend(_bound_names(element))
+        return names
+    return []
+
+
+def _function_scope_nodes(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    """函数自有节点；嵌套函数/lambda 的局部变量不参与本函数的派生分析。"""
+    nodes: list[ast.AST] = []
+    stack: list[ast.AST] = list(func.body)
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return nodes
+
+
+def _dynamic_path_parser_details(tree: ast.AST) -> dict[str, Any] | None:
+    aliases = _import_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        parameters = _function_parameter_names(node)
+        path_param = next(
+            (name for name in parameters if name in _DYNAMIC_PATH_PARAMETER_NAMES),
+            None,
+        )
+        if path_param is None:
+            continue
+        scope = _function_scope_nodes(node)
+        derived = {path_param}
+        containers = set(parameters)
+        changed = True
+        while changed:
+            changed = False
+            for item in scope:
+                targets: list[ast.AST] = []
+                value: ast.AST | None = None
+                if isinstance(item, (ast.Assign, ast.AugAssign)):
+                    targets = item.targets if isinstance(item, ast.Assign) else [item.target]
+                    value = item.value
+                elif isinstance(item, (ast.AnnAssign, ast.NamedExpr)):
+                    targets = [item.target]
+                    value = item.value
+                elif isinstance(item, (ast.For, ast.AsyncFor, ast.comprehension)):
+                    targets = [item.target]
+                    value = item.iter
+                for target in targets:
+                    bound = _bound_names(target)
+                    if not bound:
+                        continue
+                    containers.update(bound)
+                    if value is not None and _loaded_names(value) & derived:
+                        if not set(bound) <= derived:
+                            derived.update(bound)
+                            changed = True
+        has_parse_signal = False
+        for item in scope:
+            if not isinstance(item, ast.Call):
+                continue
+            if (
+                isinstance(item.func, ast.Attribute)
+                and item.func.attr in _DYNAMIC_PATH_SPLIT_METHODS
+                and isinstance(item.func.value, ast.Name)
+                and item.func.value.id in derived
+            ):
+                sep = (
+                    item.args[0]
+                    if item.args
+                    else next(
+                        (keyword.value for keyword in item.keywords if keyword.arg == "sep"),
+                        None,
+                    )
+                )
+                if (
+                    isinstance(sep, ast.Constant)
+                    and isinstance(sep.value, str)
+                    and "." in sep.value
+                ):
+                    has_parse_signal = True
+            if _qualified_name(item.func, aliases) in _DYNAMIC_PATH_REGEX_CALLS:
+                subject = (
+                    item.args[1]
+                    if len(item.args) > 1
+                    else next(
+                        (keyword.value for keyword in item.keywords if keyword.arg == "string"),
+                        None,
+                    )
+                )
+                if subject is not None and _loaded_names(subject) & derived:
+                    has_parse_signal = True
+        has_subscript_signal = any(
+            isinstance(item, ast.Subscript)
+            and isinstance(item.value, ast.Name)
+            and item.value.id in containers
+            and _loaded_names(item.slice) & derived
+            for item in scope
+        )
+        if has_parse_signal and has_subscript_signal:
+            return {
+                "reason": "dynamic_path_parser",
+                "functionName": node.name,
+                "parameterName": path_param,
+                "line": node.lineno,
+            }
+    return None
+
+
+def _reject_dynamic_path_parser(tree: ast.AST) -> None:
+    details = _dynamic_path_parser_details(tree)
+    if details is None:
+        return
+    raise ReportingError(
+        "report_code_dynamic_path_parser",
+        "禁止编写通用动态路径解析器：函数 {functionName} 接收 {parameterName} 并按解析结果"
+        "对数据做下标访问。逐字使用 binding.dataPath（如 findings[0].rows）读取数据，"
+        "用显式链式访问替代运行期路径解析，不要写通用路径解析器。".format(**details),
+        details=details,
+    )
+
+
+def _simple_assignment_targets_value(item: ast.AST) -> tuple[list[ast.AST], ast.AST | None]:
+    if isinstance(item, ast.Assign):
+        return item.targets, item.value
+    if isinstance(item, ast.AnnAssign):
+        return [item.target], item.value
+    if isinstance(item, ast.NamedExpr):
+        return [item.target], item.value
+    return [], None
+
+
+def _read_text_call(node: ast.AST, aliases: Mapping[str, str]) -> bool:
+    """Detect Path(...).read_text()."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "read_text"
+        and isinstance(node.func.value, ast.Call)
+        and _qualified_name(node.func.value.func, aliases) == "pathlib.Path"
+    )
+
+
+def _is_load_expression(
+    node: ast.AST,
+    aliases: Mapping[str, str],
+    derived: set[str],
+    loaded_sources: Mapping[str, str],
+) -> bool:
+    if isinstance(node, ast.Name) and node.id in loaded_sources:
+        return True
+    if not isinstance(node, ast.Call):
+        return False
+    qn = _qualified_name(node.func, aliases)
+    if qn == "open" and node.args and _loaded_names(node.args[0]) & derived:
+        return True
+    if qn in ("json.load", "json.loads") and node.args:
+        if _is_load_expression(node.args[0], aliases, derived, loaded_sources):
+            return True
+    if _read_text_call(node, aliases):
+        path_arg = node.func.value.args[0] if node.func.value.args else None
+        if path_arg is not None and _loaded_names(path_arg) & derived:
+            return True
+    return False
+
+
+def _path_source_parameter(
+    node: ast.AST,
+    aliases: Mapping[str, str],
+    derived: set[str],
+    loaded_sources: Mapping[str, str],
+) -> str | None:
+    if isinstance(node, ast.Name):
+        return loaded_sources.get(node.id)
+    if not isinstance(node, ast.Call):
+        return None
+    qn = _qualified_name(node.func, aliases)
+    if qn == "open" and node.args:
+        names = _loaded_names(node.args[0]) & derived
+        if names:
+            return min(names)
+    if qn in ("json.load", "json.loads") and node.args:
+        return _path_source_parameter(node.args[0], aliases, derived, loaded_sources)
+    if _read_text_call(node, aliases):
+        path_arg = node.func.value.args[0] if node.func.value.args else None
+        if path_arg is not None:
+            names = _loaded_names(path_arg) & derived
+            if names:
+                return min(names)
+    return None
+
+
+def _findings_decoder_root(node: ast.AST, parameters: set[str]) -> str | None:
+    if not isinstance(node, ast.Subscript):
+        return None
+    chain: list[ast.Subscript] = []
+    current: ast.AST = node
+    while isinstance(current, ast.Subscript):
+        chain.append(current)
+        current = current.value
+    if len(chain) < 3:
+        return None
+    innermost = chain[-1]
+    key = innermost.slice
+    if not isinstance(key, ast.Constant) or not isinstance(key.value, str) or key.value != "findings":
+        return None
+    if not isinstance(current, ast.Name) or current.id not in parameters:
+        return None
+    return current.id
+
+
+def _generic_data_helper_details(tree: ast.AST) -> dict[str, Any] | None:
+    aliases = _import_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        param_list = _function_parameter_names(node)
+        if not param_list:
+            continue
+        parameters = set(param_list)
+        first_param = param_list[0]
+        scope = _function_scope_nodes(node)
+
+        # Propagate parameter-derived names (e.g., path = p).
+        derived: set[str] = set(parameters)
+        changed = True
+        while changed:
+            changed = False
+            for item in scope:
+                targets, value = _simple_assignment_targets_value(item)
+                if value is not None and _loaded_names(value) & derived:
+                    for target in targets:
+                        for name in _bound_names(target):
+                            if name not in derived:
+                                derived.add(name)
+                                changed = True
+
+        # Generic file loader detection.
+        loaded_sources: dict[str, str] = {}
+        changed = True
+        while changed:
+            changed = False
+            for item in scope:
+                targets, value = _simple_assignment_targets_value(item)
+                if value is not None and _is_load_expression(
+                    value, aliases, derived, loaded_sources
+                ):
+                    source = _path_source_parameter(value, aliases, derived, loaded_sources)
+                    for target in targets:
+                        for name in _bound_names(target):
+                            if name not in loaded_sources:
+                                loaded_sources[name] = source or first_param
+                                changed = True
+                if isinstance(item, ast.With):
+                    for withitem in item.items:
+                        if withitem.optional_vars is None:
+                            continue
+                        if _is_load_expression(
+                            withitem.context_expr, aliases, derived, loaded_sources
+                        ):
+                            source = _path_source_parameter(
+                                withitem.context_expr, aliases, derived, loaded_sources
+                            )
+                            for name in _bound_names(withitem.optional_vars):
+                                if name not in loaded_sources:
+                                    loaded_sources[name] = source or first_param
+                                    changed = True
+
+        for item in scope:
+            if isinstance(item, ast.Return) and item.value is not None:
+                if _is_load_expression(item.value, aliases, derived, loaded_sources):
+                    source = _path_source_parameter(
+                        item.value, aliases, derived, loaded_sources
+                    )
+                    if source is None and isinstance(item.value, ast.Name):
+                        source = loaded_sources.get(item.value.id)
+                    return {
+                        "reason": "generic_loader",
+                        "functionName": node.name,
+                        "parameterName": source or first_param,
+                        "line": node.lineno,
+                    }
+
+        # Generic findings decoder detection.
+        decoder_roots: dict[str, str] = {}
+        changed = True
+        while changed:
+            changed = False
+            for item in scope:
+                targets, value = _simple_assignment_targets_value(item)
+                if value is None:
+                    continue
+                root = _findings_decoder_root(value, parameters)
+                if root is None and isinstance(value, ast.Name):
+                    root = decoder_roots.get(value.id)
+                if root is not None:
+                    for target in targets:
+                        for name in _bound_names(target):
+                            if name not in decoder_roots:
+                                decoder_roots[name] = root
+                                changed = True
+
+        for item in scope:
+            if isinstance(item, ast.Return) and item.value is not None:
+                root = _findings_decoder_root(item.value, parameters)
+                if root is None and isinstance(item.value, ast.Name):
+                    root = decoder_roots.get(item.value.id)
+                if root is not None:
+                    return {
+                        "reason": "generic_findings_decoder",
+                        "functionName": node.name,
+                        "parameterName": root,
+                        "line": node.lineno,
+                    }
+    return None
+
+
+def _reject_generic_data_helpers(tree: ast.AST) -> None:
+    details = _generic_data_helper_details(tree)
+    if details is None:
+        return
+    if details["reason"] == "generic_loader":
+        message = (
+            "禁止编写通用数据加载函数：函数 {functionName} 接收 {parameterName} 并直接返回"
+            "加载后的原始数据。请内联使用 json.load(open(LITERAL_PATH)) 读取数据，"
+            "不要封装通用加载器。".format(**details)
+        )
+    else:
+        message = (
+            "禁止编写通用 findings 解码函数：函数 {functionName} 接收 {parameterName} 并直接返回"
+            "原始行数据。请使用显式链式访问如 data['findings'][0]['rows']，"
+            "不要封装通用数据解码器。".format(**details)
+        )
+    raise ReportingError("report_code_generic_data_helper", message, details=details)
+
+
+def _safe_join_call(
+    node: ast.Call,
+    aliases: Mapping[str, str],
+    bindings: Mapping[str, ast.AST],
+    authorized_paths: frozenset[str],
+) -> bool:
+    """os.path.join 只在所有参数都是静态字面量且结果命中签发路径时放行。"""
+    if _qualified_name(node.func, aliases) != "os.path.join" or node.keywords:
+        return False
+    parts: list[str] = []
+    for arg in node.args:
+        lit = _literal_string(arg, bindings)
+        if lit is None:
+            return False
+        parts.append(lit)
+    if not parts:
+        return False
+    return os.path.join(*parts) in authorized_paths
+
+
+def _is_placeholder_script(
+    source: str,
+    declared_output_paths: frozenset[str],
+    task_kind: str,
+) -> bool:
+    """启发式识别占位/探索脚本：不引用声明产物且无产物写出调用，但存在目录遍历。
+
+    用于在 declared_output_missing 时快速打开重写闸门，避免预算空转。
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    aliases = _import_aliases(tree)
+    bindings = _literal_bindings(tree)
+
+    referenced_paths = _all_referenced_literal_paths(tree)
+    if referenced_paths & declared_output_paths:
+        return False
+
+    has_exploration = any(
+        isinstance(node, ast.Call)
+        and _qualified_name(node.func, aliases) in _PLACEHOLDER_EXPLORATION_CALLS
+        for node in ast.walk(tree)
+    )
+    if not has_exploration:
+        return False
+
+    has_output_call = any(
+        isinstance(node, ast.Call)
+        and (
+            _qualified_name(node.func, aliases) in _PLACEHOLDER_OUTPUT_CALLS
+            or (
+                (qualified := _qualified_name(node.func, aliases)) is not None
+                and qualified.rsplit(".", 1)[-1] in _PLACEHOLDER_OUTPUT_METHODS
+            )
+            or _looks_like_output_open(node, aliases, bindings)
+        )
+        for node in ast.walk(tree)
+    )
+    if has_output_call:
+        return False
+
+    if task_kind == "visualization":
+        viz_roots = {"matplotlib", "plotly", "seaborn"}
+        if any(
+            module.split(".")[0] in viz_roots for module in aliases.values()
+        ) or any(
+            isinstance(node, ast.Import)
+            and any(alias.name.split(".")[0] in viz_roots for alias in node.names)
+            for node in ast.walk(tree)
+        ):
+            return False
+
+    return True
+
+
+def _looks_like_output_open(
+    node: ast.Call, aliases: Mapping[str, str], bindings: Mapping[str, ast.AST]
+) -> bool:
+    qualified = _qualified_name(node.func, aliases)
+    if qualified not in ("open", "io.open"):
+        return False
+    if not node.args or len(node.args) < 2:
+        return False
+    mode = _literal_string(node.args[1], bindings)
+    if mode is None:
+        return False
+    return any(char in mode for char in "wax+")
+
+
 def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: frozenset[str]) -> None:
     aliases = _import_aliases(tree)
-    forbidden = {
-        qualified
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and (qualified := _qualified_name(node.func, aliases)) in _FORBIDDEN_PATH_CALLS
-    }
+    bindings = _literal_bindings(tree)
+    forbidden: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        qualified = _qualified_name(node.func, aliases)
+        if qualified not in _FORBIDDEN_PATH_CALLS:
+            continue
+        if qualified == "os.path.join" and _safe_join_call(
+            node, aliases, bindings, authorized_paths
+        ):
+            continue
+        forbidden.add(qualified)
     if any(
         isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id == "__file__"
         for node in ast.walk(tree)
     ):
         forbidden.add("__file__")
     unsigned = _referenced_literal_paths(tree) - set(authorized_paths)
+    # pathlib 斜杠拼接与安全 os.path.join 同语义：完整拼接结果命中签发路径时，
+    # 其组成部分（如目录名 "charts"）不按未签发路径报告。
+    if unsigned:
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
+                continue
+            resolved = _resolved_path_literal(node, aliases, bindings)
+            if resolved is None or resolved not in authorized_paths:
+                continue
+            parts: set[str] = set()
+            left = _literal_string(node.left, bindings)
+            if isinstance(node.left, ast.Call) and _qualified_name(node.left.func, aliases) == "pathlib.Path":
+                left = _literal_string(node.left.args[0], bindings) if node.left.args else None
+            right = _literal_string(node.right, bindings)
+            if left is not None:
+                parts.add(left)
+            if right is not None:
+                parts.add(right)
+            unsigned -= parts
     if forbidden or unsigned:
         raise ReportingError(
             "report_python_source_path_invalid",
@@ -427,6 +1107,8 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "currentSha256", "expectedSha256", "action", "readRange",
         "sourceExcerpt", "sourceStartLine", "sourceEndLine", "errorLine", "blockIndex",
         "variableSummary", "explorationVariables", "allowedEditRegion", "forbiddenEditRegions",
+        "isPlaceholderScript", "allDeclaredOutputsMissing", "declaredOutputCount",
+        "detectedOutputWrites", "functionName", "parameterName",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -442,10 +1124,11 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         value = details.get(key)
         if key in {
             "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths", "presentPaths",
+            "detectedOutputWrites",
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
-        elif key in {"retryable", "escalated"}:
+        elif key in {"retryable", "escalated", "isPlaceholderScript", "allDeclaredOutputsMissing"}:
             if isinstance(value, bool):
                 result[key] = value
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -636,6 +1319,137 @@ def _lsp_parameters(*, path_required: bool, include_position: bool) -> dict[str,
     return {"type": "object", "properties": properties, "required": required}
 
 
+def _bounded_edit_context(
+    source: str, anchor_line: int, script_path: str
+) -> dict[str, Any] | None:
+    """以 anchor_line 为中心计算模型可直接局部编辑的有界源码上下文。"""
+    lines = source.splitlines(keepends=True)
+    if not 1 <= anchor_line <= len(lines):
+        return None
+    start_line = max(1, anchor_line - 12)
+    end_line = min(len(lines), anchor_line + 12)
+    region_start, region_end = start_line, end_line
+    try:
+        functions = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.end_lineno is not None
+            and node.lineno <= anchor_line <= node.end_lineno
+        ]
+    except SyntaxError:
+        functions = []
+    if functions:
+        function = max(functions, key=lambda node: node.lineno)
+        region_start, region_end = function.lineno, function.end_lineno
+        assert region_end is not None
+        function_source = "".join(lines[region_start - 1:region_end])
+        if len(function_source.encode("utf-8")) <= SOURCE_EXCERPT_MAX_BYTES:
+            start_line, end_line = region_start, region_end
+        else:
+            start_line = max(start_line, region_start)
+            end_line = min(end_line, region_end)
+    while (
+        len("".join(lines[start_line - 1:end_line]).encode("utf-8"))
+        > SOURCE_EXCERPT_MAX_BYTES
+    ):
+        if start_line == end_line:
+            return None
+        if anchor_line - start_line >= end_line - anchor_line:
+            start_line += 1
+        else:
+            end_line -= 1
+    context: dict[str, Any] = {
+        "sourceExcerpt": "".join(lines[start_line - 1:end_line]),
+        "sourceStartLine": start_line,
+        "sourceEndLine": end_line,
+        "errorLine": anchor_line,
+        "allowedEditRegion": {
+            "path": script_path,
+            "startLine": region_start,
+            "endLine": region_end,
+        },
+        "forbiddenEditRegions": [
+            {
+                "path": script_path,
+                "outside": {
+                    "startLine": 1,
+                    "endLine": len(lines),
+                    "allowedStartLine": region_start,
+                    "allowedEndLine": region_end,
+                },
+            }
+        ],
+    }
+    if start_line > region_start or end_line < region_end:
+        context["readRange"] = dict(context["allowedEditRegion"])
+    return context
+
+
+def _search_anchor_line(source: str, search_text: str) -> int | None:
+    """用 SEARCH 首个非空行在当前源码中定位锚点行；未命中返回 None。"""
+    anchor_lines = [line for line in search_text.split("\n") if line.strip()]
+    if not anchor_lines:
+        return None
+    first_line = anchor_lines[0].rstrip("\r")
+    source_lines = source.splitlines()
+    for index, line in enumerate(source_lines, 1):
+        if line == first_line:
+            return index
+    for index, line in enumerate(source_lines, 1):
+        if first_line in line:
+            return index
+    return None
+
+
+_EDIT_ANCHOR_FAILURE_CODES = frozenset(
+    {
+        "report_code_script_edit_not_found",
+        "report_code_script_edit_ambiguous",
+        "report_code_script_edit_overlap",
+    }
+)
+
+
+def _edit_failure_anchor_details(
+    source: str,
+    edits: list[tuple[str, str]],
+    details: Mapping[str, Any],
+    script_path: str,
+    current_sha256: str,
+) -> dict[str, Any]:
+    """not_found/ambiguous/overlap 回执：锚点命中附上有界上下文，未命中退回 readRange。"""
+    repair = dict(details)
+    block_index = repair.get("blockIndex")
+    search_text = (
+        edits[block_index - 1][0]
+        if isinstance(block_index, int) and not isinstance(block_index, bool)
+        and 1 <= block_index <= len(edits)
+        else (edits[0][0] if edits else "")
+    )
+    anchor_line = _search_anchor_line(source, search_text)
+    context = (
+        _bounded_edit_context(source, anchor_line, script_path)
+        if anchor_line is not None
+        else None
+    )
+    if context is None:
+        # 锚点未命中：excerpt 无法定位，退回整份读取范围。
+        repair["readRange"] = {
+            "path": script_path,
+            "startLine": 1,
+            "endLine": len(source.splitlines()),
+        }
+        return repair
+    repair.update(context)
+    repair["sourceSha256"] = current_sha256
+    repair["nextTools"] = (
+        ["read_script", "edit_script", "run_script"]
+        if "readRange" in context
+        else ["edit_script", "run_script"]
+    )
+    return repair
+
+
 class ReportingCodeModeToolkit(Toolkit):
     """把固定 task binding 暴露为执行与只读代码理解工具。"""
 
@@ -674,6 +1488,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self._delivery_state: dict[str, Any] = {}
         self._failure_signature: str | None = None
         self._repeated_failure_count = 0
+        self._edit_failures_since_progress = 0
+        self._consecutive_critical_review_rounds = 0
         tools = [
             Function(
                 name="write_script",
@@ -704,6 +1520,8 @@ class ReportingCodeModeToolkit(Toolkit):
                     "从 read_script 或执行失败回执取得当前源码 sha256，必须把该哈希原样放在 *** SHA256: 后。"
                     "每个 SEARCH 必须在同一份原始源码中逐字匹配唯一位置，各块不得重叠。"
                     "先整体校验再一次提交；不得用前块生成的文本作为后块 SEARCH。"
+                    "定位或冲突失败回执可能附带当前源码的有界 sourceExcerpt 与行号范围；"
+                    "据此修正 SEARCH 并使用回执中的 sourceSha256/currentSha256 直接重试，无需重新 read_script。"
                     "插入使用原文上下文作锚点；删除使用空 REPLACE；移动用删除块与目标处插入块。"
                     "禁止整份替换；不接受文件路径。"
                     "标记独占一行并使用 LF；分隔符前的一个换行属于协议，"
@@ -810,17 +1628,26 @@ class ReportingCodeModeToolkit(Toolkit):
             tools.append(
                 Function(
                     name="view_image",
-                    description="审查 run_script 生成的当前图片输出；仅对声明的图片路径使用，修复后重新运行再审查。",
+                    description="审查 run_script 生成的图片输出。为减少模型往返，请把所有待审查图片路径"
+                                "放入 `paths` 数组一次性调用；超过 5 张时宿主会自动按 5 张分批审查，"
+                                "无需自行拆分。只有单张图时才使用 `path`。"
+                                "禁止重复审查已通过的图片，修复后重新运行再审查。",
                     parameters={
                         "type": "object",
                         "properties": {
                             "path": {"type": "string"},
+                            "paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "minItems": 1,
+                                # 宿主按 5 张分批审查，此处不限上限，
+                                # 与描述“超过 5 张宿主自动分批”口径一致。
+                            },
                             "detail": {
                                 "type": "string",
                                 "enum": ["high", "original"],
                             },
                         },
-                        "required": ["path"],
                         "additionalProperties": False,
                     },
                     strict=True,
@@ -913,66 +1740,16 @@ class ReportingCodeModeToolkit(Toolkit):
         repair["sourceSha256"] = current_sha256
         if error_line is None:
             return repair
-        lines = source.splitlines(keepends=True)
-        if not 1 <= error_line <= len(lines):
+        context = _bounded_edit_context(source, error_line, self.context.script_path)
+        if context is None:
             return repair
-        start_line = max(1, error_line - 12)
-        end_line = min(len(lines), error_line + 12)
-        region_start, region_end = start_line, end_line
-        try:
-            functions = [
-                node for node in ast.walk(ast.parse(source))
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.end_lineno is not None
-                and node.lineno <= error_line <= node.end_lineno
-            ]
-        except SyntaxError:
-            functions = []
-        if functions:
-            function = max(functions, key=lambda node: node.lineno)
-            region_start, region_end = function.lineno, function.end_lineno
-            assert region_end is not None
-            function_source = "".join(lines[region_start - 1:region_end])
-            if len(function_source.encode("utf-8")) <= 1800:
-                start_line, end_line = region_start, region_end
-            else:
-                start_line = max(start_line, region_start)
-                end_line = min(end_line, region_end)
-        while len("".join(lines[start_line - 1:end_line]).encode("utf-8")) > 1800:
-            if start_line == end_line:
-                return repair
-            if error_line - start_line >= end_line - error_line:
-                start_line += 1
-            else:
-                end_line -= 1
-        repair.update(
-            {
-                "sourceExcerpt": "".join(lines[start_line - 1:end_line]),
-                "sourceStartLine": start_line,
-                "sourceEndLine": end_line,
-                "errorLine": error_line,
-                "allowedEditRegion": {
-                    "path": self.context.script_path,
-                    "startLine": region_start,
-                    "endLine": region_end,
-                },
-                "forbiddenEditRegions": [
-                    {
-                        "path": self.context.script_path,
-                        "outside": {
-                            "startLine": 1,
-                            "endLine": len(lines),
-                            "allowedStartLine": region_start,
-                            "allowedEndLine": region_end,
-                        },
-                    }
-                ],
-                "nextTools": ["edit_script", "run_script"],
-            }
+        repair.update(context)
+        # excerpt 覆盖整个允许区域时可直接局部修复；收缩过则需先读取缺失部分。
+        repair["nextTools"] = (
+            ["read_script", "edit_script", "run_script"]
+            if "readRange" in context
+            else ["edit_script", "run_script"]
         )
-        if start_line > region_start or end_line < region_end:
-            repair["readRange"] = dict(repair["allowedEditRegion"])
-            repair["nextTools"] = ["read_script", "edit_script", "run_script"]
         return repair
 
     def _record_tool_start(self, fc: Any) -> None:
@@ -1046,6 +1823,12 @@ class ReportingCodeModeToolkit(Toolkit):
         if isinstance(result, Mapping) and isinstance(result.get("outputValidation"), Mapping):
             result = result["outputValidation"]
         failed = bool(fc.error or (isinstance(result, Mapping) and result.get("ok") is False))
+        # 编辑失败计数只在真正取得进展（成功运行或整段重写落盘）时清零；
+        # 成功但未带来运行通过的编辑不算进展，避免在"编辑空转"死局里反复重置。
+        if name == "edit_script" and failed:
+            self._edit_failures_since_progress += 1
+        elif name in {"run_script", "write_script"} and not failed:
+            self._edit_failures_since_progress = 0
         if name == "write_script" and self.first_script_success == "unknown":
             self.first_script_success = not failed
             if failed:
@@ -1104,18 +1887,33 @@ class ReportingCodeModeToolkit(Toolkit):
             if failed:
                 self.first_repair_success = False
                 self._awaiting_first_repair_run = False
-        if (
-            name == "view_image"
-            and self._awaiting_first_repair_run
-            and isinstance(fc.result, Mapping)
-            and isinstance(fc.result.get("receipt"), Mapping)
-            and (
-                fc.result["receipt"].get("requiresRevision") is True
-                or fc.result["receipt"].get("requires_revision") is True
+        if name == "view_image" and isinstance(fc.result, Mapping):
+            receipt_payloads: list[Mapping[str, Any]] = []
+            if isinstance(fc.result.get("receipt"), Mapping):
+                receipt_payloads.append(fc.result["receipt"])
+            receipts = fc.result.get("receipts")
+            if isinstance(receipts, list):
+                receipt_payloads.extend(
+                    item for item in receipts if isinstance(item, Mapping)
+                )
+            requires_any_revision = any(
+                item.get("requiresRevision") is True or item.get("requires_revision") is True
+                for item in receipt_payloads
             )
-        ):
-            self.first_repair_success = False
-            self._awaiting_first_repair_run = False
+            fresh_count = fc.result.get("freshReviewCount")
+            has_fresh_review = (
+                isinstance(fresh_count, int) and fresh_count > 0
+            ) or (fresh_count is None and bool(receipt_payloads))
+            if has_fresh_review:
+                # 对齐 codex 熔断语义：只统计新执行的审查轮次；重复查看已
+                # 通过图片的缓存回执不清零、也不累计。
+                if requires_any_revision:
+                    self._consecutive_critical_review_rounds += 1
+                else:
+                    self._consecutive_critical_review_rounds = 0
+            if self._awaiting_first_repair_run and requires_any_revision:
+                self.first_repair_success = False
+                self._awaiting_first_repair_run = False
         if (
             name == "submit_script"
             and self._awaiting_first_repair_run
@@ -1259,6 +2057,12 @@ class ReportingCodeModeToolkit(Toolkit):
         return self.binding.context
 
     @property
+    def rewrite_gate_open(self) -> bool:
+        """连续局部编辑失败且无成功运行；允许一次 write_script 整段重写。"""
+
+        return self._edit_failures_since_progress >= REWRITE_GATE_EDIT_FAILURES
+
+    @property
     def pending_output_validation(self) -> dict[str, Any] | None:
         """预检结论只对签发它的执行有效；当前执行缺少通过结论时阻塞提交。"""
 
@@ -1322,7 +2126,19 @@ class ReportingCodeModeToolkit(Toolkit):
             and review.sha256 == output.sha256
             and review.reviewed
             and review.visual_review_status == "passed"
-            and not review.requires_revision
+            and (not review.requires_revision or self.visual_review_gate_tripped)
+        )
+
+    @property
+    def consecutive_critical_review_rounds(self) -> int:
+        """连续要求修订的视觉审查轮次；干净通过的轮次会清零。"""
+        return self._consecutive_critical_review_rounds
+
+    @property
+    def visual_review_gate_tripped(self) -> bool:
+        return (
+            self._consecutive_critical_review_rounds
+            >= VISUALIZATION_CRITICAL_REVIEW_ROUNDS_LIMIT
         )
 
     async def read_script(
@@ -1438,6 +2254,8 @@ class ReportingCodeModeToolkit(Toolkit):
             if tree is not None:
                 _reject_code_envelope(tree, "write_script")
                 _reject_embedded_data(tree)
+                _reject_dynamic_path_parser(tree)
+                _reject_generic_data_helpers(tree)
                 # 与 run_script 同一路径策略：draft 阶段即拒绝，避免"保存成功
                 # → 执行被拒"浪费一整个写-跑循环后模型重试退化。
                 _reject_unauthorized_paths(
@@ -1445,6 +2263,10 @@ class ReportingCodeModeToolkit(Toolkit):
                     self.context.script_path,
                     frozenset((*self.context.authorized_read_paths, *self.context.authorized_write_paths)),
                 )
+                if self.context.task_kind == "visualization":
+                    _reject_output_write_contract(
+                        tree, self.context.declared_output_paths
+                    )
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         if tree is not None:
@@ -1472,6 +2294,12 @@ class ReportingCodeModeToolkit(Toolkit):
             else:
                 formatted = candidate != source
                 source = candidate
+        if tree is not None and self.context.task_kind == "visualization":
+            output_write_warning = _output_write_warning(
+                tree, self.context.declared_output_paths
+            )
+            if output_write_warning is not None:
+                warnings.append(output_write_warning)
         for warning in warnings:
             logger.warning(
                 "report_code_formatting task_id={} code={} reason={}",
@@ -1538,20 +2366,44 @@ class ReportingCodeModeToolkit(Toolkit):
         # 哈希和匹配必须基于同一份读取内容，避免独立 hash/read 之间的竞态。
         current_sha256 = hashlib.sha256(source_bytes).hexdigest()
         if expectedSourceSha256 != current_sha256:
+            details: dict[str, Any] = {
+                "currentSha256": current_sha256,
+                "expectedSha256": expectedSourceSha256,
+                "action": "read_script",
+                "readRange": {
+                    "path": self.context.script_path,
+                    "startLine": 1,
+                    "endLine": len(source.splitlines()),
+                },
+                "nextTools": ["read_script", "edit_script"],
+            }
+            # SEARCH 首行仍能命中当前源码时附上有界 excerpt，模型可据此直接重试。
+            anchor_line = _search_anchor_line(source, edits[0][0] if edits else "")
+            context = (
+                _bounded_edit_context(source, anchor_line, self.context.script_path)
+                if anchor_line is not None
+                else None
+            )
+            if context is not None:
+                details.update(context)
+                details["sourceSha256"] = current_sha256
             return _failure(
                 "report_code_script_edit_conflict",
                 "脚本在读取后已发生变化，请重新读取后再编辑。",
-                {
-                    "currentSha256": current_sha256,
-                    "expectedSha256": expectedSourceSha256,
-                    "action": "read_script",
-                    "readRange": {"path": self.context.script_path, "startLine": 1},
-                    "nextTools": ["read_script", "edit_script"],
-                },
+                details,
             )
         try:
             updated = apply_edit_blocks(source, edits)
         except ReportingError as error:
+            if error.code in _EDIT_ANCHOR_FAILURE_CODES:
+                return _failure(
+                    error.code,
+                    error.message,
+                    _edit_failure_anchor_details(
+                        source, edits, error.details,
+                        self.context.script_path, current_sha256,
+                    ),
+                )
             return _failure(error.code, error.message, error.details)
         try:
             validate_draft_source(self.context, updated)
@@ -1564,11 +2416,17 @@ class ReportingCodeModeToolkit(Toolkit):
             try:
                 _reject_code_envelope(tree, "edit_script")
                 _reject_embedded_data(tree)
+                _reject_dynamic_path_parser(tree)
+                _reject_generic_data_helpers(tree)
                 _reject_unauthorized_paths(
                     tree,
                     self.context.script_path,
                     frozenset((*self.context.authorized_read_paths, *self.context.authorized_write_paths)),
                 )
+                if self.context.task_kind == "visualization":
+                    _reject_output_write_contract(
+                        tree, self.context.declared_output_paths
+                    )
             except ReportingError as error:
                 return _failure(error.code, error.message, error.details)
         try:
@@ -1699,25 +2557,78 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def view_image(
         self,
-        path: str,
+        path: str | None = None,
+        paths: list[str] | None = None,
         detail: str = "high",
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         del run_context
         if detail not in {"high", "original"}:
             return _failure("report_code_visual_detail_invalid", "detail 必须是 high 或 original。")
-        try:
-            source_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
-        except WorkspaceError:
+        target_paths: list[str] = []
+        if isinstance(path, str) and path:
+            target_paths.append(path)
+        if isinstance(paths, list):
+            target_paths.extend(str(item) for item in paths if isinstance(item, str) and item)
+        if not target_paths:
             return _failure(
-                "report_code_visual_path_forbidden",
-                "图片路径不属于当前 Coding task 的声明输出。",
+                "report_code_visual_path_missing",
+                "必须提供 path 或 paths 参数。",
             )
-        if source_path not in self.context.declared_output_paths:
-            return _failure(
-                "report_code_visual_path_forbidden",
-                "图片路径不属于当前 Coding task 的声明输出。",
+
+        normalized_paths: list[str] = []
+        for raw_path in target_paths:
+            try:
+                source_path = WorkspaceService.normalize_path(raw_path, allow_root=False)[0]
+            except WorkspaceError:
+                return _failure(
+                    "report_code_visual_path_forbidden",
+                    "图片路径不属于当前 Coding task 的声明输出。",
+                )
+            if source_path not in self.context.declared_output_paths:
+                return _failure(
+                    "report_code_visual_path_forbidden",
+                    "图片路径不属于当前 Coding task 的声明输出。",
+                )
+            normalized_paths.append(source_path)
+
+        receipts: list[dict[str, Any]] = []
+        fresh_review_count = 0
+        for start in range(0, len(normalized_paths), _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE):
+            chunk = normalized_paths[start : start + _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE]
+            results = await asyncio.gather(
+                *(self._review_one_image(source_path, detail) for source_path in chunk),
+                return_exceptions=True,
             )
+            chunk_receipts: list[dict[str, Any]] = []
+            for index, result in enumerate(results):
+                if isinstance(result, asyncio.CancelledError):
+                    # 取消异常必须继续向上传播，不能被视觉审查失败回执吞掉。
+                    raise result
+                if isinstance(result, BaseException) and not isinstance(result, Exception):
+                    raise result
+                if isinstance(result, dict) and result.get("ok") is False:
+                    return result
+                if isinstance(result, dict):
+                    chunk_receipts.append(result["receipt"])
+                    if result.get("cached") is not True:
+                        fresh_review_count += 1
+                else:
+                    return self._visual_review_unavailable(chunk[index], result)
+            receipts.extend(chunk_receipts)
+        if len(normalized_paths) == 1:
+            return {
+                "ok": True,
+                "receipt": receipts[0],
+                "freshReviewCount": fresh_review_count,
+            }
+        return {"ok": True, "receipts": receipts, "freshReviewCount": fresh_review_count}
+
+    async def _review_one_image(
+        self,
+        source_path: str,
+        detail: str,
+    ) -> dict[str, Any]:
         execution = self.binding.execution_receipt
         if execution is None:
             return _failure(
@@ -1754,6 +2665,7 @@ class ReportingCodeModeToolkit(Toolkit):
             return {
                 "ok": True,
                 "receipt": _visual_review_model_receipt(cached),
+                "cached": True,
             }
         if self.vision_reviewer is None:
             return self._visual_review_unavailable(source_path, None)
@@ -1937,17 +2849,50 @@ class ReportingCodeModeToolkit(Toolkit):
             identities.append(FileIdentity.model_validate(value))
         if missing_paths:
             present_paths = [item.path for item in identities]
+            is_placeholder = await self._script_looks_like_placeholder()
+            all_missing = not present_paths
+            if is_placeholder or all_missing:
+                # 占位脚本或零产物脚本：局部编辑契约已被证明难以生效，
+                # 直接打开重写闸门，避免在打印 facts/探索结构上消耗预算。
+                self._edit_failures_since_progress = REWRITE_GATE_EDIT_FAILURES
+            rewrite_hint = (
+                "已连续多次局部编辑失败或全部产物缺失，可调用 write_script 整段重写一次，"
+                "重写必须完整实现并写出全部声明产物。"
+                if self.rewrite_gate_open
+                else "不得调用 write_script 整段重写。"
+            )
+            details: dict[str, Any] = {
+                "path": missing_paths[0],
+                "missingPaths": missing_paths[:20],
+                "presentPaths": present_paths[:20],
+            }
+            if is_placeholder:
+                details["isPlaceholderScript"] = True
+            if all_missing:
+                details["allDeclaredOutputsMissing"] = True
             raise ReportingError(
                 "report_code_declared_output_missing",
                 "声明产物不存在，不代表脚本不存在。检查缺失路径对应的写出逻辑，"
-                "使用 edit_script 局部修复现有脚本，再 run_script；不得调用 write_script 整段重写。",
-                details={
-                    "path": missing_paths[0],
-                    "missingPaths": missing_paths[:20],
-                    "presentPaths": present_paths[:20],
-                },
+                "使用 edit_script 局部修复现有脚本，再 run_script；" + rewrite_hint,
+                details=details,
             )
         return tuple(identities)
+
+    async def _script_looks_like_placeholder(self) -> bool:
+        try:
+            raw = await self.workspace.read_limited_regular_file(
+                self.context.task_id,
+                self.context.script_path,
+                max_bytes=self.context.max_source_bytes,
+            )
+            source = raw.decode("utf-8")
+        except (WorkspaceError, UnicodeDecodeError):
+            return False
+        return _is_placeholder_script(
+            source,
+            frozenset(self.context.declared_output_paths),
+            self.context.task_kind,
+        )
 
     async def run_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
@@ -2192,16 +3137,48 @@ class ReportingCodeModeToolkit(Toolkit):
                         "每个当前图片输出都必须完成独立视觉审查。",
                         {"nextTools": ["view_image", "submit_script"]},
                     )
-                if reviewed.requires_revision:
+                if reviewed.requires_revision and not self.visual_review_gate_tripped:
                     return _failure(
                         "report_code_visual_revision_required",
                         "独立视觉审查要求修订当前图片输出。",
                         {"nextTools": ["read_script", "edit_script", "run_script"]},
                     )
+        submit_warnings: list[dict[str, Any]] = []
+        if (
+            self.visual_review_gate_tripped
+            and self.context.task_kind == "visualization"
+        ):
+            flagged = [
+                path
+                for path, reviewed in self.binding.visual_inspection_receipts.items()
+                if reviewed.requires_revision
+                and path in output_by_path
+                and reviewed.sha256 == output_by_path[path].sha256
+            ]
+            if flagged:
+                submit_warnings.append(
+                    {
+                        "code": "report_code_visual_review_rounds_exhausted",
+                        "details": {
+                            "criticalRounds": self.consecutive_critical_review_rounds,
+                            "flaggedCharts": flagged[:20],
+                        },
+                    }
+                )
+                logger.bind(
+                    reporting_progress="code_visual_review_gate",
+                    critical_rounds=self.consecutive_critical_review_rounds,
+                    flagged_charts=len(flagged),
+                ).warning(
+                    "report_code_visual_review_rounds_exhausted critical_rounds={} flagged={}",
+                    self.consecutive_critical_review_rounds,
+                    len(flagged),
+                )
         self.submitted_receipt = receipt
         return {
             "ok": True,
             "executionReceipt": receipt.model_dump(mode="json", by_alias=True),
+            **({"warnings": submit_warnings} if submit_warnings else {}),
         }
 
     async def require_current_receipt(self, receipt: ExecutionReceipt) -> None:

@@ -116,7 +116,14 @@ class RuntimeVisualizationMixin:
         thread_id: str,
         path: str,
     ) -> dict[str, Any]:
-        return await self.runtime.workspace.inspect_chart_file(thread_id, path)
+        workspace = self.runtime.workspace
+        if not hasattr(workspace, "inspect_chart_file"):
+            raise ReportingError(
+                "report_workspace_capability_missing",
+                "Reporting 工作区适配缺少图表检查能力。",
+                details={"capability": "inspect_chart_file"},
+            )
+        return await workspace.inspect_chart_file(thread_id, path)
 
     async def _inspect_plotly_file(
         self,
@@ -124,7 +131,14 @@ class RuntimeVisualizationMixin:
         thread_id: str,
         path: str,
     ) -> dict[str, Any]:
-        return await self.runtime.workspace.inspect_plotly_file(thread_id, path)
+        workspace = self.runtime.workspace
+        if not hasattr(workspace, "inspect_plotly_file"):
+            raise ReportingError(
+                "report_workspace_capability_missing",
+                "Reporting 工作区适配缺少 Plotly 检查能力。",
+                details={"capability": "inspect_plotly_file"},
+            )
+        return await workspace.inspect_plotly_file(thread_id, path)
 
     async def _inspect_chart(
         self,

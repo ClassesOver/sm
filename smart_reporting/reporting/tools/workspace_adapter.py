@@ -248,6 +248,11 @@ class ReportingWorkspaceAdapter:
 
         return await inspect_report_chart_file(self._service, thread_id=thread_id, path=path)
 
+    async def inspect_plotly_file(self, thread_id: str, path: str) -> dict[str, Any]:
+        from ..workspace import inspect_report_plotly_file
+
+        return await inspect_report_plotly_file(self._service, thread_id=thread_id, path=path)
+
 
 class WorkspaceServiceReportingRuntime:
     """Reporting 工具的运行时边界；RunContext 只在此处解析。"""

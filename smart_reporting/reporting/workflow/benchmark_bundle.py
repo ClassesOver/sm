@@ -295,4 +295,58 @@ def validate_frozen_planner_coding_bundle(
         raise ValueError("benchmark Coding 基础 facts 不得包含 planner 产物")
     if "variant" in payloads["plannerRequest"] or "variant" in payloads["executionContext"]:
         raise ValueError("冻结 bundle 不得内嵌 legacy/candidate variant")
+    _validate_required_charts(payloads["plannerRequest"], task_payload)
     return manifest, payloads
+
+
+def _validate_required_charts(
+    planner_request: Mapping[str, Any], task_payload: Mapping[str, Any]
+) -> None:
+    """plannerRequest 携带 requiredCharts 时的形状与一致性校验。
+
+    requiredCharts 是冻结的图表身份契约：chartId 全局唯一；
+    sourcePath/interactivePath 的并集必须与 Coding declared_output_paths 严格相等。
+    仅适用于 visualization 任务，其他任务携带即拒绝。
+    条目中的未知键静默忽略，允许前向兼容扩展。
+    """
+    required = planner_request.get("requiredCharts")
+    if required is None:
+        return
+    if task_payload.get("task_kind") != "visualization":
+        raise ValueError("benchmark requiredCharts 仅适用于 visualization 任务")
+    if not isinstance(required, list) or not required:
+        raise ValueError("benchmark requiredCharts 必须是非空列表")
+    chart_ids: list[str] = []
+    paths: list[str] = []
+    for item in required:
+        if not isinstance(item, Mapping):
+            raise ValueError("benchmark requiredCharts 项必须是对象")
+        chart_id = item.get("chartId")
+        source_path = item.get("sourcePath")
+        interactive_path = item.get("interactivePath")
+        if not isinstance(chart_id, str) or not chart_id:
+            raise ValueError("benchmark requiredCharts 缺少 chartId")
+        if not isinstance(source_path, str) or not source_path:
+            raise ValueError("benchmark requiredCharts 缺少 sourcePath")
+        if interactive_path is not None and not isinstance(interactive_path, str):
+            raise ValueError("benchmark requiredCharts interactivePath 必须是字符串或 null")
+        if interactive_path == "":
+            raise ValueError(
+                "benchmark requiredCharts interactivePath 不能是空字符串（无交互产物用 null）"
+            )
+        chart_ids.append(chart_id)
+        paths.append(source_path)
+        if interactive_path:
+            paths.append(interactive_path)
+    if len(chart_ids) != len(set(chart_ids)):
+        raise ValueError("benchmark requiredCharts chartId 不能重复")
+    if len(paths) != len(set(paths)):
+        raise ValueError("benchmark requiredCharts sourcePath/interactivePath 不能重复")
+    declared = task_payload.get("declared_output_paths")
+    declared_set = set(declared) if isinstance(declared, (list, tuple)) else set()
+    if set(paths) != declared_set:
+        raise ValueError(
+            "benchmark requiredCharts 路径集合与 declared_output_paths 不一致："
+            f"missing={sorted(declared_set - set(paths))} "
+            f"unexpected={sorted(set(paths) - declared_set)}"
+        )

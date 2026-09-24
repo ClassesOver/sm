@@ -28,6 +28,7 @@ from ...code_agent.context import (
     ReportingCodingTaskContext,
     ReportingCodingTaskRegistry,
 )
+from ...code_agent.delivery import SOURCE_EXCERPT_MAX_BYTES, bounded_edit_region
 from ...code_agent.failure_policy import failure_kind as _code_failure_kind
 from ...code_agent.lsp_process import ReportingLspProcessManager
 from ...code_agent.metrics import build_coding_metric_sample, measure_input_components
@@ -48,6 +49,7 @@ MAX_DIAGNOSTIC_POSITION = 1_000_000_000
 ANALYSIS_TOOL_CALL_LIMIT = 30
 VISUALIZATION_TOOL_CALL_BASE = 29
 MAX_TOOL_CALL_LIMIT = 140
+VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN = 2
 REPORTING_CODING_TASK_CONTEXT_METADATA_KEY = "reportingCodingTaskContext"
 # 同一 run 内压缩重连的上限；请求数同时受模型预算 request_limit 约束。
 MAX_RUN_COMPACTION_CONTINUATIONS = 2
@@ -418,6 +420,11 @@ class ReportingCodeGenerationRunner:
                         if callable(envelope_reader := getattr(model, "code_run_envelope_normalized_inputs", None))
                         else "unknown"
                     ),
+                    wire_shape_recoveries=(
+                        wire_reader()
+                        if callable(wire_reader := getattr(model, "code_run_wire_shape_recoveries", None))
+                        else "unknown"
+                    ),
                     first_script_success=getattr(
                         toolkit, "first_script_success", "unknown"
                     ),
@@ -545,6 +552,8 @@ class ReportingCodeGenerationRunner:
                             if task_context.task_kind == "visualization"
                             else 3
                         ),
+                        tool_call_limit=model_tool_limit,
+                        visual_budget_gate_safety_margin=VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN,
                     )
                 model = getattr(agent, "model", None)
                 request_count_reader = getattr(model, "code_run_request_count", None)
@@ -874,7 +883,8 @@ class ReportingCodeGenerationRunner:
         forbidden = _bounded_forbidden_path_operations(details.get("forbiddenPathOperations"))
         if forbidden:
             safe["forbiddenPathOperations"] = forbidden
-        for field in ("line", "offset", "size", "lineCount", "maxLineLength", "exitCode"):
+        for field in ("line", "offset", "size", "lineCount", "maxLineLength", "exitCode",
+                      "sourceStartLine", "sourceEndLine", "errorLine"):
             value = details.get(field)
             if (
                 isinstance(value, int)
@@ -882,6 +892,19 @@ class ReportingCodeGenerationRunner:
                 and abs(value) <= MAX_DIAGNOSTIC_POSITION
             ):
                 safe[field] = value
+        # 编辑锚点上下文与 delivery 投影使用同一边界，跨压缩重连时保持可修复性。
+        source_excerpt = details.get("sourceExcerpt")
+        if isinstance(source_excerpt, str) and source_excerpt:
+            raw = source_excerpt.encode("utf-8")
+            safe["sourceExcerpt"] = (
+                source_excerpt
+                if len(raw) <= SOURCE_EXCERPT_MAX_BYTES
+                else raw[-SOURCE_EXCERPT_MAX_BYTES:].decode("utf-8", errors="ignore")
+            )
+        for field in ("readRange", "allowedEditRegion"):
+            region = bounded_edit_region(details.get(field))
+            if region is not None:
+                safe[field] = region
         output = details.get("output")
         if isinstance(output, str) and output:
             safe["output"], truncated = bounded_python_script_diagnostic(

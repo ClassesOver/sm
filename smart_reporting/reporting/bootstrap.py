@@ -34,7 +34,9 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "收到视觉审查的 critical 问题后，只修改与该问题直接相关的局部代码；禁止插入临时诊断、raise、打印、探针数据或改写无关数据读取。",
     "warning、info 和已通过图片不触发修复；不要为了验证假设重新生成整段脚本或改变未被指出的图表。",
     "逐字使用 facts 中的 factFile.path、visualizationPlan.charts 和输出路径。",
-    "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据。",
+    "脚本从冻结 facts 生成计划中的全部图表，不得增删图表或改写引用元数据；"
+    "首轮 write_script 直接完整实现全部图表并写出所有签发产物，"
+    "禁止先写探索占位脚本或以打印 facts 结构、字段概览代替绘图。",
     "百分比标签必须区分小数比率和百分数：例如增减额/基数为 0.0619 时显示 6.19%，"
     "不能直接拼接 %；已乘过 100 的百分数不得再次乘 100。以源字段说明及分子分母核对单位。",
     "source descriptor 的 metricIndex、findingIndex 是源文件数组的零基下标，不是数组元素内的字段。"
@@ -55,12 +57,19 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "多个指标需要展示分组贡献时必须在同一签发图片内使用独立子图，各子图只读取自身"
     "metricIndex 的真实分组；同一指标内缺失的分类值保留为 NaN 或空白并明确标注无数据，"
     "不得补零。",
+    "数据形状契约：metrics/derivedMetrics/comparisons 中的 periodValues、topGroups、"
+    "bottomGroups 是行对象数组；supplementalEvidenceSources[].findings[] 是 columns+rows "
+    "表格对象。两类形状不得混用，必须按 binding.dataPath 与 dataDescriptors.fields 解码。",
+    "禁止编写通用 resolve()、table_rows()、read_table() 等动态路径解析器或通用数据读取 helper；"
+    "逐字使用 binding.dataPath 读取数据，不要用正则、字符串拼接、+、f-string 或 os.path.join 构造/推导路径。",
+    "输入文件路径必须使用 task.authorized_read_paths 或 binding.factFile.path 中的逐字字符串，"
+    "不得把 facts 文件（如 analysis_*.json）当作 supplement 来访问 findings。",
     "修复 execution_output_error 时必须修正原始数据读取或解码错误，不得仅删除失败代码、"
     "吞掉异常或补默认数据。",
     "按 visualizationMode 选择 Matplotlib 或 Plotly；每张图都必须生成签发路径的 PNG/JPEG 静态图，"
     "Plotly 图还必须生成签发路径的 .plotly.json。"
-    "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 使用 fig.write_json()，"
-    "不要依赖未提供的 Kaleido 或 fig.write_image()。",
+    "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 的静态图使用 fig.write_image()"
+    "（Kaleido 已随环境提供），交互产物使用 fig.write_json()。",
     "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
 )
 

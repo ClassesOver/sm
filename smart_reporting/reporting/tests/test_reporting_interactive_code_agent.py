@@ -48,6 +48,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import code_generation
 from smart_reporting.reporting.workflow.runtime.base import _ANALYSIS_CODE_INSTRUCTIONS
 from smart_reporting.reporting.workflow.runtime.code_generation import (
+    VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN,
     CodeGenerationResult,
     ReportingCodeGenerationRunner,
 )
@@ -1428,6 +1429,7 @@ async def test_view_image_returns_and_stores_structured_visual_review(
             "warningCount": 1,
             "message": "非阻断问题已记录，无需修改。",
         },
+        "freshReviewCount": 1,
     }
     assert binding.visual_inspection_receipts == {"charts/chart.png": reviewed}
     assert toolkit.visual_review_duration_ms >= 0
@@ -1525,6 +1527,7 @@ async def test_view_image_returns_only_critical_repair_context(
                 }
             ],
         },
+        "freshReviewCount": 1,
     }
     assert binding.visual_inspection_receipts[output.path] == reviewed
     assert "纵轴单位" not in str(result)
@@ -2205,8 +2208,8 @@ def test_code_agent_factory_creates_fresh_agent_with_custom_input_instructions()
     assert "当前工具声明" in instructions
     assert "首轮思考聚焦实现、边界条件与正确性" in instructions
     assert "不重复推导已给事实" in instructions
-    assert "对 run_script 返回的每个图片输出调用 view_image" in instructions
-    assert "全部审查后再 submit_script" in instructions
+    assert "对 run_script 返回的图片输出调用 view_image 审查，全部通过后再 submit_script" in instructions
+    assert "建议把当前待审图片一次性批量传入 view_image 的 `paths` 数组" in instructions
     assert "custom input" not in instructions
     assert "JSON 包装" not in instructions
     assert "Markdown 围栏" not in instructions
@@ -2261,7 +2264,16 @@ def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget()
     }
     budgets = {
         "analysis": {"bytes": 3_100, "cl100k_tokens": 940},
-        "visualization": {"bytes": 4_500, "cl100k_tokens": 1_400},
+        # 2026-09-24：可视化公共指令追加反探索占位要求（真实运行 attempt-1
+        # 占位脚本导致 declared_output_missing 重试循环的证据驱动改动），
+        # 预算从 4_500/1_400 上调。
+        # 2026-09-24：追加 view_image 批量审查提示与反占位要求后，
+        # 可视化公共指令预算再次上调。
+        # 2026-09-24：view_image 提示追加自动分批说明后微调至 1_520 tokens。
+        # 2026-09-24：追加 facts/supplement 数据形状契约后上调至 5_100/1_600。
+        # 2026-09-24：追加禁止通用 resolve() 后上调至 5_300/1_650。
+        # 2026-09-24：追加禁止通用 helper / f-string / os.path.join 构造路径后上调至 5_600/1_750。
+        "visualization": {"bytes": 5_600, "cl100k_tokens": 1_750},
     }
     tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -2273,6 +2285,11 @@ def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget()
         assert "脚本不存在时" not in instructions
         assert "JSON 信封" not in instructions
         assert "Markdown 围栏" not in instructions
+        if task_kind == "visualization":
+            assert "数据形状契约" in instructions
+            assert "行对象数组" in instructions
+            assert "columns+rows" in instructions
+            assert "禁止编写通用 resolve()" in instructions
         assert instructions.count("cwd") == 1
         assert instructions.count("__file__") == 1
 
@@ -2718,3 +2735,151 @@ async def test_interactive_v1_releases_all_task_resources(
     assert result.script_file == result.execution_receipt.source_file
     assert registry.active_count == 0
     assert runtime.shutdowns == ["code-task-1"]
+
+
+
+def _visualization_model_with_budget(
+    toolkit: ReportingCodeModeToolkit,
+    tool_call_limit: int,
+    used_tool_calls: int,
+) -> ReportingCodeOpenAIResponses:
+    model = ReportingCodeOpenAIResponses(
+        id="gate-test", api_key="test-key", base_url="http://localhost"
+    )
+    model.configure_code_run(
+        toolkit.tool_functions,
+        max_model_requests=10,
+        delivery_state_reader=toolkit.delivery_state,
+        tool_call_limit=tool_call_limit,
+        visual_budget_gate_safety_margin=VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN,
+    )
+    model._code_budget.tool_calls = used_tool_calls
+    model._code_request_metrics = [{"status": "started", "requestParams": {}}]
+    return model
+
+
+@pytest.mark.anyio
+async def test_visual_budget_gate_forces_submit_when_outputs_present_and_budget_low(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
+    await toolkit.refresh_delivery_state()
+    tool_limit = 10
+    model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 1)
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    assert [tool["name"] for tool in params["tools"]] == ["submit_script"]
+    warnings = model.code_run_request_metrics()[-1].get("warnings", [])
+    assert any(
+        warning["code"] == "report_code_visual_budget_gate_forced_submit"
+        for warning in warnings
+    )
+    details = warnings[0]["details"]
+    assert details["remainingToolCalls"] == 1
+    assert isinstance(details["viewImageRounds"], int)
+
+
+@pytest.mark.anyio
+async def test_visual_budget_gate_does_not_trigger_when_outputs_missing(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    binding = ReportingCodingTaskBinding(_visualization_task_context(workspace), workspace)
+    await binding.workspace.awrite_text("task-1", "analysis/chart.py", VISUAL_SOURCE)
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.refresh_delivery_state()
+    tool_limit = 10
+    model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 1)
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    assert any(tool["name"] == "edit_script" for tool in params["tools"])
+    assert any(tool["name"] == "run_script" for tool in params["tools"])
+    assert not model.code_run_request_metrics()[-1].get("warnings")
+
+
+@pytest.mark.anyio
+async def test_visual_budget_gate_does_not_trigger_for_analysis(
+    binding: ReportingCodingTaskBinding,
+    runtime: ToolkitRuntime,
+) -> None:
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    await toolkit.write_script(SOURCE)
+    assert (await toolkit.run_script())["ok"] is True
+    state = toolkit.delivery_state()
+    state["taskKind"] = "analysis"
+    state["nextTools"] = ["edit_script", "submit_script"]
+    state["execution"] = {"runId": "analysis-run", "valid": True}
+    tool_limit = 10
+    model = ReportingCodeOpenAIResponses(
+        id="gate-test", api_key="test-key", base_url="http://localhost"
+    )
+    model.configure_code_run(
+        toolkit.tool_functions,
+        max_model_requests=10,
+        delivery_state_reader=lambda: state,
+        tool_call_limit=tool_limit,
+        visual_budget_gate_safety_margin=VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN,
+    )
+    model._code_budget.tool_calls = tool_limit - 1
+    model._code_request_metrics = [{"status": "started", "requestParams": {}}]
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    assert {tool["name"] for tool in params["tools"]} == {"edit_script", "submit_script"}
+    assert not model.code_run_request_metrics()[-1].get("warnings")
+
+
+@pytest.mark.anyio
+async def test_visual_budget_gate_records_event_in_request_metrics(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
+    await toolkit.refresh_delivery_state()
+    tool_limit = 10
+    model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 2)
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    assert [tool["name"] for tool in params["tools"]] == ["submit_script"]
+    metric = model.code_run_request_metrics()[-1]
+    assert metric.get("warnings") == [
+        {
+            "code": "report_code_visual_budget_gate_forced_submit",
+            "details": {"remainingToolCalls": 2, "viewImageRounds": 0},
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_visual_budget_gate_does_not_trigger_when_budget_above_margin(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
+    await toolkit.refresh_delivery_state()
+    tool_limit = 10
+    model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 3)
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    assert {tool["name"] for tool in params["tools"]} == {"view_image", "submit_script"}
+    assert not model.code_run_request_metrics()[-1].get("warnings")

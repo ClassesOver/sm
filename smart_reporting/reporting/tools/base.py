@@ -955,6 +955,7 @@ class ReportingToolkitBase(Toolkit):
             "report_analysis_already_submitted",
             "report_section_already_submitted",
             "report_chart_registration_closed",
+            "report_workspace_capability_missing",
         }:
             retryable = False
         result: dict[str, Any] = {
@@ -1010,6 +1011,15 @@ class ReportingToolkitBase(Toolkit):
                 for key in ("chartId", "sourceDatasetId", "citationDatasetIds")
                 if key in error.details
             }
+        elif (
+            code == "report_workspace_capability_missing"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            # 确定性 infra 缺陷只需暴露缺失的能力名；重试无法补齐协议方法。
+            capability = error.details.get("capability")
+            if isinstance(capability, str):
+                result["details"] = {"capability": capability}
         elif (
             code
             in {

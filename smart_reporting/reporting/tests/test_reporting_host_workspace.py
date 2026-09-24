@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -594,3 +595,25 @@ async def test_reporting_runtime_retains_tool_output_on_host_workspace(tmp_path:
     )
     assert raw.decode("utf-8") == "医疗收入"
     assert metadata["bytes"] == len("医疗收入".encode())
+
+
+@pytest.mark.anyio
+async def test_reporting_runtime_workspace_adapter_inspects_plotly_file(tmp_path: Path) -> None:
+    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
+    router = ReportingWorkspaceRouter(registry)
+    runtime = WorkspaceServiceReportingRuntime(router, object())
+    content = json.dumps(
+        {"data": [{"type": "bar", "x": ["一月", "二月"], "y": [10, 12]}]},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    await router.awrite_bytes("workspace-1", "analysis/charts/income.plotly.json", content)
+
+    result = await runtime.workspace.inspect_plotly_file(
+        "workspace-1", "analysis/charts/income.plotly.json"
+    )
+
+    assert result["sourcePath"] == "analysis/charts/income.plotly.json"
+    assert result["size"] == len(content)
+    assert result["sha256"] == hashlib.sha256(content).hexdigest()
+    assert result["traceCount"] == 1

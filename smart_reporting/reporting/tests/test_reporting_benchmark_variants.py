@@ -1,5 +1,6 @@
 import hashlib
 import json
+from types import MappingProxyType
 
 import pytest
 from agno.models.openai import OpenAIChat
@@ -9,6 +10,7 @@ from smart_reporting.reporting.agent import create_reporting_generator_agent
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.benchmark_bundle import (
     BenchmarkModelConfig,
+    _validate_required_charts,
     prepare_frozen_planner_coding_bundle,
     validate_frozen_planner_coding_bundle,
 )
@@ -104,9 +106,18 @@ def _legacy_visualization_plan() -> LegacyVisualizationPlanDraft:
     )
 
 
-def _write_frozen_bundle(tmp_path, *, embed_variant: bool = False) -> None:
+def _write_frozen_bundle(
+    tmp_path,
+    *,
+    embed_variant: bool = False,
+    required_charts=None,
+    declared_outputs=("charts/chart.png",),
+) -> None:
+    planner_request = {"sectionCode": "section-1", **({"variant": "legacy"} if embed_variant else {})}
+    if required_charts is not None:
+        planner_request["requiredCharts"] = required_charts
     files = {
-        "planner-request.json": {"sectionCode": "section-1", **({"variant": "legacy"} if embed_variant else {})},
+        "planner-request.json": planner_request,
         "execution-context.json": {
             "taskKind": "visualization",
             "taskId": "task-1",
@@ -120,8 +131,8 @@ def _write_frozen_bundle(tmp_path, *, embed_variant: bool = False) -> None:
                     "workspace_root": "workspace",
                     "script_path": "charts/charts.py",
                     "authorized_read_paths": ["facts.json"],
-                    "authorized_write_paths": ["charts/charts.py", "charts/chart.png"],
-                    "declared_output_paths": ["charts/chart.png"],
+                    "authorized_write_paths": ["charts/charts.py", *declared_outputs],
+                    "declared_output_paths": list(declared_outputs),
                     "max_source_bytes": 100_000,
                 },
                 "facts": {"visualizationFacts": []},
@@ -481,6 +492,109 @@ def test_frozen_planner_coding_bundle_rejects_changed_input(tmp_path) -> None:
     (tmp_path / "workspace/facts.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(ValueError, match="身份不一致"):
+        validate_frozen_planner_coding_bundle(tmp_path)
+
+
+def test_frozen_bundle_accepts_required_charts_consistent_with_declared(tmp_path) -> None:
+    _write_frozen_bundle(
+        tmp_path,
+        required_charts=[
+            {"chartId": "chart", "sourcePath": "charts/chart.png", "interactivePath": None}
+        ],
+    )
+
+    manifest, payloads = validate_frozen_planner_coding_bundle(tmp_path)
+
+    assert payloads["plannerRequest"]["requiredCharts"][0]["chartId"] == "chart"
+    assert manifest.task_kind == "visualization"
+
+
+def test_frozen_bundle_accepts_required_charts_with_interactive_path(tmp_path) -> None:
+    _write_frozen_bundle(
+        tmp_path,
+        declared_outputs=["charts/chart.png", "charts/chart.plotly.json"],
+        required_charts=[
+            {
+                "chartId": "chart",
+                "sourcePath": "charts/chart.png",
+                "interactivePath": "charts/chart.plotly.json",
+            }
+        ],
+    )
+
+    _manifest, payloads = validate_frozen_planner_coding_bundle(tmp_path)
+
+    assert payloads["plannerRequest"]["requiredCharts"][0]["interactivePath"] == (
+        "charts/chart.plotly.json"
+    )
+
+
+def test_frozen_bundle_rejects_interactive_path_missing_from_declared(tmp_path) -> None:
+    _write_frozen_bundle(
+        tmp_path,
+        required_charts=[
+            {
+                "chartId": "chart",
+                "sourcePath": "charts/chart.png",
+                "interactivePath": "charts/chart.plotly.json",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="declared_output_paths 不一致"):
+        validate_frozen_planner_coding_bundle(tmp_path)
+
+
+def test_required_charts_rejected_for_non_visualization_task() -> None:
+    with pytest.raises(ValueError, match="仅适用于 visualization"):
+        _validate_required_charts(
+            {"requiredCharts": [{"chartId": "chart", "sourcePath": "charts/chart.png"}]},
+            {"task_kind": "analysis", "declared_output_paths": ["charts/chart.png"]},
+        )
+
+
+@pytest.mark.parametrize(
+    ("required_charts", "match"),
+    [
+        ("not-a-list", "非空列表"),
+        ([{"chartId": "chart"}], "sourcePath"),
+        ([{"sourcePath": "charts/chart.png"}], "chartId"),
+        (
+            [
+                {"chartId": "dup", "sourcePath": "charts/chart.png"},
+                {"chartId": "dup", "sourcePath": "charts/chart.png"},
+            ],
+            "不能重复",
+        ),
+        (
+            [{"chartId": "chart", "sourcePath": "charts/renamed.png"}],
+            "declared_output_paths 不一致",
+        ),
+        (
+            [{"chartId": "chart", "sourcePath": "charts/chart.png", "interactivePath": 1}],
+            "interactivePath",
+        ),
+        (
+            [{"chartId": "chart", "sourcePath": "charts/chart.png", "interactivePath": ""}],
+            "空字符串",
+        ),
+        (
+            [
+                {"chartId": "chart-a", "sourcePath": "charts/chart.png"},
+                {
+                    "chartId": "chart-b",
+                    "sourcePath": "charts/chart.png",
+                    "interactivePath": "charts/other.png",
+                },
+            ],
+            "不能重复",
+        ),
+    ],
+)
+def test_frozen_bundle_rejects_invalid_required_charts(tmp_path, required_charts, match) -> None:
+    _write_frozen_bundle(tmp_path, required_charts=required_charts)
+
+    with pytest.raises(ValueError, match=match):
         validate_frozen_planner_coding_bundle(tmp_path)
 
 
@@ -957,6 +1071,242 @@ def test_visualization_benchmark_reports_output_path_differences() -> None:
     ]
 
 
+def _candidate_visualization_plan_payload() -> dict:
+    plan_payload = _legacy_visualization_plan().model_dump(mode="json", by_alias=True)
+    plan_payload["charts"][0].update({
+        "visualForm": "按月折线图",
+        "dataBindings": [{
+            "analysisId": "analysis-1",
+            "factPath": "facts/analysis-1.json",
+            "dataPath": "metrics[0].periodValues",
+            "fields": ["period", "value"],
+            "role": "月度趋势",
+        }],
+    })
+    return plan_payload
+
+
+def _visualization_execution(declared=("charts/chart-1.png",)) -> dict:
+    return {"codingPayload": {
+        "task": {
+            "task_kind": "visualization",
+            "declared_output_paths": list(declared),
+        },
+        "facts": {"visualizationFacts": []},
+    }}
+
+
+def test_visualization_benchmark_accepts_plan_matching_required_charts() -> None:
+    plan = VisualizationPlanDraft.model_validate(_candidate_visualization_plan_payload())
+    planner_request = {
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    }
+
+    payload = prepare_benchmark_coding_payload(
+        task_kind="visualization",
+        variant=BenchmarkVariant.CANDIDATE,
+        execution_context=_visualization_execution(),
+        acceptance={},
+        planner_output=plan,
+        planner_request=planner_request,
+    )
+
+    assert payload["facts"]["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+
+
+def test_visualization_benchmark_rejects_required_charts_identity_violations() -> None:
+    planner_request = {
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None},
+            {"chartId": "chart-2", "sourcePath": "charts/chart-2.png", "interactivePath": None},
+        ],
+    }
+
+    with pytest.raises(ReportingError, match="requiredCharts") as caught:
+        prepare_benchmark_coding_payload(
+            task_kind="visualization",
+            variant=BenchmarkVariant.CANDIDATE,
+            execution_context=_visualization_execution(
+                ("charts/chart-1.png", "charts/chart-2.png")
+            ),
+            acceptance={},
+            planner_output=VisualizationPlanDraft.model_validate(
+                _candidate_visualization_plan_payload()
+            ),
+            planner_request=planner_request,
+        )
+
+    assert caught.value.details["missingChartIds"] == ["chart-2"]
+    assert caught.value.details["unexpectedChartIds"] == []
+
+
+def test_visualization_benchmark_rejects_required_charts_path_mismatch() -> None:
+    plan_payload = _candidate_visualization_plan_payload()
+    plan_payload["charts"][0]["sourcePath"] = "charts/renamed.png"
+    planner_request = {
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    }
+
+    with pytest.raises(ReportingError, match="requiredCharts") as caught:
+        prepare_benchmark_coding_payload(
+            task_kind="visualization",
+            variant=BenchmarkVariant.CANDIDATE,
+            execution_context=_visualization_execution(("charts/renamed.png",)),
+            acceptance={},
+            planner_output=VisualizationPlanDraft.model_validate(plan_payload),
+            planner_request=planner_request,
+        )
+
+    assert caught.value.details["pathMismatches"] == ["chart-1"]
+
+
+def test_visualization_benchmark_rejects_required_charts_interactive_path_mismatch() -> None:
+    plan_payload = _candidate_visualization_plan_payload()
+    plan_payload["charts"][0]["renderer"] = "plotly"
+    plan_payload["charts"][0]["interactivePath"] = "charts/chart-1.plotly.json"
+    planner_request = {
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    }
+
+    with pytest.raises(ReportingError, match="requiredCharts") as caught:
+        prepare_benchmark_coding_payload(
+            task_kind="visualization",
+            variant=BenchmarkVariant.CANDIDATE,
+            execution_context=_visualization_execution(),
+            acceptance={},
+            planner_output=VisualizationPlanDraft.model_validate(plan_payload),
+            planner_request=planner_request,
+        )
+
+    assert caught.value.details["pathMismatches"] == ["chart-1"]
+
+
+def _legacy_acceptance() -> dict:
+    return {
+        "decisionsByChartId": {
+            "chart-1": {
+                "visualForm": "按月折线图",
+                "dataBindings": [
+                    {
+                        "analysisId": "analysis-1",
+                        "factPath": "facts/analysis-1.json",
+                        "dataPath": "metrics[0].periodValues",
+                        "fields": ["period", "value"],
+                        "role": "月度趋势",
+                    }
+                ],
+            }
+        }
+    }
+
+
+def test_visualization_benchmark_legacy_variant_enforces_required_charts_identity() -> None:
+    planner_request = {
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    }
+
+    payload = prepare_benchmark_coding_payload(
+        task_kind="visualization",
+        variant=BenchmarkVariant.LEGACY,
+        execution_context=_visualization_execution(),
+        acceptance=_legacy_acceptance(),
+        planner_output=_legacy_visualization_plan(),
+        planner_request=planner_request,
+    )
+
+    assert payload["facts"]["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+
+
+def test_visualization_benchmark_legacy_variant_rejects_renamed_chart() -> None:
+    legacy_payload = _legacy_visualization_plan().model_dump(mode="json", by_alias=True)
+    legacy_payload["charts"][0]["sourcePath"] = "charts/renamed.png"
+    planner_request = {
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    }
+
+    with pytest.raises(ReportingError, match="requiredCharts") as caught:
+        prepare_benchmark_coding_payload(
+            task_kind="visualization",
+            variant=BenchmarkVariant.LEGACY,
+            execution_context=_visualization_execution(),
+            acceptance=_legacy_acceptance(),
+            planner_output=LegacyVisualizationPlanDraft.model_validate(legacy_payload),
+            planner_request=planner_request,
+        )
+
+    assert caught.value.details["pathMismatches"] == ["chart-1"]
+
+
+@pytest.mark.parametrize(
+    "planner_request",
+    [
+        {"requiredCharts": ["not-a-chart-entry"]},
+        {"requiredCharts": [{"sourcePath": "charts/chart-1.png"}]},
+        {"requiredCharts": [{"chartId": "", "sourcePath": "charts/chart-1.png"}]},
+    ],
+)
+def test_visualization_benchmark_rejects_malformed_required_charts_entry(
+    planner_request,
+) -> None:
+    with pytest.raises(ReportingError, match="畸形条目"):
+        prepare_benchmark_coding_payload(
+            task_kind="visualization",
+            variant=BenchmarkVariant.CANDIDATE,
+            execution_context=_visualization_execution(),
+            acceptance={},
+            planner_output=VisualizationPlanDraft.model_validate(
+                _candidate_visualization_plan_payload()
+            ),
+            planner_request=planner_request,
+        )
+
+
+def test_visualization_benchmark_identity_gate_accepts_mapping_planner_request() -> None:
+    planner_request = MappingProxyType({
+        "requiredCharts": [
+            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+        ],
+    })
+
+    payload = prepare_benchmark_coding_payload(
+        task_kind="visualization",
+        variant=BenchmarkVariant.CANDIDATE,
+        execution_context=_visualization_execution(),
+        acceptance={},
+        planner_output=VisualizationPlanDraft.model_validate(
+            _candidate_visualization_plan_payload()
+        ),
+        planner_request=planner_request,
+    )
+
+    assert payload["facts"]["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+
+
+def test_visualization_benchmark_without_required_charts_keeps_legacy_gate_only() -> None:
+    plan = VisualizationPlanDraft.model_validate(_candidate_visualization_plan_payload())
+
+    payload = prepare_benchmark_coding_payload(
+        task_kind="visualization",
+        variant=BenchmarkVariant.CANDIDATE,
+        execution_context=_visualization_execution(),
+        acceptance={},
+        planner_output=plan,
+        planner_request={"sectionCode": "section-1"},
+    )
+
+    assert payload["facts"]["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+
+
 def test_visualization_benchmark_projection_hides_frozen_decisions_from_legacy() -> None:
     legacy_plan = _legacy_visualization_plan()
     decisions = {
@@ -1057,3 +1407,49 @@ def test_benchmark_planner_agent_selects_schema_before_request(
             instructions=("",),
             project_coding_facts=lambda payload: payload,
         )
+
+
+@pytest.mark.parametrize("variant", [BenchmarkVariant.LEGACY, BenchmarkVariant.CANDIDATE])
+def test_visualization_benchmark_planner_instructions_require_chart_identity(variant) -> None:
+    spec, _agent = build_benchmark_planner_agent(
+        model=OpenAIChat(id="benchmark-test"),
+        task_kind="visualization",
+        variant=variant,
+        planner_request={
+            "requiredCharts": [
+                {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            ]
+        },
+    )
+
+    instructions = "\n".join(spec.instructions)
+    assert "requiredCharts" in instructions
+    assert "逐字使用" in instructions
+    assert "不得新增、删除、改名图表或改动任何路径" in instructions
+
+
+@pytest.mark.parametrize(
+    "planner_request",
+    [None, {}, {"requiredCharts": None}, {"requiredCharts": "not-a-list"}],
+)
+def test_visualization_benchmark_planner_instructions_absent_without_required_charts(
+    planner_request,
+) -> None:
+    spec, _agent = build_benchmark_planner_agent(
+        model=OpenAIChat(id="benchmark-test"),
+        task_kind="visualization",
+        variant=BenchmarkVariant.CANDIDATE,
+        planner_request=planner_request,
+    )
+
+    assert spec.instructions == ()
+
+
+def test_analysis_benchmark_planner_instructions_untouched_by_chart_identity() -> None:
+    spec, _agent = build_benchmark_planner_agent(
+        model=OpenAIChat(id="benchmark-test"),
+        task_kind="analysis",
+        variant=BenchmarkVariant.CANDIDATE,
+    )
+
+    assert "requiredCharts" not in "\n".join(spec.instructions)

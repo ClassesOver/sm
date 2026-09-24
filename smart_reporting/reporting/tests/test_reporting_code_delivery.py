@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Mapping
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,11 +11,17 @@ from agno.models.message import Message
 from agno.tools.function import FunctionCall
 
 from smart_reporting.reporting.agent import _INTERACTIVE_CODE_INSTRUCTIONS
+from smart_reporting.reporting.code_agent.context import (
+    ExecutionReceipt,
+    ReportingCodingTaskBinding,
+    ReportingCodingTaskContext,
+)
 from smart_reporting.reporting.code_agent.delivery import (
     _visual_review_model_receipt,
     merge_visual_failures,
 )
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
+from smart_reporting.reporting.code_agent.metrics import build_coding_metric_sample
 from smart_reporting.reporting.code_agent.protocol import ReportingCodeOpenAIResponses
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.code_mode import ScriptProcessResult
@@ -33,6 +40,7 @@ from smart_reporting.reporting.tests.test_reporting_interactive_code_agent impor
 from smart_reporting.reporting.workflow.checkpoint import (
     ChartVisualInspectionIssue,
     ChartVisualInspectionReceipt,
+    FileIdentity,
 )
 from smart_reporting.workspace import WorkspaceError
 
@@ -272,6 +280,77 @@ async def test_delivery_state_tracks_write_run_submit_and_invalidates_edit(bindi
 
 
 @pytest.mark.anyio
+async def test_rewrite_gate_opens_after_repeated_edit_failures_and_closes_on_rewrite(binding):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    await FunctionCall(function=functions["write_script"], arguments={"source": SOURCE}).aexecute()
+    model = ReportingCodeOpenAIResponses(id="test", api_key="test")
+    model.configure_code_run(
+        toolkit.tool_functions, max_model_requests=10,
+        delivery_state_reader=toolkit.delivery_state,
+    )
+
+    def declared():
+        params = model.get_request_params(messages=[], tools=toolkit.tool_functions)
+        return {tool["name"]: tool["type"] for tool in params["tools"]}
+
+    assert toolkit.delivery_state()["rewriteAllowed"] is False
+    assert "write_script" not in declared()
+
+    # 连续局部编辑被拒（SEARCH 锚点不存在），中间没有成功运行或重写。
+    for index in range(2):
+        patch = edit_patch(SOURCE, f"不存在的锚点-{index}", "x = 1")
+        edit = FunctionCall(function=functions["edit_script"], arguments={"patch": patch})
+        await edit.aexecute()
+        assert edit.result["ok"] is False
+    state = toolkit.delivery_state()
+    assert state["rewriteAllowed"] is True
+    assert state["nextTools"] == ["write_script", "read_script", "edit_script", "run_script"]
+    assert declared()["write_script"] == "custom"
+
+    # 整段重写落盘后闸门关闭，恢复局部修复契约。
+    rewrite = FunctionCall(
+        function=functions["write_script"], arguments={"source": SOURCE + "\n# rewritten"}
+    )
+    await rewrite.aexecute()
+    assert rewrite.result["ok"] is True
+    assert toolkit.delivery_state()["rewriteAllowed"] is False
+    assert "write_script" not in declared()
+
+
+@pytest.mark.anyio
+async def test_declared_output_missing_advises_rewrite_after_gate_opens(binding):  # noqa: F811
+    class EmptyRuntime(ToolkitRuntime):
+        async def execute_script_process(self, _session_id, _workspace, _path, **_kwargs):
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
+
+    toolkit = ReportingCodeModeToolkit(binding, EmptyRuntime(), ReportingLspProcessManager())
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    await FunctionCall(function=functions["write_script"], arguments={"source": SOURCE}).aexecute()
+    run = FunctionCall(function=functions["run_script"], arguments={})
+    await run.aexecute()
+    assert run.result["code"] == "report_code_declared_output_missing"
+    # 全部声明产物缺失，零产物快速失败直接打开重写闸门。
+    assert run.result["details"].get("allDeclaredOutputsMissing") is True
+    assert "可调用 write_script 整段重写一次" in run.result["message"]
+    assert toolkit.rewrite_gate_open is True
+
+    for index in range(2):
+        patch = edit_patch(SOURCE, f"不存在的锚点-{index}", "x = 1")
+        edit = FunctionCall(function=functions["edit_script"], arguments={"patch": patch})
+        await edit.aexecute()
+        assert edit.result["ok"] is False
+    # 失败的运行不清零编辑失败计数，闸门保持开启。
+    assert toolkit.rewrite_gate_open is True
+    retry = FunctionCall(function=functions["run_script"], arguments={})
+    await retry.aexecute()
+    assert retry.result["code"] == "report_code_declared_output_missing"
+    assert "可调用 write_script 整段重写一次" in retry.result["message"]
+
+
+@pytest.mark.anyio
 async def test_successive_patches_remain_declared_until_execution(binding):  # noqa: F811
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     functions = {tool.name: tool for tool in toolkit.tool_functions}
@@ -489,6 +568,31 @@ async def test_run_script_failure_receipt_advises_next_tools(binding, monkeypatc
 
 
 @pytest.mark.anyio
+async def test_delivery_state_carries_edit_failure_anchor_excerpt(binding):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
+    source = "value = 1\nprint(value)\n"
+    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, source)
+    function = next(tool for tool in toolkit.tool_functions if tool.name == "edit_script")
+    call = FunctionCall(
+        function=function, call_id="edit-anchor",
+        arguments={"patch": edit_patch(source, "print(value)\nmissing", "print(2)")},
+    )
+    assert await call.aexecute()
+    assert call.result["code"] == "report_code_script_edit_not_found"
+    failure = toolkit.delivery_state()["lastFailure"]
+    assert failure["tool"] == "edit_script"
+    assert failure["code"] == "report_code_script_edit_not_found"
+    # edit 失败的有界 excerpt 进入 delivery 状态，跨上下文压缩后仍可支撑直接重试。
+    assert failure["details"]["sourceExcerpt"] == source
+    assert failure["details"]["sourceStartLine"] == "1"
+    assert failure["details"]["sourceEndLine"] == "2"
+    assert failure["details"]["errorLine"] == "2"
+    assert failure["details"]["allowedEditRegion"] == {
+        "path": toolkit.context.script_path, "startLine": 1, "endLine": 2,
+    }
+
+
+@pytest.mark.anyio
 async def test_run_script_failure_includes_matching_source_context_for_direct_edit(binding):  # noqa: F811
     runtime = ToolkitRuntime()
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
@@ -594,7 +698,9 @@ async def test_missing_declared_output_includes_matching_source_context(binding)
     assert result["code"] == "report_code_declared_output_missing"
     assert "不代表脚本不存在" in result["message"]
     assert "edit_script 局部修复" in result["message"]
-    assert "不得调用 write_script" in result["message"]
+    # 全部声明产物缺失，直接打开重写闸门。
+    assert details["allDeclaredOutputsMissing"] is True
+    assert "可调用 write_script" in result["message"]
     assert details["path"] == "analysis/out.json"
     assert details["sourceSha256"] == hashlib.sha256(SOURCE.encode()).hexdigest()
     assert details["sourceExcerpt"] == SOURCE
@@ -650,7 +756,8 @@ async def test_visual_tool_description_targets_current_output(workspace):  # noq
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
     wire = {tool["name"]: tool for tool in model._format_tool_params([], list(toolkit.tool_functions))}
     assert wire["view_image"]["type"] == "function"
-    assert "当前图片输出" in wire["view_image"]["description"]
+    assert "paths" in wire["view_image"]["description"]
+    assert "自动按 5 张分批审查" in wire["view_image"]["description"]
 
 
 @pytest.mark.anyio
@@ -829,3 +936,407 @@ async def test_delivery_preflight_diagnostic_is_bounded(binding):  # noqa: F811
     assert state["nextTools"] == ["read_script", "edit_script", "run_script"]
     assert len(state["validationFailure"]["message"]) <= 512
     assert len(json.dumps(state, ensure_ascii=False).encode()) < 8192
+
+
+@pytest.mark.anyio
+async def test_view_image_reviews_multiple_paths_in_one_call(workspace):  # noqa: F811
+    from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
+        ToolkitRuntime,
+        _visual_receipt,
+    )
+
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/chart.py", "charts/a.png", "charts/b.png"),
+        declared_output_paths=("charts/a.png", "charts/b.png"),
+        max_source_bytes=128 * 1024,
+    )
+    task_binding = ReportingCodingTaskBinding(context, workspace)
+    await workspace.awrite_text("task-1", "analysis/chart.py", "# script")
+    await workspace.awrite_text("task-1", "charts/a.png", "image-a")
+    await workspace.awrite_text("task-1", "charts/b.png", "image-b")
+    source = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "analysis/chart.py")
+    )
+    output_a = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "charts/a.png")
+    )
+    output_b = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "charts/b.png")
+    )
+    task_binding.execution_receipt = ExecutionReceipt(
+        runId="visual-run",
+        sourceFile=source,
+        outputFiles=(output_a, output_b),
+    )
+    reviewer = AsyncMock()
+    reviewer.review.side_effect = [
+        _visual_receipt(output_a).model_dump(mode="json", by_alias=True),
+        _visual_receipt(output_b).model_dump(mode="json", by_alias=True),
+    ]
+    toolkit = ReportingCodeModeToolkit(
+        task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+    )
+    result = await toolkit.view_image(paths=["charts/a.png", "charts/b.png"])
+    assert result["ok"] is True
+    assert "receipts" in result
+    assert len(result["receipts"]) == 2
+    assert reviewer.review.await_count == 2
+    assert toolkit.has_current_visual_review("charts/a.png")
+    assert toolkit.has_current_visual_review("charts/b.png")
+
+
+@pytest.mark.anyio
+async def test_view_image_auto_chunks_more_than_five_paths(workspace):  # noqa: F811
+    output_paths = [f"charts/{name}.png" for name in ("a", "b", "c", "d", "e", "f")]
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/chart.py", *output_paths),
+        declared_output_paths=tuple(output_paths),
+        max_source_bytes=128 * 1024,
+    )
+    task_binding = ReportingCodingTaskBinding(context, workspace)
+    await workspace.awrite_text("task-1", "analysis/chart.py", "# script")
+    output_files = []
+    for path in output_paths:
+        await workspace.awrite_text("task-1", path, f"image-{path}")
+        output_files.append(
+            FileIdentity.model_validate(await workspace.ahash_file("task-1", path))
+        )
+    source = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "analysis/chart.py")
+    )
+    task_binding.execution_receipt = ExecutionReceipt(
+        runId="visual-run",
+        sourceFile=source,
+        outputFiles=tuple(output_files),
+    )
+    reviewed_paths: list[str] = []
+
+    reviewer = AsyncMock()
+
+    async def review(_workspace_key, path, *, detail):
+        reviewed_paths.append(path)
+        output = FileIdentity.model_validate(await workspace.ahash_file("task-1", path))
+        return _visual_receipt(output).model_dump(mode="json", by_alias=True)
+
+    reviewer.review.side_effect = review
+    toolkit = ReportingCodeModeToolkit(
+        task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+    )
+
+    result = await toolkit.view_image(paths=list(output_paths))
+
+    assert result["ok"] is True
+    assert [item["sourcePath"] for item in result["receipts"]] == output_paths
+    assert sorted(reviewed_paths) == sorted(output_paths)
+    assert reviewer.review.await_count == len(output_paths)
+    for path in output_paths:
+        assert toolkit.has_current_visual_review(path)
+
+
+@pytest.mark.anyio
+async def test_write_script_rejects_visual_placeholder_without_output_reference(workspace):  # noqa: F811
+    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+
+    result = await toolkit.write_script("print('facts overview')\n")
+
+    assert result["ok"] is False
+    assert result["code"] == "report_code_script_no_output_write"
+    assert result["details"]["declaredOutputCount"] == 1
+    assert result["details"]["detectedOutputWrites"] == []
+
+
+@pytest.mark.anyio
+async def test_write_script_warns_when_output_write_not_statically_resolvable(workspace):  # noqa: F811
+    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    source = (
+        "from pathlib import Path\n"
+        "def write_chart(path):\n"
+        "    Path(path).write_bytes(b'image')\n"
+        "write_chart('charts/chart.png')\n"
+    )
+
+    result = await toolkit.write_script(source)
+
+    assert result["ok"] is True
+    assert any(
+        warning["code"] == "report_code_script_output_write_unverified"
+        for warning in result["warnings"]
+    )
+
+
+@pytest.mark.anyio
+async def test_write_script_with_real_output_write_has_no_unverified_warning(workspace):  # noqa: F811
+    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+
+    result = await toolkit.write_script(VISUAL_SOURCE)
+
+    assert result["ok"] is True
+    assert not any(
+        warning["code"] == "report_code_script_output_write_unverified"
+        for warning in result["warnings"]
+    )
+
+
+@pytest.mark.anyio
+async def test_edit_script_rejects_removing_all_declared_output_references(workspace):  # noqa: F811
+    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    write = await toolkit.write_script(VISUAL_SOURCE)
+    saved = write.get("savedSource") or VISUAL_SOURCE
+
+    result = await toolkit.edit_script(
+        edit_patch(
+            saved,
+            'Path("charts/chart.png").write_bytes(b"image")',
+            "print('placeholder')",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_code_script_no_output_write"
+
+
+@pytest.mark.anyio
+async def test_write_script_accepts_pathlib_slash_concatenation(workspace):  # noqa: F811
+    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    source = (
+        "from pathlib import Path\n"
+        'out = Path("charts") / "chart.png"\n'
+        "out.write_bytes(b'image')\n"
+    )
+
+    result = await toolkit.write_script(source)
+
+    assert result["ok"] is True
+    assert not any(
+        warning["code"] == "report_code_script_output_write_unverified"
+        for warning in result["warnings"]
+    )
+
+
+@pytest.mark.anyio
+async def test_write_script_accepts_plotly_positional_write_image(workspace):  # noqa: F811
+    _task_binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    source = (
+        "import plotly.graph_objects as go\n"
+        "fig = go.Figure()\n"
+        'fig.write_image("charts/chart.png")\n'
+    )
+
+    result = await toolkit.write_script(source)
+
+    assert result["ok"] is True
+    assert not any(
+        warning["code"] == "report_code_script_output_write_unverified"
+        for warning in result["warnings"]
+    )
+
+
+def _view_image_review_call(
+    functions: Mapping[str, object],
+    *,
+    requires_revision: bool,
+    fresh_review_count: int,
+) -> FunctionCall:
+    call = FunctionCall(
+        function=functions["view_image"], arguments={"path": "charts/chart.png"}
+    )
+    call.result = {
+        "ok": True,
+        "receipt": {"requiresRevision": requires_revision},
+        "freshReviewCount": fresh_review_count,
+    }
+    return call
+
+
+@pytest.mark.anyio
+async def test_consecutive_critical_review_rounds_trip_gate_and_allow_submit(workspace):  # noqa: F811
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    task_binding.visual_inspection_receipts[output.path] = _visual_receipt(
+        output, requires_revision=True
+    ).model_copy(
+        update={
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="text_overlap",
+                    severity="critical",
+                    description="关键标签无法辨认。",
+                ),
+            )
+        }
+    )
+    toolkit._consecutive_critical_review_rounds = 3
+    await toolkit.refresh_delivery_state()
+
+    state = toolkit.delivery_state()
+    assert state["visualReviewGate"] == {"tripped": True, "criticalRounds": 3}
+    assert state["visualFailures"] == []
+    assert state["nextTools"] == ["submit_script"]
+    assert "软告警" in state["requiredAction"]
+
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    submit = FunctionCall(function=functions["submit_script"], arguments={})
+    assert await submit.aexecute()
+    assert submit.result["ok"] is True
+    warnings = submit.result["warnings"]
+    assert warnings[0]["code"] == "report_code_visual_review_rounds_exhausted"
+    assert warnings[0]["details"]["criticalRounds"] == 3
+    assert warnings[0]["details"]["flaggedCharts"] == [output.path]
+
+
+@pytest.mark.anyio
+async def test_consecutive_critical_review_rounds_counter_resets_on_clean_round(workspace):  # noqa: F811
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+
+    await toolkit._update_tool_result(
+        _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
+    )
+    await toolkit._update_tool_result(
+        _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
+    )
+    assert toolkit.consecutive_critical_review_rounds == 2
+    assert toolkit.visual_review_gate_tripped is False
+
+    await toolkit._update_tool_result(
+        _view_image_review_call(functions, requires_revision=False, fresh_review_count=1)
+    )
+    assert toolkit.consecutive_critical_review_rounds == 0
+
+    for _ in range(3):
+        await toolkit._update_tool_result(
+            _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
+        )
+    assert toolkit.consecutive_critical_review_rounds == 3
+    assert toolkit.visual_review_gate_tripped is True
+
+
+@pytest.mark.anyio
+async def test_cached_view_image_round_does_not_reset_critical_rounds(workspace):  # noqa: F811
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+    toolkit._consecutive_critical_review_rounds = 2
+
+    await toolkit._update_tool_result(
+        _view_image_review_call(functions, requires_revision=False, fresh_review_count=0)
+    )
+    assert toolkit.consecutive_critical_review_rounds == 2
+
+
+@pytest.mark.anyio
+async def test_view_image_reports_fresh_review_count_and_cached_round(workspace):  # noqa: F811
+    reviewer = AsyncMock()
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime(), reviewer
+    )
+    reviewer.review.return_value = _visual_receipt(output)
+    functions = {tool.name: tool for tool in toolkit.tool_functions}
+
+    review = FunctionCall(
+        function=functions["view_image"], arguments={"path": output.path}
+    )
+    assert await review.aexecute()
+    assert review.result["ok"] is True
+    assert review.result["freshReviewCount"] == 1
+    assert toolkit.consecutive_critical_review_rounds == 0
+
+    cached = FunctionCall(
+        function=functions["view_image"], arguments={"path": output.path}
+    )
+    assert await cached.aexecute()
+    assert cached.result["ok"] is True
+    assert cached.result["freshReviewCount"] == 0
+    assert reviewer.review.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_visual_review_rounds_gate_records_protocol_warning(workspace):  # noqa: F811
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
+    await toolkit.refresh_delivery_state()
+    state = toolkit.delivery_state()
+    state["visualReviewGate"] = {"tripped": True, "criticalRounds": 3}
+    model = ReportingCodeOpenAIResponses(
+        id="gate-test", api_key="test-key", base_url="http://localhost"
+    )
+    model.configure_code_run(
+        toolkit.tool_functions,
+        max_model_requests=10,
+        delivery_state_reader=lambda: state,
+        tool_call_limit=10,
+    )
+    model._code_request_metrics = [{"status": "started", "requestParams": {}}]
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    assert params["tools"]
+    warnings = model.code_run_request_metrics()[-1].get("warnings", [])
+    assert any(
+        warning["code"] == "report_code_visual_review_rounds_exhausted"
+        for warning in warnings
+    )
+    assert warnings[-1]["details"]["criticalRounds"] == 3
+
+
+def test_coding_metric_sample_projects_bounded_request_warnings():
+    sample = build_coding_metric_sample(
+        duration_ms=100,
+        request_metrics=[
+            {
+                "requestIndex": 1,
+                "status": "completed",
+                "warnings": [
+                    {
+                        "code": "report_code_visual_review_rounds_exhausted",
+                        "details": {
+                            "criticalRounds": 3,
+                            "flaggedCharts": ["charts/a.png"],
+                        },
+                    },
+                    "garbage-entry",
+                ],
+            }
+        ],
+    )
+    request = sample["modelRequestMetrics"][0]
+    assert request["warnings"] == [
+        {
+            "code": "report_code_visual_review_rounds_exhausted",
+            "details": {"criticalRounds": 3},
+        }
+    ]

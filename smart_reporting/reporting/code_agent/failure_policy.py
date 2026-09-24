@@ -32,6 +32,9 @@ POLICIES = MappingProxyType({
     "report_code_custom_tool_protocol_error": _FATAL,
     "report_coding_task_conflict": _FATAL,
     "report_code_mode_runtime_missing": _FATAL,
+    # 工作区适配缺少协议能力（如 inspect_plotly_file）是确定性 infra 缺陷；
+    # 重试或降级都无法补齐缺失的方法，必须立即停止并保留能力名诊断。
+    "report_workspace_capability_missing": _FATAL,
     "report_workspace_unavailable": _FATAL,
     "report_task_cancelled": _FATAL,
     "report_task_timeout": _FATAL,

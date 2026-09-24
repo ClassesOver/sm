@@ -42,12 +42,19 @@ from ..phase import (
 )
 from .budget import CodeBudget
 from .edit_patch import EDIT_PATCH_GRAMMAR
+from .metrics import bounded_failure_diagnostics
 
 FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
     {"write_script": "source", "run": "code", "edit_script": "patch"}
 )
 
 _CUSTOM_TOOL_PROTOCOL_ERROR = "report_code_custom_tool_protocol_error"
+_VISUALIZATION_BUDGET_GATE_FORCED_SUBMIT = "report_code_visual_budget_gate_forced_submit"
+_VISUALIZATION_REVIEW_ROUNDS_GATE = "report_code_visual_review_rounds_exhausted"
+# provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回；参数 JSON
+# 完好就还原为 custom 形态继续既有 stage 白名单/执行链路（candidate-32）。超过上限
+# 说明 provider 持续退化，恢复无益，保持 fail-closed。
+_WIRE_SHAPE_RECOVERY_LIMIT = 3
 # 用合法代码首行固定 raw input 形状，避免任意文本 grammar 接受 JSON 包装。
 _FREEFORM_TOOL_GRAMMARS: Mapping[str, str] = MappingProxyType({
     "write_script": 'start: "# Python" NEWLINE SOURCE\n'
@@ -389,6 +396,42 @@ def _custom_input_prefixes(tool_name: str) -> tuple[str, ...]:
     )
 
 
+def _recover_wire_shaped_freedom_call(
+    item: Any, name: Any, kind: str, task_tools: Any
+) -> dict[str, Any] | None:
+    """provider grammar 退化时，任务集内 FREEFORM 工具可能以 function 形态返回。
+
+    candidate-32：write_script 以 kind=function 返回（arguments 是完好的
+    {"source": "..."} JSON）。参数结构可解时还原为 custom 形态，交给既有
+    stage 白名单/执行链路处理（stage 内则执行，stage 外走软拒绝回执）；
+    名称不在任务集、参数不可解或 input 为空时返回 None，保持 fail-closed。
+    """
+    if not (isinstance(name, str) and kind == "function" and name in FREEFORM_TOOL_ARGUMENTS):
+        return None
+    if task_tools is not None and name not in task_tools:
+        return None
+    arguments = _field(item, "arguments")
+    try:
+        decoded = json.loads(arguments) if isinstance(arguments, str) else None
+    except (TypeError, ValueError):
+        decoded = None
+    raw_input = decoded.get(FREEFORM_TOOL_ARGUMENTS[name]) if isinstance(decoded, Mapping) else None
+    if not isinstance(raw_input, str) or not raw_input:
+        # 第二机会（candidate-38）：grammar 退化更深时模型会把 free-form 原文直接
+        # 作为 function 参数（非 JSON 对象）；按该工具的输入前缀特征接受原文。
+        if isinstance(arguments, str) and arguments.startswith(_custom_input_prefixes(name)):
+            raw_input = arguments
+    if not isinstance(raw_input, str) or not raw_input:
+        return None
+    return {
+        "type": "custom_tool_call",
+        "id": _field(item, "id"),
+        "call_id": _field(item, "call_id"),
+        "name": name,
+        "input": raw_input,
+    }
+
+
 def _synthetic_custom_call(item: Any) -> dict[str, Any]:
     # 只接受 provider 的结构化 custom_tool_call。单层 data 信封是已观测到的
     # provider 兼容形状；正文、嵌套信封和其他 JSON 均不在这里解释或执行。
@@ -530,9 +573,19 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
     def _is_redundant_visual_review(self, call: FunctionCall) -> bool:
         if call.function.name != "view_image" or not isinstance(call.arguments, Mapping):
             return False
-        path = call.arguments.get("path")
         checker = getattr(self, "_code_redundant_review_check", None)
-        return isinstance(path, str) and callable(checker) and checker(path) is True
+        if not callable(checker):
+            return False
+        raw_paths: list[Any] = []
+        path = call.arguments.get("path")
+        if isinstance(path, str) and path:
+            raw_paths.append(path)
+        paths = call.arguments.get("paths")
+        if isinstance(paths, list):
+            raw_paths.extend(item for item in paths if isinstance(item, str) and item)
+        if not raw_paths:
+            return False
+        return all(checker(item) is True for item in raw_paths)
 
     def configure_code_run(
         self,
@@ -542,6 +595,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         delivery_reserve: int | None = None,
         redundant_call_check: Callable[[str], bool] | None = None,
         delivery_state_reader: Callable[[], dict[str, Any]] | None = None,
+        tool_call_limit: int | None = None,
+        visual_budget_gate_safety_margin: int = 2,
     ) -> None:
         """绑定本任务实际 Function 范围；浅复制模型共享同一任务请求计数。"""
         names = [report_model_tool_name(tool) for tool in tools]
@@ -556,10 +611,24 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             or delivery_reserve < 1
         ):
             raise ValueError("delivery_reserve must be a positive integer")
+        if tool_call_limit is not None and (
+            isinstance(tool_call_limit, bool)
+            or not isinstance(tool_call_limit, int)
+            or tool_call_limit < 1
+        ):
+            raise ValueError("tool_call_limit must be a positive integer")
+        if (
+            isinstance(visual_budget_gate_safety_margin, bool)
+            or not isinstance(visual_budget_gate_safety_margin, int)
+            or visual_budget_gate_safety_margin < 0
+        ):
+            raise ValueError("visual_budget_gate_safety_margin must be a non-negative integer")
         self._code_budget = CodeBudget(
             request_limit=max_model_requests,
             reserve=delivery_reserve if delivery_reserve is not None else _DELIVERY_TOOL_RESERVE,
         )
+        self._code_tool_call_limit = tool_call_limit
+        self._code_visual_budget_gate_safety_margin = visual_budget_gate_safety_margin
         self._code_redundant_review_check = redundant_call_check
         self._code_delivery_state_reader = delivery_state_reader
         self._code_stage_mismatch_names: frozenset[str] = frozenset()
@@ -718,6 +787,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         budget = getattr(self, "_code_budget", None)
         return budget.envelope_normalized_inputs if budget is not None else "unknown"
 
+    def code_run_wire_shape_recoveries(self) -> int | str:
+        budget = getattr(self, "_code_budget", None)
+        return budget.wire_shape_recoveries if budget is not None else "unknown"
+
     def claim_delivery_continuation(self, tool_limit: int) -> int | None:
         budget = getattr(self, "_code_budget", None)
         return budget.claim_continuation(tool_limit) if budget is not None else None
@@ -729,6 +802,34 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         if isinstance(next_tools, list) and "read_script" in next_tools:
             return _DELIVERY_TOOL_CANDIDATES
         return _DELIVERY_TOOL_NAMES
+
+    def _visual_budget_gate_triggered(
+        self,
+        state: Mapping[str, Any],
+        remaining_tool_calls: int,
+    ) -> bool:
+        """可视化任务在剩余工具预算过低且产物已齐全时，强制进入提交阶段。"""
+
+        if state.get("taskKind") != "visualization":
+            return False
+        if remaining_tool_calls > getattr(
+            self, "_code_visual_budget_gate_safety_margin", 2
+        ):
+            return False
+        execution = state.get("execution")
+        if not isinstance(execution, Mapping) or execution.get("valid") is not True:
+            return False
+        if state.get("outputValidation") == "failed":
+            return False
+        if state.get("visualFailures"):
+            return False
+        failure = state.get("lastFailure")
+        if isinstance(failure, Mapping) and failure.get("resolved") is False:
+            return False
+        next_tools = state.get("nextTools")
+        if not isinstance(next_tools, list):
+            return False
+        return any(name in next_tools for name in ("view_image", "edit_script"))
 
     def _format_tool_params(
         self, messages: list[Message], tools: Any = None
@@ -804,13 +905,25 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         state = state_reader() if callable(state_reader) else None
         if isinstance(state, Mapping):
             script = state.get("script")
-            if isinstance(script, Mapping) and script.get("sha256"):
-                # 完整写入只用于首次创建；已有脚本只能走局部编辑。
+            if (
+                isinstance(script, Mapping)
+                and script.get("sha256")
+                and state.get("rewriteAllowed") is not True
+            ):
+                # 完整写入只用于首次创建；已有脚本只能走局部编辑，
+                # 除非交付状态的重写闸门已放行（连续编辑失败死局的逃生口）。
                 formatted_tools = [
                     tool for tool in formatted_tools if tool["name"] != "write_script"
                 ]
                 params["tools"] = formatted_tools
                 declarations = {tool["name"]: tool["type"] for tool in formatted_tools}
+        budget = getattr(self, "_code_budget", None)
+        tool_limit = getattr(self, "_code_tool_call_limit", None)
+        remaining_tool_calls = (
+            max(0, tool_limit - budget.tool_calls)
+            if budget is not None and isinstance(tool_limit, int)
+            else None
+        )
         next_tools = state.get("nextTools") if isinstance(state, Mapping) else None
         if isinstance(next_tools, list):
             allowed_tools = set(next_tools)
@@ -819,6 +932,61 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 allowed_tools.update({"run_script", "submit_script"})
                 if state.get("taskKind") == "visualization":
                     allowed_tools.add("view_image")
+            if (
+                remaining_tool_calls is not None
+                and self._visual_budget_gate_triggered(state, remaining_tool_calls)
+            ):
+                allowed_tools = {"submit_script"}
+                view_image_rounds = sum(
+                    1
+                    for metric in self.code_run_request_metrics()
+                    for call in (metric.get("toolCalls") or ())
+                    if isinstance(call, Mapping) and call.get("name") == "view_image"
+                )
+                gate_event = {
+                    "code": _VISUALIZATION_BUDGET_GATE_FORCED_SUBMIT,
+                    "details": {
+                        "remainingToolCalls": remaining_tool_calls,
+                        "viewImageRounds": view_image_rounds,
+                    },
+                }
+                request_metrics = getattr(self, "_code_request_metrics", None)
+                if (
+                    isinstance(request_metrics, list)
+                    and request_metrics
+                    and request_metrics[-1].get("status") == "started"
+                ):
+                    request_metrics[-1].setdefault("warnings", []).append(gate_event)
+                logger.bind(
+                    reporting_progress="code_visual_budget_gate",
+                    **gate_event["details"],
+                ).warning(
+                    "report_code_visual_budget_gate_forced_submit remaining={} view_image_rounds={}",
+                    remaining_tool_calls,
+                    view_image_rounds,
+                )
+            visual_gate = state.get("visualReviewGate")
+            if isinstance(visual_gate, Mapping) and visual_gate.get("tripped") is True:
+                rounds_gate_event = {
+                    "code": _VISUALIZATION_REVIEW_ROUNDS_GATE,
+                    "details": {"criticalRounds": visual_gate.get("criticalRounds")},
+                }
+                request_metrics = getattr(self, "_code_request_metrics", None)
+                if (
+                    isinstance(request_metrics, list)
+                    and request_metrics
+                    and request_metrics[-1].get("status") == "started"
+                ):
+                    request_metrics[-1].setdefault("warnings", []).append(
+                        rounds_gate_event
+                    )
+                logger.bind(
+                    reporting_progress="code_visual_review_gate",
+                    critical_rounds=visual_gate.get("criticalRounds"),
+                ).warning(
+                    "report_code_visual_review_rounds_exhausted critical_rounds={}",
+                    visual_gate.get("criticalRounds"),
+                )
             # 分析与图表都以宿主交付状态为工具白名单；空列表必须保持关闭。
             formatted_tools = [
                 tool for tool in formatted_tools if tool["name"] in allowed_tools
@@ -1061,7 +1229,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         task_tools = getattr(self, "_code_tool_names", None)
         identities: set[str] = set()
         stage_mismatch_names: list[str] = []
-        for item in actionable:
+        for index, item in enumerate(actionable):
             name = _field(item, "name")
             kind = "custom" if _field(item, "type") == "custom_tool_call" else "function"
             if declarations is not None and declarations.get(name) != kind:
@@ -1084,22 +1252,52 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         str(name)[:128], kind, sorted(declarations), sorted(task_tools),
                     )
                 else:
-                    if budget is not None:
-                        budget.record_protocol_violation()
-                    logger.warning(
-                        "report_code_tool_declaration_mismatch name={} kind={} declared={}",
-                        str(name)[:128], kind, sorted(declarations),
-                    )
-                    error = _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
-                    error.details.update({
-                        "toolName": str(name)[:128],
-                        "receivedType": kind,
-                        "expectedType": declarations.get(name, "undeclared"),
-                        "declaredTools": dict(declarations),
-                        "itemId": str(_field(item, "id"))[:256],
-                        "callId": str(_field(item, "call_id"))[:256],
-                    })
-                    raise error
+                    recovered = _recover_wire_shaped_freedom_call(item, name, kind, task_tools)
+                    if (
+                        recovered is not None
+                        and budget is not None
+                        and budget.wire_shape_recoveries < _WIRE_SHAPE_RECOVERY_LIMIT
+                    ):
+                        # candidate-32：grammar 退化下 FREEFORM 工具以 function 形态
+                        # 返回。参数 JSON 完好时还原为 custom 形态继续既有校验与
+                        # stage 白名单（stage 外软拒绝、stage 内正常执行），不记协议
+                        # 违规；恢复计数超限后保持 fail-closed。
+                        budget.record_wire_shape_recovery()
+                        actionable[index] = recovered
+                        item = recovered
+                        kind = "custom"
+                        logger.warning(
+                            "report_code_wire_shape_recovered name={} recovery={}",
+                            str(name)[:128], budget.wire_shape_recoveries,
+                        )
+                        if (
+                            isinstance(name, str)
+                            and task_tools is not None
+                            and name in task_tools
+                            and declarations is not None
+                            and name not in declarations
+                        ):
+                            # 还原后仍受交付阶段白名单约束：stage 外的 FREEFORM
+                            # 工具与正常 stage 不匹配同路径软拒绝，不执行。
+                            stage_mismatch_names.append(name)
+                            budget.record_stage_mismatch_rejection()
+                    else:
+                        if budget is not None:
+                            budget.record_protocol_violation()
+                        logger.warning(
+                            "report_code_tool_declaration_mismatch name={} kind={} declared={}",
+                            str(name)[:128], kind, sorted(declarations),
+                        )
+                        error = _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
+                        error.details.update({
+                            "toolName": str(name)[:128],
+                            "receivedType": kind,
+                            "expectedType": declarations.get(name, "undeclared"),
+                            "declaredTools": dict(declarations),
+                            "itemId": str(_field(item, "id"))[:256],
+                            "callId": str(_field(item, "call_id"))[:256],
+                        })
+                        raise error
             call_identities = {_required_id(item, "id"), _required_id(item, "call_id")}
             if identities.intersection(call_identities):
                 if budget is not None:
@@ -1191,6 +1389,41 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     status="skipped",
                     code="report_code_batch_stopped",
                 ).info("report_code_tool_progress tool_name={} status=skipped", tool_name)
+                continue
+            if function_call_limit is not None and current_count >= function_call_limit:
+                # Agno 的硬限额只回裸 tool_call_error（无 code，回放 requestMetrics
+                # 表现为边界 tool_error）；在委托前换成编码回执，模型与指标都能
+                # 看到明确的终止原因。计数口径与 Agno 一致（下一次调用即超限）。
+                limited = Message(
+                    role=self.tool_message_role,
+                    tool_call_id=call.call_id,
+                    tool_name=tool_name,
+                    tool_args=call.arguments,
+                    tool_call_error=True,
+                    content=json.dumps({
+                        "ok": False,
+                        "status": "rejected",
+                        "code": "report_code_tool_call_limit",
+                        "message": "工具调用次数已达上限；本次调用未执行。",
+                        "details": {"used": current_count, "limit": function_call_limit},
+                    }, ensure_ascii=False),
+                )
+                self._attach_tool_budget(
+                    [limited], used=current_count, limit=function_call_limit
+                )
+                results.append(limited)
+                if request_metric is not None and "firstToolFailure" not in request_metric:
+                    request_metric["firstToolFailure"] = {
+                        "toolName": tool_name[:128],
+                        "code": "report_code_tool_call_limit",
+                        "diagnostics": {"used": current_count, "limit": function_call_limit},
+                    }
+                logger.bind(
+                    reporting_progress="code_tool",
+                    tool_name=tool_name,
+                    status="rejected",
+                    code="report_code_tool_call_limit",
+                ).info("report_code_tool_progress tool_name={} status=rejected", tool_name)
                 continue
             is_redundant_review = self._is_redundant_visual_review(call)
             if tool_name in getattr(self, "_code_stage_mismatch_names", frozenset()):
@@ -1390,12 +1623,16 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 and (failure.get("ok") is False or any(item.tool_call_error for item in completed))
             ):
                 failure_code = failure.get("code")
-                request_metric["firstToolFailure"] = {
+                tool_failure: dict[str, Any] = {
                     "toolName": tool_name[:128],
                     "code": failure_code[:128]
                     if isinstance(failure_code, str) and failure_code
                     else "tool_error",
                 }
+                diagnostics = bounded_failure_diagnostics(failure.get("details"))
+                if diagnostics:
+                    tool_failure["diagnostics"] = diagnostics
+                request_metric["firstToolFailure"] = tool_failure
             if isinstance(code, str):
                 progress["code"] = code
             logger.bind(**progress).info(

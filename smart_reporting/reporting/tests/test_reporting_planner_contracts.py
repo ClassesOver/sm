@@ -2752,6 +2752,94 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
     assert requests[0]["extra_body"]["enable_thinking"] is True
 
 
+@pytest.mark.anyio
+async def test_visualization_section_task_stops_fatal_infra_failure_after_single_attempt(
+    monkeypatch,
+) -> None:
+    from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
+    from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft
+
+    planner = Agent(
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        output_schema=VisualizationPlanDraft,
+    )
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(), reporting_agent_template=planner,
+        task_runner=SimpleNamespace(
+            repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+            start=AsyncMock(),
+        ),
+        workspace_service=SimpleNamespace(), registry=SimpleNamespace(),
+        profiles=SimpleNamespace(), planner_reasoning_effort="low",
+        planner_enable_thinking=True, state_repository=SimpleNamespace(),
+        visualization_generator=planner,
+    )
+    context = RunContext(run_id="visualization-fatal-infra", session_id="session-1", session_state={})
+    checkpoint = SimpleNamespace(trace=(), visualization_section_errors={})
+    runtime._current_reporting_checkpoint = AsyncMock(return_value=checkpoint)
+    runtime._persist_reporting_checkpoint = AsyncMock()
+    checkpoint_updates: list[dict] = []
+
+    def record_checkpoint_update(_checkpoint, **kwargs):
+        checkpoint_updates.append(kwargs)
+        return _checkpoint
+
+    runtime._update_reporting_checkpoint = record_checkpoint_update
+    runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
+    runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
+    runtime._envelope = lambda _context: SimpleNamespace(report_goal="分析收入", visualization_mode="auto")
+    runtime._visualization_section_fact_projection = AsyncMock(return_value={"analysisId": "analysis_001"})
+    runtime._apply_durable_command = AsyncMock()
+    runtime.state_repository.get = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={"analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}}}
+        )
+    )
+    outline = ReportOutline.model_validate({
+        "reportType": "topic", "title": "收入分析",
+        "sections": [{"code": "section_001", "sectionNumber": "1", "title": "收入", "analysisIds": ["analysis_001"]}],
+    })
+    monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
+    monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [object()])
+
+    async def failing_workflow(_workflow, _payload, _run_context):
+        raise ReportingError(
+            "report_workspace_capability_missing",
+            "Reporting 工作区适配缺少 Plotly 检查能力。",
+            details={"capability": "inspect_plotly_file"},
+        )
+
+    monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", failing_workflow)
+
+    async def run_task(scope, *, executor, **_kwargs):
+        return await executor(SimpleNamespace(
+            scope=scope, run_context=context,
+            model_metrics_settlement=SimpleNamespace(stage_recorder=lambda *_args, **_kwargs: None),
+        ))
+
+    runtime.task_runner.run = run_task
+    identity = FileIdentity(path="facts/analysis.json", size=2, sha256="a" * 64)
+
+    with pytest.raises(ReportingError) as caught:
+        await runtime._run_visualization_section_task("section_001", context={
+            "run_context": context, "checkpoint": checkpoint, "external_run_id": "run-1",
+            "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
+            "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
+            "validation_context_file": identity,
+        })
+
+    assert caught.value.code == "report_workspace_capability_missing"
+    # 确定性 infra 缺陷不重跑整段 planner + Coding：只有一个 attempt 签发过 Task。
+    assert runtime.task_runner.start.await_count == 1
+    failures = [
+        entry["visualization_section_errors"]
+        for entry in checkpoint_updates
+        if "visualization_section_errors" in entry
+    ]
+    assert failures[-1]["section_001"]["code"] == "report_workspace_capability_missing"
+    assert runtime._persist_reporting_checkpoint.await_count >= 1
+
+
 @pytest.mark.skip(reason="V1 已将 analysis script agent 改为 task factory")
 def test_runtime_planner_policies_honor_disabled_thinking() -> None:
     runtime = ReportWorkflowRuntime(
