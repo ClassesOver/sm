@@ -865,6 +865,18 @@ class BenchmarkPlannerSpec:
 
 **2026-09-24 candidate-39 真实回放（裸文本恢复后验证）`status=passed`：** **全程最快最省样本**——8 请求 / 9 工具调用 / 421.4s / reasoning **6,206** / 零编辑。轨迹：req1 先 run 被拒（脚本不存在）→ req2 helper 闸门拦截 → req3 路径规则 → req4 占位拦截 → req5 写入成功 → req6 首跑成功 → req7 审查 → req8 提交。所有预检按设计工作且零浪费。`rawProtocolCorrect=true`、`criticalVisualDefect=false`。
 
+**2026-09-25 真实 CLI 端到端验证（cli-report-e556f25b，PTY 驱动，40 分钟被驱动超时截断，前半链完整）：** 上游全链（查询→数据集→分析计划→大纲）完成；analysis_item Coding ×2 提交；可视化 attempt-1 提交、attempt-2 因 provider 协议长尾失败（req14 输入膨胀至 172K、158s、0 工具调用）**生产 fresh attempt 循环现场自动换新**（四层兜底实录）；attempt-3 **收敛闸门生产首触**（criticalRounds=3）软告警提交成功；占位闸门连续 3 次拦截；信封归一化持续吸收 wire 退化。产出三项优化：
+
+**2026-09-25 三项生产实证优化已实施（800 passed / 1 既有失败）：**
+- **① planner binding 结构校验**（生产实证：planner 把 supplement 形状 dataPath `findings[1].rows` 签到 facts 文件上，模型照计划执行必然 KeyError）：`_validate_visualization_plan_bindings` 从软告警升级——绑定字段集合在该 analysisId 的签发描述中**唯一精确匹配**时自动改指 factPath/dataPath（loguru 告警 + 返回修正后的 plan，StrictModel 用 model_copy 重建）；无法唯一修正时抛 `report_visualization_binding_invalid`（details 含 availableDescriptors），由报告级 fresh attempt 携错误上下文重签（该码默认 retry 策略，未登记 FATAL）。
+- **② 占位回执附最小骨架**（candidate-35 七连占位 + 生产任务 #4 三连占位实证）：`report_code_script_no_output_write` 消息追加可逐行复制的最小脚本骨架（含首个签发产物路径字面值），镜像已验证有效的补丁模板手法；消息 387 字符 < 512 截断。
+- **③ provider 实测输入回压**（生产实证：本地投影 ~36K 时 provider 实测 172K，本地门禁失明）：`project_with_metrics` 新增 `provider_input_hint`（protocol 在每次请求结算后记录 provider 实测 input_tokens），达到 `CODING_COMPACTION_PROVIDER_INPUT_GATE=100K` 时强制触发确定性压缩并强制走窗口重建路径，同时打 `report_code_input_inflation` 警告；压缩完成后清除提示避免持续强压。metrics 新增 `input_inflation_detected`。
+- 测试：①拆分旧软告警用例为"可改指→自动修正"与"不可改指→终止"两组（fixed_phase_workflows + benchmark_variants），②骨架断言，③无提示基线不压缩 / 有提示强制压缩。17 文件回归 **800 passed，1 failed**（唯一仍为既有 `test_interactive_v1_end_to_end_responses_loop`）。ruff 全绿。
+
+**2026-09-25 CLI 复跑（bash-q3mmq6zj）失败并归因——收敛闸门与 section 回执校验冲突（本轮引入的回归，已修复）：** 运行 50 分钟 / 8 个 Coding 任务后死于 `report_coding_workflow_output_invalid`。根因链：收敛闸门降级提交（回执 `requires_revision=true`）→ `_validated_visual_receipts` 把 `requires_revision` 与结构校验一起硬拒（`report_phase_artifact_changed`）→ 报告级 fresh attempt 重跑整章 → 再次降级提交 → 再次被拒 → **attempt-1..6 死循环**（这也解释了多次 section 重签）→ 重试耗尽 → 工作流输出无效 → CLI 终止。关键事实：未降级路径的 `requires_revision` 已被 `submit_script` 拦截，到达 section 边界的必然是降级回执——这道检查实际只挡降级路径，与闸门设计冲突。修复：`_validated_visual_receipts` 中 `requires_revision` 从硬拒改为软告警（`report_visualization_revision_soft_warning`）继续；sha/reviewed/passed 等结构身份校验保持硬性（对齐 AGENTS.md"语义业务校验只需要软告警"）。新增用例锁定：降级回执接受 + 未审查/sha 不匹配仍硬拒。该次 CLI 期间三项优化生产验证：binding 自动改指 4 次、收敛闸门 10 次触发、输入回压 0 次、占位骨架后无连拒。
+
+**2026-09-25 CLI 第三跑（bash-4pyc0qxz）再次失败并归因——优化① 的硬拒过激（设计二次修正）：** 4 个 Coding 任务后同死于外层 `report_coding_workflow_output_invalid`；内部根因是**优化①新增的 `report_visualization_binding_invalid` 硬拒**：planner 产出无法按字段唯一改指的错配 → 硬拒 → agno step 层 attempt-1 重试再遇同形态错配 → 步骤失败 → 工作流输出无效。教训与修正：不可唯一修正的 planner 语义错配**必须回到软告警继续**（AGENTS.md 与 2026-09-23 拍板原则；执行层 AST/指令/修复回执已可兜底）——唯一字段匹配的**自动改指保留**（纯收益，两次生产触发均有效）。`_validate_visualization_plan_bindings` 最终形态：精确匹配放行 → 唯一字段匹配自动改指（告警）→ 其余软告警继续（details 含 availableDescriptors 供诊断）。测试同步改回"不可修正→软告警继续"。17 文件回归 **801 passed，1 failed**（唯一仍为既有失败）。
+
 **专项收口结论（工作流级成功率）：** 至此每个**已被观察到的失败族**都有结构性修复并在真实回放中验证过至少一次（触发型）或单测覆盖（保险型）：
 
 | 失败族 | 修复 | 验证 |
