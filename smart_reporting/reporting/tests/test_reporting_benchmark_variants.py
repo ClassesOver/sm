@@ -415,10 +415,10 @@ def test_legacy_visualization_adapter_rejects_unfrozen_chart_identity() -> None:
         adapt_legacy_visualization_plan(_legacy_visualization_plan(), {})
 
 
-def test_adapted_legacy_visualization_binding_mismatch_warns_without_raising() -> None:
-    # 2026-09-23 契约变更（用户拍板）：图表绑定与签发事实描述的语义偏差从
-    # report_phase_contract_invalid 硬错误改为 loguru 软告警（对齐 AGENTS.md
-    # "语义业务校验只需要软告警"）；文件访问授权仍由执行层 AST 字面路径白名单硬校验。
+def test_adapted_legacy_visualization_binding_mismatch_autocorrects_without_raising() -> None:
+    # 2026-09-23 契约（用户拍板）：绑定语义偏差不升硬错误。2026-09-25 收紧：
+    # 字段集合与签发描述唯一匹配时自动改指（loguru 告警），文件访问授权仍由
+    # 执行层 AST 字面路径白名单硬校验。
     from loguru import logger
 
     adapted = adapt_legacy_visualization_plan(
@@ -442,7 +442,7 @@ def test_adapted_legacy_visualization_binding_mismatch_warns_without_raising() -
     records = []
     sink = logger.add(lambda message: records.append(message.record), level="WARNING")
     try:
-        _validate_visualization_plan_bindings(
+        corrected = _validate_visualization_plan_bindings(
             adapted,
             {
                 "visualizationFacts": [
@@ -462,12 +462,19 @@ def test_adapted_legacy_visualization_binding_mismatch_warns_without_raising() -
     finally:
         logger.remove(sink)
 
-    events = [r for r in records if "report_visualization_binding_mismatch" in r["message"]]
+    events = [
+        r for r in records if "report_visualization_binding_autocorrected" in r["message"]
+    ]
     assert len(events) == 1
     assert events[0]["level"].name == "WARNING"
     details = events[0]["message"]
-    assert "facts/not-authorized.json" in details
     assert "chart-1" in details
+    extra = events[0]["extra"]
+    assert extra["fact_path"] == "facts/not-authorized.json"
+    assert extra["corrected_fact_path"] == "facts/analysis-1.json"
+    binding = corrected.charts[0].data_bindings[0]
+    assert binding.fact_path == "facts/analysis-1.json"
+    assert binding.data_path == "metrics[0].periodValues"
 
 
 def test_frozen_planner_coding_bundle_keeps_variant_outside_input(tmp_path) -> None:

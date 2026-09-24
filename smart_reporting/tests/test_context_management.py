@@ -2128,3 +2128,33 @@ def test_coding_custom_history_batch_budget_has_final_fallback():
     }
     assert "call-current" in call_ids
     assert "call-0" not in call_ids
+
+
+def test_coding_provider_input_inflation_forces_compaction():
+    """provider 实测输入超门禁时强制压缩：本地估算低于 token 门禁也触发。"""
+    old_source = "# Python\n" + ("print('old')\n" * 100)
+    current_code = "# Python\nprint('current')\n"
+    messages = [
+        Message(role="user", content="task"),
+        *_coding_custom_round(
+            "call-old",
+            "write_script",
+            old_source,
+            {"ok": True, "sourceSha256": "a" * 64, "stdout": "x" * 500},
+        ),
+        *_coding_custom_round("call-current", "run", current_code, {"ok": True, "exitCode": 0}),
+    ]
+
+    _projected, baseline = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000
+    )
+    assert baseline["compaction_triggered"] is False
+    assert baseline["input_inflation_detected"] is False
+
+    _projected, metrics = TaskExecutionContextProjector.project_with_metrics(
+        messages, model=CountingModel(), hard_cap=500_000, provider_input_hint=150_000
+    )
+
+    assert metrics["input_inflation_detected"] is True
+    assert metrics["compaction_triggered"] is True
+    assert metrics["compacted_calls"] >= 1

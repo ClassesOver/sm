@@ -1059,6 +1059,12 @@ async def test_write_script_rejects_visual_placeholder_without_output_reference(
     assert result["code"] == "report_code_script_no_output_write"
     assert result["details"]["declaredOutputCount"] == 1
     assert result["details"]["detectedOutputWrites"] == []
+    # candidate-35/生产复盘：占位回执必须附可逐行复制的最小骨架，减少占位循环。
+    message = result["message"]
+    assert len(message) <= 512
+    assert 'OUT = "charts/chart.png"' in message
+    assert "json.load(open(" in message
+    assert "plt.savefig(OUT)" in message
 
 
 @pytest.mark.anyio

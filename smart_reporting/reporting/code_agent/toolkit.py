@@ -450,9 +450,17 @@ def _reject_output_write_contract(tree: ast.Module, declared_paths: tuple[str, .
         return
     if _declared_output_literals(tree, declared):
         return
+    first_output = declared_paths[0] if declared_paths else "<首个签发产物路径>"
     raise ReportingError(
         "report_code_script_no_output_write",
-        "脚本未引用任何声明产物路径，疑似占位/探索脚本；必须在脚本中真实写出全部声明产物。",
+        "脚本未引用任何声明产物路径，疑似占位/探索脚本；必须在脚本中真实写出全部声明产物。"
+        "首轮 write_script 就应完整实现全部图表；最小可接受骨架（路径逐字替换）：\n"
+        f'import json\nOUT = "{first_output}"\n'
+        'data = json.load(open("<task 签发的 factFile 字面路径>", encoding="utf-8"))\n'
+        'rows = data["metrics"][0]["periodValues"]\n'
+        "import matplotlib\nmatplotlib.use(\"Agg\")\nimport matplotlib.pyplot as plt\n"
+        'plt.plot([r["value"] for r in rows])\nplt.savefig(OUT)\n'
+        "每张图的真实绘制都必须落盘到各自的签发输出路径。",
         details={"declaredOutputCount": len(declared), "detectedOutputWrites": []},
     )
 

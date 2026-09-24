@@ -45,6 +45,10 @@ CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD = 0.60
 # 点落在长修复链后半程；首轮（≤8K）与短任务稳态平台（约 16.5K）不触发，安全下界
 # 18K。小窗口模型仍受比例门禁约束，取两者较小值。
 CODING_COMPACTION_INPUT_TOKEN_GATE = 20_000
+# provider 实测输入的绝对膨胀门禁：本地 token 估算与 provider 计数已证实会大幅偏离
+# （cli 复盘：本地投影 ~36K 时 provider 实测 172K）。上一请求实测输入达到该门禁即
+# 强制触发确定性压缩，不再依赖本地估算。
+CODING_COMPACTION_PROVIDER_INPUT_GATE = 100_000
 # 对齐 Codex 两级工具元数据预算：单个旧调用摘要 8 KiB，整批旧历史元数据 32 KiB。
 CODING_CUSTOM_HISTORY_SUMMARY_MAX_BYTES = 8 * 1024
 CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES = 32 * 1024
@@ -1527,6 +1531,7 @@ class TaskExecutionContextProjector:
         protected_call_ids: frozenset[str] = frozenset(),
         history_summary_enabled: bool = True,
         metadata_budget_enabled: bool = True,
+        provider_input_hint: int | None = None,
     ) -> tuple[list[Message], dict[str, int | bool]]:
         projection_started_at = perf_counter()
         count_calls = 0
@@ -1589,6 +1594,7 @@ class TaskExecutionContextProjector:
             "metadata_budget_exceeded": False,
             "compaction_tokens_before": 0,
             "compaction_tokens_after": 0,
+            "input_inflation_detected": False,
         }
         # 请求前 token 门禁：达到 Coding 专用阈值（低于窗口重建阈值与 provider 硬
         # 窗口）或旧历史元数据超 32 KiB 预算时，先用确定性摘要替换完整旧历史。
@@ -1596,12 +1602,26 @@ class TaskExecutionContextProjector:
             max(1, int(hard_cap * CODING_CUSTOM_HISTORY_TOKEN_THRESHOLD)),
             CODING_COMPACTION_INPUT_TOKEN_GATE,
         )
+        provider_input_inflated = (
+            isinstance(provider_input_hint, int)
+            and not isinstance(provider_input_hint, bool)
+            and provider_input_hint >= CODING_COMPACTION_PROVIDER_INPUT_GATE
+        )
+        if provider_input_inflated:
+            custom_history_metrics["input_inflation_detected"] = True
+            logger.warning(
+                "report_code_input_inflation provider_input={} local_estimate={} gate={}",
+                provider_input_hint,
+                pre_compaction_tokens,
+                CODING_COMPACTION_PROVIDER_INPUT_GATE,
+            )
         canonical_tokens = pre_compaction_tokens
         if (
             history_summary_enabled
             and custom_history_metrics["history_candidate"]
             and (
                 pre_compaction_tokens >= coding_history_gate
+                or provider_input_inflated
                 or (
                     metadata_budget_enabled
                     and compactable_metadata_bytes > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
@@ -1640,6 +1660,7 @@ class TaskExecutionContextProjector:
         if (
             not legacy_baseline_rebase
             and not custom_history_metrics["metadata_budget_exceeded"]
+            and not provider_input_inflated
             and canonical_tokens <= threshold
             and projected_tokens <= hard_cap
         ):

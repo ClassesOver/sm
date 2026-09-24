@@ -1146,6 +1146,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 projected_input = [*projected_input, Message(
                     role="user", content=json.dumps(state, ensure_ascii=False, separators=(",", ":")),
                 )]
+        provider_input_hint = getattr(self, "_code_provider_input_hint", None)
         projected, metrics = TaskExecutionContextProjector.project_with_metrics(
             projected_input,
             model=self,
@@ -1156,7 +1157,16 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             # benchmark 专用开关：默认开启，生产路径不设置这两个属性。
             history_summary_enabled=not getattr(self, "_code_disable_history_summary", False),
             metadata_budget_enabled=not getattr(self, "_code_disable_metadata_budget", False),
+            provider_input_hint=(
+                provider_input_hint
+                if isinstance(provider_input_hint, int)
+                and not isinstance(provider_input_hint, bool)
+                else None
+            ),
         )
+        if metrics.get("compaction_triggered") and metrics.get("input_inflation_detected"):
+            # 膨胀触发的压缩完成后清除提示，避免本地估算恢复后仍持续强压。
+            self._code_provider_input_hint = 0
         record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
         # 有界投影快照：并入随后一次请求的 requestMetric，供 run 级压缩信号与回放诊断。
         self._code_last_projection_metrics = {
@@ -2005,6 +2015,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 "status": "completed",
             }
         )
+        if isinstance(input_tokens, int) and not isinstance(input_tokens, bool):
+            # provider 实测输入是上下文膨胀的地面真值：本地估算与 provider 计数
+            # 已证实会偏离（cli 复盘：本地 ~36K 时 provider 实测 172K）。
+            self._code_provider_input_hint = input_tokens
         logger.bind(
             reporting_progress="code_model_request",
             model_id=self.id,

@@ -73,6 +73,7 @@ from smart_reporting.reporting.workflow.runtime.section_workflow import SectionW
 from smart_reporting.reporting.workflow.runtime.visualization_section_workflow import (
     VisualizationSectionWorkflow,
     _code_failure_kind,
+    _validated_visual_receipts,
     _visualization_thinking_complexity,
 )
 from smart_reporting.reporting.workflow.state import ReportingPhase
@@ -133,16 +134,15 @@ def _visualization_payload() -> dict[str, object]:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("analysisId", "analysis_unknown"),
         ("factPath", "facts/other.json"),
         ("dataPath", "metrics[9].periodValues"),
-        ("fields", ["period", "unknown"]),
     ],
-    ids=("analysis", "fact-path", "data-path", "field"),
+    ids=("fact-path", "data-path"),
 )
-async def test_visualization_workflow_warns_on_data_binding_mismatch_and_continues(
+async def test_visualization_workflow_autocorrects_retargetable_binding_mismatch(
     field: str, value: object
 ) -> None:
+    """字段集合与签发描述唯一匹配时，planner 签错 factPath/dataPath 自动改指并继续。"""
     chart_payload = _chart().model_dump(mode="json", by_alias=True)
     chart_payload["dataBindings"][0][field] = value
     plan = VisualizationPlanDraft(charts=(ChartDraft.model_validate(chart_payload),))
@@ -169,13 +169,73 @@ async def test_visualization_workflow_warns_on_data_binding_mismatch_and_continu
 
     assert result.status == "accepted"
     assert result.inspections == (_inspection(),)
-    submit.assert_awaited_once_with(plan, (_inspection(),), _context())
+    corrected_binding = result.plan.charts[0].data_bindings[0]
+    assert corrected_binding.fact_path == "facts/analysis_001.json"
+    assert corrected_binding.data_path == "metrics[0].periodValues"
+    warnings = [
+        message for message in messages
+        if "report_visualization_binding_autocorrected" in str(message)
+    ]
+    assert len(warnings) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("analysisId", "analysis_unknown"),
+        ("fields", ["period", "unknown"]),
+    ],
+    ids=("analysis", "field"),
+)
+async def test_visualization_workflow_warns_on_uncorrectable_binding_mismatch(
+    field: str, value: object
+) -> None:
+    """无法按字段唯一改指的错配保持软告警继续（生产三跑实证：硬拒会耗尽
+    fresh attempt；执行层 AST/指令/修复回执兜底）。"""
+    chart_payload = _chart().model_dump(mode="json", by_alias=True)
+    chart_payload["dataBindings"][0][field] = value
+    plan = VisualizationPlanDraft(charts=(ChartDraft.model_validate(chart_payload),))
+    code_result = CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt(
+            "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+        ),
+        visual_inspection_receipts=(_inspection(),),
+    )
+    submit = AsyncMock(return_value={"status": "accepted"})
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=plan),
+        run_code=AsyncMock(return_value=code_result),
+        submit=submit,
+    )
+
+    messages = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        result = await workflow.run(_visualization_payload(), _context())
+    finally:
+        logger.remove(sink_id)
+
+    assert result.status == "accepted"
     warnings = [
         message for message in messages
         if "report_visualization_binding_mismatch" in str(message)
     ]
     assert len(warnings) == 1
-    assert warnings[0].record["extra"]["details"][field] == value
+    extra = warnings[0].record["extra"]
+    expected_descriptors = (
+        []
+        if field == "analysisId"
+        else [
+            {
+                "factPath": "facts/analysis_001.json",
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+            }
+        ]
+    )
+    assert extra["details"]["availableDescriptors"] == expected_descriptors
 
 
 def test_analysis_executor_does_not_assemble_report() -> None:
@@ -2241,4 +2301,45 @@ async def test_section_workflow_rejects_evidence_receipt_without_frozen_hash() -
             rework=AsyncMock(),
         ).run(_section_work_item(), _context())
 
+    assert caught.value.code == "report_phase_artifact_changed"
+
+
+def test_validated_visual_receipts_soft_accepts_gate_degraded_revision():
+    """收敛闸门降级提交的 requires_revision 回执按软告警接受（cli-report-48220a46
+    实证：硬拒会把 section 打入 fresh attempt 死循环）。结构/身份校验保持硬性。"""
+    result = CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt(
+            "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+        ),
+        visual_inspection_receipts=(_inspection().model_copy(
+            update={"requires_revision": True}
+        ),),
+    )
+    plan = _visualization_plan()
+
+    inspections = _validated_visual_receipts(result, plan)
+
+    assert inspections[0].requires_revision is True
+
+    unreviewed = CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt(
+            "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+        ),
+        visual_inspection_receipts=(_inspection().model_copy(update={"reviewed": False}),),
+    )
+    with pytest.raises(ReportingError) as caught:
+        _validated_visual_receipts(unreviewed, plan)
+    assert caught.value.code == "report_phase_artifact_changed"
+
+    sha_mismatch = CodeGenerationResult(
+        script_file=FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64),
+        execution_receipt=_execution_receipt(
+            "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+        ),
+        visual_inspection_receipts=(_inspection().model_copy(update={"sha256": "c" * 64}),),
+    )
+    with pytest.raises(ReportingError) as caught:
+        _validated_visual_receipts(sha_mismatch, plan)
     assert caught.value.code == "report_phase_artifact_changed"

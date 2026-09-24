@@ -22,7 +22,7 @@ from .code_generation import (
     _bounded_unsigned_paths,
     _code_failure_kind,
 )
-from .phase_models import VisualizationPlanDraft
+from .phase_models import ChartDataBinding, ChartDraft, VisualizationPlanDraft
 
 GenerateVisualizationPlan = Callable[
     [Mapping[str, Any], RunContext], Awaitable[VisualizationPlanDraft]
@@ -132,29 +132,90 @@ def _visualization_binding_catalog(
 
 def _validate_visualization_plan_bindings(
     plan: VisualizationPlanDraft, payload: Mapping[str, Any]
-) -> None:
+) -> VisualizationPlanDraft:
     catalog = _visualization_binding_catalog(payload)
+    by_analysis: dict[Any, list[tuple[str, str, frozenset[str]]]] = {}
+    for (analysis_id, path, data_path), fields in catalog.items():
+        by_analysis.setdefault(analysis_id, []).append((path, data_path, fields))
+    corrected_charts: list[ChartDraft] = []
+    plan_corrected = False
     for chart in plan.charts:
+        corrected_bindings: list[ChartDataBinding] = []
+        chart_corrected = False
         for binding in chart.data_bindings:
             key = (binding.analysis_id, binding.fact_path, binding.data_path)
             declared_fields = catalog.get(key)
-            if declared_fields is None or not set(binding.fields).issubset(declared_fields):
-                # 计划元数据的语义偏差只告警；文件访问授权仍由执行层校验。
-                details = {
-                    "chartId": chart.chart_id,
-                    "analysisId": binding.analysis_id,
-                    "factPath": binding.fact_path,
-                    "dataPath": binding.data_path,
-                    "fields": list(binding.fields),
-                    "declaredFields": (
-                        sorted(declared_fields) if declared_fields is not None else None
-                    ),
-                }
-                logger.bind(details=details).warning(
-                    "report_visualization_binding_mismatch details={} "
-                    "图表数据绑定未逐字引用本轮签发的事实描述，继续执行。",
-                    details,
+            if declared_fields is not None and set(binding.fields).issubset(declared_fields):
+                corrected_bindings.append(binding)
+                continue
+            # 生产实证（cli-report-e556f25b 复盘）：planner 可能把 supplement 形状的
+            # dataPath（如 findings[1].rows）签到 facts 文件上，模型照计划执行必然
+            # KeyError。字段集合在该 analysisId 的签发描述中唯一匹配时自动改指；
+            # 否则按结构错误终止本 Task，由报告级 fresh attempt 携错误上下文重签。
+            binding_fields = frozenset(binding.fields)
+            candidates = [
+                (path, data_path)
+                for path, data_path, fields in by_analysis.get(binding.analysis_id, ())
+                if binding_fields and binding_fields == set(fields)
+            ]
+            if len(candidates) == 1:
+                corrected_path, corrected_data_path = candidates[0]
+                logger.bind(
+                    chart_id=chart.chart_id,
+                    analysis_id=binding.analysis_id,
+                    fact_path=binding.fact_path,
+                    corrected_fact_path=corrected_path,
+                    data_path=binding.data_path,
+                    corrected_data_path=corrected_data_path,
+                ).warning(
+                    "report_visualization_binding_autocorrected chart_id={} "
+                    "dataPath={} -> {} 字段唯一匹配，自动改指。",
+                    chart.chart_id,
+                    binding.data_path,
+                    corrected_data_path,
                 )
+                corrected_bindings.append(
+                    binding.model_copy(
+                        update={"fact_path": corrected_path, "data_path": corrected_data_path}
+                    )
+                )
+                chart_corrected = True
+                continue
+            mismatched = {
+                "chartId": chart.chart_id,
+                "analysisId": binding.analysis_id,
+                "factPath": binding.fact_path,
+                "dataPath": binding.data_path,
+                "fields": list(binding.fields),
+                "declaredFields": (
+                    sorted(declared_fields) if declared_fields is not None else None
+                ),
+                "availableDescriptors": [
+                    {"factPath": path, "dataPath": data_path, "fields": sorted(fields)}
+                    for path, data_path, fields in by_analysis.get(
+                        binding.analysis_id, ()
+                    )[:20]
+                ],
+            }
+            # 2026-09-25 生产三跑实证：不可唯一修正的错配按软告警继续（AGENTS.md
+            # "语义业务校验只需要软告警"）。硬拒会把 planner 的同一形态错配放大成
+            # fresh attempt 循环耗尽；执行层 AST/指令/修复回执已可兜底。
+            logger.bind(details=mismatched).warning(
+                "report_visualization_binding_mismatch details={} "
+                "图表数据绑定未逐字引用本轮签发的事实描述，继续执行。",
+                mismatched,
+            )
+            corrected_bindings.append(binding)
+        if chart_corrected:
+            plan_corrected = True
+            corrected_charts.append(
+                chart.model_copy(update={"data_bindings": tuple(corrected_bindings)})
+            )
+        else:
+            corrected_charts.append(chart)
+    if plan_corrected:
+        return plan.model_copy(update={"charts": tuple(corrected_charts)})
+    return plan
 
 
 def _repair_diagnostic(
@@ -392,10 +453,18 @@ def _validated_visual_receipts(
             receipt.sha256 != output.sha256
             or not receipt.reviewed
             or receipt.visual_review_status != "passed"
-            or receipt.requires_revision
         ):
             raise ReportingError(
                 "report_phase_artifact_changed", "图表视觉回执未通过或与签发输出不一致。"
+            )
+        if receipt.requires_revision:
+            # 生产实证（cli-report-48220a46）：收敛闸门按 AGENTS.md 软告警口径放行的
+            # requires_revision 回执在此被硬拒，把 section 打入 fresh attempt 死循环。
+            # 未降级路径的 requires_revision 已由 submit_script 拦截，到达这里的一定
+            # 是降级提交；结构/身份校验（sha、reviewed、passed）保持硬性。
+            logger.warning(
+                "report_visualization_revision_soft_warning path={} section 按软告警接受带修订要求的图表回执。",
+                path,
             )
     return tuple(receipts[path] for path in sorted(receipts))
 
@@ -456,7 +525,7 @@ class VisualizationSectionWorkflow:
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         plan = await self.generate_plan(payload, run_context)
-        _validate_visualization_plan_bindings(plan, payload)
+        plan = _validate_visualization_plan_bindings(plan, payload)
         benchmark_kwargs = (
             {"benchmark_projection": self.benchmark_projection}
             if self.benchmark_projection is not None
