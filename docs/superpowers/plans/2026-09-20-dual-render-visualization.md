@@ -18,7 +18,7 @@
 - Plotly companions are JSON only. Never accept generated HTML or JavaScript.
 - Plotly.js must be bundled locally and loaded lazily; no CDN and no CSP relaxation.
 - Semantic business validation produces soft warnings; path, identity, and executable-content validation fail closed.
-- Do not install or rely on Kaleido in this implementation.
+- Do not install or rely on Kaleido in this implementation.（**已取代（2026-09-24）：** 用户拍板安装 `kaleido>=1.4.0`，根 Dockerfile 构建期 provision 专用 Chrome 并冒烟验证 `fig.write_image()`；详见 `docs/superpowers/plans/2026-09-20-reporting-coding-performance-optimization.md` 的 2026-09-24 Kaleido 登记。本条与第 141 行"without claiming Kaleido support"仅保留为历史决策记录。）
 - Run focused tests after each task; do not repeat the full test suite.
 
 ---
@@ -56,6 +56,8 @@
 **Interfaces:**
 - Produces: `inspect_report_plotly_file(service, thread_id, path) -> dict[str, Any]`
 - Produces: durable `interactiveFiles` identities paired to Plotly chart registrations
+
+> **2026-09-24 实施补记：** `ReportingWorkspaceAdapter` 已补齐 `inspect_plotly_file`，并把缺失能力收敛为结构化失败码 `report_workspace_capability_missing`（fatal-fast）；可视化章节 fresh-attempt 循环遇到该错误码记账后立即上抛，不再触发 4 次整段重跑。
 
 - [ ] Add failing tests for a valid bounded Plotly figure, malformed JSON, forbidden URL/script content, unsupported traces, excessive complexity, missing companion, and cross-root paths.
 - [ ] Run those tests and verify each failure is feature-related.

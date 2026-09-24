@@ -33,6 +33,8 @@ Plotly JSON is the interactive description, but it never replaces the raster con
 
 Until Kaleido is deliberately admitted and sandboxed, prompt guidance must not claim that `fig.write_image()` is available. This avoids creating an undeclared Chrome execution dependency.
 
+> **已取代（2026-09-24）：** 用户已拍板安装 Kaleido——`pyproject.toml` 新增 `kaleido>=1.4.0`，根 `Dockerfile` 在构建期经 `choreo_get_chrome` provision 专用 Chrome 并把 `fig.write_image()` 纳入冒烟检查；可视化 Coding 指令已改为"Plotly 的静态图使用 fig.write_image()（Kaleido 已随环境提供）"。本节"不安装 Kaleido / 不得声称 write_image 可用"两条仅保留为历史决策记录。注意边界：Chrome 只在报表宿主镜像提供；`docker/sandbox-tools` 镜像的 forbidden 列表仍含 kaleido，脚本执行路径若迁移需重新评估。
+
 ## Editor And Security
 
 The editor serves specs only when their path, size, and SHA-256 match the published job. Responses use `application/json`, `nosniff`, `no-store`, and `Content-Security-Policy: default-src 'none'`. Plotly.js is bundled locally; CSP does not allow CDNs, inline scripts, external images, or frames.
