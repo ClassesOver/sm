@@ -285,6 +285,9 @@ _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
 )
 
 
+# 单个可视化章节的默认墙钟截止（秒）；超时后以零图降级收口，不再开启新工作。
+VISUALIZATION_SECTION_DEADLINE_SECONDS = 1200
+
 _JSON_FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
 _VISIBLE_MACHINE_SCALAR_KEYS = frozenset(
     {
@@ -505,6 +508,7 @@ class _ReportWorkflowRuntimeBase:
         analysis_concurrency: int = 1,
         section_concurrency: int = 1,
         reporting_execution_mode: str = "sequential",
+        visualization_section_deadline_seconds: int = VISUALIZATION_SECTION_DEADLINE_SECONDS,
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")
@@ -558,6 +562,13 @@ class _ReportWorkflowRuntimeBase:
             raise ValueError("planner_thinking_budget 必须是正整数")
         self.analysis_concurrency = analysis_concurrency
         self.section_concurrency = section_concurrency
+        if (
+            isinstance(visualization_section_deadline_seconds, bool)
+            or not isinstance(visualization_section_deadline_seconds, int)
+            or visualization_section_deadline_seconds < 1
+        ):
+            raise ValueError("visualization_section_deadline_seconds 必须是正整数")
+        self.visualization_section_deadline_seconds = visualization_section_deadline_seconds
         self.reporting_execution_mode = reporting_execution_mode
         self._durable_command_lock = asyncio.Lock()
         self._checkpoint_persist_lock = asyncio.Lock()

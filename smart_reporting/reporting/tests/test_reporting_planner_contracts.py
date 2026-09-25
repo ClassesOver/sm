@@ -2990,6 +2990,22 @@ def _final_attempt_runtime(monkeypatch, failing_workflow):
 
 
 @pytest.mark.anyio
+async def test_visualization_section_deadline_degrades_on_first_attempt(monkeypatch) -> None:
+    run_attempt = AsyncMock(side_effect=AssertionError("截止已过不得再调用 planner/Coding"))
+    runtime, toolkit, run_section = _final_attempt_runtime(monkeypatch, run_attempt)
+    # 截止时刻在进入章节时即已过去：只签发一个 attempt 并零图收口，不等外部总时限。
+    runtime.visualization_section_deadline_seconds = -1
+
+    await run_section()
+
+    assert runtime.task_runner.start.await_count == 1
+    run_attempt.assert_not_awaited()
+    assert toolkit.submit_visualization_charts.await_args.args == ("section_001", [])
+    warning = runtime._apply_durable_command.await_args.args[1].payload["warnings"][0]
+    assert warning["details"]["failureCode"] == "report_visualization_section_deadline_exceeded"
+
+
+@pytest.mark.anyio
 async def test_visualization_section_final_attempt_degrades_instead_of_failing_report(
     monkeypatch,
 ) -> None:

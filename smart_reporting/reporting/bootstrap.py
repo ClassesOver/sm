@@ -224,5 +224,8 @@ def create_report_runtime(
         analysis_concurrency=settings.report_analysis_concurrency,
         section_concurrency=settings.report_section_concurrency,
         reporting_execution_mode=settings.reporting_execution_mode,
+        visualization_section_deadline_seconds=(
+            settings.report_visualization_section_deadline_seconds
+        ),
     )
     return reporting_agent_template, runtime

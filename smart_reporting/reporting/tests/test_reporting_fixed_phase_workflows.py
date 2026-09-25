@@ -2343,3 +2343,80 @@ def test_validated_visual_receipts_soft_accepts_gate_degraded_revision():
     with pytest.raises(ReportingError) as caught:
         _validated_visual_receipts(sha_mismatch, plan)
     assert caught.value.code == "report_phase_artifact_changed"
+
+
+@pytest.mark.anyio
+async def test_visualization_deadline_passed_degrades_without_planner_call() -> None:
+    generate_plan = AsyncMock(return_value=_visualization_plan())
+    degrade = AsyncMock(return_value={"status": "accepted"})
+
+    # 章节墙钟截止已过：新 attempt 不再调用 planner，直接零图收口。
+    result = await VisualizationSectionWorkflow(
+        generate_plan=generate_plan,
+        run_code=AsyncMock(),
+        submit=AsyncMock(),
+        degrade=degrade,
+        deadline=100.0,
+        clock=lambda: 100.0,
+    ).run(_visualization_payload(), _context())
+
+    assert result.status == "degraded"
+    assert result.plan.charts == ()
+    generate_plan.assert_not_awaited()
+    assert degrade.await_args.args[0].code == "report_visualization_section_deadline_exceeded"
+
+
+@pytest.mark.anyio
+async def test_visualization_deadline_stops_new_repairs_even_before_final_attempt() -> None:
+    now = [0.0]
+
+    async def failing_run_code(*_args, **_kwargs):
+        # 第一次执行耗尽截止；即使失败可修复，也不得再开启新一轮修复。
+        now[0] = 200.0
+        raise ReportingError("report_visualization_script_failed", "脚本失败。")
+
+    run_code = AsyncMock(side_effect=failing_run_code)
+    degrade = AsyncMock(return_value={"status": "accepted"})
+
+    result = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=run_code,
+        submit=AsyncMock(),
+        degrade=degrade,
+        final_attempt=False,
+        deadline=100.0,
+        clock=lambda: now[0],
+    ).run(_visualization_payload(), _context())
+
+    assert result.status == "degraded"
+    assert run_code.await_count == 1
+    error = degrade.await_args.args[0]
+    assert error.code == "report_visualization_section_deadline_exceeded"
+    assert error.details["lastFailureCode"] == "report_visualization_script_failed"
+
+
+@pytest.mark.anyio
+async def test_visualization_without_deadline_keeps_repairing() -> None:
+    script_file = FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64)
+    result = CodeGenerationResult(
+        script_file=script_file,
+        execution_receipt=_execution_receipt(
+            "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
+        ),
+        visual_inspection_receipts=(_inspection(),),
+    )
+    run_code = AsyncMock(
+        side_effect=[ReportingError("report_visualization_script_failed", "失败"), result]
+    )
+
+    outcome = await VisualizationSectionWorkflow(
+        generate_plan=AsyncMock(return_value=_visualization_plan()),
+        run_code=run_code,
+        submit=AsyncMock(return_value={"status": "accepted"}),
+        degrade=AsyncMock(),
+        deadline=100.0,
+        clock=lambda: 0.0,
+    ).run(_visualization_payload(), _context())
+
+    assert outcome.status == "accepted"
+    assert run_code.await_count == 2

@@ -69,6 +69,7 @@ from .base import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    VISUALIZATION_SECTION_DEADLINE_SECONDS,
     AnalysisReworkRequest,
     Any,
     BaseModel,
@@ -960,6 +961,11 @@ class RuntimeAnalysisMixin:
                 "章节图表 fresh attempt 已达到上限，拒绝创建新的 Task。",
             )
         scope = self._scope(run_context)
+        # 章节墙钟截止：从本次进入章节开始计时，跨 fresh attempt 共享；超时后新
+        # attempt 直接零图收口，避免整份报告被外部总时限杀掉而零交付。
+        section_deadline = time.monotonic() + getattr(
+            self, "visualization_section_deadline_seconds", VISUALIZATION_SECTION_DEADLINE_SECONDS
+        )
         for attempt in range(next_attempt, max_attempts):
             root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
             task_id = reporting_phase_task_key(
@@ -1381,7 +1387,9 @@ class RuntimeAnalysisMixin:
                     if knowledge_index is not None:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
                     result = await VisualizationSectionWorkflow(
-                        **workflow_kwargs, final_attempt=attempt == max_attempts - 1
+                        **workflow_kwargs,
+                        final_attempt=attempt == max_attempts - 1,
+                        deadline=section_deadline,
                     ).run(instruction_payload, invocation.run_context)
                     return result.plan
 
