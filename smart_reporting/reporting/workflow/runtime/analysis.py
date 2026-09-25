@@ -2070,6 +2070,8 @@ class RuntimeAnalysisMixin:
             run_id=str(run_context.run_id or scope["externalRunId"]),
             session_id=scope["threadId"],
         )
+        if reporting_workflow.execution_error is not None:
+            raise reporting_workflow.execution_error
         content = getattr(output, "content", None)
         if not isinstance(content, dict):
             raise ReportingError(
