@@ -1,13 +1,24 @@
 """绑定脚本的多块 free-form 精确替换；统一定位后原子提交。"""
 
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 from ..models import ReportingError
 
 EDIT_PATCH_GRAMMAR = (
-    'start: "*** Begin Edit" LF "*** SHA256: " SHA256 LF edit+ "*** End Edit" LF?\n'
+    "start: edit_envelope | patch_envelope\n"
+    'edit_envelope: "*** Begin Edit" LF "*** SHA256: " SHA256 LF (edit+ | hunks) "*** End Edit" LF?\n'
+    'patch_envelope: "*** Begin Patch" LF ("*** SHA256: " SHA256 LF)? '
+    '"*** Update File: " PATH LF hunks "*** End Patch" LF?\n'
     'edit: "<<<<<<< SEARCH" LF line+ "=======" LF line+ ">>>>>>> REPLACE" LF\n'
+    "hunks: hunk+ (\"*** End of File\" LF)?\n"
+    "hunk: hunk_header? change_line+\n"
+    'hunk_header: "@@" TEXT? LF\n'
+    "TEXT: /[^\\n]+/\n"
+    "change_line: /[ +\\-][^\\n]*/ LF | LF\n"
     'line: /[^\\n]+/ LF | LF\n'
+    "PATH: /[^\\n]+/\n"
     'SHA256: /[0-9a-f]{64}/\n'
     '%import common.LF'
 )
@@ -126,6 +137,156 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
         ">>>>>>> REPLACE\\n*** End Edit",
         details=details,
     )
+
+
+PatchFormat = Literal["search_replace", "apply_patch", "edit_envelope_hunks"]
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptPatch:
+    """edit_script 输入的统一解析结果；各格式都归一为 (SEARCH, REPLACE) 块。"""
+
+    edits: list[tuple[str, str]]
+    sha256: str | None
+    patch_format: PatchFormat
+    path: str | None = None
+
+
+_APPLY_PATCH_ENVELOPE = re.compile(
+    r"\*\*\* Begin Patch\n(?:\*\*\* SHA256: (?P<sha>[0-9a-f]{64})\n)?"
+    r"(?P<body>.*?)\*\*\* End Patch\n?",
+    re.DOTALL,
+)
+_UPDATE_FILE = "*** Update File: "
+_UNSUPPORTED_FILE_OPERATIONS = ("*** Add File: ", "*** Delete File: ", "*** Move to: ")
+_HUNK_LINE = re.compile(r"^(?:@@.*|[ +\-].*|)$")
+
+
+def _apply_patch_error(reason: str, message: str, **details: object) -> ReportingError:
+    return ReportingError(
+        "report_code_script_edit_invalid",
+        message,
+        details={**_invalid_details, "reason": reason, "patchFormat": "apply_patch", **details},
+    )
+
+
+def _parse_hunks(body: str) -> list[tuple[str, str]]:
+    """把 Codex apply_patch 的 hunk（@@ / 空格 / - / + 行）转换为 SEARCH/REPLACE 块。
+
+    上下文与删除行组成 SEARCH，上下文与新增行组成 REPLACE；@@ 只作 hunk 分隔，
+    定位仍由唯一匹配决定，歧义时要求补充上下文。纯新增 hunk 没有定位锚点，拒绝。
+    """
+
+    lines = body.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if lines and lines[-1] == "*** End of File":
+        lines.pop()
+    hunks: list[list[str]] = [[]]
+    for number, line in enumerate(lines, 1):
+        if line.startswith("@@"):
+            if hunks[-1]:
+                hunks.append([])
+            continue
+        if line.startswith("*** "):
+            raise _apply_patch_error(
+                "apply_patch_operation_unsupported",
+                "edit_script 只支持对当前绑定脚本的单个 *** Update File；"
+                "不支持新增、删除、移动文件或多文件补丁。",
+                line=number,
+            )
+        if not _HUNK_LINE.match(line):
+            raise _apply_patch_error(
+                "apply_patch_line_prefix_missing",
+                f"补丁第 {number} 行缺少行首标记：上下文行以一个空格开头，删除行以 -、"
+                "新增行以 + 开头。",
+                line=number,
+            )
+        hunks[-1].append(line)
+    edits: list[tuple[str, str]] = []
+    for index, hunk in enumerate((item for item in hunks if item), 1):
+        old = [line[1:] for line in hunk if line[:1] in {" ", "-", ""}]
+        new = [line[1:] for line in hunk if line[:1] in {" ", "+", ""}]
+        if not any(line[:1] in {"+", "-"} for line in hunk):
+            raise _apply_patch_error(
+                "apply_patch_hunk_without_change",
+                f"第 {index} 个 hunk 没有 - 或 + 行。",
+                blockIndex=index,
+            )
+        if not any(line.strip() for line in old):
+            raise _apply_patch_error(
+                "apply_patch_hunk_without_context",
+                f"第 {index} 个 hunk 只有新增行，无法定位插入位置；请带上至少一行原文上下文"
+                "（以空格开头）。",
+                blockIndex=index,
+            )
+        edits.append(("\n".join(old), "\n".join(new)))
+    if not edits:
+        raise _apply_patch_error("apply_patch_empty", "补丁不包含任何 hunk。")
+    return edits
+
+
+def _looks_like_hunk_body(body: str) -> bool:
+    lines = [line for line in body.split("\n") if line]
+    if lines and lines[0].startswith(_UPDATE_FILE):
+        lines = lines[1:]
+    return bool(lines) and any(line[:1] in {"+", "-"} for line in lines) and all(
+        _HUNK_LINE.match(line) or line == "*** End of File" for line in lines
+    )
+
+
+def parse_script_patch(patch: str, max_source_bytes: int) -> ScriptPatch:
+    """edit_script 统一入口：SEARCH/REPLACE、Codex apply_patch 及二者混合信封。
+
+    观测到弱模型常把 apply_patch hunk 写进 *** Begin Edit 信封（candidate-19/27/28 的
+    no_valid_blocks 早停族）；这里按原生格式确定性转换，最终仍由同一唯一匹配、
+    语法护栏与预检校验，不放宽任何提交约束。
+    """
+
+    if isinstance(patch, str) and len(patch.encode("utf-8")) <= 2 * max_source_bytes + 256:
+        normalized = _normalize_patch(patch)
+        if normalized.startswith("*** Begin Patch\n"):
+            match = _APPLY_PATCH_ENVELOPE.fullmatch(normalized.rstrip() + "\n")
+            if match is None:
+                raise _apply_patch_error(
+                    "apply_patch_envelope_invalid",
+                    "apply_patch 补丁必须以 *** Begin Patch 开头、*** End Patch 结尾，"
+                    "中间只含一个 *** Update File: <脚本路径> 及其 hunk。",
+                )
+            body = match["body"]
+            if any(body.startswith(item) for item in _UNSUPPORTED_FILE_OPERATIONS):
+                raise _apply_patch_error(
+                    "apply_patch_operation_unsupported",
+                    "edit_script 只支持对当前绑定脚本的单个 *** Update File。",
+                )
+            if not body.startswith(_UPDATE_FILE):
+                raise _apply_patch_error(
+                    "apply_patch_update_missing",
+                    "apply_patch 补丁缺少 *** Update File: <脚本路径> 行。",
+                )
+            header, _, hunk_body = body.partition("\n")
+            return ScriptPatch(
+                edits=_parse_hunks(hunk_body),
+                sha256=match["sha"],
+                patch_format="apply_patch",
+                path=header[len(_UPDATE_FILE):].strip(),
+            )
+        envelope = _EDIT_PATCH.fullmatch(normalized.rstrip() + "\n")
+        if envelope is not None and "<<<<<<< SEARCH" not in envelope["body"]:
+            body = envelope["body"]
+            if _looks_like_hunk_body(body):
+                path = None
+                if body.startswith(_UPDATE_FILE):
+                    header, _, body = body.partition("\n")
+                    path = header[len(_UPDATE_FILE):].strip()
+                return ScriptPatch(
+                    edits=_parse_hunks(body),
+                    sha256=envelope["sha"],
+                    patch_format="edit_envelope_hunks",
+                    path=path,
+                )
+    edits, sha256 = parse_edit_patch(patch, max_source_bytes)
+    return ScriptPatch(edits=edits, sha256=sha256, patch_format="search_replace")
 
 
 def _indent(line: str) -> str:

@@ -41,7 +41,7 @@ from .delivery import (
     _visual_review_model_receipt,
     build_delivery_state,
 )
-from .edit_patch import apply_edit_blocks, parse_edit_patch
+from .edit_patch import apply_edit_blocks, parse_script_patch
 from .formatting import format_python_source
 from .lsp import ReportingWorkspaceLsp
 from .lsp_process import ReportingLspProcessManager
@@ -499,6 +499,21 @@ def _parses(source: str) -> bool:
     except (SyntaxError, ValueError):
         return False
     return True
+
+
+def _patch_path_matches(path: str | None, script_path: str) -> bool:
+    """apply_patch 路径可写相对、带 ./ 或工作区绝对路径，只要唯一指向绑定脚本。"""
+
+    if not path:
+        return False
+    normalized = path.strip().strip("`\"'").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return (
+        normalized == script_path
+        or normalized.endswith("/" + script_path)
+        or script_path.endswith("/" + normalized)
+    )
 
 
 def _syntax_edit_failure(
@@ -1796,6 +1811,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self.first_run_failure_code: str = "unknown"
         self.first_run_failure: dict[str, Any] | None = None
         self.first_patch_applied: bool | str = "unknown"
+        # edit_script 输入格式分布（含无效原因），用于评估原生 apply_patch 的实际占比。
+        self.patch_format_counts: dict[str, int] = {}
         self.first_repair_success: bool | str = "unknown"
         self._awaiting_first_repair_run = False
         self.visual_review_duration_ms = 0
@@ -1844,7 +1861,10 @@ class ReportingCodeModeToolkit(Toolkit):
                     "write_script 预检被拒时回执给出 draftSha256 与全部 violations；把 draftSha256 放在 "
                     "*** SHA256: 后即可对被拒草稿打补丁，通过全部预检后草稿才成为签发脚本。"
                     "插入使用原文上下文作锚点；删除使用空 REPLACE；移动用删除块与目标处插入块。"
-                    "禁止整份替换；不接受文件路径。"
+                    "禁止整份替换。"
+                    "也可使用 Codex apply_patch 格式：*** Begin Patch\n*** Update File: <绑定脚本路径>\n"
+                    "@@\n 上下文行（行首一个空格）\n-删除行\n+新增行\n*** End Patch；"
+                    "每个 hunk 至少含一行原文上下文，只能更新绑定脚本，可在 Begin Patch 后加 *** SHA256: 行。"
                     "标记独占一行并使用 LF；分隔符前的一个换行属于协议，"
                     "如旧文本或新文本本身以换行结尾，需在分隔符前再保留一个换行。"
                     "输入示例（哈希必须替换为当前脚本的真实值）：\n"
@@ -2727,18 +2747,39 @@ class ReportingCodeModeToolkit(Toolkit):
         del run_context
         draft = self._rejected_draft
         try:
-            edits, expectedSourceSha256 = parse_edit_patch(
-                patch, self.context.max_source_bytes,
-            )
+            parsed = parse_script_patch(patch, self.context.max_source_bytes)
         except ReportingError as error:
             # 补丁格式无效时无法解析出 SHA，按原文是否携带草稿 SHA 判断目标。
             self._last_edit_targeted_draft = (
                 draft is not None and isinstance(patch, str) and draft.sha256 in patch
             )
+            self._record_patch_format(
+                "invalid:" + str((error.details or {}).get("reason", "unknown"))
+            )
             return _failure(error.code, error.message, error.details)
-        self._last_edit_targeted_draft = (
-            draft is not None and expectedSourceSha256 == draft.sha256
-        )
+        self._record_patch_format(parsed.patch_format)
+        edits, expectedSourceSha256 = parsed.edits, parsed.sha256
+        if expectedSourceSha256 is None:
+            # 原生 apply_patch 可省略 SHA：此时目标只能由 Update File 路径确认，
+            # 存在被拒草稿时补丁基于模型最近提交的草稿文本。
+            if not _patch_path_matches(parsed.path, self.context.script_path):
+                self._last_edit_targeted_draft = False
+                return _failure(
+                    "report_code_script_edit_invalid",
+                    "apply_patch 的 *** Update File 路径必须是当前绑定脚本。",
+                    {
+                        "reason": "apply_patch_path_mismatch",
+                        "patchFormat": parsed.patch_format,
+                        "path": (parsed.path or "")[:256],
+                        "expectedPath": self.context.script_path,
+                        "nextTools": ["edit_script"],
+                    },
+                )
+            self._last_edit_targeted_draft = draft is not None
+        else:
+            self._last_edit_targeted_draft = (
+                draft is not None and expectedSourceSha256 == draft.sha256
+            )
         if draft is not None and self._last_edit_targeted_draft:
             return await self._edit_rejected_draft(draft, edits)
         try:
@@ -2756,7 +2797,7 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         # 哈希和匹配必须基于同一份读取内容，避免独立 hash/read 之间的竞态。
         current_sha256 = hashlib.sha256(source_bytes).hexdigest()
-        if expectedSourceSha256 != current_sha256:
+        if expectedSourceSha256 is not None and expectedSourceSha256 != current_sha256:
             details: dict[str, Any] = {
                 "currentSha256": current_sha256,
                 "expectedSha256": expectedSourceSha256,
@@ -2863,6 +2904,10 @@ class ReportingCodeModeToolkit(Toolkit):
             **({"fuzzyMatches": fuzzy_matches} if fuzzy_matches else {}),
             **identity,
         }
+
+    def _record_patch_format(self, key: str) -> None:
+        key = key[:64]
+        self.patch_format_counts[key] = self.patch_format_counts.get(key, 0) + 1
 
     async def _current_script_sha256(self) -> str | None:
         try:

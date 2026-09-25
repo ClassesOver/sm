@@ -395,7 +395,7 @@ def _custom_input_prefixes(tool_name: str) -> tuple[str, ...]:
     # 与 _FREEFORM_TOOL_GRAMMARS 一致：只有 run 接受 %%bash cell；write_script 的
     # 正式脚本必须是 Python，%%bash 首行不能被当作协议正确输入或信封解封目标。
     if tool_name == "edit_script":
-        return ("*** Begin Edit\n",)
+        return ("*** Begin Edit\n", "*** Begin Patch\n")
     if tool_name == "run":
         return ("# Python\n", "# Python\r\n", "%%bash\n", "%%bash\r\n")
     return ("# Python\n", "# Python\r\n")
@@ -950,7 +950,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     "description": (
                         "这是 FREEFORM custom 工具，输入就是原始文本；"
                         "不要构造参数对象、字符串引号或 Markdown 围栏。"
-                        + ("补丁以 *** Begin Edit 和真实换行开头。" if name == "edit_script"
+                        + ("补丁以 *** Begin Edit 或 *** Begin Patch 和真实换行开头。"
+                           if name == "edit_script"
                            else "Python 输入以 # Python 和真实换行开头。")
                         + ("仅 run 支持以 %%bash 和真实换行开头的 Shell cell。" if name == "run" else "")
                         + str(tool.get("description") or name)

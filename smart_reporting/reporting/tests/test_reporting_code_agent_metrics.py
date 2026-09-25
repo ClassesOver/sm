@@ -297,6 +297,7 @@ def test_coding_metric_sample_keeps_delivery_evidence_and_unknowns_separate():
         "firstWriteRequestDurationMs": "unknown",
         "firstWriteReasoningTokens": "unknown",
         "firstPatchApplied": False,
+        "patchFormats": {},
         "criticalVisualDefect": True,
         "failureCode": "report_code_generation_no_submission",
         "rawProtocolCorrect": "unknown",

@@ -444,6 +444,7 @@ class ReportingCodeGenerationRunner:
                     ),
                     first_run_failure=getattr(toolkit, "first_run_failure", None),
                     first_patch_applied=getattr(toolkit, "first_patch_applied", "unknown"),
+                    patch_format_counts=getattr(toolkit, "patch_format_counts", None),
                     first_repair_success=getattr(
                         toolkit, "first_repair_success", "unknown"
                     ),
