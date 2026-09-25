@@ -877,6 +877,8 @@ class BenchmarkPlannerSpec:
 
 **2026-09-25 CLI 第三跑（bash-4pyc0qxz）再次失败并归因——优化① 的硬拒过激（设计二次修正）：** 4 个 Coding 任务后同死于外层 `report_coding_workflow_output_invalid`；内部根因是**优化①新增的 `report_visualization_binding_invalid` 硬拒**：planner 产出无法按字段唯一改指的错配 → 硬拒 → agno step 层 attempt-1 重试再遇同形态错配 → 步骤失败 → 工作流输出无效。教训与修正：不可唯一修正的 planner 语义错配**必须回到软告警继续**（AGENTS.md 与 2026-09-23 拍板原则；执行层 AST/指令/修复回执已可兜底）——唯一字段匹配的**自动改指保留**（纯收益，两次生产触发均有效）。`_validate_visualization_plan_bindings` 最终形态：精确匹配放行 → 唯一字段匹配自动改指（告警）→ 其余软告警继续（details 含 availableDescriptors 供诊断）。测试同步改回"不可修正→软告警继续"。17 文件回归 **801 passed，1 failed**（唯一仍为既有失败）。
 
+**2026-09-25 合并 origin/code（远端 Coding 收敛迭代 V1-V5/A1-A3 + chartInputs 预解析机制，+2967 行）与语义冲突修复：** 自动合并无文本冲突，但静默丢失/错位三处，逐一修复：① toolkit 的 `_reject_generic_data_helpers`（远端把 helper 硬拦降为软告警，按 8 次真实触发实证恢复硬拦，同时接入远端 `_collect_preflight` 多违规聚合与草稿隔离改进）；② bootstrap 指令索引拼接错位（远端 `[16:]` 按旧列表长度书写，跳过本方数据形状契约/禁 helper/路径逐字三条，补回 `[13:16]`，5567/5600 bytes）；③ 测试对齐远端改进（violations 逐项诊断、收敛计数 run_id 去重——同一 execution 多次 view_image 只算一轮，语义更精确）。合并后 17 文件 **809 passed，2 failed**（interactive_v1_end_to_end 为本方既有；visual_review_state[restart] 经 worktree 验证在纯 origin/code 同样失败，属远端既有）。commit：80af04c（merge）+ 848ef8e（语义修复）。
+
 **专项收口结论（工作流级成功率）：** 至此每个**已被观察到的失败族**都有结构性修复并在真实回放中验证过至少一次（触发型）或单测覆盖（保险型）：
 
 | 失败族 | 修复 | 验证 |
