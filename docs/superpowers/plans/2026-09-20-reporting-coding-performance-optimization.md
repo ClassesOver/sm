@@ -893,6 +893,14 @@ class BenchmarkPlannerSpec:
 2. **补丁连续失败与逃生口脱节**：草稿机制下连续 4 次 `edit_invalid` 后 rewrite gate 未接住（13 次 edit 仅 1 次 write）——需复查草稿状态下 write_script 的可用性语义与 `_edit_failures_since_progress` 计数是否覆盖草稿编辑路径。
 3. **语法错误草稿漏到 run**：`write_script` 有 compile 预检，`edit_script` 应用草稿时缺——补丁落盘前加 compile 检查，把 `report_code_source_invalid` 前移到 edit 阶段。
 
+**2026-09-25 第五跑问题修复（离线单测，未做真实回放）：**
+
+- ① 零产物回执新增 `writeExample`：按缺失路径给出单张图完整写出链（Matplotlib `fig.savefig(签发路径)`；Plotly `write_image` + `write_json`），只对可视化图片产物生效。
+- ② 根因不是 rewrite gate：首次创建时脚本不存在，`write_script` 本就可用；问题是交付状态在有草稿时持续推荐草稿补丁。现在草稿存在期间 `edit_script` 连续失败 2 次即作废草稿，交付状态改为只推荐 `write_script`。
+- ③ 根因：草稿补丁后经 `write_script` 提升，而 `write_script` 遇语法错误跳过全部预检直接落盘。现在提升前先 `ast.parse`，失败仍保留为隔离草稿并返回带行号的 `report_code_source_invalid`。
+- 合并修正复核：候选指令补回的通用 [13:16] 无条件要求按 `binding.dataPath` / `factFile.path` 读原始 facts，与 chartInputs 冲突（全部物化时事实文件不在授权路径内）。形状与路径规则已在回退图规则中，现只保留"禁止通用 helper"，指令 5,567 → 3,796 B。
+- `visual_review_state[restart]` 失败不是远端既有问题，而是 `restart_code_mode` 保留执行回执的有意行为变化；测试已按新行为更新。
+
 正面确认：降级通道正确兜底（no_progress → degrade → 零图继续成稿）；占位骨架本跑 0 触发（模型首写质量提升）；chartInputs 数据未核对按软告警继续交付。
 
 **专项收口结论（工作流级成功率）：** 至此每个**已被观察到的失败族**都有结构性修复并在真实回放中验证过至少一次（触发型）或单测覆盖（保险型）：

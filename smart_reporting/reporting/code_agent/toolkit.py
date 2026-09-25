@@ -465,6 +465,42 @@ def _reject_output_write_contract(tree: ast.Module, declared_paths: tuple[str, .
     )
 
 
+def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -> str:
+    """零产物回执附带缺失产物的完整写出示例，路径逐字使用签发值。"""
+
+    if path.endswith(".plotly.json"):
+        image = next(
+            (
+                item
+                for item in declared_paths
+                if not item.endswith(".plotly.json")
+                and item.rsplit(".", 1)[0] == path.removesuffix(".plotly.json")
+            ),
+            None,
+        )
+        lines = [f"fig.write_json({path!r})"]
+        if image is not None:
+            lines.insert(0, f"fig.write_image({image!r})")
+        return "\n".join(lines)
+    interactive = next(
+        (
+            item
+            for item in declared_paths
+            if item.endswith(".plotly.json")
+            and item.removesuffix(".plotly.json") == path.rsplit(".", 1)[0]
+        ),
+        None,
+    )
+    if interactive is not None:
+        return f"fig.write_image({path!r})\nfig.write_json({interactive!r})"
+    return (
+        "fig, ax = plt.subplots(figsize=(10, 6))\n"
+        "# ... 按本图 chartInputs 绘制 ...\n"
+        f"fig.savefig({path!r}, dpi=150, bbox_inches='tight')\n"
+        "plt.close(fig)"
+    )
+
+
 def _output_write_warning(tree: ast.Module, declared_paths: tuple[str, ...]) -> dict[str, str] | None:
     declared = frozenset(declared_paths)
     if not declared or not _declared_output_literals(tree, declared):
@@ -1239,7 +1275,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "variableSummary", "explorationVariables", "allowedEditRegion", "forbiddenEditRegions",
         "isPlaceholderScript", "allDeclaredOutputsMissing", "declaredOutputCount",
         "detectedOutputWrites", "functionName", "parameterName",
-        "violations", "draftSha256", "violationLines",
+        "violations", "draftSha256", "violationLines", "writeExample",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -1643,6 +1679,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self._rejected_draft: tuple[str, str] | None = None
         # 草稿产生时正式脚本的 SHA（None 表示尚不存在）；正式脚本变化后草稿作废。
         self._rejected_draft_base: str | None = None
+        # 草稿存在期间连续失败的 edit_script 次数；达到阈值即作废草稿改走整稿重写。
+        self._draft_edit_failures = 0
         tools = [
             Function(
                 name="write_script",
@@ -1982,6 +2020,19 @@ class ReportingCodeModeToolkit(Toolkit):
         # 成功但未带来运行通过的编辑不算进展，避免在"编辑空转"死局里反复重置。
         if name == "edit_script" and failed:
             self._edit_failures_since_progress += 1
+            if self._rejected_draft is not None:
+                self._draft_edit_failures += 1
+                if self._draft_edit_failures >= REWRITE_GATE_EDIT_FAILURES:
+                    # 草稿补丁连续失败（多为补丁格式 edit_invalid）：继续推荐草稿
+                    # 补丁只会空转，作废草稿，交付状态随之只推荐 write_script。
+                    self._rejected_draft = None
+                    self._draft_edit_failures = 0
+                    if isinstance(fc.result, dict):
+                        fc.result["draftDiscarded"] = True
+                        fc.result["message"] = (
+                            f"{fc.result.get('message', '')}草稿补丁已连续失败，草稿已作废；"
+                            "请用 write_script 重新提交完整脚本，并修正全部 violations。"
+                        )
         elif name in {"run_script", "write_script"} and not failed:
             self._edit_failures_since_progress = 0
         if name == "write_script" and self.first_script_success == "unknown":
@@ -2436,6 +2487,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     draft_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
                     if self._rejected_draft is None:
                         self._rejected_draft_base = await self._current_script_sha256()
+                        self._draft_edit_failures = 0
                     self._rejected_draft = (draft_sha256, source)
                     return _preflight_failure(
                         violations, source, draft_sha256=draft_sha256
@@ -2675,6 +2727,33 @@ class ReportingCodeModeToolkit(Toolkit):
             details["draftSha256"] = draft_sha256
             details["nextTools"] = ["edit_script"]
             return _failure(error.code, error.message, details)
+        try:
+            ast.parse(updated, filename=self.context.script_path)
+        except SyntaxError as error:
+            # write_script 对语法错误跳过全部预检直接落盘；草稿提升前必须先能解析，
+            # 否则语法错误（及未检查的路径违规）会漏到 run_script 才暴露。
+            new_sha256 = hashlib.sha256(updated.encode("utf-8")).hexdigest()
+            self._rejected_draft = (new_sha256, updated)
+            lines = updated.splitlines()
+            line = error.lineno or 0
+            return _failure(
+                "report_code_source_invalid",
+                "补丁后的草稿存在语法错误，仍保留为隔离草稿、未写入正式脚本；"
+                "请以新的 draftSha256 继续用 edit_script 修正。",
+                {
+                    "reason": error.msg,
+                    "errorType": "SyntaxError",
+                    "line": line,
+                    "column": error.offset or 0,
+                    **(
+                        {"sourceLine": lines[line - 1][:300]}
+                        if 0 < line <= len(lines)
+                        else {}
+                    ),
+                    "draftSha256": new_sha256,
+                    "nextTools": ["edit_script"],
+                },
+            )
         result = await self.write_script(updated)
         if result.get("ok") is not True:
             # 仍有违规时 write_script 已把补丁后的草稿存为新的隔离草稿。
@@ -3122,6 +3201,16 @@ class ReportingCodeModeToolkit(Toolkit):
                 details["isPlaceholderScript"] = True
             if all_missing:
                 details["allDeclaredOutputsMissing"] = True
+            example = (
+                _declared_output_write_example(
+                    missing_paths[0], self.context.declared_output_paths
+                )
+                if self.context.task_kind == "visualization"
+                and missing_paths[0].lower().endswith((".png", ".jpg", ".jpeg", ".plotly.json"))
+                else ""
+            )
+            if example:
+                details["writeExample"] = example
             raise ReportingError(
                 "report_code_declared_output_missing",
                 "声明产物不存在，不代表脚本不存在。检查缺失路径对应的写出逻辑，"
