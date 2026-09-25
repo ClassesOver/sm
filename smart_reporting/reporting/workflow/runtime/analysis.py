@@ -122,6 +122,12 @@ from .base import (
     time,
     validate_metric_code_bindings,
 )
+from .chart_inputs import (
+    ChartInputMaterialization,
+    fallback_plan,
+    prepare_chart_inputs,
+    verify_plotly_chart_inputs,
+)
 from .code_generation import (
     CodeGenerationResult,
     ReportingCodeGenerationRunner,
@@ -542,6 +548,41 @@ def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]
     )
 
 
+def _visualization_repair_facts(
+    task_facts: Mapping[str, Any] | None,
+    chart_inputs: ChartInputMaterialization | None,
+    coding_facts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """已物化时，修复用 dataPaths 契约只保留仍授权读取的回退分析项。"""
+
+    facts = dict(task_facts or {})
+    contract = facts.get("visualizationDataContract")
+    if chart_inputs is None or not chart_inputs.files or not isinstance(contract, Mapping):
+        return facts
+    authorized = {
+        item.get("analysisId") for item in coding_facts if isinstance(item, Mapping)
+    }
+    metrics = [
+        item
+        for item in contract.get("metrics") or ()
+        if isinstance(item, Mapping) and item.get("analysisId") in authorized
+    ]
+    if metrics:
+        facts["visualizationDataContract"] = {**contract, "metrics": metrics}
+    else:
+        facts.pop("visualizationDataContract")
+    return facts
+
+
+def _visualization_chart_input_root(chart_output_root: str) -> str:
+    """chart-input 放在 chartOutputRoot 之外的只读兄弟目录，避免混入声明产物。"""
+
+    marker = "/analysis/charts/"
+    if marker in chart_output_root:
+        return chart_output_root.replace(marker, "/analysis/chart-inputs/", 1)
+    return f"{chart_output_root.rstrip('/')}-chart-inputs"
+
+
 def _visualization_registration_payload(chart: ChartDraft) -> dict[str, Any]:
     """仅提交交付注册字段，规划到 Coding 的决策字段不进入归档契约。"""
 
@@ -595,6 +636,19 @@ def _analysis_item_dataset_inputs(
             dataset_input["columnTypes"] = {
                 field: field_types[field] for field in context.fields
             }
+        # A3：确定性数据集画像（列角色、基数、缺失率），减少 planner 的字段选择推理。
+        roles = {"categorical": "dimension", "numeric": "measure", "temporal": "period"}
+        profile = {
+            item.name: {
+                "role": roles.get(item.inferred_type, "empty"),
+                "distinct": item.distinct_count,
+                "missingRate": round(item.missing_rate, 4),
+            }
+            for item in context.field_stats
+            if item.name in context.fields
+        }
+        if profile:
+            dataset_input["columnProfile"] = profile
         inputs.append(dataset_input)
     return inputs
 
@@ -1001,6 +1055,8 @@ class RuntimeAnalysisMixin:
                     repair_workspace_key: str | None = None
                     knowledge_index = getattr(self, "knowledge_index", None)
                     code_runner_instance: ReportingCodeGenerationRunner | None = None
+                    # 同一 fixed Workflow 内计划只生成一次；chart-input 按计划物化一次复用。
+                    chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
                     planner_metrics_recorder = (
                         invocation.model_metrics_settlement.stage_recorder(
                             "planner", agent_role="visualization-planner"
@@ -1103,19 +1159,6 @@ class RuntimeAnalysisMixin:
                             stored_scope=parent_scope,
                         )
                         declared_outputs = _visualization_output_paths(plan)
-                        coding_context = ReportingCodingTaskContext(
-                            task_id=str(coding_task_id),
-                            task_kind="visualization",
-                            code_mode_session_id=f"visualization:{coding_task_id}",
-                            workspace_key=task_workspace.identity.workspace_key,
-                            workspace_root=task_workspace.identity.root,
-                            script_path=script_path,
-                            authorized_read_paths=visualization_read_paths(facts),
-                            authorized_write_paths=(script_path, *declared_outputs),
-                            declared_output_paths=declared_outputs,
-                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
-                        )
-                        repair_workspace_key = coding_context.workspace_key
                         if benchmark_projection is not None and not isinstance(
                             benchmark_projection, BenchmarkProjection
                         ):
@@ -1123,32 +1166,96 @@ class RuntimeAnalysisMixin:
                                 "report_phase_contract_invalid",
                                 "可视化 benchmark projection 类型无效。",
                             )
+                        # V2：宿主按已校验绑定预物化 chart-input，模型不再导航原始 facts；
+                        # 物化失败的图（或整体不可用）回退原始 facts 投影。
+                        chart_inputs: ChartInputMaterialization | None = None
+                        if (
+                            benchmark_projection is None
+                            or benchmark_projection.materialize_chart_inputs
+                        ):
+                            plan_key = payload_sha256(plan.model_dump(mode="json", by_alias=True))
+                            if plan_key not in chart_input_cache:
+                                chart_input_cache[plan_key] = await prepare_chart_inputs(
+                                    plan,
+                                    facts,
+                                    task_workspace,
+                                    thread_id=str(coding_task_id),
+                                    output_root=_visualization_chart_input_root(root),
+                                )
+                            chart_inputs = chart_input_cache[plan_key]
+                        coding_facts = visualization_coding_facts(
+                            facts,
+                            plan=(
+                                plan
+                                if benchmark_projection is None
+                                or benchmark_projection.include_visual_bindings
+                                else None
+                            ),
+                        )
+                        read_paths = visualization_read_paths(facts)
+                        if chart_inputs is not None and chart_inputs.files:
+                            coding_facts = (
+                                visualization_coding_facts(
+                                    facts,
+                                    plan=fallback_plan(plan, chart_inputs.fallback_chart_ids),
+                                )
+                                if chart_inputs.fallback_chart_ids
+                                else []
+                            )
+                            read_paths = tuple(
+                                sorted(
+                                    {
+                                        *chart_inputs.read_paths,
+                                        *visualization_read_paths(coding_facts),
+                                    }
+                                )
+                            )
+                        coding_context = ReportingCodingTaskContext(
+                            task_id=str(coding_task_id),
+                            task_kind="visualization",
+                            code_mode_session_id=f"visualization:{coding_task_id}",
+                            workspace_key=task_workspace.identity.workspace_key,
+                            workspace_root=task_workspace.identity.root,
+                            script_path=script_path,
+                            authorized_read_paths=read_paths,
+                            authorized_write_paths=(script_path, *declared_outputs),
+                            declared_output_paths=declared_outputs,
+                            max_source_bytes=_VISUALIZATION_SCRIPT_MAX_BYTES,
+                        )
+                        repair_workspace_key = coding_context.workspace_key
                         facts_payload = {
                             "visualizationMode": visualization_mode,
-                            "visualizationFacts": visualization_coding_facts(
-                                facts,
-                                plan=(
-                                    plan
-                                    if benchmark_projection is None
-                                    or benchmark_projection.include_visual_bindings
-                                    else None
-                                ),
+                            **(
+                                {"chartInputs": list(chart_inputs.entries)}
+                                if chart_inputs is not None and chart_inputs.files
+                                else {}
                             ),
+                            **({"visualizationFacts": coding_facts} if coding_facts else {}),
                             "visualizationWorkspace": instruction_payload[
                                 "visualizationWorkspace"
                             ],
                             "visualizationPlan": visualization_coding_plan(
                                 plan, benchmark_projection=benchmark_projection
                             ),
-                            **dict(task_facts or {}),
+                            **_visualization_repair_facts(
+                                task_facts, chart_inputs, coding_facts
+                            ),
                         }
-                        return await code_runner().run(
+                        result = await code_runner().run(
                             coding_context,
                             task_workspace,
                             facts_payload,
                             run_context=task_context,
                             diagnostic=diagnostic,
                         )
+                        if chart_inputs is not None and chart_inputs.files:
+                            await verify_plotly_chart_inputs(
+                                plan,
+                                chart_inputs,
+                                task_workspace,
+                                thread_id=str(coding_task_id),
+                            )
+                        return result
 
                     async def record_successful_repair(
                         diagnostic: Mapping[str, Any], script_file: FileIdentity
@@ -1403,6 +1510,12 @@ class RuntimeAnalysisMixin:
                                 "rowEncoding": "columns_rows",
                                 "rowCount": len(rows),
                                 **({"nullableFields": nullable_fields} if nullable_fields else {}),
+                                **(
+                                    {"columnMeta": finding["columnMeta"]}
+                                    if isinstance(finding.get("columnMeta"), Mapping)
+                                    and finding["columnMeta"]
+                                    else {}
+                                ),
                             }
                         )
                     findings.append(descriptor)
@@ -2799,12 +2912,21 @@ class RuntimeAnalysisMixin:
             )
             return cast(AnalysisSummaryDraft, output)
 
+        async def read_dataset(identity: FileIdentity) -> bytes:
+            # A1 覆盖率软校验：按签发 SHA 直接读取 CSV，不占用 Task 工具调用。
+            return await self._read_identity_bytes(
+                str(self._scope(parent_run_context)["threadId"]),
+                identity,
+                max_bytes=32 * 1024 * 1024,
+            )
+
         workflow_kwargs: dict[str, Any] = {
             "decide_evidence": decide_evidence,
             "run_code": run_code,
             "summarize": summarize,
             "read_file": toolkit.read_file,
             "complete": toolkit.complete_analysis_item,
+            "read_dataset": read_dataset,
         }
         if knowledge_index is not None:
             workflow_kwargs["record_successful_repair"] = record_successful_repair

@@ -469,6 +469,8 @@ _ANALYSIS_EVIDENCE_CANDIDATE_INSTRUCTIONS = (
     "只返回 requiresSupplementalEvidence、reason、missingFacts、codingRequirements，不得生成 script 或任何代码。",
     "需要补证时，codingRequirements 逐项声明当前授权 datasets 中的 datasetId、fields、calculation 和 outputName；不得编造数据集或字段。",
     "固定事实足够时 missingFacts 和 codingRequirements 必须都是空数组，不得为了探索数据而声明缺口。",
+    "同一 datasetId、同一维度粒度的多个指标合并为一个 codingRequirement（一个 outputName，fields 同时列出维度列与全部指标列），"
+    "不要按指标逐条拆分；可参考 datasets[].columnProfile 的列角色（dimension/measure/period）与基数选择字段。",
 )
 
 
