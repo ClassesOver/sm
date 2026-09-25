@@ -46,6 +46,7 @@ from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingWorkspaceIdentity,
 )
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.structured_output import ReportingStructuredOutputExecutor
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.reporting.workflow.benchmark_bundle import (
@@ -74,6 +75,10 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
 from smart_reporting.reporting.workflow.runtime.base import (
     _ANALYSIS_CODE_INSTRUCTIONS,
     _ANALYSIS_CODE_LEGACY_INSTRUCTIONS,
+)
+from smart_reporting.reporting.workflow.runtime.chart_inputs import (
+    fallback_plan,
+    prepare_chart_inputs,
 )
 from smart_reporting.reporting.workflow.runtime.code_generation import (
     REPORTING_CODING_TASK_CONTEXT_METADATA_KEY,
@@ -154,7 +159,7 @@ class ReplayObservedOpenAIChat(OpenAIChat):
 class CodingOnlyBenchmarkLink:
     payload: dict[str, Any]
     model_config: BenchmarkModelConfig
-    task_kind: Literal["analysis"] = "analysis"
+    task_kind: Literal["analysis", "visualization"] = "analysis"
     benchmark_mode: Literal["coding-only"] = "coding-only"
 
 
@@ -621,16 +626,19 @@ def link_coding_only_benchmark(
     *,
     variant: BenchmarkVariant,
 ) -> CodingOnlyBenchmarkLink:
-    """联结 v2 冻结配置与已签名的 analysis Coding payload。"""
+    """联结 v2 冻结配置与已签名的 Coding payload（analysis 或 candidate 可视化）。"""
 
     benchmark_manifest, benchmark_payloads = validate_frozen_planner_coding_bundle(
         benchmark_bundle_dir.resolve()
     )
     replay_manifest = validate_replay_bundle(coding_only_payload_path.resolve())
-    if benchmark_manifest.task_kind != "analysis" or replay_manifest.get(
+    task_kind = benchmark_manifest.task_kind
+    if task_kind not in {"analysis", "visualization"} or replay_manifest.get(
         "taskKind"
-    ) != "analysis":
-        raise ValueError("Coding-only benchmark 首版仅支持 analysis")
+    ) != task_kind:
+        raise ValueError("Coding-only payload 与 v2 bundle 任务类型不一致")
+    if task_kind == "visualization" and variant is not BenchmarkVariant.CANDIDATE:
+        raise ValueError("可视化 Coding-only benchmark 仅支持 candidate")
     if replay_manifest.get("version") != 1:
         raise ValueError("Coding-only payload 必须来自 version 1 replay bundle")
 
@@ -640,27 +648,50 @@ def link_coding_only_benchmark(
     facts = payload.get("facts")
     if not isinstance(facts, dict):
         raise ValueError("Coding-only payload 缺少 facts 对象")
-    base_payload = deepcopy(payload)
-    if variant is BenchmarkVariant.LEGACY:
-        decision = LegacyAnalysisEvidenceDecision.model_validate(
-            facts.get("evidenceDecision")
-        )
-        if not decision.requires_supplemental_evidence:
-            raise ValueError("Coding-only payload 必须要求 supplemental evidence")
-        base_payload["facts"].pop("evidenceDecision")
-    else:
+    if variant is BenchmarkVariant.CANDIDATE:
         origin = replay_manifest.get("plannerOrigin", {})
         expected_source = hashlib.sha256(
             (benchmark_bundle_dir / "manifest.json").read_bytes()
         ).hexdigest()
         if not isinstance(origin, dict) or origin.get("variant") != variant.value or origin.get("benchmarkManifestSha256") != expected_source:
             raise ValueError("candidate Coding-only 缺少匹配的 planner 冻结身份")
-        if not facts.get("codingRequirements") or "evidenceDecision" in facts:
-            raise ValueError("candidate Coding-only 缺少 codingRequirements")
-        base_payload["facts"].pop("codingRequirements")
     benchmark_payload = benchmark_payloads["executionContext"].get("codingPayload")
-    if base_payload != benchmark_payload:
-        raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
+    if task_kind == "visualization":
+        # 可视化 planner 输出会改写 facts 投影与授权路径，不能按字段剔除还原；
+        # 用冻结计划重走同一确定性投影，逐字比对签名 payload。
+        try:
+            plan = VisualizationPlanDraft.model_validate(facts.get("visualizationPlan"))
+            expected_projection = normalize_replay_payload(
+                prepare_benchmark_coding_payload(
+                    task_kind=task_kind,
+                    variant=variant,
+                    execution_context=benchmark_payloads["executionContext"],
+                    acceptance=benchmark_payloads["acceptance"],
+                    planner_output=plan,
+                    planner_request=benchmark_payloads["plannerRequest"],
+                )
+            )
+        except (ValidationError, ReportingError) as error:
+            raise ValueError("candidate Coding-only visualizationPlan 未通过冻结投影身份校验") from error
+        # 冻结 payload 经 JSON 落盘，元组路径需按同一编码比较。
+        expected_payload = json.loads(json.dumps(expected_projection, ensure_ascii=False))
+        if payload != expected_payload:
+            raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
+    else:
+        base_payload = deepcopy(payload)
+        if variant is BenchmarkVariant.LEGACY:
+            decision = LegacyAnalysisEvidenceDecision.model_validate(
+                facts.get("evidenceDecision")
+            )
+            if not decision.requires_supplemental_evidence:
+                raise ValueError("Coding-only payload 必须要求 supplemental evidence")
+            base_payload["facts"].pop("evidenceDecision")
+        else:
+            if not facts.get("codingRequirements") or "evidenceDecision" in facts:
+                raise ValueError("candidate Coding-only 缺少 codingRequirements")
+            base_payload["facts"].pop("codingRequirements")
+        if base_payload != benchmark_payload:
+            raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
 
     raw_replay_inputs = replay_manifest.get("inputs")
     if not isinstance(raw_replay_inputs, list) or any(
@@ -680,11 +711,17 @@ def link_coding_only_benchmark(
         )
         for item in benchmark_manifest.inputs
     )
-    if replay_inputs != benchmark_inputs:
+    # 可视化 planner 绑定后只授权被引用的事实文件，因此是 v2 输入的签名子集。
+    if (
+        not set(replay_inputs) <= set(benchmark_inputs)
+        if task_kind == "visualization"
+        else replay_inputs != benchmark_inputs
+    ):
         raise ValueError("Coding-only 与 v2 授权输入路径、大小或 SHA 身份不一致")
     return CodingOnlyBenchmarkLink(
         payload=payload,
         model_config=benchmark_manifest.model_config_snapshot,
+        task_kind=task_kind,
     )
 
 
@@ -730,6 +767,57 @@ def freeze_planner_coding_payload(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return manifest
+
+
+async def apply_replay_chart_inputs(
+    payload: dict[str, Any], workspace: HostReportingWorkspace
+) -> bool:
+    """V2 对照：按冻结计划物化 chart-input，并改写授权路径与模型 facts。
+
+    冻结 payload 本身不含 chart-input，两臂共享同一份 planner 输出。
+    """
+
+    facts = payload.get("facts")
+    task = payload.get("task")
+    if not isinstance(facts, dict) or not isinstance(task, dict):
+        return False
+    if task.get("task_kind") != "visualization":
+        return False
+    try:
+        plan = VisualizationPlanDraft.model_validate(facts.get("visualizationPlan"))
+    except ValidationError:
+        return False
+    if not any(chart.data_bindings for chart in plan.charts):
+        return False
+    raw_facts = facts.get("visualizationFacts")
+    if not isinstance(raw_facts, list):
+        return False
+    script_parent = Path(str(task["script_path"])).parent.as_posix()
+    materialized = await prepare_chart_inputs(
+        plan,
+        raw_facts,
+        workspace,
+        thread_id="replay",
+        output_root=f"{script_parent}-chart-inputs",
+    )
+    if materialized is None or not materialized.files:
+        return False
+    fallback_facts = (
+        visualization_coding_facts(
+            raw_facts, plan=fallback_plan(plan, materialized.fallback_chart_ids)
+        )
+        if materialized.fallback_chart_ids
+        else []
+    )
+    task["authorized_read_paths"] = sorted(
+        {*materialized.read_paths, *visualization_read_paths(fallback_facts)}
+    )
+    facts["chartInputs"] = list(materialized.entries)
+    if fallback_facts:
+        facts["visualizationFacts"] = fallback_facts
+    else:
+        facts.pop("visualizationFacts", None)
+    return True
 
 
 def analysis_evidence_diagnostic(
@@ -995,7 +1083,28 @@ def extract_benchmark_trace_inputs(
         raise ValueError("可视化 Coding trace 缺少 facts")
     neutral_facts = visualization_coding_facts(facts)
     candidate_facts = visualization_coding_facts(facts, plan=candidate_plan)
-    if coding_facts.get("visualizationFacts") != candidate_facts:
+    if "chartInputs" in coding_facts:
+        # V2 之后的生产 trace：chart-input 由宿主按计划派生，属于臂内投影而非冻结输入。
+        # 还原为变体中立的 facts 与全部事实文件授权路径，回放时再按 --chart-inputs 物化。
+        chart_ids = {
+            item.get("chartId")
+            for item in coding_facts.get("chartInputs") or ()
+            if isinstance(item, Mapping)
+        }
+        fallback_ids = frozenset(
+            chart.chart_id for chart in candidate_plan.charts if chart.chart_id not in chart_ids
+        )
+        expected_fallback = (
+            visualization_coding_facts(facts, plan=fallback_plan(candidate_plan, fallback_ids))
+            if fallback_ids
+            else None
+        )
+        if coding_facts.get("visualizationFacts") != expected_fallback:
+            raise ValueError("可视化 planner 与 Coding 的回退 visualizationFacts 投影不一致")
+        coding_facts.pop("chartInputs")
+        coding_facts.pop("visualizationDataContract", None)
+        coding_payload["task"]["authorized_read_paths"] = list(visualization_read_paths(facts))
+    elif coding_facts.get("visualizationFacts") != candidate_facts:
         raise ValueError("可视化 planner 与 Coding 的 visualizationFacts 投影不一致")
     coding_facts["visualizationFacts"] = neutral_facts
     coding_facts.pop("visualizationPlan", None)
@@ -1082,6 +1191,7 @@ async def main(
     freeze_coding_dir: Path | None = None,
     disable_history_summary: bool = False,
     disable_metadata_budget: bool = False,
+    chart_inputs: bool = True,
 ) -> int:
     configure_application_logging(debug=False)
     if benchmark_extract_dir is not None:
@@ -1202,6 +1312,12 @@ async def main(
             if not isinstance(payload, dict):
                 raise ValueError("benchmark executionContext 缺少 codingPayload")
             task_kind = benchmark_manifest.task_kind
+            if (
+                freeze_coding_dir is not None
+                and task_kind == "visualization"
+                and benchmark_variant is not BenchmarkVariant.CANDIDATE
+            ):
+                raise ValueError("可视化 freeze-coding 仅支持 candidate")
     else:
         if payload_path is not None and (payload_path.parent / "manifest.json").is_file():
             replay_manifest = validate_replay_bundle(payload_path.resolve())
@@ -1350,6 +1466,13 @@ async def main(
                 workspace=Workspace(str(root)),
             )
         )
+        chart_inputs_applied = (
+            chart_inputs
+            and benchmark_variant is not BenchmarkVariant.LEGACY
+            and await apply_replay_chart_inputs(payload, workspace)
+        )
+        if chart_inputs_applied:
+            task = ReportingCodingTaskContext(**payload["task"])
         coding_model = None
 
         def capture_coding_model(created_model) -> None:
@@ -1465,6 +1588,7 @@ async def main(
             )
             result_payload = {
                 "status": "passed",
+                "chartInputs": chart_inputs_applied,
                 "compactContinuation": compact_continuation,
                 "historySummaryEnabled": not disable_history_summary,
                 "metadataBudgetEnabled": not disable_metadata_budget,
@@ -1531,6 +1655,7 @@ async def main(
                 failure_payload["benchmarkMode"] = coding_only_link.benchmark_mode
                 failure_payload["variant"] = benchmark_variant.value
             failure_payload["firstRunFailureArtifact"] = first_failure_artifact or "unknown"
+            failure_payload["chartInputs"] = chart_inputs_applied
             failure_payload["compactContinuation"] = compact_continuation
             failure_payload["historySummaryEnabled"] = not disable_history_summary
             failure_payload["metadataBudgetEnabled"] = not disable_metadata_budget
@@ -1612,11 +1737,17 @@ if __name__ == "__main__":
         action="store_true",
         help="benchmark-only：关闭 8 KiB/32 KiB 工具元数据预算（构造仅摘要组）。",
     )
+    parser.add_argument(
+        "--chart-inputs",
+        choices=("on", "off"),
+        default="on",
+        help="V2 对照：candidate 可视化是否预物化 chart-input（默认与生产一致为 on）。",
+    )
     parser.add_argument("--variant", choices=("legacy", "candidate"))
     parser.add_argument(
         "--coding-only-payload",
         type=Path,
-        help="使用已签名 analysis payload 跳过 planner；candidate 须来自 --freeze-coding。",
+        help="使用已签名 Coding payload 跳过 planner；candidate 须来自 --freeze-coding，可视化仅支持 candidate。",
     )
     parser.add_argument("--freeze-coding", type=Path, help="保存实际 planner 输出为 Coding-only bundle。")
     parser.add_argument("--coding-payload", type=Path)
@@ -1704,4 +1835,5 @@ if __name__ == "__main__":
         args.freeze_coding,
         disable_history_summary=args.disable_history_summary,
         disable_metadata_budget=args.disable_metadata_budget,
+        chart_inputs=args.chart_inputs == "on",
     )))

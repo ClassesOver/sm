@@ -113,6 +113,21 @@ def bounded_failure_diagnostics(value: Any) -> dict[str, Any]:
             candidate = value.get(source)
         if isinstance(candidate, str) and candidate:
             diagnostics[target] = candidate[-_FAILURE_DIAGNOSTIC_TEXT_LIMIT:]
+    violations = value.get("violations")
+    if isinstance(violations, (list, tuple)):
+        diagnostics["violations"] = [
+            {
+                key: (item[key][:256] if isinstance(item[key], str) else item[key])
+                for key in ("code", "line", "snippet")
+                if key in item
+                and (
+                    isinstance(item[key], str)
+                    or (isinstance(item[key], int) and not isinstance(item[key], bool))
+                )
+            }
+            for item in violations[:8]
+            if isinstance(item, Mapping)
+        ]
     excerpt = _bounded_source_excerpt(value.get("sourceExcerpt"))
     if excerpt is not None:
         diagnostics["sourceExcerpt"] = excerpt

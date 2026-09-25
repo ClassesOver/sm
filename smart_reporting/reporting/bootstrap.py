@@ -75,12 +75,32 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
 
 _VISUALIZATION_CODE_LEGACY_INSTRUCTIONS = _VISUALIZATION_CODE_COMMON_INSTRUCTIONS
 
+_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS = (
+    "facts 提供 chartInputs 时，每张图只逐字读取 chartId 与本图相同的 chartInputs[].path"
+    "（json.load），不要再读取原始事实文件；每个文件是宿主按 dataBindings 预解析的 "
+    "{columns, rows} 表格，按 dict(zip(columns, row)) 解码。nullableColumns 中的 null 是"
+    "源数据的合法不可用值，必须保留并显式标注无数据，禁止替换成 0、空字符串或常数；"
+    "columnMeta 声明的单位与是否百分数优先于自行推断。",
+    "不在 chartInputs 中的图（或 facts 未提供 chartInputs 时的全部图）按 visualizationFacts "
+    "与 binding.dataPath 从源文件根读取原始事实：metricIndex、findingIndex 是源文件数组零基"
+    "下标；periodValues/topGroups/bottomGroups 是行对象数组，findings 是 columns+rows 表格，"
+    "rows 须按位置解码；只读取 descriptor.fields 声明的字段。输入路径只能逐字使用 "
+    "task.authorized_read_paths 或 binding.factPath，不得把 facts 文件当作 supplement 访问 findings。",
+    "每个 metricIndex 的 topGroups 和 bottomGroups 都是指标局部集合，禁止跨指标复用分组标签、"
+    "数组位置或查找结果；多个指标展示分组贡献时在同一签发图片内使用独立子图，缺失分类值"
+    "保留为 NaN 或空白并标注无数据，不得补零。",
+)
+
 _VISUALIZATION_CODE_INSTRUCTIONS = (
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[:2],
-    "逐图直接实现 visualizationPlan.charts[].visualForm 和 dataBindings；只从 binding.factPath"
-    "读取 binding.dataPath，并只使用 binding.fields。不得重新选择数据源、字段或图型；"
-    "函数组织、布局细节和同章脚本组织由当前实现决定。",
-    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[2:],
+    "逐图直接实现 visualizationPlan.charts[].visualForm 和 dataBindings；不得重新选择数据源、"
+    "字段或图型；函数组织、布局细节和同章脚本组织由当前实现决定。",
+    _VISUALIZATION_CODE_COMMON_INSTRUCTIONS[2],
+    "逐字使用 chartInputs[].path（或回退图的 factFile.path）、visualizationPlan.charts 和输出路径。",
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
+    *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[9:11],
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[16:],
 )
 
 

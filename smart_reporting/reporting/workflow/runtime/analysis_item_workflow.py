@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
+import anyio
 from agno.run import RunContext
 from agno.workflow import Condition, Loop, Step, Steps
 from agno.workflow.types import StepInput, StepOutput
@@ -34,6 +35,12 @@ from ..benchmark_variants import (
     LegacyAnalysisEvidenceDecision,
 )
 from ..checkpoint import FileIdentity
+from .analysis_coverage import (
+    dimension_coverage_gaps,
+    one_sided_gap_warnings,
+    parse_csv_columns,
+    requirement_output_gaps,
+)
 from .code_generation import CodeGenerationResult
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
@@ -41,6 +48,8 @@ MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS = 3
 MAX_DETERMINISTIC_FACT_BYTES = 10 * 1024 * 1024
 DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
+# A1 覆盖率校验读取签发 CSV 全集的上限；更大的数据集跳过校验，不影响交付。
+MAX_COVERAGE_DATASET_BYTES = 32 * 1024 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
 _EXISTING_FACT_COLLECTIONS = (
@@ -118,6 +127,9 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
             "表格 finding 使用 columns + rows 行编码；columns 不重复，每个 rows 行与 columns 等长；数值不得为 NaN 或无穷大，缺失值使用 JSON null。",
             "业务对账不通过时如实写 passed=false，并在 warnings 中说明；这是软告警，不是结构错误。",
             "使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，不得使用 indent 或删减已计算事实。",
+            "每个 codingRequirements[].outputName 对应一个 findings[].name（逐字相同）。",
+            "表格 finding 可选附带 columnMeta：{列名: {unit, isPercent, periodRole}}；isPercent=true 表示数值已乘 100，"
+            "periodRole 取 current/prior/change；只声明确定的元数据，不确定时省略。",
         ],
     }
 
@@ -596,7 +608,11 @@ class AnalysisItemWorkflow:
         record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
         | None = None,
         benchmark_projection: BenchmarkProjection | None = None,
+        read_dataset: Callable[[FileIdentity], Awaitable[bytes]] | None = None,
     ) -> None:
+        self.read_dataset = read_dataset
+        # 同一 Workflow 内多次 validate-evidence 复用按 (SHA, 字段) 解析的列全集。
+        self._coverage_columns: dict[tuple[str, frozenset[str]], dict[str, list[str]]] = {}
         self.decide_evidence = decide_evidence
         self.run_code = run_code
         self.summarize = summarize
@@ -1073,10 +1089,110 @@ class AnalysisItemWorkflow:
                 state.instruction.get("currentAnalysisId"),
                 len(failed_reconciliations),
             )
+        quality_warnings = await self._evidence_quality_warnings(state, evidence, run_context)
         state.statuses["validate-evidence"] = "completed"
         return StepOutput(
-            content={"status": "validated", "evidencePath": self._evidence_path(state)}
+            content={
+                "status": "validated",
+                "evidencePath": self._evidence_path(state),
+                **({"qualityWarnings": quality_warnings} if quality_warnings else {}),
+            }
         )
+
+    async def _evidence_quality_warnings(
+        self,
+        state: _AnalysisItemState,
+        evidence: SupplementalEvidence,
+        run_context: RunContext,
+    ) -> list[dict[str, Any]]:
+        """A1/A2 确定性软校验：只进审计日志与步骤输出，不进报告正文、不触发修复。"""
+
+        try:
+            decision = state.decision
+            requirements = (
+                [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in decision.coding_requirements
+                ]
+                if isinstance(decision, AnalysisEvidenceDecision)
+                else []
+            )
+            findings = list(evidence.findings)
+            warnings: list[dict[str, Any]] = requirement_output_gaps(requirements, findings)
+            if requirements:
+                fields_by_dataset: dict[str, set[str]] = {}
+                for requirement in requirements:
+                    fields_by_dataset.setdefault(requirement["datasetId"], set()).update(
+                        requirement["fields"]
+                    )
+                dataset_columns: dict[str, dict[str, list[str]]] = {}
+                for dataset in state.instruction.get("datasets") or ():
+                    if not isinstance(dataset, Mapping):
+                        continue
+                    dataset_id = dataset.get("datasetId")
+                    if dataset_id not in fields_by_dataset:
+                        continue
+                    columns = await self._coverage_dataset_columns(
+                        dataset, frozenset(fields_by_dataset[str(dataset_id)]), run_context
+                    )
+                    if columns is not None:
+                        dataset_columns[str(dataset_id)] = columns
+                warnings.extend(
+                    dimension_coverage_gaps(requirements, dataset_columns, findings)
+                )
+            warnings.extend(one_sided_gap_warnings(findings, evidence.warnings))
+        except Exception as error:  # noqa: BLE001 - 软校验不得影响补证交付
+            logger.warning(
+                "report_analysis_evidence_quality_check_skipped analysis_id={} error={}",
+                state.instruction.get("currentAnalysisId"),
+                type(error).__name__,
+            )
+            return []
+        for warning in warnings:
+            logger.bind(details=warning).warning(
+                "{} analysis_id={} details={}",
+                warning["code"],
+                state.instruction.get("currentAnalysisId"),
+                warning,
+            )
+        return warnings
+
+    async def _coverage_dataset_columns(
+        self,
+        dataset: Mapping[str, Any],
+        fields: frozenset[str],
+        run_context: RunContext,
+    ) -> dict[str, list[str]] | None:
+        key = (str(dataset.get("sha256")), fields)
+        cached = self._coverage_columns.get(key)
+        if cached is not None:
+            return cached
+        text = await self._read_coverage_dataset(dataset, run_context)
+        if text is None:
+            return None
+        # 全量 CSV 解析可能耗时数百毫秒，放到工作线程，避免阻塞并发的章节任务。
+        columns = await anyio.to_thread.run_sync(parse_csv_columns, text, fields)
+        self._coverage_columns[key] = columns
+        return columns
+
+    async def _read_coverage_dataset(
+        self, dataset: Mapping[str, Any], run_context: RunContext
+    ) -> str | None:
+        """按签发身份直接读取 CSV 全集；不经过 Task 工具运行时，身份不符即跳过。"""
+
+        del run_context
+        if self.read_dataset is None:
+            return None
+        try:
+            identity = FileIdentity.model_validate(
+                {key: dataset.get(key) for key in ("path", "size", "sha256")}
+            )
+        except ValidationError:
+            return None
+        if identity.size > MAX_COVERAGE_DATASET_BYTES:
+            return None
+        content = await self.read_dataset(identity)
+        return content.decode("utf-8-sig")
 
     async def _read_supplemental_evidence(
         self, state: _AnalysisItemState, run_context: RunContext

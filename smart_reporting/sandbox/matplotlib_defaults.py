@@ -1,5 +1,10 @@
+import importlib.abc
+import importlib.machinery
 import runpy
 import sys
+import warnings
+from collections.abc import Callable
+from typing import Any
 
 MATPLOTLIBRC_CONTENT = """backend: Agg
 font.family: sans-serif
@@ -98,15 +103,153 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
     )
 
 
+_KALEIDO_SYNC_FUNCTIONS = ("calc_fig_sync", "write_fig_sync", "write_fig_from_object_sync")
+_PLOTLY_AUTOMARGIN_TEMPLATE = "reporting_automargin"
+
+
+class _KaleidoSession:
+    """首个同步渲染请求时启动常驻 Chrome，脚本结束时关闭。
+
+    Kaleido 1.x 未启动 sync server 时每次 write_image 都冷启动并关闭一个
+    Chrome；复用单实例只改变渲染进程生命周期，不改变脚本语义。任何失败都
+    静默退回逐次启动。
+    """
+
+    def __init__(self) -> None:
+        self.module: Any = None
+        self.started = False
+        self.attempted = False
+
+    def ensure_started(self) -> None:
+        if self.attempted or self.module is None:
+            return
+        self.attempted = True
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.module.start_sync_server(silence_warnings=True)
+            self.started = True
+        except Exception:
+            self.started = False
+
+    def patch(self, module: Any) -> None:
+        self.module = module
+        if not callable(getattr(module, "start_sync_server", None)):
+            return
+        for name in _KALEIDO_SYNC_FUNCTIONS:
+            original = getattr(module, name, None)
+            if callable(original):
+                setattr(module, name, self._wrap(original))
+
+    def _wrap(self, original: Callable[..., Any]) -> Callable[..., Any]:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            self.ensure_started()
+            return original(*args, **kwargs)
+
+        call.__wrapped__ = original  # type: ignore[attr-defined]
+        return call
+
+    def close(self) -> None:
+        if not self.started or self.module is None:
+            return
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.module.stop_sync_server(silence_warnings=True)
+        except Exception:
+            pass
+        self.started = False
+
+
+def _apply_plotly_layout_defaults(module: Any) -> None:
+    """为 Plotly 默认模板叠加 automargin，避免长刻度标签被裁切或重叠。"""
+
+    try:
+        base = module.templates.default or "plotly"
+        if _PLOTLY_AUTOMARGIN_TEMPLATE in str(base).split("+"):
+            return
+        module.templates[_PLOTLY_AUTOMARGIN_TEMPLATE] = {
+            "layout": {
+                "xaxis": {"automargin": True},
+                "yaxis": {"automargin": True},
+            }
+        }
+        module.templates.default = f"{base}+{_PLOTLY_AUTOMARGIN_TEMPLATE}"
+    except Exception:
+        pass
+
+
+class _PostImportHooks(importlib.abc.MetaPathFinder):
+    """模块被脚本首次导入后执行宿主默认值；不预先导入重量级依赖。"""
+
+    def __init__(self, hooks: dict[str, Callable[[Any], None]]) -> None:
+        self.hooks = hooks
+        self.active: set[str] = set()
+
+    def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+        hook = self.hooks.get(fullname)
+        if hook is None or fullname in self.active:
+            return None
+        self.active.add(fullname)
+        try:
+            spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+            if spec is None:
+                for finder in sys.meta_path:
+                    if finder is self or not hasattr(finder, "find_spec"):
+                        continue
+                    spec = finder.find_spec(fullname, path, target)
+                    if spec is not None:
+                        break
+        finally:
+            self.active.discard(fullname)
+        loader = getattr(spec, "loader", None) if spec is not None else None
+        exec_module = getattr(loader, "exec_module", None)
+        if not callable(exec_module):
+            return spec
+
+        def exec_with_hook(module: Any) -> None:
+            exec_module(module)
+            try:
+                hook(module)
+            except Exception:
+                pass
+
+        try:
+            loader.exec_module = exec_with_hook
+        except Exception:
+            return spec
+        return spec
+
+
+def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
+    hooks = _PostImportHooks(
+        {"kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults}
+    )
+    sys.meta_path.insert(0, hooks)
+    # 包装器之前已导入的模块直接应用默认值。
+    if "kaleido" in sys.modules:
+        kaleido.patch(sys.modules["kaleido"])
+    if "plotly.io" in sys.modules:
+        _apply_plotly_layout_defaults(sys.modules["plotly.io"])
+    return hooks
+
+
 def run_reporting_script(script_path: str, runtime_root: str) -> None:
-    """在正式脚本进程内应用 Matplotlib 默认值后执行签发脚本。"""
+    """在正式脚本进程内应用 Matplotlib/Plotly 默认值后执行签发脚本。"""
 
     namespace: dict[str, object] = {}
     bootstrap = matplotlib_bootstrap(runtime_root)
     exec(compile(bootstrap, "<matplotlib-bootstrap>", "exec"), namespace)
+    kaleido = _KaleidoSession()
+    hooks = _install_import_hooks(kaleido)
     previous_argv = sys.argv
     sys.argv = [script_path]
     try:
         runpy.run_path(script_path, run_name="__main__")
     finally:
         sys.argv = previous_argv
+        kaleido.close()
+        try:
+            sys.meta_path.remove(hooks)
+        except ValueError:
+            pass

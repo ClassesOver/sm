@@ -704,6 +704,293 @@ def test_candidate_coding_only_rejects_frozen_identity_drift(tmp_path, change):
         )
 
 
+def _visualization_fact_identity(source: Path, relative_path: str) -> dict:
+    target = source / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"analysisId": target.stem}), encoding="utf-8")
+    return {
+        "path": relative_path,
+        "size": target.stat().st_size,
+        "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+    }
+
+
+def _prepare_linked_visualization_bundles(tmp_path):
+    """冻结两份事实文件的 v2 bundle，再按 candidate 计划固化 Coding-only payload。"""
+
+    from smart_reporting.reporting.workflow.benchmark_execution import (
+        prepare_benchmark_coding_payload,
+    )
+    from smart_reporting.reporting.workflow.runtime.phase_models import (
+        VisualizationPlanDraft,
+    )
+
+    source = tmp_path / "source"
+    bound = _visualization_fact_identity(source, "facts/analysis-001.json")
+    unbound = _visualization_fact_identity(source, "facts/analysis-002.json")
+    visualization_facts = [
+        {
+            "analysisId": "analysis-001",
+            "factFile": bound,
+            "dataDescriptors": [
+                {"dataPath": "metrics[0].periodValues", "fields": ["period", "value"]},
+                {"dataPath": "metrics[1].periodValues", "fields": ["period", "value"]},
+            ],
+        },
+        {
+            "analysisId": "analysis-002",
+            "factFile": unbound,
+            "dataDescriptors": [
+                {"dataPath": "metrics[0].periodValues", "fields": ["period", "value"]}
+            ],
+        },
+    ]
+    base_payload = {
+        "task": {
+            "task_id": "section-001",
+            "task_kind": "visualization",
+            "code_mode_session_id": "visualization:section-001",
+            "workspace_key": "workspace-001",
+            "workspace_root": str(source),
+            "script_path": "charts/section-001.py",
+            "authorized_read_paths": [bound["path"], unbound["path"]],
+            "authorized_write_paths": ["charts/section-001.py", "charts/chart-1.png"],
+            "declared_output_paths": ["charts/chart-1.png"],
+            "max_source_bytes": 100_000,
+        },
+        "facts": {"visualizationFacts": visualization_facts},
+    }
+    planner_request = {
+        "sectionCode": "section-001",
+        "visualizationFacts": visualization_facts,
+        "requiredCharts": [
+            {
+                "chartId": "chart-1",
+                "sourcePath": "charts/chart-1.png",
+                "interactivePath": None,
+            }
+        ],
+    }
+    model_config = BenchmarkModelConfig.model_validate({
+        "model": "coding-model",
+        "reasoningEffort": "medium",
+        "reasoningSummary": "detailed",
+        "enableThinkingLocation": "top_level",
+        "enableThinking": True,
+        "maxOutputTokens": 65536,
+        "parallelToolCalls": True,
+        "toolChoice": "auto",
+    })
+    benchmark_bundle = tmp_path / "benchmark"
+    prepare_frozen_planner_coding_bundle(
+        benchmark_bundle,
+        task_kind="visualization",
+        planner_request=planner_request,
+        coding_payload=base_payload,
+        acceptance={},
+        model_config=model_config,
+    )
+    frozen = json.loads((benchmark_bundle / "execution-context.json").read_text())
+    # 与 main 中 planner 之后的处理一致：确定性投影 → 生产授权路径 → 绝对 workspace。
+    payload = replay_visualization_task.normalize_replay_payload(
+        prepare_benchmark_coding_payload(
+            task_kind="visualization",
+            variant=BenchmarkVariant.CANDIDATE,
+            execution_context=frozen,
+            acceptance={},
+            planner_output=VisualizationPlanDraft.model_validate(
+                _candidate_visualization_plan("charts/chart-1.png")
+            ),
+            planner_request=planner_request,
+        )
+    )
+    payload["task"]["workspace_root"] = str(source)
+    coding_only_bundle = tmp_path / "coding-only"
+    replay_visualization_task.freeze_planner_coding_payload(
+        payload, coding_only_bundle, benchmark_bundle, BenchmarkVariant.CANDIDATE
+    )
+    return benchmark_bundle, coding_only_bundle / "payload.json", model_config
+
+
+def test_visualization_coding_only_link_reprojects_frozen_plan(tmp_path):
+    benchmark_bundle, coding_only_payload, expected_model_config = (
+        _prepare_linked_visualization_bundles(tmp_path)
+    )
+
+    linked = replay_visualization_task.link_coding_only_benchmark(
+        benchmark_bundle, coding_only_payload, variant=BenchmarkVariant.CANDIDATE
+    )
+
+    assert linked.task_kind == "visualization"
+    assert linked.model_config == expected_model_config
+    assert linked.payload["task"]["authorized_read_paths"] == ["facts/analysis-001.json"]
+    facts = linked.payload["facts"]
+    assert facts["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+    assert [item["analysisId"] for item in facts["visualizationFacts"]] == ["analysis-001"]
+    assert facts["visualizationFacts"][0]["dataDescriptors"] == [
+        {"dataPath": "metrics[0].periodValues", "fields": ["period", "value"]}
+    ]
+
+
+@pytest.mark.parametrize(
+    "change", ["renamed_chart", "facts", "unsigned", "origin", "input", "legacy"]
+)
+def test_visualization_coding_only_link_rejects_identity_drift(tmp_path, change):
+    benchmark_bundle, coding_only_payload, _ = _prepare_linked_visualization_bundles(
+        tmp_path
+    )
+    variant = BenchmarkVariant.CANDIDATE
+    bundle = coding_only_payload.parent
+    manifest_path = bundle / "manifest.json"
+    if change in {"renamed_chart", "facts"}:
+        # 重新签名 payload，只留下与冻结投影的语义漂移。
+        payload = json.loads(coding_only_payload.read_text(encoding="utf-8"))
+        if change == "renamed_chart":
+            payload["facts"]["visualizationPlan"]["charts"][0]["chartId"] = "chart-9"
+            expected = "投影身份校验"
+        else:
+            payload["facts"]["visualizationFacts"][0]["dataDescriptors"].append(
+                {"dataPath": "metrics[1].periodValues", "fields": ["period", "value"]}
+            )
+            expected = "Coding payload.*不一致"
+        encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode()
+        coding_only_payload.write_bytes(encoded)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["payloadSha256"] = hashlib.sha256(encoded).hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif change == "unsigned":
+        coding_only_payload.write_text(coding_only_payload.read_text() + " ")
+        expected = "payload 身份不一致"
+    elif change == "origin":
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["plannerOrigin"]["benchmarkManifestSha256"] = "changed"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        expected = "planner 冻结身份"
+    elif change == "input":
+        (bundle / "workspace/facts/analysis-001.json").write_text("{}", encoding="utf-8")
+        expected = "身份不一致"
+    else:
+        variant = BenchmarkVariant.LEGACY
+        expected = "仅支持 candidate"
+
+    with pytest.raises(ValueError, match=expected):
+        replay_visualization_task.link_coding_only_benchmark(
+            benchmark_bundle, coding_only_payload, variant=variant
+        )
+
+
+@pytest.mark.anyio
+async def test_visualization_coding_only_main_skips_planner_with_frozen_plan(
+    tmp_path, monkeypatch
+):
+    benchmark_bundle, coding_only_payload, expected_model_config = (
+        _prepare_linked_visualization_bundles(tmp_path)
+    )
+    output_path = tmp_path / "result.json"
+    seen = {}
+
+    async def planner_must_not_run(*_args, **_kwargs):
+        raise AssertionError("Coding-only benchmark 不得调用 planner")
+
+    class FakeCloseable:
+        async def aclose(self):
+            pass
+
+    class FakeRunner:
+        async def run(self, task, _workspace, facts, **_kwargs):
+            seen["task"] = task
+            seen["facts"] = facts
+            return SimpleNamespace(
+                script_file=SimpleNamespace(
+                    model_dump=lambda **_kwargs: {"path": task.script_path}
+                ),
+                execution_receipt=SimpleNamespace(output_files=()),
+                visual_inspection_receipts=(),
+            )
+
+    monkeypatch.setattr(
+        replay_visualization_task, "run_frozen_benchmark_planner", planner_must_not_run
+    )
+    monkeypatch.setattr(
+        replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "build_replay_model",
+        lambda _settings, **kwargs: seen.setdefault("modelConfig", kwargs) or object(),
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "create_reporting_code_agent_factory",
+        lambda **kwargs: seen.setdefault("instructions", kwargs["instructions"]) or object(),
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "create_reporting_code_mode_runtime",
+        lambda *_args, **_kwargs: FakeCloseable(),
+    )
+    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", FakeCloseable)
+    monkeypatch.setattr(
+        replay_visualization_task, "ReportVisionReviewer", lambda *_args: object()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "ReportingCodeGenerationRunner",
+        lambda *_args, **_kwargs: FakeRunner(),
+    )
+
+    result = await replay_visualization_task.main(
+        None,
+        None,
+        "visualization",
+        "high",
+        output_path,
+        None,
+        None,
+        benchmark_bundle_dir=benchmark_bundle,
+        benchmark_variant=BenchmarkVariant.CANDIDATE,
+        coding_only_payload_path=coding_only_payload,
+    )
+
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert result == 0
+    assert saved["benchmarkMode"] == "coding-only"
+    assert saved["variant"] == "candidate"
+    assert "plannerMetrics" not in saved
+    assert seen["modelConfig"]["benchmark_model_config"] == expected_model_config
+    assert seen["instructions"] == replay_visualization_task._VISUALIZATION_CODE_INSTRUCTIONS
+    assert seen["task"].authorized_read_paths == ("facts/analysis-001.json",)
+    assert seen["facts"]["visualizationPlan"]["charts"][0]["chartId"] == "chart-1"
+
+
+@pytest.mark.anyio
+async def test_visualization_freeze_coding_rejects_legacy_before_planner(
+    tmp_path, monkeypatch
+):
+    benchmark_bundle, _, _ = _prepare_linked_visualization_bundles(tmp_path)
+
+    def must_not_load_settings():
+        raise AssertionError("legacy 可视化 freeze 不得进入 provider 准备")
+
+    monkeypatch.setattr(
+        replay_visualization_task.AgentSettings, "from_environment", must_not_load_settings
+    )
+
+    with pytest.raises(ValueError, match="freeze-coding 仅支持 candidate"):
+        await replay_visualization_task.main(
+            None,
+            None,
+            "visualization",
+            "high",
+            tmp_path / "result.json",
+            None,
+            None,
+            benchmark_bundle_dir=benchmark_bundle,
+            benchmark_variant=BenchmarkVariant.LEGACY,
+            freeze_coding_dir=tmp_path / "frozen-legacy",
+        )
+
+
 @pytest.mark.anyio
 async def test_benchmark_planner_timeout_preserves_started_provider_request(
     tmp_path, monkeypatch
