@@ -956,6 +956,11 @@ class _ReportWorkflowRuntimeBase:
                     user_id=scope["userId"],
                     workflow_session_id=run_context.session_id,
                     workflow_run_id=run_context.run_id,
+                    dependencies=(
+                        dict(run_context.dependencies)
+                        if isinstance(run_context.dependencies, Mapping)
+                        else None
+                    ),
                     output=content,
                 )
             else:

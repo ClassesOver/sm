@@ -310,6 +310,7 @@ class RuntimePlanningMixin:
         user_id: str,
         workflow_session_id: str,
         workflow_run_id: str,
+        dependencies: dict[str, Any] | None = None,
         output: Any,
     ) -> dict[str, Any]:
         download_grants = self.download_grants
@@ -378,10 +379,14 @@ class RuntimePlanningMixin:
             if durable is not None and isinstance(durable.payload, dict)
             else None
         )
+        # Durable payload 不固化作用域；调用方 thread 只能从发布时的 run_context
+        # dependencies 恢复，与 _scope() 的解析来源保持一致，否则 caller_thread_id
+        # 会回退到 workflow 内部会话 id，误判编辑上下文作用域不一致。
         scope = resolve_reporting_workflow_scope(
             run_id=workflow_run_id,
             session_id=workflow_session_id,
             user_id=user_id,
+            dependencies=dependencies,
             stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
         )
         if durable is None or scope.caller_thread_id != thread_id:
