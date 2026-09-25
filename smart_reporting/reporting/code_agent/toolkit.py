@@ -12,7 +12,6 @@ import subprocess
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from time import perf_counter
 from typing import Any, NoReturn
 from uuid import uuid4
@@ -24,6 +23,7 @@ from loguru import logger
 from ...code_monitor.tools import log_tool_event
 from ...workspace import WorkspaceError, WorkspaceService
 from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
+from ..contract import interactive_spec_path
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
 from ..vision import ReportVisionReviewer
@@ -602,16 +602,13 @@ def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -
     图片与交互产物的配对沿用交付校验规则：image.with_suffix(".plotly.json")。
     """
 
-    def interactive_for(image: str) -> str:
-        return PurePosixPath(image).with_suffix(".plotly.json").as_posix()
-
     images = [item for item in declared_paths if not item.endswith(".plotly.json")]
     if path.endswith(".plotly.json"):
-        image = next((item for item in images if interactive_for(item) == path), None)
+        image = next((item for item in images if interactive_spec_path(item) == path), None)
         interactive: str | None = path
     else:
         image = path
-        interactive = interactive_for(path) if interactive_for(path) in declared_paths else None
+        interactive = interactive_spec_path(path) if interactive_spec_path(path) in declared_paths else None
     if interactive is not None:
         lines = [f"fig.write_image({image!r})"] if image is not None else []
         return "\n".join([*lines, f"fig.write_json({interactive!r})"])

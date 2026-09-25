@@ -2890,7 +2890,10 @@ def _final_attempt_runtime(monkeypatch, failing_workflow):
     })
     monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
     monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [toolkit])
-    monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", failing_workflow)
+    # 只替换单次 attempt 主体，保留 run() 中的最后一次降级收口。
+    monkeypatch.setattr(
+        reporting_analysis.VisualizationSectionWorkflow, "_run_attempt", failing_workflow
+    )
 
     async def run_task(scope, *, executor, **_kwargs):
         return await executor(SimpleNamespace(
@@ -2969,7 +2972,7 @@ async def test_visualization_section_final_attempt_does_not_mask_config_or_code_
 async def test_visualization_section_final_attempt_does_not_degrade_twice(monkeypatch) -> None:
     async def failing_workflow(workflow, _payload, run_context):
         # 工作流内部已走过 degrade，但其提交随后失败。
-        await workflow.degrade(
+        await workflow._degrade(
             ReportingError("report_code_no_progress", "无进展"), run_context
         )
         raise ReportingError("report_visualization_submit_rejected", "零图提交被拒。")

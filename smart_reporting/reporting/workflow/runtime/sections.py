@@ -12,6 +12,7 @@ from ....task_execution import (
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
+from ...contract import interactive_spec_path
 from ...delivery.draft_v1 import ReportDraftBlock
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
@@ -93,7 +94,7 @@ from .section_workflow import SectionWorkflow
 
 
 def _archived_interactive_path(image_path: str) -> str:
-    return PurePosixPath(image_path).with_suffix(".plotly.json").as_posix()
+    return interactive_spec_path(image_path)
 
 
 def _analysis_chart_from_registration(

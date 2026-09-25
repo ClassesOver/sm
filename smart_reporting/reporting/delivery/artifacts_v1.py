@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlsplit
 from markdown_it import MarkdownIt
 from pydantic import Field, field_validator, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel
+from ..contract import SHA256_PATTERN, StrictModel, interactive_spec_path
 from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
 from ..workflow.query_pipeline import DatasetLineage
@@ -65,7 +65,7 @@ class ChartArtifact(ArtifactFile):
         if self.interactive_spec is not None and (
             self.interactive_spec.media_type != "application/vnd.plotly.v1+json"
             or self.interactive_spec.path
-            != PurePosixPath(self.path).with_suffix(".plotly.json").as_posix()
+            != interactive_spec_path(self.path)
         ):
             raise ValueError("Plotly 交互规格必须与静态图同目录同名")
         if len(set(self.dataset_ids)) != len(self.dataset_ids):
@@ -240,7 +240,7 @@ def build_authoritative_manifest(
         set(companions) - set(image_bindings)
         or len(set(companions.values())) != len(companions)
         or any(
-            spec_path != PurePosixPath(image_path).with_suffix(".plotly.json").as_posix()
+            spec_path != interactive_spec_path(image_path)
             for image_path, spec_path in companions.items()
         )
         or extra_paths != submitted_images | set(companions.values())
