@@ -149,6 +149,12 @@ _PATH_OWNER_WRITE_METHODS = frozenset(
 )
 _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE = 5
 
+# 本地图片检查（文件缺失、解码失败、空白）的拒绝码：属于脚本产物问题，
+# 由模型修复，不重试视觉审查，也不判为审查不可用。
+_LOCAL_CHART_REJECTION_CODES = frozenset(
+    {"report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank"}
+)
+
 # 连续局部编辑失败且无成功运行达到该阈值时，交付状态放行一次 write_script
 # 整段重写（真实回放 candidate-3：占位脚本 + 禁止重写 = 预算空转死局）。
 REWRITE_GATE_EDIT_FAILURES = 2
@@ -3150,17 +3156,9 @@ class ReportingCodeModeToolkit(Toolkit):
             return self._visual_review_unavailable(source_path, None)
         review_started_at = perf_counter()
         try:
-            reviewed = ChartVisualInspectionReceipt.model_validate(
-                await self.vision_reviewer.review(
-                    self.context.workspace_key,
-                    source_path,
-                    detail=detail,
-                )
-            )
+            reviewed = await self._review_with_retry(source_path, detail)
         except Exception as error:
-            if isinstance(error, ReportingError) and error.code in {
-                "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
-            }:
+            if isinstance(error, ReportingError) and error.code in _LOCAL_CHART_REJECTION_CODES:
                 logger.warning(
                     "report_code_visual_file_rejected path={} code={}", source_path, error.code,
                 )
@@ -3203,6 +3201,34 @@ class ReportingCodeModeToolkit(Toolkit):
             "ok": True,
             "receipt": _visual_review_model_receipt(reviewed),
         }
+
+    async def _review_with_retry(self, source_path: str, detail: str) -> ChartVisualInspectionReceipt:
+        """视觉审查失败先重试一次，再判为不可用。
+
+        模型层重试只覆盖 API 错误，不覆盖输出解析/校验失败；单次失败即判不可用会
+        终止整个 Coding 任务并触发整章 fresh attempt。本地图片检查失败不重试。
+        """
+
+        assert self.vision_reviewer is not None
+        for attempt in range(2):
+            try:
+                return ChartVisualInspectionReceipt.model_validate(
+                    await self.vision_reviewer.review(
+                        self.context.workspace_key, source_path, detail=detail
+                    )
+                )
+            except Exception as error:
+                if attempt == 1 or (
+                    isinstance(error, ReportingError)
+                    and error.code in _LOCAL_CHART_REJECTION_CODES
+                ):
+                    raise
+                logger.warning(
+                    "report_code_visual_review_retry path={} error_type={}",
+                    source_path,
+                    type(error).__name__,
+                )
+        raise AssertionError("视觉审查重试循环未终止")
 
     def _visual_review_unavailable(self, path: str, error: Exception | None) -> dict[str, Any]:
         error_type = type(error).__name__ if error is not None else "ReviewerMissing"

@@ -1601,6 +1601,29 @@ async def test_view_image_bounds_visual_reviewer_failures(
 
 
 @pytest.mark.anyio
+async def test_view_image_retries_transient_visual_reviewer_failure_once(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    reviewer = AsyncMock(spec=ReportVisionReviewer)
+    _binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, runtime, reviewer
+    )
+    # 单次输出解析失败不应终止整个 Coding 任务并触发整章 fresh attempt。
+    reviewer.review.side_effect = [
+        RuntimeError("malformed assessment"),
+        _visual_receipt(output).model_dump(mode="json", by_alias=True),
+    ]
+
+    result = await toolkit.view_image(output.path)
+
+    assert result["ok"] is True
+    assert reviewer.review.await_count == 2
+    assert toolkit.terminal_failure is None
+    assert output.path in toolkit.binding.visual_inspection_receipts
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["write", "restart"])
 async def test_visual_review_state_is_retained_until_next_execution(
     operation: str,

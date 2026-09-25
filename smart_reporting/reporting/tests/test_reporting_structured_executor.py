@@ -1009,3 +1009,27 @@ async def test_schema_fallback_log_contains_stable_failure_fields() -> None:
     assert fallback["extra"]["fallback_reason"] == "schema_transport_error"
     assert fallback["extra"]["protocol_attempt_number"] == 1
     assert fallback["extra"]["business_call_number"] == 0
+
+
+@pytest.mark.anyio
+async def test_structured_executor_timeout_raises_stable_reporting_error() -> None:
+    import anyio
+
+    from smart_reporting.reporting.models import ReportingError
+
+    async def slow_run(*_args, **_kwargs):
+        await anyio.sleep(10)
+
+    draft = Mock()
+    draft.output_schema = VisualizationPlanDraft
+    draft.arun = AsyncMock(side_effect=slow_run)
+    executor = ReportingStructuredOutputExecutor(draft, idle_timeout_seconds=0.05)
+    scope = TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "generator")
+
+    # 裸 TimeoutError 不可降级且无归因；必须转成稳定错误码。
+    with pytest.raises(ReportingError) as caught:
+        await executor.run(
+            "instruction", scope=scope, run_context=RunContext(run_id="r", session_id="s")
+        )
+    assert caught.value.code == "report_structured_output_timeout"
+    assert caught.value.details["schemaName"] == "VisualizationPlanDraft"
