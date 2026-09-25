@@ -150,6 +150,12 @@ class ScriptPatch:
     sha256: str | None
     patch_format: PatchFormat
     path: str | None = None
+    # apply_patch hunk 的 @@ 锚点；SEARCH/REPLACE 为空。hunk 形态按文件顺序消歧。
+    anchors: tuple[str | None, ...] = ()
+
+    @property
+    def ordered(self) -> bool:
+        return self.patch_format != "search_replace"
 
 
 _APPLY_PATCH_ENVELOPE = re.compile(
@@ -170,11 +176,11 @@ def _apply_patch_error(reason: str, message: str, **details: object) -> Reportin
     )
 
 
-def _parse_hunks(body: str) -> list[tuple[str, str]]:
+def _parse_hunks(body: str) -> tuple[list[tuple[str, str]], tuple[str | None, ...]]:
     """把 Codex apply_patch 的 hunk（@@ / 空格 / - / + 行）转换为 SEARCH/REPLACE 块。
 
-    上下文与删除行组成 SEARCH，上下文与新增行组成 REPLACE；@@ 只作 hunk 分隔，
-    定位仍由唯一匹配决定，歧义时要求补充上下文。纯新增 hunk 没有定位锚点，拒绝。
+    上下文与删除行组成 SEARCH，上下文与新增行组成 REPLACE；@@ 后的文本作为该 hunk
+    的锚点，仅在 SEARCH 命中多处时参与消歧。纯新增 hunk 没有定位原文，拒绝。
     """
 
     lines = body.split("\n")
@@ -183,10 +189,17 @@ def _parse_hunks(body: str) -> list[tuple[str, str]]:
     if lines and lines[-1] == "*** End of File":
         lines.pop()
     hunks: list[list[str]] = [[]]
+    hunk_anchors: list[str | None] = [None]
     for number, line in enumerate(lines, 1):
         if line.startswith("@@"):
             if hunks[-1]:
                 hunks.append([])
+                hunk_anchors.append(None)
+            # Codex 的 @@ 头可写 "@@ def main():" 或 "@@ ... @@" 形式；只保留锚点文本。
+            header = line[2:].strip()
+            if header.endswith("@@"):
+                header = header[:-2].strip()
+            hunk_anchors[-1] = header or None
             continue
         if line.startswith("*** "):
             raise _apply_patch_error(
@@ -204,7 +217,11 @@ def _parse_hunks(body: str) -> list[tuple[str, str]]:
             )
         hunks[-1].append(line)
     edits: list[tuple[str, str]] = []
-    for index, hunk in enumerate((item for item in hunks if item), 1):
+    anchors: list[str | None] = []
+    for index, (hunk, anchor) in enumerate(
+        ((item, hunk_anchor) for item, hunk_anchor in zip(hunks, hunk_anchors, strict=True) if item),
+        1,
+    ):
         old = [line[1:] for line in hunk if line[:1] in {" ", "-", ""}]
         new = [line[1:] for line in hunk if line[:1] in {" ", "+", ""}]
         if not any(line[:1] in {"+", "-"} for line in hunk):
@@ -221,9 +238,10 @@ def _parse_hunks(body: str) -> list[tuple[str, str]]:
                 blockIndex=index,
             )
         edits.append(("\n".join(old), "\n".join(new)))
+        anchors.append(anchor)
     if not edits:
         raise _apply_patch_error("apply_patch_empty", "补丁不包含任何 hunk。")
-    return edits
+    return edits, tuple(anchors)
 
 
 def _looks_like_hunk_body(body: str) -> bool:
@@ -265,11 +283,13 @@ def parse_script_patch(patch: str, max_source_bytes: int) -> ScriptPatch:
                     "apply_patch 补丁缺少 *** Update File: <脚本路径> 行。",
                 )
             header, _, hunk_body = body.partition("\n")
+            edits, anchors = _parse_hunks(hunk_body)
             return ScriptPatch(
-                edits=_parse_hunks(hunk_body),
+                edits=edits,
                 sha256=match["sha"],
                 patch_format="apply_patch",
                 path=header[len(_UPDATE_FILE):].strip(),
+                anchors=anchors,
             )
         envelope = _EDIT_PATCH.fullmatch(normalized.rstrip() + "\n")
         if envelope is not None and "<<<<<<< SEARCH" not in envelope["body"]:
@@ -279,11 +299,13 @@ def parse_script_patch(patch: str, max_source_bytes: int) -> ScriptPatch:
                 if body.startswith(_UPDATE_FILE):
                     header, _, body = body.partition("\n")
                     path = header[len(_UPDATE_FILE):].strip()
+                edits, anchors = _parse_hunks(body)
                 return ScriptPatch(
-                    edits=_parse_hunks(body),
+                    edits=edits,
                     sha256=envelope["sha"],
                     patch_format="edit_envelope_hunks",
                     path=path,
+                    anchors=anchors,
                 )
     edits, sha256 = parse_edit_patch(patch, max_source_bytes)
     return ScriptPatch(edits=edits, sha256=sha256, patch_format="search_replace")
@@ -398,8 +420,10 @@ def _cuts_identifier(source: str, start: int, end: int) -> bool:
     )
 
 
-def _exact_candidates(source: str, old: str) -> tuple[list[int], int]:
-    """返回不切断标识符的精确匹配起点（最多 2 个）与被排除的切断匹配数。
+def _exact_candidates(
+    source: str, old: str, limit: int | None = 2
+) -> tuple[list[int], int]:
+    """返回不切断标识符的精确匹配起点（默认最多 2 个）与被排除的切断匹配数。
 
     行内子串替换（如 figsize 参数）仍然允许；只排除边界落在标识符内部的命中，
     否则 SEARCH 写错一行时会静默改写另一个变量，或把本可唯一定位的块误判为歧义。
@@ -408,7 +432,7 @@ def _exact_candidates(source: str, old: str) -> tuple[list[int], int]:
     starts: list[int] = []
     cut = 0
     position = source.find(old)
-    while position >= 0 and len(starts) < 2:
+    while position >= 0 and (limit is None or len(starts) < limit):
         if _cuts_identifier(source, position, position + len(old)):
             cut += 1
         else:
@@ -423,12 +447,39 @@ def _starts_after_indent(source: str, position: int) -> bool:
     return bool(prefix) and not prefix.strip(" \t")
 
 
+def _anchor_line_start(
+    lines: list[str], offsets: list[int], anchor: str, floor: int
+) -> int | None:
+    """返回 floor 之后首个 @@ 锚点行的起点；先比较整行去空白，再退化为包含匹配。"""
+
+    target = anchor.strip()
+    candidates = [
+        index for index, offset in enumerate(offsets) if offset >= floor or (
+            offset < floor <= offset + len(lines[index])
+        )
+    ]
+    for matches in (
+        lambda line: line.strip() == target,
+        lambda line: target in line,
+    ):
+        for index in candidates:
+            if matches(lines[index]):
+                return offsets[index]
+    return None
+
+
 def apply_edit_blocks(
-    source: str, edits: list[tuple[str, str]]
+    source: str,
+    edits: list[tuple[str, str]],
+    *,
+    anchors: tuple[str | None, ...] | None = None,
+    ordered: bool = False,
 ) -> tuple[str, list[dict[str, object]]]:
     """所有块在同一原文中唯一定位，拒绝重叠和整份替换，再从后往前应用。
 
-    精确匹配优先；失败时按整行容错定位（仍须唯一）。返回 (新源码, 容错定位的块
+    精确匹配优先；失败时按整行容错定位（仍须唯一）。apply_patch hunk 额外按 Codex
+    语义消歧：SEARCH 命中多处时，只取 @@ 锚点行之后（ordered 时还须在上一个 hunk
+    之后）的首个命中；唯一命中不受锚点影响。返回 (新源码, 非精确唯一定位的块
     [{blockIndex, matchMode}])。
     """
     line_table: tuple[list[str], list[int]] | None = None
@@ -446,17 +497,24 @@ def apply_edit_blocks(
 
     replacements: list[tuple[int, int, str, int]] = []
     fuzzy: list[dict[str, object]] = []
+    previous_end = 0
     for index, (old, new) in enumerate(edits, 1):
         if old == new:
             raise _edit_error("unchanged", "SEARCH 与 REPLACE 文本不能相同。", index)
-        starts, cut_matches = _exact_candidates(source, old)
+        anchor = anchors[index - 1] if anchors and index <= len(anchors) else None
+        # 顺序消歧只在已有前一个 hunk 定位后生效；首个无锚点 hunk 仍须唯一，不能
+        # 默认取文件中第一个命中。
+        disambiguate = bool(anchor) or (ordered and previous_end > 0)
+        starts, cut_matches = _exact_candidates(
+            source, old, limit=None if disambiguate else 2
+        )
         if starts:
             start = starts[0]
             mode, hint = "", ""
-            candidates = [(start, start + len(old), new)]
-            if len(starts) > 1:
-                candidates.append(candidates[0])
-            elif "\n" in new and _starts_after_indent(source, start):
+            candidates = [(item, item + len(old), new) for item in starts]
+            if len(starts) > 1 and not disambiguate:
+                candidates = candidates[:2]
+            elif len(starts) == 1 and "\n" in new and _starts_after_indent(source, start):
                 # SEARCH 从缩进之后开始、REPLACE 跨多行时，逐字插入会让后续行丢失
                 # 缩进、悄悄改变代码块归属；整行缩进对齐的唯一候选覆盖同一位置时优先。
                 aligned_mode, aligned, _ = _fuzzy_candidates(*split_lines(), old, new)
@@ -467,7 +525,7 @@ def apply_edit_blocks(
                 ):
                     mode, candidates = aligned_mode, aligned
         else:
-            if cut_matches > 1:
+            if cut_matches > 1 and not disambiguate:
                 # 多处只能切断标识符命中（如 "aa" 之于 'aaa'）：无法判断意图，按歧义拒绝。
                 raise _edit_error(
                     "ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index
@@ -483,9 +541,32 @@ def apply_edit_blocks(
             if hint:
                 error.details["hint"] = hint
             raise error
+        if len(candidates) > 1 and disambiguate:
+            floor = previous_end if ordered else 0
+            # ordered 时锚点也只在上一个 hunk 之后查找，保持 Codex 的顺序语义。
+            lower = floor
+            if anchor:
+                anchor_start = _anchor_line_start(*split_lines(), anchor, floor)
+                if anchor_start is None:
+                    error = _edit_error(
+                        "ambiguous", "SEARCH 匹配多个位置，且 @@ 锚点行在脚本中不存在。", index
+                    )
+                    error.details["anchor"] = anchor[:200]
+                    raise error
+                lower = anchor_start
+            after = [item for item in candidates if item[0] >= lower]
+            if after:
+                candidates = after[:1]
+                mode = "anchor" if not mode else f"{mode}+anchor"
         if len(candidates) > 1:
-            raise _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
+            error = _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
+            if ordered or anchor:
+                error.details["hint"] = (
+                    "apply_patch hunk 可在 @@ 后写该位置之前最近的一行原文（如 def/for 行）作为锚点。"
+                )
+            raise error
         replacements.append((*candidates[0], index))
+        previous_end = candidates[0][1]
         if mode:
             fuzzy.append({"blockIndex": index, "matchMode": mode})
     replacements.sort()

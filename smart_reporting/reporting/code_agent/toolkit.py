@@ -2781,7 +2781,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 draft is not None and expectedSourceSha256 == draft.sha256
             )
         if draft is not None and self._last_edit_targeted_draft:
-            return await self._edit_rejected_draft(draft, edits)
+            return await self._edit_rejected_draft(
+                draft, edits, anchors=parsed.anchors, ordered=parsed.ordered
+            )
         try:
             source_bytes = await self.workspace.read_limited_regular_file(
                 self.context.task_id,
@@ -2825,7 +2827,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 details,
             )
         try:
-            updated, fuzzy_matches = apply_edit_blocks(source, edits)
+            updated, fuzzy_matches = apply_edit_blocks(
+                source, edits, anchors=parsed.anchors, ordered=parsed.ordered
+            )
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 return _failure(
@@ -2924,7 +2928,12 @@ class ReportingCodeModeToolkit(Toolkit):
         return sha256 if isinstance(sha256, str) else None
 
     async def _edit_rejected_draft(
-        self, draft: _RejectedDraft, edits: Any
+        self,
+        draft: _RejectedDraft,
+        edits: Any,
+        *,
+        anchors: tuple[str | None, ...] = (),
+        ordered: bool = False,
     ) -> dict[str, Any]:
         """对隔离草稿打补丁，再按 write_script 同一路径预检、格式化并落盘。"""
 
@@ -2937,7 +2946,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 {"nextTools": ["read_script", "edit_script"]},
             )
         try:
-            updated, fuzzy_matches = apply_edit_blocks(draft_source, edits)
+            updated, fuzzy_matches = apply_edit_blocks(
+                draft_source, edits, anchors=anchors, ordered=ordered
+            )
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(

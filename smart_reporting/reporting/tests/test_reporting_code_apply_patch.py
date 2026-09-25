@@ -184,3 +184,72 @@ def test_metric_sample_reports_patch_formats() -> None:
     )
 
     assert sample["patchFormats"] == {"apply_patch": 2, "invalid:no_valid_blocks": 1}
+
+
+_TWO_FUNCTIONS = (
+    "def load():\n    value = 1\n    return value\n\n\n"
+    "def plot():\n    value = 1\n    return value\n"
+)
+
+
+def _apply(patch: str) -> tuple[str, list[dict[str, object]]]:
+    parsed = parse_script_patch(patch, 64 * 1024)
+    return apply_edit_blocks(
+        _TWO_FUNCTIONS, parsed.edits, anchors=parsed.anchors, ordered=parsed.ordered
+    )
+
+
+def test_anchor_disambiguates_repeated_hunk() -> None:
+    updated, matches = _apply(
+        _apply_patch("a.py", "@@ def plot():\n     value = 1\n-    return value\n+    return value * 2\n")
+    )
+
+    assert updated.endswith("def plot():\n    value = 1\n    return value * 2\n")
+    assert updated.startswith("def load():\n    value = 1\n    return value\n")
+    assert matches == [{"blockIndex": 1, "matchMode": "anchor"}]
+
+
+def test_later_hunks_are_located_after_previous_hunk() -> None:
+    updated, _ = _apply(
+        _apply_patch(
+            "a.py",
+            "@@ def load():\n     value = 1\n-    return value\n+    return value + 1\n"
+            "@@\n     value = 1\n-    return value\n+    return value + 2\n",
+        )
+    )
+
+    assert "return value + 1\n\n\ndef plot():" in updated
+    assert updated.endswith("return value + 2\n")
+
+
+@pytest.mark.parametrize(
+    ("hunks", "anchor_detail"),
+    [
+        ("@@\n     value = 1\n-    return value\n+    return 0\n", None),
+        ("@@ def missing():\n     value = 1\n-    return value\n+    return 0\n", "def missing():"),
+    ],
+    ids=["first-hunk-without-anchor", "anchor-not-found"],
+)
+def test_ambiguous_hunk_without_usable_anchor_is_rejected(hunks, anchor_detail) -> None:
+    with pytest.raises(ReportingError) as caught:
+        _apply(_apply_patch("a.py", hunks))
+
+    assert caught.value.code == "report_code_script_edit_ambiguous"
+    assert caught.value.details.get("anchor") == anchor_detail
+
+
+def test_search_replace_ambiguity_ignores_anchor_semantics() -> None:
+    with pytest.raises(ReportingError) as caught:
+        apply_edit_blocks(_TWO_FUNCTIONS, [("    value = 1\n    return value", "    return 0")])
+
+    assert caught.value.code == "report_code_script_edit_ambiguous"
+    assert "hint" not in caught.value.details
+
+
+def test_codex_style_double_at_header_is_parsed_as_anchor() -> None:
+    parsed = parse_script_patch(
+        _apply_patch("a.py", "@@ def plot(): @@\n     value = 1\n-    return value\n+    return 0\n"),
+        64 * 1024,
+    )
+
+    assert parsed.anchors == ("def plot():",)
