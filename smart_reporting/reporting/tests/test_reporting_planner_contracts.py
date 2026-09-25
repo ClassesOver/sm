@@ -2840,6 +2840,98 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     assert runtime._persist_reporting_checkpoint.await_count >= 1
 
 
+@pytest.mark.anyio
+async def test_visualization_section_final_attempt_degrades_instead_of_failing_report(
+    monkeypatch,
+) -> None:
+    from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
+    from smart_reporting.reporting.workflow.runtime.base import (
+        MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
+        MAX_REPORT_SECTION_PHASE_ATTEMPTS,
+    )
+    from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft
+
+    planner = Agent(
+        model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+        output_schema=VisualizationPlanDraft,
+    )
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(), reporting_agent_template=planner,
+        task_runner=SimpleNamespace(
+            repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+            start=AsyncMock(),
+        ),
+        workspace_service=SimpleNamespace(), registry=SimpleNamespace(),
+        profiles=SimpleNamespace(), planner_reasoning_effort="low",
+        planner_enable_thinking=True, state_repository=SimpleNamespace(),
+        visualization_generator=planner,
+    )
+    context = RunContext(run_id="visualization-final-degrade", session_id="session-1", session_state={})
+    checkpoint = SimpleNamespace(trace=(), visualization_section_errors={})
+    runtime._current_reporting_checkpoint = AsyncMock(return_value=checkpoint)
+    runtime._persist_reporting_checkpoint = AsyncMock()
+    runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
+    runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
+    runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
+    runtime._envelope = lambda _context: SimpleNamespace(report_goal="分析收入", visualization_mode="auto")
+    runtime._visualization_section_fact_projection = AsyncMock(return_value={"analysisId": "analysis_001"})
+    runtime._apply_durable_command = AsyncMock()
+    toolkit = SimpleNamespace(
+        submit_visualization_charts=AsyncMock(return_value={"status": "accepted"})
+    )
+
+    async def durable_state(_run_id):
+        # 只有零图降级提交后才出现章节收口，模拟真实 durable 状态。
+        completed = ["section_001"] if toolkit.submit_visualization_charts.await_count else []
+        return SimpleNamespace(
+            payload={
+                "analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}},
+                "completedVisualizationSections": completed,
+            }
+        )
+
+    runtime.state_repository.get = durable_state
+    outline = ReportOutline.model_validate({
+        "reportType": "topic", "title": "收入分析",
+        "sections": [{"code": "section_001", "sectionNumber": "1", "title": "收入", "analysisIds": ["analysis_001"]}],
+    })
+    monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
+    monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [toolkit])
+
+    async def failing_workflow(_workflow, _payload, _run_context):
+        # 工作流内判为 fatal、不可降级的 provider 协议错误。
+        raise ReportingError(
+            "report_code_custom_tool_protocol_error", "provider 返回了未声明的工具调用。"
+        )
+
+    monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", failing_workflow)
+
+    async def run_task(scope, *, executor, **_kwargs):
+        return await executor(SimpleNamespace(
+            scope=scope, run_context=context,
+            model_metrics_settlement=SimpleNamespace(stage_recorder=lambda *_args, **_kwargs: None),
+        ))
+
+    runtime.task_runner.run = run_task
+    identity = FileIdentity(path="facts/analysis.json", size=2, sha256="a" * 64)
+
+    await runtime._run_visualization_section_task("section_001", context={
+        "run_context": context, "checkpoint": checkpoint, "external_run_id": "run-1",
+        "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
+        "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
+        "validation_context_file": identity,
+    })
+
+    max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS * (MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION + 1)
+    # 前面的 fresh attempt 照常失败重来，只有最后一次才降级为零图成稿。
+    assert runtime.task_runner.start.await_count == max_attempts
+    toolkit.submit_visualization_charts.assert_awaited_once()
+    assert toolkit.submit_visualization_charts.await_args.args == ("section_001", [])
+    warning = runtime._apply_durable_command.await_args.args[1].payload["warnings"][0]
+    assert warning["code"] == "report_visualization_degraded"
+    assert warning["details"]["failureCode"] == "report_code_custom_tool_protocol_error"
+
+
 @pytest.mark.skip(reason="V1 已将 analysis script agent 改为 task factory")
 def test_runtime_planner_policies_honor_disabled_thinking() -> None:
     runtime = ReportWorkflowRuntime(

@@ -138,6 +138,7 @@ from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
+    _raise_rejected_submission,
     _visualization_thinking_complexity,
 )
 
@@ -546,6 +547,20 @@ def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]
             if path is not None
         )
     )
+
+
+# 这些错误意味着任务本身已无法继续（取消、超时、租约或工作区不可用），
+# 连零图提交也不可靠，必须上抛由上层处理。
+_VISUALIZATION_UNDEGRADABLE_ERROR_CODES = frozenset(
+    {
+        "report_task_cancelled",
+        "report_task_timeout",
+        "report_task_lease_conflict",
+        "report_workspace_unavailable",
+        "report_workspace_capability_missing",
+        "report_coding_task_conflict",
+    }
+)
 
 
 def _visualization_repair_facts(
@@ -1343,9 +1358,27 @@ class RuntimeAnalysisMixin:
                     }
                     if knowledge_index is not None:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
-                    result = await VisualizationSectionWorkflow(
-                        **workflow_kwargs
-                    ).run(instruction_payload, invocation.run_context)
+                    try:
+                        result = await VisualizationSectionWorkflow(
+                            **workflow_kwargs
+                        ).run(instruction_payload, invocation.run_context)
+                    except Exception as error:
+                        # 最后一次 fresh attempt 仍失败时，非基础设施错误（协议错误、产物
+                        # 身份失败等工作流内判为 fatal 的错误）也按零图降级成稿，不让单章
+                        # 图表失败升级为整份报告失败；任务取消、租约冲突等仍原样上抛。
+                        if (
+                            attempt < max_attempts - 1
+                            or getattr(error, "code", None)
+                            in _VISUALIZATION_UNDEGRADABLE_ERROR_CODES
+                        ):
+                            raise
+                        loguru_logger.bind(
+                            section_code=section_code,
+                            failure_code=getattr(error, "code", type(error).__name__),
+                        ).warning("report_visualization_section_final_attempt_degraded")
+                        receipt = await degrade(error, invocation.run_context)
+                        _raise_rejected_submission(receipt)
+                        return VisualizationPlanDraft(charts=(), warnings=())
                     return result.plan
 
                 await self.task_runner.run(
