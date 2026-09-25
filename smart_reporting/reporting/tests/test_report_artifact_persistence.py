@@ -710,6 +710,17 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
 
 
 @pytest.mark.anyio
+async def test_http_publication_keeps_host_workspace_instead_of_destroying(tmp_path) -> None:
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_registry = registry
+    # 生产装配的宿主机路由没有 adestroy/aquarantine；发布后必须保留会话目录供编辑器续写。
+    runtime.workspace_service = ReportingWorkspaceRouter(registry)
+
+    await runtime._release_or_destroy_workspace("thread-1", message="m")
+
+
+@pytest.mark.anyio
 async def test_terminal_cleanup_destroys_reporting_sandbox() -> None:
     workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
     repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))

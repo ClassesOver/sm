@@ -3404,6 +3404,37 @@ def test_analysis_correction_restores_unapproved_changes() -> None:
     assert projected["requirements"][0]["grainColumns"] == ["data_date"]
 
 
+def test_analysis_correction_restore_follows_identity_after_required_deletion() -> None:
+    previous = {
+        "requirements": [
+            {"requirementId": key, "note": f"{key}-orig"} for key in ("A", "B", "C", "D")
+        ],
+        "analyses": [],
+    }
+    # 模型按要求删除 B，同时越权改写 C；差异路径使用 previous 下标。
+    corrected = {
+        "requirements": [
+            {"requirementId": "A", "note": "A-orig"},
+            {"requirementId": "C", "note": "越权改写"},
+            {"requirementId": "D", "note": "D-orig"},
+        ],
+        "analyses": [],
+    }
+    unexpected = reporting_runtime._unexpected_correction_paths(
+        previous, corrected, (), ("requirements[1]",)
+    )
+
+    projected = reporting_runtime._restore_unapproved_correction_changes(
+        previous, corrected, tuple(unexpected)
+    )
+
+    assert [(item["requirementId"], item["note"]) for item in projected["requirements"]] == [
+        ("A", "A-orig"),
+        ("C", "C-orig"),
+        ("D", "D-orig"),
+    ]
+
+
 def test_analysis_grain_correction_allows_related_join_columns() -> None:
     previous = {
         "analyses": [],

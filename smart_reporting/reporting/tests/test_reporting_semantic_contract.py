@@ -379,6 +379,13 @@ def test_manifest_warns_chart_dataset_without_frozen_evidence() -> None:
         for item in gate["warnings"]
         if item["code"] == "report_chart_dataset_unfrozen"
     } == {("report_chart_dataset_unfrozen", "chart-1", "dataset-2")}
+    # 发布门禁把每条 warning 送入质量审计；未登记的规则码会把软告警升级为发布阻断。
+    audit = QualityAuditCollector(report_run_id="run-1", revision=1)
+    for item in gate["warnings"]:
+        audit.add(_publication_warning_notice(item, run_id="run-1", source_phase="publication"))
+    assert "report_chart_dataset_unfrozen" in {
+        finding.rule_code for finding in audit.build().findings
+    }
 
 
 def test_semantic_catalog_registers_metric_field_alias() -> None:

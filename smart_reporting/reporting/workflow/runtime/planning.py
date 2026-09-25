@@ -261,18 +261,20 @@ class RuntimePlanningMixin:
                 task_cleanup_error = task_cleanup_error or error
         if task_cleanup_error is not None:
             raise task_cleanup_error
-        if getattr(self, "workspace_registry", None) is not None:
-            # 宿主机模式只释放进程内 Workspace 身份，保留会话目录和全部产物供审计/恢复。
-            self.workspace_registry.release(scope["thread_id"])
-            getattr(self, "_host_workspaces", {}).pop(scope["thread_id"], None)
-            loguru_logger.info(
-                "report_host_workspace_released workspace_key={}", scope["thread_id"]
-            )
-            return
-        await self._destroy_or_quarantine_workspace(
+        await self._release_or_destroy_workspace(
             scope["thread_id"],
             message="报表工作流已结束，但运行环境删除失败，已隔离并转入后台清理。",
         )
+
+    async def _release_or_destroy_workspace(self, thread_id: str, *, message: str) -> None:
+        if getattr(self, "workspace_registry", None) is not None:
+            # 宿主机模式只释放进程内 Workspace 身份，保留会话目录和全部产物供审计/恢复
+            # 与报告编辑器续写；宿主机路由不提供 sandbox 删除/隔离能力。
+            self.workspace_registry.release(thread_id)
+            getattr(self, "_host_workspaces", {}).pop(thread_id, None)
+            loguru_logger.info("report_host_workspace_released workspace_key={}", thread_id)
+            return
+        await self._destroy_or_quarantine_workspace(thread_id, message=message)
 
     async def _destroy_or_quarantine_workspace(self, thread_id: str, *, message: str) -> None:
         """删除失败时先轮换持久化 generation，再允许控制器释放 owner。"""
@@ -406,7 +408,7 @@ class RuntimePlanningMixin:
             ),
             expected_version=durable.state_version,
         )
-        await self._destroy_or_quarantine_workspace(
+        await self._release_or_destroy_workspace(
             thread_id,
             message="报告已持久化，但运行环境删除失败，已隔离并转入后台清理。",
         )
@@ -2313,16 +2315,48 @@ def _restore_unapproved_correction_changes(
         source: Any = previous
         target: Any = projected
         try:
-            for token in tokens[:-1]:
+            target_tokens = _current_correction_tokens(previous, projected, tokens)
+            if target_tokens is None:
+                return deepcopy(previous)
+            for token, target_token in zip(tokens[:-1], target_tokens[:-1], strict=True):
                 source = source[token]
-                target = target[token]
-            leaf = tokens[-1]
-            target[leaf] = deepcopy(source[leaf])
+                target = target[target_token]
+            target[target_tokens[-1]] = deepcopy(source[tokens[-1]])
         except (IndexError, KeyError, TypeError):
             # 无法精确恢复说明候选改变了容器形状。此时回退整份可信基线，不能猜测
             # 列表身份或扩大允许修改范围；后续无进展门禁仍会按原规则失败关闭。
             return deepcopy(previous)
     return projected
+
+
+def _current_correction_tokens(
+    previous: Mapping[str, Any], current: Mapping[str, Any], tokens: list[str | int]
+) -> list[str | int] | None:
+    """把按 previous 下标给出的差异路径换算到 current 中同一业务对象的下标。
+
+    _analysis_bundle_diff_paths 对 requirements/analyses 按业务标识比较，路径使用
+    previous 下标；删除或重排后同一下标在 current 中是另一个对象，不能直接写回。
+    """
+
+    if len(tokens) < 2 or not isinstance(tokens[1], int):
+        return tokens
+    identity_key = {"requirements": "requirementId", "analyses": "code"}.get(str(tokens[0]))
+    if identity_key is None:
+        return tokens
+    previous_items = previous.get(str(tokens[0]))
+    current_items = current.get(str(tokens[0]))
+    if not isinstance(previous_items, list) or not isinstance(current_items, list):
+        return tokens
+    previous_item = previous_items[tokens[1]] if tokens[1] < len(previous_items) else None
+    identity = previous_item.get(identity_key) if isinstance(previous_item, Mapping) else None
+    matches = [
+        index
+        for index, item in enumerate(current_items)
+        if isinstance(item, Mapping) and item.get(identity_key) == identity
+    ]
+    if identity is None or len(matches) != 1:
+        return None
+    return [tokens[0], matches[0], *tokens[2:]]
 
 
 def _unexpected_correction_paths(
