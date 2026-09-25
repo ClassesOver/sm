@@ -70,16 +70,25 @@ POLICIES = MappingProxyType({
 })
 
 
+def fresh_attempt_futile(error: BaseException) -> bool:
+    """基础设施/部署配置类失败：重开 fresh attempt 同样无法修复，必须立即停止重试。
+
+    分析项、可视化章节与章节成稿的 fresh attempt 循环统一以此为准。
+    """
+
+    return (
+        isinstance(error, ReportingError)
+        and POLICIES.get(error.code, FailurePolicy()).infrastructure
+    )
+
+
 def final_attempt_degradable(error: BaseException) -> bool:
     """最后一次 fresh attempt 失败时能否按零图降级。
 
     只接受业务/模型侧的 ReportingError；普通异常多为代码缺陷，必须上抛暴露。
     """
 
-    return (
-        isinstance(error, ReportingError)
-        and not POLICIES.get(error.code, FailurePolicy()).infrastructure
-    )
+    return isinstance(error, ReportingError) and not fresh_attempt_futile(error)
 
 
 def recovery_for(error: Exception, task: TaskKind) -> Recovery:

@@ -14,6 +14,7 @@ from ....task_execution import (
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
+from ...code_agent.failure_policy import fresh_attempt_futile
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -49,7 +50,6 @@ from .analysis_item_workflow import (
     validate_supplemental_evidence,
 )
 from .base import (
-    _VISUALIZATION_FATAL_ERROR_CODES,
     _VISUALIZATION_RECOVERY_ERROR_CODES,
     MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
     MAX_REPORT_INSTRUCTION_BYTES,
@@ -1406,12 +1406,9 @@ class RuntimeAnalysisMixin:
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
-                if (
-                    isinstance(error, ReportingError)
-                    and error.code in _VISUALIZATION_FATAL_ERROR_CODES
-                ):
-                    # 确定性 infra 缺陷（如工作区适配缺少协议能力）重跑不可修复；
-                    # 失败已入账后立即上抛，终止同章 fresh attempt 循环。
+                if fresh_attempt_futile(error):
+                    # 基础设施/部署配置类失败重跑不可修复；失败已入账后立即上抛，
+                    # 终止同章 fresh attempt 循环（与分析项、章节成稿同一口径）。
                     raise
         assert last_error is not None
         raise last_error
@@ -3338,6 +3335,9 @@ class RuntimeAnalysisMixin:
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
+                if fresh_attempt_futile(error):
+                    # 与可视化章节同一口径：基础设施/部署配置类失败不再开新 attempt。
+                    raise
         assert last_error is not None
         raise last_error
 

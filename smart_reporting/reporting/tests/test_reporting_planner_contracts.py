@@ -1800,6 +1800,80 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     assert "按 analysisId 完成 CSV 复算并保存可复现证据" not in analysis.completion_conditions
 
 
+async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> AsyncMock:
+    from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
+
+    for name, value in {
+        "_reporting_detailed_analysis_plan": lambda *_a, **_k: {"analyses": [{"analysisId": "analysis_001"}]},
+        "_analysis_item_dataset_inputs": lambda *_a, **_k: [],
+        "_model_facing_deterministic_facts": lambda *_a, **_k: {},
+        "_checkpoint_retry_error": lambda *_a, **_k: None,
+        "_profile_coverage_instruction_projection": lambda *_a, **_k: None,
+        "_source_warnings_from_state": lambda *_a, **_k: (),
+        "_analysis_item_thinking_policy": lambda *_a, **_k: ("off", 0, "simple"),
+        "_analysis_item_complexity": lambda *_a, **_k: (0, "simple"),
+        "_analysis_fact_query_limit_for_plan": lambda *_a, **_k: 1,
+        "build_report_phase_acceptance_contract": lambda **_k: {},
+        "_checkpoint_retry_usage": lambda *_a, **_k: SimpleNamespace(model_dump=lambda **_k: {}),
+    }.items():
+        monkeypatch.setattr(reporting_analysis, name, value)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _context: {"externalRunId": "run-1", "threadId": "t", "userId": "u"}
+    runtime._state = lambda _context: {}
+    runtime._envelope = lambda _context: SimpleNamespace(report_goal="目标")
+    runtime._analysis_thinking_effort = lambda: "off"
+    runtime._read_identity_model = AsyncMock(return_value=SimpleNamespace(analysis_id="analysis_001"))
+    runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
+    runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
+    runtime._persist_reporting_checkpoint = AsyncMock()
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
+    runtime.task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(side_effect=error),
+    )
+    identity = SimpleNamespace(model_dump=lambda **_kwargs: {})
+    with pytest.raises(ReportingError) as caught:
+        await runtime._run_analysis_item_task(
+            RunContext(run_id="run-1", session_id="s"),
+            checkpoint=SimpleNamespace(trace=(), profile_coverage=None),
+            revision=1,
+            sandbox_id="sandbox",
+            validation_context_file=identity,
+            detailed_plan=SimpleNamespace(
+                analyses=(SimpleNamespace(analysis_id="analysis_001", dataset_ids=("d1",)),)
+            ),
+            dataset_handles=(SimpleNamespace(dataset_id="d1"),),
+            lineage=(),
+            citation_bindings=(),
+            analysis_context_file=identity,
+            fact_files={"analysis_001": identity},
+            analysis_id="analysis_001",
+            section_goal={},
+            retry_reason=None,
+            feedback=None,
+            rework_request=None,
+        )
+    assert caught.value is error
+    return runtime.task_runner.start
+
+
+@pytest.mark.anyio
+async def test_analysis_item_stops_fresh_attempts_on_infrastructure_failure(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime.base import MAX_REPORT_SECTION_PHASE_ATTEMPTS
+
+    # 与可视化章节同一口径：部署配置缺失重跑不可修复，只签发一个 attempt。
+    infra = await _run_failing_analysis_item(
+        monkeypatch, ReportingError("report_code_mode_runtime_missing", "未配置。")
+    )
+    assert infra.await_count == 1
+    # 业务/模型侧失败仍按既有上限 fresh retry。
+    ordinary = await _run_failing_analysis_item(
+        monkeypatch, ReportingError("report_analysis_script_failed", "脚本失败。")
+    )
+    assert ordinary.await_count == MAX_REPORT_SECTION_PHASE_ATTEMPTS
+
+
 def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task))
     tree = ast.parse(source)
