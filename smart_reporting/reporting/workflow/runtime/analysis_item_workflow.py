@@ -48,8 +48,7 @@ MAX_DETERMINISTIC_FACT_BYTES = 10 * 1024 * 1024
 DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
 # A1 覆盖率校验读取签发 CSV 全集的上限；更大的数据集跳过校验，不影响交付。
-MAX_COVERAGE_DATASET_BYTES = 4 * 1024 * 1024
-COVERAGE_DATASET_PAGE_BYTES = 128 * 1024
+MAX_COVERAGE_DATASET_BYTES = 32 * 1024 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
 _EXISTING_FACT_COLLECTIONS = (
@@ -608,7 +607,9 @@ class AnalysisItemWorkflow:
         record_successful_repair: Callable[[Mapping[str, Any], FileIdentity], Awaitable[None]]
         | None = None,
         benchmark_projection: BenchmarkProjection | None = None,
+        read_dataset: Callable[[FileIdentity], Awaitable[bytes]] | None = None,
     ) -> None:
+        self.read_dataset = read_dataset
         self.decide_evidence = decide_evidence
         self.run_code = run_code
         self.summarize = summarize
@@ -1156,39 +1157,21 @@ class AnalysisItemWorkflow:
     async def _read_coverage_dataset(
         self, dataset: Mapping[str, Any], run_context: RunContext
     ) -> str | None:
-        path = dataset.get("path")
-        size = dataset.get("size")
-        expected_sha256 = dataset.get("sha256")
-        if (
-            not isinstance(path, str)
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or not 0 < size <= MAX_COVERAGE_DATASET_BYTES
-        ):
+        """按签发身份直接读取 CSV 全集；不经过 Task 工具运行时，身份不符即跳过。"""
+
+        del run_context
+        if self.read_dataset is None:
             return None
-        chunks: list[str] = []
-        offset = 0
-        while offset < size:
-            result = await self.read_file(
-                path=path,
-                offset=offset,
-                max_bytes=COVERAGE_DATASET_PAGE_BYTES,
-                run_context=run_context,
+        try:
+            identity = FileIdentity.model_validate(
+                {key: dataset.get(key) for key in ("path", "size", "sha256")}
             )
-            content = result.get("content") if isinstance(result, Mapping) else None
-            next_offset = result.get("nextOffset") if isinstance(result, Mapping) else None
-            if not isinstance(content, str) or (
-                isinstance(expected_sha256, str)
-                and result.get("sha256") not in (None, expected_sha256)
-            ):
-                return None
-            if not isinstance(next_offset, int) or isinstance(next_offset, bool):
-                next_offset = offset + len(content.encode("utf-8"))
-            if next_offset <= offset:
-                return None
-            chunks.append(content)
-            offset = next_offset
-        return "".join(chunks)
+        except ValidationError:
+            return None
+        if identity.size > MAX_COVERAGE_DATASET_BYTES:
+            return None
+        content = await self.read_dataset(identity)
+        return content.decode("utf-8-sig")
 
     async def _read_supplemental_evidence(
         self, state: _AnalysisItemState, run_context: RunContext

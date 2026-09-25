@@ -25,7 +25,7 @@
 | V2 | `runtime/chart_inputs.py` + `analysis.py` 可视化 `run_code`：按已校验绑定物化 `chart-input/v1`，授权路径只含 chart-inputs 与回退图原始 facts；candidate 指令 19 条/3,945 B → 14 条/3,046 B；Plotly 数值核对软告警 `report_visualization_chart_data_unverified` | 生产默认开启；回放 `--chart-inputs on\|off`，`BenchmarkProjection.materialize_chart_inputs` |
 | V3 | `toolkit.py`：预检一次返回全部违规（≤8 项，主码不变）；被拒整稿存为内存隔离草稿，`edit_script` 以 `draftSha256` 打补丁，通过全部预检才落盘 | 生产默认开启 |
 | V4 | `protocol.py` + `code_generation.py`：无进展快停 `report_code_no_progress`（retry_then_degrade）；`report_code_generic_data_helper` 改为软告警 | R=24、K=3 为暂定值，须按 V0 的 `firstSuccessfulRunRequest` 标定 |
-| V5 | Matplotlib `figure.constrained_layout.use`、Plotly `automargin` 模板；Coding 指标新增 `visualReviewGateTripped`、`gateCriticalCategories` | 生产默认开启 |
+| V5 | Plotly `automargin` 模板；Coding 指标新增 `visualReviewGateTripped`、`gateCriticalCategories`。Matplotlib `constrained_layout` 全局默认已撤回：与脚本常见的 `colorbar` + `tight_layout()` 组合直接抛 `RuntimeError` | Plotly 默认开启；Matplotlib 排版需离线复渲染验证后另行设计 |
 | A1 | `runtime/analysis_coverage.py` + `_validate_evidence`：维度覆盖缺口、单侧缺失未披露，只进日志与步骤输出；离线 `scripts/analysis_coverage_check.py` | 数据集 ≤4 MB 才校验；TopN 仅按 calculation 文本降级 |
 | A2 | 输出契约新增 outputName↔findings.name 与可选 `columnMeta`；缺失记 `report_analysis_requirement_unfulfilled`；`columnMeta` 透传到 chart-input 与 finding descriptor | 生产默认开启 |
 | A3 | 两个候选同时落地：datasets 投影 `columnProfile`（角色、基数、缺失率）；planner 指令"同维度多指标合并为一个 outputName" | 违反"每次只试一个"，A/B 时需分别关闭对照 |

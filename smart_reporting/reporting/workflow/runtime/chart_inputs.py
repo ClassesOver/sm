@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -119,9 +120,12 @@ def _table_for_binding(
     if tokens[-1] == "rows" and isinstance(value, list):
         parent = _navigate(document, tokens[:-1])
         if isinstance(parent, Mapping) and "columns" in parent:
-            columns, rows = _columns_rows_table(parent.get("columns"), value, ())
+            # findings[i].rows 的 descriptor.fields 就是 columns，绑定字段必须全部存在。
+            columns, rows = _columns_rows_table(parent.get("columns"), value, fields)
             return columns, rows, parent.get("columnMeta")
     if isinstance(value, Mapping) and "columns" in value and "rows" in value:
+        # findings[i] 的 descriptor.fields 是 finding 对象键（name/columns/rows…），
+        # 不是表格列名，因此不按列名校验。
         columns, rows = _columns_rows_table(value.get("columns"), value.get("rows"), ())
         return columns, rows, value.get("columnMeta")
     if isinstance(value, list):
@@ -138,10 +142,12 @@ def _table_for_binding(
             rows.append(row)
         return fields, rows, None
     if isinstance(value, Mapping):
-        columns = [name for name in fields if name in value and _is_scalar(value[name])]
-        if not columns:
-            raise ChartInputError("对象中没有可物化的标量字段")
-        return columns, [[value[name] for name in columns]], None
+        missing = [name for name in fields if name not in value]
+        nested = [name for name in fields if name in value and not _is_scalar(value[name])]
+        if missing or nested:
+            # 绑定字段缺失或是嵌套结构时不能静默丢列，整图回退原始 facts。
+            raise ChartInputError(f"对象绑定字段缺失或非标量：{missing + nested}")
+        return fields, [[value[name] for name in fields]], None
     raise ChartInputError("dataPath 指向的值无法转换为表格")
 
 
@@ -179,11 +185,13 @@ def _binding_catalog(
 
 
 def _safe_name(chart_id: str) -> str:
+    """文件名与 chartId 一一对应：改写或截断时追加完整 chartId 的摘要。"""
+
     name = _UNSAFE_NAME.sub("-", chart_id).strip("-.")
-    if not name or name != chart_id:
-        digest = hashlib.sha256(chart_id.encode("utf-8")).hexdigest()[:10]
-        name = f"{name or 'chart'}-{digest}"
-    return name[:96]
+    if name and name == chart_id and len(name) <= 80:
+        return name
+    digest = hashlib.sha256(chart_id.encode("utf-8")).hexdigest()[:12]
+    return f"{(name or 'chart')[:80]}-{digest}"
 
 
 def _materialize_chart(
@@ -260,6 +268,13 @@ def materialize_chart_inputs(
     files: list[ChartInputFile] = []
     entries: list[dict[str, Any]] = []
     fallback: set[str] = set()
+    names = [_safe_name(chart.chart_id) for chart in plan.charts]
+    if len(names) != len(set(names)):
+        # 计划校验已保证 chartId 唯一；文件名仍冲突说明映射失效，整体不物化。
+        logger.warning("report_visualization_chart_input_name_conflict")
+        return ChartInputMaterialization(
+            fallback_chart_ids=frozenset(chart.chart_id for chart in plan.charts)
+        )
     for chart in plan.charts:
         try:
             chart_files, chart_entries = _materialize_chart(
@@ -338,9 +353,21 @@ async def prepare_chart_inputs(
     return materialized
 
 
+def _decode_bdata(values: Mapping[str, Any]) -> list[float]:
+    """解码 Plotly 6 write_json 的 typed array（{dtype, bdata, shape?}）。"""
+
+    try:
+        import numpy as np
+
+        array = np.frombuffer(base64.b64decode(values["bdata"]), dtype=np.dtype(values["dtype"]))
+    except Exception:  # noqa: BLE001 - 无法解码时交由其余 trace 判定
+        return []
+    return [float(item) for item in array.ravel() if np.isfinite(item)]
+
+
 def _numbers(values: Any) -> list[float]:
-    if isinstance(values, Mapping) and "bdata" in values:
-        return []  # 二进制编码数组不解码，交由其余 trace 判定
+    if isinstance(values, Mapping) and "bdata" in values and "dtype" in values:
+        return _decode_bdata(values)
     if not isinstance(values, (list, tuple)):
         return []
     flat: list[float] = []

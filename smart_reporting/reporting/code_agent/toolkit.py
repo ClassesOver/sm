@@ -865,25 +865,6 @@ def _generic_data_helper_details(tree: ast.AST) -> dict[str, Any] | None:
     return None
 
 
-def _reject_generic_data_helpers(tree: ast.AST) -> None:
-    details = _generic_data_helper_details(tree)
-    if details is None:
-        return
-    if details["reason"] == "generic_loader":
-        message = (
-            "禁止编写通用数据加载函数：函数 {functionName} 接收 {parameterName} 并直接返回"
-            "加载后的原始数据。请内联使用 json.load(open(LITERAL_PATH)) 读取数据，"
-            "不要封装通用加载器。".format(**details)
-        )
-    else:
-        message = (
-            "禁止编写通用 findings 解码函数：函数 {functionName} 接收 {parameterName} 并直接返回"
-            "原始行数据。请使用显式链式访问如 data['findings'][0]['rows']，"
-            "不要封装通用数据解码器。".format(**details)
-        )
-    raise ReportingError("report_code_generic_data_helper", message, details=details)
-
-
 def _safe_join_call(
     node: ast.Call,
     aliases: Mapping[str, str],
@@ -2475,7 +2456,7 @@ class ReportingCodeModeToolkit(Toolkit):
             return _failure(error.code, error.message, error.details)
         draft = self._rejected_draft
         if draft is not None and expectedSourceSha256 == draft[0]:
-            return await self._edit_rejected_draft(draft[1], edits)
+            return await self._edit_rejected_draft(draft[0], draft[1], edits)
         try:
             source_bytes = await self.workspace.read_limited_regular_file(
                 self.context.task_id,
@@ -2538,8 +2519,9 @@ class ReportingCodeModeToolkit(Toolkit):
             tree = None
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
+        preflight_warnings: list[dict[str, str]] = []
         if tree is not None:
-            violations, _warnings = _collect_preflight(
+            violations, preflight_warnings = _collect_preflight(
                 tree, updated, "edit_script", self.context
             )
             if violations:
@@ -2576,61 +2558,42 @@ class ReportingCodeModeToolkit(Toolkit):
                 "kind": "edit",
                 "replacedOccurrences": len(edits),
             },
+            **({"warnings": preflight_warnings} if preflight_warnings else {}),
             **identity,
         }
 
     async def _edit_rejected_draft(
-        self, draft_source: str, edits: Any
+        self, draft_sha256: str, draft_source: str, edits: Any
     ) -> dict[str, Any]:
-        """对隔离草稿打补丁；重新执行全部预检，通过后才写入签发脚本。"""
+        """对隔离草稿打补丁，再按 write_script 同一路径预检、格式化并落盘。"""
 
         try:
             updated = apply_edit_blocks(draft_source, edits)
-            validate_draft_source(self.context, updated)
         except ReportingError as error:
-            return _failure(
-                error.code,
-                error.message,
-                {
-                    **(dict(error.details) if isinstance(error.details, Mapping) else {}),
-                    "draftSha256": self._rejected_draft[0] if self._rejected_draft else None,
-                },
-            )
-        try:
-            tree = ast.parse(updated, filename=self.context.script_path)
-        except SyntaxError:
-            tree = None
-        if tree is not None:
-            violations, _warnings = _collect_preflight(
-                tree, updated, "write_script", self.context
-            )
-            if violations:
-                draft_sha256 = hashlib.sha256(updated.encode("utf-8")).hexdigest()
-                self._rejected_draft = (draft_sha256, updated)
-                return _preflight_failure(violations, updated, draft_sha256=draft_sha256)
-        exists = await self.workspace.apath_exists(self.context.task_id, self.context.script_path)
-        await self.workspace.awrite_text(
-            self.context.task_id,
-            self.context.script_path,
-            updated,
-            overwrite=exists,
-        )
-        self._rejected_draft = None
-        self.binding.clear_execution_receipt()
-        self.submitted_receipt = None
-        identity = await self.workspace.ahash_file(
-            self.context.task_id, self.context.script_path
-        )
+            if error.code in _EDIT_ANCHOR_FAILURE_CODES:
+                details = _edit_failure_anchor_details(
+                    draft_source, edits, error.details, self.context.script_path, draft_sha256,
+                )
+            else:
+                details = dict(error.details) if isinstance(error.details, Mapping) else {}
+            details["draftSha256"] = draft_sha256
+            return _failure(error.code, error.message, details)
+        result = await self.write_script(updated)
+        if result.get("ok") is not True:
+            # 仍有违规时 write_script 已把补丁后的草稿存为新的隔离草稿。
+            return result
+        if self.first_patch_applied == "unknown":
+            self.first_patch_applied = True
         return {
-            "ok": True,
+            **result,
             "status": "draft_promoted",
             "path": self.context.script_path,
-            "readyForExecution": tree is not None,
             "replacedOccurrences": len(edits),
-            "sourceSha256": identity["sha256"],
-            "sourceBytes": identity["size"],
-            "changeSummary": {"kind": "draft_edit", "replacedOccurrences": len(edits)},
-            **identity,
+            "changeSummary": {
+                "kind": "draft_edit",
+                "replacedOccurrences": len(edits),
+                "formatted": result.get("formatted"),
+            },
         }
 
     async def run(

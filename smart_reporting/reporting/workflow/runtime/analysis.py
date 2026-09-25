@@ -2888,12 +2888,21 @@ class RuntimeAnalysisMixin:
             )
             return cast(AnalysisSummaryDraft, output)
 
+        async def read_dataset(identity: FileIdentity) -> bytes:
+            # A1 覆盖率软校验：按签发 SHA 直接读取 CSV，不占用 Task 工具调用。
+            return await self._read_identity_bytes(
+                str(self._scope(parent_run_context)["threadId"]),
+                identity,
+                max_bytes=32 * 1024 * 1024,
+            )
+
         workflow_kwargs: dict[str, Any] = {
             "decide_evidence": decide_evidence,
             "run_code": run_code,
             "summarize": summarize,
             "read_file": toolkit.read_file,
             "complete": toolkit.complete_analysis_item,
+            "read_dataset": read_dataset,
         }
         if knowledge_index is not None:
             workflow_kwargs["record_successful_repair"] = record_successful_repair

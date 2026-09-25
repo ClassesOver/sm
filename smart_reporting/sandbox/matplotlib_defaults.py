@@ -10,7 +10,6 @@ MATPLOTLIBRC_CONTENT = """backend: Agg
 font.family: sans-serif
 font.sans-serif: Noto Sans CJK SC, DejaVu Sans
 axes.unicode_minus: False
-figure.constrained_layout.use: True
 """
 
 LOCAL_MATPLOTLIB_ROOT = "/workspace/.sandbox-matplotlib"
@@ -101,11 +100,6 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
         "        f'Could not prepare Noto Sans CJK SC: {_reporting_font_error}',\n"
         "        RuntimeWarning,\n"
         "    )\n"
-        "try:\n"
-        "    from matplotlib import rcParams as _reporting_layout_rc_params\n"
-        "    _reporting_layout_rc_params['figure.constrained_layout.use'] = True\n"
-        "except Exception:\n"
-        "    pass\n"
     )
 
 

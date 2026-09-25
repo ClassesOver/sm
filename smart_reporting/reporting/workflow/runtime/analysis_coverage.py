@@ -36,6 +36,7 @@ def parse_csv_columns(text: str, fields: Iterable[str]) -> dict[str, list[str]]:
         header = next(reader)
     except StopIteration:
         return {}
+    header = [name.lstrip("\ufeff").strip() for name in header]
     positions = {name: index for index, name in enumerate(header) if name in wanted}
     columns: dict[str, list[str]] = {name: [] for name in positions}
     for row in reader:

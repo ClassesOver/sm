@@ -500,31 +500,40 @@ def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
     }
 
 
-_TRACEBACK_FRAME = re.compile(r'File "[^"]+", line \d+, in (\S+)')
+_TRACEBACK_FRAME = re.compile(r'File "([^"]+)", line (\d+), in (\S+)')
+_LIBRARY_FRAME_MARKERS = ("site-packages", "dist-packages", "/lib/python", "<frozen")
 
 
-def _run_failure_signature(failure: Mapping[str, Any]) -> tuple[str, str]:
-    """(errorType, 所属函数)：同一签名连续失败视为无进展。"""
+def _run_failure_signature(failure: Mapping[str, Any]) -> tuple[str, str] | None:
+    """(errorType, 所属函数)；只有脚本运行时异常才有签名。
+
+    输出校验、预检拒绝等没有异常栈的失败说明脚本已被执行或被宿主拦截，
+    不计入"同签名连续失败"。模块级异常用出错行区分，避免修复不同行的
+    KeyError 被当成同一失败。
+    """
 
     details = failure.get("details")
     details = details if isinstance(details, Mapping) else {}
     error_type = details.get("errorType")
-    if not isinstance(error_type, str) or not error_type:
-        code = failure.get("code")
-        error_type = code if isinstance(code, str) and code else "unknown"
-    function = "unknown"
+    frames: list[tuple[str, str, str]] = []
     for key in ("traceback", "stderr", "output", "stdout"):
         text = details.get(key)
         if isinstance(text, str) and text:
             frames = _TRACEBACK_FRAME.findall(text)
             if frames:
-                function = frames[-1]
                 break
-    if function == "unknown":
-        line = details.get("errorLine")
-        if isinstance(line, int) and not isinstance(line, bool):
-            function = f"line:{line}"
+    script_frames = [
+        frame for frame in frames
+        if not any(marker in frame[0] for marker in _LIBRARY_FRAME_MARKERS)
+    ]
+    if not isinstance(error_type, str) or not error_type or not script_frames:
+        return None
+    _path, line, function = script_frames[-1]
+    if function == "<module>":
+        error_line = details.get("errorLine")
+        function = f"<module>:{error_line if isinstance(error_line, int) else line}"
     return error_type[:128], function[:128]
+
 
 class ReportingCodeOpenAIResponses(OpenAIResponses):
     """为 Coding Agent 桥接 Responses API function/custom 混合协议。"""
@@ -687,6 +696,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             self._code_run_failure_streak = 0
             return
         signature = _run_failure_signature(failure or {})
+        if signature is None:
+            self._code_run_failure_signature = None
+            self._code_run_failure_streak = 0
+            return
         if signature == getattr(self, "_code_run_failure_signature", None):
             self._code_run_failure_streak = getattr(self, "_code_run_failure_streak", 0) + 1
         else:
@@ -715,7 +728,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             "report_code_no_progress",
             "Coding Agent 长时间没有进展，提前结束本次尝试并交由 fresh attempt 重来。",
             details={
-                "retryable": True,
+                "retryable": False,
                 "recovery": "retry_then_degrade",
                 "reason": reason,
                 "modelRequestCount": budget.requests,
