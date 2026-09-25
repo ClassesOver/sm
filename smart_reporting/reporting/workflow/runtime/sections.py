@@ -107,9 +107,7 @@ def _analysis_chart_from_registration(
     if interactive_path is not None and (
         interactive_file is None or interactive_file.get("path") != interactive_path
     ):
-        raise ReportingError(
-            "report_phase_artifact_changed", "Plotly 图表缺少匹配的交互文件身份。"
-        )
+        raise ReportingError("report_phase_artifact_changed", "Plotly 图表缺少匹配的交互文件身份。")
     payload = {
         key: value
         for key, value in raw_chart.items()
@@ -128,6 +126,7 @@ def _analysis_chart_from_registration(
         requiresRevision=False,
     ).model_dump(mode="json", by_alias=True)
     return AnalysisChart.model_validate(payload)
+
 
 _SECTION_BLOCK_DEFAULT_INPUT_TOKEN_BUDGET = 64 * 1024
 _SECTION_BLOCK_PAYLOAD_TOKEN_NUMERATOR = 3
@@ -686,6 +685,10 @@ def _section_stage_agent(
             [
                 "render 只规划必要的正文 block 和结构化 claims，不在 objective 中撰写正文。",
                 "每个 claim 必须由至少一个 block 引用；只使用输入中的 metric、管理问题、citation 和 chart ID。",
+                (
+                    "每张图表只绑定到最直接阐述它的那个 block 的 claim；多张图表应分散到各自"
+                    "对应的 block，不要集中绑定到总览或总结 block，避免图表堆叠渲染。"
+                ),
                 "存在 correction 时逐项修正 issues，只能使用 allowedValues，并返回完整规划。",
             ]
         )
@@ -703,6 +706,10 @@ def _section_stage_agent(
             (
                 "Markdown 的标题和正文都不得出现 citationIds、chartIds、图表文件名、"
                 "HTML 标签或 <sup> 脚注；这些引用只能通过输入中的结构化字段绑定。"
+            ),
+            (
+                "输入 charts 非空时，按 charts 顺序为每张图表各写一个独立段落解读，段落中写出"
+                "图表标题的主题词；图表会插在最匹配的段落之后，不要把多张图表合并到一段描述。"
             ),
             (
                 "提交前逐行检查所有 ###/#### 标题。存在 correction 时只修正 issues 指向的当前 block；"
@@ -2042,9 +2049,7 @@ class RuntimeSectionsMixin:
                 image_path = destination_by_chart[chart_id]
                 spec_path = _archived_interactive_path(image_path)
                 interactive_files.append(
-                    await self._write_immutable_artifact(
-                        scope["threadId"], spec_path, spec_content
-                    )
+                    await self._write_immutable_artifact(scope["threadId"], spec_path, spec_content)
                 )
                 interactive_charts[image_path] = spec_path
         if tuple(item.path for item in chart_files) != rendered.chart_paths:

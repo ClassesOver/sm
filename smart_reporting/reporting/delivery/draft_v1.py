@@ -501,6 +501,14 @@ class _ChartRenderPlan:
     citation_anchor_missing: bool
 
 
+def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
+    return (
+        f'![{chart.alt_text}]({file_name} "{chart.title}")'
+        + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
+        + f"\n\n*图表：{chart.title}*"
+    )
+
+
 def _chart_citation_block_indexes(
     blocks: tuple[ReportDraftBlock, ...], chart_citation_ids: tuple[str, ...]
 ) -> tuple[int, ...]:
@@ -512,6 +520,102 @@ def _chart_citation_block_indexes(
         for index, block in enumerate(blocks)
         if chart_citations.intersection(block.citation_ids)
     )
+
+
+_FENCE_LINE = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})")
+_HEADING_LINE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]")
+_LIST_ITEM_LINE = re.compile(r"^[ \t]{0,3}(?:[-*+]|\d{1,9}[.)])[ \t]")
+_ASCII_TERM = re.compile(r"[A-Za-z0-9]{2,}")
+_CJK_RUN = re.compile(r"[\u3400-\u9fff]+")
+# 图文匹配至少需要两个共享词元，避免“收入”“趋势”等单个泛化词把图表拉到无关段落。
+_CHART_UNIT_MIN_SCORE = 2
+
+
+def _block_units(markdown: str) -> list[str]:
+    """把正文 block 切成可在其后插图的顶层单元。
+
+    以空行分段；围栏代码内部不拆；仅含标题的段与后续正文合并，列表项段落合并为
+    同一单元，避免图片落在标题与正文之间或打断列表。
+    """
+
+    paragraphs: list[list[str]] = [[]]
+    fence: str | None = None
+    for line in markdown.split("\n"):
+        match = _FENCE_LINE.match(line)
+        if fence is None and not line.strip():
+            if paragraphs[-1]:
+                paragraphs.append([])
+            continue
+        if match is not None:
+            marker = match.group("fence")
+            if fence is None:
+                fence = marker[0] * len(marker)
+            elif marker.startswith(fence):
+                fence = None
+        paragraphs[-1].append(line)
+    units: list[str] = []
+    pending_heading: list[str] = []
+    previous_is_list = False
+    for lines in (item for item in paragraphs if item):
+        text = "\n".join(lines)
+        if all(_HEADING_LINE.match(line) for line in lines):
+            pending_heading.append(text)
+            previous_is_list = False
+            continue
+        is_list = _LIST_ITEM_LINE.match(lines[0]) is not None or (
+            previous_is_list and lines[0][:1] in {" ", "\t"}
+        )
+        if pending_heading:
+            units.append("\n\n".join((*pending_heading, text)))
+            pending_heading = []
+        elif is_list and previous_is_list and units:
+            units[-1] = f"{units[-1]}\n\n{text}"
+        else:
+            units.append(text)
+        previous_is_list = is_list
+    if pending_heading:
+        units.append("\n\n".join(pending_heading))
+    return units
+
+
+def _chart_terms(text: str) -> frozenset[str]:
+    terms = {item.lower() for item in _ASCII_TERM.findall(text)}
+    for run in _CJK_RUN.findall(text):
+        terms.update(run[index : index + 2] for index in range(len(run) - 1))
+    return frozenset(terms)
+
+
+def _chart_unit_score(unit: str, chart: ReportChartInput) -> int:
+    title = chart.title.strip()
+    if title and title in unit:
+        return 1000
+    return len(_chart_terms(f"{chart.title} {chart.alt_text}") & _chart_terms(unit))
+
+
+def _place_charts_in_units(
+    units: list[str], charts: list[ReportChartInput]
+) -> dict[int, list[str]]:
+    """把同一 block 的多张图表分散到最能阐述它们的段落之后，避免图表堆叠在块尾。"""
+
+    placements: dict[int, list[str]] = {}
+    unmatched: list[str] = []
+    for chart in charts:
+        scores = [_chart_unit_score(unit, chart) for unit in units]
+        qualified = [index for index, score in enumerate(scores) if score >= _CHART_UNIT_MIN_SCORE]
+        if not qualified:
+            unmatched.append(chart.chart_id)
+            continue
+        # 同分时优先尚未插图的单元，再取靠前位置，使多图沿正文自然分布。
+        target = max(
+            qualified,
+            key=lambda index: (scores[index], index not in placements, -index),
+        )
+        placements.setdefault(target, []).append(chart.chart_id)
+    # 无法按文字匹配的图表沿 block 均匀分布；单图时落在块尾，与历史行为一致。
+    for position, chart_id in enumerate(unmatched):
+        target = max(0, -(-(position + 1) * len(units) // len(unmatched)) - 1)
+        placements.setdefault(target, []).append(chart_id)
+    return placements
 
 
 def assemble_report_markdown(
@@ -569,8 +673,13 @@ def assemble_report_markdown(
     # 装配前先按 citation 交集预计算每张图的锚点：优先选同章节内第一个命中的
     # 正文 block，图片改在锚点渲染，原引用位置只保留 citation 标记；引用 block
     # 自身的 citation 子集硬校验不变，图表也不会跨章节移动。
+    # 总览 block 往往引用全部 citation；若每张图都取首个命中 block，会把整章图表
+    # 堆叠到同一位置。因此已被占用的锚点不再接收前移图表，且前移后的渲染顺序不得
+    # 早于同章节上一张图，保持图表顺序与正文引用顺序一致。
     chart_plans: dict[str, _ChartRenderPlan] = {}
+    occupied_locations: set[tuple[int, int]] = set()
     for section_index, section in enumerate(draft.sections):
+        last_render_index = 0
         for block_index, block in enumerate(section.blocks):
             for chart_id in block.chart_ids:
                 if chart_id in chart_plans or chart_id not in chart_registry:
@@ -578,9 +687,17 @@ def assemble_report_markdown(
                 matched_indexes = _chart_citation_block_indexes(
                     section.blocks, chart_registry[chart_id].citation_ids
                 )
-                # 引用 block 的 citation 必然覆盖图表 citation，因此首个命中 block
-                # 不会晚于引用位置；未注册 chartId 由渲染循环按原顺序硬校验拒绝。
-                render_index = matched_indexes[0] if matched_indexes else block_index
+                # 引用 block 的 citation 必然覆盖图表 citation，因此命中 block 不会晚于
+                # 引用位置；未注册 chartId 由渲染循环按原顺序硬校验拒绝。
+                free_anchors = [
+                    index
+                    for index in matched_indexes
+                    if last_render_index <= index < block_index
+                    and (section_index, index) not in occupied_locations
+                ]
+                render_index = free_anchors[0] if free_anchors else block_index
+                last_render_index = render_index
+                occupied_locations.add((section_index, render_index))
                 chart_plans[chart_id] = _ChartRenderPlan(
                     reference=(section_index, block_index),
                     render=(section_index, render_index),
@@ -666,13 +783,7 @@ def assemble_report_markdown(
             unknown_charts = set(block.chart_ids) - set(chart_registry)
             if unknown_charts:
                 raise ReportingError("report_draft_chart_unknown", "草稿引用了未注册图表。")
-            markdown_parts.append(
-                _marker_lines(
-                    block_markdown,
-                    block.citation_ids,
-                    (),
-                )
-            )
+            block_text = _marker_lines(block_markdown, block.citation_ids, ())
             for chart_id in block.chart_ids:
                 chart, _file_name = normalized_charts[chart_id]
                 if chart_plans[chart_id].reference != (section_index, block_index):
@@ -717,15 +828,48 @@ def assemble_report_markdown(
                             "message": "图表 citation 未命中其他正文 block，保持原引用位置渲染。",
                         }
                     )
-            for chart_id in figures_by_render_location.get((section_index, block_index), ()):
-                if chart_id in rendered_chart_ids:
-                    continue
-                rendered_chart_ids.add(chart_id)
-                chart, file_name = normalized_charts[chart_id]
-                markdown_parts.append(
-                    f'![{chart.alt_text}]({file_name} "{chart.title}")'
-                    + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
-                    + f"\n\n*图表：{chart.title}*"
+            block_figures = [
+                chart_id
+                for chart_id in figures_by_render_location.get((section_index, block_index), ())
+                if chart_id not in rendered_chart_ids
+            ]
+            rendered_chart_ids.update(block_figures)
+            units = _block_units(block_markdown) if block_figures else []
+            placements = (
+                _place_charts_in_units(
+                    units, [normalized_charts[chart_id][0] for chart_id in block_figures]
+                )
+                if units
+                else {}
+            )
+            if not placements or set(placements) == {len(units) - 1}:
+                # 图表全部落在块尾时保留原始正文，不做任何重排。
+                markdown_parts.append(block_text)
+                ordered_figures = placements.get(len(units) - 1, block_figures)
+                markdown_parts.extend(
+                    _chart_figure_markdown(*normalized_charts[chart_id])
+                    for chart_id in ordered_figures
+                )
+            else:
+                for unit_index, unit in enumerate(units):
+                    if unit_index == len(units) - 1:
+                        unit = _marker_lines(unit, block.citation_ids, ())
+                    markdown_parts.append(unit)
+                    markdown_parts.extend(
+                        _chart_figure_markdown(*normalized_charts[chart_id])
+                        for chart_id in placements.get(unit_index, ())
+                    )
+                auto_fixes.append(
+                    {
+                        "code": "chart_placed_within_block",
+                        "sectionCode": definition.code,
+                        "blockId": block.block_id,
+                        "placements": {
+                            chart_id: unit_index + 1
+                            for unit_index, chart_ids in sorted(placements.items())
+                            for chart_id in chart_ids
+                        },
+                    }
                 )
 
     if require_table and not any(
