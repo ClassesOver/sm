@@ -42,7 +42,11 @@ from smart_reporting.reporting.tests.delivery_fakes import (
 )
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting.workflow.runtime import base as runtime_module
-from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope, reporting_scope_keys
+from smart_reporting.reporting.workflow.scope import (
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+    ReportingWorkflowScope,
+    reporting_scope_keys,
+)
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
@@ -690,6 +694,7 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     runtime.state_repository = StateRepository()
     result = await runtime.issue_http_publication(
         thread_id="thread",
+        caller_thread_id="thread",
         user_id="7",
         workflow_session_id="workflow-session",
         workflow_run_id="workflow-run",
@@ -707,6 +712,132 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
         "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
     )
     assert "html" not in result
+
+
+@pytest.mark.anyio
+async def test_http_publication_resolves_caller_thread_from_run_dependencies() -> None:
+    """生产 durable payload 不固化作用域；caller thread 只能从 run dependencies 恢复。
+
+    回归：AgentOS/MCP 形态发布曾因 durable 无 scope 键、又未向 issue_http_publication
+    传入 dependencies，caller_thread_id 回退到 workflow 内部会话 id，与调用方 thread
+    不一致，误判 report_editor_scope_mismatch，导致正式发布会 100% 失败关闭。
+    """
+    pdf = b"%PDF-1.4 fake"
+    word = b"PK fake docx"
+    content = {
+        "reportId": "report-1",
+        "revision": 1,
+        "jobId": "job-1",
+        "editorJob": {"jobId": "job-1", "status": "validated"},
+        "markdownPath": "reports/report.md",
+        "pdfPath": "reports/report.pdf",
+        "pdfSize": len(pdf),
+        "pdfSha256": hashlib.sha256(pdf).hexdigest(),
+        "wordPath": "reports/report.docx",
+        "wordSize": len(word),
+        "wordSha256": hashlib.sha256(word).hexdigest(),
+        "sourceWarnings": [],
+        "codingReceipts": [],
+    }
+    events: list[str] = []
+
+    class Persistence:
+        async def persist(self, **values: Any) -> None:
+            events.append("persist")
+
+    class Grants:
+        async def issue(self, **values: Any):
+            events.append("grant")
+            return "raw", ReportDownloadGrant(
+                grant_hash="b" * 64,
+                scope=values["scope"],
+                report_id=values["report_id"],
+                revision=values["revision"],
+                pdf_path=values["pdf_path"],
+                pdf_size=values["pdf_size"],
+                pdf_sha256=values["pdf_sha256"],
+                word_path=values["word_path"],
+                word_size=values["word_size"],
+                word_sha256=values["word_sha256"],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+    class EditorGrants:
+        async def issue(self, context: Any):
+            events.append("editor-grant")
+            assert context.scope["database"] == "database-1"
+            assert context.scope["callerThreadId"] == "thread"
+            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+
+    class Workspace:
+        async def aread_text(self, thread_id: str, path: str) -> str:
+            assert thread_id == "reporting-run-workspace-key"
+            return "# 报告\n"
+
+        async def apath_exists(self, thread_id: str, path: str) -> bool:
+            assert thread_id == "reporting-run-workspace-key"
+            return False
+
+        async def awrite_text(self, thread_id: str, path: str, content: str) -> None:
+            assert thread_id == "reporting-run-workspace-key"
+
+        async def adestroy(self, thread_id: str) -> bool:
+            events.append("destroy")
+            return True
+
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.artifact_persistence = Persistence()
+    runtime.download_grants = Grants()
+    runtime.editor_grants = EditorGrants()
+    runtime.workspace_service = Workspace()
+    runtime.report_public_base_url = "http://10.233.32.64:27018"
+    # 关键复现条件：durable payload 没有 report_workflow_scope 键（生产行为）。
+    durable = SimpleNamespace(state_version=3, payload={})
+
+    class StateRepository:
+        async def get(self, report_run_id: str):
+            assert report_run_id == "workflow-run"
+            return durable
+
+        async def apply(self, report_run_id: str, command: Any, *, expected_version: int):
+            assert report_run_id == "workflow-run"
+            events.append("editor-context")
+
+    runtime.state_repository = StateRepository()
+    dependencies = {
+        REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+            "externalRunId": "external-1",
+            "threadId": "thread",
+            "userId": "7",
+            "database": "database-1",
+            "companyId": "company-1",
+        }
+    }
+    result = await runtime.issue_http_publication(
+        thread_id="reporting-run-workspace-key",
+        caller_thread_id="thread",
+        user_id="7",
+        workflow_session_id="report-session-internal",
+        workflow_run_id="workflow-run",
+        dependencies=dependencies,
+        output=content,
+    )
+
+    assert events == ["persist", "editor-context", "destroy", "grant", "editor-grant"]
+    assert result["editor"]["openUrl"] == (
+        "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
+    )
+
+    # 校验仍然失败关闭：dependencies 与 stored 都无法提供 caller thread 时不得签发。
+    with pytest.raises(ReportingError, match="report_editor_scope_mismatch"):
+        await runtime.issue_http_publication(
+            thread_id="reporting-run-workspace-key",
+            caller_thread_id="thread",
+            user_id="7",
+            workflow_session_id="report-session-internal",
+            workflow_run_id="workflow-run",
+            output=content,
+        )
 
 
 @pytest.mark.anyio
@@ -924,6 +1055,7 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
     with pytest.raises(ReportingError) as raised:
         await runtime.issue_http_publication(
             thread_id="thread",
+            caller_thread_id="thread",
             user_id="7",
             workflow_session_id="workflow-session",
             workflow_run_id="workflow-run",
@@ -991,6 +1123,7 @@ async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails(
     with pytest.raises(ReportingError) as raised:
         await runtime.issue_http_publication(
             thread_id="thread",
+            caller_thread_id="thread",
             user_id="7",
             workflow_session_id="workflow-session",
             workflow_run_id="workflow-run",
@@ -1072,9 +1205,11 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
             thread_id="thread",
             run_id="workflow-run",
         ).workspace_key,
+        caller_thread_id="thread",
         user_id="native",
         workflow_session_id="thread",
         workflow_run_id="workflow-run",
+        dependencies=None,
         output=output,
     )
     runtime.issue_workspace_publication.assert_not_awaited()

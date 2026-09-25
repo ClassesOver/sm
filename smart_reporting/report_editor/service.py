@@ -31,7 +31,8 @@ from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from ..workspace import WorkspacePathConflict
 
-EDITOR_GRANT_TTL = timedelta(minutes=10)
+# 签发链接默认长期有效（10 年，等价永久；存储列不允许 NULL，用远端日期表达）。
+EDITOR_GRANT_TTL = timedelta(days=3650)
 EDITOR_SESSION_TTL = timedelta(hours=8)
 
 

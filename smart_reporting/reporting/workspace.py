@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agno.run import RunContext
+from loguru import logger as loguru_logger
 from PIL import Image, UnidentifiedImageError
 
 from ..async_utils import complete_cleanup
@@ -654,6 +655,10 @@ class WorkspaceReportService:
                 run_context,
             )
             if validation.get("ok") is not True:
+                loguru_logger.warning(
+                    "report_runtime_validation_failed details={}",
+                    json.dumps(validation, ensure_ascii=False, default=str)[:4000],
+                )
                 raise WorkspaceError("PDF/Word 联合验收未通过。")
             await self.service.amove_files(thread_id, staging_relative, final_directory_relative)
             published = True

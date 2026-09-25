@@ -95,7 +95,16 @@ class ReportRuntime:
             "sha256": _sha256(path),
         }
 
-    def _images(self, markdown_path: Path, tokens: list[Any]) -> set[Path]:
+    def _images(self, markdown_path: Path, tokens: list[Any], state: dict[str, Any] | None = None) -> set[Path]:
+        # 编辑器导出的草稿位于 revision-N/draft/ 子目录，图片仍在报告根目录；
+        # 相对解析失败时按渲染清单（工作区相对路径）回退定位。
+        manifest_paths: list[str] = []
+        render = state.get("render") if isinstance(state, dict) else None
+        raw_images = render.get("images") if isinstance(render, dict) else None
+        if isinstance(raw_images, list):
+            for item in raw_images:
+                if isinstance(item, dict) and isinstance(item.get("path"), str):
+                    manifest_paths.append(item["path"].replace("\\", "/"))
         images: list[Path] = []
         for token in tokens:
             for child in token.children or []:
@@ -112,6 +121,18 @@ class ReportRuntime:
                 if relative.is_absolute() or ".." in relative.parts:
                     raise ReportFailure("Markdown 图片只能引用工作区内的相对路径")
                 image = markdown_path.parent.joinpath(*relative.parts)
+                if not image.is_file():
+                    suffix = "/" + relative.as_posix()
+                    matched = next(
+                        (
+                            full
+                            for full in manifest_paths
+                            if full == relative.as_posix() or full.endswith(suffix)
+                        ),
+                        None,
+                    )
+                    if matched is not None:
+                        image = self.workspace.joinpath(*PurePosixPath(matched).parts)
                 _reject_symlinks(self.workspace, image)
                 try:
                     image.relative_to(self.workspace)
@@ -138,6 +159,19 @@ class ReportRuntime:
             if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
                 raise ReportFailure("HTML 图片只能引用已校验的工作区资源")
             path = (source_parent / unquote(parsed.path)).resolve()
+            if path not in allowed_images:
+                # 草稿目录与图文目录分离时，按已校验清单后缀回退（与 _images 一致）。
+                suffix = "/" + PurePosixPath(unquote(parsed.path)).as_posix()
+                matched = next(
+                    (
+                        candidate
+                        for candidate in allowed_images
+                        if str(candidate).replace("\\", "/").endswith(suffix)
+                    ),
+                    None,
+                )
+                if matched is not None:
+                    path = matched
             if path not in allowed_images:
                 raise ReportFailure("HTML 图片引用了未校验资源")
             mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
@@ -168,7 +202,7 @@ class ReportRuntime:
         try:
             import pypdf
             from markdown_it import MarkdownIt
-            from weasyprint import HTML, URLFetcher
+            from weasyprint import HTML, URLFetcher, default_url_fetcher
         except ImportError as error:
             raise ReportFailure("PDF 运行时依赖不可用") from error
 
@@ -212,7 +246,7 @@ class ReportRuntime:
             if marker_sections != expected_section_codes:
                 raise ReportFailure("Markdown 正式章节标识与已批准提纲不一致")
             _bind_heading_anchors(tokens, context["headingNumbers"])
-            allowed_images = self._images(source, tokens)
+            allowed_images = self._images(source, tokens, state)
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
@@ -231,6 +265,10 @@ class ReportRuntime:
 
             def fetch_resource(url: str) -> dict[str, Any]:
                 parsed = urlsplit(url)
+                if parsed.scheme == "data":
+                    # data URI 由 _inline_images 从已校验工作区图片生成，自包含
+                    # 内容，交给 weasyprint 默认抓取器解码即可。
+                    return default_url_fetcher(url)
                 if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
                     raise ReportFailure("PDF 渲染禁止访问外部资源")
                 path = Path(unquote(parsed.path)).resolve()
@@ -238,8 +276,10 @@ class ReportRuntime:
                     raise ReportFailure("PDF 渲染引用了未校验资源")
                 return file_fetcher(url)
 
+            # html_body 已将工作区图片内联为 data URI，PDF 与 Word 都必须用它：
+            # 草稿目录与图文目录分离时，相对 src 在两路渲染器里都解析不到。
             pdf_document, word_document = _semantic_documents(
-                body,
+                html_body,
                 context=context,
                 layout=layout,
                 include_cover=include_cover,
@@ -254,7 +294,7 @@ class ReportRuntime:
                 preflight_document.pages, context["headingNumbers"]
             )
             pdf_document, _ = _semantic_documents(
-                body,
+                html_body,
                 context=context,
                 layout=layout,
                 toc_page_numbers=toc_page_numbers,
@@ -292,6 +332,8 @@ class ReportRuntime:
                 output=temporary_docx,
                 context=context,
                 layout=layout,
+                include_cover=include_cover,
+                include_toc=include_toc,
             )
             pdf_size = temporary.stat().st_size
             if pdf_size > MAX_PDF_BYTES:

@@ -2393,30 +2393,9 @@ button {
   }
 }
 
-.report-section-marker {
-  display: none;
-}
-
+.report-section-marker,
 .report-citation-marker {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  margin: 0 3px;
-  padding: 0 6px;
-  border: 1px solid #9cc9d8;
-  border-radius: 999px;
-  background: #f1f7fb;
-  color: transparent;
-  font-size: 0;
-  user-select: none;
-}
-
-.report-citation-marker::before {
-  color: #007ea7;
-  content: attr(data-marker-label);
-  font-family: Inter, "Noto Sans SC", sans-serif;
-  font-size: 12px;
-  line-height: 20px;
+  display: none;
 }
 
 @media (max-width: 768px) {
@@ -2839,14 +2818,5 @@ button {
   #report-editor .ProseMirror img,
   #report-editor .ProseMirror blockquote {
     break-inside: avoid;
-  }
-
-  #report-editor .report-citation-marker {
-    color: #007ea7;
-    background: transparent;
-  }
-
-  #report-editor .report-citation-marker::before {
-    color: #007ea7;
   }
 }

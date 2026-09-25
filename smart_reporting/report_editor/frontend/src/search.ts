@@ -5,6 +5,7 @@ export interface SearchControllerOptions {
   getText: () => string
   replaceText: (text: string) => void
   setQuery?: (query: string, replacement: string) => void
+  applyHighlight?: (query: string, current: number) => void
   navigate?: (direction: 'prev' | 'next') => void
 }
 
@@ -37,7 +38,7 @@ function replaceOutsideProtected(text: string, query: string, replacement: strin
   return result + text.slice(cursor)
 }
 
-export function createSearchController({ root, getText, replaceText, setQuery, navigate }: SearchControllerOptions) {
+export function createSearchController({ root, getText, replaceText, setQuery, applyHighlight, navigate }: SearchControllerOptions) {
   const panel = document.createElement('section')
   panel.className = 'search-panel'
   panel.hidden = true
@@ -96,6 +97,7 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
     panel.querySelectorAll<HTMLButtonElement>('[data-search="prev"], [data-search="next"], [data-search="replace"], [data-search="all"]')
       .forEach((button) => { button.disabled = matches.length === 0 })
     if (setQuery) setQuery(query.value, replacement.value)
+    else if (applyHighlight) applyHighlight(query.value, current)
     else highlight()
   }
   const move = (offset: number) => {
@@ -112,6 +114,7 @@ export function createSearchController({ root, getText, replaceText, setQuery, n
     current = 0
     count.textContent = '0 个匹配'
     if (setQuery) setQuery('', replacement.value)
+    else if (applyHighlight) applyHighlight('', 0)
     else clearHighlights()
     opener?.focus()
     opener = null
