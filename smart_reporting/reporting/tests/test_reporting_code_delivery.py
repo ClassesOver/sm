@@ -1224,9 +1224,18 @@ async def test_consecutive_critical_review_rounds_counter_resets_on_clean_round(
     )
     functions = {tool.name: tool for tool in toolkit.tool_functions}
 
+    # 合并 origin/code 后的语义：同一 execution 的多次 view_image 只累计一轮
+    # （run_id 去重），跨执行的新审查轮才继续累计。
     await toolkit._update_tool_result(
         _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
     )
+    await toolkit._update_tool_result(
+        _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
+    )
+    assert toolkit.consecutive_critical_review_rounds == 1
+    assert toolkit.visual_review_gate_tripped is False
+
+    toolkit._critical_review_run_id = "other-run"
     await toolkit._update_tool_result(
         _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
     )
@@ -1238,7 +1247,8 @@ async def test_consecutive_critical_review_rounds_counter_resets_on_clean_round(
     )
     assert toolkit.consecutive_critical_review_rounds == 0
 
-    for _ in range(3):
+    for index in range(3):
+        toolkit._critical_review_run_id = f"run-{index}"
         await toolkit._update_tool_result(
             _view_image_review_call(functions, requires_revision=True, fresh_review_count=1)
         )

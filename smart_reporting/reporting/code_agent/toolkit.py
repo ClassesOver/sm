@@ -767,6 +767,25 @@ def _findings_decoder_root(node: ast.AST, parameters: set[str]) -> str | None:
     return current.id
 
 
+def _reject_generic_data_helpers(tree: ast.AST) -> None:
+    details = _generic_data_helper_details(tree)
+    if details is None:
+        return
+    if details["reason"] == "generic_loader":
+        message = (
+            "禁止编写通用数据加载函数：函数 {functionName} 接收 {parameterName} 并直接返回"
+            "加载后的原始数据。请内联使用 json.load(open(LITERAL_PATH)) 读取数据，"
+            "不要封装通用加载器。".format(**details)
+        )
+    else:
+        message = (
+            "禁止编写通用 findings 解码函数：函数 {functionName} 接收 {parameterName} 并直接返回"
+            "原始行数据。请使用显式链式访问如 data['findings'][0]['rows']，"
+            "不要封装通用数据解码器。".format(**details)
+        )
+    raise ReportingError("report_code_generic_data_helper", message, details=details)
+
+
 def _generic_data_helper_details(tree: ast.AST) -> dict[str, Any] | None:
     aliases = _import_aliases(tree)
     for node in ast.walk(tree):
@@ -1144,6 +1163,7 @@ def _collect_preflight(
         lambda: _reject_code_envelope(tree, tool_name),
         lambda: _reject_embedded_data(tree),
         lambda: _reject_dynamic_path_parser(tree),
+        lambda: _reject_generic_data_helpers(tree),
         lambda: _reject_unauthorized_paths(
             tree,
             context.script_path,

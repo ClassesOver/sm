@@ -730,15 +730,17 @@ async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrappe
     assert sample["rawProtocolCorrect"] is True
     assert sample["envelopeNormalizedInputs"] == (1 if wrapped else 0)
     assert sample["firstScriptFailureCode"] == "report_python_source_path_invalid"
-    assert sample["modelRequestMetrics"][0]["firstToolFailure"] == {
-        "toolName": "write_script",
-        "code": "report_python_source_path_invalid",
-        "diagnostics": {
-            "path": "analysis/a.py",
-            "unsignedPaths": [],
-            "forbiddenPathOperations": ["os.getcwd"],
-        },
-    }
+    # 合并 origin/code：预检失败新增 violations 逐项诊断（远端"增强诊断"），
+    # 断言收敛为关键字段 + violations 存在性。
+    first_failure = sample["modelRequestMetrics"][0]["firstToolFailure"]
+    assert first_failure["toolName"] == "write_script"
+    assert first_failure["code"] == "report_python_source_path_invalid"
+    diagnostics = first_failure["diagnostics"]
+    assert diagnostics["path"] == "analysis/a.py"
+    assert diagnostics["unsignedPaths"] == []
+    assert diagnostics["forbiddenPathOperations"] == ["os.getcwd"]
+    assert diagnostics["violations"]
+    assert diagnostics["violations"][0]["code"] == "report_python_source_path_invalid"
     assert "firstToolFailure" not in sample["modelRequestMetrics"][1]
 
 
