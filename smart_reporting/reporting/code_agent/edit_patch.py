@@ -102,14 +102,13 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
 
 
 def _line_spans(source: str) -> list[tuple[int, int]]:
-    """每行 (起点, 不含换行符的终点)。"""
+    """按 LF 切分的每行 (起点, 不含换行符的终点)；与 SEARCH 的切分方式一致。"""
 
     spans: list[tuple[int, int]] = []
     position = 0
-    for line in source.splitlines(keepends=True):
-        content = line.rstrip("\r\n")
-        spans.append((position, position + len(content)))
-        position += len(line)
+    for line in source.split("\n"):
+        spans.append((position, position + len(line)))
+        position += len(line) + 1
     return spans
 
 
@@ -134,13 +133,16 @@ def _reindent(new: str, add: str, remove: str) -> str | None:
 
 def _fuzzy_candidates(
     source: str, old: str, new: str
-) -> tuple[str, list[tuple[int, int, str]]]:
+) -> tuple[str, list[tuple[int, int, str]], str]:
     """精确匹配失败后的整行容错：先忽略行尾空白，再允许整块统一缩进偏移。
 
-    只在 SEARCH 由完整行构成时生效；返回 (匹配模式, [(起点, 终点, 替换文本)])。
+    只在 SEARCH 由完整行构成时生效；返回 (匹配模式, [(起点, 终点, 替换文本)], 提示)。
+    SEARCH 以换行结尾（协议中"分隔符前保留空行"的写法）时，匹配区域同样包含
+    末行换行。
     """
 
-    search = old.split("\n")
+    trailing_newline = old.endswith("\n")
+    search = (old[:-1] if trailing_newline else old).split("\n")
     if not any(line.strip() for line in search):
         return "", []
     spans = _line_spans(source)
@@ -148,9 +150,14 @@ def _fuzzy_candidates(
     count = len(search)
     trailing: list[tuple[int, int, str]] = []
     indented: list[tuple[int, int, str]] = []
+    hint = ""
     for index in range(len(lines) - count + 1):
         window = lines[index:index + count]
         start, end = spans[index][0], spans[index + count - 1][1]
+        if trailing_newline:
+            if index + count >= len(spans):
+                continue  # 末行后没有换行，无法与以换行结尾的 SEARCH 对齐
+            end += 1
         if all(a.rstrip() == b.rstrip() for a, b in zip(window, search, strict=True)):
             trailing.append((start, end, new))
             continue
@@ -173,12 +180,18 @@ def _fuzzy_candidates(
             and (add or b.startswith(remove))
             for a, b in pairs
         ):
+            if '"""' in new or "\'\'\'" in new:
+                # 重排缩进会改变多行字符串字面量的值，不做自动对齐。
+                hint = "SEARCH 按缩进偏移可唯一定位，但 REPLACE 含多行字符串，无法安全重排缩进；请按原文缩进逐字复制。"
+                continue
             replacement = _reindent(new, add, remove)
-            if replacement is not None:
-                indented.append((start, end, replacement))
+            if replacement is None:
+                hint = "SEARCH 按缩进偏移可唯一定位，但 REPLACE 有行的缩进小于偏移量，无法对齐；请按原文缩进逐字复制。"
+                continue
+            indented.append((start, end, replacement))
     if trailing:
-        return "trailing_whitespace", trailing
-    return ("indentation", indented) if indented else ("", [])
+        return "trailing_whitespace", trailing, ""
+    return ("indentation", indented, "") if indented else ("", [], hint)
 
 
 def apply_edit_blocks(source: str, edits: list[tuple[str, str]]) -> str:
@@ -197,9 +210,14 @@ def apply_edit_blocks_with_modes(
             raise _edit_error("unchanged", "SEARCH 与 REPLACE 文本不能相同。", index)
         start = source.find(old)
         if start < 0:
-            mode, candidates = _fuzzy_candidates(source, old, new)
+            mode, candidates, hint = _fuzzy_candidates(source, old, new)
             if not candidates:
-                raise _edit_error("not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index)
+                error = _edit_error(
+                    "not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index
+                )
+                if hint:
+                    error.details["hint"] = hint
+                raise error
             if len(candidates) > 1:
                 raise _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
             fuzzy_start, fuzzy_end, fuzzy_new = candidates[0]

@@ -189,3 +189,65 @@ async def test_missing_output_diagnosis_separates_unreferenced_and_unexecuted(
     assert diagnosis["writeNotExecutedPaths"] == ["analysis/out.json"]
     assert "notReferencedPaths" not in diagnosis
     assert "未执行到" in diagnosis["outputHint"]
+
+
+@pytest.mark.anyio
+async def test_applied_draft_patch_with_remaining_violations_keeps_draft(
+    binding, runtime  # noqa: F811
+):
+    toolkit = _toolkit(binding, runtime)
+    source = (
+        'import json\njson.dump({}, open("data/x.json", "w"))\n'
+        'json.dump({}, open("data/y.json", "w"))\n'
+    )
+    await toolkit.write_script(source)
+
+    # 两次补丁都已应用、各修掉一处违规：属于逐步修正，不应作废草稿。
+    first = await toolkit.edit_script(
+        multi_edit_patch(source, [('"data/x.json"', '"analysis/out.json"')])
+    )
+    await _post_hook(toolkit, "edit_script", first)
+    assert first["code"] == "report_python_source_path_invalid"
+    patched = source.replace('"data/x.json"', '"analysis/out.json"')
+    second = await toolkit.edit_script(
+        multi_edit_patch(patched, [("\njson.dump({}, open(\"data/y.json\", \"w\"))", "")])
+    )
+    await _post_hook(toolkit, "edit_script", second)
+
+    assert second["ok"] is True
+    assert second["status"] == "draft_promoted"
+
+
+@pytest.mark.anyio
+async def test_discarded_draft_receipt_points_to_write_script(binding, runtime):  # noqa: F811
+    toolkit = _toolkit(binding, runtime)
+    await _rejected(toolkit)
+    missing = multi_edit_patch(REJECTED_SOURCE, [("not in draft", "x = 1")])
+
+    for _ in range(2):
+        result = await toolkit.edit_script(missing)
+        await _post_hook(toolkit, "edit_script", result)
+
+    assert result["draftDiscarded"] is True
+    assert "draftSha256" not in result["details"]
+    assert result["details"]["nextTools"] == ["write_script"]
+
+
+def test_plotly_io_writers_take_path_from_second_argument():
+    import ast
+
+    from smart_reporting.reporting.code_agent.toolkit import (
+        _declared_output_write_paths,
+        _referenced_literal_paths,
+    )
+
+    tree = ast.parse(
+        "import plotly.io as pio\n"
+        'pio.write_image(fig, "charts/a.png")\n'
+        'pio.write_json(fig, "charts/a.plotly.json")\n'
+        'fig.write_image("charts/b.png")\n'
+    )
+    declared = frozenset({"charts/a.png", "charts/a.plotly.json", "charts/b.png"})
+
+    assert _declared_output_write_paths(tree, declared) == declared
+    assert _referenced_literal_paths(tree) == declared

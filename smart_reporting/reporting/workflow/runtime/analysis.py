@@ -14,6 +14,7 @@ from ....task_execution import (
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
+from ...code_agent.failure_policy import final_attempt_degradable
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -547,20 +548,6 @@ def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]
             if path is not None
         )
     )
-
-
-# 这些错误意味着任务本身已无法继续（取消、超时、租约或工作区不可用），
-# 连零图提交也不可靠，必须上抛由上层处理。
-_VISUALIZATION_UNDEGRADABLE_ERROR_CODES = frozenset(
-    {
-        "report_task_cancelled",
-        "report_task_timeout",
-        "report_task_lease_conflict",
-        "report_workspace_unavailable",
-        "report_workspace_capability_missing",
-        "report_coding_task_conflict",
-    }
-)
 
 
 def _visualization_repair_facts(
@@ -1298,9 +1285,13 @@ class RuntimeAnalysisMixin:
                             ),
                         )
 
+                    degrade_attempted = False
+
                     async def degrade(
                         error: Exception, task_context: RunContext
                     ) -> Mapping[str, Any]:
+                        nonlocal degrade_attempted
+                        degrade_attempted = True
                         error_code = str(
                             getattr(error, "code", "report_visualization_section_failed")
                         )
@@ -1366,10 +1357,12 @@ class RuntimeAnalysisMixin:
                         # 最后一次 fresh attempt 仍失败时，非基础设施错误（协议错误、产物
                         # 身份失败等工作流内判为 fatal 的错误）也按零图降级成稿，不让单章
                         # 图表失败升级为整份报告失败；任务取消、租约冲突等仍原样上抛。
+                        # 工作流内已经走过 degrade（其提交或落账本身失败）时不重复降级，
+                        # 避免同一章节记录两条降级告警、根因被二次失败码掩盖。
                         if (
                             attempt < max_attempts - 1
-                            or getattr(error, "code", None)
-                            in _VISUALIZATION_UNDEGRADABLE_ERROR_CODES
+                            or degrade_attempted
+                            or not final_attempt_degradable(error)
                         ):
                             raise
                         loguru_logger.bind(

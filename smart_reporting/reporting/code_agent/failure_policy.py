@@ -59,6 +59,35 @@ POLICIES = MappingProxyType({
 })
 
 
+# 基础设施与部署配置类失败：任务本身已无法继续（取消、超时、租约、工作区），或
+# 运行时装配缺失。这类错误即使在最后一次 fresh attempt 也不得降级为零图成稿，
+# 必须上抛暴露；与 POLICIES 同处维护，新增此类错误码时两处一并更新。
+INFRASTRUCTURE_FATAL_CODES = frozenset(
+    {
+        "report_task_cancelled",
+        "report_task_timeout",
+        "report_task_lease_conflict",
+        "report_workspace_unavailable",
+        "report_workspace_capability_missing",
+        "report_coding_task_conflict",
+        "report_code_mode_runtime_missing",
+        "report_capability_invalid",
+        "report_visualization_code_agent_missing",
+        "report_visualization_executor_missing",
+        "report_code_model_protocol_missing",
+    }
+)
+
+
+def final_attempt_degradable(error: BaseException) -> bool:
+    """最后一次 fresh attempt 失败时能否按零图降级。
+
+    只接受业务/模型侧的 ReportingError；普通异常多为代码缺陷，必须上抛暴露。
+    """
+
+    return isinstance(error, ReportingError) and error.code not in INFRASTRUCTURE_FATAL_CODES
+
+
 def recovery_for(error: Exception, task: TaskKind) -> Recovery:
     if not isinstance(error, ReportingError):
         return "retry"

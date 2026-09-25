@@ -71,6 +71,11 @@ _FORBIDDEN_PATH_CALLS = frozenset(
 _PATH_ARGUMENT_CALLS = frozenset({"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path"})
 _PATH_ARGUMENT_METHODS = frozenset(
     {
+        # Plotly 写出（fig.write_image(path) / pio.write_image(fig, path)）；
+        # 不含 write_text/write_bytes：pathlib 这两个方法的首参是内容而非路径。
+        "write_html",
+        "write_image",
+        "write_json",
         "imread",
         "imsave",
         "read_csv",
@@ -306,11 +311,19 @@ def _literal_string(
     return None
 
 
+def _positional_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
+    """plotly.io.write_image/write_json(fig, path) 的路径是第二个位置参数。"""
+
+    if qualified_name.startswith("plotly.io."):
+        return list(call.args[1:2])
+    return list(call.args[:1])
+
+
 def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
     method_name = qualified_name.rsplit(".", 1)[-1]
     if qualified_name not in _PATH_ARGUMENT_CALLS and method_name not in _PATH_ARGUMENT_METHODS:
         return ()
-    arguments = list(call.args[:1])
+    arguments = _positional_path_arguments(call, qualified_name)
     arguments.extend(
         keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
     )
@@ -414,8 +427,8 @@ def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) 
                 resolved = _resolved_path_literal(node.func.value, aliases, bindings)
                 if resolved in declared_paths:
                     found.add(resolved)
-                # 继续尝试第一个位置参数（plotly 的 fig.write_image 风格）。
-            arguments = list(node.args[:1])
+                # 继续尝试位置参数（plotly 的 fig.write_image / pio.write_image 风格）。
+            arguments = _positional_path_arguments(node, qualified_name)
             arguments.extend(
                 keyword.value
                 for keyword in node.keywords
@@ -474,21 +487,31 @@ def _parses(source: str) -> bool:
 
 
 def _syntax_edit_failure(
-    error: SyntaxError, updated: str, current_sha256: str
+    error: SyntaxError,
+    updated: str,
+    sha256: str,
+    *,
+    draft: bool = False,
 ) -> dict[str, Any]:
     lines = updated.splitlines()
     line = error.lineno or 0
+    message = (
+        "补丁后的草稿存在语法错误，仍保留为隔离草稿、未写入正式脚本；"
+        "请以新的 draftSha256 继续用 edit_script 修正。"
+        if draft
+        else "补丁应用后脚本出现语法错误，本次编辑未写入，脚本保持不变；"
+        "请以同一 SHA256 重新提交修正后的补丁（SEARCH 仍以当前脚本为准）。"
+    )
     return _failure(
         "report_code_source_invalid",
-        "补丁应用后脚本出现语法错误，本次编辑未写入，脚本保持不变；"
-        "请以同一 SHA256 重新提交修正后的补丁（SEARCH 仍以当前脚本为准）。",
+        message,
         {
             "reason": error.msg,
             "errorType": "SyntaxError",
             "line": line,
             "column": error.offset or 0,
             **({"sourceLine": lines[line - 1][:300]} if 0 < line <= len(lines) else {}),
-            "sourceSha256": current_sha256,
+            ("draftSha256" if draft else "sourceSha256"): sha256,
             "nextTools": ["edit_script"],
         },
     )
@@ -2052,7 +2075,14 @@ class ReportingCodeModeToolkit(Toolkit):
         # 成功但未带来运行通过的编辑不算进展，避免在"编辑空转"死局里反复重置。
         if name == "edit_script" and failed:
             self._edit_failures_since_progress += 1
-            if self._rejected_draft is not None:
+            failure_code = result.get("code") if isinstance(result, Mapping) else None
+            patch_not_applied = isinstance(failure_code, str) and failure_code.startswith(
+                "report_code_script_edit_"
+            )
+            if self._rejected_draft is not None and not patch_not_applied:
+                # 补丁已应用但仍有违规或语法错误，属于逐步修正的进展，不计入空转。
+                self._draft_edit_failures = 0
+            elif self._rejected_draft is not None:
                 self._draft_edit_failures += 1
                 if self._draft_edit_failures >= REWRITE_GATE_EDIT_FAILURES:
                     # 草稿补丁连续失败（多为补丁格式 edit_invalid）：继续推荐草稿
@@ -2061,6 +2091,11 @@ class ReportingCodeModeToolkit(Toolkit):
                     self._draft_edit_failures = 0
                     if isinstance(fc.result, dict):
                         fc.result["draftDiscarded"] = True
+                        details = fc.result.get("details")
+                        if isinstance(details, dict):
+                            # 回执不得再指向已作废草稿或推荐草稿补丁。
+                            details.pop("draftSha256", None)
+                            details["nextTools"] = ["write_script"]
                         fc.result["message"] = (
                             f"{fc.result.get('message', '')}草稿补丁已连续失败，草稿已作废；"
                             "请用 write_script 重新提交完整脚本，并修正全部 violations。"
@@ -2753,7 +2788,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 {"nextTools": ["read_script", "edit_script"]},
             )
         try:
-            updated, _fuzzy = apply_edit_blocks_with_modes(draft_source, edits)
+            updated, fuzzy_matches = apply_edit_blocks_with_modes(draft_source, edits)
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(
@@ -2773,26 +2808,7 @@ class ReportingCodeModeToolkit(Toolkit):
             # 否则语法错误（及未检查的路径违规）会漏到 run_script 才暴露。
             new_sha256 = hashlib.sha256(updated.encode("utf-8")).hexdigest()
             self._rejected_draft = (new_sha256, updated)
-            lines = updated.splitlines()
-            line = error.lineno or 0
-            return _failure(
-                "report_code_source_invalid",
-                "补丁后的草稿存在语法错误，仍保留为隔离草稿、未写入正式脚本；"
-                "请以新的 draftSha256 继续用 edit_script 修正。",
-                {
-                    "reason": error.msg,
-                    "errorType": "SyntaxError",
-                    "line": line,
-                    "column": error.offset or 0,
-                    **(
-                        {"sourceLine": lines[line - 1][:300]}
-                        if 0 < line <= len(lines)
-                        else {}
-                    ),
-                    "draftSha256": new_sha256,
-                    "nextTools": ["edit_script"],
-                },
-            )
+            return _syntax_edit_failure(error, updated, new_sha256, draft=True)
         result = await self.write_script(updated)
         if result.get("ok") is not True:
             # 仍有违规时 write_script 已把补丁后的草稿存为新的隔离草稿。
@@ -2809,6 +2825,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 "replacedOccurrences": len(edits),
                 "formatted": result.get("formatted"),
             },
+            **({"fuzzyMatches": fuzzy_matches} if fuzzy_matches else {}),
         }
 
     async def run(

@@ -105,3 +105,24 @@ def test_exact_match_takes_precedence_over_fuzzy():
 
     assert updated == "x = 2\ny = 2\n"
     assert fuzzy == []
+
+
+def test_fuzzy_match_supports_search_ending_with_newline():
+    source = "def f():\n    x = 1   \n    y = 2\n"
+
+    updated, fuzzy = apply_edit_blocks_with_modes(source, [("    x = 1\n", "    x = 3\n")])
+
+    assert updated == "def f():\n    x = 3\n    y = 2\n"
+    assert fuzzy == [{"blockIndex": 1, "matchMode": "trailing_whitespace"}]
+
+
+def test_indentation_match_with_multiline_string_reports_hint():
+    source = "def f():\n    if a:\n        b = 1\n    return b\n"
+
+    with pytest.raises(ReportingError) as caught:
+        apply_edit_blocks_with_modes(
+            source, [("if a:\n    b = 1", 'if a:\n    b = """\nx\n"""')]
+        )
+
+    assert caught.value.code == "report_code_script_edit_not_found"
+    assert "多行字符串" in caught.value.details["hint"]
