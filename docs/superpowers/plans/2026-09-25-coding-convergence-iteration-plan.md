@@ -80,11 +80,13 @@
   - 通过样本的 `scriptExecS / seconds` 中位数 ≥20% → V1 排在 V2 之前（成本最低，且不影响模型）；
   - `rejectedWriteS` 中位数 ≥15% → V3 可以提前与 V2 并行开发，但真实 A/B 仍须串行；
   - 从通过样本的 `firstSuccessfulRunRequest` 最大值标定 V4 的快停阈值。
-- [ ] 扩展 `scripts/replay_visualization_task.py` 的 `--freeze-coding` / `--coding-only-payload`。目前第 630 行只接受 analysis，需要支持 visualization。V2–V4 的变量都不在 planner，冻结一次 planner 输出之后只重放 Coding，每个样本可以省下约 14% 的墙钟，并消除 planner 方差和身份门禁失败。
-- [ ] 统一报告口径，增加三项：
+- [x] 扩展 `scripts/replay_visualization_task.py` 的 `--freeze-coding` / `--coding-only-payload`。目前第 630 行只接受 analysis，需要支持 visualization。V2–V4 的变量都不在 planner，冻结一次 planner 输出之后只重放 Coding，每个样本可以省下约 14% 的墙钟，并消除 planner 方差和身份门禁失败。
+  - 2026-09-25 已实现（离线单测，未做真实回放）：可视化仅支持 candidate，legacy 在 planner 请求前拒绝。link 时用冻结 payload 中的 `visualizationPlan` 重走 `prepare_benchmark_coding_payload` + `normalize_replay_payload`，逐字比对签名 payload；授权输入须是 v2 输入的同 SHA 子集（planner 绑定后只授权被引用的事实文件）。
+- [x] 统一报告口径，增加三项：
   - `expectedSecondsPerDelivery = 通过均值 + (1−p)/p × 失败均值`；
   - 通过率的 Wilson 95% 区间；
   - `gateTrippedRate`：因收敛闸门降级提交的比例，单列，不并入"通过"。
+  - 2026-09-25 已在 `coding_wall_breakdown.py` 汇总中实现：`timed_out` 删失样本不进通过率与期望成本；`gateTripped` 按"通过样本的最终视觉回执仍 `requiresRevision`"确定性推导（只有闸门降级才能在该状态下提交），同时输出残余 critical 的 `category` 分布；Coding-only 样本 `plannerModelS` 记 0。
 
 **验收：** 能对每个样本回答"模型等待、脚本执行、视觉审查、被拒整稿各占多少"；不补造历史缺失字段。
 

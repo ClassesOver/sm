@@ -14,6 +14,11 @@
 - rejectedWrites / rejectedWriteS / rejectCodes：首个被接受的 write_script 之前被拒的整稿写入
 - runs / runFailures：run_script 调用与失败次数（按请求级 firstToolFailure 统计，偏保守）
 - firstSuccessfulRunRequest：首个含 run_script 且整批无工具失败的请求序号（用于标定失败快停阈值）
+- gateTripped / gateCriticalCategories：通过样本的最终视觉回执仍要求修订，只能经收敛闸门降级提交
+
+Coding-only 回放（benchmarkMode=coding-only）不执行 planner，plannerModelS 记 0。
+汇总另给出单次通过率 Wilson 95% 区间、expectedSecondsPerDelivery 与 gateTrippedRate；
+timed_out 删失样本不进分位数、通过率和期望成本。
 
 缺失字段保持 unknown，不填 0；不从 completion tokens 或总耗时反推任何分项。
 """
@@ -66,6 +71,32 @@ def _first_failure(request: Mapping[str, Any]) -> tuple[str | None, str | None]:
     return failure.get("toolName"), failure.get("code")
 
 
+def _review_value(review: Mapping[str, Any], snake: str, camel: str) -> Any:
+    return review.get(snake, review.get(camel))
+
+
+def _gate_trip(payload: Mapping[str, Any]) -> tuple[bool | str, list[str]]:
+    """最终回执仍 requiresRevision 却通过，说明经连续 critical 闸门降级提交。"""
+
+    if payload.get("status") != "passed":
+        return False, []
+    reviews = payload.get("reviews")
+    if not isinstance(reviews, list):
+        return UNKNOWN, []
+    categories: list[str] = []
+    tripped = False
+    for review in reviews:
+        if not isinstance(review, Mapping):
+            continue
+        if _review_value(review, "requires_revision", "requiresRevision") is not True:
+            continue
+        tripped = True
+        for issue in review.get("issues") or ():
+            if isinstance(issue, Mapping) and issue.get("severity") == "critical":
+                categories.append(str(issue.get("category") or UNKNOWN))
+    return tripped, categories
+
+
 def breakdown(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     requests = [item for item in payload.get("requestMetrics") or () if isinstance(item, Mapping)]
@@ -77,7 +108,11 @@ def breakdown(path: Path) -> dict[str, Any]:
     ]
 
     seconds = _num(payload.get("seconds"))
-    planner_ms = _sum_ms(item.get("durationMs") for item in planner_requests)
+    planner_ms = (
+        0.0
+        if payload.get("benchmarkMode") == "coding-only"
+        else _sum_ms(item.get("durationMs") for item in planner_requests)
+    )
     coding_ms = _sum_ms(item.get("durationMs") for item in requests)
 
     script_values: list[Any] = []
@@ -134,6 +169,7 @@ def breakdown(path: Path) -> dict[str, Any]:
         else None
     )
     last_coding = coding_samples[-1] if coding_samples else {}
+    gate_tripped, gate_categories = _gate_trip(payload)
     failure = payload.get("failure") if isinstance(payload.get("failure"), Mapping) else {}
 
     def seconds_or_unknown(value: float | None) -> float | str:
@@ -160,6 +196,8 @@ def breakdown(path: Path) -> dict[str, Any]:
         "runFailures": run_failures,
         "firstSuccessfulRunRequest": first_successful_run,
         "criticalVisualDefect": last_coding.get("criticalVisualDefect", UNKNOWN),
+        "gateTripped": gate_tripped,
+        "gateCriticalCategories": "|".join(gate_categories),
     }
 
 
@@ -171,10 +209,64 @@ def _percentile(values: list[float], percent: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
+def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
+    """单次通过率的 Wilson 区间；小样本下比正态近似更稳。"""
+
+    if total <= 0:
+        raise ValueError("total 必须为正数")
+    rate = successes / total
+    denominator = 1 + z**2 / total
+    center = (rate + z**2 / (2 * total)) / denominator
+    half = z * ((rate * (1 - rate) / total + z**2 / (4 * total**2)) ** 0.5) / denominator
+    return max(0.0, center - half), min(1.0, center + half)
+
+
+def expected_seconds_per_delivery(
+    passed_mean: float, failed_mean: float, pass_rate: float
+) -> float:
+    """失败后按 fresh attempt 重来时，每交付一个章节的期望墙钟。"""
+
+    if not 0 < pass_rate <= 1:
+        raise ValueError("pass_rate 必须在 (0, 1] 内")
+    return passed_mean + (1 - pass_rate) / pass_rate * failed_mean
+
+
 def summarize(rows: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     passed = [row for row in rows if row["status"] == "passed"]
-    lines.append(f"samples={len(rows)} passed={len(passed)} failed={len(rows) - len(passed)}")
+    censored = [row for row in rows if row["status"] == "timed_out"]
+    failed = [row for row in rows if row["status"] not in {"passed", "timed_out"}]
+    lines.append(
+        f"samples={len(rows)} passed={len(passed)} failed={len(failed)} censored={len(censored)}"
+    )
+    completed = len(passed) + len(failed)
+    if completed:
+        low, high = wilson_interval(len(passed), completed)
+        lines.append(
+            f"passRate={len(passed) / completed:.0%} wilson95=[{low:.0%}, {high:.0%}] n={completed}"
+        )
+    passed_seconds = [row["seconds"] for row in passed if isinstance(row["seconds"], int | float)]
+    failed_seconds = [row["seconds"] for row in failed if isinstance(row["seconds"], int | float)]
+    if passed_seconds and completed:
+        expected = expected_seconds_per_delivery(
+            statistics.mean(passed_seconds),
+            statistics.mean(failed_seconds) if failed_seconds else 0.0,
+            len(passed) / completed,
+        )
+        lines.append(f"expectedSecondsPerDelivery={expected:.1f}")
+    gate_known = [row for row in passed if isinstance(row["gateTripped"], bool)]
+    if gate_known:
+        tripped = [row for row in gate_known if row["gateTripped"]]
+        categories = Counter(
+            category
+            for row in tripped
+            for category in str(row["gateCriticalCategories"]).split("|")
+            if category
+        )
+        lines.append(
+            f"gateTrippedRate={len(tripped) / len(gate_known):.0%} "
+            f"({len(tripped)}/{len(gate_known)}) categories={dict(categories.most_common())}"
+        )
     for field in (
         "seconds",
         "plannerModelS",

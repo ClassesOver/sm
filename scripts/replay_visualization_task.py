@@ -46,6 +46,7 @@ from smart_reporting.reporting.host_workspace import (
     HostReportingWorkspace,
     ReportingWorkspaceIdentity,
 )
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.structured_output import ReportingStructuredOutputExecutor
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.reporting.workflow.benchmark_bundle import (
@@ -154,7 +155,7 @@ class ReplayObservedOpenAIChat(OpenAIChat):
 class CodingOnlyBenchmarkLink:
     payload: dict[str, Any]
     model_config: BenchmarkModelConfig
-    task_kind: Literal["analysis"] = "analysis"
+    task_kind: Literal["analysis", "visualization"] = "analysis"
     benchmark_mode: Literal["coding-only"] = "coding-only"
 
 
@@ -621,16 +622,19 @@ def link_coding_only_benchmark(
     *,
     variant: BenchmarkVariant,
 ) -> CodingOnlyBenchmarkLink:
-    """联结 v2 冻结配置与已签名的 analysis Coding payload。"""
+    """联结 v2 冻结配置与已签名的 Coding payload（analysis 或 candidate 可视化）。"""
 
     benchmark_manifest, benchmark_payloads = validate_frozen_planner_coding_bundle(
         benchmark_bundle_dir.resolve()
     )
     replay_manifest = validate_replay_bundle(coding_only_payload_path.resolve())
-    if benchmark_manifest.task_kind != "analysis" or replay_manifest.get(
+    task_kind = benchmark_manifest.task_kind
+    if task_kind not in {"analysis", "visualization"} or replay_manifest.get(
         "taskKind"
-    ) != "analysis":
-        raise ValueError("Coding-only benchmark 首版仅支持 analysis")
+    ) != task_kind:
+        raise ValueError("Coding-only payload 与 v2 bundle 任务类型不一致")
+    if task_kind == "visualization" and variant is not BenchmarkVariant.CANDIDATE:
+        raise ValueError("可视化 Coding-only benchmark 仅支持 candidate")
     if replay_manifest.get("version") != 1:
         raise ValueError("Coding-only payload 必须来自 version 1 replay bundle")
 
@@ -640,27 +644,50 @@ def link_coding_only_benchmark(
     facts = payload.get("facts")
     if not isinstance(facts, dict):
         raise ValueError("Coding-only payload 缺少 facts 对象")
-    base_payload = deepcopy(payload)
-    if variant is BenchmarkVariant.LEGACY:
-        decision = LegacyAnalysisEvidenceDecision.model_validate(
-            facts.get("evidenceDecision")
-        )
-        if not decision.requires_supplemental_evidence:
-            raise ValueError("Coding-only payload 必须要求 supplemental evidence")
-        base_payload["facts"].pop("evidenceDecision")
-    else:
+    if variant is BenchmarkVariant.CANDIDATE:
         origin = replay_manifest.get("plannerOrigin", {})
         expected_source = hashlib.sha256(
             (benchmark_bundle_dir / "manifest.json").read_bytes()
         ).hexdigest()
         if not isinstance(origin, dict) or origin.get("variant") != variant.value or origin.get("benchmarkManifestSha256") != expected_source:
             raise ValueError("candidate Coding-only 缺少匹配的 planner 冻结身份")
-        if not facts.get("codingRequirements") or "evidenceDecision" in facts:
-            raise ValueError("candidate Coding-only 缺少 codingRequirements")
-        base_payload["facts"].pop("codingRequirements")
     benchmark_payload = benchmark_payloads["executionContext"].get("codingPayload")
-    if base_payload != benchmark_payload:
-        raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
+    if task_kind == "visualization":
+        # 可视化 planner 输出会改写 facts 投影与授权路径，不能按字段剔除还原；
+        # 用冻结计划重走同一确定性投影，逐字比对签名 payload。
+        try:
+            plan = VisualizationPlanDraft.model_validate(facts.get("visualizationPlan"))
+            expected_projection = normalize_replay_payload(
+                prepare_benchmark_coding_payload(
+                    task_kind=task_kind,
+                    variant=variant,
+                    execution_context=benchmark_payloads["executionContext"],
+                    acceptance=benchmark_payloads["acceptance"],
+                    planner_output=plan,
+                    planner_request=benchmark_payloads["plannerRequest"],
+                )
+            )
+        except (ValidationError, ReportingError) as error:
+            raise ValueError("candidate Coding-only visualizationPlan 未通过冻结投影身份校验") from error
+        # 冻结 payload 经 JSON 落盘，元组路径需按同一编码比较。
+        expected_payload = json.loads(json.dumps(expected_projection, ensure_ascii=False))
+        if payload != expected_payload:
+            raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
+    else:
+        base_payload = deepcopy(payload)
+        if variant is BenchmarkVariant.LEGACY:
+            decision = LegacyAnalysisEvidenceDecision.model_validate(
+                facts.get("evidenceDecision")
+            )
+            if not decision.requires_supplemental_evidence:
+                raise ValueError("Coding-only payload 必须要求 supplemental evidence")
+            base_payload["facts"].pop("evidenceDecision")
+        else:
+            if not facts.get("codingRequirements") or "evidenceDecision" in facts:
+                raise ValueError("candidate Coding-only 缺少 codingRequirements")
+            base_payload["facts"].pop("codingRequirements")
+        if base_payload != benchmark_payload:
+            raise ValueError("Coding-only Coding payload 与 v2 executionContext 不一致")
 
     raw_replay_inputs = replay_manifest.get("inputs")
     if not isinstance(raw_replay_inputs, list) or any(
@@ -680,11 +707,17 @@ def link_coding_only_benchmark(
         )
         for item in benchmark_manifest.inputs
     )
-    if replay_inputs != benchmark_inputs:
+    # 可视化 planner 绑定后只授权被引用的事实文件，因此是 v2 输入的签名子集。
+    if (
+        not set(replay_inputs) <= set(benchmark_inputs)
+        if task_kind == "visualization"
+        else replay_inputs != benchmark_inputs
+    ):
         raise ValueError("Coding-only 与 v2 授权输入路径、大小或 SHA 身份不一致")
     return CodingOnlyBenchmarkLink(
         payload=payload,
         model_config=benchmark_manifest.model_config_snapshot,
+        task_kind=task_kind,
     )
 
 
@@ -1202,6 +1235,12 @@ async def main(
             if not isinstance(payload, dict):
                 raise ValueError("benchmark executionContext 缺少 codingPayload")
             task_kind = benchmark_manifest.task_kind
+            if (
+                freeze_coding_dir is not None
+                and task_kind == "visualization"
+                and benchmark_variant is not BenchmarkVariant.CANDIDATE
+            ):
+                raise ValueError("可视化 freeze-coding 仅支持 candidate")
     else:
         if payload_path is not None and (payload_path.parent / "manifest.json").is_file():
             replay_manifest = validate_replay_bundle(payload_path.resolve())
@@ -1616,7 +1655,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--coding-only-payload",
         type=Path,
-        help="使用已签名 analysis payload 跳过 planner；candidate 须来自 --freeze-coding。",
+        help="使用已签名 Coding payload 跳过 planner；candidate 须来自 --freeze-coding，可视化仅支持 candidate。",
     )
     parser.add_argument("--freeze-coding", type=Path, help="保存实际 planner 输出为 Coding-only bundle。")
     parser.add_argument("--coding-payload", type=Path)
