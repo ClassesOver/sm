@@ -17,7 +17,7 @@ export function createExportSettingsPanel(root: HTMLElement) {
     closeClass: 'export-settings-close',
     closeLabel: '关闭导出设置',
     labelledBy: 'export-settings-title',
-    content: `<h2 id="export-settings-title">导出设置</h2><label><input type="checkbox" name="cover"> 包含封面</label><label><input type="checkbox" name="toc" checked> 包含目录</label><label><input type="checkbox" name="headerFooter" checked> 页眉页脚</label><label><input type="checkbox" name="pageNumbers" checked> 页码</label><label class="export-note-field"><span>版本备注</span><textarea name="note" maxlength="200" rows="3" placeholder="例如：运营数据复核后发布"></textarea></label><div><button type="button" class="ui-button ui-button--secondary" data-export-settings="cancel">取消</button><button type="button" class="ui-button ui-button--primary" data-export-settings="confirm">继续导出</button></div>`,
+    content: `<h2 id="export-settings-title">导出设置</h2><label><input type="checkbox" name="cover" checked> 包含封面</label><label><input type="checkbox" name="toc" checked> 包含目录</label><label><input type="checkbox" name="headerFooter" checked> 页眉页脚</label><label><input type="checkbox" name="pageNumbers" checked> 页码</label><label class="export-note-field"><span>版本备注</span><textarea name="note" maxlength="200" rows="3" placeholder="例如：运营数据复核后发布"></textarea></label><div><button type="button" class="ui-button ui-button--secondary" data-export-settings="cancel">取消</button><button type="button" class="ui-button ui-button--primary" data-export-settings="confirm">继续导出</button></div>`,
   })
   const dialog = modal.overlay
   const storageKey = `smart-reporting-editor:export-settings:${window.location.pathname}`
