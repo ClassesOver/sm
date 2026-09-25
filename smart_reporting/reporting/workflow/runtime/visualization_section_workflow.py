@@ -557,6 +557,9 @@ class VisualizationSectionWorkflow:
         recovery_used = initial_recovery_used
         execution_repairs = 0
         pending_repair_error: Exception | None = None
+        # 修复未改变脚本时，先用新结果（新执行/审查回执）再提交一次；
+        # 仍失败才标记 repairUnchanged，避免临时故障被当成确定性失败而白耗修复。
+        unchanged_repair = False
 
         while True:
             try:
@@ -573,6 +576,13 @@ class VisualizationSectionWorkflow:
                     "accepted", plan, script_file, inspections, recovery_used
                 )
             except Exception as error:
+                if unchanged_repair:
+                    unchanged_repair = False
+                    if not isinstance(error, ReportingError) or not (
+                        isinstance(error.details, Mapping)
+                        and error.details.get("repairUnchanged") is True
+                    ):
+                        error = _with_unchanged_repair(error, script_file=script_file)
                 if _is_nonrecoverable(error):
                     raise
                 if not _is_degradable(error):
@@ -640,9 +650,7 @@ class VisualizationSectionWorkflow:
                         "图表路径不在 Coding Agent 签发输出中。",
                     )
                 if repaired_file.sha256 == script_file.sha256:
-                    pending_repair_error = _with_unchanged_repair(
-                        error, script_file=script_file
-                    )
+                    unchanged_repair = True
                     logger.warning(
                         "report_visualization_script_repair_unchanged path={} sha256={} "
                         "execution_repairs={}",
