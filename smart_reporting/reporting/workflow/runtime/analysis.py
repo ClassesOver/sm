@@ -124,6 +124,7 @@ from .base import (
 )
 from .chart_inputs import (
     ChartInputMaterialization,
+    _binding_catalog,
     fallback_plan,
     prepare_chart_inputs,
     verify_plotly_chart_inputs,
@@ -356,15 +357,26 @@ def visualization_coding_facts(
         return projected
 
     bindings: dict[tuple[str, str], set[str]] = {}
+    catalog = _binding_catalog(facts)
+    # 计划绑定错配只软告警继续执行（见 _validate_visualization_plan_bindings）；
+    # 这类绑定无法定位描述，对应分析项必须保留完整投影，否则模型拿不到任何数据定位。
+    unresolved: set[str] = set()
     for chart in plan.charts:
         for binding in chart.data_bindings:
             bindings.setdefault(
                 (binding.analysis_id, binding.fact_path), set()
             ).add(binding.data_path)
+            if (binding.analysis_id, binding.fact_path, binding.data_path) not in catalog:
+                unresolved.add(binding.analysis_id)
+    if unresolved - {item.get("analysisId") for item in projected}:
+        return projected
 
     compact: list[dict[str, Any]] = []
     for item in projected:
         analysis_id = item.get("analysisId")
+        if analysis_id in unresolved:
+            compact.append(item)
+            continue
         fact_file = item.get("factFile")
         fact_path = fact_file.get("path") if isinstance(fact_file, Mapping) else None
         main_paths = bindings.get((analysis_id, fact_path), set())

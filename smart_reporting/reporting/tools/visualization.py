@@ -361,7 +361,6 @@ class RuntimeVisualizationMixin:
                     receipt.sha256 != file_by_path[path]["sha256"]
                     or not receipt.reviewed
                     or receipt.visual_review_status != "passed"
-                    or receipt.requires_revision
                     for path, receipt in receipt_by_path.items()
                 )
             ):
@@ -369,6 +368,18 @@ class RuntimeVisualizationMixin:
                     "report_phase_artifact_changed",
                     "图表视觉回执未通过或与当前文件身份不一致。",
                 )
+            # 未降级路径的 requires_revision 已由 submit_script 拦截；到达这里的是视觉审查
+            # 轮次耗尽后的降级提交，与 Workflow 口径一致按软告警保留图表（AGENTS.md）。
+            warnings.extend(
+                {
+                    "code": "report_visualization_revision_soft_warning",
+                    "message": "图表视觉审查修订轮次已耗尽，剩余修订要求降级为质量告警。",
+                    "sectionCode": sectionCode,
+                    "details": {"sourcePath": path},
+                }
+                for path, receipt in sorted(receipt_by_path.items())
+                if receipt.requires_revision
+            )
             serialized_receipts = [
                 receipt_by_path[path].model_dump(mode="json", by_alias=True)
                 for path in sorted(receipt_by_path)
