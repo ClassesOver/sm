@@ -95,7 +95,16 @@ class ReportRuntime:
             "sha256": _sha256(path),
         }
 
-    def _images(self, markdown_path: Path, tokens: list[Any]) -> set[Path]:
+    def _images(self, markdown_path: Path, tokens: list[Any], state: dict[str, Any] | None = None) -> set[Path]:
+        # 编辑器导出的草稿位于 revision-N/draft/ 子目录，图片仍在报告根目录；
+        # 相对解析失败时按渲染清单（工作区相对路径）回退定位。
+        manifest_paths: list[str] = []
+        render = state.get("render") if isinstance(state, dict) else None
+        raw_images = render.get("images") if isinstance(render, dict) else None
+        if isinstance(raw_images, list):
+            for item in raw_images:
+                if isinstance(item, dict) and isinstance(item.get("path"), str):
+                    manifest_paths.append(item["path"].replace("\\", "/"))
         images: list[Path] = []
         for token in tokens:
             for child in token.children or []:
@@ -112,6 +121,18 @@ class ReportRuntime:
                 if relative.is_absolute() or ".." in relative.parts:
                     raise ReportFailure("Markdown 图片只能引用工作区内的相对路径")
                 image = markdown_path.parent.joinpath(*relative.parts)
+                if not image.is_file():
+                    suffix = "/" + relative.as_posix()
+                    matched = next(
+                        (
+                            full
+                            for full in manifest_paths
+                            if full == relative.as_posix() or full.endswith(suffix)
+                        ),
+                        None,
+                    )
+                    if matched is not None:
+                        image = self.workspace.joinpath(*PurePosixPath(matched).parts)
                 _reject_symlinks(self.workspace, image)
                 try:
                     image.relative_to(self.workspace)
@@ -212,7 +233,7 @@ class ReportRuntime:
             if marker_sections != expected_section_codes:
                 raise ReportFailure("Markdown 正式章节标识与已批准提纲不一致")
             _bind_heading_anchors(tokens, context["headingNumbers"])
-            allowed_images = self._images(source, tokens)
+            allowed_images = self._images(source, tokens, state)
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
