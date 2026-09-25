@@ -272,8 +272,10 @@ class ReportRuntime:
                     raise ReportFailure("PDF 渲染引用了未校验资源")
                 return file_fetcher(url)
 
+            # html_body 已将工作区图片内联为 data URI，PDF 与 Word 都必须用它：
+            # 草稿目录与图文目录分离时，相对 src 在两路渲染器里都解析不到。
             pdf_document, word_document = _semantic_documents(
-                body,
+                html_body,
                 context=context,
                 layout=layout,
                 include_cover=include_cover,
@@ -288,7 +290,7 @@ class ReportRuntime:
                 preflight_document.pages, context["headingNumbers"]
             )
             pdf_document, _ = _semantic_documents(
-                body,
+                html_body,
                 context=context,
                 layout=layout,
                 toc_page_numbers=toc_page_numbers,
