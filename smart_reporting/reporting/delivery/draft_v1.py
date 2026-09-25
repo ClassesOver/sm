@@ -501,11 +501,36 @@ class _ChartRenderPlan:
     citation_anchor_missing: bool
 
 
+_MARKDOWN_INLINE_SPECIAL = re.compile(r"([\\`*_\[\]<>\"!#|~&])")
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _markdown_inline_text(text: str) -> str:
+    """把图表标题/alt 转成单行、无 Markdown 语义的行内文本。
+
+    标题来自模型登记，ASCII 引号会提前闭合图片 title 导致整张图退化为原文，
+    `*`/`_` 会截断图注强调；统一折叠空白并反斜杠转义 CommonMark 标点。
+    """
+
+    return _MARKDOWN_INLINE_SPECIAL.sub(r"\\\1", _WHITESPACE_RUN.sub(" ", text).strip())
+
+
+# 图片 alt 以纯文本渲染，反斜杠转义字符会被丢弃，因此改用等形全角字符保留语义。
+_ALT_TEXT_TRANSLATION = str.maketrans(
+    {character: chr(ord(character) + 0xFEE0) for character in '\\`*_[]<>"!#|~&'}
+)
+
+
+def _chart_alt_text(text: str) -> str:
+    return _WHITESPACE_RUN.sub(" ", text).strip().translate(_ALT_TEXT_TRANSLATION)
+
+
 def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
+    title = _markdown_inline_text(chart.title)
     return (
-        f'![{chart.alt_text}]({file_name} "{chart.title}")'
+        f'![{_chart_alt_text(chart.alt_text)}]({file_name} "{title}")'
         + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
-        + f"\n\n*图表：{chart.title}*"
+        + f"\n\n*图表：{title}*"
     )
 
 

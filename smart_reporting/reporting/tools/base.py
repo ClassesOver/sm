@@ -41,6 +41,28 @@ from .workspace_adapter import WorkspaceServiceReportingRuntime
 SUPPLEMENTAL_EVIDENCE_READ_BYTES = 128 * 1024
 
 
+def _decode_utf8_page(content: bytes, *, offset: int, end: int) -> str:
+    """解码一页 UTF-8 文本；只回退页尾被截断的多字节字符。
+
+    非 UTF-8（图片、parquet 等二进制）或 offset 不在字符边界时明确拒绝，不能逐字节
+    回退后把几字节乱码当作文本分页返回，诱导模型持续翻页。
+    """
+
+    try:
+        return content[offset:end].decode("utf-8")
+    except UnicodeDecodeError as error:
+        if error.reason == "unexpected end of data" and end < len(content):
+            return content[offset : offset + error.start].decode("utf-8")
+        if error.start == 0 and offset > 0:
+            raise WorkspaceError(
+                "read_file offset 不是 UTF-8 字符边界，请使用上次返回的 nextOffset。"
+            ) from error
+        raise WorkspaceError(
+            f"read_file 只能读取 UTF-8 文本文件；该文件在字节 {offset + error.start} 处不是有效"
+            " UTF-8。图片请用 view_image，表格数据请通过脚本读取。"
+        ) from error
+
+
 class ReportingToolRuntime(WorkspaceServiceReportingRuntime):
     """将中立任务内核和 Reporting 工作区端口组合为工具运行时。"""
 
@@ -102,14 +124,8 @@ class ReportingToolkitBase(Toolkit):
             if offset > len(content):
                 raise WorkspaceError("read_file offset 超过文件大小。")
             end = min(len(content), offset + max_bytes)
-            while end > offset:
-                try:
-                    selected = content[offset:end].decode("utf-8")
-                    break
-                except UnicodeDecodeError:
-                    end -= 1
-            else:
-                selected = ""
+            selected = _decode_utf8_page(content, offset=offset, end=end)
+            end = offset + len(selected.encode("utf-8"))
             if not selected and offset < len(content):
                 raise WorkspaceError("read_file max_bytes 不足以读取下一个 UTF-8 字符。")
             return {
