@@ -51,6 +51,12 @@ VISUALIZATION_TOOL_CALL_BASE = 29
 MAX_TOOL_CALL_LIMIT = 140
 VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN = 2
 REPORTING_CODING_TASK_CONTEXT_METADATA_KEY = "reportingCodingTaskContext"
+# V4 无进展快停：超过该请求序号仍无一次成功 run_script，或连续同签名
+# run_script 失败达到上限时，提前以 report_code_no_progress 交给 fresh attempt。
+# 请求阈值应按冻结回放中通过样本 firstSuccessfulRunRequest 最大值加余量标定。
+VISUALIZATION_NO_PROGRESS_REQUEST_LIMIT = 24
+VISUALIZATION_REPEATED_RUN_FAILURE_LIMIT = 3
+
 # 同一 run 内压缩重连的上限；请求数同时受模型预算 request_limit 约束。
 MAX_RUN_COMPACTION_CONTINUATIONS = 2
 # 与投影层请求前门禁对齐：窗口内任一请求输入达到该阈值即视为历史增长越界。
@@ -175,6 +181,7 @@ class ReportingCodeGenerationRunner:
             "outputContract",
             "visualizationDataContract",
             "missingCharts",
+            "chartInputs",
         ):
             if key in task_facts:
                 projected[key] = task_facts[key]
@@ -453,6 +460,26 @@ class ReportingCodeGenerationRunner:
                         else "unknown"
                     ),
                 )
+                if task_context.task_kind == "visualization":
+                    # V5：闸门降级提交单独计量，不并入干净通过；类别来自完整回执。
+                    gate_tripped = getattr(toolkit, "visual_review_gate_tripped", None)
+                    sample["visualReviewGateTripped"] = (
+                        gate_tripped if isinstance(gate_tripped, bool) else "unknown"
+                    )
+                    receipts = getattr(
+                        getattr(toolkit, "binding", None), "visual_inspection_receipts", None
+                    )
+                    categories: list[str] = []
+                    if gate_tripped is True and isinstance(receipts, Mapping):
+                        for receipt in receipts.values():
+                            if not getattr(receipt, "requires_revision", False):
+                                continue
+                            categories.extend(
+                                str(getattr(issue, "category", "unknown"))[:64]
+                                for issue in getattr(receipt, "issues", ())
+                                if getattr(issue, "severity", None) == "critical"
+                            )
+                    sample["gateCriticalCategories"] = sorted(categories)[:20]
                 sample["compactContinuationEnabled"] = self.compact_continuation
                 sample["compactContinuationApplied"] = compact_continuation_applied
                 sample["compactionTriggered"] = run_compaction["triggered"]
@@ -554,6 +581,18 @@ class ReportingCodeGenerationRunner:
                         ),
                         tool_call_limit=model_tool_limit,
                         visual_budget_gate_safety_margin=VISUALIZATION_BUDGET_GATE_SAFETY_MARGIN,
+                        **(
+                            {
+                                "no_progress_request_limit": (
+                                    VISUALIZATION_NO_PROGRESS_REQUEST_LIMIT
+                                ),
+                                "repeated_run_failure_limit": (
+                                    VISUALIZATION_REPEATED_RUN_FAILURE_LIMIT
+                                ),
+                            }
+                            if task_context.task_kind == "visualization"
+                            else {}
+                        ),
                     )
                 model = getattr(agent, "model", None)
                 request_count_reader = getattr(model, "code_run_request_count", None)

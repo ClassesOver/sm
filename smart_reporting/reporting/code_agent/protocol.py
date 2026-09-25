@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from copy import copy, deepcopy
@@ -499,6 +500,32 @@ def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
     }
 
 
+_TRACEBACK_FRAME = re.compile(r'File "[^"]+", line \d+, in (\S+)')
+
+
+def _run_failure_signature(failure: Mapping[str, Any]) -> tuple[str, str]:
+    """(errorType, 所属函数)：同一签名连续失败视为无进展。"""
+
+    details = failure.get("details")
+    details = details if isinstance(details, Mapping) else {}
+    error_type = details.get("errorType")
+    if not isinstance(error_type, str) or not error_type:
+        code = failure.get("code")
+        error_type = code if isinstance(code, str) and code else "unknown"
+    function = "unknown"
+    for key in ("traceback", "stderr", "output", "stdout"):
+        text = details.get(key)
+        if isinstance(text, str) and text:
+            frames = _TRACEBACK_FRAME.findall(text)
+            if frames:
+                function = frames[-1]
+                break
+    if function == "unknown":
+        line = details.get("errorLine")
+        if isinstance(line, int) and not isinstance(line, bool):
+            function = f"line:{line}"
+    return error_type[:128], function[:128]
+
 class ReportingCodeOpenAIResponses(OpenAIResponses):
     """为 Coding Agent 桥接 Responses API function/custom 混合协议。"""
 
@@ -597,6 +624,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         delivery_state_reader: Callable[[], dict[str, Any]] | None = None,
         tool_call_limit: int | None = None,
         visual_budget_gate_safety_margin: int = 2,
+        no_progress_request_limit: int | None = None,
+        repeated_run_failure_limit: int | None = None,
     ) -> None:
         """绑定本任务实际 Function 范围；浅复制模型共享同一任务请求计数。"""
         names = [report_model_tool_name(tool) for tool in tools]
@@ -633,11 +662,79 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         self._code_delivery_state_reader = delivery_state_reader
         self._code_stage_mismatch_names: frozenset[str] = frozenset()
         self._code_request_metrics: list[dict[str, Any]] = []
+        for name, value in (
+            ("no_progress_request_limit", no_progress_request_limit),
+            ("repeated_run_failure_limit", repeated_run_failure_limit),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer")
+        self._code_no_progress_request_limit = no_progress_request_limit
+        self._code_repeated_run_failure_limit = repeated_run_failure_limit
+        self._code_run_succeeded = False
+        self._code_run_failure_signature: tuple[str, str] | None = None
+        self._code_run_failure_streak = 0
+
+    def _record_run_outcome(
+        self, succeeded: bool, failure: Mapping[str, Any] | None
+    ) -> None:
+        """记录 run_script 进展；只使用宿主已有回执，不新增模型请求。"""
+
+        if succeeded:
+            self._code_run_succeeded = True
+            self._code_run_failure_signature = None
+            self._code_run_failure_streak = 0
+            return
+        signature = _run_failure_signature(failure or {})
+        if signature == getattr(self, "_code_run_failure_signature", None):
+            self._code_run_failure_streak = getattr(self, "_code_run_failure_streak", 0) + 1
+        else:
+            self._code_run_failure_signature = signature
+            self._code_run_failure_streak = 1
+
+    def _check_code_progress(self, budget: CodeBudget) -> None:
+        request_limit = getattr(self, "_code_no_progress_request_limit", None)
+        repeat_limit = getattr(self, "_code_repeated_run_failure_limit", None)
+        reason: str | None = None
+        if (
+            request_limit is not None
+            and not getattr(self, "_code_run_succeeded", False)
+            and budget.requests >= request_limit
+        ):
+            reason = "no_successful_run"
+        elif (
+            repeat_limit is not None
+            and getattr(self, "_code_run_failure_streak", 0) >= repeat_limit
+        ):
+            reason = "repeated_run_failure"
+        if reason is None:
+            return
+        signature = getattr(self, "_code_run_failure_signature", None)
+        raise ReportingError(
+            "report_code_no_progress",
+            "Coding Agent 长时间没有进展，提前结束本次尝试并交由 fresh attempt 重来。",
+            details={
+                "retryable": True,
+                "recovery": "retry_then_degrade",
+                "reason": reason,
+                "modelRequestCount": budget.requests,
+                "noProgressRequestLimit": request_limit,
+                "repeatedRunFailureLimit": repeat_limit,
+                "runFailureStreak": getattr(self, "_code_run_failure_streak", 0),
+                **(
+                    {"errorType": signature[0], "function": signature[1]}
+                    if signature is not None
+                    else {}
+                ),
+            },
+        )
 
     def _consume_code_request(self) -> None:
         budget = getattr(self, "_code_budget", None)
         if budget is None:
             return
+        self._check_code_progress(budget)
         if not budget.consume_request():
             raise ReportingError(
                 "report_code_model_request_limit", "Coding Agent 模型请求次数已达上限。",
@@ -1633,6 +1730,12 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 if diagnostics:
                     tool_failure["diagnostics"] = diagnostics
                 request_metric["firstToolFailure"] = tool_failure
+            if tool_name == "run_script" and budget is not None:
+                self._record_run_outcome(
+                    failure.get("ok") is not False
+                    and not any(item.tool_call_error for item in completed),
+                    failure,
+                )
             if isinstance(code, str):
                 progress["code"] = code
             logger.bind(**progress).info(

@@ -75,12 +75,28 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
 
 _VISUALIZATION_CODE_LEGACY_INSTRUCTIONS = _VISUALIZATION_CODE_COMMON_INSTRUCTIONS
 
+_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS = (
+    "每张图只逐字读取 facts.chartInputs 中 chartId 与本图相同的 path（json.load），"
+    "不要读取其他数据文件；每个文件是宿主按 dataBindings 预解析的 {columns, rows} 表格，"
+    "按 dict(zip(columns, row)) 解码。nullableColumns 中的 null 是源数据的合法不可用值，"
+    "必须保留并显式标注无数据，禁止替换成 0、空字符串或常数；columnMeta 声明的单位"
+    "与是否百分数优先于自行推断。",
+    "只有未出现在 chartInputs 中的回退图才按 visualizationFacts 与 binding.dataPath 读取原始事实："
+    "metricIndex、findingIndex 是源文件数组零基下标；periodValues/topGroups/bottomGroups 是"
+    "行对象数组，findings 是 columns+rows 表格，rows 须按位置解码；路径只用逐字字符串。",
+)
+
 _VISUALIZATION_CODE_INSTRUCTIONS = (
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[:2],
-    "逐图直接实现 visualizationPlan.charts[].visualForm 和 dataBindings；只从 binding.factPath"
-    "读取 binding.dataPath，并只使用 binding.fields。不得重新选择数据源、字段或图型；"
-    "函数组织、布局细节和同章脚本组织由当前实现决定。",
-    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[2:],
+    "逐图直接实现 visualizationPlan.charts[].visualForm 和 dataBindings 的角色；数据来自"
+    "本图的 chartInputs，不得重新选择数据源、字段或图型；函数组织、布局细节和同章脚本"
+    "组织由当前实现决定。",
+    _VISUALIZATION_CODE_COMMON_INSTRUCTIONS[2],
+    "逐字使用 chartInputs[].path、visualizationPlan.charts 和输出路径。",
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
+    *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[9:11],
+    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[16:],
 )
 
 

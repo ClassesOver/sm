@@ -124,9 +124,16 @@ class BenchmarkProjection:
     variant: BenchmarkVariant
     include_analysis_requirements: bool
     include_visual_bindings: bool
+    # V2 对照开关：candidate 默认预物化 chart-input；legacy 没有绑定，始终关闭。
+    materialize_chart_inputs: bool = False
 
     @classmethod
-    def for_variant(cls, variant: BenchmarkVariant) -> BenchmarkProjection:
+    def for_variant(
+        cls,
+        variant: BenchmarkVariant,
+        *,
+        materialize_chart_inputs: bool | None = None,
+    ) -> BenchmarkProjection:
         if not isinstance(variant, BenchmarkVariant):
             raise TypeError("variant 必须是 BenchmarkVariant")
         enabled = variant is BenchmarkVariant.CANDIDATE
@@ -134,6 +141,8 @@ class BenchmarkProjection:
             variant=variant,
             include_analysis_requirements=enabled,
             include_visual_bindings=enabled,
+            materialize_chart_inputs=enabled
+            and (True if materialize_chart_inputs is None else materialize_chart_inputs),
         )
 
 

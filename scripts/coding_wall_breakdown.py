@@ -80,6 +80,14 @@ def _gate_trip(payload: Mapping[str, Any]) -> tuple[bool | str, list[str]]:
 
     if payload.get("status") != "passed":
         return False, []
+    samples = payload.get("codingMetrics")
+    last = samples[-1] if isinstance(samples, list) and samples else None
+    recorded = last.get("visualReviewGateTripped") if isinstance(last, Mapping) else None
+    if isinstance(recorded, bool):
+        categories = last.get("gateCriticalCategories")
+        return recorded, (
+            [str(item) for item in categories] if recorded and isinstance(categories, list) else []
+        )
     reviews = payload.get("reviews")
     if not isinstance(reviews, list):
         return UNKNOWN, []

@@ -34,6 +34,12 @@ from ..benchmark_variants import (
     LegacyAnalysisEvidenceDecision,
 )
 from ..checkpoint import FileIdentity
+from .analysis_coverage import (
+    dimension_coverage_gaps,
+    one_sided_gap_warnings,
+    parse_csv_columns,
+    requirement_output_gaps,
+)
 from .code_generation import CodeGenerationResult
 
 MAX_ANALYSIS_SCRIPT_REPAIRS = 2
@@ -41,6 +47,9 @@ MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS = 3
 MAX_DETERMINISTIC_FACT_BYTES = 10 * 1024 * 1024
 DETERMINISTIC_FACT_READ_BYTES = 64 * 1024
 SUPPLEMENTAL_EVIDENCE_PAGE_BYTES = 64 * 1024
+# A1 覆盖率校验读取签发 CSV 全集的上限；更大的数据集跳过校验，不影响交付。
+MAX_COVERAGE_DATASET_BYTES = 4 * 1024 * 1024
+COVERAGE_DATASET_PAGE_BYTES = 128 * 1024
 MAX_SUPPLEMENTAL_EVIDENCE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSIS_SUMMARY_PROJECTED_ROWS = 256
 _EXISTING_FACT_COLLECTIONS = (
@@ -118,6 +127,9 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
             "表格 finding 使用 columns + rows 行编码；columns 不重复，每个 rows 行与 columns 等长；数值不得为 NaN 或无穷大，缺失值使用 JSON null。",
             "业务对账不通过时如实写 passed=false，并在 warnings 中说明；这是软告警，不是结构错误。",
             "使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，不得使用 indent 或删减已计算事实。",
+            "每个 codingRequirements[].outputName 对应一个 findings[].name（逐字相同）。",
+            "表格 finding 可选附带 columnMeta：{列名: {unit, isPercent, periodRole}}；isPercent=true 表示数值已乘 100，"
+            "periodRole 取 current/prior/change；只声明确定的元数据，不确定时省略。",
         ],
     }
 
@@ -1073,10 +1085,110 @@ class AnalysisItemWorkflow:
                 state.instruction.get("currentAnalysisId"),
                 len(failed_reconciliations),
             )
+        quality_warnings = await self._evidence_quality_warnings(state, evidence, run_context)
         state.statuses["validate-evidence"] = "completed"
         return StepOutput(
-            content={"status": "validated", "evidencePath": self._evidence_path(state)}
+            content={
+                "status": "validated",
+                "evidencePath": self._evidence_path(state),
+                **({"qualityWarnings": quality_warnings} if quality_warnings else {}),
+            }
         )
+
+    async def _evidence_quality_warnings(
+        self,
+        state: _AnalysisItemState,
+        evidence: SupplementalEvidence,
+        run_context: RunContext,
+    ) -> list[dict[str, Any]]:
+        """A1/A2 确定性软校验：只进审计日志与步骤输出，不进报告正文、不触发修复。"""
+
+        try:
+            decision = state.decision
+            requirements = (
+                [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in decision.coding_requirements
+                ]
+                if isinstance(decision, AnalysisEvidenceDecision)
+                else []
+            )
+            findings = list(evidence.findings)
+            warnings: list[dict[str, Any]] = requirement_output_gaps(requirements, findings)
+            if requirements:
+                fields_by_dataset: dict[str, set[str]] = {}
+                for requirement in requirements:
+                    fields_by_dataset.setdefault(requirement["datasetId"], set()).update(
+                        requirement["fields"]
+                    )
+                dataset_columns: dict[str, dict[str, list[str]]] = {}
+                for dataset in state.instruction.get("datasets") or ():
+                    if not isinstance(dataset, Mapping):
+                        continue
+                    dataset_id = dataset.get("datasetId")
+                    if dataset_id not in fields_by_dataset:
+                        continue
+                    text = await self._read_coverage_dataset(dataset, run_context)
+                    if text is not None:
+                        dataset_columns[str(dataset_id)] = parse_csv_columns(
+                            text, fields_by_dataset[str(dataset_id)]
+                        )
+                warnings.extend(
+                    dimension_coverage_gaps(requirements, dataset_columns, findings)
+                )
+            warnings.extend(one_sided_gap_warnings(findings, evidence.warnings))
+        except Exception as error:  # noqa: BLE001 - 软校验不得影响补证交付
+            logger.warning(
+                "report_analysis_evidence_quality_check_skipped analysis_id={} error={}",
+                state.instruction.get("currentAnalysisId"),
+                type(error).__name__,
+            )
+            return []
+        for warning in warnings:
+            logger.bind(details=warning).warning(
+                "{} analysis_id={} details={}",
+                warning["code"],
+                state.instruction.get("currentAnalysisId"),
+                warning,
+            )
+        return warnings
+
+    async def _read_coverage_dataset(
+        self, dataset: Mapping[str, Any], run_context: RunContext
+    ) -> str | None:
+        path = dataset.get("path")
+        size = dataset.get("size")
+        expected_sha256 = dataset.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or not 0 < size <= MAX_COVERAGE_DATASET_BYTES
+        ):
+            return None
+        chunks: list[str] = []
+        offset = 0
+        while offset < size:
+            result = await self.read_file(
+                path=path,
+                offset=offset,
+                max_bytes=COVERAGE_DATASET_PAGE_BYTES,
+                run_context=run_context,
+            )
+            content = result.get("content") if isinstance(result, Mapping) else None
+            next_offset = result.get("nextOffset") if isinstance(result, Mapping) else None
+            if not isinstance(content, str) or (
+                isinstance(expected_sha256, str)
+                and result.get("sha256") not in (None, expected_sha256)
+            ):
+                return None
+            if not isinstance(next_offset, int) or isinstance(next_offset, bool):
+                next_offset = offset + len(content.encode("utf-8"))
+            if next_offset <= offset:
+                return None
+            chunks.append(content)
+            offset = next_offset
+        return "".join(chunks)
 
     async def _read_supplemental_evidence(
         self, state: _AnalysisItemState, run_context: RunContext

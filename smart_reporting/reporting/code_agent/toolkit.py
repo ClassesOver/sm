@@ -1089,6 +1089,109 @@ def _bounded_exploration_variables(value: Any) -> dict[str, str]:
     return result
 
 
+_MAX_PREFLIGHT_VIOLATIONS = 8
+_PREFLIGHT_SNIPPET_BYTES = 300
+
+
+def _violation_line(details: Mapping[str, Any]) -> int | None:
+    for key in ("line", "errorLine"):
+        value = details.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    operations = details.get("forbiddenPathOperations")
+    if isinstance(operations, list):
+        for item in operations:
+            if isinstance(item, Mapping):
+                value = item.get("line")
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    return value
+    return None
+
+
+def _preflight_violation(error: ReportingError, source: str) -> dict[str, Any]:
+    details = error.details if isinstance(error.details, Mapping) else {}
+    violation: dict[str, Any] = {"code": error.code, "hint": error.message[:300]}
+    line = _violation_line(details)
+    if line is not None:
+        violation["line"] = line
+        lines = source.splitlines()
+        if line <= len(lines):
+            snippet = lines[line - 1].strip().encode("utf-8")[:_PREFLIGHT_SNIPPET_BYTES]
+            violation["snippet"] = snippet.decode("utf-8", errors="ignore")
+    for key in ("unsignedPaths", "forbiddenPathOperations"):
+        value = details.get(key)
+        if isinstance(value, list) and value:
+            violation[key] = [str(item)[:256] for item in value[:5]]
+    return violation
+
+
+def _collect_preflight(
+    tree: ast.Module,
+    source: str,
+    tool_name: str,
+    context: Any,
+) -> tuple[list[ReportingError], list[dict[str, str]]]:
+    """一次执行全部预检，返回 (违规列表, 软告警)；主失败码沿用第一个违规。"""
+
+    checks: list[Callable[[], None]] = [
+        lambda: _reject_code_envelope(tree, tool_name),
+        lambda: _reject_embedded_data(tree),
+        lambda: _reject_dynamic_path_parser(tree),
+        lambda: _reject_unauthorized_paths(
+            tree,
+            context.script_path,
+            frozenset((*context.authorized_read_paths, *context.authorized_write_paths)),
+        ),
+    ]
+    if context.task_kind == "visualization":
+        checks.append(
+            lambda: _reject_output_write_contract(tree, context.declared_output_paths)
+        )
+    violations: list[ReportingError] = []
+    for check in checks:
+        try:
+            check()
+        except ReportingError as error:
+            violations.append(error)
+    warnings: list[dict[str, str]] = []
+    helper = _generic_data_helper_details(tree)
+    if helper is not None:
+        # 统一形状输入下通用 helper 本身无害；真正的风险路径由字面路径白名单兜底。
+        warnings.append(
+            {
+                "code": "report_code_generic_data_helper",
+                "reason": str(helper.get("reason") or "generic_helper"),
+                "message": "检测到通用数据读取 helper；请确认只读取签发路径中的逐字字符串。",
+            }
+        )
+    return violations, warnings
+
+
+def _preflight_failure(
+    violations: list[ReportingError],
+    source: str,
+    *,
+    draft_sha256: str | None = None,
+) -> dict[str, Any]:
+    primary = violations[0]
+    details = dict(primary.details) if isinstance(primary.details, Mapping) else {}
+    details["violations"] = [
+        _preflight_violation(item, source) for item in violations[:_MAX_PREFLIGHT_VIOLATIONS]
+    ]
+    if draft_sha256 is not None:
+        details["draftSha256"] = draft_sha256
+        details["nextTools"] = ["edit_script"]
+    message = primary.message
+    if len(violations) > 1:
+        message = f"{message}（另有 {len(violations) - 1} 项违规，见 details.violations）"
+    if draft_sha256 is not None:
+        message += (
+            "被拒整稿已保存为隔离草稿，不会执行；请用 edit_script 以 draftSha256 作为 "
+            "*** SHA256: 对草稿打补丁修正全部违规，无需重新生成整稿。"
+        )
+    return _failure(primary.code, message, details)
+
+
 def _failure(code: str, message: str, details: Mapping[str, Any] | None = None) -> dict[str, Any]:
     result = {"ok": False, "status": "rejected", "code": code, "message": message}
     if details:
@@ -1109,6 +1212,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "variableSummary", "explorationVariables", "allowedEditRegion", "forbiddenEditRegions",
         "isPlaceholderScript", "allDeclaredOutputsMissing", "declaredOutputCount",
         "detectedOutputWrites", "functionName", "parameterName",
+        "violations", "draftSha256",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -1177,6 +1281,23 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
             result[key] = summary_result
         elif key == "explorationVariables" and isinstance(value, Mapping):
             result[key] = _bounded_exploration_variables(value)
+        elif key == "violations" and isinstance(value, list):
+            result[key] = [
+                {
+                    field: (
+                        bounded_text(item[field], _PREFLIGHT_SNIPPET_BYTES)
+                        if isinstance(item[field], str)
+                        else item[field]
+                    )
+                    for field in (
+                        "code", "hint", "line", "snippet", "unsignedPaths",
+                        "forbiddenPathOperations",
+                    )
+                    if field in item
+                }
+                for item in value[:_MAX_PREFLIGHT_VIOLATIONS]
+                if isinstance(item, Mapping)
+            ]
         elif isinstance(value, str) and key not in output_fields:
             result[key] = bounded_text(value, 2048)
 
@@ -1490,6 +1611,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self._repeated_failure_count = 0
         self._edit_failures_since_progress = 0
         self._consecutive_critical_review_rounds = 0
+        # V3：被拒整稿只保存在内存隔离草稿中，run_script 永远不执行草稿。
+        self._rejected_draft: tuple[str, str] | None = None
         tools = [
             Function(
                 name="write_script",
@@ -1522,6 +1645,8 @@ class ReportingCodeModeToolkit(Toolkit):
                     "先整体校验再一次提交；不得用前块生成的文本作为后块 SEARCH。"
                     "定位或冲突失败回执可能附带当前源码的有界 sourceExcerpt 与行号范围；"
                     "据此修正 SEARCH 并使用回执中的 sourceSha256/currentSha256 直接重试，无需重新 read_script。"
+                    "write_script 预检被拒时回执给出 draftSha256 与全部 violations；把 draftSha256 放在 "
+                    "*** SHA256: 后即可对被拒草稿打补丁，通过全部预检后草稿才成为签发脚本。"
                     "插入使用原文上下文作锚点；删除使用空 REPLACE；移动用删除块与目标处插入块。"
                     "禁止整份替换；不接受文件路径。"
                     "标记独占一行并使用 LF；分隔符前的一个换行属于协议，"
@@ -2252,21 +2377,18 @@ class ReportingCodeModeToolkit(Toolkit):
                     }
                 )
             if tree is not None:
-                _reject_code_envelope(tree, "write_script")
-                _reject_embedded_data(tree)
-                _reject_dynamic_path_parser(tree)
-                _reject_generic_data_helpers(tree)
                 # 与 run_script 同一路径策略：draft 阶段即拒绝，避免"保存成功
-                # → 执行被拒"浪费一整个写-跑循环后模型重试退化。
-                _reject_unauthorized_paths(
-                    tree,
-                    self.context.script_path,
-                    frozenset((*self.context.authorized_read_paths, *self.context.authorized_write_paths)),
+                # → 执行被拒"浪费一整个写-跑循环后模型重试退化。一次返回全部违规。
+                violations, preflight_warnings = _collect_preflight(
+                    tree, source, "write_script", self.context
                 )
-                if self.context.task_kind == "visualization":
-                    _reject_output_write_contract(
-                        tree, self.context.declared_output_paths
+                if violations:
+                    draft_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                    self._rejected_draft = (draft_sha256, source)
+                    return _preflight_failure(
+                        violations, source, draft_sha256=draft_sha256
                     )
+                warnings.extend(preflight_warnings)
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         if tree is not None:
@@ -2316,6 +2438,7 @@ class ReportingCodeModeToolkit(Toolkit):
         )
         self.binding.clear_execution_receipt()
         self.submitted_receipt = None
+        self._rejected_draft = None
         identity = await self.workspace.ahash_file(
             self.context.task_id, self.context.script_path
         )
@@ -2350,6 +2473,9 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
+        draft = self._rejected_draft
+        if draft is not None and expectedSourceSha256 == draft[0]:
+            return await self._edit_rejected_draft(draft[1], edits)
         try:
             source_bytes = await self.workspace.read_limited_regular_file(
                 self.context.task_id,
@@ -2413,22 +2539,11 @@ class ReportingCodeModeToolkit(Toolkit):
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         if tree is not None:
-            try:
-                _reject_code_envelope(tree, "edit_script")
-                _reject_embedded_data(tree)
-                _reject_dynamic_path_parser(tree)
-                _reject_generic_data_helpers(tree)
-                _reject_unauthorized_paths(
-                    tree,
-                    self.context.script_path,
-                    frozenset((*self.context.authorized_read_paths, *self.context.authorized_write_paths)),
-                )
-                if self.context.task_kind == "visualization":
-                    _reject_output_write_contract(
-                        tree, self.context.declared_output_paths
-                    )
-            except ReportingError as error:
-                return _failure(error.code, error.message, error.details)
+            violations, _warnings = _collect_preflight(
+                tree, updated, "edit_script", self.context
+            )
+            if violations:
+                return _preflight_failure(violations, updated)
         try:
             await self.workspace.awrite_text(
                 self.context.task_id,
@@ -2461,6 +2576,60 @@ class ReportingCodeModeToolkit(Toolkit):
                 "kind": "edit",
                 "replacedOccurrences": len(edits),
             },
+            **identity,
+        }
+
+    async def _edit_rejected_draft(
+        self, draft_source: str, edits: Any
+    ) -> dict[str, Any]:
+        """对隔离草稿打补丁；重新执行全部预检，通过后才写入签发脚本。"""
+
+        try:
+            updated = apply_edit_blocks(draft_source, edits)
+            validate_draft_source(self.context, updated)
+        except ReportingError as error:
+            return _failure(
+                error.code,
+                error.message,
+                {
+                    **(dict(error.details) if isinstance(error.details, Mapping) else {}),
+                    "draftSha256": self._rejected_draft[0] if self._rejected_draft else None,
+                },
+            )
+        try:
+            tree = ast.parse(updated, filename=self.context.script_path)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            violations, _warnings = _collect_preflight(
+                tree, updated, "write_script", self.context
+            )
+            if violations:
+                draft_sha256 = hashlib.sha256(updated.encode("utf-8")).hexdigest()
+                self._rejected_draft = (draft_sha256, updated)
+                return _preflight_failure(violations, updated, draft_sha256=draft_sha256)
+        exists = await self.workspace.apath_exists(self.context.task_id, self.context.script_path)
+        await self.workspace.awrite_text(
+            self.context.task_id,
+            self.context.script_path,
+            updated,
+            overwrite=exists,
+        )
+        self._rejected_draft = None
+        self.binding.clear_execution_receipt()
+        self.submitted_receipt = None
+        identity = await self.workspace.ahash_file(
+            self.context.task_id, self.context.script_path
+        )
+        return {
+            "ok": True,
+            "status": "draft_promoted",
+            "path": self.context.script_path,
+            "readyForExecution": tree is not None,
+            "replacedOccurrences": len(edits),
+            "sourceSha256": identity["sha256"],
+            "sourceBytes": identity["size"],
+            "changeSummary": {"kind": "draft_edit", "replacedOccurrences": len(edits)},
             **identity,
         }
 

@@ -14,6 +14,22 @@
    - 签发条数在 2–10 之间波动。
    - **维度覆盖缺口（candidate-1 缺 46 个科室标签）生产侧检测不到**，只在离线独立复算中发现。对账 `passed` 是脚本自己算、自己填的。
 
+## 实施状态（2026-09-25，全部代码已落地，未经 A/B 验证）
+
+按决策先把全部迭代落地到代码，**没有新增测试，也没有做任何真实回放**；各迭代的门槛与复选框仍需按原协议用证据验收，未达标项应撤回或调参。现有测试套件单跑一次：2,274 通过，24 失败；其中 14 个在基线提交上同样失败（数据库、字体、密钥等环境依赖），10 个是本次有意改变的契约（预检回执新增 `violations`/`draftSha256`、通用 helper 降级为软告警、可视化指令合并、输出契约新增规则）。
+
+| 迭代 | 落地位置 | 默认状态 / 待标定参数 |
+| --- | --- | --- |
+| V0 | `replay_visualization_task.py`（可视化 Coding-only）、`coding_wall_breakdown.py`（Wilson、期望成本、gateTripped） | 已完成，待跑 frozen-visual-v3 |
+| V1 | `sandbox/matplotlib_defaults.py`：首次 Kaleido 同步渲染时启动常驻 Chrome，脚本结束关闭；失败静默退回逐次启动 | 生产默认开启 |
+| V2 | `runtime/chart_inputs.py` + `analysis.py` 可视化 `run_code`：按已校验绑定物化 `chart-input/v1`，授权路径只含 chart-inputs 与回退图原始 facts；candidate 指令 19 条/3,945 B → 14 条/3,046 B；Plotly 数值核对软告警 `report_visualization_chart_data_unverified` | 生产默认开启；回放 `--chart-inputs on\|off`，`BenchmarkProjection.materialize_chart_inputs` |
+| V3 | `toolkit.py`：预检一次返回全部违规（≤8 项，主码不变）；被拒整稿存为内存隔离草稿，`edit_script` 以 `draftSha256` 打补丁，通过全部预检才落盘 | 生产默认开启 |
+| V4 | `protocol.py` + `code_generation.py`：无进展快停 `report_code_no_progress`（retry_then_degrade）；`report_code_generic_data_helper` 改为软告警 | R=24、K=3 为暂定值，须按 V0 的 `firstSuccessfulRunRequest` 标定 |
+| V5 | Matplotlib `figure.constrained_layout.use`、Plotly `automargin` 模板；Coding 指标新增 `visualReviewGateTripped`、`gateCriticalCategories` | 生产默认开启 |
+| A1 | `runtime/analysis_coverage.py` + `_validate_evidence`：维度覆盖缺口、单侧缺失未披露，只进日志与步骤输出；离线 `scripts/analysis_coverage_check.py` | 数据集 ≤4 MB 才校验；TopN 仅按 calculation 文本降级 |
+| A2 | 输出契约新增 outputName↔findings.name 与可选 `columnMeta`；缺失记 `report_analysis_requirement_unfulfilled`；`columnMeta` 透传到 chart-input 与 finding descriptor | 生产默认开启 |
+| A3 | 两个候选同时落地：datasets 投影 `columnProfile`（角色、基数、缺失率）；planner 指令"同维度多指标合并为一个 outputName" | 违反"每次只试一个"，A/B 时需分别关闭对照 |
+
 ## 1. 证据盘点
 
 数据全部摘自主计划的逐样本登记，统计脚本见附录。c11/c12 是 planner 身份门禁失败，未进入 Coding，不计入。

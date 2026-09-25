@@ -76,6 +76,10 @@ from smart_reporting.reporting.workflow.runtime.base import (
     _ANALYSIS_CODE_INSTRUCTIONS,
     _ANALYSIS_CODE_LEGACY_INSTRUCTIONS,
 )
+from smart_reporting.reporting.workflow.runtime.chart_inputs import (
+    fallback_plan,
+    prepare_chart_inputs,
+)
 from smart_reporting.reporting.workflow.runtime.code_generation import (
     REPORTING_CODING_TASK_CONTEXT_METADATA_KEY,
     ReportingCodeGenerationRunner,
@@ -765,6 +769,57 @@ def freeze_planner_coding_payload(
     return manifest
 
 
+async def apply_replay_chart_inputs(
+    payload: dict[str, Any], workspace: HostReportingWorkspace
+) -> bool:
+    """V2 对照：按冻结计划物化 chart-input，并改写授权路径与模型 facts。
+
+    冻结 payload 本身不含 chart-input，两臂共享同一份 planner 输出。
+    """
+
+    facts = payload.get("facts")
+    task = payload.get("task")
+    if not isinstance(facts, dict) or not isinstance(task, dict):
+        return False
+    if task.get("task_kind") != "visualization":
+        return False
+    try:
+        plan = VisualizationPlanDraft.model_validate(facts.get("visualizationPlan"))
+    except ValidationError:
+        return False
+    if not any(chart.data_bindings for chart in plan.charts):
+        return False
+    raw_facts = facts.get("visualizationFacts")
+    if not isinstance(raw_facts, list):
+        return False
+    script_parent = Path(str(task["script_path"])).parent.as_posix()
+    materialized = await prepare_chart_inputs(
+        plan,
+        raw_facts,
+        workspace,
+        thread_id="replay",
+        output_root=f"{script_parent}-chart-inputs",
+    )
+    if materialized is None or not materialized.files:
+        return False
+    fallback_facts = (
+        visualization_coding_facts(
+            raw_facts, plan=fallback_plan(plan, materialized.fallback_chart_ids)
+        )
+        if materialized.fallback_chart_ids
+        else []
+    )
+    task["authorized_read_paths"] = sorted(
+        {*materialized.read_paths, *visualization_read_paths(fallback_facts)}
+    )
+    facts["chartInputs"] = list(materialized.entries)
+    if fallback_facts:
+        facts["visualizationFacts"] = fallback_facts
+    else:
+        facts.pop("visualizationFacts", None)
+    return True
+
+
 def analysis_evidence_diagnostic(
     content: str | bytes, current_analysis: Mapping[str, object]
 ) -> dict | None:
@@ -1115,6 +1170,7 @@ async def main(
     freeze_coding_dir: Path | None = None,
     disable_history_summary: bool = False,
     disable_metadata_budget: bool = False,
+    chart_inputs: bool = True,
 ) -> int:
     configure_application_logging(debug=False)
     if benchmark_extract_dir is not None:
@@ -1389,6 +1445,13 @@ async def main(
                 workspace=Workspace(str(root)),
             )
         )
+        chart_inputs_applied = (
+            chart_inputs
+            and benchmark_variant is not BenchmarkVariant.LEGACY
+            and await apply_replay_chart_inputs(payload, workspace)
+        )
+        if chart_inputs_applied:
+            task = ReportingCodingTaskContext(**payload["task"])
         coding_model = None
 
         def capture_coding_model(created_model) -> None:
@@ -1504,6 +1567,7 @@ async def main(
             )
             result_payload = {
                 "status": "passed",
+                "chartInputs": chart_inputs_applied,
                 "compactContinuation": compact_continuation,
                 "historySummaryEnabled": not disable_history_summary,
                 "metadataBudgetEnabled": not disable_metadata_budget,
@@ -1570,6 +1634,7 @@ async def main(
                 failure_payload["benchmarkMode"] = coding_only_link.benchmark_mode
                 failure_payload["variant"] = benchmark_variant.value
             failure_payload["firstRunFailureArtifact"] = first_failure_artifact or "unknown"
+            failure_payload["chartInputs"] = chart_inputs_applied
             failure_payload["compactContinuation"] = compact_continuation
             failure_payload["historySummaryEnabled"] = not disable_history_summary
             failure_payload["metadataBudgetEnabled"] = not disable_metadata_budget
@@ -1650,6 +1715,12 @@ if __name__ == "__main__":
         "--disable-metadata-budget",
         action="store_true",
         help="benchmark-only：关闭 8 KiB/32 KiB 工具元数据预算（构造仅摘要组）。",
+    )
+    parser.add_argument(
+        "--chart-inputs",
+        choices=("on", "off"),
+        default="on",
+        help="V2 对照：candidate 可视化是否预物化 chart-input（默认与生产一致为 on）。",
     )
     parser.add_argument("--variant", choices=("legacy", "candidate"))
     parser.add_argument(
@@ -1743,4 +1814,5 @@ if __name__ == "__main__":
         args.freeze_coding,
         disable_history_summary=args.disable_history_summary,
         disable_metadata_budget=args.disable_metadata_budget,
+        chart_inputs=args.chart_inputs == "on",
     )))
