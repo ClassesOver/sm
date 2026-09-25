@@ -202,7 +202,7 @@ class ReportRuntime:
         try:
             import pypdf
             from markdown_it import MarkdownIt
-            from weasyprint import HTML, URLFetcher
+            from weasyprint import HTML, URLFetcher, default_url_fetcher
         except ImportError as error:
             raise ReportFailure("PDF 运行时依赖不可用") from error
 
@@ -265,6 +265,10 @@ class ReportRuntime:
 
             def fetch_resource(url: str) -> dict[str, Any]:
                 parsed = urlsplit(url)
+                if parsed.scheme == "data":
+                    # data URI 由 _inline_images 从已校验工作区图片生成，自包含
+                    # 内容，交给 weasyprint 默认抓取器解码即可。
+                    return default_url_fetcher(url)
                 if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
                     raise ReportFailure("PDF 渲染禁止访问外部资源")
                 path = Path(unquote(parsed.path)).resolve()
