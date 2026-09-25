@@ -140,3 +140,52 @@ def test_candidate_instructions_do_not_route_materialized_charts_to_raw_facts():
     assert "逐字使用 binding.dataPath 读取数据" not in instructions
     assert "task.authorized_read_paths 或 binding.factFile.path 中的逐字字符串" not in instructions
     assert "禁止编写通用 resolve()" in instructions
+
+
+def test_edit_patch_tolerates_blank_noise_between_and_after_blocks():
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    sha = "a" * 64
+    block = "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n"
+    second = "<<<<<<< SEARCH\ny = 1\n=======\ny = 2\n>>>>>>> REPLACE\n"
+    patch = f"*** Begin Edit\n*** SHA256: {sha}\n{block}\n  \n{second}*** End Edit\n\n \n"
+
+    edits, digest = parse_edit_patch(patch, 10_000)
+
+    assert edits == [("x = 1", "x = 2"), ("y = 1", "y = 2")]
+    assert digest == sha
+
+
+def test_edit_patch_marker_failure_names_missing_line():
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+    from smart_reporting.reporting.models import ReportingError
+
+    patch = (
+        f"*** Begin Edit\n*** SHA256: {'a' * 64}\n"
+        "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n"
+        "<<<<<<< SEARCH\ny = 1\n=======\ny = 2\n>>>>>>> REPLACE\n*** End Edit"
+    )
+
+    with pytest.raises(ReportingError) as caught:
+        parse_edit_patch(patch, 10_000)
+
+    assert caught.value.details["reason"] == "marker_in_block"
+    assert ">>>>>>> REPLACE" in caught.value.details["hint"]
+
+
+@pytest.mark.anyio
+async def test_missing_output_diagnosis_separates_unreferenced_and_unexecuted(
+    binding, runtime  # noqa: F811
+):
+    toolkit = _toolkit(binding, runtime)
+    await toolkit.write_script(
+        "import json\n"
+        "def unused():\n"
+        '    json.dump({}, open("analysis/out.json", "w"))\n'
+    )
+
+    diagnosis = await toolkit._missing_output_diagnosis(["analysis/out.json"])
+
+    assert diagnosis["writeNotExecutedPaths"] == ["analysis/out.json"]
+    assert "notReferencedPaths" not in diagnosis
+    assert "未执行到" in diagnosis["outputHint"]

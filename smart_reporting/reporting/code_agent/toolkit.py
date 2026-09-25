@@ -1276,6 +1276,8 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "isPlaceholderScript", "allDeclaredOutputsMissing", "declaredOutputCount",
         "detectedOutputWrites", "functionName", "parameterName",
         "violations", "draftSha256", "violationLines", "writeExample",
+        "notReferencedPaths", "writeNotExecutedPaths", "unresolvedWritePaths", "outputHint",
+        "hint",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -1291,7 +1293,8 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         value = details.get(key)
         if key in {
             "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths", "presentPaths",
-            "detectedOutputWrites", "violationLines",
+            "detectedOutputWrites", "violationLines", "notReferencedPaths",
+            "writeNotExecutedPaths", "unresolvedWritePaths",
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
@@ -3211,6 +3214,8 @@ class ReportingCodeModeToolkit(Toolkit):
             )
             if example:
                 details["writeExample"] = example
+            if open_rewrite_gate:
+                details.update(await self._missing_output_diagnosis(missing_paths))
             raise ReportingError(
                 "report_code_declared_output_missing",
                 "声明产物不存在，不代表脚本不存在。检查缺失路径对应的写出逻辑，"
@@ -3218,6 +3223,53 @@ class ReportingCodeModeToolkit(Toolkit):
                 details=details,
             )
         return tuple(identities)
+
+    async def _missing_output_diagnosis(self, missing_paths: list[str]) -> dict[str, Any]:
+        """静态区分"脚本未引用签发路径"与"写出调用存在但运行时未执行到"。"""
+
+        try:
+            raw = await self.workspace.read_limited_regular_file(
+                self.context.task_id,
+                self.context.script_path,
+                max_bytes=self.context.max_source_bytes,
+            )
+            tree = ast.parse(raw.decode("utf-8"), filename=self.context.script_path)
+        except (WorkspaceError, UnicodeDecodeError, SyntaxError, ValueError):
+            return {}
+        declared = frozenset(self.context.declared_output_paths)
+        referenced = _declared_output_literals(tree, declared)
+        written = _declared_output_write_paths(tree, declared)
+        not_referenced = [path for path in missing_paths if path not in referenced]
+        not_executed = [path for path in missing_paths if path in written]
+        unresolved = [
+            path for path in missing_paths if path in referenced and path not in written
+        ]
+        hints: list[str] = []
+        if not_referenced:
+            hints.append(
+                "notReferencedPaths 在脚本中没有出现签发路径字面量：为这些图补上完整绘制与写出，"
+                "路径逐字使用签发值（见 writeExample）。"
+            )
+        if not_executed:
+            hints.append(
+                "writeNotExecutedPaths 的写出调用存在但运行时未执行到：检查它是否位于未被调用的"
+                "函数、if __name__ 之外的死分支、提前 return/continue，或被 try/except 吞掉的异常之后。"
+            )
+        if unresolved:
+            hints.append(
+                "unresolvedWritePaths 只以变量或拼接方式出现，宿主无法确认写出：直接在 savefig/"
+                "write_image/write_json 调用中使用签发路径字面量。"
+            )
+        result: dict[str, Any] = {}
+        if not_referenced:
+            result["notReferencedPaths"] = not_referenced[:20]
+        if not_executed:
+            result["writeNotExecutedPaths"] = not_executed[:20]
+        if unresolved:
+            result["unresolvedWritePaths"] = unresolved[:20]
+        if hints:
+            result["outputHint"] = " ".join(hints)
+        return result
 
     async def _script_looks_like_placeholder(self) -> bool:
         try:

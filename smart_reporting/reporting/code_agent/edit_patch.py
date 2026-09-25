@@ -24,6 +24,21 @@ _EDIT_BLOCK = re.compile(
 _MARKERS = ("*** Begin Edit", "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE", "*** End Edit")
 
 _invalid_details = {"nextTools": ["read_script", "edit_script"]}
+# 块间与 End Edit 之后只含空白的多余内容不承载任何源码，按协议噪声容忍。
+_BLANK_GAP = re.compile(r"[ \t\r]*(?:\n[ \t\r]*)*")
+
+
+def _marker_hint(old: str, new: str, block_index: int) -> str:
+    """定位被混入块内的协议标记，说明缺的是哪一行，而不只报 marker_in_block。"""
+
+    old_lines, new_lines = old.split("\n"), new.split("\n")
+    if "<<<<<<< SEARCH" in new_lines or "*** End Edit" in new_lines:
+        return f"第 {block_index} 块 REPLACE 后缺少独占一行的 >>>>>>> REPLACE。"
+    if "=======" in new_lines:
+        return f"第 {block_index} 块含两个 ======= 分隔行；SEARCH 与 REPLACE 之间只能有一个。"
+    if ">>>>>>> REPLACE" in old_lines or "<<<<<<< SEARCH" in old_lines:
+        return f"第 {block_index} 块 SEARCH 后缺少独占一行的 =======。"
+    return f"第 {block_index} 块的 SEARCH/REPLACE 文本中含有协议标记行。"
 
 
 def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str, str]], str]:
@@ -35,7 +50,7 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
             details = {**_invalid_details, "reason": "oversized_patch",
                        "actualBytes": patch_bytes, "limitBytes": max_source_bytes}
         else:
-            match = _EDIT_PATCH.fullmatch(patch)
+            match = _EDIT_PATCH.fullmatch(patch.rstrip() + "\n") if patch.strip() else None
             if match is None:
                 if _EDIT_PATCH.match(patch):
                     details = {**_invalid_details, "reason": "trailing_text"}
@@ -46,13 +61,20 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                 edits: list[tuple[str, str]] = []
                 position = 0
                 marker_contaminated = False
+                marker_hint = ""
                 while block := _EDIT_BLOCK.match(body, position):
                     if any(marker in text.split("\n") for text in (block["old"], block["new"])
                            for marker in _MARKERS):
                         marker_contaminated = True
+                        marker_hint = _marker_hint(block["old"], block["new"], len(edits) + 1)
                         break
                     edits.append((block["old"], block["new"]))
                     position = block.end()
+                    gap = _BLANK_GAP.match(body, position)
+                    if gap is not None and (
+                        gap.end() == len(body) or body.startswith("<<<<<<< SEARCH", gap.end())
+                    ):
+                        position = gap.end()
                 if edits and position == len(body):
                     return edits, match["sha"]
                 details = {
@@ -64,6 +86,8 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                 }
                 if details["blockIndex"] is None:
                     details.pop("blockIndex")
+                if marker_hint:
+                    details["hint"] = marker_hint
     raise ReportingError(
         "report_code_script_edit_invalid",
         "edit_script 需要一个含有效 SHA256 和一个或多个 SEARCH/REPLACE 块的原始补丁；"

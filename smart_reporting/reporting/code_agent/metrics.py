@@ -95,6 +95,9 @@ def bounded_failure_diagnostics(value: Any) -> dict[str, Any]:
         "unsignedPaths",
         "forbiddenPathOperations",
         "detectedOutputWrites",
+        "notReferencedPaths",
+        "writeNotExecutedPaths",
+        "unresolvedWritePaths",
     ):
         candidate = value.get(key)
         if isinstance(candidate, (list, tuple)):

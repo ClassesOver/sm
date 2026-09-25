@@ -818,6 +818,8 @@ async def test_declared_output_missing_records_bounded_diagnostics(workspace):  
         "allDeclaredOutputsMissing": True,
         "sourceExcerpt": '# Python\nfrom pathlib import Path\n\nPath("analysis/out.json").write_text("{}")\n',
         "allowedEditRegion": {"path": "analysis/a.py", "startLine": 1, "endLine": 4},
+        # 写出调用静态可见但运行后产物缺失：宿主区分"未执行到"与"未引用签发路径"。
+        "writeNotExecutedPaths": ["analysis/out.json"],
     }
     # 零产物场景首跑即打开重写闸门，第二轮 run_script 写出产物后同批 submit_script
     # 即可成功，整个 runner 只需要 2 个 model request。
