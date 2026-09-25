@@ -347,6 +347,19 @@ def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
     return tuple(_call_path_arguments(call, qualified_name))
 
 
+def _normalize_literal_path(value: str) -> str:
+    """只消除与签发相对路径无歧义等价的写法：前导 ./、重复斜杠与中间的 /./。
+
+    脚本在工作区根执行，"./analysis/out.json" 与签发的 "analysis/out.json" 是同一
+    文件；绝对路径、反斜杠与 .. 保持原样，由白名单继续拒绝。
+    """
+
+    if not value or value.startswith("/") or "\\" in value:
+        return value
+    parts = [part for part in value.split("/") if part not in {"", "."}]
+    return "/".join(parts) if parts else value
+
+
 def _referenced_literal_paths(tree: ast.AST) -> set[str]:
     aliases = _import_aliases(tree)
     bindings = _literal_bindings(tree)
@@ -360,7 +373,7 @@ def _referenced_literal_paths(tree: ast.AST) -> set[str]:
         for argument in _path_arguments(node, qualified_name):
             literal = _literal_string(argument, bindings)
             if literal is not None:
-                paths.add(literal)
+                paths.add(_normalize_literal_path(literal))
     return paths
 
 
@@ -376,22 +389,23 @@ def _resolved_path_literal(
         )
     literal = _literal_string(node, bindings)
     if literal is not None:
-        return literal
+        return _normalize_literal_path(literal)
     if isinstance(node, ast.Call):
         qualified_name = _qualified_name(node.func, aliases)
         if qualified_name == "pathlib.Path" and node.args:
-            return _literal_string(node.args[0], bindings)
+            first = _literal_string(node.args[0], bindings)
+            return _normalize_literal_path(first) if first is not None else None
         if qualified_name == "os.path.join" and not node.keywords:
             parts = [_literal_string(argument, bindings) for argument in node.args]
             if parts and all(part is not None for part in parts):
-                return os.path.join(*parts)
+                return _normalize_literal_path(os.path.join(*parts))
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         # pathlib 斜杠拼接：Path("charts") / "a.png"；左侧是 os.path.join
         # 解析出的 POSIX 路径时也按同风格拼接。
         left = _resolved_path_literal(node.left, aliases, bindings, seen)
         right = _literal_string(node.right, bindings)
         if left is not None and right is not None:
-            return f"{left.rstrip('/')}/{right}"
+            return _normalize_literal_path(f"{left.rstrip('/')}/{right}")
     return None
 
 
@@ -406,13 +420,13 @@ def _all_referenced_literal_paths(tree: ast.AST) -> set[str]:
             continue
         parts = [_literal_string(argument, bindings) for argument in node.args]
         if parts and all(part is not None for part in parts):
-            paths.add(os.path.join(*parts))
+            paths.add(_normalize_literal_path(os.path.join(*parts)))
     return paths
 
 
 def _declared_output_literals(tree: ast.AST, declared_paths: frozenset[str]) -> set[str]:
     literals = {
-        node.value
+        _normalize_literal_path(node.value)
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
@@ -1197,9 +1211,9 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
                 left = _literal_string(node.left.args[0], bindings) if node.left.args else None
             right = _literal_string(node.right, bindings)
             if left is not None:
-                parts.add(left)
+                parts.add(_normalize_literal_path(left))
             if right is not None:
-                parts.add(right)
+                parts.add(_normalize_literal_path(right))
             unsigned -= parts
     if unsigned:
         for node in ast.walk(tree):
@@ -1209,7 +1223,8 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
             if qualified_name is None:
                 continue
             if any(
-                _literal_string(argument, bindings) in unsigned
+                (literal := _literal_string(argument, bindings)) is not None
+                and _normalize_literal_path(literal) in unsigned
                 for argument in _path_arguments(node, qualified_name)
             ):
                 lines.append(node.lineno)

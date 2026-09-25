@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -926,3 +927,45 @@ async def test_edit_script_rejects_introduced_generic_helper(
         "task-1", "analysis/chart.py", max_bytes=64 * 1024
     )
     assert stored.decode("utf-8") == source
+
+
+_SIGNED_PATHS = frozenset({"analysis/out.json", "charts/a.png"})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'open("./analysis/out.json", "w")',
+        'open("analysis//out.json", "w")',
+        'from pathlib import Path\nPath("./charts/a.png")',
+        'from pathlib import Path\nPath("./charts") / "a.png"',
+    ],
+    ids=["dot-slash", "double-slash", "pathlib-dot", "pathlib-join-dot"],
+)
+def test_equivalent_relative_spellings_of_signed_paths_pass_preflight(source):
+    from smart_reporting.reporting.code_agent.toolkit import _reject_unauthorized_paths
+
+    _reject_unauthorized_paths(ast.parse(source), "analysis/s.py", _SIGNED_PATHS)
+
+
+@pytest.mark.parametrize(
+    ("source", "unsigned"),
+    [
+        ('open("../analysis/out.json", "w")', "../analysis/out.json"),
+        ('open("/analysis/out.json", "w")', "/analysis/out.json"),
+        ('open("./analysis/other.json", "w")', "analysis/other.json"),
+    ],
+)
+def test_non_equivalent_paths_still_rejected(source, unsigned):
+    from smart_reporting.reporting.code_agent.toolkit import _reject_unauthorized_paths
+
+    with pytest.raises(ReportingError) as caught:
+        _reject_unauthorized_paths(ast.parse(source), "analysis/s.py", _SIGNED_PATHS)
+    assert caught.value.details["unsignedPaths"] == [unsigned]
+
+
+def test_declared_output_write_detected_through_dot_slash():
+    from smart_reporting.reporting.code_agent.toolkit import _declared_output_write_paths
+
+    tree = ast.parse('import matplotlib.pyplot as plt\nplt.savefig("./charts/a.png")')
+    assert _declared_output_write_paths(tree, frozenset({"charts/a.png"})) == {"charts/a.png"}
