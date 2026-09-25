@@ -3389,6 +3389,31 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         return tuple(identities)
 
+    async def _declared_output_progress(self) -> dict[str, Any]:
+        """脚本中途失败时，给出崩溃前已写出与仍缺失的声明产物。
+
+        多图脚本中单张图的断言失败会中断全部后续写出；模型据此定位出错的那张图
+        局部修复，而不是改写已成功的部分。
+        """
+
+        present: list[str] = []
+        missing: list[str] = []
+        for path in self.context.declared_output_paths:
+            try:
+                await self.workspace.ahash_file(self.context.task_id, path)
+            except WorkspaceError:
+                missing.append(path)
+            else:
+                present.append(path)
+        progress: dict[str, Any] = {"presentPaths": present, "missingPaths": missing}
+        if present and missing:
+            progress["outputHint"] = (
+                "presentPaths 已在崩溃前写出；只局部修复 traceback 指向的那张图及其后续写出，"
+                "不要改动已成功的部分。单张图的数据校验失败应跳过该图的断言或改为软告警，"
+                "不得中断其他图的写出。"
+            )
+        return progress
+
     async def _read_script_source(self) -> str | None:
         try:
             raw = await self.workspace.read_limited_regular_file(
@@ -3433,6 +3458,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     else {"status": "unknown", "reason": "runtime_did_not_expose_locals"}
                 )
                 details["exitCode"] = exit_code
+                details.update(await self._declared_output_progress())
                 return _failure(
                     "report_code_mode_execution_failed",
                     "Coding Agent 脚本子进程未正常退出。",

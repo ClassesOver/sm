@@ -153,3 +153,52 @@ def test_exact_single_line_replacement_keeps_literal_semantics():
 
     assert updated == "if a:\n    b = 3\nprint(b)\n"
     assert fuzzy == []
+
+
+_SHA = "a" * 64
+_ENVELOPE = f"*** Begin Edit\n*** SHA256: {_SHA}\n"
+
+
+@pytest.mark.parametrize(
+    ("patch", "expected"),
+    [
+        # 工具描述承诺“删除使用空 REPLACE”；======= 后直接接 REPLACE 标记即为删除。
+        (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\n>>>>>>> REPLACE\n*** End Edit", ""),
+        (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\n\n>>>>>>> REPLACE\n*** End Edit", ""),
+        (
+            (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit")
+            .replace("\n", "\r\n"),
+            "x = 2",
+        ),
+        (
+            _ENVELOPE.replace(_SHA, _SHA.upper())
+            + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit",
+            "x = 2",
+        ),
+        (_ENVELOPE + "<<<<<<< SEARCH \nx = 1\n======= \nx = 2\n>>>>>>> REPLACE\t\n*** End Edit", "x = 2"),
+        ("\n\n" + _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit", "x = 2"),
+    ],
+)
+def test_patch_tolerates_unambiguous_format_noise(patch: str, expected: str) -> None:
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    edits, sha = parse_edit_patch(patch, 10_000)
+
+    assert edits == [("x = 1", expected)]
+    assert sha == _SHA
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        # 缺少 End Edit 多见于输出截断，可能丢失后续块，不能只应用一部分。
+        _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n",
+        "```\n" + _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit\n```",
+    ],
+)
+def test_patch_still_rejects_truncated_or_fenced_input(patch: str) -> None:
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    with pytest.raises(ReportingError) as caught:
+        parse_edit_patch(patch, 10_000)
+    assert caught.value.code == "report_code_script_edit_invalid"

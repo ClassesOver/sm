@@ -16,8 +16,10 @@ _EDIT_PATCH = re.compile(
     r"(?P<body>.+)\*\*\* End Edit\n?",
     re.DOTALL,
 )
+# 空 REPLACE（删除）允许 ======= 后直接跟 >>>>>>> REPLACE；中间保留一个空行的
+# 旧写法仍解析为空文本，两种写法语义一致。
 _EDIT_BLOCK = re.compile(
-    r"<<<<<<< SEARCH\n(?P<old>.+?)\n=======\n(?P<new>.*?)\n"
+    r"<<<<<<< SEARCH\n(?P<old>.+?)\n=======\n(?:(?P<new>.*?)\n)?"
     r">>>>>>> REPLACE\n",
     re.DOTALL,
 )
@@ -26,6 +28,33 @@ _MARKERS = ("*** Begin Edit", "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE", "*
 _invalid_details = {"nextTools": ["read_script", "edit_script"]}
 # 块间与 End Edit 之后只含空白的多余内容不承载任何源码，按协议噪声容忍。
 _BLANK_GAP = re.compile(r"[ \t\r\n]*")
+
+
+_SHA_LINE = re.compile(r"\*\*\* SHA256:[ \t]*([0-9A-Fa-f]{64})[ \t]*")
+
+
+def _normalize_patch(patch: str) -> str:
+    """只消除无歧义的格式噪声：整份 CRLF、首部空行、标记行尾空白与 SHA 大小写。
+
+    信封行本身为 CRLF 说明整份补丁被换行转换，统一回 LF；信封为 LF 时块内字节
+    （含 CRLF）原样保留。缺少 *** End Edit 多见于输出截断，可能丢失后续块，
+    仍按无效补丁拒绝。
+    """
+
+    patch = patch.lstrip(" \t\r\n")
+    if patch.startswith("*** Begin Edit\r\n"):
+        patch = patch.replace("\r\n", "\n")
+    lines = patch.split("\n")
+    normalized = []
+    for line in lines:
+        stripped = line.rstrip(" \t")
+        if stripped in _MARKERS:
+            normalized.append(stripped)
+        elif sha := _SHA_LINE.fullmatch(line):
+            normalized.append(f"*** SHA256: {sha[1].lower()}")
+        else:
+            normalized.append(line)
+    return "\n".join(normalized)
 
 
 def _marker_hint(old: str, new: str, block_index: int) -> str:
@@ -50,6 +79,7 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
             details = {**_invalid_details, "reason": "oversized_patch",
                        "actualBytes": patch_bytes, "limitBytes": max_source_bytes}
         else:
+            patch = _normalize_patch(patch)
             match = _EDIT_PATCH.fullmatch(patch.rstrip() + "\n") if patch.strip() else None
             if match is None:
                 if _EDIT_PATCH.match(patch):
@@ -62,11 +92,12 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                 position = 0
                 marker_hint = ""
                 while block := _EDIT_BLOCK.match(body, position):
-                    if any(marker in text.split("\n") for text in (block["old"], block["new"])
+                    replacement = block["new"] or ""
+                    if any(marker in text.split("\n") for text in (block["old"], replacement)
                            for marker in _MARKERS):
-                        marker_hint = _marker_hint(block["old"], block["new"], len(edits) + 1)
+                        marker_hint = _marker_hint(block["old"], replacement, len(edits) + 1)
                         break
-                    edits.append((block["old"], block["new"]))
+                    edits.append((block["old"], replacement))
                     position = block.end()
                     gap_end = _BLANK_GAP.match(body, position).end()
                     if gap_end == len(body) or body.startswith("<<<<<<< SEARCH", gap_end):
