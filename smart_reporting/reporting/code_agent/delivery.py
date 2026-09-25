@@ -195,6 +195,17 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
         next_tools, action = ["view_image", "submit_script"], "只审查 nextReviewPaths 中尚未通过的当前图片；全部通过后直接 submit_script 提交，不要重复运行或查看已通过的图片。"
     else:
         next_tools, action = ["submit_script"], "当前执行与审查已满足提交条件，直接提交，无需重复运行。"
+    draft_sha256 = getattr(toolkit, "rejected_draft_sha256", None)
+    if (
+        isinstance(draft_sha256, str)
+        and toolkit.terminal_failure is None
+        and not submitted
+        and "edit_script" not in next_tools
+    ):
+        # 被拒整稿可用 edit_script 以 draftSha256 打补丁；首次创建时脚本尚不存在，
+        # 若不显式放行，协议层会隐藏 edit_script，V3 草稿路径不可达。
+        next_tools = [*next_tools, "edit_script"]
+        action += f" 也可用 edit_script 以 *** SHA256: {draft_sha256} 修正被拒草稿中的全部违规。"
     visual_review_gate_tripped = toolkit.visual_review_gate_tripped
     gated_critical_paths = (
         [
@@ -253,6 +264,7 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
         "nextReviewPaths": reviews[:5],
         "submitted": submitted,
         "rewriteAllowed": toolkit.rewrite_gate_open,
+        "rejectedDraftSha256": draft_sha256 if isinstance(draft_sha256, str) else None,
         "visualReviewGate": {
             "tripped": visual_review_gate_tripped,
             "criticalRounds": toolkit.consecutive_critical_review_rounds,
