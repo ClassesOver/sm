@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from loguru import logger
 
@@ -216,8 +217,10 @@ class ReportingWorkspaceLsp:
             item.get("targetSelectionRange") or item.get("range") or nested.get("range") or {}
         ).get("start", {})
         try:
+            # _uri 经 Path.as_uri() 百分号编码（中文工作区路径必然编码），必须解码后
+            # 再映射回工作区相对路径，否则模型拿到的路径无法用于后续 LSP 调用。
             path = (
-                Path(str(uri).removeprefix("file://"))
+                Path(unquote(urlparse(str(uri)).path))
                 .resolve()
                 .relative_to(self.binding.context.workspace_root.resolve())
                 .as_posix()

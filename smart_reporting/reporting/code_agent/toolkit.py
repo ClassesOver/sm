@@ -3036,6 +3036,16 @@ class ReportingCodeModeToolkit(Toolkit):
             normalized_paths.append(source_path)
         # 同一路径并发审查会重复调用视觉模型并重复计数。
         normalized_paths = list(dict.fromkeys(normalized_paths))
+        # Plotly 交互规格不是图片，交付状态也不要求审查；送入图片检查会得到
+        # report_chart_source_invalid，并把模型误导去修复本无问题的脚本。
+        skipped_paths = [item for item in normalized_paths if item.endswith(".plotly.json")]
+        normalized_paths = [item for item in normalized_paths if item not in skipped_paths]
+        if not normalized_paths:
+            return _failure(
+                "report_code_visual_path_not_image",
+                "Plotly 交互规格（.plotly.json）无需视觉审查；只审查 PNG/JPEG 图片输出。",
+                {"path": skipped_paths[0]},
+            )
 
         receipts: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
@@ -3078,13 +3088,20 @@ class ReportingCodeModeToolkit(Toolkit):
                     for item in failures[1:8]
                 ]
             return primary
+        skipped = {"skippedInteractivePaths": skipped_paths} if skipped_paths else {}
         if len(normalized_paths) == 1:
             return {
                 "ok": True,
                 "receipt": receipts[0],
                 "freshReviewCount": fresh_review_count,
+                **skipped,
             }
-        return {"ok": True, "receipts": receipts, "freshReviewCount": fresh_review_count}
+        return {
+            "ok": True,
+            "receipts": receipts,
+            "freshReviewCount": fresh_review_count,
+            **skipped,
+        }
 
     async def _review_one_image(
         self,
@@ -3298,6 +3315,12 @@ class ReportingCodeModeToolkit(Toolkit):
     async def _clear_declared_outputs(self) -> None:
         for path in self.context.declared_output_paths:
             await self.workspace.adelete_file(self.context.task_id, path)
+        # 源码禁止目录推导且只放行签发的完整文件路径，脚本无法自行创建产物父目录；
+        # 声明产物位于 chartOutputRoot 子目录时由宿主预先创建，避免 savefig 必然失败。
+        for parent in sorted(
+            {path.rsplit("/", 1)[0] for path in self.context.declared_output_paths if "/" in path}
+        ):
+            await self.workspace.aensure_directory(self.context.task_id, parent)
 
     async def _declared_output_identities(
         self, *, open_rewrite_gate: bool = False

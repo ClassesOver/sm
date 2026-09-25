@@ -302,3 +302,75 @@ def test_deterministic_setup_failures_are_not_final_attempt_degradable():
     assert final_attempt_degradable(
         ReportingError("report_code_custom_tool_protocol_error", "m")
     ) is True
+
+
+@pytest.mark.anyio
+async def test_run_script_precreates_declared_output_subdirectories(workspace):  # noqa: F811
+    from smart_reporting.reporting.code_agent.context import (
+        ReportingCodingTaskBinding,
+        ReportingCodingTaskContext,
+    )
+    from smart_reporting.reporting.code_mode import ScriptProcessResult
+
+    output = "analysis/charts/sub/out.json"
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="analysis",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/a.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/a.py", output),
+        declared_output_paths=(output,),
+        max_source_bytes=128 * 1024,
+    )
+
+    class ScriptRuntime:
+        async def execute_script_process(self, _session_id, task_workspace, _path, **_kwargs):
+            # 模拟脚本进程：只按签发完整路径写文件，不自行创建父目录。
+            task_workspace.paths.to_host_path(output).write_text("{}", encoding="utf-8")
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
+
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(context, workspace),
+        ScriptRuntime(),
+        ReportingLspProcessManager(),
+    )
+    written = await toolkit.write_script(f'open("{output}", "w").write("{{}}")\n')
+    assert written["ok"] is True
+
+    result = await toolkit.run_script()
+
+    assert result["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_view_image_skips_plotly_interactive_spec(workspace):  # noqa: F811
+    from smart_reporting.reporting.code_agent.context import (
+        ReportingCodingTaskBinding,
+        ReportingCodingTaskContext,
+    )
+
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="charts/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("charts/chart.py", "charts/a.png", "charts/a.plotly.json"),
+        declared_output_paths=("charts/a.png", "charts/a.plotly.json"),
+        max_source_bytes=128 * 1024,
+    )
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(context, workspace), object(), ReportingLspProcessManager()
+    )
+
+    # 交互规格不得送入图片检查：否则返回 report_chart_source_invalid 并诱导修复脚本。
+    result = await toolkit.view_image(paths=["charts/a.plotly.json"])
+
+    assert result["code"] == "report_code_visual_path_not_image"
