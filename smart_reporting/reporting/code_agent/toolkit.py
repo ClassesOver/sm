@@ -2542,6 +2542,8 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         self.binding.clear_execution_receipt()
         self.submitted_receipt = None
+        # 正式脚本已前进，旧草稿基于过期源码，不得再被提升覆盖当前脚本。
+        self._rejected_draft = None
         identity = await self.workspace.ahash_file(
             self.context.task_id, self.context.script_path
         )

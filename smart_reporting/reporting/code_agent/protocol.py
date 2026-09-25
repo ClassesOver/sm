@@ -500,22 +500,24 @@ def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
     }
 
 
-_TRACEBACK_FRAME = re.compile(r'File "([^"]+)", line (\d+), in (\S+)')
+_TRACEBACK_FRAME = re.compile(
+    r'File "([^"]+)", line (\d+), in (\S+)(?:\r?\n[ \t]+(\S[^\r\n]*))?'
+)
 _LIBRARY_FRAME_MARKERS = ("site-packages", "dist-packages", "/lib/python", "<frozen")
 
 
 def _run_failure_signature(failure: Mapping[str, Any]) -> tuple[str, str] | None:
-    """(errorType, 所属函数)；只有脚本运行时异常才有签名。
+    """(errorType, 所属函数 + 出错语句)；只有脚本运行时异常才有签名。
 
-    输出校验、预检拒绝等没有异常栈的失败说明脚本已被执行或被宿主拦截，
-    不计入"同签名连续失败"。模块级异常用出错行区分，避免修复不同行的
-    KeyError 被当成同一失败。
+    输出校验、预检拒绝等没有异常栈的失败不计入"同签名连续失败"。出错语句按
+    源码文本而非行号比较：修复后行号漂移仍识别为同一失败，同一函数内不同语句
+    的失败（模型在推进）则视为不同签名。
     """
 
     details = failure.get("details")
     details = details if isinstance(details, Mapping) else {}
     error_type = details.get("errorType")
-    frames: list[tuple[str, str, str]] = []
+    frames: list[tuple[str, str, str, str]] = []
     for key in ("traceback", "stderr", "output", "stdout"):
         text = details.get(key)
         if isinstance(text, str) and text:
@@ -528,11 +530,9 @@ def _run_failure_signature(failure: Mapping[str, Any]) -> tuple[str, str] | None
     ]
     if not isinstance(error_type, str) or not error_type or not script_frames:
         return None
-    _path, line, function = script_frames[-1]
-    if function == "<module>":
-        error_line = details.get("errorLine")
-        function = f"<module>:{error_line if isinstance(error_line, int) else line}"
-    return error_type[:128], function[:128]
+    _path, line, function, statement = script_frames[-1]
+    location = " ".join(statement.split())[:160] if statement else f"line:{line}"
+    return error_type[:128], f"{function[:96]}|{location}"
 
 
 class ReportingCodeOpenAIResponses(OpenAIResponses):
@@ -635,6 +635,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         visual_budget_gate_safety_margin: int = 2,
         no_progress_request_limit: int | None = None,
         repeated_run_failure_limit: int | None = None,
+        initial_run_succeeded: bool = False,
     ) -> None:
         """绑定本任务实际 Function 范围；浅复制模型共享同一任务请求计数。"""
         names = [report_model_tool_name(tool) for tool in tools]
@@ -681,49 +682,52 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 raise ValueError(f"{name} must be a positive integer")
         self._code_no_progress_request_limit = no_progress_request_limit
         self._code_repeated_run_failure_limit = repeated_run_failure_limit
-        self._code_run_succeeded = False
-        self._code_run_failure_signature: tuple[str, str] | None = None
-        self._code_run_failure_streak = 0
+        # 每次请求在 copy(self) 上执行工具循环；进展状态必须放在共享可变对象中，
+        # 否则续跑 arun 时会从原对象读到过期值。宿主预执行成功同样计为进展。
+        self._code_progress: dict[str, Any] = {
+            "runSucceeded": bool(initial_run_succeeded),
+            "signature": None,
+            "streak": 0,
+        }
 
     def _record_run_outcome(
         self, succeeded: bool, failure: Mapping[str, Any] | None
     ) -> None:
         """记录 run_script 进展；只使用宿主已有回执，不新增模型请求。"""
 
+        progress = getattr(self, "_code_progress", None)
+        if not isinstance(progress, dict):
+            return
         if succeeded:
-            self._code_run_succeeded = True
-            self._code_run_failure_signature = None
-            self._code_run_failure_streak = 0
+            progress.update(runSucceeded=True, signature=None, streak=0)
             return
         signature = _run_failure_signature(failure or {})
         if signature is None:
-            self._code_run_failure_signature = None
-            self._code_run_failure_streak = 0
-            return
-        if signature == getattr(self, "_code_run_failure_signature", None):
-            self._code_run_failure_streak = getattr(self, "_code_run_failure_streak", 0) + 1
+            progress.update(signature=None, streak=0)
+        elif signature == progress.get("signature"):
+            progress["streak"] = int(progress.get("streak") or 0) + 1
         else:
-            self._code_run_failure_signature = signature
-            self._code_run_failure_streak = 1
+            progress.update(signature=signature, streak=1)
 
     def _check_code_progress(self, budget: CodeBudget) -> None:
         request_limit = getattr(self, "_code_no_progress_request_limit", None)
         repeat_limit = getattr(self, "_code_repeated_run_failure_limit", None)
+        progress = getattr(self, "_code_progress", None)
+        if not isinstance(progress, dict):
+            return
+        streak = int(progress.get("streak") or 0)
         reason: str | None = None
         if (
             request_limit is not None
-            and not getattr(self, "_code_run_succeeded", False)
+            and not progress.get("runSucceeded")
             and budget.requests >= request_limit
         ):
             reason = "no_successful_run"
-        elif (
-            repeat_limit is not None
-            and getattr(self, "_code_run_failure_streak", 0) >= repeat_limit
-        ):
+        elif repeat_limit is not None and streak >= repeat_limit:
             reason = "repeated_run_failure"
         if reason is None:
             return
-        signature = getattr(self, "_code_run_failure_signature", None)
+        signature = progress.get("signature")
         raise ReportingError(
             "report_code_no_progress",
             "Coding Agent 长时间没有进展，提前结束本次尝试并交由 fresh attempt 重来。",
@@ -734,10 +738,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 "modelRequestCount": budget.requests,
                 "noProgressRequestLimit": request_limit,
                 "repeatedRunFailureLimit": repeat_limit,
-                "runFailureStreak": getattr(self, "_code_run_failure_streak", 0),
+                "runFailureStreak": streak,
                 **(
                     {"errorType": signature[0], "function": signature[1]}
-                    if signature is not None
+                    if isinstance(signature, tuple)
                     else {}
                 ),
             },

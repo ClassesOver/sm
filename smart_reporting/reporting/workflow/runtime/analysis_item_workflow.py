@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
+import anyio
 from agno.run import RunContext
 from agno.workflow import Condition, Loop, Step, Steps
 from agno.workflow.types import StepInput, StepOutput
@@ -610,6 +611,8 @@ class AnalysisItemWorkflow:
         read_dataset: Callable[[FileIdentity], Awaitable[bytes]] | None = None,
     ) -> None:
         self.read_dataset = read_dataset
+        # 同一 Workflow 内多次 validate-evidence 复用按 (SHA, 字段) 解析的列全集。
+        self._coverage_columns: dict[tuple[str, frozenset[str]], dict[str, list[str]]] = {}
         self.decide_evidence = decide_evidence
         self.run_code = run_code
         self.summarize = summarize
@@ -1129,11 +1132,11 @@ class AnalysisItemWorkflow:
                     dataset_id = dataset.get("datasetId")
                     if dataset_id not in fields_by_dataset:
                         continue
-                    text = await self._read_coverage_dataset(dataset, run_context)
-                    if text is not None:
-                        dataset_columns[str(dataset_id)] = parse_csv_columns(
-                            text, fields_by_dataset[str(dataset_id)]
-                        )
+                    columns = await self._coverage_dataset_columns(
+                        dataset, frozenset(fields_by_dataset[str(dataset_id)]), run_context
+                    )
+                    if columns is not None:
+                        dataset_columns[str(dataset_id)] = columns
                 warnings.extend(
                     dimension_coverage_gaps(requirements, dataset_columns, findings)
                 )
@@ -1153,6 +1156,24 @@ class AnalysisItemWorkflow:
                 warning,
             )
         return warnings
+
+    async def _coverage_dataset_columns(
+        self,
+        dataset: Mapping[str, Any],
+        fields: frozenset[str],
+        run_context: RunContext,
+    ) -> dict[str, list[str]] | None:
+        key = (str(dataset.get("sha256")), fields)
+        cached = self._coverage_columns.get(key)
+        if cached is not None:
+            return cached
+        text = await self._read_coverage_dataset(dataset, run_context)
+        if text is None:
+            return None
+        # 全量 CSV 解析可能耗时数百毫秒，放到工作线程，避免阻塞并发的章节任务。
+        columns = await anyio.to_thread.run_sync(parse_csv_columns, text, fields)
+        self._coverage_columns[key] = columns
+        return columns
 
     async def _read_coverage_dataset(
         self, dataset: Mapping[str, Any], run_context: RunContext

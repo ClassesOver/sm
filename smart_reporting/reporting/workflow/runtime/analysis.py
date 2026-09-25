@@ -123,6 +123,7 @@ from .base import (
     validate_metric_code_bindings,
 )
 from .chart_inputs import (
+    ChartInputMaterialization,
     fallback_plan,
     prepare_chart_inputs,
     verify_plotly_chart_inputs,
@@ -545,6 +546,32 @@ def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]
             if path is not None
         )
     )
+
+
+def _visualization_repair_facts(
+    task_facts: Mapping[str, Any] | None,
+    chart_inputs: ChartInputMaterialization | None,
+    coding_facts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """已物化时，修复用 dataPaths 契约只保留仍授权读取的回退分析项。"""
+
+    facts = dict(task_facts or {})
+    contract = facts.get("visualizationDataContract")
+    if chart_inputs is None or not chart_inputs.files or not isinstance(contract, Mapping):
+        return facts
+    authorized = {
+        item.get("analysisId") for item in coding_facts if isinstance(item, Mapping)
+    }
+    metrics = [
+        item
+        for item in contract.get("metrics") or ()
+        if isinstance(item, Mapping) and item.get("analysisId") in authorized
+    ]
+    if metrics:
+        facts["visualizationDataContract"] = {**contract, "metrics": metrics}
+    else:
+        facts.pop("visualizationDataContract")
+    return facts
 
 
 def _visualization_chart_input_root(chart_output_root: str) -> str:
@@ -1028,6 +1055,8 @@ class RuntimeAnalysisMixin:
                     repair_workspace_key: str | None = None
                     knowledge_index = getattr(self, "knowledge_index", None)
                     code_runner_instance: ReportingCodeGenerationRunner | None = None
+                    # 同一 fixed Workflow 内计划只生成一次；chart-input 按计划物化一次复用。
+                    chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
                     planner_metrics_recorder = (
                         invocation.model_metrics_settlement.stage_recorder(
                             "planner", agent_role="visualization-planner"
@@ -1139,18 +1168,21 @@ class RuntimeAnalysisMixin:
                             )
                         # V2：宿主按已校验绑定预物化 chart-input，模型不再导航原始 facts；
                         # 物化失败的图（或整体不可用）回退原始 facts 投影。
-                        chart_inputs = (
-                            await prepare_chart_inputs(
-                                plan,
-                                facts,
-                                task_workspace,
-                                thread_id=str(coding_task_id),
-                                output_root=_visualization_chart_input_root(root),
-                            )
-                            if benchmark_projection is None
+                        chart_inputs: ChartInputMaterialization | None = None
+                        if (
+                            benchmark_projection is None
                             or benchmark_projection.materialize_chart_inputs
-                            else None
-                        )
+                        ):
+                            plan_key = payload_sha256(plan.model_dump(mode="json", by_alias=True))
+                            if plan_key not in chart_input_cache:
+                                chart_input_cache[plan_key] = await prepare_chart_inputs(
+                                    plan,
+                                    facts,
+                                    task_workspace,
+                                    thread_id=str(coding_task_id),
+                                    output_root=_visualization_chart_input_root(root),
+                                )
+                            chart_inputs = chart_input_cache[plan_key]
                         coding_facts = visualization_coding_facts(
                             facts,
                             plan=(
@@ -1205,17 +1237,9 @@ class RuntimeAnalysisMixin:
                             "visualizationPlan": visualization_coding_plan(
                                 plan, benchmark_projection=benchmark_projection
                             ),
-                            **{
-                                key: value
-                                for key, value in dict(task_facts or {}).items()
-                                # 全部图已物化时原始 dataPaths 契约只会诱导重新导航 facts。
-                                if not (
-                                    key == "visualizationDataContract"
-                                    and chart_inputs is not None
-                                    and chart_inputs.files
-                                    and not chart_inputs.fallback_chart_ids
-                                )
-                            },
+                            **_visualization_repair_facts(
+                                task_facts, chart_inputs, coding_facts
+                            ),
                         }
                         result = await code_runner().run(
                             coding_context,

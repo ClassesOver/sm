@@ -589,6 +589,10 @@ class ReportingCodeGenerationRunner:
                                 "repeated_run_failure_limit": (
                                     VISUALIZATION_REPEATED_RUN_FAILURE_LIMIT
                                 ),
+                                # 宿主预执行在 configure 之前完成；成功即已有可交付产物。
+                                "initial_run_succeeded": (
+                                    getattr(toolkit, "first_run_success", None) is True
+                                ),
                             }
                             if task_context.task_kind == "visualization"
                             else {}

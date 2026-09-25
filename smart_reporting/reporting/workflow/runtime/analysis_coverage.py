@@ -169,6 +169,15 @@ def dimension_coverage_gaps(
     return gaps
 
 
+def _strip_hints(name: str, hints: Sequence[str]) -> str:
+    """大小写无关地去掉期间提示词，得到用于配对的指标词干。"""
+
+    stem = name
+    for hint in hints:
+        stem = re.sub(re.escape(hint), "", stem, flags=re.IGNORECASE)
+    return " ".join(stem.replace("_", " ").split()).lower()
+
+
 def _period_pairs(names: Sequence[str]) -> list[tuple[str, str]]:
     prior = [name for name in names if any(hint in name.lower() for hint in _PRIOR_HINTS)]
     current = [
@@ -178,26 +187,15 @@ def _period_pairs(names: Sequence[str]) -> list[tuple[str, str]]:
     ]
     pairs: list[tuple[str, str]] = []
     for current_name in current:
-        stem = current_name
-        for hint in _CURRENT_HINTS:
-            stem = stem.replace(hint, "")
+        stem = _strip_hints(current_name, _CURRENT_HINTS)
         match = next(
-            (
-                prior_name
-                for prior_name in prior
-                if _strip_hints(prior_name, _PRIOR_HINTS) == stem
-            ),
-            prior[0] if len(prior) == 1 else None,
+            (name for name in prior if _strip_hints(name, _PRIOR_HINTS) == stem),
+            # 词干不匹配时只允许唯一的本期列与唯一的上期列兜底配对。
+            prior[0] if len(prior) == 1 and len(current) == 1 else None,
         )
         if match is not None:
             pairs.append((current_name, match))
     return pairs
-
-
-def _strip_hints(name: str, hints: Sequence[str]) -> str:
-    for hint in hints:
-        name = name.replace(hint, "")
-    return name
 
 
 def one_sided_gap_warnings(

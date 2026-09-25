@@ -1083,7 +1083,28 @@ def extract_benchmark_trace_inputs(
         raise ValueError("可视化 Coding trace 缺少 facts")
     neutral_facts = visualization_coding_facts(facts)
     candidate_facts = visualization_coding_facts(facts, plan=candidate_plan)
-    if coding_facts.get("visualizationFacts") != candidate_facts:
+    if "chartInputs" in coding_facts:
+        # V2 之后的生产 trace：chart-input 由宿主按计划派生，属于臂内投影而非冻结输入。
+        # 还原为变体中立的 facts 与全部事实文件授权路径，回放时再按 --chart-inputs 物化。
+        chart_ids = {
+            item.get("chartId")
+            for item in coding_facts.get("chartInputs") or ()
+            if isinstance(item, Mapping)
+        }
+        fallback_ids = frozenset(
+            chart.chart_id for chart in candidate_plan.charts if chart.chart_id not in chart_ids
+        )
+        expected_fallback = (
+            visualization_coding_facts(facts, plan=fallback_plan(candidate_plan, fallback_ids))
+            if fallback_ids
+            else None
+        )
+        if coding_facts.get("visualizationFacts") != expected_fallback:
+            raise ValueError("可视化 planner 与 Coding 的回退 visualizationFacts 投影不一致")
+        coding_facts.pop("chartInputs")
+        coding_facts.pop("visualizationDataContract", None)
+        coding_payload["task"]["authorized_read_paths"] = list(visualization_read_paths(facts))
+    elif coding_facts.get("visualizationFacts") != candidate_facts:
         raise ValueError("可视化 planner 与 Coding 的 visualizationFacts 投影不一致")
     coding_facts["visualizationFacts"] = neutral_facts
     coding_facts.pop("visualizationPlan", None)
