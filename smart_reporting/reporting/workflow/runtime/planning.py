@@ -307,6 +307,7 @@ class RuntimePlanningMixin:
         self,
         *,
         thread_id: str,
+        caller_thread_id: str,
         user_id: str,
         workflow_session_id: str,
         workflow_run_id: str,
@@ -382,6 +383,8 @@ class RuntimePlanningMixin:
         # Durable payload 不固化作用域；调用方 thread 只能从发布时的 run_context
         # dependencies 恢复，与 _scope() 的解析来源保持一致，否则 caller_thread_id
         # 会回退到 workflow 内部会话 id，误判编辑上下文作用域不一致。
+        # thread_id 是 as_state() 里的 workspace_key（供工作区 IO 寻址），安全比对
+        # 必须对着调用方 thread（callerThreadId），两者不是同一语义。
         scope = resolve_reporting_workflow_scope(
             run_id=workflow_run_id,
             session_id=workflow_session_id,
@@ -389,7 +392,7 @@ class RuntimePlanningMixin:
             dependencies=dependencies,
             stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
         )
-        if durable is None or scope.caller_thread_id != thread_id:
+        if durable is None or scope.caller_thread_id != caller_thread_id:
             raise ReportingError(
                 "report_editor_scope_mismatch", "报告编辑上下文与发布作用域不一致。"
             )

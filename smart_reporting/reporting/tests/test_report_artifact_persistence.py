@@ -694,6 +694,7 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     runtime.state_repository = StateRepository()
     result = await runtime.issue_http_publication(
         thread_id="thread",
+        caller_thread_id="thread",
         user_id="7",
         workflow_session_id="workflow-session",
         workflow_run_id="workflow-run",
@@ -770,15 +771,15 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
 
     class Workspace:
         async def aread_text(self, thread_id: str, path: str) -> str:
-            assert thread_id == "thread"
+            assert thread_id == "reporting-run-workspace-key"
             return "# 报告\n"
 
         async def apath_exists(self, thread_id: str, path: str) -> bool:
-            assert thread_id == "thread"
+            assert thread_id == "reporting-run-workspace-key"
             return False
 
         async def awrite_text(self, thread_id: str, path: str, content: str) -> None:
-            assert thread_id == "thread"
+            assert thread_id == "reporting-run-workspace-key"
 
         async def adestroy(self, thread_id: str) -> bool:
             events.append("destroy")
@@ -813,7 +814,8 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
         }
     }
     result = await runtime.issue_http_publication(
-        thread_id="thread",
+        thread_id="reporting-run-workspace-key",
+        caller_thread_id="thread",
         user_id="7",
         workflow_session_id="report-session-internal",
         workflow_run_id="workflow-run",
@@ -829,7 +831,8 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
     # 校验仍然失败关闭：dependencies 与 stored 都无法提供 caller thread 时不得签发。
     with pytest.raises(ReportingError, match="report_editor_scope_mismatch"):
         await runtime.issue_http_publication(
-            thread_id="thread",
+            thread_id="reporting-run-workspace-key",
+            caller_thread_id="thread",
             user_id="7",
             workflow_session_id="report-session-internal",
             workflow_run_id="workflow-run",
@@ -1052,6 +1055,7 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
     with pytest.raises(ReportingError) as raised:
         await runtime.issue_http_publication(
             thread_id="thread",
+            caller_thread_id="thread",
             user_id="7",
             workflow_session_id="workflow-session",
             workflow_run_id="workflow-run",
@@ -1119,6 +1123,7 @@ async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails(
     with pytest.raises(ReportingError) as raised:
         await runtime.issue_http_publication(
             thread_id="thread",
+            caller_thread_id="thread",
             user_id="7",
             workflow_session_id="workflow-session",
             workflow_run_id="workflow-run",
@@ -1200,6 +1205,7 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
             thread_id="thread",
             run_id="workflow-run",
         ).workspace_key,
+        caller_thread_id="thread",
         user_id="native",
         workflow_session_id="thread",
         workflow_run_id="workflow-run",
