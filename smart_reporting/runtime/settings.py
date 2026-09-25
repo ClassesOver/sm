@@ -296,6 +296,12 @@ class AgentSettings:
     report_analysis_concurrency: int
     report_section_concurrency: int
     reporting_execution_mode: str
+    # 单个可视化章节的墙钟截止（秒）：超时后不再开启新的修复或 fresh attempt，
+    # 直接零图降级，保证最难主题也能在报告总时限内交付。
+    report_visualization_section_deadline_seconds: int = 900
+    # 全部可视化章节共享的墙钟预算（秒），从报告分析阶段开始计时；单章截止取
+    # 本章上限与报告剩余预算的较小值，避免多出图章节累加越过报告总时限。
+    report_visualization_total_deadline_seconds: int = 2400
     model_fast_structured_mode: str = "json_schema"
     model_standard_structured_mode: str = "json_schema"
     model_strong_structured_mode: str = "json_schema"
@@ -474,6 +480,18 @@ class AgentSettings:
             report_analysis_concurrency=report_analysis_concurrency,
             report_section_concurrency=report_section_concurrency,
             reporting_execution_mode=reporting_execution_mode,
+            report_visualization_section_deadline_seconds=_positive_int(
+                values,
+                "AGENT_REPORT_VISUALIZATION_SECTION_DEADLINE_SECONDS",
+                900,
+                maximum=7200,
+            ),
+            report_visualization_total_deadline_seconds=_positive_int(
+                values,
+                "AGENT_REPORT_VISUALIZATION_TOTAL_DEADLINE_SECONDS",
+                2400,
+                maximum=14400,
+            ),
             model_fast_structured_mode=_structured_output_mode(
                 values, "AGENT_MODEL_FAST_STRUCTURED_MODE"
             ),

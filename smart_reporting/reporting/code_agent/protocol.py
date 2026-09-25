@@ -52,10 +52,12 @@ FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
 _CUSTOM_TOOL_PROTOCOL_ERROR = "report_code_custom_tool_protocol_error"
 _VISUALIZATION_BUDGET_GATE_FORCED_SUBMIT = "report_code_visual_budget_gate_forced_submit"
 _VISUALIZATION_REVIEW_ROUNDS_GATE = "report_code_visual_review_rounds_exhausted"
-# provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回；参数 JSON
-# 完好就还原为 custom 形态继续既有 stage 白名单/执行链路（candidate-32）。超过上限
-# 说明 provider 持续退化，恢复无益，保持 fail-closed。
-_WIRE_SHAPE_RECOVERY_LIMIT = 3
+# provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回；该调用不执行，
+# 只补未执行回执引导模型改用 custom 工具重发。超过上限说明 provider 持续退化，保持
+# fail-closed。
+_WIRE_SHAPE_REJECTION_LIMIT = 3
+# provider 以 function 形态返回、已补未执行回执的 FREEFORM 调用在历史中的标记。
+_WIRE_REJECTED_FUNCTION = "function_rejected"
 # 用合法代码首行固定 raw input 形状，避免任意文本 grammar 接受 JSON 包装。
 _FREEFORM_TOOL_GRAMMARS: Mapping[str, str] = MappingProxyType({
     "write_script": 'start: "# Python" NEWLINE SOURCE\n'
@@ -390,47 +392,28 @@ def _normalize_provider_custom_input(raw_input: str, tool_name: str) -> tuple[st
 
 
 def _custom_input_prefixes(tool_name: str) -> tuple[str, ...]:
-    return (
-        ("*** Begin Edit\n",)
-        if tool_name == "edit_script"
-        else ("# Python\n", "# Python\r\n", "%%bash\n", "%%bash\r\n")
-    )
+    # 与 _FREEFORM_TOOL_GRAMMARS 一致：只有 run 接受 %%bash cell；write_script 的
+    # 正式脚本必须是 Python，%%bash 首行不能被当作协议正确输入或信封解封目标。
+    if tool_name == "edit_script":
+        return ("*** Begin Edit\n", "*** Begin Patch\n")
+    if tool_name == "run":
+        return ("# Python\n", "# Python\r\n", "%%bash\n", "%%bash\r\n")
+    return ("# Python\n", "# Python\r\n")
 
 
-def _recover_wire_shaped_freedom_call(
-    item: Any, name: Any, kind: str, task_tools: Any
-) -> dict[str, Any] | None:
-    """provider grammar 退化时，任务集内 FREEFORM 工具可能以 function 形态返回。
+def _is_wire_shaped_freedom_call(name: Any, kind: str, task_tools: Any) -> bool:
+    """任务集内 FREEFORM 工具被 provider 以 function 形态返回（grammar 退化）。
 
-    candidate-32：write_script 以 kind=function 返回（arguments 是完好的
-    {"source": "..."} JSON）。参数结构可解时还原为 custom 形态，交给既有
-    stage 白名单/执行链路处理（stage 内则执行，stage 外走软拒绝回执）；
-    名称不在任务集、参数不可解或 input 为空时返回 None，保持 fail-closed。
+    按 AGENTS.md，只有 provider 返回的结构化 custom_tool_call 可执行，write_script/run
+    等不得降级为 JSON function tool。因此这里只做识别：该调用保持 provider 原样、
+    不改写、不执行，由调用循环补未执行回执，引导模型改用原生 custom 工具重发。
     """
-    if not (isinstance(name, str) and kind == "function" and name in FREEFORM_TOOL_ARGUMENTS):
-        return None
-    if task_tools is not None and name not in task_tools:
-        return None
-    arguments = _field(item, "arguments")
-    try:
-        decoded = json.loads(arguments) if isinstance(arguments, str) else None
-    except (TypeError, ValueError):
-        decoded = None
-    raw_input = decoded.get(FREEFORM_TOOL_ARGUMENTS[name]) if isinstance(decoded, Mapping) else None
-    if not isinstance(raw_input, str) or not raw_input:
-        # 第二机会（candidate-38）：grammar 退化更深时模型会把 free-form 原文直接
-        # 作为 function 参数（非 JSON 对象）；按该工具的输入前缀特征接受原文。
-        if isinstance(arguments, str) and arguments.startswith(_custom_input_prefixes(name)):
-            raw_input = arguments
-    if not isinstance(raw_input, str) or not raw_input:
-        return None
-    return {
-        "type": "custom_tool_call",
-        "id": _field(item, "id"),
-        "call_id": _field(item, "call_id"),
-        "name": name,
-        "input": raw_input,
-    }
+    return (
+        isinstance(name, str)
+        and kind == "function"
+        and name in FREEFORM_TOOL_ARGUMENTS
+        and (task_tools is None or name in task_tools)
+    )
 
 
 def _synthetic_custom_call(item: Any) -> dict[str, Any]:
@@ -671,6 +654,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         self._code_redundant_review_check = redundant_call_check
         self._code_delivery_state_reader = delivery_state_reader
         self._code_stage_mismatch_names: frozenset[str] = frozenset()
+        self._code_wire_rejected_call_ids: frozenset[str] = frozenset()
         self._code_request_metrics: list[dict[str, Any]] = []
         for name, value in (
             ("no_progress_request_limit", no_progress_request_limit),
@@ -901,9 +885,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         budget = getattr(self, "_code_budget", None)
         return budget.envelope_normalized_inputs if budget is not None else "unknown"
 
-    def code_run_wire_shape_recoveries(self) -> int | str:
+    def code_run_wire_shape_rejections(self) -> int | str:
         budget = getattr(self, "_code_budget", None)
-        return budget.wire_shape_recoveries if budget is not None else "unknown"
+        return budget.wire_shape_rejections if budget is not None else "unknown"
 
     def claim_delivery_continuation(self, tool_limit: int) -> int | None:
         budget = getattr(self, "_code_budget", None)
@@ -966,7 +950,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     "description": (
                         "这是 FREEFORM custom 工具，输入就是原始文本；"
                         "不要构造参数对象、字符串引号或 Markdown 围栏。"
-                        + ("补丁以 *** Begin Edit 和真实换行开头。" if name == "edit_script"
+                        + ("补丁以 *** Begin Edit 或 *** Begin Patch 和真实换行开头。"
+                           if name == "edit_script"
                            else "Python 输入以 # Python 和真实换行开头。")
                         + ("仅 run 支持以 %%bash 和真实换行开头的 Shell cell。" if name == "run" else "")
                         + str(tool.get("description") or name)
@@ -1360,7 +1345,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         task_tools = getattr(self, "_code_tool_names", None)
         identities: set[str] = set()
         stage_mismatch_names: list[str] = []
-        for index, item in enumerate(actionable):
+        wire_rejected_call_ids: list[str] = []
+        for item in actionable:
             name = _field(item, "name")
             kind = "custom" if _field(item, "type") == "custom_tool_call" else "function"
             if declarations is not None and declarations.get(name) != kind:
@@ -1383,35 +1369,20 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         str(name)[:128], kind, sorted(declarations), sorted(task_tools),
                     )
                 else:
-                    recovered = _recover_wire_shaped_freedom_call(item, name, kind, task_tools)
                     if (
-                        recovered is not None
+                        _is_wire_shaped_freedom_call(name, kind, task_tools)
                         and budget is not None
-                        and budget.wire_shape_recoveries < _WIRE_SHAPE_RECOVERY_LIMIT
+                        and budget.wire_shape_rejections < _WIRE_SHAPE_REJECTION_LIMIT
                     ):
-                        # candidate-32：grammar 退化下 FREEFORM 工具以 function 形态
-                        # 返回。参数 JSON 完好时还原为 custom 形态继续既有校验与
-                        # stage 白名单（stage 外软拒绝、stage 内正常执行），不记协议
-                        # 违规；恢复计数超限后保持 fail-closed。
-                        budget.record_wire_shape_recovery()
-                        actionable[index] = recovered
-                        item = recovered
-                        kind = "custom"
+                        # grammar 退化下 FREEFORM 工具以 function 形态返回：不改写为
+                        # custom、不执行，保留 provider 原样历史并补未执行回执；超过
+                        # 上限后按协议违规 fail-closed。
+                        budget.record_wire_shape_rejection()
+                        wire_rejected_call_ids.append(_required_id(item, "call_id"))
                         logger.warning(
-                            "report_code_wire_shape_recovered name={} recovery={}",
-                            str(name)[:128], budget.wire_shape_recoveries,
+                            "report_code_wire_shape_rejected name={} rejection={}",
+                            str(name)[:128], budget.wire_shape_rejections,
                         )
-                        if (
-                            isinstance(name, str)
-                            and task_tools is not None
-                            and name in task_tools
-                            and declarations is not None
-                            and name not in declarations
-                        ):
-                            # 还原后仍受交付阶段白名单约束：stage 外的 FREEFORM
-                            # 工具与正常 stage 不匹配同路径软拒绝，不执行。
-                            stage_mismatch_names.append(name)
-                            budget.record_stage_mismatch_rejection()
                     else:
                         if budget is not None:
                             budget.record_protocol_violation()
@@ -1436,6 +1407,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 raise _custom_protocol_error("Coding Agent 工具调用身份重复。")
             identities.update(call_identities)
         self._code_stage_mismatch_names = frozenset(stage_mismatch_names)
+        self._code_wire_rejected_call_ids = frozenset(wire_rejected_call_ids)
         if not actionable and _contains_textual_tool_marker(output):
             if budget is not None:
                 budget.record_protocol_violation()
@@ -1465,6 +1437,11 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             if _field(item, "type") == "custom_tool_call"
         }
         parsed = super()._parse_provider_response(response, **kwargs)
+        for call in parsed.tool_calls or ():
+            if isinstance(call, dict) and call.get("call_id") in wire_rejected_call_ids:
+                # 标记为“按 provider 原样回放的被拒 function 调用”，回放时不得误判为
+                # 被篡改的 custom 调用，也不得还原为 custom 形态。
+                call["provider_data"] = {"reporting_wire_type": _WIRE_REJECTED_FUNCTION}
         if not custom_calls:
             return parsed
         function_calls = iter(parsed.tool_calls or ())
@@ -1560,6 +1537,43 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 ).info("report_code_tool_progress tool_name={} status=rejected", tool_name)
                 continue
             is_redundant_review = self._is_redundant_visual_review(call)
+            if call.call_id in getattr(self, "_code_wire_rejected_call_ids", frozenset()):
+                # provider 以 function 形态返回 FREEFORM 工具：按协议只执行结构化
+                # custom_tool_call，这里补未执行回执并继续本批次，不消耗任务额度。
+                wire_rejected = Message(
+                    role=self.tool_message_role,
+                    tool_call_id=call.call_id,
+                    tool_name=tool_name,
+                    tool_args=call.arguments,
+                    tool_call_error=True,
+                    content=json.dumps({
+                        "ok": False,
+                        "status": "rejected",
+                        "code": "report_code_tool_wire_type_invalid",
+                        "message": (
+                            f"{tool_name} 只能以原生 custom 工具调用（free-form 原文），"
+                            "不能使用 JSON function 形态；本次未执行，请用 custom 工具重新发送。"
+                        ),
+                        "details": {
+                            "toolName": tool_name,
+                            "receivedType": "function",
+                            "expectedType": "custom",
+                            "inputPrefixes": list(_custom_input_prefixes(tool_name)),
+                        },
+                    }, ensure_ascii=False),
+                )
+                if function_call_limit is not None:
+                    self._attach_tool_budget(
+                        [wire_rejected], used=current_count, limit=function_call_limit
+                    )
+                results.append(wire_rejected)
+                logger.bind(
+                    reporting_progress="code_tool",
+                    tool_name=tool_name,
+                    status="rejected",
+                    code="report_code_tool_wire_type_invalid",
+                ).info("report_code_tool_progress tool_name={} status=rejected", tool_name)
+                continue
             if tool_name in getattr(self, "_code_stage_mismatch_names", frozenset()):
                 # 上一轮校验已判定该调用不在当前交付阶段白名单（但任务集内且
                 # wire 类型正确）：补未执行回执并继续本批次，不消耗任务额度。
@@ -1854,6 +1868,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         identity_owners: dict[str, int] = {}
         custom_calls: dict[str, dict[str, Any]] = {}
         custom_replays: list[dict[str, Any]] = []
+        wire_rejected_ids: set[str] = set()
         for index, (original, normalized) in enumerate(
             zip(original_calls, normalized_calls, strict=True)
         ):
@@ -1883,8 +1898,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             function = _field(original, "function")
             name = _field(function, "name")
             if custom is None:
-                if name in FREEFORM_TOOL_ARGUMENTS:
+                provider_data = _field(original, "provider_data")
+                wire_rejected = (
+                    isinstance(provider_data, Mapping)
+                    and provider_data.get("reporting_wire_type") == _WIRE_REJECTED_FUNCTION
+                )
+                if name in FREEFORM_TOOL_ARGUMENTS and not wire_rejected:
                     raise _custom_protocol_error("Coding Agent custom 工具调用类型不匹配。")
+                if wire_rejected:
+                    wire_rejected_ids.update(identities)
                 continue
             custom_replays.append(custom)
             for identity in identities:
@@ -1905,7 +1927,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 custom_result_counts[call_id] = custom_result_counts.get(call_id, 0) + 1
                 if custom_result_counts[call_id] > 1:
                     raise _custom_protocol_error("Coding Agent custom 工具调用存在重复结果。")
-            elif message.tool_name in FREEFORM_TOOL_ARGUMENTS:
+            elif (
+                message.tool_name in FREEFORM_TOOL_ARGUMENTS
+                and result_identity not in wire_rejected_ids
+            ):
                 raise _custom_protocol_error("Coding Agent custom 工具结果类型不匹配。")
         if any(
             custom_result_counts.get(custom["call_id"], 0) != 1

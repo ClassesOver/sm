@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -50,6 +51,8 @@ SubmitVisualization = Callable[
 DegradeVisualization = Callable[[Exception, RunContext], Awaitable[Mapping[str, Any]]]
 
 _MAX_GENERATE_ATTEMPTS = 3
+# 章节墙钟截止：超时后不再开启新的生成/修复，交由零图降级收口。
+VISUALIZATION_SECTION_DEADLINE_EXCEEDED = "report_visualization_section_deadline_exceeded"
 MAX_VISUALIZATION_EXECUTION_REPAIRS = 3
 
 
@@ -513,6 +516,8 @@ class VisualizationSectionWorkflow:
         thinking_budget_cap: int = 8192,
         benchmark_projection: BenchmarkProjection | None = None,
         final_attempt: bool = False,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.generate_plan = generate_plan
         self.run_code = run_code
@@ -522,6 +527,10 @@ class VisualizationSectionWorkflow:
         # 避免单章图表失败升级为整份报告失败；基础设施类错误与代码缺陷仍上抛。
         self.final_attempt = final_attempt
         self._degrade_attempted = False
+        # 章节墙钟截止（clock 同源的单调时刻）；只在开启新一轮生成/修复前检查，
+        # 不打断进行中的模型调用或脚本执行。
+        self.deadline = deadline
+        self.clock = clock
         self.record_successful_repair = record_successful_repair
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
@@ -534,16 +543,39 @@ class VisualizationSectionWorkflow:
         self._degrade_attempted = True
         return await self.degrade(error, run_context)
 
+    def _deadline_exceeded(self) -> bool:
+        return self.deadline is not None and self.clock() >= self.deadline
+
+    def _check_deadline(self, last_error: Exception | None) -> None:
+        if not self._deadline_exceeded():
+            return
+        raise ReportingError(
+            VISUALIZATION_SECTION_DEADLINE_EXCEEDED,
+            "章节图表超过墙钟截止，停止新的生成与修复并按零图收口。",
+            details={
+                "lastFailureCode": (
+                    last_error.code if isinstance(last_error, ReportingError) else None
+                ),
+            },
+        )
+
     async def run(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         try:
+            if self.degrade is not None:
+                # 截止已过时不再调用 planner：直接零图收口，成本只剩一次提交。
+                self._check_deadline(None)
             return await self._run_attempt(payload, run_context)
         except Exception as error:
+            deadline_exceeded = (
+                isinstance(error, ReportingError)
+                and error.code == VISUALIZATION_SECTION_DEADLINE_EXCEEDED
+            )
             # 工作流内部已走过 degrade（其提交或落账本身失败）时不重复降级，
             # 避免同一章节记录两条降级告警、根因被二次失败码掩盖。
             if (
-                not self.final_attempt
+                not (self.final_attempt or deadline_exceeded)
                 or self.degrade is None
                 or self._degrade_attempted
                 or not final_attempt_degradable(error)
@@ -597,6 +629,8 @@ class VisualizationSectionWorkflow:
             MAX_VISUALIZATION_EXECUTION_REPAIRS + 1,
         )
         for generate_attempt in range(max_attempts):
+            if generate_attempt > 0:
+                self._check_deadline(generation_failure)
             try:
                 diagnostic = (
                     _repair_diagnostic(plan, generation_failure, script_path)
@@ -718,6 +752,7 @@ class VisualizationSectionWorkflow:
                             "degraded", plan, script_file, (), recovery_used
                         )
                     raise exhausted_error
+                self._check_deadline(error)
                 execution_repairs += 1
                 recovery_used = True
                 diagnostic = _repair_diagnostic(plan, error, script_path)

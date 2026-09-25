@@ -427,9 +427,9 @@ class ReportingCodeGenerationRunner:
                         if callable(envelope_reader := getattr(model, "code_run_envelope_normalized_inputs", None))
                         else "unknown"
                     ),
-                    wire_shape_recoveries=(
+                    wire_shape_rejections=(
                         wire_reader()
-                        if callable(wire_reader := getattr(model, "code_run_wire_shape_recoveries", None))
+                        if callable(wire_reader := getattr(model, "code_run_wire_shape_rejections", None))
                         else "unknown"
                     ),
                     first_script_success=getattr(
@@ -444,6 +444,7 @@ class ReportingCodeGenerationRunner:
                     ),
                     first_run_failure=getattr(toolkit, "first_run_failure", None),
                     first_patch_applied=getattr(toolkit, "first_patch_applied", "unknown"),
+                    patch_format_counts=getattr(toolkit, "patch_format_counts", None),
                     first_repair_success=getattr(
                         toolkit, "first_repair_success", "unknown"
                     ),

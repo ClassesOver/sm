@@ -975,11 +975,13 @@ async def test_view_image_reviews_multiple_paths_in_one_call(workspace):  # noqa
         sourceFile=source,
         outputFiles=(output_a, output_b),
     )
+    receipts = {
+        "charts/a.png": _visual_receipt(output_a).model_dump(mode="json", by_alias=True),
+        "charts/b.png": _visual_receipt(output_b).model_dump(mode="json", by_alias=True),
+    }
     reviewer = AsyncMock()
-    reviewer.review.side_effect = [
-        _visual_receipt(output_a).model_dump(mode="json", by_alias=True),
-        _visual_receipt(output_b).model_dump(mode="json", by_alias=True),
-    ]
+    # 多图并发审查的调用顺序不确定，按路径返回回执，不能依赖 side_effect 列表顺序。
+    reviewer.review.side_effect = lambda _workspace, path, **_kwargs: receipts[path]
     toolkit = ReportingCodeModeToolkit(
         task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
     )

@@ -238,3 +238,48 @@ def test_visualization_legacy_projection_hides_r7_plan_fields() -> None:
 
     assert "visualForm" not in projected["charts"][0]
     assert "dataBindings" not in projected["charts"][0]
+
+
+def test_section_scoped_chart_ids_prevent_cross_section_collisions() -> None:
+    from smart_reporting.reporting.workflow.runtime.analysis import _section_scoped_chart_ids
+
+    def plan(chart_id: str) -> VisualizationPlanDraft:
+        return VisualizationPlanDraft(
+            charts=(
+                ChartDraft(
+                    chartId=chart_id,
+                    sourcePath="charts/one.png",
+                    title="收入指标",
+                    altText="收入指标图",
+                    citationIds=("citation_001",),
+                    metricCodes=("revenue",),
+                    currentPeriod="2025",
+                    sourceDatasetId="dataset_001",
+                    aggregationGrain="year",
+                    visualForm="柱状图",
+                    dataBindings=(
+                        {
+                            "analysisId": "analysis_001",
+                            "factPath": "facts/analysis.json",
+                            "dataPath": "metrics[0]",
+                            "fields": ["name", "value"],
+                            "role": "收入",
+                        },
+                    ),
+                ),
+            )
+        )
+
+    first = _section_scoped_chart_ids(plan("chart_001"), "section_001")
+    second = _section_scoped_chart_ids(plan("chart_001"), "section_002")
+
+    # durable 状态要求 chartId 跨章节唯一；各章 planner 常各自生成 chart_001。
+    assert first.charts[0].chart_id == "section_001__chart_001"
+    assert second.charts[0].chart_id == "section_002__chart_001"
+    assert _section_scoped_chart_ids(first, "section_001") == first
+    long_ids = {
+        _section_scoped_chart_ids(plan("x" * 127 + suffix), "section_001").charts[0].chart_id
+        for suffix in "ab"
+    }
+    assert len(long_ids) == 2
+    assert all(len(item) <= 128 for item in long_ids)

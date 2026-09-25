@@ -2914,7 +2914,7 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     assert runtime._persist_reporting_checkpoint.await_count >= 1
 
 
-def _final_attempt_runtime(monkeypatch, failing_workflow):
+def _final_attempt_runtime(monkeypatch, failing_workflow, extra_context=None):
     from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
     from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft
 
@@ -2984,9 +2984,45 @@ def _final_attempt_runtime(monkeypatch, failing_workflow):
             "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
             "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
             "validation_context_file": identity,
+            **(extra_context or {}),
         })
 
     return runtime, toolkit, run_section
+
+
+@pytest.mark.anyio
+async def test_visualization_section_deadline_degrades_on_first_attempt(monkeypatch) -> None:
+    run_attempt = AsyncMock(side_effect=AssertionError("截止已过不得再调用 planner/Coding"))
+    runtime, toolkit, run_section = _final_attempt_runtime(monkeypatch, run_attempt)
+    # 截止时刻在进入章节时即已过去：只签发一个 attempt 并零图收口，不等外部总时限。
+    runtime.visualization_section_deadline_seconds = -1
+
+    await run_section()
+
+    assert runtime.task_runner.start.await_count == 1
+    run_attempt.assert_not_awaited()
+    assert toolkit.submit_visualization_charts.await_args.args == ("section_001", [])
+    warning = runtime._apply_durable_command.await_args.args[1].payload["warnings"][0]
+    assert warning["details"]["failureCode"] == "report_visualization_section_deadline_exceeded"
+
+
+@pytest.mark.anyio
+async def test_visualization_section_respects_report_level_deadline(monkeypatch) -> None:
+    import time as time_module
+
+    run_attempt = AsyncMock(side_effect=AssertionError("报告级预算已耗尽不得再调用 planner/Coding"))
+    # 单章上限仍充足，但全部出图章节共享的报告级预算已耗尽：取较小值后直接零图收口。
+    runtime, toolkit, run_section = _final_attempt_runtime(
+        monkeypatch,
+        run_attempt,
+        extra_context={"visualization_deadline": time_module.monotonic() - 1},
+    )
+    runtime.visualization_section_deadline_seconds = 3600
+
+    await run_section()
+
+    run_attempt.assert_not_awaited()
+    assert toolkit.submit_visualization_charts.await_args.args == ("section_001", [])
 
 
 @pytest.mark.anyio
@@ -4160,3 +4196,84 @@ async def test_generate_outline_fails_after_exhausting_correction_attempts() -> 
 
     assert raised.value.code == "report_outline_invalid"
     assert planner_calls == 5
+
+
+def _multi_date_snapshot(*columns: tuple[str, str, str]) -> reporting_contract.SourceSchemaSnapshot:
+    return reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database="rj",
+                name="dwd_visit",
+                columns=tuple(
+                    reporting_contract.ModelColumn(
+                        name=name, dataType=data_type, nullable=True, description=description
+                    )
+                    for name, data_type, description in columns
+                ),
+            ),
+        ),
+    )
+
+
+def _visit_plan() -> DataUnderstandingPlan:
+    return DataUnderstandingPlan.model_validate(
+        {
+            "tables": [
+                {
+                    "sourceId": "rj",
+                    "table": "rj.dwd_visit",
+                    "role": "门诊就诊趋势",
+                    "periodColumn": "stat_month",
+                    "periodGranularity": "month",
+                }
+            ]
+        }
+    )
+
+
+def test_typed_period_prefers_goal_relevant_date_over_first_date_column() -> None:
+    snapshot = _multi_date_snapshot(
+        ("stat_month", "VARCHAR(6)", "统计月份"),
+        ("birth_date", "DATE", "患者出生日期"),
+        ("created_at", "DATETIME", "记录创建时间"),
+        ("visit_date", "DATE", "就诊日期"),
+    )
+
+    normalized = reporting_runtime._normalize_preferred_typed_period_fields(
+        _visit_plan(), (snapshot,), report_goal="分析2025年门诊就诊人次月度趋势"
+    )
+
+    assert normalized.tables[0].period_column == "visit_date"
+
+
+def test_typed_period_keeps_model_choice_when_date_columns_are_ambiguous() -> None:
+    plan = _visit_plan()
+    snapshot = _multi_date_snapshot(
+        ("stat_month", "VARCHAR(6)", "统计月份"),
+        ("birth_date", "DATE", "患者出生日期"),
+        ("discharge_date", "DATE", "出院日期"),
+    )
+
+    normalized = reporting_runtime._normalize_preferred_typed_period_fields(
+        plan, (snapshot,), report_goal="分析2025年月度趋势"
+    )
+
+    assert normalized == plan
+
+
+def test_typed_period_skips_audit_timestamp_when_single_business_date_exists() -> None:
+    snapshot = _multi_date_snapshot(
+        ("stat_month", "VARCHAR(6)", "统计月份"),
+        ("updated_at", "TIMESTAMP", "更新时间"),
+        ("biz_date", "DATE", "业务日期"),
+    )
+
+    normalized = reporting_runtime._normalize_preferred_typed_period_fields(
+        _visit_plan(), (snapshot,), report_goal="分析2025年月度趋势"
+    )
+
+    assert normalized.tables[0].period_column == "biz_date"

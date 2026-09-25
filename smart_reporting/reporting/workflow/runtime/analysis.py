@@ -69,6 +69,8 @@ from .base import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    VISUALIZATION_SECTION_DEADLINE_SECONDS,
+    VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     AnalysisReworkRequest,
     Any,
     BaseModel,
@@ -549,6 +551,29 @@ def _visualization_instruction_theme() -> dict[str, Any]:
     }
 
 
+def _section_scoped_chart_ids(
+    plan: VisualizationPlanDraft, section_code: str
+) -> VisualizationPlanDraft:
+    """把 planner 的 chartId 限定到当前章节命名空间。
+
+    durable 状态要求 chartId 在全部章节间唯一，而各章 planner 只看到本章事实，
+    常见的 chart_001 会跨章节重复，后提交的章节被判冲突并最终零图降级。
+    """
+
+    prefix = f"{section_code}__"
+    charts: list[ChartDraft] = []
+    for chart in plan.charts:
+        if chart.chart_id.startswith(prefix):
+            charts.append(chart)
+            continue
+        scoped = f"{prefix}{chart.chart_id}"
+        if len(scoped) > 128:
+            digest = hashlib.sha256(chart.chart_id.encode("utf-8")).hexdigest()[:16]
+            scoped = f"{prefix}{chart.chart_id[: 128 - len(prefix) - 17]}-{digest}"
+        charts.append(chart.model_copy(update={"chart_id": scoped}))
+    return plan.model_copy(update={"charts": tuple(charts)})
+
+
 def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -937,6 +962,18 @@ class RuntimeAnalysisMixin:
                 "章节图表 fresh attempt 已达到上限，拒绝创建新的 Task。",
             )
         scope = self._scope(run_context)
+        # 章节墙钟截止：从本次进入章节开始计时，跨 fresh attempt 共享；超时后新
+        # attempt 直接零图收口，避免整份报告被外部总时限杀掉而零交付。
+        # 单章上限与报告剩余预算取较小值，避免多出图章节累加越过报告总时限。
+        section_deadline = min(
+            time.monotonic()
+            + getattr(
+                self,
+                "visualization_section_deadline_seconds",
+                VISUALIZATION_SECTION_DEADLINE_SECONDS,
+            ),
+            context.get("visualization_deadline", float("inf")),
+        )
         for attempt in range(next_attempt, max_attempts):
             root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
             task_id = reporting_phase_task_key(
@@ -1106,13 +1143,15 @@ class RuntimeAnalysisMixin:
                                 "可视化 planner 返回了错误的 benchmark 输出类型。",
                             )
                         if visualization_plan_adapter is not None:
-                            return visualization_plan_adapter(output, request)
+                            return _section_scoped_chart_ids(
+                                visualization_plan_adapter(output, request), section_code
+                            )
                         if not isinstance(output, VisualizationPlanDraft):
                             raise ReportingError(
                                 "report_structured_output_invalid",
                                 "可视化 planner 返回了错误的结构化结果类型。",
                             )
-                        return output
+                        return _section_scoped_chart_ids(output, section_code)
 
                     def code_runner() -> ReportingCodeGenerationRunner:
                         nonlocal code_runner_instance
@@ -1356,7 +1395,9 @@ class RuntimeAnalysisMixin:
                     if knowledge_index is not None:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
                     result = await VisualizationSectionWorkflow(
-                        **workflow_kwargs, final_attempt=attempt == max_attempts - 1
+                        **workflow_kwargs,
+                        final_attempt=attempt == max_attempts - 1,
+                        deadline=section_deadline,
                     ).run(instruction_payload, invocation.run_context)
                     return result.plan
 
@@ -1648,6 +1689,10 @@ class RuntimeAnalysisMixin:
         feedback = self._feedback(_step_input)
         state = self._state(run_context)
         scope = self._scope(run_context)
+        # 全部可视化章节共享的墙钟预算，从本阶段开始计时。
+        visualization_deadline = time.monotonic() + getattr(
+            self, "visualization_total_deadline_seconds", VISUALIZATION_TOTAL_DEADLINE_SECONDS
+        )
         durable = await self.state_repository.get_or_create(
             report_run_id=str(run_context.run_id or scope["externalRunId"]),
             external_run_id=scope["externalRunId"],
@@ -1885,6 +1930,7 @@ class RuntimeAnalysisMixin:
                 "validation_context_file": validation_context_file,
                 "fact_files": fact_files,
                 "visual_inspection_mode": visual_inspection_mode,
+                "visualization_deadline": visualization_deadline,
             }
             await self._run_visualization_section_task(section_code, context=visualization_context)
             updated = await self._current_reporting_checkpoint(run_context, checkpoint)

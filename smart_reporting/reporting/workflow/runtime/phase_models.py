@@ -31,6 +31,38 @@ _SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t
 _RUNON_HEADING_BREAK_RE = re.compile(r"[。！？；：]")
 
 
+def _normalize_setext_headings(markdown: str) -> str:
+    """把模型误触发的 setext 标题还原为段落。
+
+    段落下一行紧跟 `---` 时 CommonMark 会解析为 H2（`===` 为 H1），模型本意几乎总是
+    分隔线；不处理会被判为 H1/H2 越级且反馈难以自愈。`---` 前补空行变成分隔线，
+    `===` 下划线直接删除；只处理顶层块，避免破坏列表或引用容器。
+    """
+
+    lines = markdown.splitlines(keepends=True)
+    underline_lines: dict[int, str] = {}
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if (
+            token.type != "heading_open"
+            or token.level != 0
+            or token.markup not in {"-", "="}
+            or token.map is None
+        ):
+            continue
+        underline_lines[token.map[1] - 1] = token.markup
+    if not underline_lines:
+        return markdown
+    for line_index in sorted(underline_lines, reverse=True):
+        if underline_lines[line_index] == "=":
+            del lines[line_index]
+        else:
+            lines.insert(line_index, "\n")
+    logger.bind(normalized_heading_count=len(underline_lines)).warning(
+        "report_section_setext_heading_normalized"
+    )
+    return "".join(lines)
+
+
 def _normalize_subordinate_heading_levels(markdown: str) -> str:
     """将模型过度细分的 H5/H6 提升到正文协议允许的 H4。"""
 
@@ -443,6 +475,7 @@ class SectionBlockContent(StrictModel):
             raise ValueError("章节正文清洗后不能为空。")
         # 确定性清洗必须先于 Pydantic 长度和业务校验。否则大段内部 repair comment
         # 会让本可接受的正文先触发 max_length，并错误消耗模型业务纠错额度。
+        markdown = _normalize_setext_headings(markdown)
         markdown = _normalize_subordinate_heading_levels(markdown)
         return _normalize_runon_heading_lines(markdown)
 

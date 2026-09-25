@@ -307,13 +307,14 @@ def build_coding_metric_sample(
     input_components: Mapping[str, Mapping[str, Any]] | None = None,
     raw_protocol_correct: bool | str = "unknown",
     envelope_normalized_inputs: int | str = "unknown",
-    wire_shape_recoveries: int | str = "unknown",
+    wire_shape_rejections: int | str = "unknown",
     first_script_success: bool | str = "unknown",
     first_script_failure_code: str | None = None,
     first_run_success: bool | str = "unknown",
     first_run_failure_code: str | None = None,
     first_run_failure: Mapping[str, Any] | None = None,
     first_patch_applied: bool | str = "unknown",
+    patch_format_counts: Mapping[str, int] | None = None,
     first_repair_success: bool | str = "unknown",
     critical_visual_defect: bool | str = "unknown",
     failure_code: str | None = None,
@@ -495,7 +496,7 @@ def build_coding_metric_sample(
         ),
         "rawProtocolCorrect": raw_protocol_correct,
         "envelopeNormalizedInputs": bounded_nonnegative(envelope_normalized_inputs),
-        "wireShapeRecoveries": bounded_nonnegative(wire_shape_recoveries),
+        "wireShapeRejections": bounded_nonnegative(wire_shape_rejections),
         "firstScriptSuccess": first_script_success,
         "firstScriptFailureCode": (
             first_script_failure_code[:128]
@@ -512,6 +513,13 @@ def build_coding_metric_sample(
         ),
         "firstRunFailure": failure_snapshot,
         "firstPatchApplied": first_patch_applied,
+        # edit_script 输入格式分布：search_replace / apply_patch / edit_envelope_hunks /
+        # invalid:<reason>，用于评估模型对原生 apply_patch 的实际偏好。
+        "patchFormats": {
+            str(key)[:64]: value
+            for key, value in sorted((patch_format_counts or {}).items())[:32]
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        },
         "firstRepairSuccess": first_repair_success,
         "criticalVisualDefect": critical_visual_defect,
         "failureCode": failure_code if isinstance(failure_code, str) and failure_code else "unknown",

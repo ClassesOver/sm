@@ -374,3 +374,51 @@ async def test_view_image_skips_plotly_interactive_spec(workspace):  # noqa: F81
     result = await toolkit.view_image(paths=["charts/a.plotly.json"])
 
     assert result["code"] == "report_code_visual_path_not_image"
+
+
+@pytest.mark.anyio
+async def test_execution_failure_reports_outputs_written_before_crash(workspace):  # noqa: F811
+    from smart_reporting.reporting.code_agent.context import (
+        ReportingCodingTaskBinding,
+        ReportingCodingTaskContext,
+    )
+    from smart_reporting.reporting.code_mode import ScriptProcessResult
+
+    first, second = "analysis/out_a.json", "analysis/out_b.json"
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="analysis",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/a.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/a.py", first, second),
+        declared_output_paths=(first, second),
+        max_source_bytes=128 * 1024,
+    )
+
+    class CrashingRuntime:
+        async def execute_script_process(self, _session_id, task_workspace, _path, **_kwargs):
+            # 第一张写出后，第二张的数据断言失败，脚本以非零退出。
+            task_workspace.paths.to_host_path(first).write_text("{}", encoding="utf-8")
+            cell = SimpleNamespace(
+                status="error", stdout="", stderr="AssertionError: rows empty", traceback=None
+            )
+            return ScriptProcessResult(cell, 1)
+
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(context, workspace),
+        CrashingRuntime(),
+        ReportingLspProcessManager(),
+    )
+    await toolkit.write_script(
+        f'open("{first}", "w").write("{{}}")\nopen("{second}", "w").write("{{}}")\n'
+    )
+
+    result = await toolkit.run_script()
+
+    assert result["code"] == "report_code_mode_execution_failed"
+    assert result["details"]["presentPaths"] == [first]
+    assert result["details"]["missingPaths"] == [second]
+    assert "只局部修复" in result["details"]["outputHint"]

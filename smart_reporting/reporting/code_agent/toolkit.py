@@ -41,7 +41,7 @@ from .delivery import (
     _visual_review_model_receipt,
     build_delivery_state,
 )
-from .edit_patch import apply_edit_blocks, parse_edit_patch
+from .edit_patch import apply_edit_blocks, parse_script_patch
 from .formatting import format_python_source
 from .lsp import ReportingWorkspaceLsp
 from .lsp_process import ReportingLspProcessManager
@@ -148,6 +148,12 @@ _PATH_OWNER_WRITE_METHODS = frozenset(
     {"write_text", "write_bytes", "write_image", "write_html", "write_json"}
 )
 _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE = 5
+
+# 本地图片检查（文件缺失、解码失败、空白）的拒绝码：属于脚本产物问题，
+# 由模型修复，不重试视觉审查，也不判为审查不可用。
+_LOCAL_CHART_REJECTION_CODES = frozenset(
+    {"report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank"}
+)
 
 # 连续局部编辑失败且无成功运行达到该阈值时，交付状态放行一次 write_script
 # 整段重写（真实回放 candidate-3：占位脚本 + 禁止重写 = 预算空转死局）。
@@ -493,6 +499,21 @@ def _parses(source: str) -> bool:
     except (SyntaxError, ValueError):
         return False
     return True
+
+
+def _patch_path_matches(path: str | None, script_path: str) -> bool:
+    """apply_patch 路径可写相对、带 ./ 或工作区绝对路径，只要唯一指向绑定脚本。"""
+
+    if not path:
+        return False
+    normalized = path.strip().strip("`\"'").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return (
+        normalized == script_path
+        or normalized.endswith("/" + script_path)
+        or script_path.endswith("/" + normalized)
+    )
 
 
 def _syntax_edit_failure(
@@ -1790,6 +1811,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self.first_run_failure_code: str = "unknown"
         self.first_run_failure: dict[str, Any] | None = None
         self.first_patch_applied: bool | str = "unknown"
+        # edit_script 输入格式分布（含无效原因），用于评估原生 apply_patch 的实际占比。
+        self.patch_format_counts: dict[str, int] = {}
         self.first_repair_success: bool | str = "unknown"
         self._awaiting_first_repair_run = False
         self.visual_review_duration_ms = 0
@@ -1838,7 +1861,10 @@ class ReportingCodeModeToolkit(Toolkit):
                     "write_script 预检被拒时回执给出 draftSha256 与全部 violations；把 draftSha256 放在 "
                     "*** SHA256: 后即可对被拒草稿打补丁，通过全部预检后草稿才成为签发脚本。"
                     "插入使用原文上下文作锚点；删除使用空 REPLACE；移动用删除块与目标处插入块。"
-                    "禁止整份替换；不接受文件路径。"
+                    "禁止整份替换。"
+                    "也可使用 Codex apply_patch 格式：*** Begin Patch\n*** Update File: <绑定脚本路径>\n"
+                    "@@\n 上下文行（行首一个空格）\n-删除行\n+新增行\n*** End Patch；"
+                    "每个 hunk 至少含一行原文上下文，只能更新绑定脚本，可在 Begin Patch 后加 *** SHA256: 行。"
                     "标记独占一行并使用 LF；分隔符前的一个换行属于协议，"
                     "如旧文本或新文本本身以换行结尾，需在分隔符前再保留一个换行。"
                     "输入示例（哈希必须替换为当前脚本的真实值）：\n"
@@ -2608,7 +2634,7 @@ class ReportingCodeModeToolkit(Toolkit):
         promote_draft=True 时语法错误不落盘：补丁后的草稿必须先能解析，否则语法错误
         （及因无法解析而跳过的路径违规）会漏到 run_script 才暴露。
         """
-        warnings: list[dict[str, str]] = []
+        warnings: list[dict[str, Any]] = []
         formatted = False
         try:
             source = validate_draft_source(self.context, source).decode("utf-8")
@@ -2619,13 +2645,15 @@ class ReportingCodeModeToolkit(Toolkit):
                     return _syntax_edit_failure(
                         error, await self._store_draft(source), draft=True
                     )
-                # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用。
+                # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用；回执直接给出
+                # 错误位置，模型无需再跑一次 run_script 才能定位。
                 tree = None
                 warnings.append(
                     {
                         "code": "report_code_formatting_skipped",
                         "reason": "syntax_error",
                         "message": "草稿存在语法错误，已保留原稿并跳过格式化。",
+                        "syntaxError": _syntax_error_details(error),
                     }
                 )
             if tree is not None:
@@ -2719,20 +2747,43 @@ class ReportingCodeModeToolkit(Toolkit):
         del run_context
         draft = self._rejected_draft
         try:
-            edits, expectedSourceSha256 = parse_edit_patch(
-                patch, self.context.max_source_bytes,
-            )
+            parsed = parse_script_patch(patch, self.context.max_source_bytes)
         except ReportingError as error:
             # 补丁格式无效时无法解析出 SHA，按原文是否携带草稿 SHA 判断目标。
             self._last_edit_targeted_draft = (
                 draft is not None and isinstance(patch, str) and draft.sha256 in patch
             )
+            self._record_patch_format(
+                "invalid:" + str((error.details or {}).get("reason", "unknown"))
+            )
             return _failure(error.code, error.message, error.details)
-        self._last_edit_targeted_draft = (
-            draft is not None and expectedSourceSha256 == draft.sha256
-        )
+        self._record_patch_format(parsed.patch_format)
+        edits, expectedSourceSha256 = parsed.edits, parsed.sha256
+        if expectedSourceSha256 is None:
+            # 原生 apply_patch 可省略 SHA：此时目标只能由 Update File 路径确认，
+            # 存在被拒草稿时补丁基于模型最近提交的草稿文本。
+            if not _patch_path_matches(parsed.path, self.context.script_path):
+                self._last_edit_targeted_draft = False
+                return _failure(
+                    "report_code_script_edit_invalid",
+                    "apply_patch 的 *** Update File 路径必须是当前绑定脚本。",
+                    {
+                        "reason": "apply_patch_path_mismatch",
+                        "patchFormat": parsed.patch_format,
+                        "path": (parsed.path or "")[:256],
+                        "expectedPath": self.context.script_path,
+                        "nextTools": ["edit_script"],
+                    },
+                )
+            self._last_edit_targeted_draft = draft is not None
+        else:
+            self._last_edit_targeted_draft = (
+                draft is not None and expectedSourceSha256 == draft.sha256
+            )
         if draft is not None and self._last_edit_targeted_draft:
-            return await self._edit_rejected_draft(draft, edits)
+            return await self._edit_rejected_draft(
+                draft, edits, anchors=parsed.anchors, ordered=parsed.ordered
+            )
         try:
             source_bytes = await self.workspace.read_limited_regular_file(
                 self.context.task_id,
@@ -2748,7 +2799,7 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         # 哈希和匹配必须基于同一份读取内容，避免独立 hash/read 之间的竞态。
         current_sha256 = hashlib.sha256(source_bytes).hexdigest()
-        if expectedSourceSha256 != current_sha256:
+        if expectedSourceSha256 is not None and expectedSourceSha256 != current_sha256:
             details: dict[str, Any] = {
                 "currentSha256": current_sha256,
                 "expectedSha256": expectedSourceSha256,
@@ -2776,7 +2827,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 details,
             )
         try:
-            updated, fuzzy_matches = apply_edit_blocks(source, edits)
+            updated, fuzzy_matches = apply_edit_blocks(
+                source, edits, anchors=parsed.anchors, ordered=parsed.ordered
+            )
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 return _failure(
@@ -2788,6 +2841,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     ),
                 )
             return _failure(error.code, error.message, error.details)
+        remaining_syntax_error: dict[str, Any] | None = None
         try:
             validate_draft_source(self.context, updated)
             tree = ast.parse(updated, filename=self.context.script_path)
@@ -2796,8 +2850,10 @@ class ReportingCodeModeToolkit(Toolkit):
                 # 与 SWE-agent 的编辑 lint 护栏一致：原本可解析的脚本不接受引入语法
                 # 错误的补丁，文件保持不变，避免错误拖到 run_script 才暴露。
                 return _syntax_edit_failure(error, current_sha256)
-            # 原稿本就无法解析（写入时保留的语法错误草稿）时允许逐步修复。
+            # 原稿本就无法解析（写入时保留的语法错误草稿）时允许逐步修复，但回执
+            # 必须说明仍不可执行及剩余错误位置。
             tree = None
+            remaining_syntax_error = {"errorType": "SyntaxError", **_syntax_error_details(error)}
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         preflight_warnings: list[dict[str, str]] = []
@@ -2842,10 +2898,20 @@ class ReportingCodeModeToolkit(Toolkit):
                 "replacedOccurrences": len(edits),
             },
             **({"warnings": preflight_warnings} if preflight_warnings else {}),
+            "readyForExecution": tree is not None,
+            **(
+                {"syntaxError": remaining_syntax_error, "nextTools": ["edit_script"]}
+                if remaining_syntax_error is not None
+                else {}
+            ),
             # 精确匹配失败后按行尾空白/统一缩进容错定位的块，提示模型下次逐字复制。
             **({"fuzzyMatches": fuzzy_matches} if fuzzy_matches else {}),
             **identity,
         }
+
+    def _record_patch_format(self, key: str) -> None:
+        key = key[:64]
+        self.patch_format_counts[key] = self.patch_format_counts.get(key, 0) + 1
 
     async def _current_script_sha256(self) -> str | None:
         try:
@@ -2862,7 +2928,12 @@ class ReportingCodeModeToolkit(Toolkit):
         return sha256 if isinstance(sha256, str) else None
 
     async def _edit_rejected_draft(
-        self, draft: _RejectedDraft, edits: Any
+        self,
+        draft: _RejectedDraft,
+        edits: Any,
+        *,
+        anchors: tuple[str | None, ...] = (),
+        ordered: bool = False,
     ) -> dict[str, Any]:
         """对隔离草稿打补丁，再按 write_script 同一路径预检、格式化并落盘。"""
 
@@ -2875,7 +2946,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 {"nextTools": ["read_script", "edit_script"]},
             )
         try:
-            updated, fuzzy_matches = apply_edit_blocks(draft_source, edits)
+            updated, fuzzy_matches = apply_edit_blocks(
+                draft_source, edits, anchors=anchors, ordered=ordered
+            )
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(
@@ -3150,17 +3223,9 @@ class ReportingCodeModeToolkit(Toolkit):
             return self._visual_review_unavailable(source_path, None)
         review_started_at = perf_counter()
         try:
-            reviewed = ChartVisualInspectionReceipt.model_validate(
-                await self.vision_reviewer.review(
-                    self.context.workspace_key,
-                    source_path,
-                    detail=detail,
-                )
-            )
+            reviewed = await self._review_with_retry(source_path, detail)
         except Exception as error:
-            if isinstance(error, ReportingError) and error.code in {
-                "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
-            }:
+            if isinstance(error, ReportingError) and error.code in _LOCAL_CHART_REJECTION_CODES:
                 logger.warning(
                     "report_code_visual_file_rejected path={} code={}", source_path, error.code,
                 )
@@ -3203,6 +3268,34 @@ class ReportingCodeModeToolkit(Toolkit):
             "ok": True,
             "receipt": _visual_review_model_receipt(reviewed),
         }
+
+    async def _review_with_retry(self, source_path: str, detail: str) -> ChartVisualInspectionReceipt:
+        """视觉审查失败先重试一次，再判为不可用。
+
+        模型层重试只覆盖 API 错误，不覆盖输出解析/校验失败；单次失败即判不可用会
+        终止整个 Coding 任务并触发整章 fresh attempt。本地图片检查失败不重试。
+        """
+
+        assert self.vision_reviewer is not None
+        for attempt in range(2):
+            try:
+                return ChartVisualInspectionReceipt.model_validate(
+                    await self.vision_reviewer.review(
+                        self.context.workspace_key, source_path, detail=detail
+                    )
+                )
+            except Exception as error:
+                if attempt == 1 or (
+                    isinstance(error, ReportingError)
+                    and error.code in _LOCAL_CHART_REJECTION_CODES
+                ):
+                    raise
+                logger.warning(
+                    "report_code_visual_review_retry path={} error_type={}",
+                    source_path,
+                    type(error).__name__,
+                )
+        raise AssertionError("视觉审查重试循环未终止")
 
     def _visual_review_unavailable(self, path: str, error: Exception | None) -> dict[str, Any]:
         error_type = type(error).__name__ if error is not None else "ReviewerMissing"
@@ -3389,6 +3482,31 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         return tuple(identities)
 
+    async def _declared_output_progress(self) -> dict[str, Any]:
+        """脚本中途失败时，给出崩溃前已写出与仍缺失的声明产物。
+
+        多图脚本中单张图的断言失败会中断全部后续写出；模型据此定位出错的那张图
+        局部修复，而不是改写已成功的部分。
+        """
+
+        present: list[str] = []
+        missing: list[str] = []
+        for path in self.context.declared_output_paths:
+            try:
+                await self.workspace.ahash_file(self.context.task_id, path)
+            except WorkspaceError:
+                missing.append(path)
+            else:
+                present.append(path)
+        progress: dict[str, Any] = {"presentPaths": present, "missingPaths": missing}
+        if present and missing:
+            progress["outputHint"] = (
+                "presentPaths 已在崩溃前写出；只局部修复 traceback 指向的那张图及其后续写出，"
+                "不要改动已成功的部分。单张图的数据校验失败应跳过该图的断言或改为软告警，"
+                "不得中断其他图的写出。"
+            )
+        return progress
+
     async def _read_script_source(self) -> str | None:
         try:
             raw = await self.workspace.read_limited_regular_file(
@@ -3433,6 +3551,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     else {"status": "unknown", "reason": "runtime_did_not_expose_locals"}
                 )
                 details["exitCode"] = exit_code
+                details.update(await self._declared_output_progress())
                 return _failure(
                     "report_code_mode_execution_failed",
                     "Coding Agent 脚本子进程未正常退出。",

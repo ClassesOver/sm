@@ -153,3 +153,103 @@ def test_exact_single_line_replacement_keeps_literal_semantics():
 
     assert updated == "if a:\n    b = 3\nprint(b)\n"
     assert fuzzy == []
+
+
+_SHA = "a" * 64
+_ENVELOPE = f"*** Begin Edit\n*** SHA256: {_SHA}\n"
+
+
+@pytest.mark.parametrize(
+    ("patch", "expected"),
+    [
+        # 工具描述承诺“删除使用空 REPLACE”；======= 后直接接 REPLACE 标记即为删除。
+        (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\n>>>>>>> REPLACE\n*** End Edit", ""),
+        (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\n\n>>>>>>> REPLACE\n*** End Edit", ""),
+        (
+            (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit")
+            .replace("\n", "\r\n"),
+            "x = 2",
+        ),
+        (
+            _ENVELOPE.replace(_SHA, _SHA.upper())
+            + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit",
+            "x = 2",
+        ),
+        (_ENVELOPE + "<<<<<<< SEARCH \nx = 1\n======= \nx = 2\n>>>>>>> REPLACE\t\n*** End Edit", "x = 2"),
+        ("\n\n" + _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit", "x = 2"),
+    ],
+)
+def test_patch_tolerates_unambiguous_format_noise(patch: str, expected: str) -> None:
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    edits, sha = parse_edit_patch(patch, 10_000)
+
+    assert edits == [("x = 1", expected)]
+    assert sha == _SHA
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        # 缺少 End Edit 多见于输出截断，可能丢失后续块，不能只应用一部分。
+        _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n",
+        "```\n" + _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit\n```",
+    ],
+)
+def test_patch_still_rejects_truncated_or_fenced_input(patch: str) -> None:
+    from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
+
+    with pytest.raises(ReportingError) as caught:
+        parse_edit_patch(patch, 10_000)
+    assert caught.value.code == "report_code_script_edit_invalid"
+
+
+def test_search_cutting_identifier_is_rejected_not_applied() -> None:
+    with pytest.raises(ReportingError) as caught:
+        apply_edit_blocks("max = 1\nprint(max)\n", [("x = 1", "x = 2")])
+
+    assert caught.value.code == "report_code_script_edit_not_found"
+    assert "标识符中间" in caught.value.details["hint"]
+
+
+def test_identifier_cut_match_does_not_make_real_line_ambiguous() -> None:
+    updated, _ = apply_edit_blocks("max = 1\nx = 1\n", [("x = 1", "x = 2")])
+
+    assert updated == "max = 1\nx = 2\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "edit", "expected"),
+    [
+        ("plt.figure(figsize=(8, 4))\n", ("figsize=(8, 4)", "figsize=(10, 5)"), "plt.figure(figsize=(10, 5))\n"),
+        ('title = "门诊收入趋势"\n', ("收入", "营收"), 'title = "门诊营收趋势"\n'),
+    ],
+)
+def test_inline_substring_edits_still_allowed(source, edit, expected) -> None:
+    assert apply_edit_blocks(source, [edit])[0] == expected
+
+
+@pytest.mark.anyio
+async def test_syntax_error_receipts_report_location(binding, runtime):  # noqa: F811
+    toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
+    broken = "import json\nprint((1\nvalue = 2\n"
+    written = await toolkit.write_script(broken)
+    assert written["ok"] is True
+    assert written["readyForExecution"] is False
+    syntax = written["warnings"][0]["syntaxError"]
+    assert syntax["line"] >= 2 and syntax["reason"]
+
+    current = (await toolkit.read_script())["source"]
+    edited = await toolkit.edit_script(
+        multi_edit_patch(current, [("value = 2", "value = 3")])
+    )
+    assert edited["ok"] is True
+    assert edited["readyForExecution"] is False
+    assert edited["syntaxError"]["errorType"] == "SyntaxError"
+    assert edited["nextTools"] == ["edit_script"]
+
+    current = (await toolkit.read_script())["source"]
+    fixed = await toolkit.edit_script(multi_edit_patch(current, [("print((1", "print(1)")]))
+    assert fixed["ok"] is True
+    assert fixed["readyForExecution"] is True
+    assert "syntaxError" not in fixed

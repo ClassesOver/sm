@@ -3016,6 +3016,60 @@ def _period_encoding_choices(table: ModelTable) -> list[dict[str, str]]:
     return choices
 
 
+_TYPED_PERIOD_TYPE = re.compile(r"^(?:DATE|DATETIME|TIMESTAMP)\b")
+# 审计时间戳几乎从不代表业务期间；存在业务日期列时不参与候选。
+_AUDIT_TIME_COLUMN = re.compile(
+    r"(?:^|_)(?:created?|updated?|modified|insert(?:ed)?|etl|load(?:ed)?|sync(?:ed)?)(?:_|$)"
+    r"|创建|更新|修改|入库|同步|抽取",
+)
+# 所有日期列都会共享的泛化词元不能区分候选，避免“日期”“数据”等把任意列判为匹配。
+_PERIOD_GENERIC_TERMS = frozenset(
+    {"date", "time", "at", "dt", "data", "day", "日期", "时间", "数据", "期间"}
+)
+
+
+def _period_terms(text: str) -> frozenset[str]:
+    terms = {item for item in re.split(r"[^a-z0-9]+", text.casefold()) if item}
+    for run in re.findall(r"[\u3400-\u9fff]+", text):
+        terms.update(run[index : index + 2] for index in range(len(run) - 1))
+    return frozenset(terms - _PERIOD_GENERIC_TERMS)
+
+
+def _preferred_typed_period_column(
+    columns: tuple[Any, ...], *, reference_text: str
+) -> Any | None:
+    """在类型化日期列中选出与当前期间字段、表用途和报告目标唯一最相关的一列。
+
+    只有一列时直接采用；多列时按词元重合度选唯一最高分，并在存在业务日期列时排除
+    审计时间戳。无法唯一判定时返回 None 保留模型选择，不能把出生日期、创建时间等
+    列静默冻结为报告期间口径。
+    """
+
+    typed = [
+        column for column in columns if _TYPED_PERIOD_TYPE.match(column.data_type.strip().upper())
+    ]
+    business = [
+        column
+        for column in typed
+        if _AUDIT_TIME_COLUMN.search(f"{column.name.casefold()} {column.description}") is None
+    ]
+    candidates = business or typed
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    reference = _period_terms(reference_text)
+    scores = [
+        len(reference & _period_terms(f"{column.name} {column.description}"))
+        for column in candidates
+    ]
+    best = max(scores)
+    if best == 0 or scores.count(best) != 1:
+        loguru_logger.bind(
+            candidates=[column.name for column in candidates], scores=scores
+        ).warning("report_period_typed_column_ambiguous")
+        return None
+    return candidates[scores.index(best)]
+
+
 def _normalize_preferred_typed_period_fields(
     plan: DataUnderstandingPlan,
     snapshots: tuple[SourceSchemaSnapshot, ...],
@@ -3054,13 +3108,11 @@ def _normalize_preferred_typed_period_fields(
         ):
             normalized.append(selected)
             continue
-        preferred = next(
-            (
-                column
-                for column in table.columns
-                if re.match(r"^(?:DATE|DATETIME|TIMESTAMP)\b", column.data_type.strip().upper())
+        preferred = _preferred_typed_period_column(
+            table.columns,
+            reference_text=" ".join(
+                (current.name, current.description, selected.role, report_goal)
             ),
-            None,
         )
         if preferred is None:
             normalized.append(selected)

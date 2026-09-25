@@ -920,7 +920,30 @@ class RuntimeAnalysisMixin:
                     "report_analysis_chart_invalid",
                     "chartIds 必须是不重复的字符串数组。",
                 )
-            self._require_analysis_output_paths(contract, evidencePaths)
+            deterministic_files = contract.get("deterministicFactFiles")
+            deterministic_identity = (
+                deterministic_files.get(analysisId)
+                if isinstance(deterministic_files, dict)
+                else None
+            )
+            # durable 完成后 Task 收尾中断时，新 attempt 以原 payload 幂等恢复：原
+            # payload 含上一 attempt 目录的补证与服务端追加的固定事实路径，均不在当前
+            # attempt 输出目录中。已绑定路径由下方 payload 全等比对兜底，只校验新路径。
+            bound_paths = {
+                *(
+                    durable_item.get("evidencePaths", ())
+                    if isinstance(durable_item, dict)
+                    else ()
+                ),
+                *(
+                    (deterministic_identity.get("path"),)
+                    if isinstance(deterministic_identity, dict)
+                    else ()
+                ),
+            }
+            self._require_analysis_output_paths(
+                contract, [path for path in evidencePaths if path not in bound_paths]
+            )
             summary, comparability_warnings = _normalize_analysis_summary_comparability(summary)
             warnings = list(dict.fromkeys((*warnings, *comparability_warnings)))
             payload: dict[str, Any] = {
@@ -936,12 +959,6 @@ class RuntimeAnalysisMixin:
                 payload["metrics"] = planned_metrics
             if chartIds is not None or isinstance(planned, Mapping):
                 payload["chartIds"] = chart_ids
-            deterministic_files = contract.get("deterministicFactFiles")
-            deterministic_identity = (
-                deterministic_files.get(analysisId)
-                if isinstance(deterministic_files, dict)
-                else None
-            )
             if isinstance(deterministic_identity, dict):
                 deterministic_path = deterministic_identity.get("path")
                 if isinstance(deterministic_path, str) and deterministic_path:

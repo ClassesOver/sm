@@ -139,6 +139,40 @@ class ReportingStructuredOutputExecutor:
         call_budget: StructuredOutputCallBudget | None = None,
         thinking_request: ThinkingRequest | None = None,
     ) -> StructuredOutputResult:
+        try:
+            return await self._execute(
+                instruction,
+                routing_context=routing_context,
+                session_id=session_id,
+                user_id=user_id,
+                agent_run_context=agent_run_context,
+                call_budget=call_budget,
+                thinking_request=thinking_request,
+            )
+        except TimeoutError as error:
+            # 全部纠错调用共享的总时限耗尽。转成稳定错误码：裸 TimeoutError 没有
+            # 归因信息，且不被视为可降级失败，会让可视化最后一次 attempt 的 planner
+            # 超时直接升级为整份报告失败。
+            raise ReportingError(
+                "report_structured_output_timeout",
+                "结构化输出在时限内未完成。",
+                details={
+                    "timeoutSeconds": self.idle_timeout_seconds,
+                    "schemaName": _schema_name(getattr(self.agent, "output_schema", None)),
+                },
+            ) from error
+
+    async def _execute(
+        self,
+        instruction: str,
+        *,
+        routing_context: RunContext | None,
+        session_id: str,
+        user_id: str,
+        agent_run_context: RunContext | None = None,
+        call_budget: StructuredOutputCallBudget | None = None,
+        thinking_request: ThinkingRequest | None = None,
+    ) -> StructuredOutputResult:
         schema = getattr(self.agent, "output_schema", None)
         schema_name = _schema_name(schema)
         model_tier, model_id = _selected_model_route(self.agent, routing_context)

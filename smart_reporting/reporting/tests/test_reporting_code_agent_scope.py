@@ -97,8 +97,13 @@ def test_provider_cannot_dispatch_undeclared_or_wrong_type_call(name, wire_type)
                     "name": name, "arguments": "{}"}],
         "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
     })
-    with pytest.raises(ReportingError):
+    if name == "outside":
+        with pytest.raises(ReportingError):
+            model._parse_provider_response(response)
+    else:
+        # 任务集内 FREEFORM 工具的 function 形态不派发执行，只补未执行回执。
         model._parse_provider_response(response)
+        assert model._code_wire_rejected_call_ids == frozenset({"call-1"})
     assert model.code_run_raw_protocol_correct() is False
 
 

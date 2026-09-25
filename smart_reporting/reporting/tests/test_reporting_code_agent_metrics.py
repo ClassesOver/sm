@@ -59,13 +59,13 @@ async def test_rejected_provider_call_keeps_usage_and_safe_identity(
         responses=SimpleNamespace(create=AsyncMock(return_value=response)),
     ))
     if declared_edit:
-        # candidate-32 R1：任务集内 FREEFORM 工具以 function 形态返回时还原为
-        # custom 调用继续链路，不再是协议异常；usage 照常结算，私密输入不进指标。
+        # 任务集内 FREEFORM 工具以 function 形态返回：不执行、补未执行回执，
+        # 不是协议异常；usage 照常结算，私密输入不进指标。
         await model.ainvoke([], assistant_message=Message(role="assistant"), tools=tools)
         metric = model.code_run_request_metrics()[0]
         assert metric["status"] == "completed"
         assert metric["providerRequestId"] == "resp-1"
-        assert model._code_budget.wire_shape_recoveries == 1
+        assert model._code_budget.wire_shape_rejections == 1
         assert model._code_budget.protocol_violations == 0
         assert "PRIVATE_SOURCE" not in json.dumps(model.code_run_request_metrics())
         return
@@ -297,11 +297,12 @@ def test_coding_metric_sample_keeps_delivery_evidence_and_unknowns_separate():
         "firstWriteRequestDurationMs": "unknown",
         "firstWriteReasoningTokens": "unknown",
         "firstPatchApplied": False,
+        "patchFormats": {},
         "criticalVisualDefect": True,
         "failureCode": "report_code_generation_no_submission",
         "rawProtocolCorrect": "unknown",
         "envelopeNormalizedInputs": "unknown",
-        "wireShapeRecoveries": "unknown",
+        "wireShapeRejections": "unknown",
             "firstScriptSuccess": "unknown",
             "firstScriptFailureCode": "unknown",
             "firstRunSuccess": "unknown",

@@ -15,6 +15,7 @@ from smart_reporting.reporting.code_agent.toolkit import _stop_after_success
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
     SOURCE,
+    _assistant_and_result_messages,
     _batch_response,
     _custom_response,
     _function_response,
@@ -121,9 +122,9 @@ def test_entire_batch_is_validated_before_tools_can_execute():
         model._parse_provider_response(response)
 
 
-def test_wire_shaped_freedom_call_is_recovered_and_executed():
-    """candidate-32：任务集内 FREEFORM 工具以 function 形态返回时还原为
-    custom 形态继续既有链路（stage 内正常执行），不计协议违规。"""
+def test_wire_shaped_freedom_call_is_rejected_without_execution():
+    """AGENTS.md：只有结构化 custom_tool_call 可执行。任务集内 FREEFORM 工具以
+    function 形态返回时保持 provider 原样、不改写为 custom，补未执行回执。"""
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     tools = [Function(name="write_script"), Function(name="run_script")]
     model.configure_code_run(tools, max_model_requests=2)
@@ -135,12 +136,68 @@ def test_wire_shaped_freedom_call_is_recovered_and_executed():
     parsed = model._parse_provider_response(response)
 
     assert [call["function"]["name"] for call in parsed.tool_calls] == ["write_script"]
-    assert model._code_budget.wire_shape_recoveries == 1
+    assert parsed.tool_calls[0]["provider_data"] == {"reporting_wire_type": "function_rejected"}
+    assert model._code_wire_rejected_call_ids == frozenset({"call-1"})
+    assert model._code_budget.wire_shape_rejections == 1
     assert model._code_budget.protocol_violations == 0
     assert model._code_stage_mismatch_names == frozenset()
 
+    executed: list[str] = []
+    functions = [
+        Function(name="write_script", entrypoint=lambda: executed.append("write_script")),
+        Function(name="run_script", entrypoint=lambda: executed.append("run_script") or {"ok": True}),
+    ]
+    for function in functions:
+        function.process_entrypoint()
+    calls = [
+        FunctionCall(function=functions[0], call_id="call-1", arguments={}),
+        FunctionCall(function=functions[1], call_id="call-2", arguments={}),
+    ]
+    results: list[Message] = []
+    list(
+        model.run_function_calls(
+            function_calls=calls,
+            function_call_results=results,
+            current_function_call_count=0,
+            function_call_limit=4,
+        )
+    )
 
-def test_wire_shape_recovery_keeps_following_function_calls_aligned():
+    # 被拒调用不执行、不终止批次；同批次后续合法调用照常按顺序执行。
+    assert executed == ["run_script"]
+    receipt = json.loads(results[0].content)
+    assert receipt["code"] == "report_code_tool_wire_type_invalid"
+    assert receipt["details"]["expectedType"] == "custom"
+    assert results[0].tool_call_error is True
+    assert ReportingCodeOpenAIResponses._is_non_executed_control_result(results[0])
+
+
+def test_wire_rejected_call_replays_as_provider_function_call():
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(tools, max_model_requests=2)
+    model.get_request_params(messages=[], tools=tools)
+    parsed = model._parse_provider_response(
+        _batch_response(
+            _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
+        )
+    )
+
+    replay = model._format_messages(
+        _assistant_and_result_messages(
+            parsed.tool_calls[0],
+            {"ok": False, "status": "rejected", "code": "report_code_tool_wire_type_invalid"},
+        )
+    )
+
+    # 历史按 provider 实际返回的 function_call 原样回放，不伪造 custom_tool_call。
+    assert [item.get("type") for item in replay if item.get("type")] == [
+        "function_call",
+        "function_call_output",
+    ]
+
+
+def test_wire_shape_rejection_keeps_following_function_calls_aligned():
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     tools = [Function(name="write_script"), Function(name="run_script")]
     model.configure_code_run(tools, max_model_requests=2)
@@ -152,45 +209,15 @@ def test_wire_shape_recovery_keeps_following_function_calls_aligned():
 
     parsed = model._parse_provider_response(response)
 
-    # 还原的调用仍占父类 function 序列一个位置；后续 run_script 不得被错位替换。
     assert [(call["function"]["name"], call["call_id"]) for call in parsed.tool_calls] == [
         ("write_script", "call-1"),
         ("run_script", "call-2"),
     ]
+    assert model._code_wire_rejected_call_ids == frozenset({"call-1"})
 
 
-def test_wire_shaped_freedom_call_stage_hidden_gets_soft_rejection():
-    """还原后的调用仍受交付阶段白名单约束：stage 外走软拒绝回执，不执行。"""
-    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    tools = [Function(name="write_script"), Function(name="run_script")]
-    model.configure_code_run(
-        tools,
-        max_model_requests=2,
-        delivery_state_reader=lambda: {
-            "marker": "REPORTING_CODE_DELIVERY_STATE",
-            "taskKind": "visualization",
-            "script": {"path": "analysis/a.py", "sha256": "a" * 64},
-            "execution": None,
-            "nextTools": ["read_script", "edit_script", "run_script"],
-        },
-    )
-    model.get_request_params(messages=[], tools=tools)
-    response = _batch_response(
-        _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
-    )
-
-    parsed = model._parse_provider_response(response)
-
-    assert [call["function"]["name"] for call in parsed.tool_calls] == ["write_script"]
-    assert model._code_stage_mismatch_names == frozenset({"write_script"})
-    assert model._code_budget.wire_shape_recoveries == 1
-    assert model._code_budget.stage_mismatch_rejections == 1
-    assert model._code_budget.protocol_violations == 0
-
-
-def test_wire_shaped_bare_text_arguments_are_recovered():
-    """candidate-38：grammar 退化更深时模型把 free-form 原文直接作为 function
-    参数（非 JSON 对象）；按输入前缀特征接受原文并还原为 custom 形态。"""
+def test_wire_shaped_bare_text_arguments_are_rejected_not_parsed():
+    """function 参数直接是 free-form 原文时同样不解析、不执行，只补未执行回执。"""
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     tools = [Function(name="edit_script"), Function(name="run_script")]
     model.configure_code_run(tools, max_model_requests=2)
@@ -219,17 +246,18 @@ def test_wire_shaped_bare_text_arguments_are_recovered():
     parsed = model._parse_provider_response(response)
 
     assert [call["function"]["name"] for call in parsed.tool_calls] == ["edit_script"]
-    assert model._code_budget.wire_shape_recoveries == 1
+    assert parsed.tool_calls[0]["provider_data"] == {"reporting_wire_type": "function_rejected"}
+    assert model._code_wire_rejected_call_ids == frozenset({"call-1"})
     assert model._code_budget.protocol_violations == 0
 
 
-def test_wire_shape_recovery_limit_exhausted_stays_fatal():
-    """恢复计数超限后保持 fail-closed，仍按协议异常终止。"""
+def test_wire_shape_rejection_limit_exhausted_stays_fatal():
+    """拒绝计数超限后保持 fail-closed，仍按协议异常终止。"""
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     tools = [Function(name="write_script"), Function(name="run_script")]
     model.configure_code_run(tools, max_model_requests=2)
     model.get_request_params(messages=[], tools=tools)
-    model._code_budget.wire_shape_recoveries = 3
+    model._code_budget.wire_shape_rejections = 3
     response = _batch_response(
         _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
     )
@@ -790,3 +818,12 @@ async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
         "report_code_visual_review_redundant",
         None,
     ]
+
+
+def test_write_script_prefixes_exclude_bash_cell():
+    from smart_reporting.reporting.code_agent.protocol import _normalize_provider_custom_input
+
+    envelope = json.dumps({"data": "%%bash\nls\n"})
+    # %%bash 只属于 run；write_script 的信封不得按协议正确输入解封。
+    assert _normalize_provider_custom_input(envelope, "write_script") == (envelope, False)
+    assert _normalize_provider_custom_input(envelope, "run") == ("%%bash\nls\n", True)

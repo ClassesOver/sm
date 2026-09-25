@@ -139,31 +139,26 @@ class RuntimeSectionsMixin:
                         },
                     }
                 )
-            if not citation_ids:
-                warnings.append(
-                    {
-                        "code": "report_section_claim_citation_missing",
-                        "message": "章节 claim 没有可验证 citation，已省略该 claim。",
-                        "details": {"sectionCode": section_code, "claimId": submission.claim_id},
-                    }
-                )
-                continue
-
             selected_charts = tuple(charts_by_id[item] for item in chart_ids)
             if selected_charts:
                 # 图表周期与可比性来自分析阶段冻结契约，不能让章节模型重新转录或覆盖。
                 # 同一 claim 绑定多图时只有完全相同的语义才可确定性派生；冲突时保留
                 # 首张图的冻结语义并记录警告，避免模型原样重试阻塞整个章节。
-                semantic_keys = {
-                    (
+                def semantic_key(chart: Any) -> tuple[Any, ...]:
+                    return (
                         chart.current_period,
                         chart.comparison_period,
                         chart.comparison_type,
                         chart.comparability,
                     )
-                    for chart in selected_charts
-                }
-                if len(semantic_keys) != 1:
+
+                first_key = semantic_key(selected_charts[0])
+                if any(semantic_key(chart) != first_key for chart in selected_charts):
+                    # 与首图语义一致的图表仍可确定性派生，只解绑冲突图表，避免把
+                    # 同口径的多图一并丢掉。
+                    kept = tuple(
+                        chart for chart in selected_charts if semantic_key(chart) == first_key
+                    )
                     warnings.append(
                         {
                             "code": "report_section_claim_chart_semantics_conflict",
@@ -172,11 +167,16 @@ class RuntimeSectionsMixin:
                                 "sectionCode": section_code,
                                 "claimId": submission.claim_id,
                                 "chartIds": list(chart_ids),
+                                "unboundChartIds": [
+                                    chart.chart_id
+                                    for chart in selected_charts
+                                    if semantic_key(chart) != first_key
+                                ],
                             },
                         }
                     )
-                    selected_charts = selected_charts[:1]
-                    chart_ids = (selected_charts[0].chart_id,)
+                    selected_charts = kept
+                    chart_ids = tuple(chart.chart_id for chart in kept)
                 first_chart = selected_charts[0]
                 current_period, comparison_period, comparison_type, comparability = (
                     first_chart.current_period,
@@ -206,6 +206,17 @@ class RuntimeSectionsMixin:
                 comparison_period = submission.comparison_period
                 comparison_type = submission.comparison_type
                 comparability = submission.comparability
+            # 冻结图表自带的 citation 同样是可验证事实锚点；模型只写错 citationId 但正确
+            # 绑定图表时应保留 claim，而不是在合并图表 citation 之前就省略。
+            if not citation_ids:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_citation_missing",
+                        "message": "章节 claim 没有可验证 citation，已省略该 claim。",
+                        "details": {"sectionCode": section_code, "claimId": submission.claim_id},
+                    }
+                )
+                continue
 
             try:
                 normalized_claim = SectionClaim(

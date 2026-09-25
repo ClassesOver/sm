@@ -843,3 +843,111 @@ def test_semantic_documents_can_skip_cover_and_toc() -> None:
     assert '<section class="report-cover">' not in pdf_html
     assert '<section class="report-toc">' not in pdf_html
     assert "目录" not in word_html
+
+
+def _assemble_charts(blocks: tuple[ReportDraftBlock, ...], charts: tuple[ReportChartInput, ...]):
+    return assemble_report_markdown(
+        ReportDraft(sections=(ReportDraftSection(sectionCode="section_001", blocks=blocks),)),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(
+                code="section_001",
+                sectionNumber="1",
+                title="经营分析",
+                analysisIds=("analysis_001",),
+            ),
+        ),
+        citation_ids=("citation_001", "citation_002"),
+        charts=charts,
+    )
+
+
+def _chart(chart_id: str, title: str, citation_id: str) -> ReportChartInput:
+    return ReportChartInput(
+        chartId=chart_id,
+        fileName=f"{chart_id}.png",
+        title=title,
+        altText=f"{title}图",
+        citationIds=(citation_id,),
+    )
+
+
+def test_assemble_overview_block_does_not_absorb_every_chart() -> None:
+    rendered = _assemble_charts(
+        (
+            ReportDraftBlock(
+                blockId="block_1",
+                markdown="总体概览。",
+                citationIds=("citation_001", "citation_002"),
+            ),
+            ReportDraftBlock(
+                blockId="block_2",
+                markdown="收入结论。",
+                citationIds=("citation_001",),
+                chartIds=("chart_001",),
+            ),
+            ReportDraftBlock(
+                blockId="block_3",
+                markdown="成本结论。",
+                citationIds=("citation_002",),
+                chartIds=("chart_002",),
+            ),
+        ),
+        (
+            _chart("chart_001", "收入趋势", "citation_001"),
+            _chart("chart_002", "成本结构", "citation_002"),
+        ),
+    )
+
+    markdown = rendered.markdown
+    # 总览 block 最多承接一张前移图表，第二张图留在其引用 block，不堆叠在总览后。
+    assert markdown.index("chart_001.png") < markdown.index("收入结论")
+    assert markdown.index("chart_002.png") > markdown.index("成本结论")
+
+
+def test_assemble_interleaves_multiple_charts_within_one_block() -> None:
+    rendered = _assemble_charts(
+        (
+            ReportDraftBlock(
+                blockId="block_1",
+                markdown=(
+                    "### 收入\n\n门诊收入趋势整体上升。\n\n- 一月上升\n\n- 二月上升\n\n"
+                    "### 成本\n\n药品成本结构中耗材占比最高。"
+                ),
+                citationIds=("citation_001", "citation_002"),
+                chartIds=("chart_001", "chart_002"),
+            ),
+        ),
+        (
+            _chart("chart_001", "门诊收入趋势", "citation_001"),
+            _chart("chart_002", "药品成本结构", "citation_002"),
+        ),
+    )
+
+    markdown = rendered.markdown
+    first = markdown.index("chart_001.png")
+    second = markdown.index("chart_002.png")
+    assert markdown.index("门诊收入趋势整体上升") < first < markdown.index("### 1.2")
+    assert markdown.index("耗材占比最高") < second
+    # 列表不被图片打断，block citation 仍附在块尾。
+    assert "- 一月上升\n\n- 二月上升" in markdown
+    assert "耗材占比最高。[[citation:citation_001]][[citation:citation_002]]" in markdown
+    assert rendered.auto_fixes[-1]["code"] == "chart_placed_within_block"
+
+
+def test_assemble_single_unmatched_chart_keeps_block_text_verbatim() -> None:
+    rendered = _assemble_charts(
+        (
+            ReportDraftBlock(
+                blockId="block_1",
+                markdown="第一段。\n\n\n第二段。",
+                citationIds=("citation_001",),
+                chartIds=("chart_001",),
+            ),
+        ),
+        (_chart("chart_001", "门诊人次", "citation_001"),),
+    )
+
+    assert "第一段。\n\n\n第二段。[[citation:citation_001]]\n\n![" in rendered.markdown
+    assert all(item["code"] != "chart_placed_within_block" for item in rendered.auto_fixes)
