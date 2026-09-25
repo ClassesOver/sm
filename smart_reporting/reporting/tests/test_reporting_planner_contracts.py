@@ -2914,7 +2914,7 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     assert runtime._persist_reporting_checkpoint.await_count >= 1
 
 
-def _final_attempt_runtime(monkeypatch, failing_workflow):
+def _final_attempt_runtime(monkeypatch, failing_workflow, extra_context=None):
     from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
     from smart_reporting.reporting.workflow.runtime.phase_models import VisualizationPlanDraft
 
@@ -2984,6 +2984,7 @@ def _final_attempt_runtime(monkeypatch, failing_workflow):
             "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
             "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
             "validation_context_file": identity,
+            **(extra_context or {}),
         })
 
     return runtime, toolkit, run_section
@@ -3003,6 +3004,25 @@ async def test_visualization_section_deadline_degrades_on_first_attempt(monkeypa
     assert toolkit.submit_visualization_charts.await_args.args == ("section_001", [])
     warning = runtime._apply_durable_command.await_args.args[1].payload["warnings"][0]
     assert warning["details"]["failureCode"] == "report_visualization_section_deadline_exceeded"
+
+
+@pytest.mark.anyio
+async def test_visualization_section_respects_report_level_deadline(monkeypatch) -> None:
+    import time as time_module
+
+    run_attempt = AsyncMock(side_effect=AssertionError("报告级预算已耗尽不得再调用 planner/Coding"))
+    # 单章上限仍充足，但全部出图章节共享的报告级预算已耗尽：取较小值后直接零图收口。
+    runtime, toolkit, run_section = _final_attempt_runtime(
+        monkeypatch,
+        run_attempt,
+        extra_context={"visualization_deadline": time_module.monotonic() - 1},
+    )
+    runtime.visualization_section_deadline_seconds = 3600
+
+    await run_section()
+
+    run_attempt.assert_not_awaited()
+    assert toolkit.submit_visualization_charts.await_args.args == ("section_001", [])
 
 
 @pytest.mark.anyio

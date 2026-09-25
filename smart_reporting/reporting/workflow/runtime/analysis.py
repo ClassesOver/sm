@@ -70,6 +70,7 @@ from .base import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     VISUALIZATION_SECTION_DEADLINE_SECONDS,
+    VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     AnalysisReworkRequest,
     Any,
     BaseModel,
@@ -963,8 +964,15 @@ class RuntimeAnalysisMixin:
         scope = self._scope(run_context)
         # 章节墙钟截止：从本次进入章节开始计时，跨 fresh attempt 共享；超时后新
         # attempt 直接零图收口，避免整份报告被外部总时限杀掉而零交付。
-        section_deadline = time.monotonic() + getattr(
-            self, "visualization_section_deadline_seconds", VISUALIZATION_SECTION_DEADLINE_SECONDS
+        # 单章上限与报告剩余预算取较小值，避免多出图章节累加越过报告总时限。
+        section_deadline = min(
+            time.monotonic()
+            + getattr(
+                self,
+                "visualization_section_deadline_seconds",
+                VISUALIZATION_SECTION_DEADLINE_SECONDS,
+            ),
+            context.get("visualization_deadline", float("inf")),
         )
         for attempt in range(next_attempt, max_attempts):
             root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
@@ -1681,6 +1689,10 @@ class RuntimeAnalysisMixin:
         feedback = self._feedback(_step_input)
         state = self._state(run_context)
         scope = self._scope(run_context)
+        # 全部可视化章节共享的墙钟预算，从本阶段开始计时。
+        visualization_deadline = time.monotonic() + getattr(
+            self, "visualization_total_deadline_seconds", VISUALIZATION_TOTAL_DEADLINE_SECONDS
+        )
         durable = await self.state_repository.get_or_create(
             report_run_id=str(run_context.run_id or scope["externalRunId"]),
             external_run_id=scope["externalRunId"],
@@ -1918,6 +1930,7 @@ class RuntimeAnalysisMixin:
                 "validation_context_file": validation_context_file,
                 "fact_files": fact_files,
                 "visual_inspection_mode": visual_inspection_mode,
+                "visualization_deadline": visualization_deadline,
             }
             await self._run_visualization_section_task(section_code, context=visualization_context)
             updated = await self._current_reporting_checkpoint(run_context, checkpoint)
