@@ -49,6 +49,9 @@ POLICIES = MappingProxyType({
     "report_visualization_code_agent_missing": FailurePolicy(infrastructure=True),
     "report_visualization_executor_missing": FailurePolicy(infrastructure=True),
     "report_code_model_protocol_missing": FailurePolicy(infrastructure=True),
+    # 工作区与任务上下文不匹配、能力状态损坏：确定性的部署/状态缺陷，重跑不可修复。
+    "report_coding_task_workspace_mismatch": FailurePolicy(infrastructure=True),
+    "report_capability_state_invalid": FailurePolicy(infrastructure=True),
     "report_code_generation_no_submission": _DEGRADE,
     "report_code_model_request_limit": _DEGRADE,
     "report_code_no_progress": _DEGRADE,

@@ -70,7 +70,9 @@ _FORBIDDEN_PATH_CALLS = frozenset(
         "pathlib.Path.cwd",
     }
 )
-_PATH_ARGUMENT_CALLS = frozenset({"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path"})
+_PATH_ARGUMENT_CALLS = frozenset(
+    {"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path", "plotly.offline.plot"}
+)
 _PATH_ARGUMENT_METHODS = frozenset(
     {
         # Plotly 写出（fig.write_image(path) / pio.write_image(fig, path)）；
@@ -437,10 +439,13 @@ def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) 
                 if resolved in declared_paths:
                     found.add(resolved)
                 # 继续尝试位置参数（plotly 的 fig.write_image / pio.write_image 风格）。
-            arguments = _call_path_arguments(node, qualified_name)
-            path_node = arguments[0] if arguments else None
-            if path_node is None:
-                continue
+            # 位置参数与路径关键字都可能承载路径（plotly.offline.plot 的首参是
+            # figure，路径在 filename=），逐个解析而不是只看第一个。
+            for argument in _call_path_arguments(node, qualified_name):
+                resolved = _resolved_path_literal(argument, aliases, bindings)
+                if resolved in declared_paths:
+                    found.add(resolved)
+            continue
         elif qualified_name in {"open", "io.open"} and node.args:
             mode_node = (
                 node.args[1]
@@ -554,8 +559,9 @@ _MISSING_OUTPUT_HINTS = (
     ),
     (
         "unresolvedWritePaths",
-        "unresolvedWritePaths 只以变量或拼接方式出现，宿主无法确认写出：直接在 savefig/"
-        "write_image/write_json 调用中使用签发路径字面量。",
+        "unresolvedWritePaths 在脚本中出现，但宿主未识别到对它的写出调用（路径经变量传入，"
+        "或使用了未识别的写出方式如 PIL Image.save）：改为在 savefig/write_image/write_json "
+        "调用中直接使用签发路径字面量。",
     ),
 )
 
@@ -1798,6 +1804,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self._critical_review_run_id: str | None = None
         # V3：被拒整稿只保存在内存隔离草稿中，run_script 永远不执行草稿。
         self._rejected_draft: _RejectedDraft | None = None
+        # 最近一次 edit_script 是否以草稿 SHA 为目标（补丁无法解析时按原文中的 SHA 判断）。
+        self._last_edit_targeted_draft = False
         tools = [
             Function(
                 name="write_script",
@@ -2142,8 +2150,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 "report_code_script_edit_"
             )
             draft = self._rejected_draft
-            if draft is not None:
-                # 补丁已应用但仍有违规或语法错误，属于逐步修正的进展，不计入空转。
+            if draft is not None and self._last_edit_targeted_draft:
+                # 补丁已应用但仍有违规或语法错误，属于逐步修正的进展，不计入空转；
+                # 针对正式脚本的编辑不影响草稿计数。
                 draft.edit_failures = draft.edit_failures + 1 if patch_not_applied else 0
                 if draft.edit_failures >= REWRITE_GATE_EDIT_FAILURES:
                     # 草稿补丁连续失败（多为补丁格式 edit_invalid）：继续推荐草稿
@@ -2711,14 +2720,21 @@ class ReportingCodeModeToolkit(Toolkit):
     ) -> dict[str, Any]:
         """按 CodingTools 精确匹配语义，统一校验多个局部修改后原子提交。"""
         del run_context
+        draft = self._rejected_draft
         try:
             edits, expectedSourceSha256 = parse_edit_patch(
                 patch, self.context.max_source_bytes,
             )
         except ReportingError as error:
+            # 补丁格式无效时无法解析出 SHA，按原文是否携带草稿 SHA 判断目标。
+            self._last_edit_targeted_draft = (
+                draft is not None and isinstance(patch, str) and draft.sha256 in patch
+            )
             return _failure(error.code, error.message, error.details)
-        draft = self._rejected_draft
-        if draft is not None and expectedSourceSha256 == draft.sha256:
+        self._last_edit_targeted_draft = (
+            draft is not None and expectedSourceSha256 == draft.sha256
+        )
+        if draft is not None and self._last_edit_targeted_draft:
             return await self._edit_rejected_draft(draft, edits)
         try:
             source_bytes = await self.workspace.read_limited_regular_file(

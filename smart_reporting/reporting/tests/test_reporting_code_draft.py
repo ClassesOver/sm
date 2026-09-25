@@ -106,8 +106,13 @@ async def test_draft_patch_with_syntax_error_stays_isolated(binding, runtime):  
 @pytest.mark.anyio
 async def test_repeated_draft_patch_failures_discard_draft(binding, runtime):  # noqa: F811
     toolkit = _toolkit(binding, runtime)
-    await _rejected(toolkit)
-    invalid = "*** Begin Edit\n*** SHA256: bad\n*** End Edit\ntrailing"
+    rejected = await _rejected(toolkit)
+    # 第五跑形态：补丁携带草稿 SHA，但块内混入标记（marker_in_block），无法应用。
+    invalid = (
+        f"*** Begin Edit\n*** SHA256: {rejected['details']['draftSha256']}\n"
+        "<<<<<<< SEARCH\nimport json\n=======\nimport os\n"
+        "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n*** End Edit"
+    )
 
     first = await toolkit.edit_script(invalid)
     await _post_hook(toolkit, "edit_script", first)
@@ -256,3 +261,44 @@ def test_plotly_io_writers_take_path_from_second_argument():
 
     assert _declared_output_write_paths(tree, declared) == declared
     assert _referenced_literal_paths(tree) == declared
+
+
+@pytest.mark.anyio
+async def test_formal_script_edit_failures_do_not_discard_draft(binding, runtime):  # noqa: F811
+    toolkit = _toolkit(binding, runtime)
+    await _rejected(toolkit)
+    # 以不存在的正式脚本 SHA 打补丁：失败与草稿无关，不能计入草稿空转。
+    unrelated = multi_edit_patch("x = 1\n", [("x = 1", "x = 2")])
+
+    for _ in range(3):
+        result = await toolkit.edit_script(unrelated)
+        await _post_hook(toolkit, "edit_script", result)
+
+    assert result["ok"] is False
+    assert "draftDiscarded" not in result
+    assert toolkit.rejected_draft_sha256 is not None
+
+
+def test_plotly_offline_plot_filename_is_recognized_as_write():
+    import ast
+
+    from smart_reporting.reporting.code_agent.toolkit import (
+        _declared_output_write_paths,
+        _referenced_literal_paths,
+    )
+
+    tree = ast.parse('import plotly\nplotly.offline.plot(fig, filename="charts/b.html")\n')
+
+    assert _declared_output_write_paths(tree, frozenset({"charts/b.html"})) == {"charts/b.html"}
+    assert _referenced_literal_paths(tree) == {"charts/b.html"}
+
+
+def test_deterministic_setup_failures_are_not_final_attempt_degradable():
+    from smart_reporting.reporting.code_agent.failure_policy import final_attempt_degradable
+    from smart_reporting.reporting.models import ReportingError
+
+    for code in ("report_coding_task_workspace_mismatch", "report_capability_state_invalid"):
+        assert final_attempt_degradable(ReportingError(code, "m")) is False
+    assert final_attempt_degradable(
+        ReportingError("report_code_custom_tool_protocol_error", "m")
+    ) is True

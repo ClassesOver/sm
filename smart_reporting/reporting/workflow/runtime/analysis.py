@@ -1365,10 +1365,25 @@ class RuntimeAnalysisMixin:
                             or not final_attempt_degradable(error)
                         ):
                             raise
+                        # 降级不能吞掉根因：协议错误的声明/实际类型等诊断完整入日志，
+                        # 供区分单章偶发与 provider 级全局故障。
+                        error_details = getattr(error, "details", None)
                         loguru_logger.bind(
                             section_code=section_code,
                             failure_code=getattr(error, "code", type(error).__name__),
-                        ).warning("report_visualization_section_final_attempt_degraded")
+                            failure_message=str(getattr(error, "message", error))[:500],
+                            failure_details=(
+                                json.dumps(error_details, ensure_ascii=False, default=str)[:2000]
+                                if isinstance(error_details, Mapping)
+                                else None
+                            ),
+                            attempt=attempt,
+                        ).error(
+                            "report_visualization_section_final_attempt_degraded "
+                            "section_code={} failure_code={}",
+                            section_code,
+                            getattr(error, "code", type(error).__name__),
+                        )
                         receipt = await degrade(error, invocation.run_context)
                         _raise_rejected_submission(receipt)
                         return VisualizationPlanDraft(charts=(), warnings=())
