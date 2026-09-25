@@ -14,7 +14,7 @@ class CodeBudget:
     custom_inputs: int = 0
     invalid_custom_inputs: int = 0
     envelope_normalized_inputs: int = 0
-    wire_shape_recoveries: int = 0
+    wire_shape_rejections: int = 0
     protocol_violations: int = 0
     stage_mismatch_rejections: int = 0
     continued: bool = False
@@ -52,11 +52,11 @@ class CodeBudget:
         # 违规，单列计数作为 provider 稳定性观测指标（rawProtocolCorrect 只统计真违规）。
         self.envelope_normalized_inputs += 1
 
-    def record_wire_shape_recovery(self) -> None:
-        # provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回
-        # （candidate-32：function 形态的 write_script）：参数 JSON 完好时还原为
-        # custom 形态继续既有链路。单列计数并设上限，防止 wire 混淆无限循环。
-        self.wire_shape_recoveries += 1
+    def record_wire_shape_rejection(self) -> None:
+        # provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回。
+        # 只有结构化 custom_tool_call 可执行，该调用补未执行回执；单列计数并设上限，
+        # 超限后按协议违规终止，防止 wire 混淆无限循环。
+        self.wire_shape_rejections += 1
 
     def record_protocol_violation(self) -> None:
         self.protocol_violations += 1
@@ -68,9 +68,18 @@ class CodeBudget:
         self.stage_mismatch_rejections += 1
 
     def raw_protocol_correct(self) -> bool | str:
-        if self.custom_inputs == 0 and self.protocol_violations == 0:
+        # function 形态的 FREEFORM 调用虽以软拒绝继续，仍是 provider wire 协议偏差。
+        if (
+            self.custom_inputs == 0
+            and self.protocol_violations == 0
+            and self.wire_shape_rejections == 0
+        ):
             return "unknown"
-        return self.invalid_custom_inputs == 0 and self.protocol_violations == 0
+        return (
+            self.invalid_custom_inputs == 0
+            and self.protocol_violations == 0
+            and self.wire_shape_rejections == 0
+        )
 
     @staticmethod
     def exempt(payload: Mapping) -> bool:
@@ -82,6 +91,7 @@ class CodeBudget:
             ("report_code_batch_stopped", "skipped"),
             ("report_code_visual_review_redundant", "skipped"),
             ("report_code_stage_tool_unavailable", "rejected"),
+            ("report_code_tool_wire_type_invalid", "rejected"),
         }
 
     @staticmethod

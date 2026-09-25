@@ -427,9 +427,9 @@ class ReportingCodeGenerationRunner:
                         if callable(envelope_reader := getattr(model, "code_run_envelope_normalized_inputs", None))
                         else "unknown"
                     ),
-                    wire_shape_recoveries=(
+                    wire_shape_rejections=(
                         wire_reader()
-                        if callable(wire_reader := getattr(model, "code_run_wire_shape_recoveries", None))
+                        if callable(wire_reader := getattr(model, "code_run_wire_shape_rejections", None))
                         else "unknown"
                     ),
                     first_script_success=getattr(

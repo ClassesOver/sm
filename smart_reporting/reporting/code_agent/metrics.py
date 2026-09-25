@@ -307,7 +307,7 @@ def build_coding_metric_sample(
     input_components: Mapping[str, Mapping[str, Any]] | None = None,
     raw_protocol_correct: bool | str = "unknown",
     envelope_normalized_inputs: int | str = "unknown",
-    wire_shape_recoveries: int | str = "unknown",
+    wire_shape_rejections: int | str = "unknown",
     first_script_success: bool | str = "unknown",
     first_script_failure_code: str | None = None,
     first_run_success: bool | str = "unknown",
@@ -495,7 +495,7 @@ def build_coding_metric_sample(
         ),
         "rawProtocolCorrect": raw_protocol_correct,
         "envelopeNormalizedInputs": bounded_nonnegative(envelope_normalized_inputs),
-        "wireShapeRecoveries": bounded_nonnegative(wire_shape_recoveries),
+        "wireShapeRejections": bounded_nonnegative(wire_shape_rejections),
         "firstScriptSuccess": first_script_success,
         "firstScriptFailureCode": (
             first_script_failure_code[:128]

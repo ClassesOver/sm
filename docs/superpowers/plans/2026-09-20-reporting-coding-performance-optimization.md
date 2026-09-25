@@ -1377,3 +1377,5 @@ reviewer 调用累计，缓存命中不重复计时，并进入 P50/P95 汇总�
 - 分析与可视化分别有实测证据；按章节确定任务范围，沿用宿主签发的单脚本身份、输出和 patch 契约，原分析项和产物身份始终保持准确。
 - 验收包含上游规划及 Coding 的累计 reasoning 与总耗时，不能只缩短首轮或把长推理转移到另一阶段。
 - 核心结论以 reasoning tokens 及其长尾为主；缓存命中、输入字节数、工具数量和首个工具时间只作为解释变量，不能替代目标指标。
+
+**2026-09-25 撤销 R1 wire 形态恢复执行（对齐 AGENTS.md）：** R1/candidate-38 把 function 形态的 FREEFORM 调用改写为 custom 并执行，违反“只有 provider 返回的结构化 `custom_tool_call` 可执行、`write_script`/`run` 不得降级为 JSON function tool”。现改为：识别后不改写、不执行，历史按 provider 原样的 `function_call` 回放（`provider_data.reporting_wire_type=function_rejected`），补未执行回执 `report_code_tool_wire_type_invalid`（不占任务工具额度，引导模型用原生 custom 工具重发）；每运行上限 3 次，超限仍 fail-closed。指标字段 `wireShapeRecoveries` 更名为 `wireShapeRejections`，且计入 `rawProtocolCorrect=false`。

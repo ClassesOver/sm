@@ -4196,3 +4196,84 @@ async def test_generate_outline_fails_after_exhausting_correction_attempts() -> 
 
     assert raised.value.code == "report_outline_invalid"
     assert planner_calls == 5
+
+
+def _multi_date_snapshot(*columns: tuple[str, str, str]) -> reporting_contract.SourceSchemaSnapshot:
+    return reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database="rj",
+                name="dwd_visit",
+                columns=tuple(
+                    reporting_contract.ModelColumn(
+                        name=name, dataType=data_type, nullable=True, description=description
+                    )
+                    for name, data_type, description in columns
+                ),
+            ),
+        ),
+    )
+
+
+def _visit_plan() -> DataUnderstandingPlan:
+    return DataUnderstandingPlan.model_validate(
+        {
+            "tables": [
+                {
+                    "sourceId": "rj",
+                    "table": "rj.dwd_visit",
+                    "role": "门诊就诊趋势",
+                    "periodColumn": "stat_month",
+                    "periodGranularity": "month",
+                }
+            ]
+        }
+    )
+
+
+def test_typed_period_prefers_goal_relevant_date_over_first_date_column() -> None:
+    snapshot = _multi_date_snapshot(
+        ("stat_month", "VARCHAR(6)", "统计月份"),
+        ("birth_date", "DATE", "患者出生日期"),
+        ("created_at", "DATETIME", "记录创建时间"),
+        ("visit_date", "DATE", "就诊日期"),
+    )
+
+    normalized = reporting_runtime._normalize_preferred_typed_period_fields(
+        _visit_plan(), (snapshot,), report_goal="分析2025年门诊就诊人次月度趋势"
+    )
+
+    assert normalized.tables[0].period_column == "visit_date"
+
+
+def test_typed_period_keeps_model_choice_when_date_columns_are_ambiguous() -> None:
+    plan = _visit_plan()
+    snapshot = _multi_date_snapshot(
+        ("stat_month", "VARCHAR(6)", "统计月份"),
+        ("birth_date", "DATE", "患者出生日期"),
+        ("discharge_date", "DATE", "出院日期"),
+    )
+
+    normalized = reporting_runtime._normalize_preferred_typed_period_fields(
+        plan, (snapshot,), report_goal="分析2025年月度趋势"
+    )
+
+    assert normalized == plan
+
+
+def test_typed_period_skips_audit_timestamp_when_single_business_date_exists() -> None:
+    snapshot = _multi_date_snapshot(
+        ("stat_month", "VARCHAR(6)", "统计月份"),
+        ("updated_at", "TIMESTAMP", "更新时间"),
+        ("biz_date", "DATE", "业务日期"),
+    )
+
+    normalized = reporting_runtime._normalize_preferred_typed_period_fields(
+        _visit_plan(), (snapshot,), report_goal="分析2025年月度趋势"
+    )
+
+    assert normalized.tables[0].period_column == "biz_date"
