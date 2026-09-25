@@ -2614,7 +2614,7 @@ class ReportingCodeModeToolkit(Toolkit):
         promote_draft=True 时语法错误不落盘：补丁后的草稿必须先能解析，否则语法错误
         （及因无法解析而跳过的路径违规）会漏到 run_script 才暴露。
         """
-        warnings: list[dict[str, str]] = []
+        warnings: list[dict[str, Any]] = []
         formatted = False
         try:
             source = validate_draft_source(self.context, source).decode("utf-8")
@@ -2625,13 +2625,15 @@ class ReportingCodeModeToolkit(Toolkit):
                     return _syntax_edit_failure(
                         error, await self._store_draft(source), draft=True
                     )
-                # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用。
+                # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用；回执直接给出
+                # 错误位置，模型无需再跑一次 run_script 才能定位。
                 tree = None
                 warnings.append(
                     {
                         "code": "report_code_formatting_skipped",
                         "reason": "syntax_error",
                         "message": "草稿存在语法错误，已保留原稿并跳过格式化。",
+                        "syntaxError": _syntax_error_details(error),
                     }
                 )
             if tree is not None:
@@ -2794,6 +2796,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     ),
                 )
             return _failure(error.code, error.message, error.details)
+        remaining_syntax_error: dict[str, Any] | None = None
         try:
             validate_draft_source(self.context, updated)
             tree = ast.parse(updated, filename=self.context.script_path)
@@ -2802,8 +2805,10 @@ class ReportingCodeModeToolkit(Toolkit):
                 # 与 SWE-agent 的编辑 lint 护栏一致：原本可解析的脚本不接受引入语法
                 # 错误的补丁，文件保持不变，避免错误拖到 run_script 才暴露。
                 return _syntax_edit_failure(error, current_sha256)
-            # 原稿本就无法解析（写入时保留的语法错误草稿）时允许逐步修复。
+            # 原稿本就无法解析（写入时保留的语法错误草稿）时允许逐步修复，但回执
+            # 必须说明仍不可执行及剩余错误位置。
             tree = None
+            remaining_syntax_error = {"errorType": "SyntaxError", **_syntax_error_details(error)}
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         preflight_warnings: list[dict[str, str]] = []
@@ -2848,6 +2853,12 @@ class ReportingCodeModeToolkit(Toolkit):
                 "replacedOccurrences": len(edits),
             },
             **({"warnings": preflight_warnings} if preflight_warnings else {}),
+            "readyForExecution": tree is not None,
+            **(
+                {"syntaxError": remaining_syntax_error, "nextTools": ["edit_script"]}
+                if remaining_syntax_error is not None
+                else {}
+            ),
             # 精确匹配失败后按行尾空白/统一缩进容错定位的块，提示模型下次逐字复制。
             **({"fuzzyMatches": fuzzy_matches} if fuzzy_matches else {}),
             **identity,

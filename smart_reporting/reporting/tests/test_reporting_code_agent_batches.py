@@ -818,3 +818,12 @@ async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
         "report_code_visual_review_redundant",
         None,
     ]
+
+
+def test_write_script_prefixes_exclude_bash_cell():
+    from smart_reporting.reporting.code_agent.protocol import _normalize_provider_custom_input
+
+    envelope = json.dumps({"data": "%%bash\nls\n"})
+    # %%bash 只属于 run；write_script 的信封不得按协议正确输入解封。
+    assert _normalize_provider_custom_input(envelope, "write_script") == (envelope, False)
+    assert _normalize_provider_custom_input(envelope, "run") == ("%%bash\nls\n", True)

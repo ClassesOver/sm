@@ -52,9 +52,9 @@ FREEFORM_TOOL_ARGUMENTS: Mapping[str, str] = MappingProxyType(
 _CUSTOM_TOOL_PROTOCOL_ERROR = "report_code_custom_tool_protocol_error"
 _VISUALIZATION_BUDGET_GATE_FORCED_SUBMIT = "report_code_visual_budget_gate_forced_submit"
 _VISUALIZATION_REVIEW_ROUNDS_GATE = "report_code_visual_review_rounds_exhausted"
-# provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回；参数 JSON
-# 完好就还原为 custom 形态继续既有 stage 白名单/执行链路（candidate-32）。超过上限
-# 说明 provider 持续退化，恢复无益，保持 fail-closed。
+# provider grammar 退化时任务集内 FREEFORM 工具可能以 function 形态返回；该调用不执行，
+# 只补未执行回执引导模型改用 custom 工具重发。超过上限说明 provider 持续退化，保持
+# fail-closed。
 _WIRE_SHAPE_REJECTION_LIMIT = 3
 # provider 以 function 形态返回、已补未执行回执的 FREEFORM 调用在历史中的标记。
 _WIRE_REJECTED_FUNCTION = "function_rejected"
@@ -392,11 +392,13 @@ def _normalize_provider_custom_input(raw_input: str, tool_name: str) -> tuple[st
 
 
 def _custom_input_prefixes(tool_name: str) -> tuple[str, ...]:
-    return (
-        ("*** Begin Edit\n",)
-        if tool_name == "edit_script"
-        else ("# Python\n", "# Python\r\n", "%%bash\n", "%%bash\r\n")
-    )
+    # 与 _FREEFORM_TOOL_GRAMMARS 一致：只有 run 接受 %%bash cell；write_script 的
+    # 正式脚本必须是 Python，%%bash 首行不能被当作协议正确输入或信封解封目标。
+    if tool_name == "edit_script":
+        return ("*** Begin Edit\n",)
+    if tool_name == "run":
+        return ("# Python\n", "# Python\r\n", "%%bash\n", "%%bash\r\n")
+    return ("# Python\n", "# Python\r\n")
 
 
 def _is_wire_shaped_freedom_call(name: Any, kind: str, task_tools: Any) -> bool:

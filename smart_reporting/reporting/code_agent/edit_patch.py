@@ -217,6 +217,45 @@ def _fuzzy_candidates(
     return ("indentation", indented, "") if indented else ("", [], hint)
 
 
+def _is_identifier_char(character: str) -> bool:
+    # 只看 ASCII：脚本标识符几乎都是 ASCII，中文多出现在字符串字面量里，
+    # 允许对其中的词做子串替换。
+    return character == "_" or (character.isascii() and character.isalnum())
+
+
+def _cuts_identifier(source: str, start: int, end: int) -> bool:
+    """匹配边界是否落在标识符中间，例如 SEARCH `x = 1` 命中 `max = 1` 的尾部。"""
+
+    return (
+        start > 0
+        and _is_identifier_char(source[start - 1])
+        and _is_identifier_char(source[start])
+    ) or (
+        end < len(source)
+        and _is_identifier_char(source[end - 1])
+        and _is_identifier_char(source[end])
+    )
+
+
+def _exact_candidates(source: str, old: str) -> tuple[list[int], int]:
+    """返回不切断标识符的精确匹配起点（最多 2 个）与被排除的切断匹配数。
+
+    行内子串替换（如 figsize 参数）仍然允许；只排除边界落在标识符内部的命中，
+    否则 SEARCH 写错一行时会静默改写另一个变量，或把本可唯一定位的块误判为歧义。
+    """
+
+    starts: list[int] = []
+    cut = 0
+    position = source.find(old)
+    while position >= 0 and len(starts) < 2:
+        if _cuts_identifier(source, position, position + len(old)):
+            cut += 1
+        else:
+            starts.append(position)
+        position = source.find(old, position + 1)
+    return starts, cut
+
+
 def _starts_after_indent(source: str, position: int) -> bool:
     line_start = source.rfind("\n", 0, position) + 1
     prefix = source[line_start:position]
@@ -249,11 +288,12 @@ def apply_edit_blocks(
     for index, (old, new) in enumerate(edits, 1):
         if old == new:
             raise _edit_error("unchanged", "SEARCH 与 REPLACE 文本不能相同。", index)
-        start = source.find(old)
-        if start >= 0:
+        starts, cut_matches = _exact_candidates(source, old)
+        if starts:
+            start = starts[0]
             mode, hint = "", ""
             candidates = [(start, start + len(old), new)]
-            if source.find(old, start + 1) >= 0:
+            if len(starts) > 1:
                 candidates.append(candidates[0])
             elif "\n" in new and _starts_after_indent(source, start):
                 # SEARCH 从缩进之后开始、REPLACE 跨多行时，逐字插入会让后续行丢失
@@ -266,7 +306,17 @@ def apply_edit_blocks(
                 ):
                     mode, candidates = aligned_mode, aligned
         else:
+            if cut_matches > 1:
+                # 多处只能切断标识符命中（如 "aa" 之于 'aaa'）：无法判断意图，按歧义拒绝。
+                raise _edit_error(
+                    "ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index
+                )
             mode, candidates, hint = _fuzzy_candidates(*split_lines(), old, new)
+            if not candidates and cut_matches:
+                hint = (
+                    "SEARCH 只在标识符中间匹配到（例如 x = 1 命中 max = 1），已拒绝以免改错"
+                    "变量；请从 read_script 原样复制完整的源码行。"
+                )
         if not candidates:
             error = _edit_error("not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index)
             if hint:
