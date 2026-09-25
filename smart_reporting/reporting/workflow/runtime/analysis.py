@@ -549,6 +549,29 @@ def _visualization_instruction_theme() -> dict[str, Any]:
     }
 
 
+def _section_scoped_chart_ids(
+    plan: VisualizationPlanDraft, section_code: str
+) -> VisualizationPlanDraft:
+    """把 planner 的 chartId 限定到当前章节命名空间。
+
+    durable 状态要求 chartId 在全部章节间唯一，而各章 planner 只看到本章事实，
+    常见的 chart_001 会跨章节重复，后提交的章节被判冲突并最终零图降级。
+    """
+
+    prefix = f"{section_code}__"
+    charts: list[ChartDraft] = []
+    for chart in plan.charts:
+        if chart.chart_id.startswith(prefix):
+            charts.append(chart)
+            continue
+        scoped = f"{prefix}{chart.chart_id}"
+        if len(scoped) > 128:
+            digest = hashlib.sha256(chart.chart_id.encode("utf-8")).hexdigest()[:16]
+            scoped = f"{prefix}{chart.chart_id[: 128 - len(prefix) - 17]}-{digest}"
+        charts.append(chart.model_copy(update={"chart_id": scoped}))
+    return plan.model_copy(update={"charts": tuple(charts)})
+
+
 def _visualization_output_paths(plan: VisualizationPlanDraft) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -1106,13 +1129,15 @@ class RuntimeAnalysisMixin:
                                 "可视化 planner 返回了错误的 benchmark 输出类型。",
                             )
                         if visualization_plan_adapter is not None:
-                            return visualization_plan_adapter(output, request)
+                            return _section_scoped_chart_ids(
+                                visualization_plan_adapter(output, request), section_code
+                            )
                         if not isinstance(output, VisualizationPlanDraft):
                             raise ReportingError(
                                 "report_structured_output_invalid",
                                 "可视化 planner 返回了错误的结构化结果类型。",
                             )
-                        return output
+                        return _section_scoped_chart_ids(output, section_code)
 
                     def code_runner() -> ReportingCodeGenerationRunner:
                         nonlocal code_runner_instance
