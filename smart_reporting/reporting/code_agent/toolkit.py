@@ -1373,17 +1373,9 @@ def _collect_preflight(
             check()
         except ReportingError as error:
             violations.append(error)
+    # 通用数据 helper 按真实回放实证保持硬拦截（见 _reject_generic_data_helpers），
+    # 命中即进入 violations；此处不再重复生成永远到不了模型的软告警。
     warnings: list[dict[str, str]] = []
-    helper = _generic_data_helper_details(tree)
-    if helper is not None:
-        # 统一形状输入下通用 helper 本身无害；真正的风险路径由字面路径白名单兜底。
-        warnings.append(
-            {
-                "code": "report_code_generic_data_helper",
-                "reason": str(helper.get("reason") or "generic_helper"),
-                "message": "检测到通用数据读取 helper；请确认只读取签发路径中的逐字字符串。",
-            }
-        )
     return violations, warnings
 
 
@@ -1434,7 +1426,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "detectedOutputWrites", "functionName", "parameterName",
         "violations", "draftSha256", "violationLines", "writeExample",
         "notReferencedPaths", "writeNotExecutedPaths", "unresolvedWritePaths", "outputHint",
-        "hint",
+        "hint", "totalLines", "patchFormat", "expectedPath", "anchor", "declaredImagePaths",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -1451,7 +1443,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         if key in {
             "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths", "presentPaths",
             "detectedOutputWrites", "violationLines", "notReferencedPaths",
-            "writeNotExecutedPaths", "unresolvedWritePaths",
+            "writeNotExecutedPaths", "unresolvedWritePaths", "declaredImagePaths",
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
@@ -3111,19 +3103,27 @@ class ReportingCodeModeToolkit(Toolkit):
             )
 
         normalized_paths: list[str] = []
+        # 非法路径不再让整批失败：合法图片照常审查，非法项逐条回执并给出可审查的
+        # 声明图片清单，模型可直接改正，不必再猜路径或重复消耗一轮。
+        path_failures: list[dict[str, Any]] = []
+        reviewable_paths = [
+            item for item in self.context.declared_output_paths
+            if not item.endswith(".plotly.json")
+        ]
         for raw_path in target_paths:
             try:
                 source_path = WorkspaceService.normalize_path(raw_path, allow_root=False)[0]
             except WorkspaceError:
-                return _failure(
-                    "report_code_visual_path_forbidden",
-                    "图片路径不属于当前 Coding task 的声明输出。",
+                source_path = None
+            if source_path is None or source_path not in self.context.declared_output_paths:
+                path_failures.append(
+                    _failure(
+                        "report_code_visual_path_forbidden",
+                        "图片路径不属于当前 Coding task 的声明输出。",
+                        {"path": raw_path[:512], "declaredImagePaths": reviewable_paths[:20]},
+                    )
                 )
-            if source_path not in self.context.declared_output_paths:
-                return _failure(
-                    "report_code_visual_path_forbidden",
-                    "图片路径不属于当前 Coding task 的声明输出。",
-                )
+                continue
             normalized_paths.append(source_path)
         # 同一路径并发审查会重复调用视觉模型并重复计数。
         normalized_paths = list(dict.fromkeys(normalized_paths))
@@ -3132,6 +3132,8 @@ class ReportingCodeModeToolkit(Toolkit):
         skipped_paths = [item for item in normalized_paths if item.endswith(".plotly.json")]
         normalized_paths = [item for item in normalized_paths if item not in skipped_paths]
         if not normalized_paths:
+            if path_failures:
+                return self._aggregate_view_failures(path_failures, [], 0)
             return _failure(
                 "report_code_visual_path_not_image",
                 "Plotly 交互规格（.plotly.json）无需视觉审查；只审查 PNG/JPEG 图片输出。",
@@ -3139,7 +3141,7 @@ class ReportingCodeModeToolkit(Toolkit):
             )
 
         receipts: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = list(path_failures)
         fresh_review_count = 0
         for start in range(0, len(normalized_paths), _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE):
             chunk = normalized_paths[start : start + _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE]
@@ -3165,20 +3167,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     failures.append(self._visual_review_unavailable(chunk[index], result))
             receipts.extend(chunk_receipts)
         if failures:
-            # 主失败沿用第一项；同批已完成的审查结论一并返回，不丢弃 critical 问题。
-            primary = dict(failures[0])
-            if receipts:
-                primary["receipts"] = receipts
-                primary["freshReviewCount"] = fresh_review_count
-            if len(failures) > 1:
-                primary["additionalFailures"] = [
-                    {
-                        "code": item.get("code"),
-                        "path": (item.get("details") or {}).get("path"),
-                    }
-                    for item in failures[1:8]
-                ]
-            return primary
+            return self._aggregate_view_failures(failures, receipts, fresh_review_count)
         skipped = {"skippedInteractivePaths": skipped_paths} if skipped_paths else {}
         if len(normalized_paths) == 1:
             return {
@@ -3194,7 +3183,43 @@ class ReportingCodeModeToolkit(Toolkit):
             **skipped,
         }
 
+    @staticmethod
+    def _aggregate_view_failures(
+        failures: list[dict[str, Any]],
+        receipts: list[dict[str, Any]],
+        fresh_review_count: int,
+    ) -> dict[str, Any]:
+        # 主失败沿用第一项；同批已完成的审查结论一并返回，不丢弃 critical 问题。
+        primary = dict(failures[0])
+        if receipts:
+            primary["receipts"] = receipts
+            primary["freshReviewCount"] = fresh_review_count
+        if len(failures) > 1:
+            primary["additionalFailures"] = [
+                {
+                    "code": item.get("code"),
+                    "path": (item.get("details") or {}).get("path"),
+                }
+                for item in failures[1:8]
+            ]
+        return primary
+
     async def _review_one_image(
+        self,
+        source_path: str,
+        detail: str,
+    ) -> dict[str, Any]:
+        result = await self._review_one_image_inner(source_path, detail)
+        if result.get("ok") is False:
+            # 多图汇总按 details.path 标注失败项；各分支回执统一补齐路径。
+            details = result.get("details")
+            if not isinstance(details, dict):
+                details = {}
+                result["details"] = details
+            details.setdefault("path", source_path)
+        return result
+
+    async def _review_one_image_inner(
         self,
         source_path: str,
         detail: str,

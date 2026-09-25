@@ -995,6 +995,66 @@ async def test_view_image_reviews_multiple_paths_in_one_call(workspace):  # noqa
 
 
 @pytest.mark.anyio
+async def test_view_image_reviews_valid_paths_and_reports_bad_path_with_hint(workspace):  # noqa: F811
+    from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
+        ToolkitRuntime,
+        _visual_receipt,
+    )
+
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/chart.py", "charts/a.png", "charts/b.png"),
+        declared_output_paths=("charts/a.png", "charts/b.png"),
+        max_source_bytes=128 * 1024,
+    )
+    task_binding = ReportingCodingTaskBinding(context, workspace)
+    await workspace.awrite_text("task-1", "analysis/chart.py", "# script")
+    await workspace.awrite_text("task-1", "charts/a.png", "image-a")
+    await workspace.awrite_text("task-1", "charts/b.png", "image-b")
+    source = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "analysis/chart.py")
+    )
+    output_a = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "charts/a.png")
+    )
+    output_b = FileIdentity.model_validate(
+        await workspace.ahash_file("task-1", "charts/b.png")
+    )
+    task_binding.execution_receipt = ExecutionReceipt(
+        runId="visual-run",
+        sourceFile=source,
+        outputFiles=(output_a, output_b),
+    )
+    receipts = {
+        "charts/a.png": _visual_receipt(output_a).model_dump(mode="json", by_alias=True),
+        "charts/b.png": _visual_receipt(output_b).model_dump(mode="json", by_alias=True),
+    }
+    reviewer = AsyncMock()
+    # 多图并发审查的调用顺序不确定，按路径返回回执，不能依赖 side_effect 列表顺序。
+    reviewer.review.side_effect = lambda _workspace, path, **_kwargs: receipts[path]
+    toolkit = ReportingCodeModeToolkit(
+        task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+    )
+    result = await toolkit.view_image(paths=["charts/a.png", "chart/b.png", "charts/b.png"])
+
+    # 猜错的路径不再拖垮整批：合法图片照常审查，错误项给出可审查清单。
+    assert result["ok"] is False
+    assert result["code"] == "report_code_visual_path_forbidden"
+    assert result["details"]["path"] == "chart/b.png"
+    assert result["details"]["declaredImagePaths"] == ["charts/a.png", "charts/b.png"]
+    assert len(result["receipts"]) == 2
+    assert reviewer.review.await_count == 2
+    assert toolkit.has_current_visual_review("charts/a.png")
+    assert toolkit.has_current_visual_review("charts/b.png")
+
+
+@pytest.mark.anyio
 async def test_view_image_auto_chunks_more_than_five_paths(workspace):  # noqa: F811
     output_paths = [f"charts/{name}.png" for name in ("a", "b", "c", "d", "e", "f")]
     context = ReportingCodingTaskContext(
