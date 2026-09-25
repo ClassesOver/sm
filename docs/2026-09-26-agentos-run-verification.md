@@ -42,32 +42,36 @@ Step 发布门禁与正式发布 failed: report_editor_scope_mismatch: 报告编
 （planning.py:388 → Workflow execution failed，Agent Run End 03:27:53）
 ```
 
-### 根因
+### 根因（两层叠加）
 
 1. 生产环境的 **durable payload 从不固化 `report_workflow_scope`**（全库确认无任何代码把 scope 键写入 durable；现有测试用手搓的 `as_state()` 格式 stored scope，所以测试永远绿）。
-2. `issue_http_publication` 重新解析作用域时**未传 `run_context.dependencies`**，resolver 的 fallback 链 `stored.callerThreadId → dependency.threadId → effective_session_id` 一路落空，最终用 workflow 内部会话 id（`report-session-*`）充当 caller thread。
-3. 与调用方 thread（AgentOS session，如 `cb0721c3-…`）比对必然不等 → 误判 scope mismatch。
+2. **第一层**：`issue_http_publication` 重新解析作用域时**未传 `run_context.dependencies`**，resolver 的 fallback 链 `stored.callerThreadId → dependency.threadId → effective_session_id` 一路落空，最终用 workflow 内部会话 id（`report-session-*`）充当 caller thread。
+3. **第二层**：`base.py` 传给安全比对的 `thread_id=scope["threadId"]` 实为 `as_state()` 里的 **workspace_key**（`reporting-run-<hash>`，IO 寻址语义），与 caller thread 根本不是同一语义，永不相等。
 
-只要 workflow 内部会话 id ≠ 调用方 thread（恒成立），AgentOS/MCP 形态正式发布必失败。
+任一层都足以让 `scope.caller_thread_id != thread_id` 恒成立 → AgentOS/MCP 形态正式发布 100% 失败关闭。两层分别由真实 run 暴露：第一层修复后重跑（03:41 全量版撞上 planner coverage 硬门早夭、03:48 约束版走到发布）立即暴露第二层。
 
-### 修复（commit `450acdb`，3 文件 +140/-1）
+### 修复
 
-- `planning.py`：`issue_http_publication` 新增 `dependencies` 参数传入 resolver
-- `base.py`：发布步把 `run_context.dependencies` 透传（与 `_scope()` 同源，附注释说明 durable 不固化作用域）
-- 测试：新增回归测试（durable 无 scope 键 + dependencies 恢复 caller thread → 签发成功；不传则仍失败关闭，校验保持硬门）；修正 1 处 mock 断言补 `dependencies=None`
+**第一层（commit `450acdb`）**：`issue_http_publication` 新增 `dependencies` 参数，base.py 从 `run_context.dependencies` 透传，与 `_scope()` 同源；新增回归测试（durable 无 scope 键 + dependencies 恢复 caller thread → 签发成功；不传则仍失败关闭）。
+
+**第二层（commit `e7c5ab1`）**：`issue_http_publication` 新增 `caller_thread_id` 参数，base.py 显式传 `scope["callerThreadId"]`；安全比对 `scope.caller_thread_id != caller_thread_id`；`thread_id` 仅用于工作区 IO。回归测试中 `thread_id` 与 `caller_thread_id` 取不同值，同时守住两层修复。
 
 **验证**：31/31 定向测试 passed（`test_report_artifact_persistence.py` + `test_reporting_workflow_scope.py`）；ruff check 通过；mypy 改动行零新增（139 个均为 HEAD 存量）；ruff format 报出的 hunks 经 `git show HEAD` 核实全部为存量。
 
-## 四、修复后重跑（进行中）
+## 四、修复后重跑
 
-- 服务已带修复重启（:8020），03:4x 重新提交 `2025年成本效率分析`
-- 结果（editor openUrl / downloadUrl）待 run 完成后补录
+| run | 任务 | 结果 |
+|---|---|---|
+| 全量版（03:41） | 2025年成本效率分析 | 10 分钟死于 `report_analysis_plan_invalid`（见观察项 4），未到发布 |
+| 约束版 v1（03:48，修复第一层后） | 同上，一个章节两个分析 | 走到发布，死于第二层 scope_mismatch（4 分钟，验证价值所在） |
+| 约束版 v2（03:5x，两层修复后） | 同上 | 进行中，结果待补 |
 
 ## 残余观察项
 
 1. AgentOS run 不带 `user_id` 时报错信息有误导性（"作用域不完整"实际指身份缺失）——建议拆 `report_workflow_identity_missing`，低优先级
 2. CLI 形态跳过 grant 签发无日志——建议加一条 loguru info，低优先级
 3. 历史观察项不变：edit_invalid 偶发自愈、section revision 预算上限继续观察
+4. **`report_analysis_plan_invalid`（已批准分析计划没有覆盖全部授权数据集，datasets.py:590）为语义完整性硬门**：planner 未引用某个授权数据集即杀整个 run。03:41 全量版因 planner 方差撞死（同主题 CLI 跑与约束版均通过），符合 AGENTS.md"语义业务校验只需要软告警"的降级候选——建议降级为 planner 反馈软告警，先积累样本再改
 
 ## 原始数据
 
