@@ -160,6 +160,19 @@ class ReportRuntime:
                 raise ReportFailure("HTML 图片只能引用已校验的工作区资源")
             path = (source_parent / unquote(parsed.path)).resolve()
             if path not in allowed_images:
+                # 草稿目录与图文目录分离时，按已校验清单后缀回退（与 _images 一致）。
+                suffix = "/" + PurePosixPath(unquote(parsed.path)).as_posix()
+                matched = next(
+                    (
+                        candidate
+                        for candidate in allowed_images
+                        if str(candidate).replace("\\", "/").endswith(suffix)
+                    ),
+                    None,
+                )
+                if matched is not None:
+                    path = matched
+            if path not in allowed_images:
                 raise ReportFailure("HTML 图片引用了未校验资源")
             mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
                 path.suffix.lower(), f"image/{path.suffix.lower().lstrip('.')}"
