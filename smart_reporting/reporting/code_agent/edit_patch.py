@@ -1,7 +1,6 @@
 """绑定脚本的多块 free-form 精确替换；统一定位后原子提交。"""
 
 import re
-import textwrap
 
 from ..models import ReportingError
 
@@ -103,15 +102,21 @@ def _indent(line: str) -> str:
 
 
 def _reindent(text: str, add: str, remove: str) -> str | None:
-    """按统一偏移调整非空行缩进；需去除的前缀不存在时返回 None。"""
+    """按统一偏移调整非空行缩进；需去除的前缀不存在时返回 None。
 
-    if add:
-        return textwrap.indent(text, add)
+    只按 LF 切行：textwrap.indent 会在 \u2028、\x0c 等处切分，改写字符串字面量。
+    """
+
     lines = []
     for line in text.split("\n"):
-        if line.strip() and not line.startswith(remove):
+        if not line.strip():
+            lines.append(line)
+        elif add:
+            lines.append(add + line)
+        elif line.startswith(remove):
+            lines.append(line[len(remove):])
+        else:
             return None
-        lines.append(line[len(remove):] if line.strip() else line)
     return "\n".join(lines)
 
 
@@ -181,6 +186,12 @@ def _fuzzy_candidates(
     return ("indentation", indented, "") if indented else ("", [], hint)
 
 
+def _starts_after_indent(source: str, position: int) -> bool:
+    line_start = source.rfind("\n", 0, position) + 1
+    prefix = source[line_start:position]
+    return bool(prefix) and not prefix.strip(" \t")
+
+
 def apply_edit_blocks(
     source: str, edits: list[tuple[str, str]]
 ) -> tuple[str, list[dict[str, object]]]:
@@ -189,10 +200,19 @@ def apply_edit_blocks(
     精确匹配优先；失败时按整行容错定位（仍须唯一）。返回 (新源码, 容错定位的块
     [{blockIndex, matchMode}])。
     """
-    lines = source.split("\n")
-    offsets = [0]
-    for line in lines[:-1]:
-        offsets.append(offsets[-1] + len(line) + 1)
+    line_table: tuple[list[str], list[int]] | None = None
+
+    def split_lines() -> tuple[list[str], list[int]]:
+        # 只在需要整行容错时切分源码；精确匹配的常见路径不付出这份开销。
+        nonlocal line_table
+        if line_table is None:
+            lines = source.split("\n")
+            offsets = [0]
+            for line in lines[:-1]:
+                offsets.append(offsets[-1] + len(line) + 1)
+            line_table = (lines, offsets)
+        return line_table
+
     replacements: list[tuple[int, int, str, int]] = []
     fuzzy: list[dict[str, object]] = []
     for index, (old, new) in enumerate(edits, 1):
@@ -204,8 +224,18 @@ def apply_edit_blocks(
             candidates = [(start, start + len(old), new)]
             if source.find(old, start + 1) >= 0:
                 candidates.append(candidates[0])
+            elif "\n" in new and _starts_after_indent(source, start):
+                # SEARCH 从缩进之后开始、REPLACE 跨多行时，逐字插入会让后续行丢失
+                # 缩进、悄悄改变代码块归属；整行缩进对齐的唯一候选覆盖同一位置时优先。
+                aligned_mode, aligned, _ = _fuzzy_candidates(*split_lines(), old, new)
+                if (
+                    aligned_mode == "indentation"
+                    and len(aligned) == 1
+                    and aligned[0][0] <= start < aligned[0][1]
+                ):
+                    mode, candidates = aligned_mode, aligned
         else:
-            mode, candidates, hint = _fuzzy_candidates(lines, offsets, old, new)
+            mode, candidates, hint = _fuzzy_candidates(*split_lines(), old, new)
         if not candidates:
             error = _edit_error("not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index)
             if hint:

@@ -334,3 +334,20 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
         "lsp_references",
         "lsp_document_symbols",
     })
+
+
+def test_location_decodes_percent_encoded_workspace_uri(
+    binding: ReportingCodingTaskBinding,
+) -> None:
+    lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
+    # 中文工作区路径经 Path.as_uri() 百分号编码；映射回来的路径必须可直接复用。
+    uri = (binding.context.workspace_root / "报表/智能分析/charts.py").as_uri()
+
+    location = lsp._location({"uri": uri, "range": {"start": {"line": 2, "character": 4}}})
+
+    assert location == {
+        "path": "报表/智能分析/charts.py",
+        "line": 2,
+        "character": 4,
+        "kind": "symbol",
+    }

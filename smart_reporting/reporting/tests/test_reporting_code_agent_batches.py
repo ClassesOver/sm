@@ -140,6 +140,25 @@ def test_wire_shaped_freedom_call_is_recovered_and_executed():
     assert model._code_stage_mismatch_names == frozenset()
 
 
+def test_wire_shape_recovery_keeps_following_function_calls_aligned():
+    model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
+    tools = [Function(name="write_script"), Function(name="run_script")]
+    model.configure_code_run(tools, max_model_requests=2)
+    model.get_request_params(messages=[], tools=tools)
+    response = _batch_response(
+        _function_response(1, "write_script", {"source": "# Python\nprint(1)\n"}),
+        _function_response(2, "run_script", {}),
+    )
+
+    parsed = model._parse_provider_response(response)
+
+    # 还原的调用仍占父类 function 序列一个位置；后续 run_script 不得被错位替换。
+    assert [(call["function"]["name"], call["call_id"]) for call in parsed.tool_calls] == [
+        ("write_script", "call-1"),
+        ("run_script", "call-2"),
+    ]
+
+
 def test_wire_shaped_freedom_call_stage_hidden_gets_soft_rejection():
     """还原后的调用仍受交付阶段白名单约束：stage 外走软拒绝回执，不执行。"""
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")

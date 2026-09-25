@@ -126,3 +126,30 @@ def test_indentation_match_with_multiline_string_reports_hint():
 
     assert caught.value.code == "report_code_script_edit_not_found"
     assert "多行字符串" in caught.value.details["hint"]
+
+
+def test_indentation_realignment_splits_only_on_lf():
+    source = "def f():\n    x = 1\n    y = 2\n"
+
+    updated, _fuzzy = apply_edit_blocks(source, [("x = 1\ny = 2", "x = 'a\u2028b'\ny = 3")])
+
+    # 字符串字面量里的 \u2028 不是行分隔，重排缩进不得在其后插入空格。
+    assert updated == "def f():\n    x = 'a\u2028b'\n    y = 3\n"
+
+
+def test_exact_match_after_indent_realigns_multiline_replacement():
+    source = "if a:\n    b = 2\nprint(b)\n"
+
+    updated, fuzzy = apply_edit_blocks(source, [("b = 2", "b = 3\nc = 4")])
+
+    assert updated == "if a:\n    b = 3\n    c = 4\nprint(b)\n"
+    assert fuzzy == [{"blockIndex": 1, "matchMode": "indentation"}]
+
+
+def test_exact_single_line_replacement_keeps_literal_semantics():
+    source = "if a:\n    b = 2\nprint(b)\n"
+
+    updated, fuzzy = apply_edit_blocks(source, [("b = 2", "b = 3")])
+
+    assert updated == "if a:\n    b = 3\nprint(b)\n"
+    assert fuzzy == []

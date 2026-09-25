@@ -157,6 +157,53 @@ def test_visualization_coding_facts_keep_only_plan_bound_descriptors():
     ]
 
 
+def test_visualization_coding_facts_keep_full_item_for_unresolved_binding():
+    facts = [
+        {
+            "analysisId": "analysis_001",
+            "factFile": {"path": "facts/analysis.json", "sha256": "a" * 64, "size": 10},
+            "dataDescriptors": [{"dataPath": "metrics[0]", "fields": ["name", "value"]}],
+        },
+        {
+            "analysisId": "analysis_002",
+            "factFile": {"path": "facts/other.json", "sha256": "c" * 64, "size": 5},
+            "dataDescriptors": [{"dataPath": "metrics[0]", "fields": ["name", "value"]}],
+        },
+    ]
+    plan = VisualizationPlanDraft(
+        charts=(
+            ChartDraft(
+                chartId="chart_001",
+                sourcePath="charts/one.png",
+                title="收入指标",
+                altText="收入指标图",
+                citationIds=("citation_001",),
+                metricCodes=("revenue",),
+                currentPeriod="2025",
+                sourceDatasetId="dataset_001",
+                aggregationGrain="year",
+                visualForm="柱状图",
+                dataBindings=(
+                    {
+                        # 错配绑定按软告警继续执行：factPath 不在签发目录中。
+                        "analysisId": "analysis_001",
+                        "factPath": "evidence/unsigned.json",
+                        "dataPath": "findings[0].rows",
+                        "fields": ["name", "value"],
+                        "role": "收入",
+                    },
+                ),
+            ),
+        )
+    )
+
+    coding_facts = visualization_coding_facts(facts, plan=plan)
+
+    # 无法定位的绑定保留该分析项完整描述，未绑定的分析项仍被裁掉。
+    assert coding_facts == [facts[0]]
+    assert visualization_read_paths(coding_facts) == ("facts/analysis.json",)
+
+
 def test_visualization_legacy_projection_hides_r7_plan_fields() -> None:
     plan = VisualizationPlanDraft(
         charts=(

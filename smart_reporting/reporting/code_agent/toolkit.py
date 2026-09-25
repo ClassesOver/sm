@@ -12,7 +12,6 @@ import subprocess
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from time import perf_counter
 from typing import Any, NoReturn
 from uuid import uuid4
@@ -24,6 +23,7 @@ from loguru import logger
 from ...code_monitor.tools import log_tool_event
 from ...workspace import WorkspaceError, WorkspaceService
 from ..code_mode import ReportingCodeModeRuntime, ScriptProcessResult
+from ..contract import interactive_spec_path
 from ..knowledge import KnowledgeIndexError, ReportingKnowledgeIndex
 from ..models import ReportingError
 from ..vision import ReportVisionReviewer
@@ -70,7 +70,9 @@ _FORBIDDEN_PATH_CALLS = frozenset(
         "pathlib.Path.cwd",
     }
 )
-_PATH_ARGUMENT_CALLS = frozenset({"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path"})
+_PATH_ARGUMENT_CALLS = frozenset(
+    {"open", "io.open", "os.makedirs", "os.mkdir", "pathlib.Path", "plotly.offline.plot"}
+)
 _PATH_ARGUMENT_METHODS = frozenset(
     {
         # Plotly 写出（fig.write_image(path) / pio.write_image(fig, path)）；
@@ -437,10 +439,13 @@ def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) 
                 if resolved in declared_paths:
                     found.add(resolved)
                 # 继续尝试位置参数（plotly 的 fig.write_image / pio.write_image 风格）。
-            arguments = _call_path_arguments(node, qualified_name)
-            path_node = arguments[0] if arguments else None
-            if path_node is None:
-                continue
+            # 位置参数与路径关键字都可能承载路径（plotly.offline.plot 的首参是
+            # figure，路径在 filename=），逐个解析而不是只看第一个。
+            for argument in _call_path_arguments(node, qualified_name):
+                resolved = _resolved_path_literal(argument, aliases, bindings)
+                if resolved in declared_paths:
+                    found.add(resolved)
+            continue
         elif qualified_name in {"open", "io.open"} and node.args:
             mode_node = (
                 node.args[1]
@@ -554,8 +559,9 @@ _MISSING_OUTPUT_HINTS = (
     ),
     (
         "unresolvedWritePaths",
-        "unresolvedWritePaths 只以变量或拼接方式出现，宿主无法确认写出：直接在 savefig/"
-        "write_image/write_json 调用中使用签发路径字面量。",
+        "unresolvedWritePaths 在脚本中出现，但宿主未识别到对它的写出调用（路径经变量传入，"
+        "或使用了未识别的写出方式如 PIL Image.save）：改为在 savefig/write_image/write_json "
+        "调用中直接使用签发路径字面量。",
     ),
 )
 
@@ -596,16 +602,13 @@ def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -
     图片与交互产物的配对沿用交付校验规则：image.with_suffix(".plotly.json")。
     """
 
-    def interactive_for(image: str) -> str:
-        return PurePosixPath(image).with_suffix(".plotly.json").as_posix()
-
     images = [item for item in declared_paths if not item.endswith(".plotly.json")]
     if path.endswith(".plotly.json"):
-        image = next((item for item in images if interactive_for(item) == path), None)
+        image = next((item for item in images if interactive_spec_path(item) == path), None)
         interactive: str | None = path
     else:
         image = path
-        interactive = interactive_for(path) if interactive_for(path) in declared_paths else None
+        interactive = interactive_spec_path(path) if interactive_spec_path(path) in declared_paths else None
     if interactive is not None:
         lines = [f"fig.write_image({image!r})"] if image is not None else []
         return "\n".join([*lines, f"fig.write_json({interactive!r})"])
@@ -1798,6 +1801,8 @@ class ReportingCodeModeToolkit(Toolkit):
         self._critical_review_run_id: str | None = None
         # V3：被拒整稿只保存在内存隔离草稿中，run_script 永远不执行草稿。
         self._rejected_draft: _RejectedDraft | None = None
+        # 最近一次 edit_script 是否以草稿 SHA 为目标（补丁无法解析时按原文中的 SHA 判断）。
+        self._last_edit_targeted_draft = False
         tools = [
             Function(
                 name="write_script",
@@ -2142,8 +2147,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 "report_code_script_edit_"
             )
             draft = self._rejected_draft
-            if draft is not None:
-                # 补丁已应用但仍有违规或语法错误，属于逐步修正的进展，不计入空转。
+            if draft is not None and self._last_edit_targeted_draft:
+                # 补丁已应用但仍有违规或语法错误，属于逐步修正的进展，不计入空转；
+                # 针对正式脚本的编辑不影响草稿计数。
                 draft.edit_failures = draft.edit_failures + 1 if patch_not_applied else 0
                 if draft.edit_failures >= REWRITE_GATE_EDIT_FAILURES:
                     # 草稿补丁连续失败（多为补丁格式 edit_invalid）：继续推荐草稿
@@ -2711,14 +2717,21 @@ class ReportingCodeModeToolkit(Toolkit):
     ) -> dict[str, Any]:
         """按 CodingTools 精确匹配语义，统一校验多个局部修改后原子提交。"""
         del run_context
+        draft = self._rejected_draft
         try:
             edits, expectedSourceSha256 = parse_edit_patch(
                 patch, self.context.max_source_bytes,
             )
         except ReportingError as error:
+            # 补丁格式无效时无法解析出 SHA，按原文是否携带草稿 SHA 判断目标。
+            self._last_edit_targeted_draft = (
+                draft is not None and isinstance(patch, str) and draft.sha256 in patch
+            )
             return _failure(error.code, error.message, error.details)
-        draft = self._rejected_draft
-        if draft is not None and expectedSourceSha256 == draft.sha256:
+        self._last_edit_targeted_draft = (
+            draft is not None and expectedSourceSha256 == draft.sha256
+        )
+        if draft is not None and self._last_edit_targeted_draft:
             return await self._edit_rejected_draft(draft, edits)
         try:
             source_bytes = await self.workspace.read_limited_regular_file(
@@ -3023,6 +3036,16 @@ class ReportingCodeModeToolkit(Toolkit):
             normalized_paths.append(source_path)
         # 同一路径并发审查会重复调用视觉模型并重复计数。
         normalized_paths = list(dict.fromkeys(normalized_paths))
+        # Plotly 交互规格不是图片，交付状态也不要求审查；送入图片检查会得到
+        # report_chart_source_invalid，并把模型误导去修复本无问题的脚本。
+        skipped_paths = [item for item in normalized_paths if item.endswith(".plotly.json")]
+        normalized_paths = [item for item in normalized_paths if item not in skipped_paths]
+        if not normalized_paths:
+            return _failure(
+                "report_code_visual_path_not_image",
+                "Plotly 交互规格（.plotly.json）无需视觉审查；只审查 PNG/JPEG 图片输出。",
+                {"path": skipped_paths[0]},
+            )
 
         receipts: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
@@ -3065,13 +3088,20 @@ class ReportingCodeModeToolkit(Toolkit):
                     for item in failures[1:8]
                 ]
             return primary
+        skipped = {"skippedInteractivePaths": skipped_paths} if skipped_paths else {}
         if len(normalized_paths) == 1:
             return {
                 "ok": True,
                 "receipt": receipts[0],
                 "freshReviewCount": fresh_review_count,
+                **skipped,
             }
-        return {"ok": True, "receipts": receipts, "freshReviewCount": fresh_review_count}
+        return {
+            "ok": True,
+            "receipts": receipts,
+            "freshReviewCount": fresh_review_count,
+            **skipped,
+        }
 
     async def _review_one_image(
         self,
@@ -3285,6 +3315,12 @@ class ReportingCodeModeToolkit(Toolkit):
     async def _clear_declared_outputs(self) -> None:
         for path in self.context.declared_output_paths:
             await self.workspace.adelete_file(self.context.task_id, path)
+        # 源码禁止目录推导且只放行签发的完整文件路径，脚本无法自行创建产物父目录；
+        # 声明产物位于 chartOutputRoot 子目录时由宿主预先创建，避免 savefig 必然失败。
+        for parent in sorted(
+            {path.rsplit("/", 1)[0] for path in self.context.declared_output_paths if "/" in path}
+        ):
+            await self.workspace.aensure_directory(self.context.task_id, parent)
 
     async def _declared_output_identities(
         self, *, open_rewrite_gate: bool = False

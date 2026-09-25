@@ -192,7 +192,8 @@ async def test_parallel_section_failure_stops_following_batches() -> None:
         section_concurrency=1,
     )
 
-    with pytest.raises(RuntimeError, match="Agno 章节步骤执行失败"):
+    # 上抛章节的原始异常而不是 Agno 批次包装消息；失败批次后的章节不再启动。
+    with pytest.raises(RuntimeError, match="section failed"):
         await workflow._run_sections(RunContext(run_id="run-1", session_id="session-1"))
     assert started == ["section_001"]
 
@@ -412,3 +413,36 @@ def test_parallel_plan_uses_agno_parallel_container() -> None:
         build_reporting_draft_steps(workflow, RunContext(run_id="run-1", session_id="session-1")),
         Parallel,
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_section_failures_keep_original_reporting_error(mode: str) -> None:
+    from smart_reporting.reporting.models import ReportingError
+
+    async def failing_analysis(_instruction, _context):
+        raise ReportingError("report_semantic_contract_upgrade_required", "请重新分析")
+
+    workflow = ReportingAnalysisAndDraftWorkflow(
+        report_goal="目标",
+        sections=[
+            {"sectionCode": "section_001", "analysisIds": ["analysis_001"]},
+            {"sectionCode": "section_002", "analysisIds": ["analysis_002"]},
+        ],
+        run_analysis=failing_analysis,
+        submit_visualization=AsyncMock(return_value=_ok("ok")),
+        draft_section=AsyncMock(return_value=_ok("ok")),
+        execution_mode=mode,
+        section_concurrency=2,
+    )
+
+    # Agno Steps/Parallel 会把子步骤异常转成 success=False；稳定错误码必须原样上抛。
+    with pytest.raises(ReportingError) as caught:
+        await workflow._run_sections(RunContext(run_id="run-1", session_id="session-1"))
+    assert caught.value.code == "report_semantic_contract_upgrade_required"
+
+    # Agno 默认 on_error=skip 会返回 completed；章节 Step 必须失败关闭并原样上抛。
+    with pytest.raises(ReportingError) as caught_run:
+        await workflow.arun(input={"reportGoal": "目标"}, run_id="run-2", session_id="session-2")
+    assert caught_run.value.code == "report_semantic_contract_upgrade_required"
+    assert workflow.execution_error is caught_run.value

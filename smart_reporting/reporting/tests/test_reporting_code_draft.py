@@ -106,8 +106,13 @@ async def test_draft_patch_with_syntax_error_stays_isolated(binding, runtime):  
 @pytest.mark.anyio
 async def test_repeated_draft_patch_failures_discard_draft(binding, runtime):  # noqa: F811
     toolkit = _toolkit(binding, runtime)
-    await _rejected(toolkit)
-    invalid = "*** Begin Edit\n*** SHA256: bad\n*** End Edit\ntrailing"
+    rejected = await _rejected(toolkit)
+    # 第五跑形态：补丁携带草稿 SHA，但块内混入标记（marker_in_block），无法应用。
+    invalid = (
+        f"*** Begin Edit\n*** SHA256: {rejected['details']['draftSha256']}\n"
+        "<<<<<<< SEARCH\nimport json\n=======\nimport os\n"
+        "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n*** End Edit"
+    )
 
     first = await toolkit.edit_script(invalid)
     await _post_hook(toolkit, "edit_script", first)
@@ -256,3 +261,116 @@ def test_plotly_io_writers_take_path_from_second_argument():
 
     assert _declared_output_write_paths(tree, declared) == declared
     assert _referenced_literal_paths(tree) == declared
+
+
+@pytest.mark.anyio
+async def test_formal_script_edit_failures_do_not_discard_draft(binding, runtime):  # noqa: F811
+    toolkit = _toolkit(binding, runtime)
+    await _rejected(toolkit)
+    # 以不存在的正式脚本 SHA 打补丁：失败与草稿无关，不能计入草稿空转。
+    unrelated = multi_edit_patch("x = 1\n", [("x = 1", "x = 2")])
+
+    for _ in range(3):
+        result = await toolkit.edit_script(unrelated)
+        await _post_hook(toolkit, "edit_script", result)
+
+    assert result["ok"] is False
+    assert "draftDiscarded" not in result
+    assert toolkit.rejected_draft_sha256 is not None
+
+
+def test_plotly_offline_plot_filename_is_recognized_as_write():
+    import ast
+
+    from smart_reporting.reporting.code_agent.toolkit import (
+        _declared_output_write_paths,
+        _referenced_literal_paths,
+    )
+
+    tree = ast.parse('import plotly\nplotly.offline.plot(fig, filename="charts/b.html")\n')
+
+    assert _declared_output_write_paths(tree, frozenset({"charts/b.html"})) == {"charts/b.html"}
+    assert _referenced_literal_paths(tree) == {"charts/b.html"}
+
+
+def test_deterministic_setup_failures_are_not_final_attempt_degradable():
+    from smart_reporting.reporting.code_agent.failure_policy import final_attempt_degradable
+    from smart_reporting.reporting.models import ReportingError
+
+    for code in ("report_coding_task_workspace_mismatch", "report_capability_state_invalid"):
+        assert final_attempt_degradable(ReportingError(code, "m")) is False
+    assert final_attempt_degradable(
+        ReportingError("report_code_custom_tool_protocol_error", "m")
+    ) is True
+
+
+@pytest.mark.anyio
+async def test_run_script_precreates_declared_output_subdirectories(workspace):  # noqa: F811
+    from smart_reporting.reporting.code_agent.context import (
+        ReportingCodingTaskBinding,
+        ReportingCodingTaskContext,
+    )
+    from smart_reporting.reporting.code_mode import ScriptProcessResult
+
+    output = "analysis/charts/sub/out.json"
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="analysis",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="analysis/a.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("analysis/a.py", output),
+        declared_output_paths=(output,),
+        max_source_bytes=128 * 1024,
+    )
+
+    class ScriptRuntime:
+        async def execute_script_process(self, _session_id, task_workspace, _path, **_kwargs):
+            # 模拟脚本进程：只按签发完整路径写文件，不自行创建父目录。
+            task_workspace.paths.to_host_path(output).write_text("{}", encoding="utf-8")
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
+
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(context, workspace),
+        ScriptRuntime(),
+        ReportingLspProcessManager(),
+    )
+    written = await toolkit.write_script(f'open("{output}", "w").write("{{}}")\n')
+    assert written["ok"] is True
+
+    result = await toolkit.run_script()
+
+    assert result["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_view_image_skips_plotly_interactive_spec(workspace):  # noqa: F811
+    from smart_reporting.reporting.code_agent.context import (
+        ReportingCodingTaskBinding,
+        ReportingCodingTaskContext,
+    )
+
+    context = ReportingCodingTaskContext(
+        task_id="task-1",
+        task_kind="visualization",
+        code_mode_session_id="code-task-1",
+        workspace_key=workspace.identity.workspace_key,
+        workspace_root=workspace.identity.root,
+        script_path="charts/chart.py",
+        authorized_read_paths=(),
+        authorized_write_paths=("charts/chart.py", "charts/a.png", "charts/a.plotly.json"),
+        declared_output_paths=("charts/a.png", "charts/a.plotly.json"),
+        max_source_bytes=128 * 1024,
+    )
+    toolkit = ReportingCodeModeToolkit(
+        ReportingCodingTaskBinding(context, workspace), object(), ReportingLspProcessManager()
+    )
+
+    # 交互规格不得送入图片检查：否则返回 report_chart_source_invalid 并诱导修复脚本。
+    result = await toolkit.view_image(paths=["charts/a.plotly.json"])
+
+    assert result["code"] == "report_code_visual_path_not_image"

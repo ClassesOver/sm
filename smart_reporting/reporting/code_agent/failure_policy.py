@@ -49,6 +49,9 @@ POLICIES = MappingProxyType({
     "report_visualization_code_agent_missing": FailurePolicy(infrastructure=True),
     "report_visualization_executor_missing": FailurePolicy(infrastructure=True),
     "report_code_model_protocol_missing": FailurePolicy(infrastructure=True),
+    # 工作区与任务上下文不匹配、能力状态损坏：确定性的部署/状态缺陷，重跑不可修复。
+    "report_coding_task_workspace_mismatch": FailurePolicy(infrastructure=True),
+    "report_capability_state_invalid": FailurePolicy(infrastructure=True),
     "report_code_generation_no_submission": _DEGRADE,
     "report_code_model_request_limit": _DEGRADE,
     "report_code_no_progress": _DEGRADE,
@@ -67,16 +70,25 @@ POLICIES = MappingProxyType({
 })
 
 
+def fresh_attempt_futile(error: BaseException) -> bool:
+    """基础设施/部署配置类失败：重开 fresh attempt 同样无法修复，必须立即停止重试。
+
+    分析项、可视化章节与章节成稿的 fresh attempt 循环统一以此为准。
+    """
+
+    return (
+        isinstance(error, ReportingError)
+        and POLICIES.get(error.code, FailurePolicy()).infrastructure
+    )
+
+
 def final_attempt_degradable(error: BaseException) -> bool:
     """最后一次 fresh attempt 失败时能否按零图降级。
 
     只接受业务/模型侧的 ReportingError；普通异常多为代码缺陷，必须上抛暴露。
     """
 
-    return (
-        isinstance(error, ReportingError)
-        and not POLICIES.get(error.code, FailurePolicy()).infrastructure
-    )
+    return isinstance(error, ReportingError) and not fresh_attempt_futile(error)
 
 
 def recovery_for(error: Exception, task: TaskKind) -> Recovery:

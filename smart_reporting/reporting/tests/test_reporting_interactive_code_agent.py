@@ -2764,13 +2764,27 @@ def _visualization_model_with_budget(
     return model
 
 
+async def _reviewed_toolkit_with_draft(
+    workspace: HostReportingWorkspace, runtime: ToolkitRuntime
+) -> ReportingCodeModeToolkit:
+    """图片已审查、交付状态额外放行 edit_script：唯一可成功的动作就是提交。"""
+
+    from smart_reporting.reporting.code_agent.toolkit import _RejectedDraft
+
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime)
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
+    toolkit._rejected_draft = _RejectedDraft("d" * 64, "x = 1\n", None)
+    await toolkit.refresh_delivery_state()
+    assert toolkit.delivery_state()["nextTools"] == ["submit_script", "edit_script"]
+    return toolkit
+
+
 @pytest.mark.anyio
 async def test_visual_budget_gate_forces_submit_when_outputs_present_and_budget_low(
     workspace: HostReportingWorkspace,
     runtime: ToolkitRuntime,
 ) -> None:
-    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
-    await toolkit.refresh_delivery_state()
+    toolkit = await _reviewed_toolkit_with_draft(workspace, runtime)
     tool_limit = 10
     model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 1)
 
@@ -2788,6 +2802,26 @@ async def test_visual_budget_gate_forces_submit_when_outputs_present_and_budget_
     details = warnings[0]["details"]
     assert details["remainingToolCalls"] == 1
     assert isinstance(details["viewImageRounds"], int)
+
+
+@pytest.mark.anyio
+async def test_visual_budget_gate_keeps_review_chain_while_images_unreviewed(
+    workspace: HostReportingWorkspace,
+    runtime: ToolkitRuntime,
+) -> None:
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
+    await toolkit.refresh_delivery_state()
+    tool_limit = 10
+    model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 2)
+
+    params = model.get_request_params(
+        messages=[Message(role="user", content="go")],
+        tools=toolkit.tool_functions,
+    )
+
+    # 未审查图片时强制 submit_script 必然失败；剩余预算仍够审查后提交。
+    assert [tool["name"] for tool in params["tools"]] == ["submit_script", "view_image"]
+    assert not model.code_run_request_metrics()[-1].get("warnings")
 
 
 @pytest.mark.anyio
@@ -2852,8 +2886,7 @@ async def test_visual_budget_gate_records_event_in_request_metrics(
     workspace: HostReportingWorkspace,
     runtime: ToolkitRuntime,
 ) -> None:
-    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, runtime)
-    await toolkit.refresh_delivery_state()
+    toolkit = await _reviewed_toolkit_with_draft(workspace, runtime)
     tool_limit = 10
     model = _visualization_model_with_budget(toolkit, tool_limit, tool_limit - 2)
 

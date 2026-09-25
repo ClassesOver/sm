@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -10,7 +11,7 @@ from agno.run import RunContext
 from loguru import logger
 
 from ....model_routing import TaskComplexity
-from ...code_agent.failure_policy import recovery_for
+from ...code_agent.failure_policy import final_attempt_degradable, recovery_for
 from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_reporting_thinking
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
@@ -511,17 +512,65 @@ class VisualizationSectionWorkflow:
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
         benchmark_projection: BenchmarkProjection | None = None,
+        final_attempt: bool = False,
     ) -> None:
         self.generate_plan = generate_plan
         self.run_code = run_code
         self.submit = submit
         self.degrade = degrade
+        # 报告级最后一次 fresh attempt：工作流内不可降级的业务/模型错误也按零图收口，
+        # 避免单章图表失败升级为整份报告失败；基础设施类错误与代码缺陷仍上抛。
+        self.final_attempt = final_attempt
+        self._degrade_attempted = False
         self.record_successful_repair = record_successful_repair
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
         self.benchmark_projection = benchmark_projection
 
+    async def _degrade(
+        self, error: Exception, run_context: RunContext
+    ) -> Mapping[str, Any]:
+        assert self.degrade is not None
+        self._degrade_attempted = True
+        return await self.degrade(error, run_context)
+
     async def run(
+        self, payload: Mapping[str, Any], run_context: RunContext
+    ) -> VisualizationWorkflowResult:
+        try:
+            return await self._run_attempt(payload, run_context)
+        except Exception as error:
+            # 工作流内部已走过 degrade（其提交或落账本身失败）时不重复降级，
+            # 避免同一章节记录两条降级告警、根因被二次失败码掩盖。
+            if (
+                not self.final_attempt
+                or self.degrade is None
+                or self._degrade_attempted
+                or not final_attempt_degradable(error)
+            ):
+                raise
+            # 降级不能吞掉根因：协议错误的声明/实际类型等诊断完整入日志，
+            # 供区分单章偶发与 provider 级全局故障。
+            error_details = getattr(error, "details", None)
+            logger.bind(
+                failure_code=getattr(error, "code", type(error).__name__),
+                failure_message=str(getattr(error, "message", error))[:500],
+                failure_details=(
+                    json.dumps(error_details, ensure_ascii=False, default=str)[:2000]
+                    if isinstance(error_details, Mapping)
+                    else None
+                ),
+            ).error(
+                "report_visualization_section_final_attempt_degraded failure_code={}",
+                getattr(error, "code", type(error).__name__),
+            )
+            receipt = await self._degrade(error, run_context)
+            _raise_rejected_submission(receipt)
+            return VisualizationWorkflowResult(
+                "degraded", VisualizationPlanDraft(charts=(), warnings=()), None, (), True
+            )
+
+    async def _run_attempt(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         plan = await self.generate_plan(payload, run_context)
@@ -600,7 +649,7 @@ class VisualizationSectionWorkflow:
                             execution_repairs=MAX_VISUALIZATION_EXECUTION_REPAIRS,
                         )
                         if self.degrade is not None:
-                            receipt = await self.degrade(exhausted_error, run_context)
+                            receipt = await self._degrade(exhausted_error, run_context)
                             _raise_rejected_submission(receipt)
                             return VisualizationWorkflowResult(
                                 "degraded", plan, None, (), True
@@ -663,7 +712,7 @@ class VisualizationSectionWorkflow:
                         error, execution_repairs=execution_repairs
                     )
                     if self.degrade is not None and _is_degradable(error):
-                        receipt = await self.degrade(exhausted_error, run_context)
+                        receipt = await self._degrade(exhausted_error, run_context)
                         _raise_rejected_submission(receipt)
                         return VisualizationWorkflowResult(
                             "degraded", plan, script_file, (), recovery_used

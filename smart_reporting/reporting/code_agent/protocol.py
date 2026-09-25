@@ -937,6 +937,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return False
         if state.get("visualFailures"):
             return False
+        # 仍有未审查图片时 submit_script 必然以 visual_review_required 失败；
+        # 强制提交只会烧掉最后的预算，应保留 view_image → submit_script 交付链。
+        if state.get("pendingReviewCount"):
+            return False
         failure = state.get("lastFailure")
         if isinstance(failure, Mapping) and failure.get("resolved") is False:
             return False
@@ -1348,6 +1352,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             for item in output
             if _field(item, "type") in {"custom_tool_call", "function_call"}
         ]
+        # 父类按 provider 原始 wire 类型解析；还原为 custom 的 function_call 仍占用
+        # 父类 function 调用序列中的一个位置，重组时必须按原始类型对齐消费。
+        original_kinds = [_field(item, "type") for item in actionable]
         declarations = getattr(self, "_code_declared_tools", None)
         budget = getattr(self, "_code_budget", None)
         task_tools = getattr(self, "_code_tool_names", None)
@@ -1462,12 +1469,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             return parsed
         function_calls = iter(parsed.tool_calls or ())
         parsed.content = None
-        parsed.tool_calls = [
-            custom_calls[_field(item, "id")]
-            if _field(item, "type") == "custom_tool_call"
-            else next(function_calls)
-            for item in actionable
-        ]
+        tool_calls: list[Any] = []
+        for original_kind, item in zip(original_kinds, actionable, strict=True):
+            parent_call = next(function_calls) if original_kind == "function_call" else None
+            tool_calls.append(
+                custom_calls[_field(item, "id")]
+                if _field(item, "type") == "custom_tool_call"
+                else parent_call
+            )
+        parsed.tool_calls = tool_calls
         parsed.extra = parsed.extra or {}
         parsed.extra["tool_call_ids"] = [call["call_id"] for call in parsed.tool_calls]
         return parsed

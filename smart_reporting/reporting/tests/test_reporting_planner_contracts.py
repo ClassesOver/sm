@@ -1800,6 +1800,80 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     assert "按 analysisId 完成 CSV 复算并保存可复现证据" not in analysis.completion_conditions
 
 
+async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> AsyncMock:
+    from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
+
+    for name, value in {
+        "_reporting_detailed_analysis_plan": lambda *_a, **_k: {"analyses": [{"analysisId": "analysis_001"}]},
+        "_analysis_item_dataset_inputs": lambda *_a, **_k: [],
+        "_model_facing_deterministic_facts": lambda *_a, **_k: {},
+        "_checkpoint_retry_error": lambda *_a, **_k: None,
+        "_profile_coverage_instruction_projection": lambda *_a, **_k: None,
+        "_source_warnings_from_state": lambda *_a, **_k: (),
+        "_analysis_item_thinking_policy": lambda *_a, **_k: ("off", 0, "simple"),
+        "_analysis_item_complexity": lambda *_a, **_k: (0, "simple"),
+        "_analysis_fact_query_limit_for_plan": lambda *_a, **_k: 1,
+        "build_report_phase_acceptance_contract": lambda **_k: {},
+        "_checkpoint_retry_usage": lambda *_a, **_k: SimpleNamespace(model_dump=lambda **_k: {}),
+    }.items():
+        monkeypatch.setattr(reporting_analysis, name, value)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _context: {"externalRunId": "run-1", "threadId": "t", "userId": "u"}
+    runtime._state = lambda _context: {}
+    runtime._envelope = lambda _context: SimpleNamespace(report_goal="目标")
+    runtime._analysis_thinking_effort = lambda: "off"
+    runtime._read_identity_model = AsyncMock(return_value=SimpleNamespace(analysis_id="analysis_001"))
+    runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
+    runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
+    runtime._persist_reporting_checkpoint = AsyncMock()
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
+    runtime.task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(side_effect=error),
+    )
+    identity = SimpleNamespace(model_dump=lambda **_kwargs: {})
+    with pytest.raises(ReportingError) as caught:
+        await runtime._run_analysis_item_task(
+            RunContext(run_id="run-1", session_id="s"),
+            checkpoint=SimpleNamespace(trace=(), profile_coverage=None),
+            revision=1,
+            sandbox_id="sandbox",
+            validation_context_file=identity,
+            detailed_plan=SimpleNamespace(
+                analyses=(SimpleNamespace(analysis_id="analysis_001", dataset_ids=("d1",)),)
+            ),
+            dataset_handles=(SimpleNamespace(dataset_id="d1"),),
+            lineage=(),
+            citation_bindings=(),
+            analysis_context_file=identity,
+            fact_files={"analysis_001": identity},
+            analysis_id="analysis_001",
+            section_goal={},
+            retry_reason=None,
+            feedback=None,
+            rework_request=None,
+        )
+    assert caught.value is error
+    return runtime.task_runner.start
+
+
+@pytest.mark.anyio
+async def test_analysis_item_stops_fresh_attempts_on_infrastructure_failure(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime.base import MAX_REPORT_SECTION_PHASE_ATTEMPTS
+
+    # 与可视化章节同一口径：部署配置缺失重跑不可修复，只签发一个 attempt。
+    infra = await _run_failing_analysis_item(
+        monkeypatch, ReportingError("report_code_mode_runtime_missing", "未配置。")
+    )
+    assert infra.await_count == 1
+    # 业务/模型侧失败仍按既有上限 fresh retry。
+    ordinary = await _run_failing_analysis_item(
+        monkeypatch, ReportingError("report_analysis_script_failed", "脚本失败。")
+    )
+    assert ordinary.await_count == MAX_REPORT_SECTION_PHASE_ATTEMPTS
+
+
 def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task))
     tree = ast.parse(source)
@@ -2890,7 +2964,10 @@ def _final_attempt_runtime(monkeypatch, failing_workflow):
     })
     monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
     monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [toolkit])
-    monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", failing_workflow)
+    # 只替换单次 attempt 主体，保留 run() 中的最后一次降级收口。
+    monkeypatch.setattr(
+        reporting_analysis.VisualizationSectionWorkflow, "_run_attempt", failing_workflow
+    )
 
     async def run_task(scope, *, executor, **_kwargs):
         return await executor(SimpleNamespace(
@@ -2969,7 +3046,7 @@ async def test_visualization_section_final_attempt_does_not_mask_config_or_code_
 async def test_visualization_section_final_attempt_does_not_degrade_twice(monkeypatch) -> None:
     async def failing_workflow(workflow, _payload, run_context):
         # 工作流内部已走过 degrade，但其提交随后失败。
-        await workflow.degrade(
+        await workflow._degrade(
             ReportingError("report_code_no_progress", "无进展"), run_context
         )
         raise ReportingError("report_visualization_submit_rejected", "零图提交被拒。")
@@ -3399,6 +3476,37 @@ def test_analysis_correction_restores_unapproved_changes() -> None:
     assert projected["analyses"][0]["description"] == "分析收入趋势"
     assert projected["requirements"][0]["dimensionColumns"] == ["data_date"]
     assert projected["requirements"][0]["grainColumns"] == ["data_date"]
+
+
+def test_analysis_correction_restore_follows_identity_after_required_deletion() -> None:
+    previous = {
+        "requirements": [
+            {"requirementId": key, "note": f"{key}-orig"} for key in ("A", "B", "C", "D")
+        ],
+        "analyses": [],
+    }
+    # 模型按要求删除 B，同时越权改写 C；差异路径使用 previous 下标。
+    corrected = {
+        "requirements": [
+            {"requirementId": "A", "note": "A-orig"},
+            {"requirementId": "C", "note": "越权改写"},
+            {"requirementId": "D", "note": "D-orig"},
+        ],
+        "analyses": [],
+    }
+    unexpected = reporting_runtime._unexpected_correction_paths(
+        previous, corrected, (), ("requirements[1]",)
+    )
+
+    projected = reporting_runtime._restore_unapproved_correction_changes(
+        previous, corrected, tuple(unexpected)
+    )
+
+    assert [(item["requirementId"], item["note"]) for item in projected["requirements"]] == [
+        ("A", "A-orig"),
+        ("C", "C-orig"),
+        ("D", "D-orig"),
+    ]
 
 
 def test_analysis_grain_correction_allows_related_join_columns() -> None:

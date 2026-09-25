@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from agno.run import RunContext
 from agno.workflow import Parallel, Step, Steps, Workflow
-from agno.workflow.types import StepInput, StepOutput
+from agno.workflow.types import HumanReview, OnError, StepInput, StepOutput
 from loguru import logger
 
 ReportingExecutionMode = Literal["sequential", "parallel"]
@@ -66,6 +66,9 @@ class ReportingDraftWorkflow(Workflow):
         self.execution_mode = execution_mode
         self.analysis_limiter = analysis_limiter
         self._analysis_outputs: dict[str, StepOutput] | None = None
+        # Agno Steps/Parallel 会把子步骤异常转成 success=False；保留原始异常，
+        # 让稳定错误码（如 report_semantic_contract_upgrade_required）继续上抛。
+        self._analysis_errors: dict[str, Exception] | None = None
         super().__init__(
             id=f"coding-draft-{self.section_goal.get('sectionCode', 'section')}",
             name="章节分析、可视化与成稿",
@@ -89,11 +92,16 @@ class ReportingDraftWorkflow(Workflow):
         async def invoke() -> StepOutput:
             return await self.run_analysis(self._instruction(analysis_id=analysis_id), context)
 
-        if self.analysis_limiter is None:
-            output = await invoke()
-        else:
-            async with self.analysis_limiter:
+        try:
+            if self.analysis_limiter is None:
                 output = await invoke()
+            else:
+                async with self.analysis_limiter:
+                    output = await invoke()
+        except Exception as error:
+            if self._analysis_errors is not None:
+                self._analysis_errors.setdefault(analysis_id, error)
+            raise
         if self._analysis_outputs is not None:
             self._analysis_outputs[analysis_id] = output
         return output
@@ -125,6 +133,7 @@ class ReportingDraftWorkflow(Workflow):
             ),
         )
         self._analysis_outputs = {}
+        self._analysis_errors = {}
         try:
             analysis_plan = build_reporting_draft_steps(self, run_context)
             await analysis_plan.aexecute(
@@ -137,8 +146,13 @@ class ReportingDraftWorkflow(Workflow):
             analysis_outputs = [
                 self._analysis_outputs.get(analysis_id) for analysis_id in self.analysis_ids
             ]
+            analysis_errors = dict(self._analysis_errors)
         finally:
             self._analysis_outputs = None
+            self._analysis_errors = None
+        for analysis_id in self.analysis_ids:
+            if analysis_id in analysis_errors:
+                raise analysis_errors[analysis_id]
         if any(output is None for output in analysis_outputs):
             raise RuntimeError("章节分析项未全部执行")
         for analysis_id, output in zip(self.analysis_ids, analysis_outputs, strict=True):
@@ -255,6 +269,9 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
                 )
             )
         self.sections = tuple(built_sections)
+        # Agno Workflow 按 Step 错误策略可能把章节异常记为“跳过”并返回 completed；
+        # 调用方据此重新抛出原始异常，避免根因被替换成输出无效。
+        self.execution_error: Exception | None = None
         super().__init__(
             id="coding-analysis-and-draft",
             name="Reporting 分析与成稿",
@@ -266,6 +283,9 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
                     # StepExecutor 类型尚未描述该运行时注入，故仅在此处豁免。
                     executor=self._execute_sections,  # type: ignore[arg-type]
                     max_retries=0,
+                    # Agno 默认 on_error=skip 会把章节失败记为跳过并返回 completed；
+                    # 与顶层报告工作流一致显式失败关闭。
+                    human_review=HumanReview(on_error=OnError.fail),
                 )
             ],
             add_workflow_history_to_steps=False,
@@ -280,11 +300,16 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
             batch: Sequence[ReportingDraftWorkflow], *, parallel: bool
         ) -> list[ReportingDraftWorkflowResult]:
             results: list[ReportingDraftWorkflowResult] = []
+            errors: dict[str, Exception] = {}
 
             async def execute_section(
                 _input: StepInput, section: ReportingDraftWorkflow, **_kwargs: Any
             ) -> StepOutput:
-                result = await section.execute_section(run_context)
+                try:
+                    result = await section.execute_section(run_context)
+                except Exception as error:
+                    errors.setdefault(section.id, error)
+                    raise
                 results.append(result)
                 return StepOutput(content=result)
 
@@ -321,6 +346,10 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
             )
             # Agno 会把子步骤异常转换为 success=False；批次边界必须显式阻断，
             # 否则失败章节可能被误当作完成并继续下一批。
+            for section in batch:
+                if section.id in errors:
+                    # 按提纲顺序上抛首个章节的原始异常，保留稳定错误码与诊断。
+                    raise errors[section.id]
             if container_output.success is False or any(
                 output.success is False
                 for output in (container_output.steps or ())
@@ -348,7 +377,11 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
         )
 
     async def _execute_sections(self, _input: Any, run_context: RunContext) -> StepOutput:
-        results = await self._run_sections(run_context)
+        try:
+            results = await self._run_sections(run_context)
+        except Exception as error:
+            self.execution_error = error
+            raise
         return StepOutput(
             content={
                 "sections": [

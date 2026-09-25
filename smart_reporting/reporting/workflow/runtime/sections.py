@@ -12,6 +12,8 @@ from ....task_execution import (
     TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
+from ...code_agent.failure_policy import fresh_attempt_futile
+from ...contract import interactive_spec_path
 from ...delivery.draft_v1 import ReportDraftBlock
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
@@ -93,7 +95,7 @@ from .section_workflow import SectionWorkflow
 
 
 def _archived_interactive_path(image_path: str) -> str:
-    return PurePosixPath(image_path).with_suffix(".plotly.json").as_posix()
+    return interactive_spec_path(image_path)
 
 
 def _analysis_chart_from_registration(
@@ -1923,7 +1925,8 @@ class RuntimeSectionsMixin:
                 if code in {
                     "report_section_completion_conflict",
                     "report_section_start_conflict",
-                }:
+                } or fresh_attempt_futile(error):
+                    # 与分析项、可视化章节同一口径：基础设施/部署配置类失败不再开新 attempt。
                     raise error
         assert last_error is not None
         raise last_error
