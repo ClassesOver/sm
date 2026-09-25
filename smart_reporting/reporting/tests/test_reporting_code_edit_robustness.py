@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from smart_reporting.reporting.code_agent.edit_patch import apply_edit_blocks_with_modes
+from smart_reporting.reporting.code_agent.edit_patch import apply_edit_blocks
 from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessManager
 from smart_reporting.reporting.code_agent.toolkit import ReportingCodeModeToolkit
 from smart_reporting.reporting.models import ReportingError
@@ -81,7 +81,7 @@ async def test_edit_matches_despite_trailing_whitespace_and_reports_mode(
 def test_indentation_offset_is_reapplied_to_replacement():
     source = "def main():\n    if ok:\n        run()\n    return 1\n"
 
-    updated, fuzzy = apply_edit_blocks_with_modes(
+    updated, fuzzy = apply_edit_blocks(
         source, [("if ok:\n    run()", "if ok:\n    run()\n    log()")]
     )
 
@@ -93,7 +93,7 @@ def test_fuzzy_match_still_requires_unique_location():
     source = "a = 1   \nb = 2\na = 1 \nb = 2\n"
 
     with pytest.raises(ReportingError) as caught:
-        apply_edit_blocks_with_modes(source, [("a = 1\nb = 2", "a = 3\nb = 2")])
+        apply_edit_blocks(source, [("a = 1\nb = 2", "a = 3\nb = 2")])
 
     assert caught.value.code == "report_code_script_edit_ambiguous"
 
@@ -101,7 +101,7 @@ def test_fuzzy_match_still_requires_unique_location():
 def test_exact_match_takes_precedence_over_fuzzy():
     source = "x = 1\ny = 2\n"
 
-    updated, fuzzy = apply_edit_blocks_with_modes(source, [("x = 1", "x = 2")])
+    updated, fuzzy = apply_edit_blocks(source, [("x = 1", "x = 2")])
 
     assert updated == "x = 2\ny = 2\n"
     assert fuzzy == []
@@ -110,7 +110,7 @@ def test_exact_match_takes_precedence_over_fuzzy():
 def test_fuzzy_match_supports_search_ending_with_newline():
     source = "def f():\n    x = 1   \n    y = 2\n"
 
-    updated, fuzzy = apply_edit_blocks_with_modes(source, [("    x = 1\n", "    x = 3\n")])
+    updated, fuzzy = apply_edit_blocks(source, [("    x = 1\n", "    x = 3\n")])
 
     assert updated == "def f():\n    x = 3\n    y = 2\n"
     assert fuzzy == [{"blockIndex": 1, "matchMode": "trailing_whitespace"}]
@@ -120,7 +120,7 @@ def test_indentation_match_with_multiline_string_reports_hint():
     source = "def f():\n    if a:\n        b = 1\n    return b\n"
 
     with pytest.raises(ReportingError) as caught:
-        apply_edit_blocks_with_modes(
+        apply_edit_blocks(
             source, [("if a:\n    b = 1", 'if a:\n    b = """\nx\n"""')]
         )
 

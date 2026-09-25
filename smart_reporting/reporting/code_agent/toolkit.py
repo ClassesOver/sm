@@ -11,6 +11,8 @@ import re
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
+from pathlib import PurePosixPath
 from time import perf_counter
 from typing import Any, NoReturn
 from uuid import uuid4
@@ -39,7 +41,7 @@ from .delivery import (
     _visual_review_model_receipt,
     build_delivery_state,
 )
-from .edit_patch import apply_edit_blocks_with_modes, parse_edit_patch
+from .edit_patch import apply_edit_blocks, parse_edit_patch
 from .formatting import format_python_source
 from .lsp import ReportingWorkspaceLsp
 from .lsp_process import ReportingLspProcessManager
@@ -311,23 +313,30 @@ def _literal_string(
     return None
 
 
-def _positional_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
-    """plotly.io.write_image/write_json(fig, path) 的路径是第二个位置参数。"""
+# 路径不在首个位置参数的调用：plotly.io 模块级写出函数签名为 (fig, path)。
+_PATH_ARGUMENT_POSITION = {
+    "plotly.io.write_image": 1,
+    "plotly.io.write_json": 1,
+    "plotly.io.write_html": 1,
+}
 
-    if qualified_name.startswith("plotly.io."):
-        return list(call.args[1:2])
-    return list(call.args[:1])
+
+def _call_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
+    """调用中承载路径的实参：按签名取位置参数，并加上路径关键字参数。"""
+
+    position = _PATH_ARGUMENT_POSITION.get(qualified_name, 0)
+    arguments = list(call.args[position:position + 1])
+    arguments.extend(
+        keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
+    )
+    return arguments
 
 
 def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
     method_name = qualified_name.rsplit(".", 1)[-1]
     if qualified_name not in _PATH_ARGUMENT_CALLS and method_name not in _PATH_ARGUMENT_METHODS:
         return ()
-    arguments = _positional_path_arguments(call, qualified_name)
-    arguments.extend(
-        keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
-    )
-    return tuple(arguments)
+    return tuple(_call_path_arguments(call, qualified_name))
 
 
 def _referenced_literal_paths(tree: ast.AST) -> set[str]:
@@ -428,12 +437,7 @@ def _declared_output_write_paths(tree: ast.AST, declared_paths: frozenset[str]) 
                 if resolved in declared_paths:
                     found.add(resolved)
                 # 继续尝试位置参数（plotly 的 fig.write_image / pio.write_image 风格）。
-            arguments = _positional_path_arguments(node, qualified_name)
-            arguments.extend(
-                keyword.value
-                for keyword in node.keywords
-                if keyword.arg in _PATH_ARGUMENT_KEYWORDS
-            )
+            arguments = _call_path_arguments(node, qualified_name)
             path_node = arguments[0] if arguments else None
             if path_node is None:
                 continue
@@ -488,13 +492,10 @@ def _parses(source: str) -> bool:
 
 def _syntax_edit_failure(
     error: SyntaxError,
-    updated: str,
     sha256: str,
     *,
     draft: bool = False,
 ) -> dict[str, Any]:
-    lines = updated.splitlines()
-    line = error.lineno or 0
     message = (
         "补丁后的草稿存在语法错误，仍保留为隔离草稿、未写入正式脚本；"
         "请以新的 draftSha256 继续用 edit_script 修正。"
@@ -506,45 +507,108 @@ def _syntax_edit_failure(
         "report_code_source_invalid",
         message,
         {
-            "reason": error.msg,
             "errorType": "SyntaxError",
-            "line": line,
-            "column": error.offset or 0,
-            **({"sourceLine": lines[line - 1][:300]} if 0 < line <= len(lines) else {}),
+            **_syntax_error_details(error),
             ("draftSha256" if draft else "sourceSha256"): sha256,
             "nextTools": ["edit_script"],
         },
     )
 
 
-def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -> str:
-    """零产物回执附带缺失产物的完整写出示例，路径逐字使用签发值。"""
+@dataclass(slots=True)
+class _RejectedDraft:
+    """被拒整稿的隔离草稿：只在内存中，run_script 永远不执行。"""
 
-    if path.endswith(".plotly.json"):
-        image = next(
-            (
-                item
-                for item in declared_paths
-                if not item.endswith(".plotly.json")
-                and item.rsplit(".", 1)[0] == path.removesuffix(".plotly.json")
-            ),
-            None,
-        )
-        lines = [f"fig.write_json({path!r})"]
-        if image is not None:
-            lines.insert(0, f"fig.write_image({image!r})")
-        return "\n".join(lines)
-    interactive = next(
-        (
-            item
-            for item in declared_paths
-            if item.endswith(".plotly.json")
-            and item.removesuffix(".plotly.json") == path.rsplit(".", 1)[0]
-        ),
-        None,
+    sha256: str
+    source: str
+    # 草稿链开始时正式脚本的 SHA（None 表示尚不存在）；正式脚本变化后草稿作废。
+    base_sha256: str | None
+    # 草稿存在期间补丁未能应用的连续次数；达到阈值即作废改走整稿重写。
+    edit_failures: int = 0
+
+
+def _mark_draft_discarded(result: dict[str, Any]) -> None:
+    """草稿作废后改写回执：不再指向已作废草稿或推荐草稿补丁。"""
+
+    result["draftDiscarded"] = True
+    details = result.get("details")
+    if isinstance(details, dict):
+        details.pop("draftSha256", None)
+        details["nextTools"] = ["write_script"]
+    result["message"] = (
+        f"{result.get('message', '')}草稿补丁已连续失败，草稿已作废；"
+        "请用 write_script 重新提交完整脚本，并修正全部 violations。"
     )
+
+
+_MISSING_OUTPUT_HINTS = (
+    (
+        "notReferencedPaths",
+        "notReferencedPaths 在脚本中没有出现签发路径字面量：为这些图补上完整绘制与写出，"
+        "路径逐字使用签发值（见 writeExample）。",
+    ),
+    (
+        "writeNotExecutedPaths",
+        "writeNotExecutedPaths 的写出调用存在但运行时未执行到：检查它是否位于未被调用的"
+        "函数、if __name__ 之外的死分支、提前 return/continue，或被 try/except 吞掉的异常之后。",
+    ),
+    (
+        "unresolvedWritePaths",
+        "unresolvedWritePaths 只以变量或拼接方式出现，宿主无法确认写出：直接在 savefig/"
+        "write_image/write_json 调用中使用签发路径字面量。",
+    ),
+)
+
+
+def _missing_output_diagnosis(
+    source: str, missing_paths: list[str], declared_paths: tuple[str, ...]
+) -> dict[str, Any]:
+    """静态区分"脚本未引用签发路径""写出调用存在但运行时未执行到"与"路径非字面量"。"""
+
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return {}
+    declared = frozenset(declared_paths)
+    referenced = _declared_output_literals(tree, declared)
+    written = _declared_output_write_paths(tree, declared)
+    groups = {
+        "notReferencedPaths": [path for path in missing_paths if path not in referenced],
+        "writeNotExecutedPaths": [path for path in missing_paths if path in written],
+        "unresolvedWritePaths": [
+            path for path in missing_paths if path in referenced and path not in written
+        ],
+    }
+    result: dict[str, Any] = {}
+    hints: list[str] = []
+    for key, hint in _MISSING_OUTPUT_HINTS:
+        if groups[key]:
+            result[key] = groups[key][:20]
+            hints.append(hint)
+    if hints:
+        result["outputHint"] = " ".join(hints)
+    return result
+
+
+def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -> str:
+    """零产物回执附带缺失产物的完整写出示例，路径逐字使用签发值。
+
+    图片与交互产物的配对沿用交付校验规则：image.with_suffix(".plotly.json")。
+    """
+
+    def interactive_for(image: str) -> str:
+        return PurePosixPath(image).with_suffix(".plotly.json").as_posix()
+
+    images = [item for item in declared_paths if not item.endswith(".plotly.json")]
+    if path.endswith(".plotly.json"):
+        image = next((item for item in images if interactive_for(item) == path), None)
+        interactive: str | None = path
+    else:
+        image = path
+        interactive = interactive_for(path) if interactive_for(path) in declared_paths else None
     if interactive is not None:
-        return f"fig.write_image({path!r})\nfig.write_json({interactive!r})"
+        lines = [f"fig.write_image({image!r})"] if image is not None else []
+        return "\n".join([*lines, f"fig.write_json({interactive!r})"])
     return (
         "fig, ax = plt.subplots(figsize=(10, 6))\n"
         "# ... 按本图 chartInputs 绘制 ...\n"
@@ -1140,6 +1204,17 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
         )
 
 
+def _syntax_error_details(error: SyntaxError) -> dict[str, Any]:
+    return {
+        "line": error.lineno,
+        "column": error.offset,
+        "endLine": error.end_lineno,
+        "endColumn": error.end_offset,
+        "sourceLine": (error.text or "").rstrip("\n"),
+        "reason": error.msg,
+    }
+
+
 def compile_script_source(path: str, source: str, authorized_paths: frozenset[str]) -> None:
     try:
         tree = ast.parse(source, filename=path)
@@ -1151,16 +1226,7 @@ def compile_script_source(path: str, source: str, authorized_paths: frozenset[st
     except (SyntaxError, TypeError, ValueError) as error:
         details: dict[str, Any] = {"path": path, "errorType": type(error).__name__}
         if isinstance(error, SyntaxError):
-            details.update(
-                {
-                    "line": error.lineno,
-                    "column": error.offset,
-                    "endLine": error.end_lineno,
-                    "endColumn": error.end_offset,
-                    "sourceLine": (error.text or "").rstrip("\n"),
-                    "reason": error.msg,
-                }
-            )
+            details.update(_syntax_error_details(error))
         else:
             details["reason"] = str(error)[:512]
         raise ReportingError(
@@ -1731,11 +1797,7 @@ class ReportingCodeModeToolkit(Toolkit):
         self._consecutive_critical_review_rounds = 0
         self._critical_review_run_id: str | None = None
         # V3：被拒整稿只保存在内存隔离草稿中，run_script 永远不执行草稿。
-        self._rejected_draft: tuple[str, str] | None = None
-        # 草稿产生时正式脚本的 SHA（None 表示尚不存在）；正式脚本变化后草稿作废。
-        self._rejected_draft_base: str | None = None
-        # 草稿存在期间连续失败的 edit_script 次数；达到阈值即作废草稿改走整稿重写。
-        self._draft_edit_failures = 0
+        self._rejected_draft: _RejectedDraft | None = None
         tools = [
             Function(
                 name="write_script",
@@ -2079,27 +2141,16 @@ class ReportingCodeModeToolkit(Toolkit):
             patch_not_applied = isinstance(failure_code, str) and failure_code.startswith(
                 "report_code_script_edit_"
             )
-            if self._rejected_draft is not None and not patch_not_applied:
+            draft = self._rejected_draft
+            if draft is not None:
                 # 补丁已应用但仍有违规或语法错误，属于逐步修正的进展，不计入空转。
-                self._draft_edit_failures = 0
-            elif self._rejected_draft is not None:
-                self._draft_edit_failures += 1
-                if self._draft_edit_failures >= REWRITE_GATE_EDIT_FAILURES:
+                draft.edit_failures = draft.edit_failures + 1 if patch_not_applied else 0
+                if draft.edit_failures >= REWRITE_GATE_EDIT_FAILURES:
                     # 草稿补丁连续失败（多为补丁格式 edit_invalid）：继续推荐草稿
                     # 补丁只会空转，作废草稿，交付状态随之只推荐 write_script。
                     self._rejected_draft = None
-                    self._draft_edit_failures = 0
                     if isinstance(fc.result, dict):
-                        fc.result["draftDiscarded"] = True
-                        details = fc.result.get("details")
-                        if isinstance(details, dict):
-                            # 回执不得再指向已作废草稿或推荐草稿补丁。
-                            details.pop("draftSha256", None)
-                            details["nextTools"] = ["write_script"]
-                        fc.result["message"] = (
-                            f"{fc.result.get('message', '')}草稿补丁已连续失败，草稿已作废；"
-                            "请用 write_script 重新提交完整脚本，并修正全部 violations。"
-                        )
+                        _mark_draft_discarded(fc.result)
         elif name in {"run_script", "write_script"} and not failed:
             self._edit_failures_since_progress = 0
         if name == "write_script" and self.first_script_success == "unknown":
@@ -2420,7 +2471,7 @@ class ReportingCodeModeToolkit(Toolkit):
 
     @property
     def rejected_draft_sha256(self) -> str | None:
-        return self._rejected_draft[0] if self._rejected_draft is not None else None
+        return self._rejected_draft.sha256 if self._rejected_draft is not None else None
 
     @property
     def consecutive_critical_review_rounds(self) -> int:
@@ -2528,13 +2579,40 @@ class ReportingCodeModeToolkit(Toolkit):
         self, source: str, run_context: RunContext | None = None
     ) -> dict[str, Any]:
         del run_context
+        return await self._write_source(source)
+
+    async def _store_draft(self, source: str) -> str:
+        """保存被拒整稿为隔离草稿；同一草稿链沿用首次被拒时的正式脚本 SHA。"""
+
+        sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        draft = self._rejected_draft
+        if draft is None:
+            self._rejected_draft = _RejectedDraft(
+                sha256, source, await self._current_script_sha256()
+            )
+        else:
+            draft.sha256, draft.source = sha256, source
+        return sha256
+
+    async def _write_source(
+        self, source: str, *, promote_draft: bool = False
+    ) -> dict[str, Any]:
+        """write_script 与草稿提升共用的预检、格式化与落盘。
+
+        promote_draft=True 时语法错误不落盘：补丁后的草稿必须先能解析，否则语法错误
+        （及因无法解析而跳过的路径违规）会漏到 run_script 才暴露。
+        """
         warnings: list[dict[str, str]] = []
         formatted = False
         try:
             source = validate_draft_source(self.context, source).decode("utf-8")
             try:
                 tree = ast.parse(source, filename=self.context.script_path)
-            except SyntaxError:
+            except SyntaxError as error:
+                if promote_draft:
+                    return _syntax_edit_failure(
+                        error, await self._store_draft(source), draft=True
+                    )
                 # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用。
                 tree = None
                 warnings.append(
@@ -2551,13 +2629,8 @@ class ReportingCodeModeToolkit(Toolkit):
                     tree, source, "write_script", self.context
                 )
                 if violations:
-                    draft_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
-                    if self._rejected_draft is None:
-                        self._rejected_draft_base = await self._current_script_sha256()
-                        self._draft_edit_failures = 0
-                    self._rejected_draft = (draft_sha256, source)
                     return _preflight_failure(
-                        violations, source, draft_sha256=draft_sha256
+                        violations, source, draft_sha256=await self._store_draft(source)
                     )
                 warnings.extend(preflight_warnings)
         except ReportingError as error:
@@ -2645,8 +2718,8 @@ class ReportingCodeModeToolkit(Toolkit):
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         draft = self._rejected_draft
-        if draft is not None and expectedSourceSha256 == draft[0]:
-            return await self._edit_rejected_draft(draft[0], draft[1], edits)
+        if draft is not None and expectedSourceSha256 == draft.sha256:
+            return await self._edit_rejected_draft(draft, edits)
         try:
             source_bytes = await self.workspace.read_limited_regular_file(
                 self.context.task_id,
@@ -2690,7 +2763,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 details,
             )
         try:
-            updated, fuzzy_matches = apply_edit_blocks_with_modes(source, edits)
+            updated, fuzzy_matches = apply_edit_blocks(source, edits)
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 return _failure(
@@ -2709,7 +2782,7 @@ class ReportingCodeModeToolkit(Toolkit):
             if _parses(source):
                 # 与 SWE-agent 的编辑 lint 护栏一致：原本可解析的脚本不接受引入语法
                 # 错误的补丁，文件保持不变，避免错误拖到 run_script 才暴露。
-                return _syntax_edit_failure(error, updated, current_sha256)
+                return _syntax_edit_failure(error, current_sha256)
             # 原稿本就无法解析（写入时保留的语法错误草稿）时允许逐步修复。
             tree = None
         except ReportingError as error:
@@ -2776,11 +2849,12 @@ class ReportingCodeModeToolkit(Toolkit):
         return sha256 if isinstance(sha256, str) else None
 
     async def _edit_rejected_draft(
-        self, draft_sha256: str, draft_source: str, edits: Any
+        self, draft: _RejectedDraft, edits: Any
     ) -> dict[str, Any]:
         """对隔离草稿打补丁，再按 write_script 同一路径预检、格式化并落盘。"""
 
-        if await self._current_script_sha256() != self._rejected_draft_base:
+        draft_sha256, draft_source = draft.sha256, draft.source
+        if await self._current_script_sha256() != draft.base_sha256:
             self._rejected_draft = None
             return _failure(
                 "report_code_script_draft_stale",
@@ -2788,7 +2862,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 {"nextTools": ["read_script", "edit_script"]},
             )
         try:
-            updated, fuzzy_matches = apply_edit_blocks_with_modes(draft_source, edits)
+            updated, fuzzy_matches = apply_edit_blocks(draft_source, edits)
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(
@@ -2801,17 +2875,9 @@ class ReportingCodeModeToolkit(Toolkit):
             details["draftSha256"] = draft_sha256
             details["nextTools"] = ["edit_script"]
             return _failure(error.code, error.message, details)
-        try:
-            ast.parse(updated, filename=self.context.script_path)
-        except SyntaxError as error:
-            # write_script 对语法错误跳过全部预检直接落盘；草稿提升前必须先能解析，
-            # 否则语法错误（及未检查的路径违规）会漏到 run_script 才暴露。
-            new_sha256 = hashlib.sha256(updated.encode("utf-8")).hexdigest()
-            self._rejected_draft = (new_sha256, updated)
-            return _syntax_edit_failure(error, updated, new_sha256, draft=True)
-        result = await self.write_script(updated)
+        result = await self._write_source(updated, promote_draft=True)
         if result.get("ok") is not True:
-            # 仍有违规时 write_script 已把补丁后的草稿存为新的隔离草稿。
+            # 语法错误或仍有违规时，补丁后的草稿已存为新的隔离草稿。
             return result
         if self.first_patch_applied == "unknown":
             self.first_patch_applied = True
@@ -3234,7 +3300,13 @@ class ReportingCodeModeToolkit(Toolkit):
             identities.append(FileIdentity.model_validate(value))
         if missing_paths:
             present_paths = [item.path for item in identities]
-            is_placeholder = await self._script_looks_like_placeholder()
+            # 同一失败路径上的占位判定与静态诊断共用一次脚本读取。
+            source = await self._read_script_source()
+            is_placeholder = source is not None and _is_placeholder_script(
+                source,
+                frozenset(self.context.declared_output_paths),
+                self.context.task_kind,
+            )
             all_missing = not present_paths
             # 只有 run_script 的产物校验可以据此放行重写；交付状态刷新、提交等
             # 只读校验不得改变重写闸门。
@@ -3267,8 +3339,12 @@ class ReportingCodeModeToolkit(Toolkit):
             )
             if example:
                 details["writeExample"] = example
-            if open_rewrite_gate:
-                details.update(await self._missing_output_diagnosis(missing_paths))
+            if open_rewrite_gate and source is not None:
+                details.update(
+                    _missing_output_diagnosis(
+                        source, missing_paths, self.context.declared_output_paths
+                    )
+                )
             raise ReportingError(
                 "report_code_declared_output_missing",
                 "声明产物不存在，不代表脚本不存在。检查缺失路径对应的写出逻辑，"
@@ -3277,68 +3353,16 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         return tuple(identities)
 
-    async def _missing_output_diagnosis(self, missing_paths: list[str]) -> dict[str, Any]:
-        """静态区分"脚本未引用签发路径"与"写出调用存在但运行时未执行到"。"""
-
+    async def _read_script_source(self) -> str | None:
         try:
             raw = await self.workspace.read_limited_regular_file(
                 self.context.task_id,
                 self.context.script_path,
                 max_bytes=self.context.max_source_bytes,
             )
-            tree = ast.parse(raw.decode("utf-8"), filename=self.context.script_path)
-        except (WorkspaceError, UnicodeDecodeError, SyntaxError, ValueError):
-            return {}
-        declared = frozenset(self.context.declared_output_paths)
-        referenced = _declared_output_literals(tree, declared)
-        written = _declared_output_write_paths(tree, declared)
-        not_referenced = [path for path in missing_paths if path not in referenced]
-        not_executed = [path for path in missing_paths if path in written]
-        unresolved = [
-            path for path in missing_paths if path in referenced and path not in written
-        ]
-        hints: list[str] = []
-        if not_referenced:
-            hints.append(
-                "notReferencedPaths 在脚本中没有出现签发路径字面量：为这些图补上完整绘制与写出，"
-                "路径逐字使用签发值（见 writeExample）。"
-            )
-        if not_executed:
-            hints.append(
-                "writeNotExecutedPaths 的写出调用存在但运行时未执行到：检查它是否位于未被调用的"
-                "函数、if __name__ 之外的死分支、提前 return/continue，或被 try/except 吞掉的异常之后。"
-            )
-        if unresolved:
-            hints.append(
-                "unresolvedWritePaths 只以变量或拼接方式出现，宿主无法确认写出：直接在 savefig/"
-                "write_image/write_json 调用中使用签发路径字面量。"
-            )
-        result: dict[str, Any] = {}
-        if not_referenced:
-            result["notReferencedPaths"] = not_referenced[:20]
-        if not_executed:
-            result["writeNotExecutedPaths"] = not_executed[:20]
-        if unresolved:
-            result["unresolvedWritePaths"] = unresolved[:20]
-        if hints:
-            result["outputHint"] = " ".join(hints)
-        return result
-
-    async def _script_looks_like_placeholder(self) -> bool:
-        try:
-            raw = await self.workspace.read_limited_regular_file(
-                self.context.task_id,
-                self.context.script_path,
-                max_bytes=self.context.max_source_bytes,
-            )
-            source = raw.decode("utf-8")
+            return raw.decode("utf-8")
         except (WorkspaceError, UnicodeDecodeError):
-            return False
-        return _is_placeholder_script(
-            source,
-            frozenset(self.context.declared_output_paths),
-            self.context.task_kind,
-        )
+            return None
 
     async def run_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context

@@ -12,6 +12,7 @@ from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcess
 from smart_reporting.reporting.code_agent.toolkit import (
     ReportingCodeModeToolkit,
     _declared_output_write_example,
+    _missing_output_diagnosis,
 )
 from smart_reporting.reporting.tests.test_reporting_code_edit import multi_edit_patch
 from smart_reporting.reporting.tests.test_reporting_interactive_code_agent import (
@@ -184,7 +185,11 @@ async def test_missing_output_diagnosis_separates_unreferenced_and_unexecuted(
         '    json.dump({}, open("analysis/out.json", "w"))\n'
     )
 
-    diagnosis = await toolkit._missing_output_diagnosis(["analysis/out.json"])
+    diagnosis = _missing_output_diagnosis(
+        await toolkit._read_script_source(),
+        ["analysis/out.json"],
+        toolkit.context.declared_output_paths,
+    )
 
     assert diagnosis["writeNotExecutedPaths"] == ["analysis/out.json"]
     assert "notReferencedPaths" not in diagnosis
