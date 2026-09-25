@@ -101,15 +101,111 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
     )
 
 
+def _line_spans(source: str) -> list[tuple[int, int]]:
+    """每行 (起点, 不含换行符的终点)。"""
+
+    spans: list[tuple[int, int]] = []
+    position = 0
+    for line in source.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        spans.append((position, position + len(content)))
+        position += len(line)
+    return spans
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _reindent(new: str, add: str, remove: str) -> str | None:
+    lines = new.split("\n")
+    result = []
+    for line in lines:
+        if not line.strip():
+            result.append(line)
+        elif remove:
+            if not line.startswith(remove):
+                return None
+            result.append(line[len(remove):])
+        else:
+            result.append(add + line)
+    return "\n".join(result)
+
+
+def _fuzzy_candidates(
+    source: str, old: str, new: str
+) -> tuple[str, list[tuple[int, int, str]]]:
+    """精确匹配失败后的整行容错：先忽略行尾空白，再允许整块统一缩进偏移。
+
+    只在 SEARCH 由完整行构成时生效；返回 (匹配模式, [(起点, 终点, 替换文本)])。
+    """
+
+    search = old.split("\n")
+    if not any(line.strip() for line in search):
+        return "", []
+    spans = _line_spans(source)
+    lines = [source[a:b] for a, b in spans]
+    count = len(search)
+    trailing: list[tuple[int, int, str]] = []
+    indented: list[tuple[int, int, str]] = []
+    for index in range(len(lines) - count + 1):
+        window = lines[index:index + count]
+        start, end = spans[index][0], spans[index + count - 1][1]
+        if all(a.rstrip() == b.rstrip() for a, b in zip(window, search, strict=True)):
+            trailing.append((start, end, new))
+            continue
+        pairs = [
+            (a, b) for a, b in zip(window, search, strict=True) if a.strip() or b.strip()
+        ]
+        if not pairs or any(not a.strip() or not b.strip() for a, b in pairs):
+            continue
+        source_indent, search_indent = _indent(pairs[0][0]), _indent(pairs[0][1])
+        if source_indent.startswith(search_indent):
+            add, remove = source_indent[len(search_indent):], ""
+        elif search_indent.startswith(source_indent):
+            add, remove = "", search_indent[len(source_indent):]
+        else:
+            continue
+        if not add and not remove:
+            continue
+        if all(
+            a.rstrip() == (add + b.rstrip() if add else b.rstrip()[len(remove):])
+            and (add or b.startswith(remove))
+            for a, b in pairs
+        ):
+            replacement = _reindent(new, add, remove)
+            if replacement is not None:
+                indented.append((start, end, replacement))
+    if trailing:
+        return "trailing_whitespace", trailing
+    return ("indentation", indented) if indented else ("", [])
+
+
 def apply_edit_blocks(source: str, edits: list[tuple[str, str]]) -> str:
     """所有块在同一原文中唯一定位，拒绝重叠和整份替换，再从后往前应用。"""
+    return apply_edit_blocks_with_modes(source, edits)[0]
+
+
+def apply_edit_blocks_with_modes(
+    source: str, edits: list[tuple[str, str]]
+) -> tuple[str, list[dict[str, object]]]:
+    """同 apply_edit_blocks，并返回使用了容错定位的块（blockIndex, matchMode）。"""
     replacements: list[tuple[int, int, str, int]] = []
+    fuzzy: list[dict[str, object]] = []
     for index, (old, new) in enumerate(edits, 1):
         if old == new:
             raise _edit_error("unchanged", "SEARCH 与 REPLACE 文本不能相同。", index)
         start = source.find(old)
         if start < 0:
-            raise _edit_error("not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index)
+            mode, candidates = _fuzzy_candidates(source, old, new)
+            if not candidates:
+                raise _edit_error("not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index)
+            if len(candidates) > 1:
+                raise _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
+            fuzzy_start, fuzzy_end, fuzzy_new = candidates[0]
+            replacements.append((fuzzy_start, fuzzy_end, fuzzy_new, index))
+            fuzzy.append({"blockIndex": index, "matchMode": mode})
+            continue
         if source.find(old, start + 1) >= 0:
             raise _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
         replacements.append((start, start + len(old), new, index))
@@ -126,7 +222,7 @@ def apply_edit_blocks(source: str, edits: list[tuple[str, str]]) -> str:
         raise _edit_error("not_local", "SEARCH 块合计覆盖整份脚本，请缩小到需要修改的局部。")
     for start, end, new, _ in reversed(replacements):
         source = source[:start] + new + source[end:]
-    return source
+    return source, fuzzy
 
 
 def _edit_error(reason: str, message: str, block: int | None = None) -> ReportingError:

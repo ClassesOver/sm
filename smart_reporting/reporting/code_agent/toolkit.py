@@ -39,7 +39,7 @@ from .delivery import (
     _visual_review_model_receipt,
     build_delivery_state,
 )
-from .edit_patch import apply_edit_blocks, parse_edit_patch
+from .edit_patch import apply_edit_blocks_with_modes, parse_edit_patch
 from .formatting import format_python_source
 from .lsp import ReportingWorkspaceLsp
 from .lsp_process import ReportingLspProcessManager
@@ -462,6 +462,35 @@ def _reject_output_write_contract(tree: ast.Module, declared_paths: tuple[str, .
         'plt.plot([r["value"] for r in rows])\nplt.savefig(OUT)\n'
         "每张图的真实绘制都必须落盘到各自的签发输出路径。",
         details={"declaredOutputCount": len(declared), "detectedOutputWrites": []},
+    )
+
+
+def _parses(source: str) -> bool:
+    try:
+        ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    return True
+
+
+def _syntax_edit_failure(
+    error: SyntaxError, updated: str, current_sha256: str
+) -> dict[str, Any]:
+    lines = updated.splitlines()
+    line = error.lineno or 0
+    return _failure(
+        "report_code_source_invalid",
+        "补丁应用后脚本出现语法错误，本次编辑未写入，脚本保持不变；"
+        "请以同一 SHA256 重新提交修正后的补丁（SEARCH 仍以当前脚本为准）。",
+        {
+            "reason": error.msg,
+            "errorType": "SyntaxError",
+            "line": line,
+            "column": error.offset or 0,
+            **({"sourceLine": lines[line - 1][:300]} if 0 < line <= len(lines) else {}),
+            "sourceSha256": current_sha256,
+            "nextTools": ["edit_script"],
+        },
     )
 
 
@@ -2626,7 +2655,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 details,
             )
         try:
-            updated = apply_edit_blocks(source, edits)
+            updated, fuzzy_matches = apply_edit_blocks_with_modes(source, edits)
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 return _failure(
@@ -2641,7 +2670,12 @@ class ReportingCodeModeToolkit(Toolkit):
         try:
             validate_draft_source(self.context, updated)
             tree = ast.parse(updated, filename=self.context.script_path)
-        except SyntaxError:
+        except SyntaxError as error:
+            if _parses(source):
+                # 与 SWE-agent 的编辑 lint 护栏一致：原本可解析的脚本不接受引入语法
+                # 错误的补丁，文件保持不变，避免错误拖到 run_script 才暴露。
+                return _syntax_edit_failure(error, updated, current_sha256)
+            # 原稿本就无法解析（写入时保留的语法错误草稿）时允许逐步修复。
             tree = None
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
@@ -2687,6 +2721,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 "replacedOccurrences": len(edits),
             },
             **({"warnings": preflight_warnings} if preflight_warnings else {}),
+            # 精确匹配失败后按行尾空白/统一缩进容错定位的块，提示模型下次逐字复制。
+            **({"fuzzyMatches": fuzzy_matches} if fuzzy_matches else {}),
             **identity,
         }
 
@@ -2717,7 +2753,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 {"nextTools": ["read_script", "edit_script"]},
             )
         try:
-            updated = apply_edit_blocks(draft_source, edits)
+            updated, _fuzzy = apply_edit_blocks_with_modes(draft_source, edits)
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(
