@@ -879,6 +879,22 @@ class BenchmarkPlannerSpec:
 
 **2026-09-25 合并 origin/code（远端 Coding 收敛迭代 V1-V5/A1-A3 + chartInputs 预解析机制，+2967 行）与语义冲突修复：** 自动合并无文本冲突，但静默丢失/错位三处，逐一修复：① toolkit 的 `_reject_generic_data_helpers`（远端把 helper 硬拦降为软告警，按 8 次真实触发实证恢复硬拦，同时接入远端 `_collect_preflight` 多违规聚合与草稿隔离改进）；② bootstrap 指令索引拼接错位（远端 `[16:]` 按旧列表长度书写，跳过本方数据形状契约/禁 helper/路径逐字三条，补回 `[13:16]`，5567/5600 bytes）；③ 测试对齐远端改进（violations 逐项诊断、收敛计数 run_id 去重——同一 execution 多次 view_image 只算一轮，语义更精确）。合并后 17 文件 **809 passed，2 failed**（interactive_v1_end_to_end 为本方既有；visual_review_state[restart] 经 worktree 验证在纯 origin/code 同样失败，属远端既有）。commit：80af04c（merge）+ 848ef8e（语义修复）。
 
+**2026-09-25 CLI 第五跑（bash-b4hysl4r，合并后验证，用户要求中途停止）—— 待修复问题清单：**
+
+运行约 55 分钟后停止，上游链 + 多轮 section 签发完成，chartInputs/收敛闸门/helper 硬拦/降级通道均验证生效（submit 20+ 次、chart_input 8 次、收敛闸门 3 次、一次 section 走 degrade 零图兜底后继续、下一任务干净通过）。**卡住任务 `4196694c` 归因（24 请求，`report_code_no_progress` 终止）**：
+
+- `declared_output_missing` ×6（零产物探索循环，candidate-22/35 老族在合并后代码仍偶发）；
+- `edit_invalid` ×3（trailing_text ×2 / marker_in_block ×1，补丁模板存在但草稿机制下仍失败）+ `edit_not_found` ×1；
+- `source_invalid` ×1（语法错误的草稿漏到 run 阶段才发现）。
+
+**待修复问题（按优先级，未实施）：**
+
+1. **`declared_output_missing` 回执缺“写出示例”**：回执只说缺哪些文件，不给怎么写对——修法与补丁模板同构：附单张图完整写出链示例（`fig.savefig(签发路径)` + Plotly `write_image/write_json`），低风险、针对主因。
+2. **补丁连续失败与逃生口脱节**：草稿机制下连续 4 次 `edit_invalid` 后 rewrite gate 未接住（13 次 edit 仅 1 次 write）——需复查草稿状态下 write_script 的可用性语义与 `_edit_failures_since_progress` 计数是否覆盖草稿编辑路径。
+3. **语法错误草稿漏到 run**：`write_script` 有 compile 预检，`edit_script` 应用草稿时缺——补丁落盘前加 compile 检查，把 `report_code_source_invalid` 前移到 edit 阶段。
+
+正面确认：降级通道正确兜底（no_progress → degrade → 零图继续成稿）；占位骨架本跑 0 触发（模型首写质量提升）；chartInputs 数据未核对按软告警继续交付。
+
 **专项收口结论（工作流级成功率）：** 至此每个**已被观察到的失败族**都有结构性修复并在真实回放中验证过至少一次（触发型）或单测覆盖（保险型）：
 
 | 失败族 | 修复 | 验证 |
