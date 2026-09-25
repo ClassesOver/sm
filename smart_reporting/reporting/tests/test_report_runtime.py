@@ -541,3 +541,67 @@ def test_postprocess_docx_scales_tall_image_within_page_bounds(tmp_path: Path) -
 
 def test_word_page_fields_use_section_page_count() -> None:
     assert _WORD_PAGE_FIELDS == {"page": "PAGE", "pages": "SECTIONPAGES"}
+
+
+def _png(path: Path) -> None:
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (4, 4), "white").save(path)
+
+
+def _image_tokens(markdown: str) -> list[Any]:
+    from markdown_it import MarkdownIt
+
+    return MarkdownIt("commonmark").parse(markdown)
+
+
+def _draft_state(*paths: str) -> dict[str, Any]:
+    return {"render": {"images": [{"path": path} for path in paths]}}
+
+
+def test_draft_images_fall_back_to_render_manifest(tmp_path: Path) -> None:
+    _png(tmp_path / "reports/r1/chart.png")
+    draft = tmp_path / "reports/r1/revision-2/draft/report.md"
+    runtime = runtime_module.ReportRuntime(tmp_path)
+
+    images = runtime._images(
+        draft, _image_tokens("![图](chart.png)"), _draft_state("reports/r1/chart.png")
+    )
+
+    assert images == {(tmp_path / "reports/r1/chart.png").resolve()}
+    body = '<p><img src="chart.png" alt="图"></p>'
+    inlined = runtime._inline_images(body, draft.parent, images, runtime._image_sources)
+    assert "data:image/png;base64," in inlined
+
+
+def test_manifest_fallback_rejects_paths_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "reports/r1/draft").mkdir(parents=True)
+    _png(tmp_path / "outside/chart.png")
+    draft = workspace / "reports/r1/draft/report.md"
+    runtime = runtime_module.ReportRuntime(workspace)
+
+    with pytest.raises(ReportFailure, match="不存在或格式不受支持"):
+        runtime._images(
+            draft, _image_tokens("![图](chart.png)"), _draft_state("../outside/chart.png")
+        )
+
+
+def test_manifest_fallback_prefers_ancestor_and_rejects_ambiguity(tmp_path: Path) -> None:
+    _png(tmp_path / "reports/r1/chart.png")
+    _png(tmp_path / "reports/r2/chart.png")
+    runtime = runtime_module.ReportRuntime(tmp_path)
+    state = _draft_state("reports/r2/chart.png", "reports/r1/chart.png")
+
+    images = runtime._images(
+        tmp_path / "reports/r1/revision-2/draft/report.md",
+        _image_tokens("![图](chart.png)"),
+        state,
+    )
+    assert images == {(tmp_path / "reports/r1/chart.png").resolve()}
+
+    with pytest.raises(ReportFailure, match="多个同名候选"):
+        runtime._images(
+            tmp_path / "other/draft/report.md", _image_tokens("![图](chart.png)"), state
+        )
