@@ -14,6 +14,7 @@ from ....task_execution import (
     TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
 )
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
+from ...code_agent.failure_policy import final_attempt_degradable
 from ...knowledge import ReportingKnowledgeIndex
 from ...model_policy import (
     ThinkingFailureKind,
@@ -138,6 +139,7 @@ from .phase_models import ChartDraft, VisualizationPlanDraft
 from .reporting_draft_workflow import ReportingAnalysisAndDraftWorkflow
 from .visualization_section_workflow import (
     VisualizationSectionWorkflow,
+    _raise_rejected_submission,
     _visualization_thinking_complexity,
 )
 
@@ -1283,9 +1285,13 @@ class RuntimeAnalysisMixin:
                             ),
                         )
 
+                    degrade_attempted = False
+
                     async def degrade(
                         error: Exception, task_context: RunContext
                     ) -> Mapping[str, Any]:
+                        nonlocal degrade_attempted
+                        degrade_attempted = True
                         error_code = str(
                             getattr(error, "code", "report_visualization_section_failed")
                         )
@@ -1343,9 +1349,29 @@ class RuntimeAnalysisMixin:
                     }
                     if knowledge_index is not None:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
-                    result = await VisualizationSectionWorkflow(
-                        **workflow_kwargs
-                    ).run(instruction_payload, invocation.run_context)
+                    try:
+                        result = await VisualizationSectionWorkflow(
+                            **workflow_kwargs
+                        ).run(instruction_payload, invocation.run_context)
+                    except Exception as error:
+                        # 最后一次 fresh attempt 仍失败时，非基础设施错误（协议错误、产物
+                        # 身份失败等工作流内判为 fatal 的错误）也按零图降级成稿，不让单章
+                        # 图表失败升级为整份报告失败；任务取消、租约冲突等仍原样上抛。
+                        # 工作流内已经走过 degrade（其提交或落账本身失败）时不重复降级，
+                        # 避免同一章节记录两条降级告警、根因被二次失败码掩盖。
+                        if (
+                            attempt < max_attempts - 1
+                            or degrade_attempted
+                            or not final_attempt_degradable(error)
+                        ):
+                            raise
+                        loguru_logger.bind(
+                            section_code=section_code,
+                            failure_code=getattr(error, "code", type(error).__name__),
+                        ).warning("report_visualization_section_final_attempt_degraded")
+                        receipt = await degrade(error, invocation.run_context)
+                        _raise_rejected_submission(receipt)
+                        return VisualizationPlanDraft(charts=(), warnings=())
                     return result.plan
 
                 await self.task_runner.run(

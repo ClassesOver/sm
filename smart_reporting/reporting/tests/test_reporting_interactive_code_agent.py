@@ -1612,14 +1612,18 @@ async def test_visual_review_state_is_retained_until_next_execution(
     assert binding.execution_receipt is not None
     toolkit.submitted_receipt = binding.execution_receipt
 
+    receipt = binding.execution_receipt
     if operation == "write":
         await toolkit.write_script(VISUAL_SOURCE)
+        assert binding.execution_receipt is None
+        assert toolkit.submitted_receipt is None
     else:
+        # 重启只重置探索内核；脚本回执基于文件哈希，未改动的产物无需重跑重审。
         await toolkit.restart_code_mode()
+        assert binding.execution_receipt is receipt
+        assert toolkit.submitted_receipt is receipt
 
-    assert binding.execution_receipt is None
     assert binding.visual_inspection_receipts == {output.path: _visual_receipt(output)}
-    assert toolkit.submitted_receipt is None
 
 
 @pytest.mark.anyio
@@ -2286,7 +2290,9 @@ def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget()
         assert "JSON 信封" not in instructions
         assert "Markdown 围栏" not in instructions
         if task_kind == "visualization":
-            assert "数据形状契约" in instructions
+            # 数据形状规则只作用于未物化 chartInputs 的回退图，不能无条件导向原始 facts。
+            assert "chartInputs" in instructions
+            assert "数据形状契约" not in instructions
             assert "行对象数组" in instructions
             assert "columns+rows" in instructions
             assert "禁止编写通用 resolve()" in instructions

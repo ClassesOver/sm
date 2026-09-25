@@ -100,9 +100,11 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[4:6],
     *_VISUALIZATION_CODE_CHART_INPUT_INSTRUCTIONS,
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[9:11],
-    # 合并修正：远端索引 [16:] 按其旧列表长度书写，跳过了本方新增的
-    # [13:16]（数据形状契约 / 禁止通用 helper / 输入路径逐字），此处补回。
-    *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[13:16],
+    # 通用指令 [13:16] 要求按 binding.dataPath / factFile.path 读取原始事实，与
+    # chartInputs 冲突（全部物化时事实文件不在授权路径内）。数据形状与路径规则已
+    # 并入上方回退图规则，这里只保留与数据来源无关的"禁止通用 helper"约束。
+    "禁止编写通用 resolve()、table_rows()、read_table() 等动态路径解析器或通用数据读取 helper；"
+    "输入路径只用逐字字符串，不要用正则、字符串拼接、+、f-string 或 os.path.join 构造/推导路径。",
     *_VISUALIZATION_CODE_COMMON_INSTRUCTIONS[16:],
 )
 

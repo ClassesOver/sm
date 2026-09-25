@@ -21,26 +21,34 @@ class FailurePolicy:
     analysis: Recovery = "retry"
     visualization: Recovery = "retry"
     thinking: ThinkingFailureKind | None = None
+    # 基础设施与部署配置类失败：任务本身已无法继续（取消、超时、租约、工作区），
+    # 或运行时装配缺失。即使在最后一次 fresh attempt 也不得降级为零图成稿。
+    infrastructure: bool = False
 
 
 _FATAL = FailurePolicy("fatal", "fatal")
+_INFRA = FailurePolicy("fatal", "fatal", infrastructure=True)
 _DEGRADE = FailurePolicy("retry_then_degrade", "retry_then_degrade")
 _COMPILE = FailurePolicy(thinking="python_compile_failure")
 POLICIES = MappingProxyType({
     # Provider 返回未声明或类型不匹配的工具调用属于协议层故障；重试同一
     # 工具上下文不会修复 wire 类型，必须停止并保留原始声明诊断。
     "report_code_custom_tool_protocol_error": _FATAL,
-    "report_coding_task_conflict": _FATAL,
-    "report_code_mode_runtime_missing": _FATAL,
+    "report_coding_task_conflict": _INFRA,
+    "report_code_mode_runtime_missing": _INFRA,
     # 工作区适配缺少协议能力（如 inspect_plotly_file）是确定性 infra 缺陷；
     # 重试或降级都无法补齐缺失的方法，必须立即停止并保留能力名诊断。
-    "report_workspace_capability_missing": _FATAL,
-    "report_workspace_unavailable": _FATAL,
-    "report_task_cancelled": _FATAL,
-    "report_task_timeout": _FATAL,
+    "report_workspace_capability_missing": _INFRA,
+    "report_workspace_unavailable": _INFRA,
+    "report_task_cancelled": _INFRA,
+    "report_task_timeout": _INFRA,
     "report_phase_artifact_changed": _FATAL,
-    "report_capability_invalid": FailurePolicy(visualization="fatal"),
-    "report_task_lease_conflict": FailurePolicy(visualization="fatal"),
+    "report_capability_invalid": FailurePolicy(visualization="fatal", infrastructure=True),
+    "report_task_lease_conflict": FailurePolicy(visualization="fatal", infrastructure=True),
+    # 运行时装配缺失：恢复策略沿用默认 retry，只标记为基础设施类。
+    "report_visualization_code_agent_missing": FailurePolicy(infrastructure=True),
+    "report_visualization_executor_missing": FailurePolicy(infrastructure=True),
+    "report_code_model_protocol_missing": FailurePolicy(infrastructure=True),
     "report_code_generation_no_submission": _DEGRADE,
     "report_code_model_request_limit": _DEGRADE,
     "report_code_no_progress": _DEGRADE,
@@ -57,6 +65,18 @@ POLICIES = MappingProxyType({
     "report_visualization_review_failed": FailurePolicy(thinking="visual_review_failure"),
     "report_analysis_evidence_schema_invalid": FailurePolicy(thinking="schema_failure"),
 })
+
+
+def final_attempt_degradable(error: BaseException) -> bool:
+    """最后一次 fresh attempt 失败时能否按零图降级。
+
+    只接受业务/模型侧的 ReportingError；普通异常多为代码缺陷，必须上抛暴露。
+    """
+
+    return (
+        isinstance(error, ReportingError)
+        and not POLICIES.get(error.code, FailurePolicy()).infrastructure
+    )
 
 
 def recovery_for(error: Exception, task: TaskKind) -> Recovery:
