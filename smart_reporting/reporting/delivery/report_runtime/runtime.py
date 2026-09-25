@@ -326,6 +326,8 @@ class ReportRuntime:
                 output=temporary_docx,
                 context=context,
                 layout=layout,
+                include_cover=include_cover,
+                include_toc=include_toc,
             )
             pdf_size = temporary.stat().st_size
             if pdf_size > MAX_PDF_BYTES:

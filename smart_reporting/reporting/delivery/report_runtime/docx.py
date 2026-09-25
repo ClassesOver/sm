@@ -42,6 +42,8 @@ def _render_docx(
     output: Path,
     context: dict[str, Any],
     layout: dict[str, str],
+    include_cover: bool = True,
+    include_toc: bool = True,
 ) -> dict[str, Any]:
     pandoc = shutil.which("pandoc")
     conversion_root: Path | None = None
@@ -104,7 +106,13 @@ def _render_docx(
         )
         stderr = (process.stderr or b"").decode(errors="replace").strip()
         raise ReportFailure(f"Word 渲染失败：{stderr[-500:]}")
-    _postprocess_docx(output, context=context, layout=layout)
+    _postprocess_docx(
+        output,
+        context=context,
+        layout=layout,
+        include_cover=include_cover,
+        include_toc=include_toc,
+    )
     return _validate_docx_structure(
         output,
         expected_sections=context["sections"],
@@ -113,7 +121,14 @@ def _render_docx(
     )
 
 
-def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, str]) -> None:
+def _postprocess_docx(
+    path: Path,
+    *,
+    context: dict[str, Any],
+    layout: dict[str, str],
+    include_cover: bool = True,
+    include_toc: bool = True,
+) -> None:
     try:
         from docx import Document
         from docx.enum.style import WD_STYLE_TYPE
@@ -267,20 +282,29 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
     toc_start_index = marker_index("toc_field_start")
     toc_end_index = marker_index("toc_field_end")
     body_start_index = marker_index("body_start")
-    for paragraph in paragraphs[:cover_end_index]:
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_paragraph = next(
-        (item for item in paragraphs[:cover_end_index] if item.text == context["title"]), None
-    )
-    if title_paragraph is None:
-        raise ReportFailure("Word 封面缺少报告标题")
-    title_paragraph.style = document.styles["Title"]
-    toc_title = next(
-        (item for item in paragraphs[cover_end_index:toc_start_index] if item.text == "目录"), None
-    )
-    if toc_title is None:
-        raise ReportFailure("Word 缺少目录标题")
-    toc_title.style = document.styles["Title"]
+    if include_cover:
+        for paragraph in paragraphs[:cover_end_index]:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title_paragraph = next(
+            (item for item in paragraphs[:cover_end_index] if item.text == context["title"]), None
+        )
+        if title_paragraph is None:
+            raise ReportFailure("Word 封面缺少报告标题")
+        title_paragraph.style = document.styles["Title"]
+    else:
+        # 无封面导出时标题随正文起始，仅按标题文本套用 Title 样式（若存在）。
+        title_paragraph = next(
+            (item for item in paragraphs[body_start_index:] if item.text == context["title"]), None
+        )
+        if title_paragraph is not None:
+            title_paragraph.style = document.styles["Title"]
+    if include_toc:
+        toc_title = next(
+            (item for item in paragraphs[cover_end_index:toc_start_index] if item.text == "目录"), None
+        )
+        if toc_title is None:
+            raise ReportFailure("Word 缺少目录标题")
+        toc_title.style = document.styles["Title"]
 
     body_headings: list[Any] = []
     search_index = body_start_index + 1
