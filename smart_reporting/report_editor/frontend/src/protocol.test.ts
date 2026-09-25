@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { findProtocolMarkers, protocolMarkersUnchanged } from './protocol'
+import { findProtocolMarkers, protocolMarkersUnchanged, restoreProtocolMarkers } from './protocol'
 
 describe('report protocol markers', () => {
   it('finds section and citation markers without transforming markdown', () => {
@@ -27,5 +27,23 @@ describe('report protocol markers', () => {
     expect(
       protocolMarkersUnchanged(original, '[[citation:x]]\n正文 [[section:a]]'),
     ).toBe(false)
+  })
+
+  it('restores serializer-escaped protocol markers', () => {
+    const serialized = [
+      '\\[\\[section:section\\_001]]',
+      '## 成本分析\\[\\[analysis:analysis\\_001]]',
+      '正文\\[\\[citation:citation\\_001]]',
+      '普通转义 \\[\\[not a marker]] 保持原样',
+    ].join('\n')
+
+    expect(restoreProtocolMarkers(serialized)).toBe(
+      [
+        '[[section:section_001]]',
+        '## 成本分析[[analysis:analysis_001]]',
+        '正文[[citation:citation_001]]',
+        '普通转义 \\[\\[not a marker]] 保持原样',
+      ].join('\n'),
+    )
   })
 })

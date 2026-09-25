@@ -12,6 +12,7 @@ import '@milkdown/crepe/theme/common/diff.css'
 import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
+import { editorViewCtx } from '@milkdown/kit/core'
 import { outline } from '@milkdown/kit/utils'
 import { replaceAll } from '@milkdown/kit/utils'
 import {
@@ -43,6 +44,8 @@ import {
   installEditorShortcuts,
 } from './enhancements'
 import { protocolMarkerPlugin } from './protocol-plugin'
+import { restoreProtocolMarkers } from './protocol'
+import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
 import { createEditorShell } from './shell'
 import { createOutlineController, type OutlineItem } from './outline'
 import { documentMetrics } from './metrics'
@@ -238,7 +241,8 @@ try {
     },
   )
   crepe.editor.use(protocolMarkerPlugin)
-  getEditorMarkdown = () => crepe.getMarkdown()
+  crepe.editor.use(searchHighlightPlugin)
+  getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   replaceEditorMarkdown = (markdown) => crepe.editor.action(replaceAll(markdown))
   await crepe.create()
   crepe.on((listener) => {
@@ -278,6 +282,12 @@ try {
     root,
     getText: () => crepe.getMarkdown(),
     replaceText: (markdown) => crepe.editor.action(replaceAll(markdown)),
+    applyHighlight: (query, current) => {
+      crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        view.dispatch(view.state.tr.setMeta(searchHighlightPluginKey, { query, current }))
+      })
+    },
   })
   searchController.setEditor(shell.editor)
   shell.search.addEventListener('click', () => searchController.open())
