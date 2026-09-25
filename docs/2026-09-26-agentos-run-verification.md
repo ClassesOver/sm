@@ -64,7 +64,15 @@ Step 发布门禁与正式发布 failed: report_editor_scope_mismatch: 报告编
 |---|---|---|
 | 全量版（03:41） | 2025年成本效率分析 | 10 分钟死于 `report_analysis_plan_invalid`（见观察项 4），未到发布 |
 | 约束版 v1（03:48，修复第一层后） | 同上，一个章节两个分析 | 走到发布，死于第二层 scope_mismatch（4 分钟，验证价值所在） |
-| 约束版 v2（03:5x，两层修复后） | 同上 | 进行中，结果待补 |
+| 约束版 v2（03:57，两层修复后） | 同上 | ✅ **成功**（30m：03:57→04:26），正式签发 editor openUrl + PDF/Word downloadUrl，三层修复全链路验证通过 |
+
+**约束版 v2 产物**（run `7df90da6`，session `a1455c11`）：
+
+- 编辑报告（一次性 grant，10 分钟 TTL）：`http://127.0.0.1:8020/reports/v1/editor/open/gAAAAABqttkM8BOPVzVn-UC2oNECTYjTAm4wTEKowyaXLCH2H7pXFDDjzWLV_lvseggd6Wjcl99RlmdgeQfymgjjjnFZUYDoQjtBc_61xDj4Q1x_lMWBS342ICioB_sLu20GK9I_1VuDn-_H-MAlnIjz3GTvP8GyBNchAjTf9fMoERJRPKs9GiLkbeXgbc-L5ObrBbOBoGUPVWMOezIqgiCEwD4ppFwF1USU2CdaWE6mDFYU8RxMHYFHA3rWpytkeB1ApNnPL87IJ7KDGpGDVi-GOndyBYFDmgPIVYNtLI7aJ2I32ZOMNyZg7ekqHKp0Jz8C4boD4omHQCZJMzko2f3BL2sha0XG742AjMdp53pQQe3m_suMkiNoiR4ILYQivvCGWCwe4_zY68sgUb8jx4IfKLISMEsnIaPi3PgBW02V7Tmk8-LaFDRj1qcL5_JGyvHD1Bls2zuK`
+- 下载 PDF：`http://127.0.0.1:8020/reports/v1/download/E6BZu5KBFbOFapQWC7QemTJrOuc8a3659_qvXgjqzAA`（3.18MB，application/pdf，已验证 200）
+- 下载 Word：同路径加 `/word`
+
+注：grant URL 只出现在 Agent 最终响应中（无 loguru 落盘行），curl 中断后通过 `GET /agents/smart-reporting/runs/{run_id}?session_id=…` 从会话存储恢复。
 
 ## 残余观察项
 
