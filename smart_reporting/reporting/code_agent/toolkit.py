@@ -1931,7 +1931,10 @@ class ReportingCodeModeToolkit(Toolkit):
             Function(name="run_script", description="运行已保存的绑定脚本并校验声明输出；失败时按回执中的源码 SHA 与片段使用 edit_script 局部修复，随后重新运行。", entrypoint=self.run_script),
             Function(
                 name="lsp_diagnostics",
-                description="检查已保存脚本的语法和类型诊断；可用当前脚本 SHA 防止读取旧版本。",
+                description=(
+                    "检查已保存脚本的语法和类型诊断；可用当前脚本 SHA 防止读取旧版本。"
+                    "回执中的 line/column 从 1 开始，与 read_script 和 traceback 一致，并附 sourceLine。"
+                ),
                 parameters=_lsp_parameters(path_required=False, include_position=False),
                 entrypoint=self.lsp_diagnostics,
             ),
@@ -3597,12 +3600,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 )
                 result["truncated"] = sorted(truncated)
                 return result
-        except WorkspaceError:
-            return _failure(
-                "report_code_source_missing",
-                "Coding Agent 脚本不存在。",
-                {"nextTools": ["write_script"]},
-            )
+        except WorkspaceError as error:
+            return await self._workspace_failure(error)
         except ReportingError as error:
             details = dict(error.details) if isinstance(error.details, Mapping) else {}
             details.setdefault("nextTools", ["read_script", "edit_script", "run_script"])
@@ -3681,6 +3680,32 @@ class ReportingCodeModeToolkit(Toolkit):
                 self._set_output_validation("passed")
         return result
 
+    async def _workspace_failure(self, error: WorkspaceError) -> dict[str, Any]:
+        """脚本确实不存在时才引导 write_script；其他工作区错误（产物路径是符号链接、
+        目录无法创建等）如实回报，避免模型整段重写一个本来存在的脚本。"""
+
+        try:
+            script_exists = await self.workspace.apath_exists(
+                self.context.task_id, self.context.script_path
+            )
+        except WorkspaceError:
+            script_exists = False
+        if not script_exists:
+            return _failure(
+                "report_code_source_missing",
+                "Coding Agent 脚本不存在。",
+                {"path": self.context.script_path, "nextTools": ["write_script"]},
+            )
+        return _failure(
+            "report_code_workspace_error",
+            "工作区操作失败，脚本本身仍存在；请按 reason 处理后重新运行，不要整段重写脚本。",
+            {
+                "reason": str(error)[:300],
+                "errorType": type(error).__name__,
+                "nextTools": ["read_script", "edit_script", "run_script"],
+            },
+        )
+
     async def submit_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
         receipt = self.binding.execution_receipt
@@ -3703,12 +3728,8 @@ class ReportingCodeModeToolkit(Toolkit):
         try:
             source = await self._validated_source_identity()
             outputs = await self._declared_output_identities()
-        except WorkspaceError:
-            return _failure(
-                "report_code_source_missing",
-                "Coding Agent 脚本不存在。",
-                {"path": self.context.script_path, "nextTools": ["write_script"]},
-            )
+        except WorkspaceError as error:
+            return await self._workspace_failure(error)
         except ReportingError as error:
             details = dict(error.details) if isinstance(error.details, Mapping) else {}
             details.setdefault("nextTools", ["read_script", "edit_script", "run_script"])

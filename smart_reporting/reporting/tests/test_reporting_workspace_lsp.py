@@ -351,3 +351,34 @@ def test_location_decodes_percent_encoded_workspace_uri(
         "character": 4,
         "kind": "symbol",
     }
+
+
+def test_diagnostic_positions_are_one_based_with_source_line() -> None:
+    diagnostic = ReportingWorkspaceLsp._diagnostic(
+        {
+            "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 9}},
+            "severity": 1,
+            "message": "undefined name 'totl'",
+            "source": "pyflakes",
+        },
+        "import json\nprint(totl)\n",
+    )
+
+    assert diagnostic == {
+        "line": 2,
+        "column": 5,
+        "endLine": 2,
+        "endColumn": 10,
+        "severity": "error",
+        "message": "undefined name 'totl'",
+        "source": "pyflakes",
+        "sourceLine": "print(totl)",
+    }
+
+
+def test_diagnostic_without_range_stays_well_formed() -> None:
+    diagnostic = ReportingWorkspaceLsp._diagnostic({"message": "x", "severity": 9}, "a = 1\n")
+
+    assert diagnostic["line"] is None
+    assert diagnostic["severity"] == "unknown"
+    assert "sourceLine" not in diagnostic
