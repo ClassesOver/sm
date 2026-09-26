@@ -17,6 +17,56 @@ interface ChartDependencies {
 
 const CHART_FONT = '"Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif'
 
+// 生成侧模型产出的 spec 常见两类版式冲突，渲染前确定性归一：
+// 1. 顶部水平图例与标题同处顶栏相互压盖（legend.y > 1 且非 top 锚定）
+// 2. 同侧多条 overlaying Y 轴刻度重叠（用 plotly autoshift 自动外移）
+function normalizeLayoutOverlaps(merged: Record<string, unknown>): void {
+  const title = merged.title
+  const hasTitle = typeof title === 'string'
+    ? title.trim().length > 0
+    : !!(title && typeof title === 'object' && (title as { text?: unknown }).text)
+  const legend = merged.legend as Record<string, unknown> | undefined
+  if (hasTitle && legend?.orientation === 'h') {
+    const y = typeof legend.y === 'number' ? legend.y : 1
+    if (y > 1 && legend.yanchor !== 'top') {
+      merged.legend = { ...legend, y: -0.22, yanchor: 'top', x: 0.5, xanchor: 'center' }
+      const margin = merged.margin as Record<string, number>
+      merged.margin = { ...margin, b: Math.max(margin.b ?? 0, 110) }
+    }
+  }
+
+  const occupiedSides = new Set<string>()
+  const displaced: Record<string, number> = { left: 0, right: 0 }
+  const axisKeys = Object.keys(merged)
+    .filter((key) => /^yaxis\d*$/.test(key))
+    .sort((a, b) => (Number(a.slice(5)) || 1) - (Number(b.slice(5)) || 1))
+  for (const key of axisKeys) {
+    const axis = merged[key]
+    if (!axis || typeof axis !== 'object') continue
+    const record = axis as Record<string, unknown>
+    const side = record.side === 'right' ? 'right' : 'left'
+    if (!('overlaying' in record)) {
+      occupiedSides.add(side)
+      continue
+    }
+    // autoshift 对同侧 overlaying 轴无效（实测 plotly.js 3.3.1 不外移），
+    // 用官方多轴同侧方案：anchor free + position 外置 + 收缩 x 域腾出空间。
+    if (occupiedSides.has(side) && record.anchor !== 'free') {
+      merged[key] = { ...record, anchor: 'free', position: displaced[side] * 0.08 }
+      displaced[side] += 1
+    }
+    occupiedSides.add(side)
+  }
+  if (displaced.left || displaced.right) {
+    const xaxis = { ...((merged.xaxis as Record<string, unknown> | undefined) ?? {}) }
+    const domain = Array.isArray(xaxis.domain) ? [...xaxis.domain] as number[] : [0, 1]
+    domain[0] += 0.08 * displaced.left
+    domain[1] -= 0.08 * displaced.right
+    xaxis.domain = domain
+    merged.xaxis = xaxis
+  }
+}
+
 function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] {
   const merged: Record<string, unknown> = { ...layout }
   // 尺寸交给容器：figure 自带的固定 width/height 会让大图模态
@@ -31,6 +81,7 @@ function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] 
   // 纸面与绘图区留白交给容器边框和圆角处理。
   merged.paper_bgcolor = merged.paper_bgcolor ?? '#ffffff'
   merged.plot_bgcolor = merged.plot_bgcolor ?? '#ffffff'
+  normalizeLayoutOverlaps(merged)
   return merged
 }
 

@@ -158,3 +158,61 @@ it('disposes stale instances when the editor replaces an image', async () => {
   expect(plot.purge).toHaveBeenCalledOnce()
   controller.destroy()
 })
+
+it('normalizes title-legend and same-side axis overlaps before rendering', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const figure = {
+    data: [{ type: 'scatter', yaxis: 'y3' }],
+    layout: {
+      title: { text: '2025年月度单位工作量成本走势' },
+      legend: { orientation: 'h', y: 1.06, x: 0.5, xanchor: 'center', yanchor: 'bottom' },
+      yaxis: { title: { text: '门诊单位成本（元）' } },
+      yaxis2: { title: { text: '床日单位成本（元）' }, overlaying: 'y', side: 'right' },
+      yaxis3: { title: { text: '住院单位成本（元）' }, overlaying: 'y', side: 'left', showgrid: false },
+    },
+  }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => figure }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+
+  const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
+  // 顶部水平图例移到绘图区下方，不再压标题
+  expect(layout.legend).toMatchObject({ orientation: 'h', y: -0.22, yanchor: 'top', x: 0.5, xanchor: 'center' })
+  expect(layout.margin.b).toBeGreaterThanOrEqual(110)
+  // 与主轴同侧的第二条 overlaying 轴外置到空余纸面，不再刻度重叠
+  expect(layout.yaxis2.anchor).toBeUndefined()
+  expect(layout.yaxis3).toMatchObject({ anchor: 'free', position: 0 })
+  expect(layout.xaxis.domain).toEqual([0.08, 1])
+  // 原始 figure 不被修改
+  expect(figure.layout.legend.y).toBe(1.06)
+  expect((figure.layout.yaxis3 as Record<string, unknown>).anchor).toBeUndefined()
+  controller.destroy()
+})
+
+it('leaves non-colliding legend and axes untouched', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const figure = {
+    data: [{ type: 'bar' }],
+    layout: {
+      title: { text: '趋势' },
+      legend: { orientation: 'h', y: -0.2, yanchor: 'top' },
+      yaxis2: { overlaying: 'y', side: 'right' },
+    },
+  }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => figure }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+
+  const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
+  expect(layout.legend.y).toBe(-0.2)
+  expect(layout.yaxis2.autoshift).toBeUndefined()
+  controller.destroy()
+})
