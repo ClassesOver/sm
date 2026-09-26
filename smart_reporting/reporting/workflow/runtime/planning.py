@@ -330,6 +330,8 @@ class RuntimePlanningMixin:
             if source_markdown.parent.name == revision_directory
             else source_markdown.parent / revision_directory / source_markdown.name
         )
+        editor_job = deepcopy(content["editorJob"])
+        path_map: dict[str, str] = {}
         if revision_markdown != source_markdown:
             markdown = await self.workspace_service.aread_text(thread_id, str(source_markdown))
             if await self.workspace_service.apath_exists(thread_id, str(revision_markdown)):
@@ -345,6 +347,55 @@ class RuntimePlanningMixin:
                 await self.workspace_service.awrite_text(
                     thread_id, str(revision_markdown), markdown
                 )
+            source_root = source_markdown.parent
+            target_root = revision_markdown.parent
+
+            async def _copy_asset(source_path: str) -> str | None:
+                try:
+                    relative = PurePosixPath(source_path).relative_to(source_root)
+                except ValueError:
+                    return None
+                target_path = str(target_root / relative)
+                if target_path == source_path:
+                    return target_path
+                if not await self.workspace_service.apath_exists(thread_id, source_path):
+                    return None
+                content_bytes, _ = await self.workspace_service.afile_bytes(
+                    thread_id, source_path
+                )
+                await self.workspace_service.awrite_bytes(
+                    thread_id, target_path, content_bytes
+                )
+                path_map[source_path] = target_path
+                return target_path
+
+            render = editor_job.get("render") or {}
+            images = render.get("images") if isinstance(render, dict) else None
+            if isinstance(images, list):
+                for image in images:
+                    if isinstance(image, dict):
+                        await _copy_asset(image.get("path", ""))
+
+            interactive = editor_job.get("interactiveCharts")
+            if isinstance(interactive, dict):
+                for spec in interactive.values():
+                    if isinstance(spec, dict):
+                        await _copy_asset(spec.get("path", ""))
+
+            def _remap_paths(obj: Any) -> Any:
+                if isinstance(obj, dict):
+                    return {
+                        path_map.get(key, key): _remap_paths(value)
+                        for key, value in obj.items()
+                    }
+                if isinstance(obj, list):
+                    return [_remap_paths(item) for item in obj]
+                if isinstance(obj, str) and obj in path_map:
+                    return path_map[obj]
+                return obj
+
+            editor_job = _remap_paths(editor_job)
+        content["editorJob"] = editor_job
         durable = await self.state_repository.get(workflow_run_id)
         stored_scope = (
             durable.payload.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)

@@ -130,7 +130,7 @@ export function createOutlineController({
   }
 
   return {
-    update(items: OutlineItem[]) {
+    update(items: OutlineItem[], chapterCount?: number) {
       if (
         hasRendered &&
         items.length === currentItems.length &&
@@ -203,7 +203,8 @@ export function createOutlineController({
       container.classList.toggle('is-empty', items.length === 0)
       let count = container.querySelector<HTMLElement>('.outline-count')
       if (!count) { count = document.createElement('div'); count.className = 'outline-count'; container.append(count) }
-      count.textContent = `${items.length} 个章节`
+      const chapters = chapterCount ?? items.length
+      count.textContent = `${chapters} 个章节`
       let hint = container.querySelector<HTMLElement>('.outline-empty-hint')
       if (items.length === 0) {
         if (!hint) { hint = document.createElement('div'); hint.className = 'outline-empty-hint'; container.append(hint) }

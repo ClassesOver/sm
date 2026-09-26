@@ -152,7 +152,8 @@ let outlineFrame: number | undefined
 let saveState: SaveStateTracker | null = null
 
 function updateOutline(items: OutlineItem[]) {
-  outlineController.update(items)
+  const chapterCount = items.filter((item) => item.level === 2).length
+  outlineController.update(items, chapterCount || undefined)
   const structure = headingStructureStatus(items)
   if (structureLabel) {
     structureLabel.textContent = structure.label

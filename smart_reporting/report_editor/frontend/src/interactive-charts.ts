@@ -15,6 +15,22 @@ interface ChartDependencies {
   loadPlotly?: () => Promise<PlotlyRenderer>
 }
 
+function whenImageLoaded(image: HTMLImageElement): Promise<void> {
+  return new Promise((resolve) => {
+    if (image.complete) {
+      resolve()
+      return
+    }
+    const done = () => {
+      image.removeEventListener('load', done)
+      image.removeEventListener('error', done)
+      resolve()
+    }
+    image.addEventListener('load', done)
+    image.addEventListener('error', done)
+  })
+}
+
 export function createInteractiveCharts(
   root: HTMLElement,
   charts: Record<string, string>,
@@ -22,46 +38,55 @@ export function createInteractiveCharts(
   dependencies: ChartDependencies = {},
 ) {
   const plotlyUrl = `${basePath}/asset/`
-  const active = new Map<HTMLImageElement, { node: HTMLElement; plot: PlotlyRenderer; resize?: ResizeObserver }>()
+  const active = new Map<HTMLImageElement, { node: HTMLElement; plot: PlotlyRenderer; resize?: ResizeObserver; wrapper: HTMLElement }>()
   const pending = new Set<HTMLImageElement>()
   const failed = new WeakSet<HTMLImageElement>()
   let destroyed = false
   const fetcher = dependencies.fetcher ?? fetch
   const loadPlotly = dependencies.loadPlotly ?? (async () => (await import('plotly.js-dist-min')).default)
 
-  function position(image: HTMLImageElement, node: HTMLElement) {
+  function sizeFrom(image: HTMLImageElement) {
     const box = image.getBoundingClientRect()
-    node.style.left = `${box.left + window.scrollX}px`
-    node.style.top = `${box.top + window.scrollY}px`
-    node.style.width = `${box.width}px`
-    node.style.height = `${box.height}px`
+    return { width: box.width, height: box.height }
   }
 
-  function reposition() {
-    for (const [image, entry] of active) {
-      if (root.contains(image)) position(image, entry.node)
-      else cleanup(image)
-    }
+  function fitWrapper(image: HTMLImageElement, wrapper: HTMLElement) {
+    const { width, height } = sizeFrom(image)
+    wrapper.style.width = `${width}px`
+    wrapper.style.height = `${height}px`
   }
-  window.addEventListener('scroll', reposition, { passive: true })
-  window.addEventListener('resize', reposition)
 
   function cleanup(image: HTMLImageElement) {
     const entry = active.get(image)
     if (!entry) return
     entry.resize?.disconnect()
     entry.plot.purge(entry.node)
-    entry.node.remove()
+    const parent = entry.wrapper.parentNode
+    if (parent) {
+      parent.insertBefore(image, entry.wrapper)
+    }
+    entry.wrapper.remove()
     image.classList.remove('interactive-chart-fallback')
     active.delete(image)
   }
+
+  function reposition() {
+    for (const [image, entry] of active) {
+      if (!root.contains(image)) {
+        cleanup(image)
+      } else {
+        fitWrapper(image, entry.wrapper)
+        entry.plot.Plots.resize(entry.node)
+      }
+    }
+  }
+  window.addEventListener('resize', reposition)
 
   async function refresh() {
     if (destroyed) return
     const images = new Set(root.querySelectorAll<HTMLImageElement>('img'))
     for (const image of active.keys()) {
       if (!images.has(image)) cleanup(image)
-      else position(image, active.get(image)!.node)
     }
     await Promise.all(Array.from(images, async (image) => {
       if (active.has(image) || pending.has(image) || failed.has(image)) return
@@ -80,35 +105,45 @@ export function createInteractiveCharts(
       if (!spec) return
       pending.add(image)
       failed.add(image)
-      const node = document.createElement('div')
-      node.className = 'interactive-chart'
-      node.setAttribute('role', 'img')
-      node.setAttribute('aria-label', image.alt || '交互图表')
-      node.contentEditable = 'false'
       try {
+        await whenImageLoaded(image)
+        if (destroyed || !root.contains(image)) return
         const response = await fetcher(`${plotlyUrl}${spec.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'same-origin' })
         if (!response.ok) return
         const figure = await response.json() as PlotlyFigure
         if (!Array.isArray(figure.data) || figure.data.length === 0) return
         const plot = await loadPlotly()
         if (destroyed || !root.contains(image)) return
-        position(image, node)
-        document.body.append(node)
+
+        const parent = image.parentNode
+        if (!parent) return
+        const wrapper = document.createElement('div')
+        wrapper.className = 'interactive-chart-wrapper'
+        fitWrapper(image, wrapper)
+        const node = document.createElement('div')
+        node.className = 'interactive-chart'
+        node.setAttribute('role', 'img')
+        node.setAttribute('aria-label', image.alt || '交互图表')
+        node.contentEditable = 'false'
+        parent.insertBefore(wrapper, image)
+        wrapper.appendChild(image)
+        wrapper.appendChild(node)
+
         await plot.newPlot(node, figure.data, figure.layout, { ...figure.config, responsive: true })
         if (destroyed || !root.contains(image)) {
           plot.purge(node)
-          node.remove()
+          wrapper.remove()
           return
         }
         image.classList.add('interactive-chart-fallback')
         const resize = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
-          position(image, node)
+          fitWrapper(image, wrapper)
           plot.Plots.resize(node)
         })
-        resize?.observe(image)
-        active.set(image, { node, plot, resize })
+        resize?.observe(wrapper)
+        active.set(image, { node, plot, resize, wrapper })
       } catch {
-        node.remove()
+        image.classList.remove('interactive-chart-fallback')
       } finally {
         pending.delete(image)
       }
@@ -122,7 +157,6 @@ export function createInteractiveCharts(
     destroy() {
       destroyed = true
       observer.disconnect()
-      window.removeEventListener('scroll', reposition)
       window.removeEventListener('resize', reposition)
       for (const image of active.keys()) cleanup(image)
     },

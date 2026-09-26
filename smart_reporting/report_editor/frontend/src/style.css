@@ -1611,7 +1611,10 @@ button {
 
 #report-editor .ProseMirror h1,
 #report-editor .ProseMirror h2,
-#report-editor .ProseMirror h3 {
+#report-editor .ProseMirror h3,
+#report-editor .ProseMirror h4,
+#report-editor .ProseMirror h5,
+#report-editor .ProseMirror h6 {
   color: #1b2a41;
   font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   letter-spacing: 0;
@@ -1630,8 +1633,10 @@ button {
 #report-editor .ProseMirror h2 {
   margin-top: 2em;
   margin-bottom: 0.8em;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #d6e0e8;
   color: #30435a;
-  font-size: 21px;
+  font-size: 23px;
   font-weight: 700;
   line-height: 1.45;
 }
@@ -1639,10 +1644,31 @@ button {
 #report-editor .ProseMirror h3 {
   margin-top: 1.6em;
   margin-bottom: 0.65em;
+  padding-left: 12px;
+  border-left: 3px solid #56b4e9;
   color: #1b2a41;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 650;
   line-height: 1.5;
+}
+
+#report-editor .ProseMirror h4 {
+  margin-top: 1.4em;
+  margin-bottom: 0.55em;
+  color: #30435a;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+#report-editor .ProseMirror h5,
+#report-editor .ProseMirror h6 {
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  color: #526579;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
 }
 
 @media (min-width: 769px) {
@@ -1805,6 +1831,28 @@ button {
   visibility: hidden;
 }
 
+.interactive-chart-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.interactive-chart {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.interactive-chart .js-plotly-plot,
+.interactive-chart .plotly {
+  width: 100%;
+  height: 100%;
+}
+
 @media (min-width: 769px) {
   #report-editor .ProseMirror h1 {
     margin-bottom: 1.15em;
@@ -1816,6 +1864,10 @@ button {
 
   #report-editor .ProseMirror h3 {
     margin-top: 1.45em;
+  }
+
+  #report-editor .ProseMirror h4 {
+    margin-top: 1.35em;
   }
 
   #report-editor .ProseMirror p {
@@ -2805,12 +2857,28 @@ button {
   }
 
   #report-editor .ProseMirror h2 {
-    font-size: 15pt;
+    padding-bottom: 6pt;
+    border-bottom: 0.5pt solid #c8d4dd;
+    color: #30435a;
+    font-size: 16pt;
     break-after: avoid;
   }
 
   #report-editor .ProseMirror h3 {
+    padding-left: 8pt;
+    border-left: 2pt solid #56b4e9;
+    font-size: 13pt;
+    break-after: avoid;
+  }
+
+  #report-editor .ProseMirror h4 {
     font-size: 12pt;
+    break-after: avoid;
+  }
+
+  #report-editor .ProseMirror h5,
+  #report-editor .ProseMirror h6 {
+    font-size: 11pt;
     break-after: avoid;
   }
 
@@ -2818,5 +2886,13 @@ button {
   #report-editor .ProseMirror img,
   #report-editor .ProseMirror blockquote {
     break-inside: avoid;
+  }
+
+  #report-editor .ProseMirror img.interactive-chart-fallback {
+    visibility: visible;
+  }
+
+  #report-editor .ProseMirror .interactive-chart {
+    display: none;
   }
 }
