@@ -175,3 +175,29 @@ async def test_service_rejects_findings_outside_declared_successful_check_scope(
             findings=(finding,),
             context=CheckContext(check_id="analysis-1"),
         )
+
+
+@pytest.mark.anyio
+async def test_quality_warning_list_rejects_malformed_cursor_as_bad_request() -> None:
+    from smart_reporting.quality_warnings.api import create_quality_warning_router
+
+    class Service:
+        async def list_warning_page(self, *, tenant, query):
+            raise AssertionError("malformed cursor must not reach the repository")
+
+    application = FastAPI()
+    application.state.agentos_context = SimpleNamespace(quality_warning_service=Service())
+
+    @application.middleware("http")
+    async def capability(request, call_next):
+        request.state.capability = SimpleNamespace(database="hospital", company=42)
+        return await call_next(request)
+
+    application.include_router(create_quality_warning_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/quality-warnings?cursor=not-a-cursor")
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "quality_warning_cursor_invalid"}
