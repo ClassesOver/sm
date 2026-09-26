@@ -22,6 +22,7 @@ from smart_reporting.report_editor import (
     ReportEditorContext,
     ReportEditorGrantService,
     ReportEditorService,
+    ReportEditorSession,
     SqlAlchemyReportEditorRepository,
     create_report_editor_router,
 )
@@ -96,6 +97,38 @@ def test_sql_editor_repository_requires_postgresql() -> None:
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         SqlAlchemyReportEditorRepository(engine)  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_sql_editor_repository_prunes_expired_sessions_on_insert() -> None:
+    executed: list[object] = []
+
+    class _Connection:
+        async def execute(self, statement: object) -> None:
+            executed.append(statement)
+
+    class _Begin:
+        async def __aenter__(self) -> _Connection:
+            return _Connection()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), begin=_Begin)
+    repository = SqlAlchemyReportEditorRepository(engine)  # type: ignore[arg-type]
+
+    await repository.put_session(
+        "h" * 64,
+        ReportEditorSession(
+            report_id="r",
+            revision=1,
+            workflow_run_id="run",
+            context_sha256="c" * 64,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    assert [type(statement).__name__ for statement in executed] == ["Delete", "Insert"]
 
 
 def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> None:
