@@ -11,7 +11,7 @@ export function showEditorOnboarding(root: HTMLElement, key: string) {
     cardClass: 'editor-onboarding-card',
     label: '编辑器使用提示',
     onRequestClose: () => closePanel(),
-    content: '<span class="editor-onboarding-step">快速开始</span><h2>三步完成报告</h2><ol><li>点击正文直接编辑 Markdown</li><li>用左侧目录跳转或排序章节</li><li>保存后即可导出 PDF / Word</li></ol><div><button type="button" data-onboarding="dismiss">知道了</button><button type="button" data-onboarding="hide">以后不再提示</button></div>',
+    content: '<span class="editor-onboarding-step">快速开始</span><h2>三步完成报告</h2><ol><li>点击正文直接编辑 Markdown</li><li>用左侧目录跳转章节</li><li>保存后即可导出 PDF / Word</li></ol><div><button type="button" data-onboarding="dismiss">知道了</button><button type="button" data-onboarding="hide">以后不再提示</button></div>',
   })
   const panel = modal.overlay
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
