@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 _IDENTITY_MAX_LENGTH = 128
 _TENANT_MAX_LENGTH = 256
@@ -45,10 +45,13 @@ class TenantScope(_FrozenModel):
 
 
 class CheckScope(_FrozenModel):
+    """一次成功检查的覆盖范围：显式主体集合，或某次报告运行的全部主体（前缀）。"""
+
     domain: NonEmptyIdentity
     rule_code: NonEmptyIdentity
     subject_type: NonEmptyIdentity
-    covered_subject_ids: tuple[NonEmptyIdentity, ...] = Field(min_length=1, max_length=1_000)
+    covered_subject_ids: tuple[NonEmptyIdentity, ...] = Field(default=(), max_length=1_000)
+    covered_subject_prefix: NonEmptyIdentity | None = None
 
     @field_validator("covered_subject_ids")
     @classmethod
@@ -56,6 +59,18 @@ class CheckScope(_FrozenModel):
         if len(set(value)) != len(value):
             raise ValueError("covered_subject_ids 不能重复。")
         return value
+
+    @model_validator(mode="after")
+    def _coverage_is_declared(self) -> CheckScope:
+        if not self.covered_subject_ids and self.covered_subject_prefix is None:
+            raise ValueError("成功检查必须声明覆盖主体或主体前缀。")
+        return self
+
+    def covers(self, subject_id: str) -> bool:
+        return subject_id in self.covered_subject_ids or (
+            self.covered_subject_prefix is not None
+            and subject_id.startswith(self.covered_subject_prefix)
+        )
 
 
 class WarningFinding(_FrozenModel):

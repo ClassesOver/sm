@@ -10,6 +10,7 @@ from smart_reporting.quality_warnings import (
     WarningEmitter,
     get_warning_rule,
 )
+from smart_reporting.quality_warnings.policy import warning_rules
 
 
 def test_registered_rule_exposes_disposition_and_subject_types() -> None:
@@ -159,7 +160,56 @@ async def test_collector_flushes_one_stable_check_per_scope() -> None:
 
     assert result.flush_status == "committed"
     assert len(calls) == 1
-    assert calls[0][1][0].context.check_id == (
+    checks = {
+        (check.check_scope.rule_code, check.check_scope.subject_type): check
+        for check in calls[0][1]
+    }
+    # 每个已登记规则/主体类型都提交检查，未再出现的既有告警才能被解决。
+    assert set(checks) == {
+        (rule.code, subject_type) for rule in warning_rules() for subject_type in rule.subject_types
+    }
+    check = checks[("report_period_basis_conflict", "section_claim")]
+    assert check.context.check_id == (
         "publication:run-1:2:report_period_basis_conflict:section_claim"
     )
-    assert calls[0][1][0].findings[0].details["sourcePhases"] == ["publication"]
+    assert check.check_scope.covered_subject_prefix == "run-1:"
+    [finding] = check.findings
+    assert finding.subject_id == "run-1:claim-1"
+    assert finding.details["subjectLocalId"] == "claim-1"
+    assert finding.details["sourcePhases"] == ["publication"]
+    assert all(not item.findings for key, item in checks.items() if key != check_key(check))
+
+
+def check_key(check) -> tuple[str, str]:
+    return check.check_scope.rule_code, check.check_scope.subject_type
+
+
+@pytest.mark.anyio
+async def test_collector_without_findings_still_records_full_check() -> None:
+    calls = []
+
+    class Service:
+        async def record_successful_checks(self, *, tenant, checks):
+            calls.append(checks)
+
+    collector = QualityAuditCollector(report_run_id="run-1", revision=3)
+    result = await collector.flush(
+        service=Service(),
+        tenant=TenantScope(database_name="db", company_id="42"),
+    )
+
+    assert result.flush_status == "committed"
+    assert calls and all(not check.findings for check in calls[0])
+
+
+def test_run_subject_ids_are_bounded_and_report_subject_is_stable() -> None:
+    from smart_reporting.quality_warnings.audit import _run_subject_id, _run_subject_prefix
+
+    prefix = _run_subject_prefix("0b0e8f5e-1d2c-4f7a-9a51-2f7a3d9d5c11")
+    assert _run_subject_id(prefix, subject_type="report", subject_id="whatever") == (
+        f"{prefix}report"
+    )
+    long_id = _run_subject_id(prefix, subject_type="section_claim", subject_id="c" * 128)
+    assert long_id.startswith(f"{prefix}sha256:") and len(long_id) <= 128
+    long_run = _run_subject_prefix("r" * 200)
+    assert long_run.startswith("run-sha256-") and len(long_run) <= 49

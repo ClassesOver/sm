@@ -47,7 +47,7 @@
 | `database_name`、`company_id` | 可信执行上下文给出的租户边界。 |
 | `domain` | 业务领域，例如 `reporting`。 |
 | `rule_code` | 稳定英文规则码。 |
-| `subject_type`、`subject_id` | 问题主体，例如 `metric/income_summary_total`。 |
+| `subject_type`、`subject_id` | 问题主体，例如 `metric/income_summary_total`；报告发布产生的主体带报告运行前缀，例如 `section_claim/<run>:claim_001`。 |
 | `fingerprint` | 规则、主体、稳定根因的 SHA-256。 |
 | `status` | `open` 或 `resolved`。 |
 | `severity` | 首期固定为 `warning`，保留扩展空间。 |
@@ -85,6 +85,12 @@ await quality_warning_service.record_successful_check(
 ```
 
 `CheckScope` 的租户信息只从可信执行上下文取得，不允许调用方在请求体中指定。单次调用只能关闭同一 `domain`、`rule_code`、`subject_type` 和已声明 `covered_subject_ids` 中的 open 告警；不同阶段使用各自明确的 rule code，不能互相关闭。
+
+报告发布门禁每次都会重算全部规则，因此以报告运行为覆盖单元：
+
+- claim、block、chart、section 等主体 id 只在单次报告运行内唯一，写入台账时统一加运行前缀（`<run>:<本地 id>`，报告本身为 `<run>:report`，超长时退化为稳定摘要），本地 id 保留在 `details.subjectLocalId`。
+- 发布审计对每个已登记的规则/主体类型都提交一次检查，覆盖范围用 `covered_subject_prefix=<run>:` 声明，即使本次没有发现也会提交。
+- 同一报告运行的后续修订中不再出现的告警会被关闭；其他报告运行的告警不在覆盖范围内，保持不变。
 
 ## HTTP 查询接口与权限
 

@@ -17,9 +17,31 @@ from .models import (
     WarningNotice,
     warning_fingerprint,
 )
-from .policy import QualityWarningContractError, get_warning_rule
+from .policy import QualityWarningContractError, get_warning_rule, warning_rules
 
 _SUBJECT_ID_MAX_LENGTH = 128
+
+
+_RUN_KEY_MAX_LENGTH = 48
+
+
+def _run_subject_prefix(report_run_id: str) -> str:
+    """报告内主体（claim/block/chart 等）只在单次报告运行内唯一，台账身份需带运行前缀。"""
+
+    run_key = (
+        report_run_id
+        if len(report_run_id) <= _RUN_KEY_MAX_LENGTH and ":" not in report_run_id
+        else f"run-sha256-{hashlib.sha256(report_run_id.encode()).hexdigest()[:32]}"
+    )
+    return f"{run_key}:"
+
+
+def _run_subject_id(prefix: str, *, subject_type: str, subject_id: str) -> str:
+    local = "report" if subject_type == "report" else subject_id
+    qualified = prefix + local
+    if len(qualified) <= _SUBJECT_ID_MAX_LENGTH:
+        return qualified
+    return f"{prefix}sha256:{hashlib.sha256(local.encode()).hexdigest()}"
 
 
 def _group_subject_id(prefix: str, ids: tuple[str, ...]) -> str:
@@ -217,17 +239,24 @@ class QualityAuditCollector:
         )
 
     async def flush(self, *, service: Any, tenant: TenantScope) -> WarningAuditResult:
+        """提交一次完整发布检查。
+
+        发布门禁每次都会重算全部规则，因此对每个已登记的规则/主体类型都声明一次检查，
+        覆盖范围为本次报告运行的全部主体：本次未再出现的既有告警即被判定为已解决，
+        其他报告运行的告警不受影响。
+        """
+
         result = self.build()
-        if not result.findings:
-            result.flush_status = "skipped"
-            return result
+        prefix = _run_subject_prefix(self.report_run_id)
         grouped: dict[tuple[str, str], list[WarningFinding]] = {}
         for finding in result.findings:
             grouped.setdefault((finding.rule_code, finding.subject_type), []).append(
                 WarningFinding(
                     rule_code=finding.rule_code,
                     subject_type=finding.subject_type,
-                    subject_id=finding.subject_id,
+                    subject_id=_run_subject_id(
+                        prefix, subject_type=finding.subject_type, subject_id=finding.subject_id
+                    ),
                     severity=finding.severity,
                     disposition=finding.disposition,
                     sourcePhase=finding.source_phase,
@@ -235,32 +264,38 @@ class QualityAuditCollector:
                     message=finding.message,
                     details={
                         **finding.details,
+                        "subjectLocalId": finding.subject_id,
                         "sourcePhases": list(finding.source_phases),
                     },
                 )
             )
-        checks = tuple(
-            WarningCheck(
-                checkScope=CheckScope(
-                    domain="reporting",
-                    rule_code=rule_code,
-                    subject_type=subject_type,
-                    covered_subject_ids=tuple(sorted({item.subject_id for item in findings})),
-                ),
-                findings=tuple(findings),
-                context=CheckContext(
-                    check_id=(
-                        f"publication:{self.report_run_id}:{self.revision}:"
-                        f"{rule_code}:{subject_type}"
-                    ),
-                    report_run_id=self.report_run_id,
-                    revision=self.revision,
-                ),
-            )
-            for (rule_code, subject_type), findings in sorted(grouped.items())
-        )
+        checks = []
+        for rule in warning_rules():
+            for subject_type in sorted(rule.subject_types):
+                findings = grouped.pop((rule.code, subject_type), [])
+                checks.append(
+                    WarningCheck(
+                        checkScope=CheckScope(
+                            domain="reporting",
+                            rule_code=rule.code,
+                            subject_type=subject_type,
+                            covered_subject_prefix=prefix,
+                        ),
+                        findings=tuple(findings),
+                        context=CheckContext(
+                            check_id=(
+                                f"publication:{self.report_run_id}:{self.revision}:"
+                                f"{rule.code}:{subject_type}"
+                            ),
+                            report_run_id=self.report_run_id,
+                            revision=self.revision,
+                        ),
+                    )
+                )
+        if grouped:
+            raise QualityWarningContractError("存在未登记规则或主体类型的告警。")
         try:
-            await service.record_successful_checks(tenant=tenant, checks=checks)
+            await service.record_successful_checks(tenant=tenant, checks=tuple(checks))
         except Exception:
             result.flush_status = "failed"
             raise
