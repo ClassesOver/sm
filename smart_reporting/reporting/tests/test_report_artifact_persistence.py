@@ -49,7 +49,7 @@ from smart_reporting.reporting.workflow.scope import (
 )
 from smart_reporting.runtime.database import create_agent_database
 from smart_reporting.task_execution import TaskState
-from smart_reporting.workspace import WorkspaceService
+from smart_reporting.workspace import WorkspacePathConflict, WorkspaceService
 
 
 async def _chunks(*values: bytes):
@@ -1341,3 +1341,117 @@ async def test_workflow_publication_keeps_workspace_paths_without_http_services(
         output=output,
     )
     runtime.issue_http_publication.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_http_publication_replay_reuses_identical_revision_assets() -> None:
+    pdf = b"pdf"
+    word = b"word"
+    chart = b"png-bytes"
+    files: dict[str, bytes] = {
+        "reports/report.md": "# 报告\n".encode(),
+        "reports/charts/a.png": chart,
+    }
+    content = {
+        "reportId": "report-1",
+        "revision": 1,
+        "jobId": "job-1",
+        "editorJob": {
+            "jobId": "job-1",
+            "status": "validated",
+            "render": {"images": [{"path": "reports/charts/a.png"}]},
+        },
+        "markdownPath": "reports/report.md",
+        "pdfPath": "reports/report.pdf",
+        "pdfSize": len(pdf),
+        "pdfSha256": hashlib.sha256(pdf).hexdigest(),
+        "wordPath": "reports/report.docx",
+        "wordSize": len(word),
+        "wordSha256": hashlib.sha256(word).hexdigest(),
+        "sourceWarnings": [],
+        "codingReceipts": [],
+    }
+    contexts: list[Any] = []
+
+    class Persistence:
+        async def persist(self, **values: Any) -> None:
+            return None
+
+    class Grants:
+        async def issue(self, **values: Any):
+            return "raw", ReportDownloadGrant(
+                grant_hash="b" * 64,
+                scope=values["scope"],
+                report_id=values["report_id"],
+                revision=values["revision"],
+                pdf_path=values["pdf_path"],
+                pdf_size=values["pdf_size"],
+                pdf_sha256=values["pdf_sha256"],
+                word_path=values["word_path"],
+                word_size=values["word_size"],
+                word_sha256=values["word_sha256"],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+    class EditorGrants:
+        async def issue(self, context: Any):
+            contexts.append(context)
+            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+
+    class Workspace:
+        async def aread_text(self, thread_id: str, path: str) -> str:
+            return files[path].decode()
+
+        async def apath_exists(self, thread_id: str, path: str) -> bool:
+            return path in files
+
+        async def awrite_text(self, thread_id: str, path: str, text: str) -> None:
+            assert path not in files
+            files[path] = text.encode()
+
+        async def afile_bytes(self, thread_id: str, path: str) -> tuple[bytes, str]:
+            return files[path], "image/png"
+
+        async def awrite_bytes(self, thread_id: str, path: str, data: bytes) -> None:
+            # 与宿主机工作区一致：默认 overwrite=False，目标存在即冲突。
+            if path in files:
+                raise WorkspacePathConflict("exists")
+            files[path] = data
+
+        async def adestroy(self, thread_id: str) -> bool:
+            return True
+
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.artifact_persistence = Persistence()
+    runtime.download_grants = Grants()
+    runtime.editor_grants = EditorGrants()
+    runtime.workspace_service = Workspace()
+    runtime.report_public_base_url = "http://localhost"
+    durable = SimpleNamespace(
+        state_version=3,
+        payload={"report_workflow_scope": _scope_state_for_publication()},
+    )
+
+    class StateRepository:
+        async def get(self, report_run_id: str):
+            return durable
+
+        async def apply(self, report_run_id: str, command: Any, *, expected_version: int):
+            durable.payload["reportEditorContexts"] = {"1": command.payload["context"]}
+
+    runtime.state_repository = StateRepository()
+    for _ in range(2):
+        await runtime.issue_http_publication(
+            thread_id="thread",
+            caller_thread_id="thread",
+            user_id="7",
+            workflow_session_id="workflow-session",
+            workflow_run_id="workflow-run",
+            output=content,
+        )
+
+    assert files["reports/revision-1/charts/a.png"] == chart
+    assert [context.job["render"]["images"][0]["path"] for context in contexts] == [
+        "reports/revision-1/charts/a.png",
+        "reports/revision-1/charts/a.png",
+    ]

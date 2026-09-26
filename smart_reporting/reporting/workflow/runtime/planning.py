@@ -363,7 +363,19 @@ class RuntimePlanningMixin:
                 if not await self.workspace_service.apath_exists(thread_id, source_path):
                     return None
                 content_bytes, _ = await self.workspace_service.afile_bytes(thread_id, source_path)
-                await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
+                # 发布可能重放：目标已存在时与 Markdown 快照同语义，内容一致即复用，
+                # 不一致视为 revision 冲突，不能因 overwrite=False 让重试失败。
+                if await self.workspace_service.apath_exists(thread_id, target_path):
+                    existing_bytes, _ = await self.workspace_service.afile_bytes(
+                        thread_id, target_path
+                    )
+                    if existing_bytes != content_bytes:
+                        raise ReportingError(
+                            "report_editor_revision_conflict",
+                            "当前报告 revision 已存在不同的资源快照。",
+                        )
+                else:
+                    await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
                 path_map[source_path] = target_path
                 return target_path
 
