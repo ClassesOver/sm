@@ -321,9 +321,14 @@ class RuntimeVisualizationMixin:
             interactive_files: list[dict[str, Any]] = []
             for registration in parsed:
                 source_path = self._require_chart_output_path(registration.source_path, output_root)
-                identity = await self._inspect_chart_file(
+                # 同一次检查得到文件身份与尺寸类质量告警（分辨率、有效 DPI、宽高比），
+                # 这些告警只作为非阻断质量信号随章节回执与 durable 告警保留。
+                identity, quality_warnings = await self._inspect_chart(
                     thread_id=scope.thread_id,
-                    path=source_path,
+                    registration=registration.model_copy(update={"source_path": source_path}),
+                )
+                warnings.extend(
+                    {**warning, "sectionCode": sectionCode} for warning in quality_warnings
                 )
                 inspected.append(_serialized_chart_registration(registration))
                 files.append(
