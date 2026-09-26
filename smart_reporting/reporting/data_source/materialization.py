@@ -68,11 +68,18 @@ class CsvMaterializer:
 
 def _deduplicate_columns(columns: tuple[str, ...]) -> tuple[str, ...]:
     seen: dict[str, int] = {}
+    used: set[str] = set()
     result: list[str] = []
     for value in columns:
         name = str(value or "column")
         seen[name] = seen.get(name, 0) + 1
-        result.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
+        candidate = name if seen[name] == 1 else f"{name}_{seen[name]}"
+        # 生成的后缀名可能与原始列名相撞（如 a, a_2, a），继续递增直到唯一。
+        while candidate in used:
+            seen[name] += 1
+            candidate = f"{name}_{seen[name]}"
+        used.add(candidate)
+        result.append(candidate)
     return tuple(result)
 
 
