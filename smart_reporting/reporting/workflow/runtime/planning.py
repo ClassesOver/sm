@@ -362,12 +362,8 @@ class RuntimePlanningMixin:
                     return target_path
                 if not await self.workspace_service.apath_exists(thread_id, source_path):
                     return None
-                content_bytes, _ = await self.workspace_service.afile_bytes(
-                    thread_id, source_path
-                )
-                await self.workspace_service.awrite_bytes(
-                    thread_id, target_path, content_bytes
-                )
+                content_bytes, _ = await self.workspace_service.afile_bytes(thread_id, source_path)
+                await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
                 path_map[source_path] = target_path
                 return target_path
 
@@ -387,8 +383,7 @@ class RuntimePlanningMixin:
             def _remap_paths(obj: Any) -> Any:
                 if isinstance(obj, dict):
                     return {
-                        path_map.get(key, key): _remap_paths(value)
-                        for key, value in obj.items()
+                        path_map.get(key, key): _remap_paths(value) for key, value in obj.items()
                     }
                 if isinstance(obj, list):
                     return [_remap_paths(item) for item in obj]
