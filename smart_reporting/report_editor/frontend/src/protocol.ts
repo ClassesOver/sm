@@ -1,4 +1,4 @@
-export type ProtocolMarkerKind = 'section' | 'citation'
+export type ProtocolMarkerKind = 'section' | 'citation' | 'analysis'
 
 export interface ProtocolMarker {
   kind: ProtocolMarkerKind
@@ -8,7 +8,7 @@ export interface ProtocolMarker {
   end: number
 }
 
-const MARKER_PATTERN = /\[\[(section|citation):([A-Za-z0-9_.:-]{1,128})\]\]/g
+const MARKER_PATTERN = /\[\[(section|citation|analysis):([A-Za-z0-9_.:-]{1,128})\]\]/g
 
 // Milkdown 的 markdown 序列化器会把字面量 [[ 转义为 \[\[（下划线等同理），
 // 存储前必须还原，否则正式章节/引用/分析标识在导出渲染时无法识别。

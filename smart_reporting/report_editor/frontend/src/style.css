@@ -1624,8 +1624,8 @@ button {
   margin-top: 0.2em;
   margin-bottom: 1.35em;
   padding-bottom: 14px;
-  border-bottom: 1px solid #c8d4dd;
-  font-size: 29px;
+  border-bottom: 2px solid #c8d4dd;
+  font-size: 30px;
   font-weight: 720;
   line-height: 1.35;
 }
@@ -1634,7 +1634,7 @@ button {
   margin-top: 2em;
   margin-bottom: 0.8em;
   padding-bottom: 8px;
-  border-bottom: 1px solid #d6e0e8;
+  border-bottom: 1px solid #ccd8e2;
   color: #30435a;
   font-size: 23px;
   font-weight: 700;
@@ -1655,19 +1655,30 @@ button {
 #report-editor .ProseMirror h4 {
   margin-top: 1.4em;
   margin-bottom: 0.55em;
+  padding-left: 10px;
+  border-left: 2px solid #c3d3de;
   color: #30435a;
   font-size: 16px;
   font-weight: 650;
   line-height: 1.55;
 }
 
-#report-editor .ProseMirror h5,
-#report-editor .ProseMirror h6 {
+#report-editor .ProseMirror h5 {
   margin-top: 1.2em;
   margin-bottom: 0.5em;
   color: #526579;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.6;
+}
+
+#report-editor .ProseMirror h6 {
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  color: #71808f;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   line-height: 1.6;
 }
 
@@ -2573,7 +2584,8 @@ button {
 }
 
 .report-section-marker,
-.report-citation-marker {
+.report-citation-marker,
+.report-analysis-marker {
   display: none;
 }
 
@@ -2999,6 +3011,8 @@ button {
   }
 
   #report-editor .ProseMirror h4 {
+    padding-left: 7pt;
+    border-left: 1.5pt solid #c3d3de;
     font-size: 12pt;
     break-after: avoid;
   }

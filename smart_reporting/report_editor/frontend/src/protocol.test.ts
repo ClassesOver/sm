@@ -3,26 +3,27 @@ import { describe, expect, it } from 'vitest'
 import { findProtocolMarkers, protocolMarkersUnchanged, restoreProtocolMarkers } from './protocol'
 
 describe('report protocol markers', () => {
-  it('finds section and citation markers without transforming markdown', () => {
+  it('finds section, citation, and analysis markers without transforming markdown', () => {
     const markdown = [
       '[[section:summary]]',
-      '## 经营摘要',
+      '## 经营摘要[[analysis:analysis_001]]',
       '收入同比增长。[[citation:revenue_001]]',
     ].join('\n')
 
     expect(findProtocolMarkers(markdown)).toEqual([
       expect.objectContaining({ kind: 'section', raw: '[[section:summary]]' }),
+      expect.objectContaining({ kind: 'analysis', raw: '[[analysis:analysis_001]]' }),
       expect.objectContaining({ kind: 'citation', raw: '[[citation:revenue_001]]' }),
     ])
     expect(protocolMarkersUnchanged(markdown, markdown)).toBe(true)
   })
 
   it('rejects deletion, editing, or reordering of protected markers', () => {
-    const original = '[[section:a]]\n正文 [[citation:x]]'
+    const original = '[[section:a]]\n## 标题[[analysis:an_1]]\n正文 [[citation:x]]'
 
     expect(protocolMarkersUnchanged(original, '正文 [[citation:x]]')).toBe(false)
     expect(
-      protocolMarkersUnchanged(original, '[[section:a]]\n正文 [[citation:y]]'),
+      protocolMarkersUnchanged(original, '## 标题[[analysis:an_2]]\n正文 [[citation:x]]'),
     ).toBe(false)
     expect(
       protocolMarkersUnchanged(original, '[[citation:x]]\n正文 [[section:a]]'),
