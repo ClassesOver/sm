@@ -149,14 +149,25 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
     if (action === 'close') close()
     if (action === 'prev') { move(-1); query.focus() }
     if (action === 'next') { move(1); query.focus() }
-    if (action === 'replace' && query.value && total && backend) {
-      backend.replace(query.value, replacement.value, current)
+    // 替换文本自身含搜索词时（收入→总收入），替换后会在原位置产生新匹配；
+    // 跳过这些新匹配，否则重复点击"替换"只会反复替换同一处。
+    const advancePastReplacement = (replaced: number) => {
       refresh()
+      const skip = replacement.value.split(query.value).length - 1
+      if (!skip || !total) return
+      current = (replaced + skip) % total
+      refresh()
+    }
+    if (action === 'replace' && query.value && total && backend) {
+      const replaced = current
+      backend.replace(query.value, replacement.value, current)
+      advancePastReplacement(replaced)
     } else if (action === 'replace' && query.value && matches.length) {
+      const replaced = current
       const text = getText()
       const start = matches[current]
       replaceText(text.slice(0, start) + replacement.value + text.slice(start + query.value.length))
-      refresh()
+      advancePastReplacement(replaced)
     }
     if (action === 'all' && query.value && backend) {
       backend.replace(query.value, replacement.value, null)
