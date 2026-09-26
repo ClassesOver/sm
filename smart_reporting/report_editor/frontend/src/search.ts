@@ -7,6 +7,14 @@ export interface SearchControllerOptions {
   setQuery?: (query: string, replacement: string) => void
   applyHighlight?: (query: string, current: number) => void
   navigate?: (direction: 'prev' | 'next') => void
+  /** 编辑器文档后端：计数与替换与高亮共用同一组文档位置，优先于纯文本模式。 */
+  backend?: SearchBackend
+}
+
+export interface SearchBackend {
+  count: (query: string) => number
+  /** index 为 null 时替换全部匹配；位置在调用时按最新文档重新计算。 */
+  replace: (query: string, replacement: string, index: number | null) => void
 }
 
 function protectedRanges(text: string): Array<[number, number]> {
@@ -38,7 +46,7 @@ function replaceOutsideProtected(text: string, query: string, replacement: strin
   return result + text.slice(cursor)
 }
 
-export function createSearchController({ root, getText, replaceText, setQuery, applyHighlight, navigate }: SearchControllerOptions) {
+export function createSearchController({ root, getText, replaceText, setQuery, applyHighlight, navigate, backend }: SearchControllerOptions) {
   const panel = document.createElement('section')
   panel.className = 'search-panel'
   panel.hidden = true
@@ -81,28 +89,34 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
       node.replaceWith(fragment)
     })
   }
+  let total = 0
   const refresh = () => {
-    const text = getText()
-    const ranges = protectedRanges(text)
     matches = []
-    if (query.value) {
-      let index = text.indexOf(query.value)
-      while (index >= 0) {
-        if (!overlapsProtected(index, query.value.length, ranges)) matches.push(index)
-        index = text.indexOf(query.value, index + query.value.length)
+    if (backend) {
+      total = backend.count(query.value)
+    } else {
+      const text = getText()
+      const ranges = protectedRanges(text)
+      if (query.value) {
+        let index = text.indexOf(query.value)
+        while (index >= 0) {
+          if (!overlapsProtected(index, query.value.length, ranges)) matches.push(index)
+          index = text.indexOf(query.value, index + query.value.length)
+        }
       }
+      total = matches.length
     }
-    current = Math.min(current, Math.max(0, matches.length - 1))
-    count.textContent = matches.length ? `${current + 1} / ${matches.length} 个匹配` : '0 个匹配'
+    current = Math.min(current, Math.max(0, total - 1))
+    count.textContent = total ? `${current + 1} / ${total} 个匹配` : '0 个匹配'
     panel.querySelectorAll<HTMLButtonElement>('[data-search="prev"], [data-search="next"], [data-search="replace"], [data-search="all"]')
-      .forEach((button) => { button.disabled = matches.length === 0 })
+      .forEach((button) => { button.disabled = total === 0 })
     if (setQuery) setQuery(query.value, replacement.value)
     else if (applyHighlight) applyHighlight(query.value, current)
     else highlight()
   }
   const move = (offset: number) => {
-    if (!matches.length) return
-    current = (current + offset + matches.length) % matches.length
+    if (!total) return
+    current = (current + offset + total) % total
     refresh()
     navigate?.(offset < 0 ? 'prev' : 'next')
     const active = editor?.querySelector<HTMLElement>('.search-match-active')
@@ -111,6 +125,7 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
   const close = () => {
     panel.hidden = true
     matches = []
+    total = 0
     current = 0
     count.textContent = '0 个匹配'
     if (setQuery) setQuery('', replacement.value)
@@ -134,13 +149,19 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
     if (action === 'close') close()
     if (action === 'prev') { move(-1); query.focus() }
     if (action === 'next') { move(1); query.focus() }
-    if (action === 'replace' && query.value && matches.length) {
+    if (action === 'replace' && query.value && total && backend) {
+      backend.replace(query.value, replacement.value, current)
+      refresh()
+    } else if (action === 'replace' && query.value && matches.length) {
       const text = getText()
       const start = matches[current]
       replaceText(text.slice(0, start) + replacement.value + text.slice(start + query.value.length))
       refresh()
     }
-    if (action === 'all' && query.value) {
+    if (action === 'all' && query.value && backend) {
+      backend.replace(query.value, replacement.value, null)
+      refresh()
+    } else if (action === 'all' && query.value) {
       replaceText(replaceOutsideProtected(getText(), query.value, replacement.value))
       refresh()
     }

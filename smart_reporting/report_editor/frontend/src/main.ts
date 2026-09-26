@@ -45,6 +45,7 @@ import {
 } from './enhancements'
 import { protocolMarkerPlugin } from './protocol-plugin'
 import { restoreProtocolMarkers } from './protocol'
+import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
 import { createEditorShell } from './shell'
 import { createOutlineController, type OutlineItem } from './outline'
@@ -280,8 +281,20 @@ try {
   ])
   const searchController = createSearchController({
     root,
-    getText: () => crepe.getMarkdown(),
+    getText: () => getEditorMarkdown(),
     replaceText: (markdown) => crepe.editor.action(replaceAll(markdown)),
+    backend: {
+      count: (query) =>
+        crepe.editor.action((ctx) => findDocumentMatches(ctx.get(editorViewCtx).state.doc, query).length),
+      replace: (query, replacement, index) => {
+        crepe.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          const matches = findDocumentMatches(view.state.doc, query)
+          const selected = index === null ? matches : matches.slice(index, index + 1)
+          if (selected.length) view.dispatch(replaceDocumentMatches(view.state.tr, selected, replacement))
+        })
+      },
+    },
     applyHighlight: (query, current) => {
       crepe.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx)

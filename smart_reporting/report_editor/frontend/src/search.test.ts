@@ -202,4 +202,32 @@ describe('createSearchController', () => {
     expect(document.activeElement).toBe(query)
     expect(controller.panel.hidden).toBe(false)
   })
+  it('counts and replaces through the document backend instead of Markdown text', () => {
+    const replaced: Array<[string, string, number | null]> = []
+    let total = 3
+    const backend = {
+      count: vi.fn(() => total),
+      replace: vi.fn((query: string, value: string, index: number | null) => {
+        replaced.push([query, value, index])
+        total = index === null ? 0 : total - 1
+      }),
+    }
+    const getText = vi.fn(() => '**收入**')
+    const controller = createSearchController({ root, getText, replaceText, backend })
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    const replacement = root.querySelector<HTMLInputElement>('.search-replacement')!
+    query.value = '收入'
+    replacement.value = '营收'
+    query.dispatchEvent(new Event('input'))
+    expect(root.querySelector('.search-count')?.textContent).toBe('1 / 3 个匹配')
+
+    root.querySelector<HTMLButtonElement>('[data-search="next"]')!.click()
+    root.querySelector<HTMLButtonElement>('[data-search="replace"]')!.click()
+    root.querySelector<HTMLButtonElement>('[data-search="all"]')!.click()
+
+    expect(replaced).toEqual([['收入', '营收', 1], ['收入', '营收', null]])
+    expect(getText).not.toHaveBeenCalled()
+    expect(root.querySelector('.search-count')?.textContent).toBe('0 个匹配')
+  })
 })
