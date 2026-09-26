@@ -1259,9 +1259,7 @@ class _ReportWorkflowRuntimeBase:
         state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = scope
         return scope
 
-    def _workspace_for_scope(
-        self, scope: ReportingWorkflowScope
-    ) -> HostReportingWorkspace:
+    def _workspace_for_scope(self, scope: ReportingWorkflowScope) -> HostReportingWorkspace:
         registry = getattr(self, "workspace_registry", None)
         if registry is None:
             raise ReportingError(
@@ -1374,7 +1372,9 @@ class _ReportWorkflowRuntimeBase:
     async def assert_resumable(self, run_id: str) -> None:
         run = await self.state_repository.get_run(run_id)
         if run is None or str(run.get("status")) != "paused":
-            raise ReportingError("report_workflow_not_paused", "Reporting Workflow 不处于暂停状态。")
+            raise ReportingError(
+                "report_workflow_not_paused", "Reporting Workflow 不处于暂停状态。"
+            )
         keys = reporting_scope_keys(
             database=str(run["database"]),
             company_id=str(run["company_id"]),
@@ -1384,7 +1384,9 @@ class _ReportWorkflowRuntimeBase:
         )
         owner = await self.state_repository.get_workflow_thread_owner(keys.thread_lease_key)
         if owner is None or owner["external_run_id"] != run["external_run_id"]:
-            raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 不再拥有当前 thread。")
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "Reporting Workflow 不再拥有当前 thread。"
+            )
 
     async def settle_run(self, run_id: str, status: str) -> None:
         if status not in {"completed", "cancelled", "failed", "paused"}:
@@ -1407,9 +1409,7 @@ class _ReportWorkflowRuntimeBase:
             thread_id=str(run["thread_id"]),
             run_id=run_id,
         )
-        async with self.state_repository.workflow_thread_lifecycle_lock(
-            keys.thread_lease_key
-        ):
+        async with self.state_repository.workflow_thread_lifecycle_lock(keys.thread_lease_key):
             try:
                 await self.cleanup_terminal(
                     {"thread_id": keys.workspace_key},

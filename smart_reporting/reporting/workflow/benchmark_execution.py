@@ -132,10 +132,9 @@ def _validate_required_charts_identity(
     for chart_id in sorted(set(required_by_id) & set(planned_by_id)):
         required_item = required_by_id[chart_id]
         chart = planned_by_id[chart_id]
-        if (
-            chart.source_path != required_item.get("sourcePath")
-            or chart.interactive_path != required_item.get("interactivePath")
-        ):
+        if chart.source_path != required_item.get(
+            "sourcePath"
+        ) or chart.interactive_path != required_item.get("interactivePath"):
             mismatches.append(chart_id)
     if missing or unexpected or mismatches:
         raise ReportingError(
@@ -176,9 +175,7 @@ def prepare_benchmark_coding_payload(
             "report_phase_contract_invalid", "benchmark codingPayload 缺少 task 或 facts。"
         )
     if task.get("task_kind") != task_kind:
-        raise ReportingError(
-            "report_phase_contract_invalid", "benchmark Coding taskKind 不一致。"
-        )
+        raise ReportingError("report_phase_contract_invalid", "benchmark Coding taskKind 不一致。")
     projection = BenchmarkProjection.for_variant(variant)
 
     if task_kind == "analysis":
@@ -211,9 +208,7 @@ def prepare_benchmark_coding_payload(
                     "report_benchmark_coding_not_required",
                     "分析 planner 已确认无需 Coding，不应启动补证脚本阶段。",
                 )
-            facts["evidenceDecision"] = planner_output.model_dump(
-                mode="json", by_alias=True
-            )
+            facts["evidenceDecision"] = planner_output.model_dump(mode="json", by_alias=True)
         return coding_payload
 
     if task_kind != "visualization":
@@ -250,7 +245,8 @@ def prepare_benchmark_coding_payload(
     planned_paths = _visualization_paths(plan)
     if not isinstance(declared_outputs, (list, tuple)) or expected_paths != planned_paths:
         raise ReportingError(
-            "report_phase_contract_invalid", "planner 图表输出路径与冻结 Coding 上下文不一致。",
+            "report_phase_contract_invalid",
+            "planner 图表输出路径与冻结 Coding 上下文不一致。",
             details={
                 "missingPaths": sorted(expected_paths - planned_paths),
                 "unexpectedPaths": sorted(planned_paths - expected_paths),
@@ -265,7 +261,5 @@ def prepare_benchmark_coding_payload(
         visualization_facts,
         plan=plan if projection.include_visual_bindings else None,
     )
-    facts["visualizationPlan"] = visualization_coding_plan(
-        plan, benchmark_projection=projection
-    )
+    facts["visualizationPlan"] = visualization_coding_plan(plan, benchmark_projection=projection)
     return coding_payload

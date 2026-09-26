@@ -227,8 +227,6 @@ def create_report_runtime(
         visualization_section_deadline_seconds=(
             settings.report_visualization_section_deadline_seconds
         ),
-        visualization_total_deadline_seconds=(
-            settings.report_visualization_total_deadline_seconds
-        ),
+        visualization_total_deadline_seconds=(settings.report_visualization_total_deadline_seconds),
     )
     return reporting_agent_template, runtime

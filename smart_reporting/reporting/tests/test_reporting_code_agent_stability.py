@@ -42,12 +42,15 @@ from smart_reporting.reporting.workflow.runtime.visualization_section_workflow i
 )
 
 
-@pytest.mark.parametrize("code,expected", [
-    ("report_code_source_invalid", "python_compile_failure"),
-    ("report_code_mode_execution_failed", "python_execution_failure"),
-    ("report_analysis_evidence_schema_invalid", "schema_failure"),
-    ("unknown", None),
-])
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("report_code_source_invalid", "python_compile_failure"),
+        ("report_code_mode_execution_failed", "python_execution_failure"),
+        ("report_analysis_evidence_schema_invalid", "schema_failure"),
+        ("unknown", None),
+    ],
+)
 def test_current_code_errors_have_correct_failure_kind(code, expected):
     assert _code_failure_kind({"code": code}) == expected
 
@@ -130,11 +133,16 @@ async def test_no_submission_reports_actual_failure_and_usage(workspace, exhaust
             self.tools = {tool.name: tool for tool in tools}
 
         async def arun(self, *_args, **_kwargs):
-            await FunctionCall(function=self.tools["write_script"], arguments={
-                "source": "if True print('broken')\n",
-            }).aexecute()
+            await FunctionCall(
+                function=self.tools["write_script"],
+                arguments={
+                    "source": "if True print('broken')\n",
+                },
+            ).aexecute()
             await FunctionCall(function=self.tools["run_script"], arguments={}).aexecute()
-            return SimpleNamespace(messages=[Message(role="tool", content="skipped")] * (30 if exhausted else 2))
+            return SimpleNamespace(
+                messages=[Message(role="tool", content="skipped")] * (30 if exhausted else 2)
+            )
 
     runner = ReportingCodeGenerationRunner(Agent, ToolkitRuntime(), ReportingLspProcessManager())
     with pytest.raises(ReportingError) as caught:
@@ -157,13 +165,21 @@ def test_shared_evidence_validator_uses_trusted_identity_and_allows_semantic_war
     from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
         validate_supplemental_evidence,
     )
-    evidence = validate_supplemental_evidence(json.dumps({
-        "analysisId": "untrusted", "analysis_id": "also-untrusted",
-        "datasetIds": ["untrusted"], "dataset_ids": ["also-untrusted"],
-        "findings": [{"text": "finding"}],
-        "reconciliations": [{"name": "check", "passed": False}],
-        "warnings": [],
-    }), {"analysisId": "analysis_001", "datasetIds": ["ds_1", "ds_1"]})
+
+    evidence = validate_supplemental_evidence(
+        json.dumps(
+            {
+                "analysisId": "untrusted",
+                "analysis_id": "also-untrusted",
+                "datasetIds": ["untrusted"],
+                "dataset_ids": ["also-untrusted"],
+                "findings": [{"text": "finding"}],
+                "reconciliations": [{"name": "check", "passed": False}],
+                "warnings": [],
+            }
+        ),
+        {"analysisId": "analysis_001", "datasetIds": ["ds_1", "ds_1"]},
+    )
     assert evidence.analysis_id == "analysis_001"
     assert evidence.dataset_ids == ("ds_1",)
     assert evidence.reconciliations[0]["passed"] is False
@@ -180,20 +196,32 @@ async def test_evidence_preflight_blocks_workflow_handoff_until_repaired(binding
 
     async def preflight(receipt):
         raw = await binding.workspace.read_limited_regular_file(
-            binding.context.task_id, receipt.output_files[0].path, max_bytes=1000,
+            binding.context.task_id,
+            receipt.output_files[0].path,
+            max_bytes=1000,
         )
         try:
-            validate_supplemental_evidence(raw, {
-                "analysisId": "analysis_001", "datasetIds": ["ds_1"],
-            })
+            validate_supplemental_evidence(
+                raw,
+                {
+                    "analysisId": "analysis_001",
+                    "datasetIds": ["ds_1"],
+                },
+            )
         except ValidationError as error:
             rejection = supplemental_evidence_schema_error(error)
-            return {"code": rejection.code, "message": rejection.message,
-                    "details": rejection.details}
+            return {
+                "code": rejection.code,
+                "message": rejection.message,
+                "details": rejection.details,
+            }
         return None
 
     toolkit = ReportingCodeModeToolkit(
-        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight,
+        binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        output_preflight=preflight,
     )
     await toolkit.write_script(SOURCE)
     functions = {tool.name: tool for tool in toolkit.tool_functions}
@@ -221,7 +249,10 @@ async def test_preflight_failure_blocks_submission_instead_of_passing(binding): 
         raise RuntimeError("validator exploded")
 
     toolkit = ReportingCodeModeToolkit(
-        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight,
+        binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        output_preflight=preflight,
     )
     await toolkit.write_script(SOURCE)
     functions = {tool.name: tool for tool in toolkit.tool_functions}
@@ -254,7 +285,10 @@ async def test_stale_validation_failure_blocks_current_run_submission(binding): 
         return {"code": "report_analysis_evidence_schema_invalid", "message": "结构未通过"}
 
     toolkit = ReportingCodeModeToolkit(
-        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight,
+        binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        output_preflight=preflight,
     )
     await toolkit.write_script(SOURCE)
     functions = {tool.name: tool for tool in toolkit.tool_functions}
@@ -275,14 +309,21 @@ async def test_skipped_batch_calls_do_not_overwrite_failure(binding):  # noqa: F
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     functions = {tool.name: tool for tool in toolkit.tool_functions}
     await toolkit.write_script("if True print('broken')\n")
-    calls = [FunctionCall(function=functions[name], call_id=name, arguments={})
-             for name in ("run_script", "submit_script", "read_script")]
+    calls = [
+        FunctionCall(function=functions[name], call_id=name, arguments={})
+        for name in ("run_script", "submit_script", "read_script")
+    ]
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
     results = []
-    _ = [event async for event in model.arun_function_calls(
-        function_calls=calls, function_call_results=results,
-        current_function_call_count=0, function_call_limit=20,
-    )]
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=calls,
+            function_call_results=results,
+            current_function_call_count=0,
+            function_call_limit=20,
+        )
+    ]
     assert len(results) == 3
     assert json.loads(results[-1].content)["status"] == "skipped"
     assert toolkit.last_tool == "run_script"
@@ -297,13 +338,18 @@ async def test_skipped_batch_calls_do_not_overwrite_failure(binding):  # noqa: F
 async def test_preflight_cannot_accept_changed_output(binding):  # noqa: F811
     async def preflight(receipt):
         await binding.workspace.awrite_text(
-            binding.context.task_id, receipt.output_files[0].path, '{"changed": true}',
+            binding.context.task_id,
+            receipt.output_files[0].path,
+            '{"changed": true}',
             overwrite=True,
         )
         return None
 
     toolkit = ReportingCodeModeToolkit(
-        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight,
+        binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        output_preflight=preflight,
     )
     await toolkit.write_script(SOURCE)
     with pytest.raises(ReportingError, match="report_phase_artifact_changed"):
@@ -361,7 +407,10 @@ async def test_evidence_repair_prompt_retains_bounded_field_diagnostic(workspace
     )
     with pytest.raises(ReportingError) as caught:
         await runner.run(
-            _task_context(workspace), workspace, {}, run_context=_run_context(),
+            _task_context(workspace),
+            workspace,
+            {},
+            run_context=_run_context(),
             diagnostic={
                 "code": "report_analysis_evidence_schema_invalid",
                 "message": "补充 evidence 不符合机器结构契约。",
@@ -397,26 +446,20 @@ async def test_run_returns_expression_value(binding):  # noqa: F811
 async def test_run_returns_bounded_exploration_variable_types(binding):  # noqa: F811
     runtime = SimpleNamespace(
         execute=AsyncMock(return_value=CellResult(result="loaded")),
-        exploration_variables=AsyncMock(
-            return_value={"df1": "DataFrame", "count": "int"}
-        ),
+        exploration_variables=AsyncMock(return_value={"df1": "DataFrame", "count": "int"}),
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
 
     result = await toolkit.run("df1 = load()")
 
     assert result["explorationVariables"] == {"count": "int", "df1": "DataFrame"}
-    runtime.exploration_variables.assert_awaited_once_with(
-        binding.context.code_mode_session_id
-    )
+    runtime.exploration_variables.assert_awaited_once_with(binding.context.code_mode_session_id)
 
 
 @pytest.mark.anyio
 async def test_run_failure_returns_exploration_types_without_values(binding):  # noqa: F811
     runtime = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=CellResult(status="error", traceback="NameError: missing")
-        ),
+        execute=AsyncMock(return_value=CellResult(status="error", traceback="NameError: missing")),
         exploration_variables=AsyncMock(return_value={"df1": "DataFrame"}),
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
@@ -510,9 +553,7 @@ async def test_run_bounds_and_filters_exploration_variable_types(binding):  # no
         "not-valid": "str",
     }
     runtime = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=CellResult(result="loaded" * 5000, stdout="rows" * 5000)
-        ),
+        execute=AsyncMock(return_value=CellResult(result="loaded" * 5000, stdout="rows" * 5000)),
         exploration_variables=AsyncMock(return_value=variables),
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
@@ -550,7 +591,7 @@ async def test_restart_code_mode_reports_exploration_variables_cleared(binding):
 @pytest.mark.anyio
 async def test_run_bounds_output_and_preserves_truncation(binding):  # noqa: F811
     cell = CellResult(
-        result=("表格\\\"\n" * 5000) + "last row",
+        result=('表格\\"\n' * 5000) + "last row",
         stdout="noise" * 5000,
         stderr="warning",
         truncated=["stderr"],
@@ -585,12 +626,8 @@ async def test_visualization_run_has_no_separate_budget(workspace):  # noqa: F81
     from smart_reporting.reporting.code_agent.context import ReportingCodingTaskBinding
 
     runtime = ToolkitRuntime()
-    visual_binding = ReportingCodingTaskBinding(
-        _visualization_task_context(workspace), workspace
-    )
-    toolkit = ReportingCodeModeToolkit(
-        visual_binding, runtime, ReportingLspProcessManager()
-    )
+    visual_binding = ReportingCodingTaskBinding(_visualization_task_context(workspace), workspace)
+    toolkit = ReportingCodeModeToolkit(visual_binding, runtime, ReportingLspProcessManager())
 
     for _ in range(10):
         assert (await toolkit.run("1 + 1"))["ok"] is True
@@ -636,7 +673,9 @@ async def test_write_script_accepts_large_workspace_backed_source(workspace):  #
 
     context = replace(_task_context(workspace), max_source_bytes=_CODING_SCRIPT_MAX_BYTES)
     large_binding = ReportingCodingTaskBinding(context, workspace)
-    toolkit = ReportingCodeModeToolkit(large_binding, ToolkitRuntime(), ReportingLspProcessManager())
+    toolkit = ReportingCodeModeToolkit(
+        large_binding, ToolkitRuntime(), ReportingLspProcessManager()
+    )
     source = ("# workspace-backed data stays outside source\n" * 5000) + "print('ok')"
 
     result = await toolkit.write_script(source)
@@ -668,7 +707,8 @@ async def test_runner_rejects_missing_authorized_input_before_model_call(workspa
 
 @pytest.mark.anyio
 async def test_run_script_accepts_structured_zero_exit_code(
-    binding, workspace  # noqa: F811
+    binding,  # noqa: F811
+    workspace,  # noqa: F811
 ):
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
@@ -688,13 +728,11 @@ async def test_run_script_accepts_structured_zero_exit_code(
 
 @pytest.mark.anyio
 async def test_run_script_rejects_structured_nonzero_exit_code(
-    binding  # noqa: F811
+    binding,  # noqa: F811
 ):
     cell = SimpleNamespace(status="error", stdout="", stderr="boom", traceback=None)
     runtime = SimpleNamespace(
-        execute_script_process=AsyncMock(
-            return_value=ScriptProcessResult(cell=cell, exit_code=7)
-        )
+        execute_script_process=AsyncMock(return_value=ScriptProcessResult(cell=cell, exit_code=7))
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     await toolkit.write_script(SOURCE)
@@ -707,7 +745,7 @@ async def test_run_script_rejects_structured_nonzero_exit_code(
 
 @pytest.mark.anyio
 async def test_run_script_rejects_missing_structured_exit_receipt(
-    binding  # noqa: F811
+    binding,  # noqa: F811
 ):
     cell = SimpleNamespace(status="ok", stdout="", stderr="", traceback=None)
     runtime = SimpleNamespace(
@@ -843,7 +881,11 @@ def test_short_diagnostic_passes_through_edit_anchor_context():
                         "sourceEndLine": 2,
                         "errorLine": 2,
                         "readRange": {"path": "analysis/a.py", "startLine": 1, "endLine": 2},
-                        "allowedEditRegion": {"path": "analysis/a.py", "startLine": 1, "endLine": 2},
+                        "allowedEditRegion": {
+                            "path": "analysis/a.py",
+                            "startLine": 1,
+                            "endLine": 2,
+                        },
                     },
                 }
             },
@@ -929,9 +971,7 @@ async def test_runner_raises_terminal_tool_failure_after_agno_converts_exception
         )
         return None
 
-    runner = ReportingCodeGenerationRunner(
-        Agent, ToolkitRuntime(), ReportingLspProcessManager()
-    )
+    runner = ReportingCodeGenerationRunner(Agent, ToolkitRuntime(), ReportingLspProcessManager())
 
     with pytest.raises(ReportingError) as caught:
         await runner.run(
@@ -953,15 +993,28 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
 
     async def respond(request):
         requests.append(json.loads(request.content))
-        return httpx.Response(200, json={
-            "id": "resp-1", "created_at": 0, "model": model_id,
-            "object": "response", "status": "completed", "output": [
-                {"id": "rs-summary", "type": "reasoning", "summary": [
-                    {"type": "summary_text", "text": "先检查输入，再执行脚本。"},
-                ]},
-            ],
-            "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
-        })
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-1",
+                "created_at": 0,
+                "model": model_id,
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "rs-summary",
+                        "type": "reasoning",
+                        "summary": [
+                            {"type": "summary_text", "text": "先检查输入，再执行脚本。"},
+                        ],
+                    },
+                ],
+                "parallel_tool_calls": False,
+                "tool_choice": "auto",
+                "tools": [],
+            },
+        )
 
     client = AsyncOpenAI(
         api_key="test",
@@ -969,15 +1022,24 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
     )
     client._platform = "Linux"
     model = ReportingCodeOpenAIResponses(
-        id=model_id, api_key="test", async_client=client,
+        id=model_id,
+        api_key="test",
+        async_client=client,
         base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/api/v2",
         extra_body={"enable_thinking": True, "thinking_budget": 4096},
-        reasoning_effort="high", reasoning={"effort": "high"}, temperature=0.2,
+        reasoning_effort="high",
+        reasoning={"effort": "high"},
+        temperature=0.2,
     )
     monkeypatch.setattr(model, "count_tokens", lambda *args, **kwargs: 1)
     decision = ThinkingDecision(
-        operation="analysis_script", complexity="standard", enabled=budget > 0,
-        reasoning_effort=effort, thinking_budget=budget, attempt=1, reason="test",
+        operation="analysis_script",
+        complexity="standard",
+        enabled=budget > 0,
+        reasoning_effort=effort,
+        thinking_budget=budget,
+        attempt=1,
+        reason="test",
     )
     tools = [Function(name="write_script", parameters={"type": "object", "properties": {}})]
     try:
@@ -1050,7 +1112,7 @@ def test_responses_thinking_transport_is_projected_per_provider(
 @pytest.mark.anyio
 @pytest.mark.parametrize("large_output", [False, True])
 async def test_run_script_missing_output_preserves_execution_diagnostics(binding, large_output):  # noqa: F811
-    stdout = ("输出\n" * 10000 if large_output else "computed result")
+    stdout = "输出\n" * 10000 if large_output else "computed result"
     cell = CellResult(stdout=stdout, stderr="warning", truncated=["stderr"])
     runtime = SimpleNamespace(
         execute_script_process=AsyncMock(return_value=ScriptProcessResult(cell=cell, exit_code=0))

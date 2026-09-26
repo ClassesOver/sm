@@ -37,8 +37,11 @@ class CodeMonitor:
             wanted = {target.id: target for target in targets}
             for kernel_id in list(self.clients):
                 target = wanted.get(kernel_id)
-                if (target is None or target.generation != self._generations[kernel_id]
-                        or self._readers[kernel_id].done()):
+                if (
+                    target is None
+                    or target.generation != self._generations[kernel_id]
+                    or self._readers[kernel_id].done()
+                ):
                     await self._detach(kernel_id)
                     state = self.states[kernel_id]
                     if state.status != "disconnected":
@@ -53,8 +56,13 @@ class CodeMonitor:
                 client = AsyncKernelClient()
                 try:
                     client.load_connection_info(cast(Any, target.connection))
-                    client.start_channels(shell=wait_for_ready, iopub=True, stdin=False,
-                                          hb=wait_for_ready, control=False)
+                    client.start_channels(
+                        shell=wait_for_ready,
+                        iopub=True,
+                        stdin=False,
+                        hb=wait_for_ready,
+                        control=False,
+                    )
                     if wait_for_ready:
                         # 宿主执行前用 kernel_info 确认订阅就绪，不执行代码。
                         # 浏览器被动监控保持默认，不发送任何请求。
@@ -67,7 +75,8 @@ class CodeMonitor:
                     client.stop_channels()
                     logger.warning(
                         "code_monitor_attach_failed kernel_id={} error_type={}",
-                        target.id, type(error).__name__,
+                        target.id,
+                        type(error).__name__,
                     )
                     continue
                 except BaseException:
@@ -105,14 +114,14 @@ class CodeMonitor:
                             "report_code_mode_stream session_id={} call_id={} name={} output={}",
                             self.states[kernel_id].label,
                             message.get("parent_header", {}).get("msg_id", ""),
-                            content.get("name", "stdout"), content["text"].rstrip("\n"),
+                            content.get("name", "stdout"),
+                            content["text"].rstrip("\n"),
                         )
         except asyncio.CancelledError:
             raise
         except Exception as error:
             self.states[kernel_id].disconnected("订阅中断，等待重新连接。")
-            logger.warning("code_monitor_subscription_failed error_type={}",
-                           type(error).__name__)
+            logger.warning("code_monitor_subscription_failed error_type={}", type(error).__name__)
         finally:
             client.stop_channels()
 

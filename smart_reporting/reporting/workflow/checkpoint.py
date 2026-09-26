@@ -694,12 +694,8 @@ class ContextTrace(StrictModel):
     custom_history_compaction_count: int = Field(
         default=0, alias="customHistoryCompactionCount", ge=0
     )
-    custom_history_bytes_before: int = Field(
-        default=0, alias="customHistoryBytesBefore", ge=0
-    )
-    custom_history_bytes_after: int = Field(
-        default=0, alias="customHistoryBytesAfter", ge=0
-    )
+    custom_history_bytes_before: int = Field(default=0, alias="customHistoryBytesBefore", ge=0)
+    custom_history_bytes_after: int = Field(default=0, alias="customHistoryBytesAfter", ge=0)
     duration_seconds: float = Field(default=0.0, alias="durationSeconds", ge=0)
     pointer_receipt_ids: tuple[str, ...] = Field(
         default=(), alias="pointerReceiptIds", max_length=1000

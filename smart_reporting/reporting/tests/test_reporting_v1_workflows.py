@@ -34,20 +34,51 @@ def anyio_backend() -> str:
 
 @pytest.mark.anyio
 async def test_analysis_v1_workflow_executes_signed_code_and_completes_once() -> None:
-    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
-    evidence = json.dumps({"findings": [{"name": "收入"}], "reconciliations": [{"name": "对账", "passed": True}], "warnings": []})
+    facts = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "reconciliations": [],
+            "warnings": [],
+        }
+    )
+    evidence = json.dumps(
+        {
+            "findings": [{"name": "收入"}],
+            "reconciliations": [{"name": "对账", "passed": True}],
+            "warnings": [],
+        }
+    )
     facts_path = "facts/analysis_001.json"
     script_path = "evidence/analysis_001/supplement.py"
     evidence_path = "evidence/analysis_001/supplement.json"
     script = FileIdentity(path=script_path, size=10, sha256="b" * 64)
-    receipt = ExecutionReceipt(runId="run-1", sourceFile=script, outputFiles=(FileIdentity(path=evidence_path, size=len(evidence.encode()), sha256=hashlib.sha256(evidence.encode()).hexdigest()),))
+    receipt = ExecutionReceipt(
+        runId="run-1",
+        sourceFile=script,
+        outputFiles=(
+            FileIdentity(
+                path=evidence_path,
+                size=len(evidence.encode()),
+                sha256=hashlib.sha256(evidence.encode()).hexdigest(),
+            ),
+        ),
+    )
     calls: list[str] = []
 
     async def read_file(*, path: str, **_: object) -> dict[str, object]:
         content = facts if path == facts_path else evidence
         digest = hashlib.sha256(content.encode()).hexdigest()
         calls.append(path)
-        return {"ok": True, "content": content, "sha256": digest, "totalBytes": len(content.encode()), "nextOffset": len(content.encode())}
+        return {
+            "ok": True,
+            "content": content,
+            "sha256": digest,
+            "totalBytes": len(content.encode()),
+            "nextOffset": len(content.encode()),
+        }
 
     async def run_code(**_: object) -> CodeGenerationResult:
         calls.append("run_code")
@@ -65,9 +96,29 @@ async def test_analysis_v1_workflow_executes_signed_code_and_completes_once() ->
         read_file=read_file,
         complete=complete,
     )
-    instruction = {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]}
+    instruction = {
+        "currentAnalysisId": "analysis_001",
+        "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]},
+        "analysisOutputRoot": "evidence/analysis_001",
+        "deterministicFactFile": {
+            "path": facts_path,
+            "size": len(facts.encode()),
+            "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+        },
+        "deterministicFacts": json.loads(facts),
+        "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}],
+    }
     result = await workflow.run(instruction, RunContext(run_id="run-1", session_id="session-1"))
-    assert result.stage_statuses == tuple((name, "completed") for name in ("read-facts", "plan-evidence", "execute-script", "validate-evidence", "complete-analysis"))
+    assert result.stage_statuses == tuple(
+        (name, "completed")
+        for name in (
+            "read-facts",
+            "plan-evidence",
+            "execute-script",
+            "validate-evidence",
+            "complete-analysis",
+        )
+    )
     assert calls.count("run_code") == 1
 
 
@@ -76,12 +127,14 @@ async def _decision() -> AnalysisEvidenceDecision:
         requiresSupplementalEvidence=True,
         reason="缺少收入",
         missingFacts=("收入",),
-        codingRequirements=({
-            "datasetId": "dataset_1",
-            "fields": ["income"],
-            "calculation": "汇总收入",
-            "outputName": "income",
-        },),
+        codingRequirements=(
+            {
+                "datasetId": "dataset_1",
+                "fields": ["income"],
+                "calculation": "汇总收入",
+                "outputName": "income",
+            },
+        ),
     )
 
 
@@ -101,35 +154,56 @@ def _chart() -> ChartDraft:
         sourceDatasetId="dataset_1",
         aggregationGrain="month",
         visualForm="按月折线图",
-        dataBindings=({
-            "analysisId": "analysis_001",
-            "factPath": "facts/analysis_001.json",
-            "dataPath": "metrics[0].periodValues",
-            "fields": ["period", "value"],
-            "role": "月度趋势",
-        },),
+        dataBindings=(
+            {
+                "analysisId": "analysis_001",
+                "factPath": "facts/analysis_001.json",
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+                "role": "月度趋势",
+            },
+        ),
     )
 
 
 def _visualization_payload(script_path: str = "charts/charts.py") -> dict[str, object]:
     return {
         "visualizationWorkspace": {"scriptPath": script_path},
-        "visualizationFacts": [{
-            "analysisId": "analysis_001",
-            "factFile": {"path": "facts/analysis_001.json"},
-            "dataDescriptors": [{
-                "dataPath": "metrics[0].periodValues",
-                "fields": ["period", "value"],
-            }],
-        }],
+        "visualizationFacts": [
+            {
+                "analysisId": "analysis_001",
+                "factFile": {"path": "facts/analysis_001.json"},
+                "dataDescriptors": [
+                    {
+                        "dataPath": "metrics[0].periodValues",
+                        "fields": ["period", "value"],
+                    }
+                ],
+            }
+        ],
     }
 
 
 @pytest.mark.anyio
 async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -> None:
-    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
+    facts = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "reconciliations": [],
+            "warnings": [],
+        }
+    )
     invalid_evidence = json.dumps({"findings": [], "reconciliations": [], "warnings": []})
-    valid_evidence = json.dumps({"findings": [{"name": "收入"}], "reconciliations": [{"name": "对账", "passed": True}], "warnings": []})
+    valid_evidence = json.dumps(
+        {
+            "findings": [{"name": "收入"}],
+            "reconciliations": [{"name": "对账", "passed": True}],
+            "warnings": [],
+        }
+    )
     facts_path = "facts/analysis_001.json"
     script_path = "evidence/analysis_001/supplement.py"
     evidence_path = "evidence/analysis_001/supplement.json"
@@ -143,14 +217,33 @@ async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -
         else:
             content = invalid_evidence if evidence_reads == 0 else valid_evidence
             evidence_reads += 1
-        return {"ok": True, "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest(), "totalBytes": len(content.encode()), "nextOffset": len(content.encode())}
+        return {
+            "ok": True,
+            "content": content,
+            "sha256": hashlib.sha256(content.encode()).hexdigest(),
+            "totalBytes": len(content.encode()),
+            "nextOffset": len(content.encode()),
+        }
 
     async def run_code(**kwargs: object) -> CodeGenerationResult:
         diagnostics.append(kwargs.get("diagnostic"))
         content = invalid_evidence if len(diagnostics) == 1 else valid_evidence
-        script = FileIdentity(path=script_path, size=len(diagnostics), sha256=("a" if len(diagnostics) == 1 else "b") * 64)
-        evidence_file = FileIdentity(path=evidence_path, size=len(content.encode()), sha256=hashlib.sha256(content.encode()).hexdigest())
-        return CodeGenerationResult(script_file=script, execution_receipt=ExecutionReceipt(runId=f"run-{len(diagnostics)}", sourceFile=script, outputFiles=(evidence_file,)))
+        script = FileIdentity(
+            path=script_path,
+            size=len(diagnostics),
+            sha256=("a" if len(diagnostics) == 1 else "b") * 64,
+        )
+        evidence_file = FileIdentity(
+            path=evidence_path,
+            size=len(content.encode()),
+            sha256=hashlib.sha256(content.encode()).hexdigest(),
+        )
+        return CodeGenerationResult(
+            script_file=script,
+            execution_receipt=ExecutionReceipt(
+                runId=f"run-{len(diagnostics)}", sourceFile=script, outputFiles=(evidence_file,)
+            ),
+        )
 
     complete = []
 
@@ -158,8 +251,28 @@ async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -
         complete.append(True)
         return {"status": "accepted", "taskFinished": True}
 
-    workflow = AnalysisItemWorkflow(decide_evidence=lambda _payload: _decision(), run_code=run_code, summarize=lambda _payload: _summary(), read_file=read_file, complete=accepted)
-    await workflow.run({"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]}, RunContext(run_id="run-1", session_id="session-1"))
+    workflow = AnalysisItemWorkflow(
+        decide_evidence=lambda _payload: _decision(),
+        run_code=run_code,
+        summarize=lambda _payload: _summary(),
+        read_file=read_file,
+        complete=accepted,
+    )
+    await workflow.run(
+        {
+            "currentAnalysisId": "analysis_001",
+            "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]},
+            "analysisOutputRoot": "evidence/analysis_001",
+            "deterministicFactFile": {
+                "path": facts_path,
+                "size": len(facts.encode()),
+                "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+            },
+            "deterministicFacts": json.loads(facts),
+            "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}],
+        },
+        RunContext(run_id="run-1", session_id="session-1"),
+    )
 
     assert len(diagnostics) == 2
     assert diagnostics[0] is None
@@ -169,14 +282,29 @@ async def test_analysis_v1_workflow_restarts_coding_with_evidence_diagnostic() -
 
 @pytest.mark.anyio
 async def test_analysis_v1_degrades_after_no_submission() -> None:
-    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
+    facts = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "reconciliations": [],
+            "warnings": [],
+        }
+    )
     facts_path = "facts/analysis_001.json"
     run_count = 0
     completions: list[dict[str, object]] = []
 
     async def read_file(*, path: str, **_: object) -> dict[str, object]:
         assert path == facts_path
-        return {"ok": True, "content": facts, "sha256": hashlib.sha256(facts.encode()).hexdigest(), "totalBytes": len(facts.encode()), "nextOffset": len(facts.encode())}
+        return {
+            "ok": True,
+            "content": facts,
+            "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+            "totalBytes": len(facts.encode()),
+            "nextOffset": len(facts.encode()),
+        }
 
     async def run_code(**_: object) -> CodeGenerationResult:
         nonlocal run_count
@@ -199,7 +327,18 @@ async def test_analysis_v1_degrades_after_no_submission() -> None:
         complete=complete,
     )
     await workflow.run(
-        {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]},
+        {
+            "currentAnalysisId": "analysis_001",
+            "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]},
+            "analysisOutputRoot": "evidence/analysis_001",
+            "deterministicFactFile": {
+                "path": facts_path,
+                "size": len(facts.encode()),
+                "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+            },
+            "deterministicFacts": json.loads(facts),
+            "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}],
+        },
         RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -213,7 +352,16 @@ async def test_analysis_v1_degrades_after_no_submission() -> None:
 
 @pytest.mark.anyio
 async def test_analysis_v1_fails_closed_on_protocol_error() -> None:
-    facts = json.dumps({"analysisId": "analysis_001", "metrics": [], "derivedMetrics": [], "comparisons": [], "reconciliations": [], "warnings": []})
+    facts = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "reconciliations": [],
+            "warnings": [],
+        }
+    )
     facts_path = "facts/analysis_001.json"
     protocol_error = ReportingError(
         "report_code_custom_tool_protocol_error",
@@ -224,7 +372,13 @@ async def test_analysis_v1_fails_closed_on_protocol_error() -> None:
 
     async def read_file(*, path: str, **_: object) -> dict[str, object]:
         assert path == facts_path
-        return {"ok": True, "content": facts, "sha256": hashlib.sha256(facts.encode()).hexdigest(), "totalBytes": len(facts.encode()), "nextOffset": len(facts.encode())}
+        return {
+            "ok": True,
+            "content": facts,
+            "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+            "totalBytes": len(facts.encode()),
+            "nextOffset": len(facts.encode()),
+        }
 
     async def run_code(**_: object) -> CodeGenerationResult:
         calls["run"] += 1
@@ -243,7 +397,18 @@ async def test_analysis_v1_fails_closed_on_protocol_error() -> None:
     )
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
-            {"currentAnalysisId": "analysis_001", "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}, "analysisOutputRoot": "evidence/analysis_001", "deterministicFactFile": {"path": facts_path, "size": len(facts.encode()), "sha256": hashlib.sha256(facts.encode()).hexdigest()}, "deterministicFacts": json.loads(facts), "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}]},
+            {
+                "currentAnalysisId": "analysis_001",
+                "currentAnalysis": {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]},
+                "analysisOutputRoot": "evidence/analysis_001",
+                "deterministicFactFile": {
+                    "path": facts_path,
+                    "size": len(facts.encode()),
+                    "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+                },
+                "deterministicFacts": json.loads(facts),
+                "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}],
+            },
             RunContext(run_id="run-1", session_id="session-1"),
         )
 
@@ -283,8 +448,12 @@ async def test_visualization_v1_workflow_accepts_signed_chart_receipt_without_re
         calls["submit"] += 1
         return {"status": "accepted"}
 
-    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=submit)
-    result = await workflow.run(_visualization_payload(script.path), RunContext(run_id="run-1", session_id="session-1"))
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=submit
+    )
+    result = await workflow.run(
+        _visualization_payload(script.path), RunContext(run_id="run-1", session_id="session-1")
+    )
     assert result.status == "accepted"
     assert calls == {"run": 1, "submit": 1}
 
@@ -386,9 +555,7 @@ async def test_visualization_v1_rejects_unsigned_planned_chart() -> None:
     async def run_code(*_: object, **__: object) -> CodeGenerationResult:
         return CodeGenerationResult(
             script_file=script,
-            execution_receipt=ExecutionReceipt(
-                runId="run-1", sourceFile=script, outputFiles=()
-            ),
+            execution_receipt=ExecutionReceipt(runId="run-1", sourceFile=script, outputFiles=()),
         )
 
     workflow = VisualizationSectionWorkflow(
@@ -506,7 +673,9 @@ async def test_visualization_v1_rejects_invalid_visual_receipt() -> None:
         submit.append(True)
         return {"status": "accepted"}
 
-    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=accepted)
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=accepted
+    )
     with pytest.raises(ReportingError) as caught:
         await workflow.run(
             _visualization_payload(script_path),
@@ -539,8 +708,15 @@ async def test_visualization_v1_degrades_after_code_agent_no_submission() -> Non
         degraded.append(error)
         return {"status": "accepted"}
 
-    workflow = VisualizationSectionWorkflow(generate_plan=lambda *_: _plan(plan), run_code=run_code, submit=lambda *_: _accepted(), degrade=degrade)
-    result = await workflow.run(_visualization_payload(), RunContext(run_id="run-1", session_id="session-1"))
+    workflow = VisualizationSectionWorkflow(
+        generate_plan=lambda *_: _plan(plan),
+        run_code=run_code,
+        submit=lambda *_: _accepted(),
+        degrade=degrade,
+    )
+    result = await workflow.run(
+        _visualization_payload(), RunContext(run_id="run-1", session_id="session-1")
+    )
 
     assert result.status == "degraded"
     assert run_count == 4

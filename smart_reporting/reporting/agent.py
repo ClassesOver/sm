@@ -608,9 +608,7 @@ def _reporting_visualization_tool_budget(
     )
     total_limit = _nonnegative_int(
         binding.get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)
-    ) or (
-        _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
-    )
+    ) or (_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT)
     attempted_count = _nonnegative_int(stored.get("attemptedCount"))
     successful_count = _nonnegative_int(stored.get("successfulCount"))
     script_failure_count = _nonnegative_int(stored.get("scriptFailureCount"))
@@ -1642,10 +1640,7 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
     if not isinstance(report_title, str) or not report_title.strip():
         return "## 报告发布未完成\n\n未获取到有效的报表名称，请重试报表发布。"
     parts = ["## 报表已生成", f"### {report_title.strip()}", "报告已完成发布。"]
-    parts.append(
-        f"[**编辑报告**]({editor_url}) · [下载 PDF]({pdf_url}) · "
-        f"[下载 Word]({word_url})"
-    )
+    parts.append(f"[**编辑报告**]({editor_url}) · [下载 PDF]({pdf_url}) · [下载 Word]({word_url})")
     return "\n\n".join(parts)
 
 
@@ -2628,6 +2623,7 @@ def create_reporting_phase_agent(
         if settings.enable_tool_result_compression
         else None
     )
+
     def reporting_tools(run_context: RunContext) -> list[Any]:
         if workspace_registry is None:
             return build_reporting_tools(

@@ -1804,7 +1804,9 @@ async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> Asyn
     from smart_reporting.reporting.workflow.runtime import analysis as reporting_analysis
 
     for name, value in {
-        "_reporting_detailed_analysis_plan": lambda *_a, **_k: {"analyses": [{"analysisId": "analysis_001"}]},
+        "_reporting_detailed_analysis_plan": lambda *_a, **_k: {
+            "analyses": [{"analysisId": "analysis_001"}]
+        },
         "_analysis_item_dataset_inputs": lambda *_a, **_k: [],
         "_model_facing_deterministic_facts": lambda *_a, **_k: {},
         "_checkpoint_retry_error": lambda *_a, **_k: None,
@@ -1822,7 +1824,9 @@ async def _run_failing_analysis_item(monkeypatch, error: ReportingError) -> Asyn
     runtime._state = lambda _context: {}
     runtime._envelope = lambda _context: SimpleNamespace(report_goal="目标")
     runtime._analysis_thinking_effort = lambda: "off"
-    runtime._read_identity_model = AsyncMock(return_value=SimpleNamespace(analysis_id="analysis_001"))
+    runtime._read_identity_model = AsyncMock(
+        return_value=SimpleNamespace(analysis_id="analysis_001")
+    )
     runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._persist_reporting_checkpoint = AsyncMock()
@@ -2151,12 +2155,14 @@ async def test_analysis_script_and_structured_stages_use_layered_request_budgets
             requiresSupplementalEvidence=True,
             reason="缺少构成",
             missingFacts=("构成",),
-            codingRequirements=({
-                "datasetId": "dataset_001",
-                "fields": ["income"],
-                "calculation": "计算收入构成",
-                "outputName": "income_components",
-            },),
+            codingRequirements=(
+                {
+                    "datasetId": "dataset_001",
+                    "fields": ["income"],
+                    "calculation": "计算收入构成",
+                    "outputName": "income_components",
+                },
+            ),
         )
 
     class CapturingCodeAgent:
@@ -2593,7 +2599,9 @@ def test_reporting_phase_agent_injects_current_shanghai_date_into_planner_contex
     assert stage.timezone_identifier == "Asia/Shanghai"
     assert stage.datetime_format == "%Y-%m-%d"
     assert system_message is not None
-    assert any(f"The current time is {current_date}." in system_message.content for current_date in dates)
+    assert any(
+        f"The current time is {current_date}." in system_message.content for current_date in dates
+    )
 
 
 @pytest.mark.skip(reason="V1 已将 analysis script agent 改为 task factory")
@@ -2635,8 +2643,7 @@ def test_runtime_planners_use_operation_thinking_policies() -> None:
     assert runtime._analysis_script_agent.reasoning_model is not None
     assert runtime._analysis_script_agent.reasoning_agent is not None
     assert any(
-        "以 outputContract 为准" in instruction
-        and "analysisId 和 datasetIds" in instruction
+        "以 outputContract 为准" in instruction and "analysisId 和 datasetIds" in instruction
         for instruction in runtime._analysis_script_agent.instructions
     )
     assert all(
@@ -2746,8 +2753,11 @@ async def test_runtime_planner_configured_effort_reaches_chat_request(monkeypatc
 
     await runtime._run_planner(runtime._data_understanding_agent, {}, context)
     await runtime._run_planner(
-        runtime._data_understanding_agent, {}, context,
-        attempt=1, failure_kind="schema_failure",
+        runtime._data_understanding_agent,
+        {},
+        context,
+        attempt=1,
+        failure_kind="schema_failure",
     )
 
     assert [request["reasoning_effort"] for request in requests] == [effort, "high"]
@@ -2771,14 +2781,18 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
         output_schema=VisualizationPlanDraft,
     )
     runtime = ReportWorkflowRuntime(
-        db=SimpleNamespace(), reporting_agent_template=planner,
+        db=SimpleNamespace(),
+        reporting_agent_template=planner,
         task_runner=SimpleNamespace(
             repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
             start=AsyncMock(),
         ),
-        workspace_service=SimpleNamespace(), registry=SimpleNamespace(),
-        profiles=SimpleNamespace(), planner_reasoning_effort="low",
-        planner_enable_thinking=True, state_repository=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_reasoning_effort="low",
+        planner_enable_thinking=True,
+        state_repository=SimpleNamespace(),
         visualization_generator=planner,
     )
     context = RunContext(run_id="visualization-effort", session_id="session-1", session_state={})
@@ -2788,38 +2802,71 @@ async def test_visualization_runtime_planner_low_reaches_chat_request(monkeypatc
     runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
-    runtime._envelope = lambda _context: SimpleNamespace(report_goal="分析收入", visualization_mode="auto")
-    runtime._visualization_section_fact_projection = AsyncMock(return_value={"analysisId": "analysis_001"})
-    runtime.state_repository.get = AsyncMock(side_effect=[
-        SimpleNamespace(payload={"analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}}}),
-        SimpleNamespace(payload={"completedVisualizationSections": ["section_001"]}),
-    ])
-    outline = ReportOutline.model_validate({
-        "reportType": "topic", "title": "收入分析",
-        "sections": [{"code": "section_001", "sectionNumber": "1", "title": "收入", "analysisIds": ["analysis_001"]}],
-    })
+    runtime._envelope = lambda _context: SimpleNamespace(
+        report_goal="分析收入", visualization_mode="auto"
+    )
+    runtime._visualization_section_fact_projection = AsyncMock(
+        return_value={"analysisId": "analysis_001"}
+    )
+    runtime.state_repository.get = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                payload={"analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}}}
+            ),
+            SimpleNamespace(payload={"completedVisualizationSections": ["section_001"]}),
+        ]
+    )
+    outline = ReportOutline.model_validate(
+        {
+            "reportType": "topic",
+            "title": "收入分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入",
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+        }
+    )
     monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
-    monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [object()])
+    monkeypatch.setattr(
+        reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [object()]
+    )
 
     async def run_workflow(workflow, payload, run_context):
         plan = await workflow.generate_plan(payload, run_context)
         return SimpleNamespace(plan=plan)
 
     async def run_task(scope, *, executor, **_kwargs):
-        return await executor(SimpleNamespace(
-            scope=scope, run_context=context,
-            model_metrics_settlement=SimpleNamespace(stage_recorder=lambda *_args, **_kwargs: None),
-        ))
+        return await executor(
+            SimpleNamespace(
+                scope=scope,
+                run_context=context,
+                model_metrics_settlement=SimpleNamespace(
+                    stage_recorder=lambda *_args, **_kwargs: None
+                ),
+            )
+        )
 
     monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", run_workflow)
     runtime.task_runner.run = run_task
     identity = FileIdentity(path="facts/analysis.json", size=2, sha256="a" * 64)
-    await runtime._run_visualization_section_task("section_001", context={
-        "run_context": context, "checkpoint": checkpoint, "external_run_id": "run-1",
-        "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
-        "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
-        "validation_context_file": identity,
-    })
+    await runtime._run_visualization_section_task(
+        "section_001",
+        context={
+            "run_context": context,
+            "checkpoint": checkpoint,
+            "external_run_id": "run-1",
+            "fact_files": {"analysis_001": identity},
+            "thread_id": "thread-1",
+            "revision": 1,
+            "visual_inspection_mode": "vision",
+            "sandbox_id": "sandbox-1",
+            "validation_context_file": identity,
+        },
+    )
 
     assert len(requests) == 1
     assert requests[0]["reasoning_effort"] == "low"
@@ -2838,17 +2885,23 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
         output_schema=VisualizationPlanDraft,
     )
     runtime = ReportWorkflowRuntime(
-        db=SimpleNamespace(), reporting_agent_template=planner,
+        db=SimpleNamespace(),
+        reporting_agent_template=planner,
         task_runner=SimpleNamespace(
             repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
             start=AsyncMock(),
         ),
-        workspace_service=SimpleNamespace(), registry=SimpleNamespace(),
-        profiles=SimpleNamespace(), planner_reasoning_effort="low",
-        planner_enable_thinking=True, state_repository=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_reasoning_effort="low",
+        planner_enable_thinking=True,
+        state_repository=SimpleNamespace(),
         visualization_generator=planner,
     )
-    context = RunContext(run_id="visualization-fatal-infra", session_id="session-1", session_state={})
+    context = RunContext(
+        run_id="visualization-fatal-infra", session_id="session-1", session_state={}
+    )
     checkpoint = SimpleNamespace(trace=(), visualization_section_errors={})
     runtime._current_reporting_checkpoint = AsyncMock(return_value=checkpoint)
     runtime._persist_reporting_checkpoint = AsyncMock()
@@ -2861,20 +2914,36 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     runtime._update_reporting_checkpoint = record_checkpoint_update
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
-    runtime._envelope = lambda _context: SimpleNamespace(report_goal="分析收入", visualization_mode="auto")
-    runtime._visualization_section_fact_projection = AsyncMock(return_value={"analysisId": "analysis_001"})
+    runtime._envelope = lambda _context: SimpleNamespace(
+        report_goal="分析收入", visualization_mode="auto"
+    )
+    runtime._visualization_section_fact_projection = AsyncMock(
+        return_value={"analysisId": "analysis_001"}
+    )
     runtime._apply_durable_command = AsyncMock()
     runtime.state_repository.get = AsyncMock(
         return_value=SimpleNamespace(
             payload={"analysisItems": {"analysis_001": {"datasetIds": ["dataset_001"]}}}
         )
     )
-    outline = ReportOutline.model_validate({
-        "reportType": "topic", "title": "收入分析",
-        "sections": [{"code": "section_001", "sectionNumber": "1", "title": "收入", "analysisIds": ["analysis_001"]}],
-    })
+    outline = ReportOutline.model_validate(
+        {
+            "reportType": "topic",
+            "title": "收入分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入",
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+        }
+    )
     monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
-    monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [object()])
+    monkeypatch.setattr(
+        reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [object()]
+    )
 
     async def failing_workflow(_workflow, _payload, _run_context):
         raise ReportingError(
@@ -2886,21 +2955,34 @@ async def test_visualization_section_task_stops_fatal_infra_failure_after_single
     monkeypatch.setattr(reporting_analysis.VisualizationSectionWorkflow, "run", failing_workflow)
 
     async def run_task(scope, *, executor, **_kwargs):
-        return await executor(SimpleNamespace(
-            scope=scope, run_context=context,
-            model_metrics_settlement=SimpleNamespace(stage_recorder=lambda *_args, **_kwargs: None),
-        ))
+        return await executor(
+            SimpleNamespace(
+                scope=scope,
+                run_context=context,
+                model_metrics_settlement=SimpleNamespace(
+                    stage_recorder=lambda *_args, **_kwargs: None
+                ),
+            )
+        )
 
     runtime.task_runner.run = run_task
     identity = FileIdentity(path="facts/analysis.json", size=2, sha256="a" * 64)
 
     with pytest.raises(ReportingError) as caught:
-        await runtime._run_visualization_section_task("section_001", context={
-            "run_context": context, "checkpoint": checkpoint, "external_run_id": "run-1",
-            "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
-            "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
-            "validation_context_file": identity,
-        })
+        await runtime._run_visualization_section_task(
+            "section_001",
+            context={
+                "run_context": context,
+                "checkpoint": checkpoint,
+                "external_run_id": "run-1",
+                "fact_files": {"analysis_001": identity},
+                "thread_id": "thread-1",
+                "revision": 1,
+                "visual_inspection_mode": "vision",
+                "sandbox_id": "sandbox-1",
+                "validation_context_file": identity,
+            },
+        )
 
     assert caught.value.code == "report_workspace_capability_missing"
     # 确定性 infra 缺陷不重跑整段 planner + Coding：只有一个 attempt 签发过 Task。
@@ -2923,25 +3005,35 @@ def _final_attempt_runtime(monkeypatch, failing_workflow, extra_context=None):
         output_schema=VisualizationPlanDraft,
     )
     runtime = ReportWorkflowRuntime(
-        db=SimpleNamespace(), reporting_agent_template=planner,
+        db=SimpleNamespace(),
+        reporting_agent_template=planner,
         task_runner=SimpleNamespace(
             repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
             start=AsyncMock(),
         ),
-        workspace_service=SimpleNamespace(), registry=SimpleNamespace(),
-        profiles=SimpleNamespace(), planner_reasoning_effort="low",
-        planner_enable_thinking=True, state_repository=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_reasoning_effort="low",
+        planner_enable_thinking=True,
+        state_repository=SimpleNamespace(),
         visualization_generator=planner,
     )
-    context = RunContext(run_id="visualization-final-degrade", session_id="session-1", session_state={})
+    context = RunContext(
+        run_id="visualization-final-degrade", session_id="session-1", session_state={}
+    )
     checkpoint = SimpleNamespace(trace=(), visualization_section_errors={})
     runtime._current_reporting_checkpoint = AsyncMock(return_value=checkpoint)
     runtime._persist_reporting_checkpoint = AsyncMock()
     runtime._update_reporting_checkpoint = lambda checkpoint, **_kwargs: checkpoint
     runtime._replace_trace = lambda checkpoint, *_args, **_kwargs: checkpoint
     runtime._scope = lambda _context: {"userId": "user-1", "threadId": "thread-1"}
-    runtime._envelope = lambda _context: SimpleNamespace(report_goal="分析收入", visualization_mode="auto")
-    runtime._visualization_section_fact_projection = AsyncMock(return_value={"analysisId": "analysis_001"})
+    runtime._envelope = lambda _context: SimpleNamespace(
+        report_goal="分析收入", visualization_mode="auto"
+    )
+    runtime._visualization_section_fact_projection = AsyncMock(
+        return_value={"analysisId": "analysis_001"}
+    )
     runtime._apply_durable_command = AsyncMock()
     toolkit = SimpleNamespace(
         submit_visualization_charts=AsyncMock(return_value={"status": "accepted"})
@@ -2958,34 +3050,59 @@ def _final_attempt_runtime(monkeypatch, failing_workflow, extra_context=None):
         )
 
     runtime.state_repository.get = durable_state
-    outline = ReportOutline.model_validate({
-        "reportType": "topic", "title": "收入分析",
-        "sections": [{"code": "section_001", "sectionNumber": "1", "title": "收入", "analysisIds": ["analysis_001"]}],
-    })
+    outline = ReportOutline.model_validate(
+        {
+            "reportType": "topic",
+            "title": "收入分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入",
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+        }
+    )
     monkeypatch.setattr(reporting_analysis, "_frozen_outline", lambda _state: outline)
-    monkeypatch.setattr(reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [toolkit])
+    monkeypatch.setattr(
+        reporting_analysis, "build_reporting_tools", lambda *_args, **_kwargs: [toolkit]
+    )
     # 只替换单次 attempt 主体，保留 run() 中的最后一次降级收口。
     monkeypatch.setattr(
         reporting_analysis.VisualizationSectionWorkflow, "_run_attempt", failing_workflow
     )
 
     async def run_task(scope, *, executor, **_kwargs):
-        return await executor(SimpleNamespace(
-            scope=scope, run_context=context,
-            model_metrics_settlement=SimpleNamespace(stage_recorder=lambda *_args, **_kwargs: None),
-        ))
+        return await executor(
+            SimpleNamespace(
+                scope=scope,
+                run_context=context,
+                model_metrics_settlement=SimpleNamespace(
+                    stage_recorder=lambda *_args, **_kwargs: None
+                ),
+            )
+        )
 
     runtime.task_runner.run = run_task
     identity = FileIdentity(path="facts/analysis.json", size=2, sha256="a" * 64)
 
     async def run_section():
-        await runtime._run_visualization_section_task("section_001", context={
-            "run_context": context, "checkpoint": checkpoint, "external_run_id": "run-1",
-            "fact_files": {"analysis_001": identity}, "thread_id": "thread-1",
-            "revision": 1, "visual_inspection_mode": "vision", "sandbox_id": "sandbox-1",
-            "validation_context_file": identity,
-            **(extra_context or {}),
-        })
+        await runtime._run_visualization_section_task(
+            "section_001",
+            context={
+                "run_context": context,
+                "checkpoint": checkpoint,
+                "external_run_id": "run-1",
+                "fact_files": {"analysis_001": identity},
+                "thread_id": "thread-1",
+                "revision": 1,
+                "visual_inspection_mode": "vision",
+                "sandbox_id": "sandbox-1",
+                "validation_context_file": identity,
+                **(extra_context or {}),
+            },
+        )
 
     return runtime, toolkit, run_section
 
@@ -3082,9 +3199,7 @@ async def test_visualization_section_final_attempt_does_not_mask_config_or_code_
 async def test_visualization_section_final_attempt_does_not_degrade_twice(monkeypatch) -> None:
     async def failing_workflow(workflow, _payload, run_context):
         # 工作流内部已走过 degrade，但其提交随后失败。
-        await workflow._degrade(
-            ReportingError("report_code_no_progress", "无进展"), run_context
-        )
+        await workflow._degrade(ReportingError("report_code_no_progress", "无进展"), run_context)
         raise ReportingError("report_visualization_submit_rejected", "零图提交被拒。")
 
     runtime, toolkit, run_section = _final_attempt_runtime(monkeypatch, failing_workflow)
@@ -3135,16 +3250,19 @@ def test_runtime_planner_policies_honor_disabled_thinking() -> None:
     )
     for stage in stages:
         policy = getattr(stage, "_reporting_thinking")
-        assert select_reporting_thinking(
-            ThinkingRequest(
-                operation=policy.operation,
-                complexity="complex",
-                attempt=1,
-                failure_kind="schema_failure",
-                configured_budget_cap=policy.configured_budget_cap,
-                thinking_enabled=policy.thinking_enabled,
-            )
-        ).thinking_budget == 0
+        assert (
+            select_reporting_thinking(
+                ThinkingRequest(
+                    operation=policy.operation,
+                    complexity="complex",
+                    attempt=1,
+                    failure_kind="schema_failure",
+                    configured_budget_cap=policy.configured_budget_cap,
+                    thinking_enabled=policy.thinking_enabled,
+                )
+            ).thinking_budget
+            == 0
+        )
     assert runtime._analysis_script_agent.reasoning_model is None
     assert runtime._analysis_script_agent.reasoning_agent is None
 
@@ -3179,7 +3297,9 @@ async def test_run_planner_passes_layered_thinking_request(
                 model_request_count=1,
             )
 
-    monkeypatch.setattr(reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor)
+    monkeypatch.setattr(
+        reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor
+    )
     agent = Agent(
         id=f"report-{operation}-planner",
         model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
@@ -3207,7 +3327,9 @@ async def test_run_planner_passes_layered_thinking_request(
         failure_kind=failure_kind,
     )
 
-    assert [select_reporting_thinking(request).thinking_budget for request in observed] == expected_budgets
+    assert [
+        select_reporting_thinking(request).thinking_budget for request in observed
+    ] == expected_budgets
 
 
 @pytest.mark.anyio
@@ -3275,7 +3397,9 @@ async def test_run_planner_honors_disabled_thinking_policy(monkeypatch) -> None:
                 model_request_count=1,
             )
 
-    monkeypatch.setattr(reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor)
+    monkeypatch.setattr(
+        reporting_runtime_base, "ReportingStructuredOutputExecutor", RecordingExecutor
+    )
     agent = Agent(
         id="report-data-understanding-planner",
         model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),

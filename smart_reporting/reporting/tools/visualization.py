@@ -229,13 +229,15 @@ class RuntimeVisualizationMixin:
                 else ()
             )
             for registration in parsed:
-                if allowed_dataset_ids and registration.source_dataset_id not in allowed_dataset_ids:
+                if (
+                    allowed_dataset_ids
+                    and registration.source_dataset_id not in allowed_dataset_ids
+                ):
                     warnings.append(
                         {
                             "code": "report_chart_dataset_unfrozen",
                             "message": (
-                                "图表引用了当前章节未冻结的 Dataset，"
-                                "已保留图表并降级为质量告警。"
+                                "图表引用了当前章节未冻结的 Dataset，已保留图表并降级为质量告警。"
                             ),
                             "sectionCode": sectionCode,
                             "details": {
@@ -322,8 +324,7 @@ class RuntimeVisualizationMixin:
                         ).model_dump(mode="json", by_alias=True)
                     )
             receipts = tuple(
-                ChartVisualInspectionReceipt.model_validate(item)
-                for item in visual_receipts
+                ChartVisualInspectionReceipt.model_validate(item) for item in visual_receipts
             )
             receipt_by_path = {item.source_path: item for item in receipts}
             file_by_path = {item["path"]: item for item in files}
@@ -358,9 +359,10 @@ class RuntimeVisualizationMixin:
                 for path in sorted(receipt_by_path)
             ]
             if isinstance(existing, dict):
-                if existing.get("files") != files or existing.get(
-                    "interactiveFiles", []
-                ) != interactive_files:
+                if (
+                    existing.get("files") != files
+                    or existing.get("interactiveFiles", []) != interactive_files
+                ):
                     raise ReportingError(
                         "report_visualization_section_conflict",
                         "当前章节图表文件身份与已提交事实不一致。",

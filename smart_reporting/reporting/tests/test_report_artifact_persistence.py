@@ -687,9 +687,7 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
             assert report_run_id == "workflow-run"
             assert expected_version == 3
             events.append("editor-context")
-            durable.payload["reportEditorContexts"] = {
-                "1": command.payload["context"]
-            }
+            durable.payload["reportEditorContexts"] = {"1": command.payload["context"]}
 
     runtime.state_repository = StateRepository()
     result = await runtime.issue_http_publication(

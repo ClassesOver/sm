@@ -128,9 +128,11 @@ def _function_response(index: int, name: str, arguments: dict[str, Any]) -> Resp
 
 
 def _batch_response(*responses: Response) -> Response:
-    return responses[0].model_copy(update={
-        "output": [item for response in responses for item in response.output],
-    })
+    return responses[0].model_copy(
+        update={
+            "output": [item for response in responses for item in response.output],
+        }
+    )
 
 
 def _message_response(text: str) -> Response:
@@ -147,9 +149,7 @@ def _message_response(text: str) -> Response:
                     "type": "message",
                     "role": "assistant",
                     "status": "completed",
-                    "content": [
-                        {"type": "output_text", "text": text, "annotations": []}
-                    ],
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
                 }
             ],
             "parallel_tool_calls": False,
@@ -345,7 +345,9 @@ class ToolkitRuntime:
             cell, self.next_cell = self.next_cell, None
             return ScriptProcessResult(cell, 1)
         await workspace.awrite_text("task-1", "analysis/out.json", "{}")
-        return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+        return ScriptProcessResult(
+            SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+        )
 
     async def shutdown(self, session_id: str) -> None:
         self.shutdowns.append(session_id)
@@ -421,9 +423,7 @@ def test_mixed_protocol_formats_only_large_text_tools_as_custom() -> None:
 
 def test_custom_call_round_trip_uses_custom_output() -> None:
     model = _code_responses_model()
-    parsed = model._parse_provider_response(
-        _custom_response("run", "print('ok')")
-    )
+    parsed = model._parse_provider_response(_custom_response("run", "print('ok')"))
     call = parsed.tool_calls[0]
 
     assert json.loads(call["function"]["arguments"]) == {"code": "print('ok')"}
@@ -431,9 +431,7 @@ def test_custom_call_round_trip_uses_custom_output() -> None:
         "reporting_wire_type": "custom",
         "raw_input": "print('ok')",
     }
-    replay = model._format_messages(
-        _assistant_and_result_messages(call, {"ok": True})
-    )
+    replay = model._format_messages(_assistant_and_result_messages(call, {"ok": True}))
     assert [item["type"] for item in replay[-2:]] == [
         "custom_tool_call",
         "custom_tool_call_output",
@@ -446,9 +444,7 @@ def test_custom_call_normalizes_provider_data_envelope(name: str, argument: str)
     source = "# Python\nprint('ok')\n"
     wrapped = json.dumps({"data": source})
 
-    parsed = model._parse_provider_response(
-        _custom_response(name, wrapped)
-    )
+    parsed = model._parse_provider_response(_custom_response(name, wrapped))
     call = parsed.tool_calls[0]
 
     assert json.loads(call["function"]["arguments"]) == {argument: source}
@@ -457,9 +453,7 @@ def test_custom_call_normalizes_provider_data_envelope(name: str, argument: str)
         "raw_input": source,
         "provider_input_normalized": "data_envelope",
     }
-    replay = model._format_messages(
-        _assistant_and_result_messages(call, {"ok": True})
-    )
+    replay = model._format_messages(_assistant_and_result_messages(call, {"ok": True}))
     assert replay[-2]["input"] == source
 
 
@@ -487,9 +481,7 @@ def test_custom_call_preserves_plain_data_mapping_as_source() -> None:
 
     parsed = model._parse_provider_response(_custom_response("run", wrapped))
 
-    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
-        "code": wrapped
-    }
+    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {"code": wrapped}
 
 
 def test_custom_call_preserves_nested_mapping_as_source() -> None:
@@ -497,26 +489,18 @@ def test_custom_call_preserves_nested_mapping_as_source() -> None:
     source = "print('ok')\n"
     wrapped = json.dumps({"source": json.dumps({"data": source})})
 
-    parsed = model._parse_provider_response(
-        _custom_response("write_script", wrapped)
-    )
+    parsed = model._parse_provider_response(_custom_response("write_script", wrapped))
 
-    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
-        "source": wrapped
-    }
+    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {"source": wrapped}
 
 
 def test_custom_call_preserves_non_wrapper_json_expression() -> None:
     model = _code_responses_model()
     expression = '{"first": 1, "second": 2}'
 
-    parsed = model._parse_provider_response(
-        _custom_response("run", expression)
-    )
+    parsed = model._parse_provider_response(_custom_response("run", expression))
 
-    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {
-        "code": expression
-    }
+    assert json.loads(parsed.tool_calls[0]["function"]["arguments"]) == {"code": expression}
 
 
 def test_custom_output_stays_custom_with_previous_response_id() -> None:
@@ -526,9 +510,7 @@ def test_custom_output_stays_custom_with_previous_response_id() -> None:
         base_url="http://localhost",
         store=True,
     )
-    call = model._parse_provider_response(
-        _custom_response("run", "print('ok')")
-    ).tool_calls[0]
+    call = model._parse_provider_response(_custom_response("run", "print('ok')")).tool_calls[0]
     messages = _assistant_and_result_messages(call, {"ok": True})
     messages[0].provider_data = {"response_id": "resp-previous"}
 
@@ -637,11 +619,7 @@ def _synthetic_custom_call_for_replay(
             ),
             Message(
                 role="assistant",
-                tool_calls=[
-                    _synthetic_custom_call_for_replay(
-                        item_id="item-2", call_id="call-1"
-                    )
-                ],
+                tool_calls=[_synthetic_custom_call_for_replay(item_id="item-2", call_id="call-1")],
             ),
             Message(
                 role="tool",
@@ -671,9 +649,7 @@ def _synthetic_custom_call_for_replay(
             {"ok": True},
         ),
         [
-            Message(
-                role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]
-            ),
+            Message(role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]),
             Message(
                 role="tool",
                 content="ok",
@@ -682,9 +658,7 @@ def _synthetic_custom_call_for_replay(
             ),
         ],
         [
-            Message(
-                role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]
-            ),
+            Message(role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]),
             Message(
                 role="tool",
                 content="ok",
@@ -718,11 +692,7 @@ def _synthetic_custom_call_for_replay(
                 tool_name="run",
             )
         ],
-        [
-            Message(
-                role="assistant", tool_calls=[_synthetic_custom_call_for_replay()]
-            )
-        ],
+        [Message(role="assistant", tool_calls=[_synthetic_custom_call_for_replay()])],
     ],
     ids=[
         "duplicate-call-identity",
@@ -753,23 +723,30 @@ def test_custom_protocol_preserves_mixed_batch_order_and_replay() -> None:
     )
     parsed = model._parse_provider_response(response)
     assert [call["function"]["name"] for call in parsed.tool_calls] == [
-        "read_script", "write_script", "run_script", "run",
+        "read_script",
+        "write_script",
+        "run_script",
+        "run",
     ]
     assert parsed.extra["tool_call_ids"] == ["call-1", "call-2", "call-3", "call-4"]
     messages = [Message(role="assistant", tool_calls=parsed.tool_calls)]
     messages.extend(
-        _assistant_and_result_messages(call, {"ok": True})[1]
-        for call in parsed.tool_calls
+        _assistant_and_result_messages(call, {"ok": True})[1] for call in parsed.tool_calls
     )
     replay = model._format_messages(messages)
     calls = [item for item in replay if item.get("type") in {"function_call", "custom_tool_call"}]
     results = [item for item in replay if item.get("type", "").endswith("_output")]
     assert [item["type"] for item in calls] == [
-        "function_call", "custom_tool_call", "function_call", "custom_tool_call",
+        "function_call",
+        "custom_tool_call",
+        "function_call",
+        "custom_tool_call",
     ]
     assert [item["type"] for item in results] == [
-        "function_call_output", "custom_tool_call_output",
-        "function_call_output", "custom_tool_call_output",
+        "function_call_output",
+        "custom_tool_call_output",
+        "function_call_output",
+        "custom_tool_call_output",
     ]
     assert [item["call_id"] for item in calls] == [item["call_id"] for item in results]
     assert calls[1]["input"] == SOURCE
@@ -780,9 +757,11 @@ def test_custom_protocol_preserves_mixed_batch_order_and_replay() -> None:
 def test_custom_protocol_rejects_duplicate_batch_identity(identity: str) -> None:
     first = _custom_response("write_script", SOURCE, 1)
     second = _function_response(2, "run_script", {})
-    second.output[0] = second.output[0].model_copy(update={
-        identity: getattr(first.output[0], identity),
-    })
+    second.output[0] = second.output[0].model_copy(
+        update={
+            identity: getattr(first.output[0], identity),
+        }
+    )
     with pytest.raises(ReportingError, match="身份重复"):
         _code_responses_model()._parse_provider_response(_batch_response(first, second))
 
@@ -920,14 +899,10 @@ def test_code_request_projection_uses_previous_response_wire_messages() -> None:
     params = model.get_request_params(messages=messages, tools=[])
 
     assert params["previous_response_id"] == "resp-previous"
-    assert model._format_messages(messages) == [
-        {"role": "user", "content": "continue"}
-    ]
+    assert model._format_messages(messages) == [{"role": "user", "content": "continue"}]
     assert model._code_last_request_params["systemPrefixSha256"] == "unknown"
     assert model._code_last_request_params["systemPrefixBytes"] == "unknown"
-    assert model.code_run_request_metrics()[0]["requestParams"] == (
-        model._code_last_request_params
-    )
+    assert model.code_run_request_metrics()[0]["requestParams"] == (model._code_last_request_params)
 
 
 def test_empty_request_fingerprint_is_unknown() -> None:
@@ -964,8 +939,7 @@ async def test_code_model_response_emits_request_progress_with_budget(
     records: list[dict[str, object]] = []
     sink_id = logger.add(
         lambda message: records.append(dict(message.record["extra"])),
-        filter=lambda record: record["extra"].get("reporting_progress")
-        == "code_model_request",
+        filter=lambda record: record["extra"].get("reporting_progress") == "code_model_request",
     )
     try:
         await model.ainvoke([])
@@ -1397,9 +1371,7 @@ async def test_view_image_returns_and_stores_structured_visual_review(
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
     reviewed = _visual_receipt(output).model_copy(
         update={
             "issues": (
@@ -1446,9 +1418,7 @@ async def test_view_image_reuses_visual_review_for_same_sha256(
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
     reviewed = _visual_receipt(output).model_copy(
         update={
             "issues": (
@@ -1485,9 +1455,7 @@ async def test_view_image_returns_only_critical_repair_context(
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
     reviewed = _visual_receipt(output, requires_revision=True).model_copy(
         update={
             "issues": (
@@ -1540,9 +1508,7 @@ async def test_view_image_rejects_output_changed_during_visual_review(
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
 
     def mutate_output(*_args: object, **_kwargs: object) -> ChartVisualInspectionReceipt:
         (workspace.identity.root / "charts/chart.png").write_bytes(b"changed")
@@ -1556,17 +1522,13 @@ async def test_view_image_rejects_output_changed_during_visual_review(
     assert binding.visual_inspection_receipts == {}
 
 
-
-
 @pytest.mark.anyio
 async def test_view_image_rejects_output_deleted_during_visual_review(
     workspace: HostReportingWorkspace,
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
 
     def delete_output(*_args: object, **_kwargs: object) -> ChartVisualInspectionReceipt:
         (workspace.identity.root / "charts/chart.png").unlink()
@@ -1586,9 +1548,7 @@ async def test_view_image_bounds_visual_reviewer_failures(
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    _binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    _binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
     reviewer.review.side_effect = RuntimeError("provider secret response")
 
     result = await toolkit.view_image(output.path)
@@ -1606,9 +1566,7 @@ async def test_view_image_retries_transient_visual_reviewer_failure_once(
     runtime: ToolkitRuntime,
 ) -> None:
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    _binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, runtime, reviewer
-    )
+    _binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime, reviewer)
     # 单次输出解析失败不应终止整个 Coding 任务并触发整章 fresh attempt。
     reviewer.review.side_effect = [
         RuntimeError("malformed assessment"),
@@ -1656,12 +1614,12 @@ async def test_successful_visual_rerun_reuses_review_for_unchanged_output(
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "charts/chart.png", "image")
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
     reviewer = AsyncMock(spec=ReportVisionReviewer)
-    binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, Runtime(), reviewer
-    )
+    binding, toolkit, output = await _prepared_visualization_toolkit(workspace, Runtime(), reviewer)
     reviewed = _visual_receipt(output)
     binding.visual_inspection_receipts[output.path] = reviewed
 
@@ -1682,7 +1640,9 @@ async def test_visual_rerun_does_not_reuse_review_requiring_revision(
     class Runtime(ToolkitRuntime):
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "charts/chart.png", "image")
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
     binding, toolkit, output = await _prepared_visualization_toolkit(workspace, Runtime())
     binding.visual_inspection_receipts[output.path] = _visual_receipt(
@@ -1731,9 +1691,10 @@ async def test_write_script_normalizes_repairable_freeform_text(
     result = await toolkit.write_script(source)
 
     assert result["ok"] is True
-    assert await binding.workspace.aread_text(
-        binding.context.task_id, binding.context.script_path
-    ) == expected
+    assert (
+        await binding.workspace.aread_text(binding.context.task_id, binding.context.script_path)
+        == expected
+    )
 
 
 @pytest.mark.anyio
@@ -1769,9 +1730,7 @@ async def test_visual_submit_rejects_stale_visual_review(
     runtime: ToolkitRuntime,
 ) -> None:
     binding, toolkit, output = await _prepared_visualization_toolkit(workspace, runtime)
-    binding.visual_inspection_receipts[output.path] = _visual_receipt(
-        output, sha256="0" * 64
-    )
+    binding.visual_inspection_receipts[output.path] = _visual_receipt(output, sha256="0" * 64)
 
     result = await toolkit.submit_script()
 
@@ -1849,7 +1808,9 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -1873,7 +1834,9 @@ async def test_runner_uses_one_multitool_run_and_returns_submission(
         created.append(agent)
         return agent
 
-    result = await ReportingCodeGenerationRunner(factory, runtime, ReportingLspProcessManager()).run(
+    result = await ReportingCodeGenerationRunner(
+        factory, runtime, ReportingLspProcessManager()
+    ).run(
         _task_context(workspace),
         workspace,
         {"fact": 1},
@@ -1979,7 +1942,9 @@ async def test_runner_vision_uses_exact_reviewer_dynamic_budget_and_sorted_recei
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             for path in output_paths:
                 await received.awrite_text("task-1", path, path)
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2117,9 +2082,9 @@ async def test_runner_shuts_down_kernel_on_no_submission(
             return "done"
 
     with pytest.raises(ReportingError) as caught:
-        await ReportingCodeGenerationRunner(lambda _tools: TextOnlyAgent(), runtime, ReportingLspProcessManager()).run(
-            _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
-        )
+        await ReportingCodeGenerationRunner(
+            lambda _tools: TextOnlyAgent(), runtime, ReportingLspProcessManager()
+        ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
     assert caught.value.code == "report_code_generation_no_submission"
     assert caught.value.details["retryable"] is False
     assert caught.value.details["terminationReason"] == "model_ended_without_submission"
@@ -2211,9 +2176,7 @@ async def test_runner_shuts_down_kernel_when_agent_is_cancelled(
             runtime,
             ReportingLspProcessManager(),
             registry=registry,
-        ).run(
-            _task_context(workspace), workspace, {}, run_context=_run_context("task-1")
-        )
+        ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
 
     assert runtime.shutdowns == ["code-task-1"]
     assert registry.active_count == 0
@@ -2235,7 +2198,10 @@ def test_code_agent_factory_creates_fresh_agent_with_custom_input_instructions()
     assert "当前工具声明" in instructions
     assert "首轮思考聚焦实现、边界条件与正确性" in instructions
     assert "不重复推导已给事实" in instructions
-    assert "对 run_script 返回的图片输出调用 view_image 审查，全部通过后再 submit_script" in instructions
+    assert (
+        "对 run_script 返回的图片输出调用 view_image 审查，全部通过后再 submit_script"
+        in instructions
+    )
     assert "建议把当前待审图片一次性批量传入 view_image 的 `paths` 数组" in instructions
     assert "custom input" not in instructions
     assert "JSON 包装" not in instructions
@@ -2258,9 +2224,7 @@ def test_code_agent_factory_projects_only_task_specific_common_instructions() ->
     )([_function("write_script")])
 
     analysis_instructions = "\n".join(str(item) for item in analysis.instructions)
-    visualization_instructions = "\n".join(
-        str(item) for item in visualization.instructions
-    )
+    visualization_instructions = "\n".join(str(item) for item in visualization.instructions)
     assert "view_image" not in analysis_instructions
     assert "中文图表字体" not in analysis_instructions
     assert "期间计算" in analysis_instructions
@@ -2324,7 +2288,9 @@ def test_task_specific_code_instructions_delegate_wire_protocol_and_fit_budget()
 
 
 def test_interactive_runner_exposes_only_run_public_entrypoint() -> None:
-    runner = ReportingCodeGenerationRunner(lambda _tools: object(), object(), ReportingLspProcessManager())
+    runner = ReportingCodeGenerationRunner(
+        lambda _tools: object(), object(), ReportingLspProcessManager()
+    )
 
     assert callable(runner.run)
     assert not hasattr(runner, "generate")
@@ -2346,10 +2312,10 @@ async def test_interactive_v1_write_fail_fix_run_submit(
             if "broken" in source:
                 return ScriptProcessResult(_failed_cell("SyntaxError: invalid syntax"), 1)
             exists = await received.apath_exists("task-1", "analysis/out.json")
-            await received.awrite_text(
-                "task-1", "analysis/out.json", "{}", overwrite=exists
+            await received.awrite_text("task-1", "analysis/out.json", "{}", overwrite=exists)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
             )
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
 
         async def shutdown(self, _session_id):
             return None
@@ -2402,10 +2368,10 @@ async def test_interactive_v1_end_to_end_responses_loop(
                 _custom_response("run", "print('must not run')", 9),
             ),
             _batch_response(*responses[2:6]),
-                _batch_response(
-                    *responses[6:],
-                    _custom_response("run", "print('must not run')", 10),
-                ),
+            _batch_response(
+                *responses[6:],
+                _custom_response("run", "print('must not run')", 10),
+            ),
         ]
 
     class FakeResponsesClient:
@@ -2433,13 +2399,13 @@ async def test_interactive_v1_end_to_end_responses_loop(
             assert received is workspace
             assert code == "print('probe')"
             assert kwargs == {"matplotlib_agg": False}
-            return SimpleNamespace(
-                status="ok", stdout="probe\n", stderr="", traceback=None
-            )
+            return SimpleNamespace(status="ok", stdout="probe\n", stderr="", traceback=None)
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2559,7 +2525,9 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
             source = await received.aread_text("task-1", "analysis/chart.py")
             content = b"image-v2" if "image-v2" in source else b"image-v1"
             await received.awrite_bytes("task-1", "charts/chart.png", content)
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2597,13 +2565,9 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
                 if requires_revision
                 else (),
                 summary=(
-                    "wire summary 不得进入后续模型输入。"
-                    if requires_revision
-                    else "图表清晰。"
+                    "wire summary 不得进入后续模型输入。" if requires_revision else "图表清晰。"
                 ),
-                warnings=("wire warnings 不得进入后续模型输入。",)
-                if requires_revision
-                else (),
+                warnings=("wire warnings 不得进入后续模型输入。",) if requires_revision else (),
                 suggestions=("wire suggestion 不得进入后续模型输入。",)
                 if requires_revision
                 else (),
@@ -2651,11 +2615,12 @@ async def test_interactive_visual_repair_end_to_end_uses_text_only_receipts(
     assert "image_url" not in request_history
     assert "data:image" not in request_history
     request_tools = [tool for request in client.requests for tool in request["tools"]]
-    assert any(tool["type"] == "custom" and tool["name"] == "write_script" for tool in request_tools)
+    assert any(
+        tool["type"] == "custom" and tool["name"] == "write_script" for tool in request_tools
+    )
     assert any(tool["type"] == "custom" and tool["name"] == "edit_script" for tool in request_tools)
     assert not any(
-        tool["type"] == "function" and tool["name"] == "write_script"
-        for tool in request_tools
+        tool["type"] == "function" and tool["name"] == "write_script" for tool in request_tools
     )
     assert responses == []
     assert runtime.shutdowns == ["code-task-1"]
@@ -2674,7 +2639,9 @@ async def test_visual_reviewer_failure_releases_task_resources(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_bytes("task-1", "charts/chart.png", b"image")
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2736,7 +2703,9 @@ async def test_interactive_v1_releases_all_task_resources(
 
         async def execute_script_process(self, _session_id, received, _path, **_kwargs):
             await received.awrite_text("task-1", "analysis/out.json", "{}")
-            return ScriptProcessResult(SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0)
+            return ScriptProcessResult(
+                SimpleNamespace(status="ok", stdout="", stderr="", traceback=None), 0
+            )
 
         async def shutdown(self, session_id: str) -> None:
             self.shutdowns.append(session_id)
@@ -2758,13 +2727,10 @@ async def test_interactive_v1_releases_all_task_resources(
     runner = ReportingCodeGenerationRunner(
         lambda tools: SubmitAgent(tools), runtime, ReportingLspProcessManager(), registry=registry
     )
-    result = await runner.run(
-        _task_context(workspace), workspace, {}, run_context=_run_context()
-    )
+    result = await runner.run(_task_context(workspace), workspace, {}, run_context=_run_context())
     assert result.script_file == result.execution_receipt.source_file
     assert registry.active_count == 0
     assert runtime.shutdowns == ["code-task-1"]
-
 
 
 def _visualization_model_with_budget(
@@ -2819,8 +2785,7 @@ async def test_visual_budget_gate_forces_submit_when_outputs_present_and_budget_
     assert [tool["name"] for tool in params["tools"]] == ["submit_script"]
     warnings = model.code_run_request_metrics()[-1].get("warnings", [])
     assert any(
-        warning["code"] == "report_code_visual_budget_gate_forced_submit"
-        for warning in warnings
+        warning["code"] == "report_code_visual_budget_gate_forced_submit" for warning in warnings
     )
     details = warnings[0]["details"]
     assert details["remainingToolCalls"] == 1

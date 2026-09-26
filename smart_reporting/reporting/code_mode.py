@@ -131,7 +131,9 @@ class ReportingCodeModeRuntime:
 
     def drain_execution_spans(self, session_id: str) -> dict[str, list[int]] | str:
         spans = self._execution_spans.pop(session_id, None)
-        return "unknown" if spans is None else {name: list(values) for name, values in spans.items()}
+        return (
+            "unknown" if spans is None else {name: list(values) for name, values in spans.items()}
+        )
 
     async def _sync_monitor(self, session_id: str | None = None) -> None:
         started = perf_counter()
@@ -139,7 +141,9 @@ class ReportingCodeModeRuntime:
             try:
                 await self._monitor.reconcile(await self._monitor_source(), wait_for_ready=True)
             except Exception as error:
-                logger.warning("report_code_mode_monitor_failed error_type={}", type(error).__name__)
+                logger.warning(
+                    "report_code_mode_monitor_failed error_type={}", type(error).__name__
+                )
             finally:
                 if session_id is not None:
                     self._record_execution_span(session_id, "monitor", started)
@@ -160,13 +164,20 @@ class ReportingCodeModeRuntime:
         connection = (path, getattr(session, "generation", None))
         if self._logged_connections.get(session_id) == connection:
             return
-        command = shlex.join([
-            "jupyter", "qtconsole", "--existing", path,
-            "--ConsoleWidget.include_other_output=True",
-        ])
+        command = shlex.join(
+            [
+                "jupyter",
+                "qtconsole",
+                "--existing",
+                path,
+                "--ConsoleWidget.include_other_output=True",
+            ]
+        )
         logger.info(
             "report_code_mode_connection session_id={} connection_file={} qtconsole_command={}",
-            session_id, path, command,
+            session_id,
+            path,
+            command,
         )
         self._logged_connections[session_id] = connection
 
@@ -234,9 +245,7 @@ class ReportingCodeModeRuntime:
                 timeout=_EXPLORATION_VARIABLES_TIMEOUT_SECONDS,
             )
         except TimeoutError:
-            logger.warning(
-                "report_code_mode_variables_timeout session_id={}", session_id
-            )
+            logger.warning("report_code_mode_variables_timeout session_id={}", session_id)
         except Exception as error:
             logger.warning(
                 "report_code_mode_variables_failed session_id={} error_type={}",
@@ -321,10 +330,7 @@ class ReportingCodeModeRuntime:
                         normalized,
                         receipt_host_path,
                         matplotlib_root=(
-                            str(
-                                workspace.identity.root
-                                / _MATPLOTLIB_RUNTIME_DIRECTORY
-                            )
+                            str(workspace.identity.root / _MATPLOTLIB_RUNTIME_DIRECTORY)
                             if matplotlib_agg
                             else None
                         ),
@@ -355,7 +361,8 @@ class ReportingCodeModeRuntime:
             except (WorkspaceError, OSError) as error:
                 logger.warning(
                     "report_code_exit_receipt_cleanup_failed session_id={} error_type={}",
-                    session_id, type(error).__name__,
+                    session_id,
+                    type(error).__name__,
                 )
 
     async def shutdown(self, session_id: str) -> None:

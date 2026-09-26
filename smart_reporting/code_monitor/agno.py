@@ -28,8 +28,10 @@ class CodeModeSource:
             if id(owner) in seen:
                 continue
             seen.add(id(owner))
-            if any(cls.__name__ == "CodeMode" and cls.__module__.startswith("agno.tools.code")
-                   for cls in type(owner).__mro__):
+            if any(
+                cls.__name__ == "CodeMode" and cls.__module__.startswith("agno.tools.code")
+                for cls in type(owner).__mro__
+            ):
                 modes.append(owner)
                 continue
             # 仅遍历公开装配字段，不扫描任意对象图。
@@ -51,12 +53,15 @@ class CodeModeSource:
             if km is None or session.kc is None:
                 continue
             connection = km.get_connection_info()
-            targets.append(Target(
-                id=f"{id(mode):x}:{session_id}", label=str(session_id),
-                connection=connection,
-                generation=f"{session.generation}:{km.connection_file}",
-                busy=session.lock.locked(),
-            ))
+            targets.append(
+                Target(
+                    id=f"{id(mode):x}:{session_id}",
+                    label=str(session_id),
+                    connection=connection,
+                    generation=f"{session.generation}:{km.connection_file}",
+                    busy=session.lock.locked(),
+                )
+            )
         return targets
 
     async def __call__(self) -> list[Target]:

@@ -199,9 +199,7 @@ class ReportingDraftWorkflow(Workflow):
                 isinstance(draft_output.content, Mapping)
                 and draft_output.content.get("status") == "rework"
             ):
-                logger.warning(
-                    "report_section_degraded_draft_retry section_code={}", section_code
-                )
+                logger.warning("report_section_degraded_draft_retry section_code={}", section_code)
                 draft_input["forceDegradedDraft"] = True
                 draft_output = await self.draft_section(draft_input, run_context)
                 if draft_output.success is False:

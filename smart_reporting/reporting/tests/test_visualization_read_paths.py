@@ -27,40 +27,46 @@ def test_visualization_authorizes_supplemental_sources_without_unrelated_evidenc
 
 
 def test_visualization_coding_facts_drop_planning_narrative_and_keep_descriptors():
-    projection = [{
-        "analysisId": "analysis_001",
-        "factFile": {"path": "facts/item.json", "sha256": "a" * 64, "size": 10},
-        "dataPathBase": "fileRoot",
-        "summary": "面向章节撰写的长篇业务总结",
-        "metrics": [{"metricIndex": 0, "unit": "元", "dataPaths": {"metric": "metrics[0]"}}],
-        "dataDescriptors": [
-            {"dataPath": "metrics[0]", "fields": ["field", "total"]}
-        ],
-        "derivedMetrics": [],
-        "comparisons": [{"comparisonIndex": 0, "dataPath": "comparisons[0]"}],
-        "evidenceFiles": [{"path": "evidence/item.json"}],
-        "citationIds": ["citation_001"],
-        "supplementalEvidenceSources": [{
-            "sourceFile": {"path": "evidence/item.json", "sha256": "b" * 64, "size": 20},
-            "findings": [{
-                "findingIndex": 0,
-                "rowEncoding": "columns_rows",
-                "nullableFields": ["同比"],
-            }],
-        }],
-    }]
+    projection = [
+        {
+            "analysisId": "analysis_001",
+            "factFile": {"path": "facts/item.json", "sha256": "a" * 64, "size": 10},
+            "dataPathBase": "fileRoot",
+            "summary": "面向章节撰写的长篇业务总结",
+            "metrics": [{"metricIndex": 0, "unit": "元", "dataPaths": {"metric": "metrics[0]"}}],
+            "dataDescriptors": [{"dataPath": "metrics[0]", "fields": ["field", "total"]}],
+            "derivedMetrics": [],
+            "comparisons": [{"comparisonIndex": 0, "dataPath": "comparisons[0]"}],
+            "evidenceFiles": [{"path": "evidence/item.json"}],
+            "citationIds": ["citation_001"],
+            "supplementalEvidenceSources": [
+                {
+                    "sourceFile": {"path": "evidence/item.json", "sha256": "b" * 64, "size": 20},
+                    "findings": [
+                        {
+                            "findingIndex": 0,
+                            "rowEncoding": "columns_rows",
+                            "nullableFields": ["同比"],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
 
     coding_facts = visualization_coding_facts(projection)
 
-    assert coding_facts == [{
-        "analysisId": "analysis_001",
-        "factFile": projection[0]["factFile"],
-        "dataPathBase": "fileRoot",
-        "metrics": projection[0]["metrics"],
-        "dataDescriptors": projection[0]["dataDescriptors"],
-        "comparisons": projection[0]["comparisons"],
-        "supplementalEvidenceSources": projection[0]["supplementalEvidenceSources"],
-    }]
+    assert coding_facts == [
+        {
+            "analysisId": "analysis_001",
+            "factFile": projection[0]["factFile"],
+            "dataPathBase": "fileRoot",
+            "metrics": projection[0]["metrics"],
+            "dataDescriptors": projection[0]["dataDescriptors"],
+            "comparisons": projection[0]["comparisons"],
+            "supplementalEvidenceSources": projection[0]["supplementalEvidenceSources"],
+        }
+    ]
     assert projection[0]["summary"] == "面向章节撰写的长篇业务总结"
 
 
@@ -102,9 +108,7 @@ def test_visualization_coding_facts_keep_only_plan_bound_descriptors():
         {
             "analysisId": "analysis_002",
             "factFile": {"path": "facts/unbound.json", "sha256": "c" * 64, "size": 5},
-            "dataDescriptors": [
-                {"dataPath": "metrics[0]", "fields": ["name", "value"]}
-            ],
+            "dataDescriptors": [{"dataPath": "metrics[0]", "fields": ["name", "value"]}],
         },
     ]
     plan = VisualizationPlanDraft(
@@ -146,9 +150,7 @@ def test_visualization_coding_facts_keep_only_plan_bound_descriptors():
     assert coding_facts[0]["dataDescriptors"] == [
         {"dataPath": "metrics[0]", "fields": ["name", "value"]}
     ]
-    assert coding_facts[0]["metrics"] == [
-        {"metricIndex": 0, "dataPath": "metrics[0]"}
-    ]
+    assert coding_facts[0]["metrics"] == [{"metricIndex": 0, "dataPath": "metrics[0]"}]
     assert coding_facts[0]["supplementalEvidenceSources"][0]["dataDescriptors"] == [
         {"dataPath": "findings[1]", "fields": ["name", "rows"]}
     ]

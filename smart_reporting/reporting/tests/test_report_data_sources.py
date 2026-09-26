@@ -90,9 +90,7 @@ class _FakeDatasetService:
         _destination_relative, destination_remote = self.normalize_path(destination)
         await self.fs.move_files(source_remote, destination_remote)
 
-    async def adelete_file(
-        self, _thread: str, path: str, *, recursive: bool = False
-    ) -> None:
+    async def adelete_file(self, _thread: str, path: str, *, recursive: bool = False) -> None:
         _relative, remote = self.normalize_path(path)
         await self.fs.delete_file(remote, recursive=recursive)
 

@@ -70,10 +70,19 @@ def _recovery_toolkit() -> tuple[ReportingToolkit, dict[str, object]]:
 @pytest.mark.anyio
 async def test_durable_completion_recovery_replays_prior_attempt_paths() -> None:
     toolkit, stored = _recovery_toolkit()
-    recovered = {key: stored[key] for key in (
-        "analysisId", "summary", "datasetIds", "evidencePaths", "citationIds",
-        "profileReadReceiptIds", "warnings", "chartIds",
-    )}
+    recovered = {
+        key: stored[key]
+        for key in (
+            "analysisId",
+            "summary",
+            "datasetIds",
+            "evidencePaths",
+            "citationIds",
+            "profileReadReceiptIds",
+            "warnings",
+            "chartIds",
+        )
+    }
 
     result = await toolkit.complete_analysis_item(
         **recovered, run_context=RunContext(run_id="run-1", session_id="session-1")

@@ -632,9 +632,7 @@ class ReportEditorService:
             session_state=session_state,
         )
         if settings:
-            session_state[REPORT_JOBS_STATE_KEY][context.job_id][
-                "_editorExportSettings"
-            ] = {
+            session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = {
                 key: bool(settings[key])
                 for key in ("cover", "toc", "headerFooter", "pageNumbers")
                 if key in settings
