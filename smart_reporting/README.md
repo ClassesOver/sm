@@ -170,6 +170,7 @@ Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在�
 | `SANDBOX_LOCAL_CLIENT_KEY` | Local mTLS 客户端私钥；HTTPS 模式必填 |
 | `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
 | `AGENT_REPORT_PUBLIC_BASE_URL` | PDF/Word 下载和 `editor.openUrl` 使用的公开同源基地址；生产环境使用 HTTPS |
+| `AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS` | 编辑器导出（渲染 + 验收）的服务端超时，默认 1200 秒，最大 3600；网关/反向代理读超时须不小于该值 |
 | `DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting 阶段 Agent thinking 开关（兼容配置名） |

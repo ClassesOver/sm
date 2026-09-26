@@ -347,6 +347,19 @@ def _path_arguments(call: ast.Call, qualified_name: str) -> tuple[ast.AST, ...]:
     return tuple(_call_path_arguments(call, qualified_name))
 
 
+def _normalize_literal_path(value: str) -> str:
+    """只消除与签发相对路径无歧义等价的写法：前导 ./、重复斜杠与中间的 /./。
+
+    脚本在工作区根执行，"./analysis/out.json" 与签发的 "analysis/out.json" 是同一
+    文件；绝对路径、反斜杠与 .. 保持原样，由白名单继续拒绝。
+    """
+
+    if not value or value.startswith("/") or "\\" in value:
+        return value
+    parts = [part for part in value.split("/") if part not in {"", "."}]
+    return "/".join(parts) if parts else value
+
+
 def _referenced_literal_paths(tree: ast.AST) -> set[str]:
     aliases = _import_aliases(tree)
     bindings = _literal_bindings(tree)
@@ -360,7 +373,7 @@ def _referenced_literal_paths(tree: ast.AST) -> set[str]:
         for argument in _path_arguments(node, qualified_name):
             literal = _literal_string(argument, bindings)
             if literal is not None:
-                paths.add(literal)
+                paths.add(_normalize_literal_path(literal))
     return paths
 
 
@@ -376,22 +389,23 @@ def _resolved_path_literal(
         )
     literal = _literal_string(node, bindings)
     if literal is not None:
-        return literal
+        return _normalize_literal_path(literal)
     if isinstance(node, ast.Call):
         qualified_name = _qualified_name(node.func, aliases)
         if qualified_name == "pathlib.Path" and node.args:
-            return _literal_string(node.args[0], bindings)
+            first = _literal_string(node.args[0], bindings)
+            return _normalize_literal_path(first) if first is not None else None
         if qualified_name == "os.path.join" and not node.keywords:
             parts = [_literal_string(argument, bindings) for argument in node.args]
             if parts and all(part is not None for part in parts):
-                return os.path.join(*parts)
+                return _normalize_literal_path(os.path.join(*parts))
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         # pathlib 斜杠拼接：Path("charts") / "a.png"；左侧是 os.path.join
         # 解析出的 POSIX 路径时也按同风格拼接。
         left = _resolved_path_literal(node.left, aliases, bindings, seen)
         right = _literal_string(node.right, bindings)
         if left is not None and right is not None:
-            return f"{left.rstrip('/')}/{right}"
+            return _normalize_literal_path(f"{left.rstrip('/')}/{right}")
     return None
 
 
@@ -406,13 +420,13 @@ def _all_referenced_literal_paths(tree: ast.AST) -> set[str]:
             continue
         parts = [_literal_string(argument, bindings) for argument in node.args]
         if parts and all(part is not None for part in parts):
-            paths.add(os.path.join(*parts))
+            paths.add(_normalize_literal_path(os.path.join(*parts)))
     return paths
 
 
 def _declared_output_literals(tree: ast.AST, declared_paths: frozenset[str]) -> set[str]:
     literals = {
-        node.value
+        _normalize_literal_path(node.value)
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
@@ -1197,9 +1211,9 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
                 left = _literal_string(node.left.args[0], bindings) if node.left.args else None
             right = _literal_string(node.right, bindings)
             if left is not None:
-                parts.add(left)
+                parts.add(_normalize_literal_path(left))
             if right is not None:
-                parts.add(right)
+                parts.add(_normalize_literal_path(right))
             unsigned -= parts
     if unsigned:
         for node in ast.walk(tree):
@@ -1209,7 +1223,8 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
             if qualified_name is None:
                 continue
             if any(
-                _literal_string(argument, bindings) in unsigned
+                (literal := _literal_string(argument, bindings)) is not None
+                and _normalize_literal_path(literal) in unsigned
                 for argument in _path_arguments(node, qualified_name)
             ):
                 lines.append(node.lineno)
@@ -1334,8 +1349,12 @@ def _collect_preflight(
     source: str,
     tool_name: str,
     context: Any,
-) -> tuple[list[ReportingError], list[dict[str, str]]]:
-    """一次执行全部预检，返回 (违规列表, 软告警)；主失败码沿用第一个违规。"""
+) -> list[ReportingError]:
+    """一次执行全部预检，返回违规列表；主失败码沿用第一个违规。
+
+    通用数据 helper 按真实回放实证保持硬拦截（见 _reject_generic_data_helpers），
+    因此预检不再产生软告警。
+    """
 
     checks: list[Callable[[], None]] = [
         lambda: _reject_code_envelope(tree, tool_name),
@@ -1358,18 +1377,7 @@ def _collect_preflight(
             check()
         except ReportingError as error:
             violations.append(error)
-    warnings: list[dict[str, str]] = []
-    helper = _generic_data_helper_details(tree)
-    if helper is not None:
-        # 统一形状输入下通用 helper 本身无害；真正的风险路径由字面路径白名单兜底。
-        warnings.append(
-            {
-                "code": "report_code_generic_data_helper",
-                "reason": str(helper.get("reason") or "generic_helper"),
-                "message": "检测到通用数据读取 helper；请确认只读取签发路径中的逐字字符串。",
-            }
-        )
-    return violations, warnings
+    return violations
 
 
 def _preflight_failure(
@@ -1419,7 +1427,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         "detectedOutputWrites", "functionName", "parameterName",
         "violations", "draftSha256", "violationLines", "writeExample",
         "notReferencedPaths", "writeNotExecutedPaths", "unresolvedWritePaths", "outputHint",
-        "hint",
+        "hint", "totalLines", "patchFormat", "expectedPath", "anchor", "declaredImagePaths",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -1436,7 +1444,7 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
         if key in {
             "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths", "presentPaths",
             "detectedOutputWrites", "violationLines", "notReferencedPaths",
-            "writeNotExecutedPaths", "unresolvedWritePaths",
+            "writeNotExecutedPaths", "unresolvedWritePaths", "declaredImagePaths",
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
@@ -1931,7 +1939,10 @@ class ReportingCodeModeToolkit(Toolkit):
             Function(name="run_script", description="运行已保存的绑定脚本并校验声明输出；失败时按回执中的源码 SHA 与片段使用 edit_script 局部修复，随后重新运行。", entrypoint=self.run_script),
             Function(
                 name="lsp_diagnostics",
-                description="检查已保存脚本的语法和类型诊断；可用当前脚本 SHA 防止读取旧版本。",
+                description=(
+                    "检查已保存脚本的语法和类型诊断；可用当前脚本 SHA 防止读取旧版本。"
+                    "回执中的 line/column 从 1 开始，与 read_script 和 traceback 一致，并附 sourceLine。"
+                ),
                 parameters=_lsp_parameters(path_required=False, include_position=False),
                 entrypoint=self.lsp_diagnostics,
             ),
@@ -2659,14 +2670,23 @@ class ReportingCodeModeToolkit(Toolkit):
             if tree is not None:
                 # 与 run_script 同一路径策略：draft 阶段即拒绝，避免"保存成功
                 # → 执行被拒"浪费一整个写-跑循环后模型重试退化。一次返回全部违规。
-                violations, preflight_warnings = _collect_preflight(
+                violations = _collect_preflight(
                     tree, source, "write_script", self.context
                 )
+                wrapped = next(
+                    (item for item in violations if item.code == "report_code_input_wrapped"),
+                    None,
+                )
+                if wrapped is not None and not promote_draft:
+                    # 包装输入不是可修补的源码：存成草稿只会让 edit_script 去补 JSON 信封，
+                    # 与 repairHint“重新 write_script 原始代码”矛盾。直接要求重发。
+                    details = dict(wrapped.details) if isinstance(wrapped.details, Mapping) else {}
+                    details["nextTools"] = ["write_script"]
+                    return _failure(wrapped.code, wrapped.message, details)
                 if violations:
                     return _preflight_failure(
                         violations, source, draft_sha256=await self._store_draft(source)
                     )
-                warnings.extend(preflight_warnings)
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         if tree is not None:
@@ -2856,9 +2876,8 @@ class ReportingCodeModeToolkit(Toolkit):
             remaining_syntax_error = {"errorType": "SyntaxError", **_syntax_error_details(error)}
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
-        preflight_warnings: list[dict[str, str]] = []
         if tree is not None:
-            violations, preflight_warnings = _collect_preflight(
+            violations = _collect_preflight(
                 tree, updated, "edit_script", self.context
             )
             if violations:
@@ -2897,7 +2916,6 @@ class ReportingCodeModeToolkit(Toolkit):
                 "kind": "edit",
                 "replacedOccurrences": len(edits),
             },
-            **({"warnings": preflight_warnings} if preflight_warnings else {}),
             "readyForExecution": tree is not None,
             **(
                 {"syntaxError": remaining_syntax_error, "nextTools": ["edit_script"]}
@@ -3093,19 +3111,27 @@ class ReportingCodeModeToolkit(Toolkit):
             )
 
         normalized_paths: list[str] = []
+        # 非法路径不再让整批失败：合法图片照常审查，非法项逐条回执并给出可审查的
+        # 声明图片清单，模型可直接改正，不必再猜路径或重复消耗一轮。
+        path_failures: list[dict[str, Any]] = []
+        reviewable_paths = [
+            item for item in self.context.declared_output_paths
+            if not item.endswith(".plotly.json")
+        ]
         for raw_path in target_paths:
             try:
                 source_path = WorkspaceService.normalize_path(raw_path, allow_root=False)[0]
             except WorkspaceError:
-                return _failure(
-                    "report_code_visual_path_forbidden",
-                    "图片路径不属于当前 Coding task 的声明输出。",
+                source_path = None
+            if source_path is None or source_path not in self.context.declared_output_paths:
+                path_failures.append(
+                    _failure(
+                        "report_code_visual_path_forbidden",
+                        "图片路径不属于当前 Coding task 的声明输出。",
+                        {"path": raw_path[:512], "declaredImagePaths": reviewable_paths[:20]},
+                    )
                 )
-            if source_path not in self.context.declared_output_paths:
-                return _failure(
-                    "report_code_visual_path_forbidden",
-                    "图片路径不属于当前 Coding task 的声明输出。",
-                )
+                continue
             normalized_paths.append(source_path)
         # 同一路径并发审查会重复调用视觉模型并重复计数。
         normalized_paths = list(dict.fromkeys(normalized_paths))
@@ -3114,6 +3140,8 @@ class ReportingCodeModeToolkit(Toolkit):
         skipped_paths = [item for item in normalized_paths if item.endswith(".plotly.json")]
         normalized_paths = [item for item in normalized_paths if item not in skipped_paths]
         if not normalized_paths:
+            if path_failures:
+                return self._aggregate_view_failures(path_failures, [], 0)
             return _failure(
                 "report_code_visual_path_not_image",
                 "Plotly 交互规格（.plotly.json）无需视觉审查；只审查 PNG/JPEG 图片输出。",
@@ -3121,7 +3149,7 @@ class ReportingCodeModeToolkit(Toolkit):
             )
 
         receipts: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = list(path_failures)
         fresh_review_count = 0
         for start in range(0, len(normalized_paths), _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE):
             chunk = normalized_paths[start : start + _DECLARED_OUTPUT_REVIEW_CHUNK_SIZE]
@@ -3137,6 +3165,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 if isinstance(result, BaseException) and not isinstance(result, Exception):
                     raise result
                 if isinstance(result, dict) and result.get("ok") is False:
+                    # 多图汇总按 details.path 标注失败项；各失败分支统一补齐路径。
+                    result.setdefault("details", {}).setdefault("path", chunk[index])
                     failures.append(result)
                     continue
                 if isinstance(result, dict):
@@ -3147,20 +3177,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     failures.append(self._visual_review_unavailable(chunk[index], result))
             receipts.extend(chunk_receipts)
         if failures:
-            # 主失败沿用第一项；同批已完成的审查结论一并返回，不丢弃 critical 问题。
-            primary = dict(failures[0])
-            if receipts:
-                primary["receipts"] = receipts
-                primary["freshReviewCount"] = fresh_review_count
-            if len(failures) > 1:
-                primary["additionalFailures"] = [
-                    {
-                        "code": item.get("code"),
-                        "path": (item.get("details") or {}).get("path"),
-                    }
-                    for item in failures[1:8]
-                ]
-            return primary
+            return self._aggregate_view_failures(failures, receipts, fresh_review_count)
         skipped = {"skippedInteractivePaths": skipped_paths} if skipped_paths else {}
         if len(normalized_paths) == 1:
             return {
@@ -3175,6 +3192,27 @@ class ReportingCodeModeToolkit(Toolkit):
             "freshReviewCount": fresh_review_count,
             **skipped,
         }
+
+    @staticmethod
+    def _aggregate_view_failures(
+        failures: list[dict[str, Any]],
+        receipts: list[dict[str, Any]],
+        fresh_review_count: int,
+    ) -> dict[str, Any]:
+        # 主失败沿用第一项；同批已完成的审查结论一并返回，不丢弃 critical 问题。
+        primary = dict(failures[0])
+        if receipts:
+            primary["receipts"] = receipts
+            primary["freshReviewCount"] = fresh_review_count
+        if len(failures) > 1:
+            primary["additionalFailures"] = [
+                {
+                    "code": item.get("code"),
+                    "path": (item.get("details") or {}).get("path"),
+                }
+                for item in failures[1:8]
+            ]
+        return primary
 
     async def _review_one_image(
         self,
@@ -3597,12 +3635,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 )
                 result["truncated"] = sorted(truncated)
                 return result
-        except WorkspaceError:
-            return _failure(
-                "report_code_source_missing",
-                "Coding Agent 脚本不存在。",
-                {"nextTools": ["write_script"]},
-            )
+        except WorkspaceError as error:
+            return await self._workspace_failure(error)
         except ReportingError as error:
             details = dict(error.details) if isinstance(error.details, Mapping) else {}
             details.setdefault("nextTools", ["read_script", "edit_script", "run_script"])
@@ -3681,6 +3715,32 @@ class ReportingCodeModeToolkit(Toolkit):
                 self._set_output_validation("passed")
         return result
 
+    async def _workspace_failure(self, error: WorkspaceError) -> dict[str, Any]:
+        """脚本确实不存在时才引导 write_script；其他工作区错误（产物路径是符号链接、
+        目录无法创建等）如实回报，避免模型整段重写一个本来存在的脚本。"""
+
+        try:
+            script_exists = await self.workspace.apath_exists(
+                self.context.task_id, self.context.script_path
+            )
+        except WorkspaceError:
+            script_exists = False
+        if not script_exists:
+            return _failure(
+                "report_code_source_missing",
+                "Coding Agent 脚本不存在。",
+                {"path": self.context.script_path, "nextTools": ["write_script"]},
+            )
+        return _failure(
+            "report_code_workspace_error",
+            "工作区操作失败，脚本本身仍存在；请按 reason 处理后重新运行，不要整段重写脚本。",
+            {
+                "reason": str(error)[:300],
+                "errorType": type(error).__name__,
+                "nextTools": ["read_script", "edit_script", "run_script"],
+            },
+        )
+
     async def submit_script(self, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
         receipt = self.binding.execution_receipt
@@ -3703,12 +3763,8 @@ class ReportingCodeModeToolkit(Toolkit):
         try:
             source = await self._validated_source_identity()
             outputs = await self._declared_output_identities()
-        except WorkspaceError:
-            return _failure(
-                "report_code_source_missing",
-                "Coding Agent 脚本不存在。",
-                {"path": self.context.script_path, "nextTools": ["write_script"]},
-            )
+        except WorkspaceError as error:
+            return await self._workspace_failure(error)
         except ReportingError as error:
             details = dict(error.details) if isinstance(error.details, Mapping) else {}
             details.setdefault("nextTools", ["read_script", "edit_script", "run_script"])

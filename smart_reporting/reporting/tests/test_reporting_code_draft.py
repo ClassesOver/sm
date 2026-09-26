@@ -422,3 +422,34 @@ async def test_execution_failure_reports_outputs_written_before_crash(workspace)
     assert result["details"]["presentPaths"] == [first]
     assert result["details"]["missingPaths"] == [second]
     assert "只局部修复" in result["details"]["outputHint"]
+
+
+@pytest.mark.anyio
+async def test_run_script_workspace_error_is_not_reported_as_missing_script(
+    binding, runtime, monkeypatch  # noqa: F811
+):
+    from smart_reporting.workspace import WorkspaceError
+
+    toolkit = _toolkit(binding, runtime)
+    written = await toolkit.write_script(
+        'import json\njson.dump({}, open("analysis/out.json", "w"))\n'
+    )
+    assert written["ok"] is True
+
+    async def broken_delete(*_args, **_kwargs):
+        raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
+
+    monkeypatch.setattr(toolkit.workspace, "adelete_file", broken_delete)
+    result = await toolkit.run_script()
+
+    assert result["code"] == "report_code_workspace_error"
+    assert "符号链接" in result["details"]["reason"]
+    assert "write_script" not in result["details"]["nextTools"]
+
+
+@pytest.mark.anyio
+async def test_run_script_without_script_still_reports_missing(binding, runtime):  # noqa: F811
+    result = await _toolkit(binding, runtime).run_script()
+
+    assert result["code"] == "report_code_source_missing"
+    assert result["details"]["nextTools"] == ["write_script"]

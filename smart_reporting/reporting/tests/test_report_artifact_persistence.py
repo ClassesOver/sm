@@ -741,9 +741,12 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
     }
     events: list[str] = []
 
+    scopes: list[Any] = []
+
     class Persistence:
         async def persist(self, **values: Any) -> None:
             events.append("persist")
+            scopes.append(values["scope"])
 
     class Grants:
         async def issue(self, **values: Any):
@@ -824,6 +827,8 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
     )
 
     assert events == ["persist", "editor-context", "destroy", "grant", "editor-grant"]
+    # 产物与授权作用域取解析后的租户，与编辑器导出一致，修订撤销才能跨入口生效。
+    assert (scopes[0].database, scopes[0].company_id) == ("database-1", "company-1")
     assert result["editor"]["openUrl"] == (
         "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
     )
@@ -1036,6 +1041,17 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
     runtime.editor_grants = Grants()
     runtime.workspace_service = Workspace()
     runtime.report_public_base_url = "http://10.233.32.64:27018"
+    durable = SimpleNamespace(
+        state_version=3,
+        payload={"report_workflow_scope": _scope_state_for_publication()},
+    )
+
+    class StateRepository:
+        async def get(self, _report_run_id: str):
+            return durable
+
+    # 作用域在落库前解析并校验，失败时不会留下已落库的产物。
+    runtime.state_repository = StateRepository()
     content = b"report"
     output = {
         "reportId": "report-1",

@@ -205,16 +205,27 @@ def _roman(value: int) -> str:
 
 
 def _page_number_context(
-    physical_page: int, *, body_start_page: int, physical_page_count: int
+    physical_page: int,
+    *,
+    body_start_page: int,
+    physical_page_count: int,
+    first_numbered_page: int = 2,
 ) -> tuple[str | int, str | int]:
-    """返回当前分节内的页码和分节总页数，封面不进入编号体系。"""
+    """返回当前分节内的页码和分节总页数，封面不进入编号体系。
+
+    ``first_numbered_page`` 是首个参与编号的物理页：有封面时为 2，无封面导出时为 1。
+    """
     if (
-        not 2 <= physical_page <= physical_page_count
-        or not 2 <= body_start_page <= physical_page_count
+        first_numbered_page not in (1, 2)
+        or not first_numbered_page <= physical_page <= physical_page_count
+        or not first_numbered_page <= body_start_page <= physical_page_count
     ):
         raise ReportFailure("报表分节页码边界无效")
     if physical_page < body_start_page:
-        return _roman(physical_page - 1), _roman(body_start_page - 2)
+        return (
+            _roman(physical_page - first_numbered_page + 1),
+            _roman(body_start_page - first_numbered_page),
+        )
     return physical_page - body_start_page + 1, physical_page_count - body_start_page + 1
 
 
@@ -268,7 +279,11 @@ def _pdf_link_count(reader: Any, *, start_page: int, end_page: int) -> int:
 
 
 def _apply_pdf_page_decorations(
-    path: Path, *, context: dict[str, Any], layout: dict[str, str]
+    path: Path,
+    *,
+    context: dict[str, Any],
+    layout: dict[str, str],
+    include_cover: bool = True,
 ) -> None:
     try:
         import pypdf
@@ -284,10 +299,14 @@ def _apply_pdf_page_decorations(
         section_pages = _pdf_section_pages(reader, context["sections"])
         body_start_page = min(section_pages.values())
         page_count = len(reader.pages)
+        first_numbered_page = 2 if include_cover else 1
         decoration_pages: list[str] = []
-        for page_number in range(2, page_count + 1):
+        for page_number in range(first_numbered_page, page_count + 1):
             page_value, pages_value = _page_number_context(
-                page_number, body_start_page=body_start_page, physical_page_count=page_count
+                page_number,
+                body_start_page=body_start_page,
+                physical_page_count=page_count,
+                first_numbered_page=first_numbered_page,
             )
             values = {
                 key: html.escape(
@@ -331,7 +350,7 @@ def _apply_pdf_page_decorations(
         )
         HTML(string=document).write_pdf(str(overlay), pdf_variant="pdf/ua-1")
         overlay_pages = pypdf.PdfReader(str(overlay)).pages
-        if len(overlay_pages) != page_count - 1:
+        if len(overlay_pages) != page_count - first_numbered_page + 1:
             raise ReportFailure("PDF 页面装饰页数不一致")
         writer = pypdf.PdfWriter(clone_from=str(path))
         # pypdf 默认将合并产物写成 1.3，即使源文档是 PDF/UA-1（1.7）；保留
@@ -339,7 +358,9 @@ def _apply_pdf_page_decorations(
         writer.pdf_header = "%PDF-1.7"
         # WeasyPrint 的命名页沿用绝对页计数。服务端按章节锚点一次生成全部装饰页，
         # 目录使用罗马数字，正文从 1 重启；封面明确不合并任何页面元素。
-        for page, overlay_page in zip(writer.pages[1:], overlay_pages, strict=True):
+        for page, overlay_page in zip(
+            writer.pages[first_numbered_page - 1 :], overlay_pages, strict=True
+        ):
             page.merge_page(overlay_page, over=True)
         with decorated.open("wb") as stream:
             writer.write(stream)

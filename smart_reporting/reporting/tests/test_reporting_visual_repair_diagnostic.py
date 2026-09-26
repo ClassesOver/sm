@@ -115,6 +115,8 @@ def test_view_image_projects_model_receipt_but_keeps_full_audit_receipt(
 
     result = asyncio.run(toolkit.view_image(chart_file.path))
 
+    # freshReviewCount 是本次新鲜审查计数，与回执投影无关。
+    assert result.pop("freshReviewCount") == 1
     assert result == {
         "ok": True,
         "receipt": {

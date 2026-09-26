@@ -268,7 +268,7 @@ describe('report editor enhancements', () => {
       revision: 2,
       requestId: '01995f3d-7bd2-7000-8000-000000000001',
       pdf: { downloadUrl: '/pdf', path: 'reports/revision-2/运营报告.pdf', size: 1536 },
-      word: { downloadUrl: '/word', path: 'reports/revision-2/运营报告.docx', size: 2048 },
+      word: { downloadUrl: '/word', path: 'reports/revision-2/运营报告.docx', size: 3_460_300 },
       editor: { openUrl: '/editor/2' },
     })
 
@@ -278,7 +278,7 @@ describe('report editor enhancements', () => {
     )
     expect(panel.dialog.textContent).toContain('版本 2')
     expect(panel.dialog.textContent).toContain('运营报告.pdf · 1.5 KB')
-    expect(panel.dialog.textContent).toContain('运营报告.docx · 2 KB')
+    expect(panel.dialog.textContent).toContain('运营报告.docx · 3.3 MB')
     expect(panel.dialog.textContent).toContain('请求编号：01995f3d-7bd2-7000-8000-000000000001')
 
     panel.close.click()

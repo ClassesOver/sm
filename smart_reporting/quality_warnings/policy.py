@@ -142,4 +142,10 @@ def get_warning_rule(code: str) -> WarningRule:
         raise QualityWarningContractError(f"规则未登记：{code}") from error
 
 
-__all__ = ["QualityWarningContractError", "WarningRule", "get_warning_rule"]
+def warning_rules() -> tuple[WarningRule, ...]:
+    """按规则码排序的全部已登记规则，用于声明一次完整检查覆盖的范围。"""
+
+    return tuple(_RULES[code] for code in sorted(_RULES))
+
+
+__all__ = ["QualityWarningContractError", "WarningRule", "get_warning_rule", "warning_rules"]

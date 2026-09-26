@@ -243,6 +243,26 @@ describe('createHistoryController', () => {
     expect(otherDay.items).toHaveLength(0)
   })
 
+  it('filters by the local calendar date instead of the UTC date prefix', async () => {
+    const previous = process.env.TZ
+    process.env.TZ = 'Asia/Shanghai'
+    try {
+      const fetchPage = vi.fn(async () => ({
+        // 本地 2026-09-26 07:30（UTC+8）导出。
+        items: [{ revision: 2, sha256: 'b'.repeat(64), source: 'manual', createdAt: '2026-09-25T23:30:00+00:00' }],
+        total: 1,
+        hasMore: false,
+      }))
+      const loadPage = createPersistedHistoryLoader(fetchPage)
+
+      expect((await loadPage(0, { source: '', date: '2026-09-26' })).items).toHaveLength(1)
+      expect((await loadPage(0, { source: '', date: '2026-09-25' })).items).toHaveLength(0)
+    } finally {
+      if (previous === undefined) delete process.env.TZ
+      else process.env.TZ = previous
+    }
+  })
+
   it('keeps session snapshots when reloading persisted history', async () => {
     const loadPage = vi.fn().mockResolvedValue({
       items: [{ label: 'Revision 1', markdown: '', revision: 1 }],

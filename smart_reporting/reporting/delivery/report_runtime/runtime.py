@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import html
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -64,6 +66,8 @@ _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 class ReportRuntime:
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace).resolve()
+        # _images 按原始 src 记录已唯一解析的图片，供 HTML 内联复用。
+        self._image_sources: dict[str, Path] = {}
 
     def _validate_datasets(self, state: dict[str, Any]) -> None:
         sources = state.get("sources")
@@ -95,9 +99,46 @@ class ReportRuntime:
             "sha256": _sha256(path),
         }
 
-    def _images(self, markdown_path: Path, tokens: list[Any], state: dict[str, Any] | None = None) -> set[Path]:
+    def _manifest_image(
+        self, markdown_path: Path, relative: PurePosixPath, manifest_paths: list[str]
+    ) -> Path | None:
+        """草稿与图文目录分离时，按渲染清单唯一定位图片。
+
+        清单路径与 Markdown 直接路径同一规则：拒绝绝对路径、.. 与反斜杠，不能借回退
+        绕过越界校验。同名候选优先取 Markdown 所在目录的祖先目录；仍不唯一时报错，
+        不静默取第一个。
+        """
+
+        target = relative.as_posix()
+        candidates: list[Path] = []
+        for value in manifest_paths:
+            candidate = PurePosixPath(value)
+            if (
+                "\\" in value
+                or candidate.is_absolute()
+                or ".." in candidate.parts
+                or not (value == target or value.endswith("/" + target))
+            ):
+                continue
+            path = self.workspace.joinpath(*candidate.parts)
+            if path not in candidates:
+                candidates.append(path)
+        if len(candidates) > 1:
+            ancestors = set(markdown_path.resolve().parents)
+            preferred = [item for item in candidates if item.parent.resolve() in ancestors]
+            if len(preferred) == 1:
+                candidates = preferred
+        if len(candidates) > 1:
+            raise ReportFailure("Markdown 图片在渲染清单中有多个同名候选，无法唯一定位")
+        return candidates[0] if candidates else None
+
+    def _images(
+        self, markdown_path: Path, tokens: list[Any], state: dict[str, Any] | None = None
+    ) -> set[Path]:
         # 编辑器导出的草稿位于 revision-N/draft/ 子目录，图片仍在报告根目录；
-        # 相对解析失败时按渲染清单（工作区相对路径）回退定位。
+        # 相对解析失败时按渲染清单（工作区相对路径）回退定位。解析结果按原始 src
+        # 记录，HTML 内联直接复用，避免两处各自猜测选中不同文件。
+        self._image_sources = {}
         manifest_paths: list[str] = []
         render = state.get("render") if isinstance(state, dict) else None
         raw_images = render.get("images") if isinstance(render, dict) else None
@@ -122,17 +163,9 @@ class ReportRuntime:
                     raise ReportFailure("Markdown 图片只能引用工作区内的相对路径")
                 image = markdown_path.parent.joinpath(*relative.parts)
                 if not image.is_file():
-                    suffix = "/" + relative.as_posix()
-                    matched = next(
-                        (
-                            full
-                            for full in manifest_paths
-                            if full == relative.as_posix() or full.endswith(suffix)
-                        ),
-                        None,
-                    )
+                    matched = self._manifest_image(markdown_path, relative, manifest_paths)
                     if matched is not None:
-                        image = self.workspace.joinpath(*PurePosixPath(matched).parts)
+                        image = matched
                 _reject_symlinks(self.workspace, image)
                 try:
                     image.relative_to(self.workspace)
@@ -143,35 +176,30 @@ class ReportRuntime:
                 if image.stat().st_size > MAX_IMAGE_BYTES:
                     raise ReportFailure("单张 Markdown 图片超过 10 MiB")
                 _check_image_signature(image)
-                images.append(image.resolve())
+                resolved = image.resolve()
+                images.append(resolved)
+                self._image_sources[source] = resolved
         unique = set(images)
         if sum(path.stat().st_size for path in unique) > MAX_TOTAL_IMAGE_BYTES:
             raise ReportFailure("Markdown 图片合计超过 50 MiB")
         return unique
 
     @staticmethod
-    def _inline_images(body: str, source_parent: Path, allowed_images: set[Path]) -> str:
+    def _inline_images(
+        body: str,
+        source_parent: Path,
+        allowed_images: set[Path],
+        sources: Mapping[str, Path] | None = None,
+    ) -> str:
         image_pattern = re.compile(r'(<img\b[^>]*\bsrc=)(["\'])([^"\']+)(\2)', re.I)
 
         def replace(match: re.Match[str]) -> str:
-            source = match.group(3)
+            source = html.unescape(match.group(3))
             parsed = urlsplit(source)
             if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
                 raise ReportFailure("HTML 图片只能引用已校验的工作区资源")
-            path = (source_parent / unquote(parsed.path)).resolve()
-            if path not in allowed_images:
-                # 草稿目录与图文目录分离时，按已校验清单后缀回退（与 _images 一致）。
-                suffix = "/" + PurePosixPath(unquote(parsed.path)).as_posix()
-                matched = next(
-                    (
-                        candidate
-                        for candidate in allowed_images
-                        if str(candidate).replace("\\", "/").endswith(suffix)
-                    ),
-                    None,
-                )
-                if matched is not None:
-                    path = matched
+            # 优先使用 _images 已唯一解析的结果（含草稿目录的清单回退）。
+            path = (sources or {}).get(source) or (source_parent / unquote(parsed.path)).resolve()
             if path not in allowed_images:
                 raise ReportFailure("HTML 图片引用了未校验资源")
             mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
@@ -224,7 +252,9 @@ class ReportRuntime:
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
             export_settings = state.get("_editorExportSettings")
-            include_cover = not isinstance(export_settings, dict) or export_settings.get("cover", True)
+            include_cover = not isinstance(export_settings, dict) or export_settings.get(
+                "cover", True
+            )
             include_toc = not isinstance(export_settings, dict) or export_settings.get("toc", True)
             include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
                 "headerFooter", True
@@ -250,7 +280,9 @@ class ReportRuntime:
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
-            html_body = self._inline_images(body, source.parent, allowed_images)
+            html_body = self._inline_images(
+                body, source.parent, allowed_images, self._image_sources
+            )
             self._reject_html_links(html_body)
             output = _output_path(self.workspace, output_path)
             word_output = _word_output_path(
@@ -325,6 +357,7 @@ class ReportRuntime:
                 temporary,
                 context=context,
                 layout=layout,
+                include_cover=include_cover,
             )
             word_structure = _render_docx(
                 word_document,
@@ -510,12 +543,20 @@ class ReportRuntime:
                     raise ReportFailure("PDF 视觉验收栅格化失败")
                 extracted_pages: list[str] = []
                 export_settings = render.get("exportSettings")
-                include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
-                    "headerFooter", True
-                )
+                include_header_footer = not isinstance(
+                    export_settings, dict
+                ) or export_settings.get("headerFooter", True)
                 include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
                     "pageNumbers", True
                 )
+                include_cover = not isinstance(export_settings, dict) or export_settings.get(
+                    "cover", True
+                )
+                include_toc = not isinstance(export_settings, dict) or export_settings.get(
+                    "toc", True
+                )
+                # 首个参与编号和页面装饰的物理页；无封面导出时正文或目录从第 1 页开始。
+                first_numbered_page = 2 if include_cover else 1
                 layout = _page_layout(
                     render.get("pageLayout"),
                     include_header_footer=include_header_footer,
@@ -529,10 +570,10 @@ class ReportRuntime:
                 toc_link_count = (
                     _pdf_link_count(
                         reader,
-                        start_page=2,
+                        start_page=first_numbered_page,
                         end_page=body_start_page - 1,
                     )
-                    if body_start_page > 2
+                    if include_toc and body_start_page > first_numbered_page
                     else 0
                 )
                 for index, (page, rendered_page) in enumerate(
@@ -548,7 +589,7 @@ class ReportRuntime:
                     ratio = round(non_white / len(samples), 6) if samples else 0.0
                     image_count = len(page.images)
                     rendered_image_count += image_count
-                    if index == 1:
+                    if index < first_numbered_page:
                         role = "cover"
                         page_value: str | int = 1
                         pages_value: str | int = 1
@@ -559,6 +600,7 @@ class ReportRuntime:
                             index,
                             body_start_page=body_start_page,
                             physical_page_count=len(reader.pages),
+                            first_numbered_page=first_numbered_page,
                         )
                         layout_present = _has_page_layout(
                             page_text,
@@ -568,9 +610,10 @@ class ReportRuntime:
                             page=page_value,
                             pages=pages_value,
                         )
-                    watermark_present = index > 1 and context["watermarkText"] in page_text
+                    numbered = index >= first_numbered_page
+                    watermark_present = numbered and context["watermarkText"] in page_text
                     substantive_text = "".join(page_text.split())
-                    if index > 1:
+                    if numbered:
                         decorations = [
                             context["watermarkText"],
                             *(
@@ -591,10 +634,10 @@ class ReportRuntime:
                                 "".join(decoration.split()), "", 1
                             )
                     text_char_count = len(substantive_text)
-                    if index > 1 and not layout_present:
+                    if numbered and not layout_present:
                         missing_page_layout.append(index)
                     blank = (
-                        text_char_count == 0 and image_count == 0 and (index > 1 or ratio < 0.0005)
+                        text_char_count == 0 and image_count == 0 and (numbered or ratio < 0.0005)
                     )
                     if blank:
                         blank_pages.append(index)
@@ -607,7 +650,7 @@ class ReportRuntime:
                             "textCharCount": text_char_count,
                             "imageCount": image_count,
                             "pageLayoutPresent": layout_present,
-                            "pageLayoutExpected": index > 1,
+                            "pageLayoutExpected": numbered,
                             "watermarkPresent": watermark_present,
                             "role": role,
                             "blank": blank,
@@ -615,7 +658,7 @@ class ReportRuntime:
                     )
                 extracted_text = "\n".join(extracted_pages)
                 cover_text = extracted_pages[0]
-                toc_text = "\n".join(extracted_pages[1 : body_start_page - 1])
+                toc_text = "\n".join(extracted_pages[first_numbered_page - 1 : body_start_page - 1])
                 final_text = extracted_pages[-1]
                 cover_values = (
                     context["title"],
@@ -634,6 +677,13 @@ class ReportRuntime:
                     all("".join(value.split()) in cover_compact for value in cover_values)
                     and cover_compact.count(watermark_compact) == expected_cover_occurrences
                 )
+                # 无封面导出时标题随正文首页出现；目录关闭时不存在目录页与目录链接。
+                title_ok = (
+                    cover_ok
+                    if include_cover
+                    else "".join(title.split())
+                    in "".join(extracted_pages[body_start_page - 1].split())
+                )
                 toc_ok = "目录" in toc_text and all(
                     format_heading_label(
                         level=item["level"], number=item["number"], title=item["title"]
@@ -646,7 +696,9 @@ class ReportRuntime:
                     and context["generatedDate"] in final_text
                 )
                 watermark_pages = [
-                    item["page"] for item in pages if item["page"] > 1 and item["watermarkPresent"]
+                    item["page"]
+                    for item in pages
+                    if item["page"] >= first_numbered_page and item["watermarkPresent"]
                 ]
                 word_structure = _validate_docx_structure(
                     word,
@@ -659,6 +711,7 @@ class ReportRuntime:
                     temp_path / "word-validation",
                     context=context,
                     layout=layout,
+                    include_cover=include_cover,
                 )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
@@ -673,12 +726,17 @@ class ReportRuntime:
                 and missing_images == 0
                 and not word_rendering["blankPages"]
                 and word_structure["embeddedImageCount"] >= markdown_image_count
-                and cover_ok
-                and toc_ok
-                and toc_link_count >= len(context["headingNumbers"])
+                and title_ok
                 and signature_ok
-                and word_structure["nativeTocPresent"]
                 and word_structure["tocEntryCount"] == len(context["headingNumbers"])
+                and (
+                    not include_toc
+                    or (
+                        toc_ok
+                        and toc_link_count >= len(context["headingNumbers"])
+                        and word_structure["nativeTocPresent"]
+                    )
+                )
             )
             validation = {
                 "ok": ok,
@@ -696,8 +754,8 @@ class ReportRuntime:
                 "sectionIds": section_ids,
                 "blankPages": blank_pages,
                 "missingPageLayoutPages": missing_page_layout,
-                "coverPresent": cover_ok,
-                "tocPresent": toc_ok,
+                "coverPresent": include_cover and cover_ok,
+                "tocPresent": include_toc and toc_ok,
                 "tocLinkCount": toc_link_count,
                 "bodyStartPage": body_start_page,
                 "watermarkPages": watermark_pages,

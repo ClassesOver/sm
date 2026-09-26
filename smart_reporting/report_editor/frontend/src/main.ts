@@ -45,6 +45,7 @@ import {
 } from './enhancements'
 import { protocolMarkerPlugin } from './protocol-plugin'
 import { restoreProtocolMarkers } from './protocol'
+import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
 import { createEditorShell } from './shell'
 import { createOutlineController, type OutlineItem } from './outline'
@@ -59,7 +60,7 @@ import { toolbarMode } from './viewport'
 import { createLoadStatePanel } from './load-state'
 import { createSaveStateTracker, type SaveStateTracker } from './save-state'
 import { createTelemetryReporter } from './telemetry'
-import { reportPreflight, showPreflightPanel } from './preflight'
+import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight'
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
 
@@ -96,14 +97,14 @@ exportSettingsPanel.dialog.querySelector('[data-export-settings="confirm"]')?.ad
   exportSettingsPanel.close()
 })
 let getEditorMarkdown = () => ''
-let replaceEditorMarkdown: (markdown: string) => void = () => {}
+let initialFormalHeadings: string[] | undefined
 const currentSectionLabel = root.querySelector<HTMLElement>('.current-section')
 const outlineController = createOutlineController({
   container: shell.outline,
   editor: shell.editor,
   toggle: shell.outlineToggle,
-  getMarkdown: () => getEditorMarkdown(),
-  replaceMarkdown: (markdown) => replaceEditorMarkdown(markdown),
+  // 正式章节（h2-h4）的顺序与编号由服务端批准提纲锁定，导出会逐项核对；
+  // 大纲拖拽重排必然导致导出失败，且会让章节标识错位，因此只保留导航。
   initialCollapsed: preferences.outlineCollapsed || undefined,
   onCollapsedChange: preferences.setOutlineCollapsed,
   onActive: (item) => {
@@ -197,6 +198,9 @@ function setActionsDisabled(disabled: boolean) {
 }
 
 function errorLabel(error: unknown): string {
+  if (error instanceof ReportEditorApiError && error.code === 'report_editor_revision_stale') {
+    return '已有更新版本 · 请打开最新版本的编辑链接'
+  }
   if (error instanceof ReportEditorApiError && error.status === 409) return '保存冲突'
   if (error instanceof ReportEditorApiError && error.status === 410) return '会话已过期'
   if (error instanceof TypeError) return '无法连接报告服务'
@@ -243,10 +247,12 @@ try {
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(searchHighlightPlugin)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
-  replaceEditorMarkdown = (markdown) => crepe.editor.action(replaceAll(markdown))
   await crepe.create()
   crepe.on((listener) => {
-    listener.markdownUpdated((_ctx, markdown) => {
+    listener.markdownUpdated((_ctx, serialized) => {
+      // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
+      // 统一使用还原后的 Markdown，否则服务端导出找不到章节标识。
+      const markdown = restoreProtocolMarkers(serialized)
       if (metricsLabel) metricsLabel.textContent = documentMetrics(markdown)
       if (outlineFrame !== undefined) window.cancelAnimationFrame(outlineFrame)
       outlineFrame = window.requestAnimationFrame(() => {
@@ -280,8 +286,20 @@ try {
   ])
   const searchController = createSearchController({
     root,
-    getText: () => crepe.getMarkdown(),
+    getText: () => getEditorMarkdown(),
     replaceText: (markdown) => crepe.editor.action(replaceAll(markdown)),
+    backend: {
+      count: (query) =>
+        crepe.editor.action((ctx) => findDocumentMatches(ctx.get(editorViewCtx).state.doc, query).length),
+      replace: (query, replacement, index) => {
+        crepe.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          const matches = findDocumentMatches(view.state.doc, query)
+          const selected = index === null ? matches : matches.slice(index, index + 1)
+          if (selected.length) view.dispatch(replaceDocumentMatches(view.state.tr, selected, replacement))
+        })
+      },
+    },
     applyHighlight: (query, current) => {
       crepe.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx)
@@ -307,6 +325,7 @@ try {
     (markdown) => crepe.editor.action(replaceAll(markdown)),
   )
   draftController.offer(documentState.markdown)
+  initialFormalHeadings = formalHeadings(documentState.markdown)
   if (metricsLabel) metricsLabel.textContent = documentMetrics(documentState.markdown)
   historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
@@ -337,7 +356,7 @@ try {
       if (currentMarkdown !== lastSavedMarkdown) return saveNow()
       return
     }
-    const markdown = crepe.getMarkdown()
+    const markdown = getEditorMarkdown()
     currentMarkdown = markdown
     if (markdown === lastSavedMarkdown) return
     status('保存中', 'busy')
@@ -425,7 +444,7 @@ try {
     setActionsDisabled(true)
     status(`准备导出 ${formatLabel}`, 'busy')
     try {
-      const warnings = reportPreflight(crepe.getMarkdown(), shell.editor)
+      const warnings = reportPreflight(getEditorMarkdown(), shell.editor, initialFormalHeadings)
       if (warnings.length) {
         const proceed = await new Promise<boolean>((resolve) => showPreflightPanel(root!, warnings, resolve))
         if (!proceed) return

@@ -38,6 +38,7 @@ async def test_normalize_multi_domain_topic_without_requesting_clarification() -
         "period": {"start": "2025-01-01", "end": "2025-12-31"},
         "comparisonRoles": ["yoy"],
         "fileInputs": [],
+        "visualizationMode": "auto",
     }
 
 

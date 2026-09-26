@@ -14,7 +14,6 @@ from sqlalchemy import (
     delete,
     insert,
     select,
-    update,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -26,6 +25,7 @@ report_editor_grants_v1 = Table(
     _metadata,
     Column("grant_hash", String(64), primary_key=True),
     Column("expires_at", DateTime(timezone=True), nullable=False),
+    # 历史一次性授权的消费时间；授权改为可重复打开后仅为兼容既有表结构保留。
     Column("consumed_at", DateTime(timezone=True), nullable=True),
 )
 report_editor_sessions_v1 = Table(
@@ -51,9 +51,7 @@ class SqlAlchemyReportEditorRepository:
             await connection.run_sync(_metadata.create_all)
             now = datetime.now(UTC)
             await connection.execute(
-                delete(report_editor_grants_v1).where(
-                    report_editor_grants_v1.c.expires_at <= now
-                )
+                delete(report_editor_grants_v1).where(report_editor_grants_v1.c.expires_at <= now)
             )
             await connection.execute(
                 delete(report_editor_sessions_v1).where(
@@ -69,18 +67,17 @@ class SqlAlchemyReportEditorRepository:
                 )
             )
 
-    async def consume_grant(self, jti: str, *, now: datetime) -> bool:
-        async with self.engine.begin() as connection:
-            result = await connection.execute(
-                update(report_editor_grants_v1)
-                .where(
-                    report_editor_grants_v1.c.grant_hash == _hash(jti),
-                    report_editor_grants_v1.c.consumed_at.is_(None),
-                    report_editor_grants_v1.c.expires_at > now,
+    async def grant_active(self, jti: str, *, now: datetime) -> bool:
+        async with self.engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    select(report_editor_grants_v1.c.grant_hash).where(
+                        report_editor_grants_v1.c.grant_hash == _hash(jti),
+                        report_editor_grants_v1.c.expires_at > now,
+                    )
                 )
-                .values(consumed_at=now)
-            )
-        return result.rowcount == 1
+            ).first()
+        return row is not None
 
     async def put_session(self, session_hash: str, session: ReportEditorSession) -> None:
         async with self.engine.begin() as connection:
@@ -98,12 +95,16 @@ class SqlAlchemyReportEditorRepository:
     async def get_session(self, session_hash: str) -> ReportEditorSession | None:
         async with self.engine.connect() as connection:
             row = (
-                await connection.execute(
-                    select(report_editor_sessions_v1).where(
-                        report_editor_sessions_v1.c.session_hash == session_hash
+                (
+                    await connection.execute(
+                        select(report_editor_sessions_v1).where(
+                            report_editor_sessions_v1.c.session_hash == session_hash
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
         if row is None:
             return None
         expires_at = cast(datetime, row["expires_at"])
@@ -120,4 +121,3 @@ class SqlAlchemyReportEditorRepository:
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
-

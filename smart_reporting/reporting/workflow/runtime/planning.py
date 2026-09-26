@@ -345,12 +345,36 @@ class RuntimePlanningMixin:
                 await self.workspace_service.awrite_text(
                     thread_id, str(revision_markdown), markdown
                 )
-        # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
-        # 修订撤销和审计，不再作为下载时的调用方权限条件。
-        download_scope = ReportDownloadScope(
-            database="agentos",
+        durable = await self.state_repository.get(workflow_run_id)
+        stored_scope = (
+            durable.payload.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
+            if durable is not None and isinstance(durable.payload, dict)
+            else None
+        )
+        # Durable payload 不固化作用域；调用方 thread 只能从发布时的 run_context
+        # dependencies 恢复，与 _scope() 的解析来源保持一致，否则 caller_thread_id
+        # 会回退到 workflow 内部会话 id，误判编辑上下文作用域不一致。
+        # thread_id 是 as_state() 里的 workspace_key（供工作区 IO 寻址），安全比对
+        # 必须对着调用方 thread（callerThreadId），两者不是同一语义。
+        scope = resolve_reporting_workflow_scope(
+            run_id=workflow_run_id,
+            session_id=workflow_session_id,
             user_id=user_id,
-            company_id="public",
+            dependencies=dependencies,
+            stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
+        )
+        if durable is None or scope.caller_thread_id != caller_thread_id:
+            raise ReportingError(
+                "report_editor_scope_mismatch", "报告编辑上下文与发布作用域不一致。"
+            )
+        # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
+        # 修订撤销和审计，不再作为下载时的调用方权限条件。必须与编辑器导出使用同一
+        # 解析作用域：撤销与防回退按 database/company 精确匹配，写死常量会让编辑器
+        # 导出的新 revision 无法撤销首次发布的旧链接。
+        download_scope = ReportDownloadScope(
+            database=scope.database,
+            user_id=user_id,
+            company_id=scope.company_id,
             session_id=workflow_session_id,
             thread_id=thread_id,
             workflow_run_id=workflow_run_id,
@@ -374,28 +398,6 @@ class RuntimePlanningMixin:
                 ),
             ),
         )
-        durable = await self.state_repository.get(workflow_run_id)
-        stored_scope = (
-            durable.payload.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
-            if durable is not None and isinstance(durable.payload, dict)
-            else None
-        )
-        # Durable payload 不固化作用域；调用方 thread 只能从发布时的 run_context
-        # dependencies 恢复，与 _scope() 的解析来源保持一致，否则 caller_thread_id
-        # 会回退到 workflow 内部会话 id，误判编辑上下文作用域不一致。
-        # thread_id 是 as_state() 里的 workspace_key（供工作区 IO 寻址），安全比对
-        # 必须对着调用方 thread（callerThreadId），两者不是同一语义。
-        scope = resolve_reporting_workflow_scope(
-            run_id=workflow_run_id,
-            session_id=workflow_session_id,
-            user_id=user_id,
-            dependencies=dependencies,
-            stored_scope=stored_scope if isinstance(stored_scope, dict) else None,
-        )
-        if durable is None or scope.caller_thread_id != caller_thread_id:
-            raise ReportingError(
-                "report_editor_scope_mismatch", "报告编辑上下文与发布作用域不一致。"
-            )
         editor_context = ReportEditorContext(
             reportId=content["reportId"],
             revision=content["revision"],

@@ -3,6 +3,8 @@ import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
 
+import { findDocumentMatches } from './search-document'
+
 export interface SearchHighlightSpec {
   query: string
   current: number
@@ -13,23 +15,11 @@ export const searchHighlightPluginKey = new PluginKey<DecorationSet>(
 )
 
 function searchDecorations(doc: ProseNode, query: string, current: number): DecorationSet {
-  const decorations: Decoration[] = []
-  if (!query) return DecorationSet.create(doc, decorations)
-  let index = 0
-  doc.descendants((node, position) => {
-    if (!node.isText || !node.text) return
-    const value = node.text
-    let found = value.indexOf(query)
-    while (found >= 0) {
-      decorations.push(
-        Decoration.inline(position + found, position + found + query.length, {
-          class: `search-match${index === current ? ' search-match-active' : ''}`,
-        }),
-      )
-      index += 1
-      found = value.indexOf(query, found + query.length)
-    }
-  })
+  const decorations = findDocumentMatches(doc, query).map((match, index) =>
+    Decoration.inline(match.from, match.to, {
+      class: `search-match${index === current ? ' search-match-active' : ''}`,
+    }),
+  )
   return DecorationSet.create(doc, decorations)
 }
 

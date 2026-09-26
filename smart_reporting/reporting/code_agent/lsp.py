@@ -15,6 +15,8 @@ from .context import ReportingCodingTaskBinding
 from .lsp_process import ReportingLspProcessError, ReportingLspProcessManager
 
 MAX_HOVER_BYTES = 2048
+MAX_DIAGNOSTICS = 50
+_SEVERITY = {1: "error", 2: "warning", 3: "information", 4: "hint"}
 
 
 class ReportingWorkspaceLsp:
@@ -41,7 +43,15 @@ class ReportingWorkspaceLsp:
             )
         except ReportingLspProcessError:
             return self._unavailable(path, sha)
-        return {"ok": True, "path": path, "diagnostics": diagnostics, "sourceSha256": sha}
+        lines = source.splitlines()
+        compact = [self._diagnostic(item, lines) for item in diagnostics[:MAX_DIAGNOSTICS]]
+        return {
+            "ok": True,
+            "path": path,
+            "diagnostics": compact,
+            "totalDiagnostics": len(diagnostics),
+            "sourceSha256": sha,
+        }
 
     async def hover(
         self, path: str, *, line: int, character: int, expected_source_sha256: str | None = None
@@ -234,6 +244,33 @@ class ReportingWorkspaceLsp:
             "character": position.get("character", 0),
             "kind": "symbol",
         }
+
+    @staticmethod
+    def _diagnostic(item: dict[str, Any], lines: list[str]) -> dict[str, Any]:
+        """LSP 原始 range 从 0 开始；统一转为与 read_script、traceback 一致的 1 起行列号。"""
+
+        range_ = item.get("range") if isinstance(item.get("range"), dict) else {}
+        start = range_.get("start") if isinstance(range_.get("start"), dict) else {}
+        end = range_.get("end") if isinstance(range_.get("end"), dict) else start
+
+        def position(value: Any) -> int | None:
+            return value + 1 if isinstance(value, int) and not isinstance(value, bool) else None
+
+        line = position(start.get("line"))
+        result: dict[str, Any] = {
+            "line": line,
+            "column": position(start.get("character")),
+            "endLine": position(end.get("line")),
+            "endColumn": position(end.get("character")),
+            "severity": _SEVERITY.get(item.get("severity"), "unknown"),
+            "message": str(item.get("message", ""))[:300],
+        }
+        for key in ("source", "code"):
+            if isinstance(item.get(key), str | int) and not isinstance(item.get(key), bool):
+                result[key] = str(item[key])[:64]
+        if line is not None and 1 <= line <= len(lines):
+            result["sourceLine"] = lines[line - 1][:200]
+        return result
 
     @staticmethod
     def _contents(value: Any) -> str:

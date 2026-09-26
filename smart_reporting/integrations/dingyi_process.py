@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from dingyi_agno.process import ProcessJournal, ProcessPublisher, create_process_router
 from dingyi_agno.process.core import now
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
@@ -50,7 +50,12 @@ async def _best_effort(action: str, operation_id: str):
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        logger.warning("dingyi_process_action_failed action={} operation={} error_type={}", action, operation_id, type(error).__name__)
+        logger.warning(
+            "dingyi_process_action_failed action={} operation={} error_type={}",
+            action,
+            operation_id,
+            type(error).__name__,
+        )
 
 
 class DingyiProcessAdapter:
@@ -72,7 +77,19 @@ class DingyiProcessAdapter:
         return self._router
 
     @staticmethod
-    async def _authorize(_request: Any, _resource: dict[str, Any] | None) -> None:
+    async def _authorize(request: Any, resource: dict[str, Any] | None) -> None:
+        """只接受中间件已验签的 Odoo capability，并把访问限定在其 thread 内。
+
+        过程 operation 的 sessionId 即报告 thread；未携带 capability 的请求不能按
+        猜测或泄露的会话/operation id 读取报告标题、步骤摘要和事件流。
+        """
+
+        capability = getattr(getattr(request, "state", None), "capability", None)
+        thread = getattr(capability, "thread", None)
+        if not isinstance(thread, str) or not thread:
+            raise HTTPException(status_code=401)
+        if resource is not None and resource.get("sessionId") not in (None, thread):
+            raise HTTPException(status_code=404)
         return None
 
     async def _snapshot(self, operation_id: str) -> dict[str, Any] | None:
@@ -81,13 +98,26 @@ class DingyiProcessAdapter:
         except Exception:
             return None
 
-    async def start_operation(self, *, operation_id: str, session_id: str, run_id: str, title: str, execution: str) -> None:
+    async def start_operation(
+        self, *, operation_id: str, session_id: str, run_id: str, title: str, execution: str
+    ) -> None:
         async with _best_effort("start_operation", operation_id):
-            publisher = ProcessPublisher(self._ensure_journal(), owner=OWNER, session_id=session_id, run_id=run_id, component=COMPONENT, title=_bounded(title, _MAX_TITLE_LENGTH) or OPERATION_TITLE, operation_id=operation_id, execution=execution)
+            publisher = ProcessPublisher(
+                self._ensure_journal(),
+                owner=OWNER,
+                session_id=session_id,
+                run_id=run_id,
+                component=COMPONENT,
+                title=_bounded(title, _MAX_TITLE_LENGTH) or OPERATION_TITLE,
+                operation_id=operation_id,
+                execution=execution,
+            )
             await publisher.astart()
             self._operation_ids[operation_id] = operation_id
 
-    async def update_operation(self, *, operation_id: str, session_id: str, status: str, summary: str | None = None) -> None:
+    async def update_operation(
+        self, *, operation_id: str, session_id: str, status: str, summary: str | None = None
+    ) -> None:
         async with _best_effort("update_operation", operation_id):
             target = self._operation_ids.get(operation_id, operation_id)
             snapshot = await self._snapshot(target)
@@ -95,7 +125,16 @@ class DingyiProcessAdapter:
                 return
             if status in _OPERATION_TERMINAL:
                 await self._close_activities(snapshot, status)
-            publisher = ProcessPublisher(self._ensure_journal(), owner=OWNER, session_id=session_id, run_id=str(snapshot["operation"]["runId"]), component=COMPONENT, title=str(snapshot["operation"]["title"]), operation_id=target, execution=str(snapshot["operation"]["execution"]))
+            publisher = ProcessPublisher(
+                self._ensure_journal(),
+                owner=OWNER,
+                session_id=session_id,
+                run_id=str(snapshot["operation"]["runId"]),
+                component=COMPONENT,
+                title=str(snapshot["operation"]["title"]),
+                operation_id=target,
+                execution=str(snapshot["operation"]["execution"]),
+            )
             await publisher.aupdate(status=status, summary=_bounded(summary, _MAX_SUMMARY_LENGTH))
             if status in _OPERATION_TERMINAL:
                 self._operation_ids.pop(operation_id, None)
@@ -107,34 +146,86 @@ class DingyiProcessAdapter:
             if str(activity.get("status")) in _ACTIVITY_TERMINAL:
                 continue
             publisher = ProcessPublisher(
-                self._ensure_journal(), owner=OWNER,
-                session_id=str(operation["sessionId"]), run_id=str(operation["runId"]),
-                component=COMPONENT, title=str(operation["title"]),
-                operation_id=str(operation["operationId"]), execution=str(operation["execution"]),
+                self._ensure_journal(),
+                owner=OWNER,
+                session_id=str(operation["sessionId"]),
+                run_id=str(operation["runId"]),
+                component=COMPONENT,
+                title=str(operation["title"]),
+                operation_id=str(operation["operationId"]),
+                execution=str(operation["execution"]),
             )
             await publisher.aactivity(
-                id=str(activity["id"]), title=str(activity.get("title") or "步骤"),
-                kind=str(activity.get("kind") or "step"), status=activity_status,
-                endedAt=now(), summary="已随任务完成" if activity_status == "completed" else "步骤执行失败",
+                id=str(activity["id"]),
+                title=str(activity.get("title") or "步骤"),
+                kind=str(activity.get("kind") or "step"),
+                status=activity_status,
+                endedAt=now(),
+                summary="已随任务完成" if activity_status == "completed" else "步骤执行失败",
             )
 
-    async def start_activity(self, *, operation_id: str, session_id: str, run_id: str, step_id: str) -> str | None:
+    async def start_activity(
+        self, *, operation_id: str, session_id: str, run_id: str, step_id: str
+    ) -> str | None:
         async with _best_effort("start_activity", operation_id):
             if await self._snapshot(self._operation_ids.get(operation_id, operation_id)) is None:
                 return None
             title, _ = _STEP_TITLES.get(step_id, (step_id, "步骤执行完成"))
-            operation = (await self._snapshot(self._operation_ids.get(operation_id, operation_id)))['operation']
-            publisher = ProcessPublisher(self._ensure_journal(), owner=OWNER, session_id=session_id, run_id=run_id, component=COMPONENT, title=str(operation['title']), operation_id=str(operation['operationId']), execution=str(operation['execution']))
+            operation = (await self._snapshot(self._operation_ids.get(operation_id, operation_id)))[
+                "operation"
+            ]
+            publisher = ProcessPublisher(
+                self._ensure_journal(),
+                owner=OWNER,
+                session_id=session_id,
+                run_id=run_id,
+                component=COMPONENT,
+                title=str(operation["title"]),
+                operation_id=str(operation["operationId"]),
+                execution=str(operation["execution"]),
+            )
             activity_id = str(uuid4())
-            await publisher.aactivity(id=activity_id, title=title, status="running", startedAt=now(), source={"runId": run_id, "stepId": step_id})
+            await publisher.aactivity(
+                id=activity_id,
+                title=title,
+                status="running",
+                startedAt=now(),
+                source={"runId": run_id, "stepId": step_id},
+            )
             return activity_id
 
-    async def finish_activity(self, *, operation_id: str, session_id: str, activity_id: str, step_id: str, status: str, summary: str | None = None) -> None:
+    async def finish_activity(
+        self,
+        *,
+        operation_id: str,
+        session_id: str,
+        activity_id: str,
+        step_id: str,
+        status: str,
+        summary: str | None = None,
+    ) -> None:
         async with _best_effort("finish_activity", operation_id):
             operation = await self._snapshot(self._operation_ids.get(operation_id, operation_id))
             if operation is None:
                 return
             data = operation["operation"]
             title, default = _STEP_TITLES.get(step_id, (step_id, "步骤执行完成"))
-            publisher = ProcessPublisher(self._ensure_journal(), owner=OWNER, session_id=session_id, run_id=str(data["runId"]), component=COMPONENT, title=str(data["title"]), operation_id=str(data["operationId"]), execution=str(data["execution"]))
-            await publisher.aactivity(id=activity_id, title=title, status=status, endedAt=now(), summary=_bounded(summary or (default if status == "completed" else None), _MAX_SUMMARY_LENGTH))
+            publisher = ProcessPublisher(
+                self._ensure_journal(),
+                owner=OWNER,
+                session_id=session_id,
+                run_id=str(data["runId"]),
+                component=COMPONENT,
+                title=str(data["title"]),
+                operation_id=str(data["operationId"]),
+                execution=str(data["execution"]),
+            )
+            await publisher.aactivity(
+                id=activity_id,
+                title=title,
+                status=status,
+                endedAt=now(),
+                summary=_bounded(
+                    summary or (default if status == "completed" else None), _MAX_SUMMARY_LENGTH
+                ),
+            )

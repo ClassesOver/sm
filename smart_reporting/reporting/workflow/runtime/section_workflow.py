@@ -10,6 +10,7 @@ from typing import Any
 from agno.run import RunContext
 from loguru import logger
 
+from ...code_agent.failure_policy import fresh_attempt_futile
 from ...models import ReportingError
 from ..checkpoint import SectionWorkItem
 from .phase_models import (
@@ -175,7 +176,11 @@ class SectionWorkflow:
                     )
                 return SectionWorkflowResult("accepted", decision, recovery_used)
             except Exception as error:
-                if isinstance(error, ReportingError) and error.code in _NON_RECOVERABLE_CODES:
+                if isinstance(error, ReportingError) and (
+                    error.code in _NON_RECOVERABLE_CODES or fresh_attempt_futile(error)
+                ):
+                    # 基础设施/部署类失败以统一 failure_policy 为准；模型侧 recovery
+                    # 无法修复，只会白耗一次模型调用后再次失败。
                     raise
                 if (
                     isinstance(error, ReportingError)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -926,3 +927,82 @@ async def test_edit_script_rejects_introduced_generic_helper(
         "task-1", "analysis/chart.py", max_bytes=64 * 1024
     )
     assert stored.decode("utf-8") == source
+
+
+_SIGNED_PATHS = frozenset({"analysis/out.json", "charts/a.png"})
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'open("./analysis/out.json", "w")',
+        'open("analysis//out.json", "w")',
+        'from pathlib import Path\nPath("./charts/a.png")',
+        'from pathlib import Path\nPath("./charts") / "a.png"',
+    ],
+    ids=["dot-slash", "double-slash", "pathlib-dot", "pathlib-join-dot"],
+)
+def test_equivalent_relative_spellings_of_signed_paths_pass_preflight(source):
+    from smart_reporting.reporting.code_agent.toolkit import _reject_unauthorized_paths
+
+    _reject_unauthorized_paths(ast.parse(source), "analysis/s.py", _SIGNED_PATHS)
+
+
+@pytest.mark.parametrize(
+    ("source", "unsigned"),
+    [
+        ('open("../analysis/out.json", "w")', "../analysis/out.json"),
+        ('open("/analysis/out.json", "w")', "/analysis/out.json"),
+        ('open("./analysis/other.json", "w")', "analysis/other.json"),
+    ],
+)
+def test_non_equivalent_paths_still_rejected(source, unsigned):
+    from smart_reporting.reporting.code_agent.toolkit import _reject_unauthorized_paths
+
+    with pytest.raises(ReportingError) as caught:
+        _reject_unauthorized_paths(ast.parse(source), "analysis/s.py", _SIGNED_PATHS)
+    assert caught.value.details["unsignedPaths"] == [unsigned]
+
+
+def test_declared_output_write_detected_through_dot_slash():
+    from smart_reporting.reporting.code_agent.toolkit import _declared_output_write_paths
+
+    tree = ast.parse('import matplotlib.pyplot as plt\nplt.savefig("./charts/a.png")')
+    assert _declared_output_write_paths(tree, frozenset({"charts/a.png"})) == {"charts/a.png"}
+
+
+def test_every_failure_detail_key_survives_the_allowlist():
+    """_failure 按白名单过滤 details；新增字段忘记登记会被静默丢弃，模型永远看不到。"""
+    from pathlib import Path
+
+    import smart_reporting.reporting.code_agent.toolkit as toolkit_module
+
+    tree = ast.parse(Path(toolkit_module.__file__).read_text(encoding="utf-8"))
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_failure"
+            and len(node.args) >= 3
+            and isinstance(node.args[2], ast.Dict)
+        ):
+            used.update(key.value for key in node.args[2].keys if isinstance(key, ast.Constant))
+    used.update({"reason", "patchFormat", "anchor", "hint", "blockIndex", "line"})
+    # 字段类型各异：分别以字符串与列表探测，任一形态保留即视为已登记。
+    kept = set(_failure("code", "message", {key: "x" for key in used})["details"])
+    kept |= set(_failure("code", "message", {key: ["x"] for key in used})["details"])
+    assert used - kept == set()
+
+
+def test_apply_patch_path_mismatch_keeps_format_and_expected_path():
+    result = _failure(
+        "report_code_script_edit_invalid",
+        "path",
+        {"reason": "apply_patch_path_mismatch", "patchFormat": "apply_patch",
+         "path": "x.py", "expectedPath": "analysis/a.py", "totalLines": 12},
+    )
+
+    assert result["details"]["patchFormat"] == "apply_patch"
+    assert result["details"]["expectedPath"] == "analysis/a.py"
+    assert result["details"]["totalLines"] == 12

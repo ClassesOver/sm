@@ -306,6 +306,9 @@ class AgentSettings:
     model_standard_structured_mode: str = "json_schema"
     model_strong_structured_mode: str = "json_schema"
     model_structured_strict: bool = True
+    # 编辑器导出同步执行渲染与验收两次报表运行时调用（各自上限 600 秒）；网关/反向
+    # 代理的读超时必须不小于该值，否则请求会先于服务端被切断。
+    report_editor_export_timeout_seconds: int = 1200
 
     @classmethod
     def from_environment(
@@ -480,6 +483,12 @@ class AgentSettings:
             report_analysis_concurrency=report_analysis_concurrency,
             report_section_concurrency=report_section_concurrency,
             reporting_execution_mode=reporting_execution_mode,
+            report_editor_export_timeout_seconds=_positive_int(
+                values,
+                "AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS",
+                1200,
+                maximum=3600,
+            ),
             report_visualization_section_deadline_seconds=_positive_int(
                 values,
                 "AGENT_REPORT_VISUALIZATION_SECTION_DEADLINE_SECONDS",

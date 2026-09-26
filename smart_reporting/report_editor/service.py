@@ -85,7 +85,7 @@ class ReportEditorDocument:
 class ReportEditorRepository(Protocol):
     async def put_grant(self, jti: str, *, expires_at: datetime) -> None: ...
 
-    async def consume_grant(self, jti: str, *, now: datetime) -> bool: ...
+    async def grant_active(self, jti: str, *, now: datetime) -> bool: ...
 
     async def put_session(self, session_hash: str, session: ReportEditorSession) -> None: ...
 
@@ -94,18 +94,15 @@ class ReportEditorRepository(Protocol):
 
 class InMemoryReportEditorRepository:
     def __init__(self) -> None:
-        self.grants: dict[str, tuple[datetime, bool]] = {}
+        self.grants: dict[str, datetime] = {}
         self.sessions: dict[str, ReportEditorSession] = {}
 
     async def put_grant(self, jti: str, *, expires_at: datetime) -> None:
-        self.grants[jti] = (expires_at, False)
+        self.grants[jti] = expires_at
 
-    async def consume_grant(self, jti: str, *, now: datetime) -> bool:
-        record = self.grants.get(jti)
-        if record is None or record[1] or record[0] <= now:
-            return False
-        self.grants[jti] = (record[0], True)
-        return True
+    async def grant_active(self, jti: str, *, now: datetime) -> bool:
+        expires_at = self.grants.get(jti)
+        return expires_at is not None and expires_at > now
 
     async def put_session(self, session_hash: str, session: ReportEditorSession) -> None:
         self.sessions[session_hash] = session
@@ -171,8 +168,10 @@ class ReportEditorGrantService:
             raise ReportingError("report_editor_grant_invalid", "报告编辑授权无效。") from error
         if expires_at <= current:
             raise ReportingError("report_editor_grant_expired", "报告编辑授权已过期。")
-        if not await self.repository.consume_grant(jti, now=current):
-            raise ReportingError("report_editor_grant_used", "报告编辑授权已使用。")
+        # 编辑链接是长期入口，可重复打开；每次兑换签发独立的短期会话，服务端只核验
+        # 授权仍登记且未过期，不做一次性消费。
+        if not await self.repository.grant_active(jti, now=current):
+            raise ReportingError("report_editor_grant_invalid", "报告编辑授权无效。")
         raw_session = secrets.token_urlsafe(32)
         await self.repository.put_session(_token_hash(raw_session), session)
         return raw_session, session
@@ -204,7 +203,7 @@ class ReportEditorService:
         download_grants: Any | None = None,
         editor_grants: ReportEditorGrantService | None = None,
         public_base_url: str | None = None,
-        export_timeout_seconds: float = 120.0,
+        export_timeout_seconds: float = 1200.0,
     ) -> None:
         self.state_repository = state_repository
         self.workspace_registry = workspace_registry
@@ -416,7 +415,9 @@ class ReportEditorService:
                 timeout=self.export_timeout_seconds,
             )
         except TimeoutError as error:
-            self._log_export_failure(correlation_id, expected, started, "report_editor_export_timeout")
+            self._log_export_failure(
+                correlation_id, expected, started, "report_editor_export_timeout"
+            )
             raise ReportingError(
                 "report_editor_export_timeout",
                 "报告导出超时，请稍后重试。",
@@ -515,11 +516,25 @@ class ReportEditorService:
             },
         )
         if settings:
-            run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = {
+            run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id][
+                "_editorExportSettings"
+            ] = {
                 key: bool(settings[key])
                 for key in ("cover", "toc", "headerFooter", "pageNumbers")
                 if key in settings
             }
+        # 编辑链接长期有效，用户可能从旧修订的链接进入；此时下一个 revision 已被占用，
+        # 重新载入也无法解决，必须明确提示改用最新修订继续编辑。
+        latest_revision = max(
+            (candidate.revision for candidate in await self._candidate_revisions(context)),
+            default=context.revision,
+        )
+        if latest_revision > context.revision:
+            raise ReportingError(
+                "report_editor_revision_stale",
+                f"当前编辑的是第 {context.revision} 版，已有更新的第 {latest_revision} 版，"
+                "请打开最新版本的编辑链接后再导出。",
+            )
         output_path = _next_pdf_path(context)
         revision_path = PurePosixPath(output_path).parent.as_posix()
         if await self.workspace.apath_exists(scope.workspace_key, revision_path):
@@ -626,6 +641,9 @@ class ReportEditorService:
                 ),
                 expected_version=durable.state_version,
             )
+            # durable 编辑上下文已提交：之后签发授权失败不得再删除 revision 文件，
+            # 否则历史里会留下一个已提交却没有 Markdown/图片的版本。
+            cleanup_revision = False
             raw_download, download_grant = await download_grants.issue(
                 scope=download_scope,
                 report_id=context.report_id,
@@ -744,9 +762,7 @@ class ReportEditorService:
                     candidates.append(candidate)
         return sorted(candidates, key=lambda item: item.revision)
 
-    async def _read_revision_markdown(
-        self, candidate: ReportEditorContext
-    ) -> tuple[str, str, str]:
+    async def _read_revision_markdown(self, candidate: ReportEditorContext) -> tuple[str, str, str]:
         draft_path = _draft_path(candidate.markdown_path)
         path = (
             draft_path

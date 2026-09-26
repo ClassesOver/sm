@@ -32,6 +32,16 @@ const FILTER_SOURCE_TO_BACKEND: Record<string, string> = {
 
 const SESSION_SNAPSHOT_LIMIT = 20
 
+// createdAt 为 UTC ISO 时间，日期筛选框给出的是本地日期；必须按本地日期比较，
+// 否则 UTC+8 下 0-8 点导出的版本会落到前一天。
+export function localDateKey(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
 export function createPersistedHistoryLoader(
   fetchPage: (limit: number, offset: number) => Promise<ReportHistoryPage>,
   pageSize = 20,
@@ -60,7 +70,7 @@ export function createPersistedHistoryLoader(
     const filtered = cachedRevisions.filter(
       (item) =>
         (expectedSource === undefined || item.source === expectedSource) &&
-        (filters.date === '' || (item.createdAt ?? '').startsWith(filters.date)),
+        (filters.date === '' || localDateKey(item.createdAt) === filters.date),
     )
     const items = filtered.slice(offset, offset + pageSize)
     return {
@@ -276,7 +286,7 @@ export function createHistoryController(
     const visibleSessionSnapshots = sourceFilter.value
       ? []
       : sessionSnapshots.filter(
-          (snapshot) => !dateFilter.value || snapshot.createdAt?.startsWith(dateFilter.value),
+          (snapshot) => !dateFilter.value || localDateKey(snapshot.createdAt) === dateFilter.value,
         )
     snapshots = [...serverSnapshots, ...visibleSessionSnapshots]
     list.innerHTML = ''

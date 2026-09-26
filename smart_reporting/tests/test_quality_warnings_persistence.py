@@ -169,3 +169,72 @@ async def test_warning_history_is_tenant_isolated_and_parallel_rechecks_aggregat
     assert own_warnings[0].occurrence_count == 2
     assert len(events) == 2
     assert other_warnings == ()
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_publication_audit_resolves_fixed_warnings_without_touching_other_reports(
+    quality_warning_service,
+) -> None:
+    from smart_reporting.quality_warnings import QualityAuditCollector, WarningEmitter
+
+    service, tenant = quality_warning_service
+
+    def claim_conflict(details: dict[str, str]):
+        return WarningEmitter(source_phase="publication").emit(
+            code="report_period_basis_conflict",
+            subject_type="section_claim",
+            subject_id="claim_001",
+            message="期间口径冲突",
+            details=details,
+        )
+
+    async def publish(run_id: str, revision: int, *notices) -> None:
+        collector = QualityAuditCollector(report_run_id=run_id, revision=revision)
+        collector.extend(notices)
+        await collector.flush(service=service, tenant=tenant)
+
+    # 两份报告的 claim id 都由模型生成为 claim_001，但属于不同主体。
+    await publish("run-a", 1, claim_conflict({"sectionCode": "income"}))
+    await publish("run-b", 1, claim_conflict({"sectionCode": "cost"}))
+    open_records = await service.list_warnings(tenant=tenant, query=WarningQuery())
+    assert sorted(item.subject_id for item in open_records) == [
+        "run-a:claim_001",
+        "run-b:claim_001",
+    ]
+
+    # 报告 A 修正后重新发布：其告警被解决，报告 B 的告警保持打开。
+    await publish("run-a", 2)
+    open_records = await service.list_warnings(tenant=tenant, query=WarningQuery())
+    resolved = await service.list_warnings(tenant=tenant, query=WarningQuery(status="resolved"))
+    assert [item.subject_id for item in open_records] == ["run-b:claim_001"]
+    assert [item.subject_id for item in resolved] == ["run-a:claim_001"]
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_incomplete_publication_audit_keeps_existing_warnings_open(
+    quality_warning_service,
+) -> None:
+    from smart_reporting.quality_warnings import QualityAuditCollector, WarningEmitter
+
+    service, tenant = quality_warning_service
+    first = QualityAuditCollector(report_run_id="run-a", revision=1)
+    first.add(
+        WarningEmitter(source_phase="publication").emit(
+            code="report_period_basis_conflict",
+            subject_type="section_claim",
+            subject_id="claim_001",
+            message="期间口径冲突",
+            details={"sectionCode": "income"},
+        )
+    )
+    await first.flush(service=service, tenant=tenant)
+
+    # 发布门禁未能读取冻结分析产物时，告警收集不完整，不能据此关闭既有告警。
+    await QualityAuditCollector(report_run_id="run-a", revision=2).flush(
+        service=service, tenant=tenant, complete=False
+    )
+
+    open_records = await service.list_warnings(tenant=tenant, query=WarningQuery())
+    assert [item.subject_id for item in open_records] == ["run-a:claim_001"]

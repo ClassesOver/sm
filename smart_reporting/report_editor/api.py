@@ -16,6 +16,7 @@ from ..reporting.models import ReportingError
 from .service import ReportEditorGrantService
 
 EDITOR_SESSION_COOKIE = "report_editor_session"
+_LEGACY_SESSION_COOKIE_PATH = "/reports/v1/editor"
 
 
 class EditorWritePayload(BaseModel):
@@ -94,17 +95,29 @@ def create_report_editor_router(
                 status_code=status,
                 detail={"code": error.code, "message": error.message},
             ) from None
-        response = RedirectResponse(
-            f"/reports/v1/editor/{session.report_id}/{session.revision}", status_code=303
-        )
+        editor_path = f"/reports/v1/editor/{session.report_id}/{session.revision}"
+        response = RedirectResponse(editor_path, status_code=303)
+        # 编辑链接通常从聊天或邮件等其他站点点开；Strict cookie 在跨站发起的重定向链上
+        # 不会随后续页面请求发送，首次打开会失败。Lax 仅放行顶层 GET 导航，写操作仍由
+        # Origin + CSRF 令牌保护。cookie 按报告 revision 限定路径，多个报告/修订可在不同
+        # 标签页并存，不会互相覆盖会话。
         response.set_cookie(
             EDITOR_SESSION_COOKIE,
             raw_session,
             httponly=True,
             secure=cookie_secure,
-            samesite="strict",
+            samesite="lax",
             max_age=max(0, int((session.expires_at - datetime.now(UTC)).total_seconds())),
-            path="/reports/v1/editor",
+            path=editor_path,
+        )
+        # 旧版本在共享路径上签发的会话会与按路径限定的新会话同名并存，且可能在解析时
+        # 覆盖新会话，打开链接时一并清除。
+        response.delete_cookie(
+            EDITOR_SESSION_COOKIE,
+            path=_LEGACY_SESSION_COOKIE_PATH,
+            secure=cookie_secure,
+            httponly=True,
+            samesite="lax",
         )
         return response
 
@@ -410,7 +423,11 @@ def _request_id(value: str | None) -> str:
 
 
 def _editor_http_error(error: ReportingError, *, request_id: str | None = None) -> NoReturn:
-    if error.code in {"report_editor_conflict", "report_editor_revision_conflict"}:
+    if error.code in {
+        "report_editor_conflict",
+        "report_editor_revision_conflict",
+        "report_editor_revision_stale",
+    }:
         status = 409
     elif error.code == "report_editor_export_timeout":
         status = 504

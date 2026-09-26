@@ -2420,3 +2420,55 @@ async def test_visualization_without_deadline_keeps_repairing() -> None:
 
     assert outcome.status == "accepted"
     assert run_code.await_count == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("code", "recovered"),
+    [
+        ("report_capability_state_invalid", False),
+        ("report_workspace_capability_missing", False),
+        ("report_section_citation_missing", True),
+    ],
+)
+async def test_section_workflow_skips_model_recovery_for_infrastructure_failures(
+    code: str, recovered: bool
+) -> None:
+    async def read(_path, _offset, _context):
+        return _section_evidence_receipt()
+
+    async def generate(_bundle, _context):
+        return RenderSectionDecision.model_construct(
+            section_code="section_001", blocks=(), claims=()
+        )
+
+    render_calls = 0
+
+    async def render(_decision, _context):
+        nonlocal render_calls
+        render_calls += 1
+        if render_calls == 1:
+            raise ReportingError(code, "失败")
+        return {"status": "accepted"}
+
+    recover = AsyncMock(
+        return_value=RenderSectionDecision.model_construct(
+            section_code="section_001", blocks=(), claims=()
+        )
+    )
+    workflow = SectionWorkflow(
+        read_evidence=read,
+        generate=generate,
+        recover=recover,
+        render=render,
+        rework=AsyncMock(),
+    )
+
+    if recovered:
+        result = await workflow.run(_section_work_item(), _context())
+        assert result.recovery_used is True
+    else:
+        # 基础设施失败交由统一策略直接上抛，不白耗一次模型 recovery 调用。
+        with pytest.raises(ReportingError, match=code):
+            await workflow.run(_section_work_item(), _context())
+        recover.assert_not_awaited()

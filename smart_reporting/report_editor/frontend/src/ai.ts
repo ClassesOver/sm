@@ -5,7 +5,7 @@ import {
 } from '@milkdown/crepe/feature/ai'
 
 import type { ReportEditorClient } from './api'
-import { findProtocolMarkers } from './protocol'
+import { findProtocolMarkers, restoreProtocolMarkers } from './protocol'
 
 export const selectionAIActions = ['polish', 'shorten', 'expand', 'professional'] as const
 export type SelectionAIAction = (typeof selectionAIActions)[number]
@@ -54,7 +54,8 @@ export function selectionAIProvider(client: SelectionAIClient): AIProvider {
     if (!isSelectionAIAction(context.instruction)) {
       throw new Error('report_editor_ai_action_invalid')
     }
-    if (findProtocolMarkers(selection).length > 0) {
+    // Crepe 以 Markdown 序列化选区，协议标记会被转义为 \[\[...]]，需还原后再识别。
+    if (findProtocolMarkers(restoreProtocolMarkers(selection)).length > 0) {
       throw new Error('report_editor_ai_protocol_marker')
     }
     yield* client.streamRewrite(selection, context.instruction, signal)

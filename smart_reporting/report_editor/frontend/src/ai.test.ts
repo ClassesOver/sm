@@ -8,6 +8,9 @@ describe('selectionAIProvider', () => {
     ['正文', 'unknown'],
     ['正文 [[citation:x]]', 'polish'],
     ['[[section:summary]] 正文', 'shorten'],
+    // Crepe 序列化后的选区形态：协议标记已被转义。
+    ['正文\\[\\[citation:revenue\\_001]]', 'polish'],
+    ['\\[\\[section:summary]]\n\n正文', 'expand'],
   ])('rejects invalid selection or action before the API call', async (selection, instruction) => {
     const streamRewrite = vi.fn()
     const provider = selectionAIProvider({ streamRewrite })

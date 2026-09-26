@@ -113,6 +113,11 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
     for key in ("analysisId", "datasetIds"):
         schema["properties"].pop(key)
     schema["required"] = ["findings", "reconciliations", "warnings"]
+    # title/default 是 Pydantic 生成的展示元数据，对模型没有约束作用；去掉后提示词保持紧凑。
+    schema.pop("title", None)
+    for prop in schema["properties"].values():
+        prop.pop("title", None)
+        prop.pop("default", None)
     schema["properties"]["reconciliations"]["items"].update({
         "properties": {
             "name": {"type": "string", "minLength": 1, "pattern": r"\S"},
@@ -124,12 +129,14 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
         "format": "json",
         "schema": schema,
         "rules": [
-            "表格 finding 使用 columns + rows 行编码；columns 不重复，每个 rows 行与 columns 等长；数值不得为 NaN 或无穷大，缺失值使用 JSON null。",
-            "业务对账不通过时如实写 passed=false，并在 warnings 中说明；这是软告警，不是结构错误。",
-            "使用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，不得使用 indent 或删减已计算事实。",
-            "每个 codingRequirements[].outputName 对应一个 findings[].name（逐字相同）。",
-            "表格 finding 可选附带 columnMeta：{列名: {unit, isPercent, periodRole}}；isPercent=true 表示数值已乘 100，"
-            "periodRole 取 current/prior/change；只声明确定的元数据，不确定时省略。",
+            "表格 finding 用 columns + rows：columns 不重复，每行与 columns 等长；"
+            "NaN/无穷大不合法，缺失值用 JSON null。",
+            "对账不通过如实写 passed=false 并在 warnings 说明；属软告警，非结构错误。",
+            "用 json.dump(..., ensure_ascii=False, separators=(',', ':')) 紧凑写入，"
+            "勿用 indent，勿删减已计算事实。",
+            "每个 codingRequirements[].outputName 对应一个逐字相同的 findings[].name。",
+            "表格 finding 可选 columnMeta：{列名: {unit, isPercent, periodRole}}；"
+            "isPercent=true 表示已乘 100，periodRole 取 current/prior/change；不确定时省略。",
         ],
     }
 

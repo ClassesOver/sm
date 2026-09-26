@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { reportPreflight, showPreflightPanel } from './preflight'
+import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight'
 
 describe('reportPreflight', () => {
   it('returns soft warnings without blocking export', () => {
@@ -56,5 +56,26 @@ describe('reportPreflight', () => {
     expect(document.activeElement).toBe(panel.querySelector('[data-preflight="close"]'))
     panel.querySelector<HTMLButtonElement>('[data-preflight="cancel"]')!.click()
     expect(document.activeElement).toBe(opener)
+  })
+})
+
+describe('formal heading preflight', () => {
+  const original = '# 报告\n\n[[section:income]]\n\n## 1. 收入\n\n### 1.1 明细\n\n正文\n\n```\n## 代码里的井号\n```\n\n## 2. 成本\n'
+
+  it('ignores body edits and fenced code', () => {
+    const editor = document.createElement('div')
+    const edited = original.replace('正文', '改写后的正文')
+    expect(reportPreflight(edited, editor, formalHeadings(original)).map((item) => item.code)).not.toContain('formal-headings')
+    expect(formalHeadings(original)).toEqual(['2|1. 收入', '3|1.1 明细', '2|2. 成本'])
+  })
+
+  it('warns when a formal heading is renamed or reordered', () => {
+    const editor = document.createElement('div')
+    const expected = formalHeadings(original)
+    const renamed = original.replace('## 2. 成本', '## 2. 成本分析')
+    const reordered = original.replace('## 1. 收入', '## 2. 成本').replace(/## 2\. 成本\n$/, '## 1. 收入\n')
+    for (const markdown of [renamed, reordered]) {
+      expect(reportPreflight(markdown, editor, expected).map((item) => item.code)).toContain('formal-headings')
+    }
   })
 })

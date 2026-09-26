@@ -76,7 +76,7 @@ class QualityWarningService:
                     or finding.subject_type != scope.subject_type
                 ):
                     raise ValueError("finding 必须与成功检查的规则和主体类型一致。")
-                if finding.subject_id not in scope.covered_subject_ids:
+                if not scope.covers(finding.subject_id):
                     raise ValueError("finding 主体不在成功检查声明的覆盖范围内。")
                 if finding.subject_type not in rule.subject_types:
                     raise QualityWarningContractError(
