@@ -98,10 +98,27 @@ def _archived_interactive_path(image_path: str) -> str:
     return interactive_spec_path(image_path)
 
 
+def _frozen_visual_receipt(
+    receipt: Any, source_file: Mapping[str, Any]
+) -> ChartVisualInspectionReceipt | None:
+    """沿用可视化阶段针对同一文件身份签发的审查回执；不匹配或无效时返回 None。"""
+
+    if not isinstance(receipt, Mapping):
+        return None
+    try:
+        parsed = ChartVisualInspectionReceipt.model_validate(receipt)
+    except ValidationError:
+        return None
+    if parsed.source_path != source_file.get("path") or parsed.sha256 != source_file.get("sha256"):
+        return None
+    return parsed
+
+
 def _analysis_chart_from_registration(
     raw_chart: Mapping[str, Any],
     source_file: Mapping[str, Any],
     interactive_file: Mapping[str, Any] | None,
+    visual_receipt: Mapping[str, Any] | None = None,
 ) -> AnalysisChart:
     interactive_path = raw_chart.get("interactivePath")
     if interactive_path is not None and (
@@ -116,7 +133,9 @@ def _analysis_chart_from_registration(
     payload["sourceFile"] = dict(source_file)
     if interactive_file is not None:
         payload["interactiveFile"] = dict(interactive_file)
-    payload["visualInspectionReceipt"] = ChartVisualInspectionReceipt(
+    # 可视化阶段已为同一文件签发的真实审查回执必须随冻结图表保留；否则通过视觉
+    # 审查的图表会在证据中被记录为“未运行审查”。没有匹配回执时才退回确定性检查。
+    receipt = _frozen_visual_receipt(visual_receipt, source_file) or ChartVisualInspectionReceipt(
         sourcePath=str(source_file["path"]),
         sha256=str(source_file["sha256"]),
         inspectionMode="deterministic",
@@ -124,7 +143,8 @@ def _analysis_chart_from_registration(
         inspectorId="deterministic-raster-inspector-v1",
         reviewed=True,
         requiresRevision=False,
-    ).model_dump(mode="json", by_alias=True)
+    )
+    payload["visualInspectionReceipt"] = receipt.model_dump(mode="json", by_alias=True)
     return AnalysisChart.model_validate(payload)
 
 
@@ -2219,10 +2239,16 @@ class RuntimeSectionsMixin:
             )
             file_by_path: dict[str, Mapping[str, Any]] = {}
             interactive_by_path: dict[str, Mapping[str, Any]] = {}
+            receipt_by_path: dict[str, Mapping[str, Any]] = {}
             for section in ordered_sections:
                 section_payload = visualization_sections.get(section.code)
                 if not isinstance(section_payload, Mapping):
                     continue
+                for raw_receipt in section_payload.get("visualReceipts", ()):
+                    if isinstance(raw_receipt, Mapping) and isinstance(
+                        raw_receipt.get("sourcePath"), str
+                    ):
+                        receipt_by_path[raw_receipt["sourcePath"]] = raw_receipt
                 for raw_file in section_payload.get("files", ()):
                     if isinstance(raw_file, Mapping) and isinstance(raw_file.get("path"), str):
                         file_by_path[raw_file["path"]] = raw_file
@@ -2247,6 +2273,7 @@ class RuntimeSectionsMixin:
                             raw_chart,
                             source_file,
                             interactive_by_path.get(raw_chart.get("interactivePath")),
+                            receipt_by_path.get(source_path),
                         )
                     )
         warnings.extend(
