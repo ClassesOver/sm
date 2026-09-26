@@ -1412,7 +1412,7 @@ button {
   width: 100%;
   min-height: calc(100vh - 116px);
   margin: 0;
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid #d5dfe6;
   border-radius: 8px;
   background: #fff;
@@ -1595,6 +1595,49 @@ button {
 #report-editor .milkdown-toolbar {
   border: 1px solid #d4e0e9;
   box-shadow: 0 10px 28px rgb(27 42 65 / 14%);
+}
+
+/* 常驻格式栏：停靠在应用栏下方，作为正文编辑的第二行工具条 */
+#report-editor .milkdown-top-bar {
+  top: var(--app-bar-height, 66px);
+  z-index: 15;
+  min-height: 42px;
+  padding: 2px clamp(36px, 8vw - 8px, 84px);
+  border-bottom: 1px solid #e5edf2;
+  background: rgb(255 255 255 / 97%);
+  backdrop-filter: blur(6px);
+}
+
+#report-editor .milkdown-top-bar .top-bar-inner {
+  gap: 0;
+}
+
+#report-editor .milkdown-top-bar .top-bar-item {
+  width: 30px;
+  height: 30px;
+  margin: 4px 2px;
+}
+
+#report-editor .milkdown-top-bar .top-bar-item svg {
+  width: 20px;
+  height: 20px;
+}
+
+#report-editor .milkdown-top-bar .top-bar-divider {
+  height: 20px;
+  margin: 4px 10px;
+}
+
+#report-editor .milkdown-top-bar .top-bar-heading-selector {
+  padding: 4px 6px 4px 0;
+}
+
+#report-editor .milkdown-top-bar .top-bar-heading-button {
+  height: 30px;
+}
+
+.focus-mode .milkdown-top-bar {
+  display: none;
 }
 
 #report-editor .ProseMirror {
@@ -2646,6 +2689,11 @@ button {
     padding: 7px 12px;
   }
 
+  #report-editor .milkdown-top-bar {
+    position: static;
+    padding: 2px 12px;
+  }
+
   .product-mark {
     width: 32px;
     height: 32px;
@@ -2989,6 +3037,7 @@ button {
   .back-to-top,
   .focus-mode-exit,
   .milkdown-toolbar,
+  .milkdown-top-bar,
   .milkdown-block-handle {
     display: none !important;
   }

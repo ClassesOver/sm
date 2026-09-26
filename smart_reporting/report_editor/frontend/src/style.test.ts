@@ -542,4 +542,33 @@ describe('report editor visual hierarchy', () => {
     expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').width).toBe('400px')
     expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').maxWidth).toBe('calc(100vw - 40px)')
   })
+
+  it('docks the persistent formatting bar below the app bar and hides it in focus and print modes', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+    const find = (selector: string, list: CSSRule[] = rules) => list.find(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule && rule.selectorText === selector,
+    )!
+
+    const bar = find('#report-editor .milkdown-top-bar').style
+    expect(bar.top).toBe('var(--app-bar-height, 66px)')
+    expect(bar.zIndex).toBe('15')
+    expect(find('.focus-mode .milkdown-top-bar').style.display).toBe('none')
+
+    const mobile = rules.find((rule): rule is CSSMediaRule =>
+      rule instanceof CSSMediaRule && rule.conditionText === '(max-width: 768px)' &&
+      Array.from(rule.cssRules).some((nested) =>
+        nested instanceof CSSStyleRule && nested.selectorText === '#report-editor .milkdown-top-bar',
+      ),
+    )!
+    expect(find('#report-editor .milkdown-top-bar', Array.from(mobile.cssRules)).style.position).toBe('static')
+
+    const print = rules.find((rule): rule is CSSMediaRule =>
+      rule instanceof CSSMediaRule && rule.conditionText === 'print',
+    )!
+    const printBar = Array.from(print.cssRules).find((rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes('.milkdown-top-bar'),
+    )!
+    expect(printBar.style.display).toBe('none')
+  })
 })

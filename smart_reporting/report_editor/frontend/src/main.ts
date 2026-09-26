@@ -7,6 +7,7 @@ import '@milkdown/crepe/theme/common/list-item.css'
 import '@milkdown/crepe/theme/common/placeholder.css'
 import '@milkdown/crepe/theme/common/toolbar.css'
 import '@milkdown/crepe/theme/common/table.css'
+import '@milkdown/crepe/theme/common/top-bar.css'
 import '@milkdown/crepe/theme/common/ai.css'
 import '@milkdown/crepe/theme/common/diff.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -73,6 +74,13 @@ const basePath = window.location.pathname.replace(/\/$/, '')
 const parts = basePath.split('/')
 const revision = parts.at(-1) ?? ''
 const shell = createEditorShell(root, toolbarMode(window.innerWidth))
+const appBar = root.querySelector<HTMLElement>('.app-bar')
+if (appBar) {
+  const syncAppBarHeight = () =>
+    document.documentElement.style.setProperty('--app-bar-height', `${appBar.offsetHeight}px`)
+  new ResizeObserver(syncAppBarHeight).observe(appBar)
+  syncAppBarHeight()
+}
 const loadState = createLoadStatePanel(root)
 loadState.showLoading()
 const progressBar = root.querySelector<HTMLElement>('.reading-progress')
