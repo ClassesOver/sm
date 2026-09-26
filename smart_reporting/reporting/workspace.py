@@ -422,6 +422,15 @@ class WorkspaceReportService:
                 )
         finally:
             await complete_cleanup(self.service.adelete_file(thread_id, payload_relative_path))
+        # Agno Workspace.run_command 不抛异常，超时与非零退出以 "Error..." 文本返回；
+        # 在解析前分类，避免统一落成含义模糊的“返回无效结果”。
+        if stdout.startswith("Error: command timed out"):
+            raise WorkspaceError("报表运行时执行超时。")
+        if stdout.startswith(("Error (exit ", "Error running command")):
+            loguru_logger.warning(
+                "report_runtime_process_failed action={} detail={}", action, stdout[-2000:]
+            )
+            raise WorkspaceError("报表运行时进程异常退出。")
         if len(stdout.encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
             raise WorkspaceError("报表运行时返回结果超过大小限制。")
         lines = [line for line in stdout.splitlines() if line.strip()]
