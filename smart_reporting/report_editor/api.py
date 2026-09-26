@@ -283,7 +283,7 @@ def create_report_editor_router(
             revision: int,
             payload: EditorExportPayload,
             request: Request,
-        ) -> dict[str, object]:
+        ) -> JSONResponse:
             context = await _write_context(
                 grants,
                 editor,
@@ -326,12 +326,12 @@ def create_report_editor_router(
                 status = editor.export_status(context, export_id)
             except ReportingError as error:
                 _editor_http_error(error)
-            error = status.get("error")
-            if isinstance(error, dict):
+            failure = status.get("error")
+            if isinstance(failure, dict):
                 # 与同步错误响应使用同一状态码映射，编辑器据此选择提示文案。
                 status = {
                     **status,
-                    "error": {**error, "status": _editor_error_status(error["code"])},
+                    "error": {**failure, "status": _editor_error_status(failure["code"])},
                 }
             return status
 

@@ -738,7 +738,8 @@ class ReportEditorService:
                 render_record.get("markdown") if isinstance(render_record, dict) else None
             )
             if (
-                not isinstance(rendered_markdown, dict)
+                not isinstance(render_record, dict)
+                or not isinstance(rendered_markdown, dict)
                 or rendered_markdown.get("sha256") != document.sha256
             ):
                 raise ReportingError(
