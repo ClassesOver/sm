@@ -15,6 +15,29 @@ interface ChartDependencies {
   loadPlotly?: () => Promise<PlotlyRenderer>
 }
 
+const CHART_FONT = '"Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif'
+
+function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] {
+  const merged: Record<string, unknown> = { ...layout }
+  // 字体跟随编辑器；figure 自带 font 的其它属性（字号、颜色）保留。
+  merged.font = { family: CHART_FONT, ...(layout?.font ?? {}) }
+  // 收紧默认边距，让图表在容器边框内不显得拥挤；figure 自带边距优先。
+  merged.margin = { t: 56, r: 28, b: 52, l: 68, ...(layout?.margin ?? {}) }
+  // 纸面与绘图区留白交给容器边框和圆角处理。
+  merged.paper_bgcolor = merged.paper_bgcolor ?? '#ffffff'
+  merged.plot_bgcolor = merged.plot_bgcolor ?? '#ffffff'
+  return merged
+}
+
+function beautifyConfig(config: PlotlyFigure['config']): PlotlyFigure['config'] {
+  return {
+    displaylogo: false,
+    displayModeBar: 'hover',
+    ...config,
+    responsive: true,
+  }
+}
+
 function whenImageLoaded(image: HTMLImageElement): Promise<void> {
   return new Promise((resolve) => {
     if (image.complete) {
@@ -133,7 +156,7 @@ export function createInteractiveCharts(
         // 文档修改触发自动保存，或按文档模型重绘 img 形成“改 class → 重绘 →
         // 再改 class”的渲染循环，页面布局持续抖动、图表错位。
         document.body.append(node)
-        await plot.newPlot(node, figure.data, figure.layout, { ...figure.config, responsive: true })
+        await plot.newPlot(node, figure.data, beautifyLayout(figure.layout), beautifyConfig(figure.config))
         if (destroyed || !root.contains(image)) {
           plot.purge(node)
           node.remove()
