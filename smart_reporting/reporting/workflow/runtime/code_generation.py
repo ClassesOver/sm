@@ -512,9 +512,15 @@ class ReportingCodeGenerationRunner:
                     if callable(delivery_state_reader)
                     else {}
                 )
+                # 按语义判断“脚本已存在、尚无执行回执、也无失败诊断”，不能精确比较
+                # nextTools 列表：7cfbe87 为保留局部编辑工具改成 read/edit/run 后，
+                # 精确比较永远为假，宿主预执行被静默关闭。
+                next_tools = state.get("nextTools")
                 if (
                     diagnostic is None
-                    and state.get("nextTools") == ["run_script"]
+                    and isinstance(next_tools, list)
+                    and "run_script" in next_tools
+                    and "write_script" not in next_tools
                     and state.get("execution") is None
                     and state.get("lastFailure") is None
                     and state.get("validationFailure") is None

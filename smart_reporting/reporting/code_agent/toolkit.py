@@ -2672,6 +2672,16 @@ class ReportingCodeModeToolkit(Toolkit):
                 violations, preflight_warnings = _collect_preflight(
                     tree, source, "write_script", self.context
                 )
+                wrapped = next(
+                    (item for item in violations if item.code == "report_code_input_wrapped"),
+                    None,
+                )
+                if wrapped is not None and not promote_draft:
+                    # 包装输入不是可修补的源码：存成草稿只会让 edit_script 去补 JSON 信封，
+                    # 与 repairHint“重新 write_script 原始代码”矛盾。直接要求重发。
+                    details = dict(wrapped.details) if isinstance(wrapped.details, Mapping) else {}
+                    details["nextTools"] = ["write_script"]
+                    return _failure(wrapped.code, wrapped.message, details)
                 if violations:
                     return _preflight_failure(
                         violations, source, draft_sha256=await self._store_draft(source)
