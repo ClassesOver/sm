@@ -8,6 +8,7 @@ import { listItem } from '@milkdown/crepe/feature/list-item'
 import { placeholder } from '@milkdown/crepe/feature/placeholder'
 import { table } from '@milkdown/crepe/feature/table'
 import { toolbar } from '@milkdown/crepe/feature/toolbar'
+import { topBar } from '@milkdown/crepe/feature/top-bar'
 
 import { editorChineseLocale } from './localization'
 
@@ -26,6 +27,7 @@ export function createReportEditor(
     .addFeature(blockEdit, editorChineseLocale.blockEdit)
     .addFeature(placeholder, { text: '开始编辑报告…' })
     .addFeature(toolbar, editorChineseLocale.toolbar)
+    .addFeature(topBar, editorChineseLocale.topBar)
     .addFeature(table)
     .addFeature(ai, aiConfig)
 }

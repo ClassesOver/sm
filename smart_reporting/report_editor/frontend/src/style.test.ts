@@ -207,7 +207,7 @@ describe('report editor visual hierarchy', () => {
     expect(style('.outline-heading').letterSpacing).toBe('0')
   })
 
-  it('keeps desktop controls compact and the active outline treatment quiet', () => {
+  it('keeps desktop controls compact and the active outline treatment on-brand', () => {
     const desktop = Array.from(document.styleSheets[0].cssRules).find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(min-width: 769px)' &&
       Array.from(rule.cssRules).some((nested) =>
@@ -219,11 +219,20 @@ describe('report editor visual hierarchy', () => {
     const style = (selector: string) => Array.from(desktop.cssRules).find(
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === selector,
     )!.style
+    const base = (selector: string) => Array.from(document.styleSheets[0].cssRules).find(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
+    )!.style
 
     expect(style('.report-actions button').height).toBe('32px')
     expect(style('.toolbar-group + .toolbar-group::before').height).toBe('14px')
-    expect(style('.outline-link[aria-current="location"]').borderLeftWidth).toBe('2px')
-    expect(style('.outline-link[aria-current="location"]').background).toBe('rgb(241, 244, 246)')
+    expect(base('.outline-link[aria-current="location"]').borderLeftColor).toBe('rgb(11, 79, 138)')
+    expect(base('.outline-link[aria-current="location"]').background).toBe('rgb(237, 245, 252)')
+    expect(base('.outline-link.level-1').fontWeight).toBe('650')
+    expect(base('.outline-link.level-2').fontWeight).toBe('600')
+    expect(base('.outline-list > .outline-link.level-2:not(:first-child)').marginTop).toBe('10px')
+    expect(base('.outline-link.level-3::after').background).toBe('rgb(225, 233, 239)')
+    expect(base('.outline-link.level-4').paddingLeft).toBe('50px')
   })
 
   it('gives export actions a quieter visual weight than save', () => {
@@ -541,5 +550,57 @@ describe('report editor visual hierarchy', () => {
     expect(style('#report-editor .milkdown-link-edit > .link-edit').minWidth).toBe('360px')
     expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').width).toBe('400px')
     expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').maxWidth).toBe('calc(100vw - 40px)')
+  })
+
+  it('docks the persistent formatting bar below the app bar and hides it in focus and print modes', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+    const find = (selector: string, list: CSSRule[] = rules) => list.find(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule && rule.selectorText === selector,
+    )!
+
+    const bar = find('#report-editor .milkdown-top-bar').style
+    expect(bar.top).toBe('var(--app-bar-height, 66px)')
+    expect(bar.zIndex).toBe('15')
+    expect(find('.focus-mode .milkdown-top-bar').style.display).toBe('none')
+
+    const mobile = rules.find((rule): rule is CSSMediaRule =>
+      rule instanceof CSSMediaRule && rule.conditionText === '(max-width: 768px)' &&
+      Array.from(rule.cssRules).some((nested) =>
+        nested instanceof CSSStyleRule && nested.selectorText === '#report-editor .milkdown-top-bar',
+      ),
+    )!
+    expect(find('#report-editor .milkdown-top-bar', Array.from(mobile.cssRules)).style.position).toBe('static')
+
+    const print = rules.find((rule): rule is CSSMediaRule =>
+      rule instanceof CSSMediaRule && rule.conditionText === 'print',
+    )!
+    const printBar = Array.from(print.cssRules).find((rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes('.milkdown-top-bar'),
+    )!
+    expect(printBar.style.display).toBe('none')
+  })
+
+  it('lands outline navigation below the sticky bars so headings stay whole', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+    const headingBlock = rules.find((rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule &&
+      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1') &&
+      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h6'),
+    )!
+    expect(headingBlock.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 66px) + 74px)')
+
+    const mobile = rules.find((rule): rule is CSSMediaRule =>
+      rule instanceof CSSMediaRule && rule.conditionText === '(max-width: 768px)' &&
+      Array.from(rule.cssRules).some((nested) =>
+        nested instanceof CSSStyleRule &&
+        nested.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1'),
+      ),
+    )!
+    const mobileHeadings = Array.from(mobile.cssRules).find((rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule &&
+      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1'),
+    )!
+    expect(mobileHeadings.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 56px) + 16px)')
   })
 })

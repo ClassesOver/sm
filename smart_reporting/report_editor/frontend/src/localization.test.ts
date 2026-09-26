@@ -41,6 +41,15 @@ describe('editorChineseLocale', () => {
       aiLabel: 'AI 改写',
     })
     expect(editorChineseLocale.linkTooltip.inputPlaceholder).toBe('粘贴链接…')
+    expect(editorChineseLocale.topBar.headingOptions).toEqual([
+      { label: '正文', level: null },
+      { label: '一级标题', level: 1 },
+      { label: '二级标题', level: 2 },
+      { label: '三级标题', level: 3 },
+      { label: '四级标题', level: 4 },
+      { label: '五级标题', level: 5 },
+      { label: '六级标题', level: 6 },
+    ])
     expect(editorChineseLocale.ai).toMatchObject({
       instructionPlaceholder: '请输入对选中内容的修改要求…',
       sendAsPromptHeaderLabel: '自定义要求',

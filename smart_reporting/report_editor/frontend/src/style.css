@@ -398,7 +398,6 @@ button {
   .app-bar > .report-actions { min-width: 0; overflow: visible; }
   .report-actions button span { display: none; }
   .report-actions button[data-action="outline"] span,
-  .report-actions button[data-action="view"] span,
   .report-actions button[data-action="search"] span,
   .report-actions button[data-action="history"] span,
   .report-actions button[data-action="save"] span,
@@ -1316,6 +1315,7 @@ button {
 }
 
 .outline-link {
+  position: relative;
   width: 100%;
   padding: 7px 12px;
   overflow: hidden;
@@ -1332,17 +1332,57 @@ button {
   white-space: nowrap;
 }
 
+.outline-link.level-1 {
+  color: #30435a;
+  font-weight: 650;
+}
+
+/* 章节（二级）：墨色加粗 + 章节分组间距，文档主干一眼可辨 */
 .outline-link.level-2 {
-  padding-left: 24px;
+  padding-left: 26px;
+  color: #30435a;
+  font-weight: 600;
+}
+
+.outline-list > .outline-link.level-2:not(:first-child) {
+  margin-top: 10px;
 }
 
 .outline-link.level-3 {
-  padding-left: 36px;
+  padding-left: 38px;
   font-size: 12px;
 }
 
+.outline-link.level-4,
+.outline-link.level-5,
+.outline-link.level-6 {
+  padding-left: 50px;
+  color: #71808f;
+  font-size: 12px;
+}
+
+/* 层级引导线：三级及以下条目左侧竖线，树形层级一眼可辨 */
+.outline-link.level-3::after,
+.outline-link.level-4::after,
+.outline-link.level-5::after,
+.outline-link.level-6::after {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 12px;
+  width: 1px;
+  background: #e1e9ef;
+  content: "";
+}
+
+.outline-link.level-4::after,
+.outline-link.level-5::after,
+.outline-link.level-6::after {
+  left: 24px;
+}
+
 .outline-link:hover {
-  background: #f2f5f7;
+  background: #edf5fc;
   color: #0b4f8a;
 }
 
@@ -1366,10 +1406,14 @@ button {
 
 .outline-link[aria-current="location"] {
   border-left-width: 3px;
-  border-left-color: #6f8da5;
-  background: #eaf0f4;
-  color: #30435a;
+  border-left-color: #0b4f8a;
+  background: #edf5fc;
+  color: #0b4f8a;
   font-weight: 650;
+}
+
+.outline-link[aria-current="location"]::after {
+  background: #b8cfdf;
 }
 
 .report-outline.is-empty .outline-heading > span,
@@ -1412,7 +1456,7 @@ button {
   width: 100%;
   min-height: calc(100vh - 116px);
   margin: 0;
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid #d5dfe6;
   border-radius: 8px;
   background: #fff;
@@ -1559,11 +1603,6 @@ button {
     transition: background 120ms ease, color 120ms ease;
   }
 
-  .outline-link[aria-current="location"] {
-    border-left-width: 2px;
-    background: #f1f4f6;
-  }
-
   .editor-surface {
     border-color: #ccd8e0;
     box-shadow:
@@ -1597,6 +1636,49 @@ button {
   box-shadow: 0 10px 28px rgb(27 42 65 / 14%);
 }
 
+/* 常驻格式栏：停靠在应用栏下方，作为正文编辑的第二行工具条 */
+#report-editor .milkdown-top-bar {
+  top: var(--app-bar-height, 66px);
+  z-index: 15;
+  min-height: 42px;
+  padding: 2px clamp(36px, 8vw - 8px, 84px);
+  border-bottom: 1px solid #e5edf2;
+  background: rgb(255 255 255 / 97%);
+  backdrop-filter: blur(6px);
+}
+
+#report-editor .milkdown-top-bar .top-bar-inner {
+  gap: 0;
+}
+
+#report-editor .milkdown-top-bar .top-bar-item {
+  width: 30px;
+  height: 30px;
+  margin: 4px 2px;
+}
+
+#report-editor .milkdown-top-bar .top-bar-item svg {
+  width: 20px;
+  height: 20px;
+}
+
+#report-editor .milkdown-top-bar .top-bar-divider {
+  height: 20px;
+  margin: 4px 10px;
+}
+
+#report-editor .milkdown-top-bar .top-bar-heading-selector {
+  padding: 4px 6px 4px 0;
+}
+
+#report-editor .milkdown-top-bar .top-bar-heading-button {
+  height: 30px;
+}
+
+.focus-mode .milkdown-top-bar {
+  display: none;
+}
+
 #report-editor .ProseMirror {
   min-height: inherit;
   padding: 68px clamp(44px, 8vw, 92px) 108px;
@@ -1611,18 +1693,24 @@ button {
 
 #report-editor .ProseMirror h1,
 #report-editor .ProseMirror h2,
-#report-editor .ProseMirror h3 {
+#report-editor .ProseMirror h3,
+#report-editor .ProseMirror h4,
+#report-editor .ProseMirror h5,
+#report-editor .ProseMirror h6 {
   color: #1b2a41;
   font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   letter-spacing: 0;
+  /* 目录点击定位的落点必须避开 sticky 的应用栏 + 常驻格式栏，
+     并与 outline 滚动跟随的 140px 阅读线保持一致，标题才不会被裁半截 */
+  scroll-margin-top: calc(var(--app-bar-height, 66px) + 74px);
 }
 
 #report-editor .ProseMirror h1 {
   margin-top: 0.2em;
   margin-bottom: 1.35em;
   padding-bottom: 14px;
-  border-bottom: 1px solid #c8d4dd;
-  font-size: 29px;
+  border-bottom: 2px solid #c8d4dd;
+  font-size: 30px;
   font-weight: 720;
   line-height: 1.35;
 }
@@ -1630,8 +1718,10 @@ button {
 #report-editor .ProseMirror h2 {
   margin-top: 2em;
   margin-bottom: 0.8em;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #ccd8e2;
   color: #30435a;
-  font-size: 21px;
+  font-size: 23px;
   font-weight: 700;
   line-height: 1.45;
 }
@@ -1639,10 +1729,42 @@ button {
 #report-editor .ProseMirror h3 {
   margin-top: 1.6em;
   margin-bottom: 0.65em;
+  padding-left: 12px;
+  border-left: 3px solid #56b4e9;
   color: #1b2a41;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 650;
   line-height: 1.5;
+}
+
+#report-editor .ProseMirror h4 {
+  margin-top: 1.4em;
+  margin-bottom: 0.55em;
+  padding-left: 10px;
+  border-left: 2px solid #c3d3de;
+  color: #30435a;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+#report-editor .ProseMirror h5 {
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  color: #526579;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+#report-editor .ProseMirror h6 {
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  color: #71808f;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.6;
 }
 
 @media (min-width: 769px) {
@@ -1801,8 +1923,157 @@ button {
   outline-offset: 3px;
 }
 
-#report-editor .ProseMirror img.interactive-chart-fallback {
-  visibility: hidden;
+.interactive-chart {
+  position: absolute;
+  z-index: 5;
+  overflow: hidden;
+  border: 1px solid #d5dfe6;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgb(27 42 65 / 4%),
+    0 6px 18px rgb(27 42 65 / 6%);
+  cursor: default;
+  animation: interactive-chart-in 240ms ease-out;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.interactive-chart:hover {
+  border-color: #9fc3d8;
+  box-shadow:
+    0 2px 4px rgb(27 42 65 / 6%),
+    0 10px 26px rgb(27 42 65 / 10%);
+}
+
+.interactive-chart:focus-visible {
+  border-color: #56b4e9;
+  outline: 3px solid rgb(86 180 233 / 45%);
+  outline-offset: 2px;
+}
+
+@keyframes interactive-chart-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.interactive-chart-expand {
+  position: absolute;
+  z-index: 6;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #c7d7e5;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 2px 6px rgb(27 42 65 / 10%);
+  color: #516679;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.interactive-chart:hover .interactive-chart-expand,
+.interactive-chart:focus-within .interactive-chart-expand {
+  opacity: 1;
+}
+
+.interactive-chart-expand:hover {
+  border-color: #007ea7;
+  background: #edf5fc;
+  color: #0b4f8a;
+}
+
+.interactive-chart-expand:focus-visible {
+  outline: 3px solid rgb(86 180 233 / 45%);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+.interactive-chart-modal {
+  position: fixed;
+  z-index: 95;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgb(13 27 42 / 48%);
+  backdrop-filter: blur(2px);
+  animation: interactive-chart-modal-in 180ms ease-out;
+  place-items: center;
+}
+
+.interactive-chart-modal-card {
+  position: relative;
+  width: min(1240px, 100%);
+  height: min(78vh, 860px);
+  padding: 14px;
+  border: 1px solid #ccd8e0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 72px rgb(13 27 42 / 30%);
+}
+
+.interactive-chart-modal-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.interactive-chart-modal-close {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 12px;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 90%);
+  color: #697b8e;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.interactive-chart-modal-close:hover {
+  border-color: #d8e2e9;
+  background: #f1f4f6;
+  color: #1b2a41;
+}
+
+.interactive-chart-modal-close:focus-visible {
+  outline: 3px solid rgb(86 180 233 / 45%);
+  outline-offset: 1px;
+}
+
+@keyframes interactive-chart-modal-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @media (min-width: 769px) {
@@ -1816,6 +2087,10 @@ button {
 
   #report-editor .ProseMirror h3 {
     margin-top: 1.45em;
+  }
+
+  #report-editor .ProseMirror h4 {
+    margin-top: 1.35em;
   }
 
   #report-editor .ProseMirror p {
@@ -2249,6 +2524,44 @@ button {
   display: none;
 }
 
+.milkdown-slash-menu li[data-heading-level] span:not(.milkdown-icon) {
+  color: #1b2a41;
+  font-weight: 700;
+}
+
+.milkdown-slash-menu li[data-heading-level="1"] span:not(.milkdown-icon) {
+  font-size: 15.5px;
+  font-weight: 720;
+}
+
+.milkdown-slash-menu li[data-heading-level="2"] span:not(.milkdown-icon) {
+  font-size: 15px;
+  color: #30435a;
+}
+
+.milkdown-slash-menu li[data-heading-level="3"] span:not(.milkdown-icon) {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.milkdown-slash-menu li[data-heading-level="4"] span:not(.milkdown-icon) {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #30435a;
+}
+
+.milkdown-slash-menu li[data-heading-level="5"] span:not(.milkdown-icon) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #526579;
+}
+
+.milkdown-slash-menu li[data-heading-level="6"] span:not(.milkdown-icon) {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #71808f;
+}
+
 #report-editor .milkdown-ai-instruction > .ai-instruction {
   width: min(360px, calc(100vw - 24px));
 }
@@ -2394,7 +2707,8 @@ button {
 }
 
 .report-section-marker,
-.report-citation-marker {
+.report-citation-marker,
+.report-analysis-marker {
   display: none;
 }
 
@@ -2415,6 +2729,21 @@ button {
     grid-template-columns: minmax(0, 1fr) auto;
     min-height: 56px;
     padding: 7px 12px;
+  }
+
+  #report-editor .milkdown-top-bar {
+    position: static;
+    padding: 2px 12px;
+  }
+
+  /* 窄屏格式栏随文档滚动，标题定位只需避开 sticky 应用栏本身 */
+  #report-editor .ProseMirror h1,
+  #report-editor .ProseMirror h2,
+  #report-editor .ProseMirror h3,
+  #report-editor .ProseMirror h4,
+  #report-editor .ProseMirror h5,
+  #report-editor .ProseMirror h6 {
+    scroll-margin-top: calc(var(--app-bar-height, 56px) + 16px);
   }
 
   .product-mark {
@@ -2499,7 +2828,7 @@ button {
     display: inline;
   }
 
-  .toolbar-compact .report-actions button:is([data-action="outline"], [data-action="view"], [data-action="more"]) span {
+  .toolbar-compact .report-actions button:is([data-action="outline"], [data-action="more"]) span {
     display: inline;
   }
 
@@ -2760,6 +3089,7 @@ button {
   .back-to-top,
   .focus-mode-exit,
   .milkdown-toolbar,
+  .milkdown-top-bar,
   .milkdown-block-handle {
     display: none !important;
   }
@@ -2805,12 +3135,30 @@ button {
   }
 
   #report-editor .ProseMirror h2 {
-    font-size: 15pt;
+    padding-bottom: 6pt;
+    border-bottom: 0.5pt solid #c8d4dd;
+    color: #30435a;
+    font-size: 16pt;
     break-after: avoid;
   }
 
   #report-editor .ProseMirror h3 {
+    padding-left: 8pt;
+    border-left: 2pt solid #56b4e9;
+    font-size: 13pt;
+    break-after: avoid;
+  }
+
+  #report-editor .ProseMirror h4 {
+    padding-left: 7pt;
+    border-left: 1.5pt solid #c3d3de;
     font-size: 12pt;
+    break-after: avoid;
+  }
+
+  #report-editor .ProseMirror h5,
+  #report-editor .ProseMirror h6 {
+    font-size: 11pt;
     break-after: avoid;
   }
 
@@ -2818,5 +3166,13 @@ button {
   #report-editor .ProseMirror img,
   #report-editor .ProseMirror blockquote {
     break-inside: avoid;
+  }
+
+  .interactive-chart {
+    display: none;
+  }
+
+  .interactive-chart-modal {
+    display: none;
   }
 }

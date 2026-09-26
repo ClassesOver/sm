@@ -446,7 +446,9 @@ async def test_editor_page_requires_session_and_sets_restrictive_csp(tmp_path: P
     assert "script-src 'self'" in csp
     assert "img-src 'self' data:" in csp
     assert "object-src 'none'" in csp
-    assert "'unsafe-inline'" not in csp
+    # Plotly 依赖动态内联样式（图例布局、modebar、文本定位），nonce/hash
+    # 对 style 属性均不可行；style-src 放开 unsafe-inline，script-src 保持严格。
+    assert "style-src 'self' 'unsafe-inline'" in csp
 
 
 @pytest.mark.anyio

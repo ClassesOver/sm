@@ -2,17 +2,17 @@ import { createModal } from './modal'
 import { formatRevisionLabel } from './localization'
 import { readStorage, writeStorage } from './storage'
 
-type EditorPreferences = { view: 'wide' | 'a4'; outlineCollapsed: boolean }
-export function createEditorPreferenceController(root: HTMLElement, toggle: HTMLButtonElement, key: string) {
+type EditorPreferences = { outlineCollapsed: boolean }
+export function createEditorPreferenceController(root: HTMLElement, key: string) {
   const storageKey = `smart-reporting-editor:prefs:${key}`
-  let prefs: EditorPreferences = { view: 'wide', outlineCollapsed: false }
+  let prefs: EditorPreferences = { outlineCollapsed: false }
   try {
     const saved = JSON.parse(readStorage(storageKey) ?? '{}') as Record<string, unknown>
-    if (saved.view === 'wide' || saved.view === 'a4') prefs.view = saved.view
     if (typeof saved.outlineCollapsed === 'boolean') {
       prefs.outlineCollapsed = saved.outlineCollapsed
     }
   } catch { /* ignore malformed preference */ }
+  // 版式固定宽屏（shell 挂 view-wide），历史存储里可能残留 a4 偏好，一律忽略。
   const persist = () => {
     writeStorage(storageKey, JSON.stringify(prefs))
   }
@@ -22,24 +22,12 @@ export function createEditorPreferenceController(root: HTMLElement, toggle: HTML
     root.querySelector('.report-workspace')?.classList.toggle('outline-collapsed', collapsed)
     if (shouldPersist) persist()
   }
-  const setView = (view: 'wide' | 'a4', shouldPersist = true) => {
-    prefs.view = view
-    root.classList.toggle('view-a4', view === 'a4')
-    root.classList.toggle('view-wide', view === 'wide')
-    toggle.setAttribute('aria-pressed', String(view === 'a4'))
-    const label = toggle.querySelector('span')
-    if (label) label.textContent = view === 'a4' ? 'A4' : '宽屏'
-    if (shouldPersist) persist()
-  }
-  setView(prefs.view, false)
   setOutlineCollapsed(prefs.outlineCollapsed, false)
-  toggle.addEventListener('click', () => setView(prefs.view === 'a4' ? 'wide' : 'a4'))
   const scrollKey = `${storageKey}:scroll`
   return {
     get outlineCollapsed() {
       return prefs.outlineCollapsed
     },
-    setView,
     setOutlineCollapsed,
     saveScroll: (top: number) => {
       writeStorage(scrollKey, String(Math.max(0, Math.round(top))))

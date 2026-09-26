@@ -2,6 +2,7 @@ import type { AIFeatureConfig } from '@milkdown/crepe/feature/ai'
 import type { BlockEditFeatureConfig } from '@milkdown/crepe/feature/block-edit'
 import type { LinkTooltipFeatureConfig } from '@milkdown/crepe/feature/link-tooltip'
 import type { ToolbarFeatureConfig } from '@milkdown/crepe/feature/toolbar'
+import type { TopBarFeatureConfig } from '@milkdown/crepe/feature/top-bar'
 
 const blockEdit = {
   textGroup: {
@@ -45,6 +46,18 @@ const linkTooltip = {
   inputPlaceholder: '粘贴链接…',
 } satisfies LinkTooltipFeatureConfig
 
+const topBar = {
+  headingOptions: [
+    { label: '正文', level: null },
+    { label: '一级标题', level: 1 },
+    { label: '二级标题', level: 2 },
+    { label: '三级标题', level: 3 },
+    { label: '四级标题', level: 4 },
+    { label: '五级标题', level: 5 },
+    { label: '六级标题', level: 6 },
+  ],
+} satisfies TopBarFeatureConfig
+
 const ai = {
   instructionPlaceholder: '请输入对选中内容的修改要求…',
   suggestionsHeaderLabel: '选择改写方式',
@@ -71,6 +84,7 @@ export const editorChineseLocale = {
   blockEdit,
   toolbar,
   linkTooltip,
+  topBar,
   ai,
 }
 

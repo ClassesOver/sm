@@ -7,12 +7,15 @@ import '@milkdown/crepe/theme/common/list-item.css'
 import '@milkdown/crepe/theme/common/placeholder.css'
 import '@milkdown/crepe/theme/common/toolbar.css'
 import '@milkdown/crepe/theme/common/table.css'
+import '@milkdown/crepe/theme/common/top-bar.css'
 import '@milkdown/crepe/theme/common/ai.css'
 import '@milkdown/crepe/theme/common/diff.css'
 import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
 import { editorViewCtx } from '@milkdown/kit/core'
+import { indent } from '@milkdown/kit/plugin/indent'
+import { trailing } from '@milkdown/kit/plugin/trailing'
 import { outline } from '@milkdown/kit/utils'
 import { replaceAll } from '@milkdown/kit/utils'
 import {
@@ -48,7 +51,7 @@ import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
 import { createEditorShell } from './shell'
-import { createOutlineController, type OutlineItem } from './outline'
+import { createOutlineController, namedOutlineItems, type OutlineItem } from './outline'
 import { documentMetrics } from './metrics'
 import { headingStructureStatus } from './structure'
 import { createLocalDraftController } from './draft'
@@ -72,6 +75,13 @@ const basePath = window.location.pathname.replace(/\/$/, '')
 const parts = basePath.split('/')
 const revision = parts.at(-1) ?? ''
 const shell = createEditorShell(root, toolbarMode(window.innerWidth))
+const appBar = root.querySelector<HTMLElement>('.app-bar')
+if (appBar) {
+  const syncAppBarHeight = () =>
+    document.documentElement.style.setProperty('--app-bar-height', `${appBar.offsetHeight}px`)
+  new ResizeObserver(syncAppBarHeight).observe(appBar)
+  syncAppBarHeight()
+}
 const loadState = createLoadStatePanel(root)
 loadState.showLoading()
 const progressBar = root.querySelector<HTMLElement>('.reading-progress')
@@ -87,7 +97,7 @@ shell.shortcuts.addEventListener('click', async () => {
   const panel = await shortcutsPanelPromise
   panel.open()
 })
-const preferences = createEditorPreferenceController(root, shell.viewToggle, basePath)
+const preferences = createEditorPreferenceController(root, basePath)
 createFocusModeController(root, shell.focus, shell.focusExit)
 const exportPanel = createExportPanel()
 const exportSettingsPanel = createExportSettingsPanel(root)
@@ -153,8 +163,10 @@ let outlineFrame: number | undefined
 let saveState: SaveStateTracker | null = null
 
 function updateOutline(items: OutlineItem[]) {
-  outlineController.update(items)
-  const structure = headingStructureStatus(items)
+  const named = namedOutlineItems(items)
+  const chapterCount = named.filter((item) => item.level === 2).length
+  outlineController.update(named, chapterCount || undefined)
+  const structure = headingStructureStatus(named)
   if (structureLabel) {
     structureLabel.textContent = structure.label
     structureLabel.classList.toggle('is-warning', structure.warning)
@@ -237,8 +249,12 @@ try {
   )
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(searchHighlightPlugin)
+  crepe.editor.use(indent)
+  crepe.editor.use(trailing)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
+  const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
+  installSlashMenuHeadingPreview()
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, serialized) => {
       // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
@@ -321,20 +337,6 @@ try {
   historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
-  window.addEventListener(
-    'scroll',
-    () => {
-      const headings = Array.from(
-        shell.editor.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'),
-      )
-      let active = 0
-      headings.forEach((heading, index) => {
-        if (heading.getBoundingClientRect().top <= 120) active = index
-      })
-      outlineController.setActive(active)
-    },
-    { passive: true },
-  )
   status(savedLabel())
   const saveScroll = () => preferences.saveScroll(window.scrollY)
   window.addEventListener('scroll', saveScroll, { passive: true })
