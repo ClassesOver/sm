@@ -152,6 +152,10 @@ const client = new ReportEditorClient(basePath)
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
 let conflictPanel: ReturnType<typeof createConflictPanel> | null = null
+// 409 后远端 sha 只暂存，用户明确选择前不得采用：否则防抖中的自动保存会用远端 sha
+// 提交本地内容并成功，在冲突面板仍打开时静默覆盖他人修改。
+let pendingConflict: { remoteSha: string; base: string; local: string; remote: string } | null =
+  null
 let sha256 = ''
 let lastSavedMarkdown = ''
 let currentMarkdown = ''
@@ -224,10 +228,18 @@ try {
     event: 'document_loaded',
     durationMs: Math.round(performance.now() - loadStartedAt),
   })
+  const acceptRemoteBase = () => {
+    if (pendingConflict) sha256 = pendingConflict.remoteSha
+    pendingConflict = null
+  }
   conflictPanel = createConflictPanel(root, {
-    keepLocal: saveInBackground,
+    keepLocal: () => {
+      acceptRemoteBase()
+      saveInBackground()
+    },
     useRemote: () => void recoverFromConflict(),
     mergeAndRetry: (markdown) => {
+      acceptRemoteBase()
       crepe.editor.action(replaceAll(markdown))
       saveInBackground()
     },
@@ -342,8 +354,19 @@ try {
   window.addEventListener('scroll', saveScroll, { passive: true })
   preferences.restoreScroll()
 
+  const reopenConflict = () => {
+    if (pendingConflict) {
+      conflictPanel?.show(pendingConflict.base, getEditorMarkdown(), pendingConflict.remote)
+    }
+  }
+
   async function saveNow(): Promise<void> {
     window.clearTimeout(saveTimer)
+    if (pendingConflict) {
+      // 冲突未决时暂停所有保存（含自动保存与导出前保存），等待用户选择。
+      status('保存冲突 · 请选择本地或远端版本', 'error', reopenConflict)
+      throw new ReportEditorApiError(409, 'report_editor_conflict')
+    }
     if (savePromise) {
       await savePromise
       if (currentMarkdown !== lastSavedMarkdown) return saveNow()
@@ -387,9 +410,14 @@ try {
         if (error instanceof ReportEditorApiError && error.status === 409) {
           try {
             const remote = await client.load()
-            sha256 = remote.sha256
+            pendingConflict = {
+              remoteSha: remote.sha256,
+              base: lastSavedMarkdown,
+              local: savingMarkdown,
+              remote: remote.markdown,
+            }
             conflictPanel?.show(lastSavedMarkdown, savingMarkdown, remote.markdown)
-            status('保存冲突 · 请选择本地或远端版本', 'error')
+            status('保存冲突 · 请选择本地或远端版本', 'error', reopenConflict)
           } catch {
             status('保存冲突 · 点击重试载入远端', 'error', () => void recoverFromConflict())
           }
@@ -420,6 +448,7 @@ try {
     status('载入远端版本', 'busy')
     try {
       const latest = await client.load()
+      pendingConflict = null
       crepe.editor.action(replaceAll(latest.markdown))
       sha256 = latest.sha256
       lastSavedMarkdown = latest.markdown
