@@ -287,8 +287,10 @@ class QualityAuditCollector:
                         findings=tuple(findings),
                         reconcile=complete,
                         context=CheckContext(
+                            # 运行键与主体前缀同一压缩规则：常规运行 ID 保持原格式（幂等键
+                            # 不变），超长 ID 退化为摘要，避免超过 check_id 256 字符上限。
                             check_id=(
-                                f"publication:{self.report_run_id}:{self.revision}:"
+                                f"publication:{prefix[:-1]}:{self.revision}:"
                                 f"{rule.code}:{subject_type}"
                             ),
                             report_run_id=self.report_run_id,
