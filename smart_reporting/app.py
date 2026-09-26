@@ -21,6 +21,7 @@ from .http.request_limits import (
     install_streaming_body_limit,
     is_agentos_run_create,
     read_limited_body,
+    report_editor_write_request_limit,
     request_body_limit_error,
     validate_agentos_run_multipart,
 )
@@ -176,7 +177,9 @@ def _request_thread(request: Request) -> str:
 def _request_limit(path: str, method: str) -> int | None:
     if path in {"/workspace/upload", "/workspace/files"} and method == "POST":
         return MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
-    return agentos_run_request_limit(path, method)
+    return agentos_run_request_limit(path, method) or report_editor_write_request_limit(
+        path, method
+    )
 
 
 async def require_workspace_capability(request: Request, call_next):

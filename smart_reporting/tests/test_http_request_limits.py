@@ -268,3 +268,56 @@ async def test_agentos_run_middleware_preserves_multipart_for_downstream(
     assert accepted.json() == {"sizes": [7]}
     assert rejected.status_code == 413
     assert rejected.json() == {"error": "request_too_large"}
+
+
+@pytest.mark.parametrize(
+    ("path", "method", "expected"),
+    [
+        ("/reports/v1/editor/report-1/1/api/document", "PUT", 12 * 1024 * 1024),
+        ("/reports/v1/editor/report-1/1/api/export", "POST", 12 * 1024 * 1024),
+        ("/reports/v1/editor/report-1/1/api/ai/rewrite", "post", 12 * 1024 * 1024),
+        ("/reports/v1/editor/report-1/1/api/document", "GET", None),
+        ("/reports/v1/download/grant", "GET", None),
+    ],
+)
+def test_report_editor_writes_are_size_limited_before_parsing(
+    path: str, method: str, expected: int | None
+) -> None:
+    assert http_request_limits.report_editor_write_request_limit(path, method) == expected
+
+
+@pytest.mark.anyio
+async def test_oversized_editor_write_is_rejected_before_json_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(http_request_limits, "MAX_REPORT_EDITOR_WRITE_REQUEST_BYTES", 64)
+    application = FastAPI()
+    parsed: list[int] = []
+
+    @application.middleware("http")
+    async def enforce_limit(request: Request, call_next):
+        limit = http_request_limits.report_editor_write_request_limit(
+            request.url.path, request.method
+        )
+        if limit and await read_limited_body(request, limit) is None:
+            return JSONResponse({"error": "request_too_large"}, status_code=413)
+        return await call_next(request)
+
+    @application.put("/reports/v1/editor/report-1/1/api/document")
+    async def write(payload: dict):
+        parsed.append(len(payload["markdown"]))
+        return {"ok": True}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        accepted = await client.put(
+            "/reports/v1/editor/report-1/1/api/document", json={"markdown": "短"}
+        )
+        rejected = await client.put(
+            "/reports/v1/editor/report-1/1/api/document", json={"markdown": "x" * 1000}
+        )
+
+    assert accepted.status_code == 200
+    assert rejected.status_code == 413
+    assert parsed == [1]
