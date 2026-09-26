@@ -221,7 +221,7 @@ def _unverified_thread(token: str) -> str:
     try:
         _header, payload, _signature = str(token or "").split(".")
         value = json.loads(_decode_segment(payload))
-        thread = value.get("thread")
+        thread = value.get("thread") if isinstance(value, dict) else None
     except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
         raise CapabilityError("capability_invalid") from error
     if not isinstance(thread, str) or not thread:
