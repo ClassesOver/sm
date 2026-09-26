@@ -60,7 +60,7 @@ import { toolbarMode } from './viewport'
 import { createLoadStatePanel } from './load-state'
 import { createSaveStateTracker, type SaveStateTracker } from './save-state'
 import { createTelemetryReporter } from './telemetry'
-import { reportPreflight, showPreflightPanel } from './preflight'
+import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight'
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
 
@@ -97,14 +97,14 @@ exportSettingsPanel.dialog.querySelector('[data-export-settings="confirm"]')?.ad
   exportSettingsPanel.close()
 })
 let getEditorMarkdown = () => ''
-let replaceEditorMarkdown: (markdown: string) => void = () => {}
+let initialFormalHeadings: string[] | undefined
 const currentSectionLabel = root.querySelector<HTMLElement>('.current-section')
 const outlineController = createOutlineController({
   container: shell.outline,
   editor: shell.editor,
   toggle: shell.outlineToggle,
-  getMarkdown: () => getEditorMarkdown(),
-  replaceMarkdown: (markdown) => replaceEditorMarkdown(markdown),
+  // 正式章节（h2-h4）的顺序与编号由服务端批准提纲锁定，导出会逐项核对；
+  // 大纲拖拽重排必然导致导出失败，且会让章节标识错位，因此只保留导航。
   initialCollapsed: preferences.outlineCollapsed || undefined,
   onCollapsedChange: preferences.setOutlineCollapsed,
   onActive: (item) => {
@@ -247,7 +247,6 @@ try {
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(searchHighlightPlugin)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
-  replaceEditorMarkdown = (markdown) => crepe.editor.action(replaceAll(markdown))
   await crepe.create()
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, serialized) => {
@@ -326,6 +325,7 @@ try {
     (markdown) => crepe.editor.action(replaceAll(markdown)),
   )
   draftController.offer(documentState.markdown)
+  initialFormalHeadings = formalHeadings(documentState.markdown)
   if (metricsLabel) metricsLabel.textContent = documentMetrics(documentState.markdown)
   historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
@@ -444,7 +444,7 @@ try {
     setActionsDisabled(true)
     status(`准备导出 ${formatLabel}`, 'busy')
     try {
-      const warnings = reportPreflight(getEditorMarkdown(), shell.editor)
+      const warnings = reportPreflight(getEditorMarkdown(), shell.editor, initialFormalHeadings)
       if (warnings.length) {
         const proceed = await new Promise<boolean>((resolve) => showPreflightPanel(root!, warnings, resolve))
         if (!proceed) return

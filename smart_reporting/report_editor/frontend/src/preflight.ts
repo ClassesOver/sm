@@ -1,8 +1,38 @@
 import { createModal } from './modal'
 
 export interface PreflightWarning { code: string; label: string; target?: string }
-export function reportPreflight(markdown: string, editor: HTMLElement): PreflightWarning[] {
+// 正式章节标题（h2-h4）由服务端编号映射锁定，导出时逐项核对级别、编号、标题与顺序。
+export function formalHeadings(markdown: string): string[] {
+  const headings: string[] = []
+  let fence: string | null = null
+  for (const line of markdown.split('\n')) {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1]?.[0]
+    if (marker && (!fence || fence === marker)) {
+      fence = fence ? null : marker
+      continue
+    }
+    const heading = fence ? null : /^(#{2,4})\s+(.*?)\s*#*\s*$/.exec(line)
+    if (heading) headings.push(`${heading[1].length}|${heading[2].trim()}`)
+  }
+  return headings
+}
+
+export function reportPreflight(
+  markdown: string,
+  editor: HTMLElement,
+  expectedHeadings?: string[],
+): PreflightWarning[] {
   const warnings: PreflightWarning[] = []
+  if (expectedHeadings) {
+    const actual = formalHeadings(markdown)
+    if (actual.length !== expectedHeadings.length || actual.some((value, index) => value !== expectedHeadings[index])) {
+      warnings.push({
+        code: 'formal-headings',
+        label: '正式章节标题或顺序已改变，导出校验将失败，请恢复原标题',
+        target: 'h2, h3, h4',
+      })
+    }
+  }
   if (!markdown.trim()) warnings.push({ code: 'empty', label: '报告内容为空' })
   if (!/^#{1,6}\s+\S/m.test(markdown)) warnings.push({ code: 'heading', label: '尚未创建章节标题', target: '.editor-surface' })
   const emptyHeadings = markdown.split('\n').filter((line) => /^#{1,6}\s*$/.test(line)).length
