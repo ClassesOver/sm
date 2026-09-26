@@ -75,6 +75,15 @@ export function createOutlineController({
 }: OutlineElements) {
   const list = container.querySelector<HTMLElement>('.outline-list')
   if (!list) throw new Error('report outline list is missing')
+  // 目录条目来自 ProseMirror 文档；#report-editor 里还挂着加载/导出等
+  // 隐藏面板的标题。点击导航与滚动跟随的标题索引必须建立在正文
+  // （.ProseMirror）内的非空标题上，否则会错位。注意 ProseMirror 挂载
+  // 晚于控制器创建，必须每次惰性查询。
+  const outlineHeadings = () => {
+    const scope = editor.querySelector('.ProseMirror') ?? editor
+    return Array.from(scope.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))
+      .filter((heading) => heading.textContent?.trim())
+  }
   let currentItems: OutlineItem[] = []
   let hasRendered = false
   let previousMarkdown: string | null = null
@@ -135,6 +144,26 @@ export function createOutlineController({
     if (active) onActive?.(active)
   }
 
+  // 滚动跟随：阅读时自动高亮当前章节，并同步状态栏"当前位置"。
+  let lastActiveIndex = -1
+  let spyFrame = 0
+  const spyActive = () => {
+    spyFrame = 0
+    const headings = outlineHeadings()
+    const anchor = window.scrollY + 140
+    let index = 0
+    headings.forEach((heading, headingIndex) => {
+      if (heading.getBoundingClientRect().top + window.scrollY <= anchor) index = headingIndex
+    })
+    if (index !== lastActiveIndex) {
+      lastActiveIndex = index
+      setActive(index)
+    }
+  }
+  window.addEventListener('scroll', () => {
+    if (currentItems.length && !spyFrame) spyFrame = requestAnimationFrame(spyActive)
+  }, { passive: true })
+
   return {
     update(items: OutlineItem[], chapterCount?: number) {
       if (
@@ -154,18 +183,17 @@ export function createOutlineController({
           const button = document.createElement('button')
           button.type = 'button'
           button.draggable = Boolean(getMarkdown && replaceMarkdown)
-          button.className = `outline-link level-${Math.min(3, Math.max(1, item.level))}`
+          button.className = `outline-link level-${Math.min(6, Math.max(1, item.level))}`
           button.textContent = item.text || '未命名章节'
           button.title = button.textContent
           button.addEventListener('click', () => {
             setActive(index)
-            const headings = editor.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')
             const target =
               (item.id
                 ? Array.from(editor.querySelectorAll<HTMLElement>('[id]')).find(
                     (element) => element.id === item.id,
                   )
-                : null) ?? headings[index]
+                : null) ?? outlineHeadings()[index]
             if (target && typeof target.scrollIntoView === 'function') {
               const reducedMotion =
                 typeof window.matchMedia === 'function' &&

@@ -43,7 +43,7 @@ describe('createOutlineController', () => {
         <div class="outline-heading"><span>目录</span><button type="button" class="outline-close">关闭</button></div>
         <nav class="outline-list"></nav>
       </aside>
-      <div id="editor"><h1>摘要</h1><h2>经营情况</h2></div>
+      <div id="editor"><h1>摘要</h1><h3></h3><h2>经营情况</h2></div>
     `
   })
 
@@ -135,6 +135,55 @@ describe('createOutlineController', () => {
     ])
     controller.setActive(1)
     expect(onActive).toHaveBeenCalledWith({ id: 'operation', level: 2, text: '经营情况' })
+  })
+
+  it('follows the reading position and highlights the current chapter', async () => {
+    const editor = document.querySelector<HTMLElement>('#editor')!
+    const [h1, h2] = editor.querySelectorAll<HTMLElement>('h1, h2')
+    // rect.top 是视口坐标：文档坐标 100 与 700 的标题随滚动改变视口位置
+    h1.getBoundingClientRect = () => ({ top: 100 - window.scrollY } as DOMRect)
+    h2.getBoundingClientRect = () => ({ top: 700 - window.scrollY } as DOMRect)
+    const onActive = vi.fn()
+    const controller = createOutlineController({
+      container: document.querySelector<HTMLElement>('#outline')!,
+      editor,
+      toggle: document.querySelector<HTMLButtonElement>('#toggle')!,
+      onActive,
+    })
+    controller.update([
+      { id: 'summary', level: 1, text: '摘要' },
+      { id: 'operation', level: 2, text: '经营情况' },
+    ])
+    const links = document.querySelectorAll<HTMLElement>('.outline-link')
+
+    const setScrollY = (value: number) => {
+      Object.defineProperty(window, 'scrollY', { value, configurable: true })
+    }
+
+    setScrollY(480)
+    window.dispatchEvent(new Event('scroll'))
+    await vi.waitFor(() => expect(links[0].getAttribute('aria-current')).toBe('location'))
+    expect(onActive).toHaveBeenLastCalledWith({ id: 'summary', level: 1, text: '摘要' })
+
+    setScrollY(560)
+    window.dispatchEvent(new Event('scroll'))
+    await vi.waitFor(() => expect(links[1].getAttribute('aria-current')).toBe('location'))
+    expect(links[0].getAttribute('aria-current')).toBeNull()
+    expect(onActive).toHaveBeenLastCalledWith({ id: 'operation', level: 2, text: '经营情况' })
+  })
+
+  it('renders heading levels four and deeper with their own outline depth', () => {
+    const controller = createOutlineController({
+      container: document.querySelector<HTMLElement>('#outline')!,
+      editor: document.querySelector<HTMLElement>('#editor')!,
+      toggle: document.querySelector<HTMLButtonElement>('#toggle')!,
+    })
+    controller.update([
+      { id: 'deep', level: 4, text: '深级章节' },
+      { id: 'deeper', level: 6, text: '更深层章节' },
+    ])
+    expect(document.querySelector('.outline-link.level-4')).not.toBeNull()
+    expect(document.querySelector('.outline-link.level-6')).not.toBeNull()
   })
 
   it('supports keyboard moving a section to the previous same-level item', () => {

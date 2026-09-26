@@ -4,7 +4,6 @@ export interface EditorShell {
   editor: HTMLElement
   outline: HTMLElement
   outlineToggle: HTMLButtonElement
-  viewToggle: HTMLButtonElement
   search: HTMLButtonElement
   history: HTMLButtonElement
   more: HTMLButtonElement
@@ -21,7 +20,7 @@ export interface EditorShell {
 }
 
 export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorShell {
-  root.className = `report-app toolbar-${mode}`
+  root.className = `report-app view-wide toolbar-${mode}`
   root.innerHTML = `
     <header class="app-bar">
       <div class="report-identity">
@@ -42,8 +41,6 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
           <span>目录</span>
         </button></div>
         <div id="report-secondary-actions" class="secondary-actions toolbar-group toolbar-group-edit-view" aria-label="编辑与视图">
-          <button type="button" data-action="view" aria-label="切换页面宽度"
-            aria-pressed="true" title="切换 A4/宽屏"><i data-lucide="maximize-2" aria-hidden="true"></i><span>A4</span></button>
           <button type="button" data-action="search" aria-label="搜索和替换" title="搜索和替换"><i data-lucide="search" aria-hidden="true"></i><span>搜索</span></button>
           <button type="button" data-action="history" aria-label="版本历史" title="版本历史"><i data-lucide="history" aria-hidden="true"></i><span>历史</span></button>
           <button type="button" data-action="focus" aria-label="进入专注模式" aria-pressed="false" title="专注模式"><i data-lucide="focus" aria-hidden="true"></i><span>专注</span></button>
@@ -103,7 +100,6 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
     editor: required<HTMLElement>('#report-editor'),
     outline: required<HTMLElement>('.report-outline'),
     outlineToggle: required<HTMLButtonElement>('[data-action="outline"]'),
-    viewToggle: required<HTMLButtonElement>('[data-action="view"]'),
     search: required<HTMLButtonElement>('[data-action="search"]'),
     history: required<HTMLButtonElement>('[data-action="history"]'),
     more: required<HTMLButtonElement>('[data-action="more"]'),

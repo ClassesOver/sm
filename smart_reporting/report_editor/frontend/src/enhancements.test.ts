@@ -14,8 +14,7 @@ import { createShortcutsPanel } from './shortcuts'
 describe('report editor enhancements', () => {
   beforeEach(() => {
     document.body.innerHTML = `
-      <main id="app" class="report-app view-a4"></main>
-      <button id="view" aria-pressed="true"></button>
+      <main id="app" class="report-app view-wide"></main>
       <div id="editor"><img src="chart.png" alt="收入趋势"></div>
     `
   })
@@ -33,19 +32,22 @@ describe('report editor enhancements', () => {
     expect(status.title).toContain('自动保存')
   })
 
-  it('persists view and outline preferences by report key', () => {
+  it('persists outline preferences by report key and ignores legacy view prefs', () => {
     localStorage.clear()
+    localStorage.setItem(
+      'smart-reporting-editor:prefs:report-1',
+      JSON.stringify({ view: 'a4', outlineCollapsed: true }),
+    )
     const root = document.querySelector<HTMLElement>('#app')!
-    const toggle = document.querySelector<HTMLButtonElement>('#view')!
-    const controller = createEditorPreferenceController(root, toggle, 'report-1')
-    controller.setOutlineCollapsed(true)
-    toggle.click()
-    expect(localStorage.getItem('smart-reporting-editor:prefs:report-1')).toContain('"view":"a4"')
+    createEditorPreferenceController(root, 'report-1')
+    expect(localStorage.getItem('smart-reporting-editor:prefs:report-1')).toContain('"outlineCollapsed":true')
+    expect(root.classList).toContain('outline-collapsed')
+    // 版式固定宽屏：历史 a4 偏好不再生效
+    expect(root.classList).not.toContain('view-a4')
+    expect(root.classList).toContain('view-wide')
     const secondRoot = document.createElement('main')
-    const secondToggle = document.createElement('button')
-    secondRoot.append(secondToggle)
-    createEditorPreferenceController(secondRoot, secondToggle, 'report-1')
-    expect(secondRoot.classList).toContain('view-a4')
+    secondRoot.className = 'report-app view-wide'
+    createEditorPreferenceController(secondRoot, 'report-1')
     expect(secondRoot.classList).toContain('outline-collapsed')
   })
 
@@ -56,11 +58,9 @@ describe('report editor enhancements', () => {
       JSON.stringify({ view: 'broken', outlineCollapsed: 'yes' }),
     )
     const root = document.querySelector<HTMLElement>('#app')!
-    const toggle = document.querySelector<HTMLButtonElement>('#view')!
 
-    createEditorPreferenceController(root, toggle, 'invalid-prefs')
+    createEditorPreferenceController(root, 'invalid-prefs')
 
-    expect(root.classList).toContain('view-wide')
     expect(root.classList).not.toContain('outline-collapsed')
   })
 
@@ -68,9 +68,8 @@ describe('report editor enhancements', () => {
     localStorage.clear()
     const setItem = vi.spyOn(Storage.prototype, 'setItem')
     const root = document.querySelector<HTMLElement>('#app')!
-    const toggle = document.querySelector<HTMLButtonElement>('#view')!
     try {
-      createEditorPreferenceController(root, toggle, 'report-defaults')
+      createEditorPreferenceController(root, 'report-defaults')
 
       expect(setItem).not.toHaveBeenCalled()
     } finally {
@@ -84,10 +83,9 @@ describe('report editor enhancements', () => {
       throw new DOMException('quota exceeded', 'QuotaExceededError')
     })
     const root = document.querySelector<HTMLElement>('#app')!
-    const toggle = document.querySelector<HTMLButtonElement>('#view')!
 
     try {
-      const controller = createEditorPreferenceController(root, toggle, 'report-quota')
+      const controller = createEditorPreferenceController(root, 'report-quota')
       expect(() => controller.setOutlineCollapsed(true)).not.toThrow()
       expect(() => controller.saveScroll(240)).not.toThrow()
       expect(root.classList).toContain('outline-collapsed')
@@ -99,10 +97,9 @@ describe('report editor enhancements', () => {
   it('restores the saved scroll position after editor loading', () => {
     localStorage.clear()
     const root = document.querySelector<HTMLElement>('#app')!
-    const toggle = document.querySelector<HTMLButtonElement>('#view')!
     const scrollTo = vi.fn()
     vi.stubGlobal('scrollTo', scrollTo)
-    const controller = createEditorPreferenceController(root, toggle, 'report-scroll')
+    const controller = createEditorPreferenceController(root, 'report-scroll')
     controller.saveScroll(640)
     controller.restoreScroll()
     expect(scrollTo).toHaveBeenCalledWith({ top: 640, behavior: 'auto' })

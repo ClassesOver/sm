@@ -207,7 +207,7 @@ describe('report editor visual hierarchy', () => {
     expect(style('.outline-heading').letterSpacing).toBe('0')
   })
 
-  it('keeps desktop controls compact and the active outline treatment quiet', () => {
+  it('keeps desktop controls compact and the active outline treatment on-brand', () => {
     const desktop = Array.from(document.styleSheets[0].cssRules).find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(min-width: 769px)' &&
       Array.from(rule.cssRules).some((nested) =>
@@ -219,11 +219,20 @@ describe('report editor visual hierarchy', () => {
     const style = (selector: string) => Array.from(desktop.cssRules).find(
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === selector,
     )!.style
+    const base = (selector: string) => Array.from(document.styleSheets[0].cssRules).find(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
+    )!.style
 
     expect(style('.report-actions button').height).toBe('32px')
     expect(style('.toolbar-group + .toolbar-group::before').height).toBe('14px')
-    expect(style('.outline-link[aria-current="location"]').borderLeftWidth).toBe('2px')
-    expect(style('.outline-link[aria-current="location"]').background).toBe('rgb(241, 244, 246)')
+    expect(base('.outline-link[aria-current="location"]').borderLeftColor).toBe('rgb(11, 79, 138)')
+    expect(base('.outline-link[aria-current="location"]').background).toBe('rgb(237, 245, 252)')
+    expect(base('.outline-link.level-1').fontWeight).toBe('650')
+    expect(base('.outline-link.level-2').fontWeight).toBe('600')
+    expect(base('.outline-list > .outline-link.level-2:not(:first-child)').marginTop).toBe('10px')
+    expect(base('.outline-link.level-3::after').background).toBe('rgb(225, 233, 239)')
+    expect(base('.outline-link.level-4').paddingLeft).toBe('50px')
   })
 
   it('gives export actions a quieter visual weight than save', () => {

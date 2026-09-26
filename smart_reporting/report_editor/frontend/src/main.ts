@@ -96,7 +96,7 @@ shell.shortcuts.addEventListener('click', async () => {
   const panel = await shortcutsPanelPromise
   panel.open()
 })
-const preferences = createEditorPreferenceController(root, shell.viewToggle, basePath)
+const preferences = createEditorPreferenceController(root, basePath)
 createFocusModeController(root, shell.focus, shell.focusExit)
 const exportPanel = createExportPanel()
 const exportSettingsPanel = createExportSettingsPanel(root)
@@ -346,20 +346,6 @@ try {
   historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
-  window.addEventListener(
-    'scroll',
-    () => {
-      const headings = Array.from(
-        shell.editor.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'),
-      )
-      let active = 0
-      headings.forEach((heading, index) => {
-        if (heading.getBoundingClientRect().top <= 120) active = index
-      })
-      outlineController.setActive(active)
-    },
-    { passive: true },
-  )
   status(savedLabel())
   const saveScroll = () => preferences.saveScroll(window.scrollY)
   window.addEventListener('scroll', saveScroll, { passive: true })

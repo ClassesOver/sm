@@ -19,7 +19,8 @@ describe('createEditorShell', () => {
     expect(outlineClose.title).toBe('关闭目录')
     expect(shell.outlineToggle.getAttribute('aria-controls')).toBe('report-outline')
     expect(shell.outlineToggle.getAttribute('aria-expanded')).toBe('true')
-    expect(shell.viewToggle.getAttribute('aria-pressed')).toBe('true')
+    expect(root.querySelector('[data-action="view"]')).toBeNull()
+    expect(root.classList).toContain('view-wide')
     expect(shell.retry.hidden).toBe(true)
     expect(shell.status.getAttribute('role')).toBe('status')
     expect(shell.status.getAttribute('aria-busy')).toBe('true')
@@ -59,7 +60,7 @@ describe('createEditorShell', () => {
     expect(root.classList.contains('toolbar-compact')).toBe(true)
     expect(shell.outlineToggle.getAttribute('aria-expanded')).toBe('false')
     expect(
-      [shell.viewToggle, shell.save, shell.exportPdf, shell.exportWord].every(
+      [shell.outlineToggle, shell.save, shell.exportPdf, shell.exportWord].every(
         (item) => item.isConnected,
       ),
     ).toBe(true)
@@ -78,7 +79,6 @@ describe('createEditorShell', () => {
       ),
     ).toEqual([
       'panel-left',
-      'maximize-2',
       'search',
       'history',
       'focus',

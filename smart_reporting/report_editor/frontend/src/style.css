@@ -398,7 +398,6 @@ button {
   .app-bar > .report-actions { min-width: 0; overflow: visible; }
   .report-actions button span { display: none; }
   .report-actions button[data-action="outline"] span,
-  .report-actions button[data-action="view"] span,
   .report-actions button[data-action="search"] span,
   .report-actions button[data-action="history"] span,
   .report-actions button[data-action="save"] span,
@@ -1316,6 +1315,7 @@ button {
 }
 
 .outline-link {
+  position: relative;
   width: 100%;
   padding: 7px 12px;
   overflow: hidden;
@@ -1332,17 +1332,57 @@ button {
   white-space: nowrap;
 }
 
+.outline-link.level-1 {
+  color: #30435a;
+  font-weight: 650;
+}
+
+/* 章节（二级）：墨色加粗 + 章节分组间距，文档主干一眼可辨 */
 .outline-link.level-2 {
-  padding-left: 24px;
+  padding-left: 26px;
+  color: #30435a;
+  font-weight: 600;
+}
+
+.outline-list > .outline-link.level-2:not(:first-child) {
+  margin-top: 10px;
 }
 
 .outline-link.level-3 {
-  padding-left: 36px;
+  padding-left: 38px;
   font-size: 12px;
 }
 
+.outline-link.level-4,
+.outline-link.level-5,
+.outline-link.level-6 {
+  padding-left: 50px;
+  color: #71808f;
+  font-size: 12px;
+}
+
+/* 层级引导线：三级及以下条目左侧竖线，树形层级一眼可辨 */
+.outline-link.level-3::after,
+.outline-link.level-4::after,
+.outline-link.level-5::after,
+.outline-link.level-6::after {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 12px;
+  width: 1px;
+  background: #e1e9ef;
+  content: "";
+}
+
+.outline-link.level-4::after,
+.outline-link.level-5::after,
+.outline-link.level-6::after {
+  left: 24px;
+}
+
 .outline-link:hover {
-  background: #f2f5f7;
+  background: #edf5fc;
   color: #0b4f8a;
 }
 
@@ -1366,10 +1406,14 @@ button {
 
 .outline-link[aria-current="location"] {
   border-left-width: 3px;
-  border-left-color: #6f8da5;
-  background: #eaf0f4;
-  color: #30435a;
+  border-left-color: #0b4f8a;
+  background: #edf5fc;
+  color: #0b4f8a;
   font-weight: 650;
+}
+
+.outline-link[aria-current="location"]::after {
+  background: #b8cfdf;
 }
 
 .report-outline.is-empty .outline-heading > span,
@@ -1557,11 +1601,6 @@ button {
 
   .outline-link {
     transition: background 120ms ease, color 120ms ease;
-  }
-
-  .outline-link[aria-current="location"] {
-    border-left-width: 2px;
-    background: #f1f4f6;
   }
 
   .editor-surface {
@@ -2776,7 +2815,7 @@ button {
     display: inline;
   }
 
-  .toolbar-compact .report-actions button:is([data-action="outline"], [data-action="view"], [data-action="more"]) span {
+  .toolbar-compact .report-actions button:is([data-action="outline"], [data-action="more"]) span {
     display: inline;
   }
 
