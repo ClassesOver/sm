@@ -102,6 +102,38 @@ def test_source_warning_adapter_preserves_dataset_references() -> None:
     assert notice.details["datasetIds"] == ["dataset-1"]
 
 
+def test_source_warning_with_many_datasets_uses_bounded_stable_subject() -> None:
+    # 真实 dataset id 为 40 字符；3 个以上直接拼接会超过 128 字符主体上限。
+    dataset_ids = [f"dataset-{str(index) * 32}" for index in range(5)]
+    notices = [
+        WarningAdapter.from_source_warning(
+            {"code": "source_coverage_difference", "message": "覆盖不同", "datasetIds": ids},
+            source_phase="analysis",
+        )
+        for ids in (dataset_ids, list(reversed(dataset_ids)))
+    ]
+
+    assert notices[0].subject_id == notices[1].subject_id
+    assert notices[0].subject_id.startswith("datasets:sha256:")
+    assert len(notices[0].subject_id) <= 128
+    assert notices[0].details["datasetIds"] == dataset_ids
+    short = WarningAdapter.from_source_warning(
+        {"code": "source_coverage_difference", "message": "覆盖不同", "datasetIds": ["b", "a"]},
+        source_phase="analysis",
+    )
+    assert short.subject_id == "datasets:a,b"
+
+
+def test_structurally_invalid_notice_is_contract_error() -> None:
+    with pytest.raises(QualityWarningContractError):
+        WarningEmitter(source_phase="publication").emit(
+            code="report_period_basis_conflict",
+            subject_type="section_claim",
+            subject_id="c" * 129,
+            message="期间口径冲突",
+        )
+
+
 @pytest.mark.anyio
 async def test_collector_flushes_one_stable_check_per_scope() -> None:
     calls = []

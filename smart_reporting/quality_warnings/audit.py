@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from pydantic import ValidationError
 
 from .models import (
     CheckContext,
@@ -15,6 +18,17 @@ from .models import (
     warning_fingerprint,
 )
 from .policy import QualityWarningContractError, get_warning_rule
+
+_SUBJECT_ID_MAX_LENGTH = 128
+
+
+def _group_subject_id(prefix: str, ids: tuple[str, ...]) -> str:
+    """多主体组合身份超过存储上限时退化为稳定摘要，完整 id 仍保留在 details。"""
+
+    joined = ",".join(sorted(ids))
+    if len(prefix) + len(joined) <= _SUBJECT_ID_MAX_LENGTH:
+        return prefix + joined
+    return f"{prefix}sha256:{hashlib.sha256(joined.encode()).hexdigest()}"
 
 
 @dataclass(slots=True)
@@ -56,14 +70,19 @@ class WarningEmitter:
             raise QualityWarningContractError("告警必须显式提供主体。")
         if subject_type not in rule.subject_types:
             raise QualityWarningContractError(f"规则 {code} 不允许主体类型 {subject_type}。")
-        return WarningNotice(
-            ruleCode=code,
-            subjectType=subject_type,
-            subjectId=subject_id,
-            message=message,
-            details=dict(details or {}),
-            sourcePhase=self.source_phase,
-        )
+        try:
+            return WarningNotice(
+                ruleCode=code,
+                subjectType=subject_type,
+                subjectId=subject_id,
+                message=message,
+                details=dict(details or {}),
+                sourcePhase=self.source_phase,
+            )
+        except ValidationError as error:
+            # 字段超限等结构问题属于审计契约违例，交由发布门禁记为 issue，而不是
+            # 以未分类异常中断整个质量审计。
+            raise QualityWarningContractError(f"规则 {code} 的告警结构无效。") from error
 
 
 class WarningAdapter:
@@ -96,9 +115,9 @@ class WarningAdapter:
         elif len(query_ids) == 1 and not dataset_ids:
             subject_type, subject_id = "query", query_ids[0]
         elif dataset_ids:
-            subject_type, subject_id = "dataset", "datasets:" + ",".join(sorted(dataset_ids))
+            subject_type, subject_id = "dataset", _group_subject_id("datasets:", dataset_ids)
         elif query_ids:
-            subject_type, subject_id = "query", "queries:" + ",".join(sorted(query_ids))
+            subject_type, subject_id = "query", _group_subject_id("queries:", query_ids)
         else:
             raise QualityWarningContractError("来源告警缺少明确数据主体。")
         details = dict(value.get("details", {}) or {})
