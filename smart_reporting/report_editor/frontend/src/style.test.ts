@@ -580,4 +580,27 @@ describe('report editor visual hierarchy', () => {
     )!
     expect(printBar.style.display).toBe('none')
   })
+
+  it('lands outline navigation below the sticky bars so headings stay whole', () => {
+    const rules = Array.from(document.styleSheets[0].cssRules)
+    const headingBlock = rules.find((rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule &&
+      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1') &&
+      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h6'),
+    )!
+    expect(headingBlock.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 66px) + 74px)')
+
+    const mobile = rules.find((rule): rule is CSSMediaRule =>
+      rule instanceof CSSMediaRule && rule.conditionText === '(max-width: 768px)' &&
+      Array.from(rule.cssRules).some((nested) =>
+        nested instanceof CSSStyleRule &&
+        nested.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1'),
+      ),
+    )!
+    const mobileHeadings = Array.from(mobile.cssRules).find((rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule &&
+      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1'),
+    )!
+    expect(mobileHeadings.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 56px) + 16px)')
+  })
 })

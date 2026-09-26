@@ -1700,6 +1700,9 @@ button {
   color: #1b2a41;
   font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   letter-spacing: 0;
+  /* 目录点击定位的落点必须避开 sticky 的应用栏 + 常驻格式栏，
+     并与 outline 滚动跟随的 140px 阅读线保持一致，标题才不会被裁半截 */
+  scroll-margin-top: calc(var(--app-bar-height, 66px) + 74px);
 }
 
 #report-editor .ProseMirror h1 {
@@ -2731,6 +2734,16 @@ button {
   #report-editor .milkdown-top-bar {
     position: static;
     padding: 2px 12px;
+  }
+
+  /* 窄屏格式栏随文档滚动，标题定位只需避开 sticky 应用栏本身 */
+  #report-editor .ProseMirror h1,
+  #report-editor .ProseMirror h2,
+  #report-editor .ProseMirror h3,
+  #report-editor .ProseMirror h4,
+  #report-editor .ProseMirror h5,
+  #report-editor .ProseMirror h6 {
+    scroll-margin-top: calc(var(--app-bar-height, 56px) + 16px);
   }
 
   .product-mark {
