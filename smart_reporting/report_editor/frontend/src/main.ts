@@ -48,7 +48,7 @@ import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
 import { createEditorShell } from './shell'
-import { createOutlineController, type OutlineItem } from './outline'
+import { createOutlineController, namedOutlineItems, type OutlineItem } from './outline'
 import { documentMetrics } from './metrics'
 import { headingStructureStatus } from './structure'
 import { createLocalDraftController } from './draft'
@@ -152,9 +152,10 @@ let outlineFrame: number | undefined
 let saveState: SaveStateTracker | null = null
 
 function updateOutline(items: OutlineItem[]) {
-  const chapterCount = items.filter((item) => item.level === 2).length
-  outlineController.update(items, chapterCount || undefined)
-  const structure = headingStructureStatus(items)
+  const named = namedOutlineItems(items)
+  const chapterCount = named.filter((item) => item.level === 2).length
+  outlineController.update(named, chapterCount || undefined)
+  const structure = headingStructureStatus(named)
   if (structureLabel) {
     structureLabel.textContent = structure.label
     structureLabel.classList.toggle('is-warning', structure.warning)

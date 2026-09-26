@@ -4,6 +4,12 @@ export interface OutlineItem {
   id: string
 }
 
+// 刚插入还没输入文字的标题不进目录：否则大纲会留下"未命名章节"占位噪声，
+// 且章节计数与层级结构状态会被空标题干扰。
+export function namedOutlineItems(items: OutlineItem[]): OutlineItem[] {
+  return items.filter((item) => item.text.trim().length > 0)
+}
+
 export function reorderMarkdownSections(markdown: string, from: number, to: number): string {
   const trailingNewline = markdown.endsWith('\n')
   const lines = markdown.split('\n')

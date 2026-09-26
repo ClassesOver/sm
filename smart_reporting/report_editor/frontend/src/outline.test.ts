@@ -1,6 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createOutlineController, reorderMarkdownSections } from './outline'
+import { createOutlineController, namedOutlineItems, reorderMarkdownSections } from './outline'
+
+it('drops empty or whitespace-only headings from the outline', () => {
+  expect(
+    namedOutlineItems([
+      { id: 'a', level: 2, text: '经营情况' },
+      { id: 'b', level: 2, text: '' },
+      { id: 'c', level: 3, text: '   ' },
+      { id: 'd', level: 3, text: '门诊收入' },
+    ]),
+  ).toEqual([
+    { id: 'a', level: 2, text: '经营情况' },
+    { id: 'd', level: 3, text: '门诊收入' },
+  ])
+})
 
 it('reorders same-level markdown sections without moving child sections out of their parent', () => {
   const markdown = '# 摘要\nA\n# 经营\nB\n## 门诊\nC\n# 风险\nD\n'
