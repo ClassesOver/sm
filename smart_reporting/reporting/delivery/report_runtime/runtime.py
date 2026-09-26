@@ -66,6 +66,8 @@ _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 class ReportRuntime:
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace).resolve()
+        # _images 按原始 src 记录已唯一解析的图片，供 HTML 内联复用。
+        self._image_sources: dict[str, Path] = {}
 
     def _validate_datasets(self, state: dict[str, Any]) -> None:
         sources = state.get("sources")
@@ -136,7 +138,7 @@ class ReportRuntime:
         # 编辑器导出的草稿位于 revision-N/draft/ 子目录，图片仍在报告根目录；
         # 相对解析失败时按渲染清单（工作区相对路径）回退定位。解析结果按原始 src
         # 记录，HTML 内联直接复用，避免两处各自猜测选中不同文件。
-        self._image_sources: dict[str, Path] = {}
+        self._image_sources = {}
         manifest_paths: list[str] = []
         render = state.get("render") if isinstance(state, dict) else None
         raw_images = render.get("images") if isinstance(render, dict) else None
@@ -174,8 +176,9 @@ class ReportRuntime:
                 if image.stat().st_size > MAX_IMAGE_BYTES:
                     raise ReportFailure("单张 Markdown 图片超过 10 MiB")
                 _check_image_signature(image)
-                images.append(image.resolve())
-                self._image_sources[source] = image.resolve()
+                resolved = image.resolve()
+                images.append(resolved)
+                self._image_sources[source] = resolved
         unique = set(images)
         if sum(path.stat().st_size for path in unique) > MAX_TOTAL_IMAGE_BYTES:
             raise ReportFailure("Markdown 图片合计超过 50 MiB")
@@ -276,7 +279,7 @@ class ReportRuntime:
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
             html_body = self._inline_images(
-                body, source.parent, allowed_images, getattr(self, "_image_sources", None)
+                body, source.parent, allowed_images, self._image_sources
             )
             self._reject_html_links(html_body)
             output = _output_path(self.workspace, output_path)

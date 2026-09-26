@@ -1459,18 +1459,6 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         parsed.extra["tool_call_ids"] = [call["call_id"] for call in parsed.tool_calls]
         return parsed
 
-    def _stage_tool_now_allowed(self, tool_name: str) -> bool:
-        """解析时的阶段白名单只是请求发出时的快照。
-
-        同批调用按 provider 顺序执行，前序调用（如 run_script 成功）会推进交付状态；
-        执行到该调用时以最新 nextTools 为准，否则“先运行再提交”的正常批次会被
-        误拒，白白多耗一轮请求。
-        """
-        reader = getattr(self, "_code_delivery_state_reader", None)
-        state = reader() if callable(reader) else None
-        next_tools = state.get("nextTools") if isinstance(state, Mapping) else None
-        return isinstance(next_tools, list) and tool_name in next_tools
-
     def _ordered_code_calls(
         self,
         function_calls: list[FunctionCall],
@@ -1586,19 +1574,24 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     code="report_code_tool_wire_type_invalid",
                 ).info("report_code_tool_progress tool_name={} status=rejected", tool_name)
                 continue
-            if tool_name in getattr(
-                self, "_code_stage_mismatch_names", frozenset()
-            ) and not self._stage_tool_now_allowed(tool_name):
-                # 上一轮校验已判定该调用不在当前交付阶段白名单（但任务集内且
-                # wire 类型正确），且同批前序调用也未使其变为可用：补未执行回执并
-                # 继续本批次，不消耗任务额度。
-                stage_state_reader = getattr(self, "_code_delivery_state_reader", None)
-                stage_state = (
-                    stage_state_reader() if callable(stage_state_reader) else None
-                )
-                stage_next_tools = (
-                    stage_state.get("nextTools") if isinstance(stage_state, Mapping) else None
-                )
+            stage_state_reader = getattr(self, "_code_delivery_state_reader", None)
+            stage_state = (
+                stage_state_reader()
+                if tool_name in getattr(self, "_code_stage_mismatch_names", frozenset())
+                and callable(stage_state_reader)
+                else None
+            )
+            stage_next_tools = (
+                stage_state.get("nextTools") if isinstance(stage_state, Mapping) else None
+            )
+            if tool_name in getattr(self, "_code_stage_mismatch_names", frozenset()) and not (
+                # 解析时的阶段白名单只是请求发出时的快照；同批前序调用（如 run_script
+                # 成功）会推进交付状态，执行时以最新 nextTools 为准，避免“先运行再
+                # 提交”的正常批次被误拒。
+                isinstance(stage_next_tools, list) and tool_name in stage_next_tools
+            ):
+                # 该调用不在当前交付阶段白名单（但任务集内且 wire 类型正确）：
+                # 补未执行回执并继续本批次，不消耗任务额度。
                 stage_mismatch = Message(
                     role=self.tool_message_role,
                     tool_call_id=call.call_id,

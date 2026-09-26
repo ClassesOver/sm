@@ -43,7 +43,8 @@ class ReportingWorkspaceLsp:
             )
         except ReportingLspProcessError:
             return self._unavailable(path, sha)
-        compact = [self._diagnostic(item, source) for item in diagnostics[:MAX_DIAGNOSTICS]]
+        lines = source.splitlines()
+        compact = [self._diagnostic(item, lines) for item in diagnostics[:MAX_DIAGNOSTICS]]
         return {
             "ok": True,
             "path": path,
@@ -245,7 +246,7 @@ class ReportingWorkspaceLsp:
         }
 
     @staticmethod
-    def _diagnostic(item: dict[str, Any], source: str) -> dict[str, Any]:
+    def _diagnostic(item: dict[str, Any], lines: list[str]) -> dict[str, Any]:
         """LSP 原始 range 从 0 开始；统一转为与 read_script、traceback 一致的 1 起行列号。"""
 
         range_ = item.get("range") if isinstance(item.get("range"), dict) else {}
@@ -256,7 +257,6 @@ class ReportingWorkspaceLsp:
             return value + 1 if isinstance(value, int) and not isinstance(value, bool) else None
 
         line = position(start.get("line"))
-        lines = source.splitlines()
         result: dict[str, Any] = {
             "line": line,
             "column": position(start.get("character")),

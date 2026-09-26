@@ -361,7 +361,7 @@ def test_diagnostic_positions_are_one_based_with_source_line() -> None:
             "message": "undefined name 'totl'",
             "source": "pyflakes",
         },
-        "import json\nprint(totl)\n",
+        ["import json", "print(totl)"],
     )
 
     assert diagnostic == {
@@ -377,7 +377,7 @@ def test_diagnostic_positions_are_one_based_with_source_line() -> None:
 
 
 def test_diagnostic_without_range_stays_well_formed() -> None:
-    diagnostic = ReportingWorkspaceLsp._diagnostic({"message": "x", "severity": 9}, "a = 1\n")
+    diagnostic = ReportingWorkspaceLsp._diagnostic({"message": "x", "severity": 9}, ["a = 1"])
 
     assert diagnostic["line"] is None
     assert diagnostic["severity"] == "unknown"

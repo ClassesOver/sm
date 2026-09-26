@@ -1349,8 +1349,12 @@ def _collect_preflight(
     source: str,
     tool_name: str,
     context: Any,
-) -> tuple[list[ReportingError], list[dict[str, str]]]:
-    """一次执行全部预检，返回 (违规列表, 软告警)；主失败码沿用第一个违规。"""
+) -> list[ReportingError]:
+    """一次执行全部预检，返回违规列表；主失败码沿用第一个违规。
+
+    通用数据 helper 按真实回放实证保持硬拦截（见 _reject_generic_data_helpers），
+    因此预检不再产生软告警。
+    """
 
     checks: list[Callable[[], None]] = [
         lambda: _reject_code_envelope(tree, tool_name),
@@ -1373,10 +1377,7 @@ def _collect_preflight(
             check()
         except ReportingError as error:
             violations.append(error)
-    # 通用数据 helper 按真实回放实证保持硬拦截（见 _reject_generic_data_helpers），
-    # 命中即进入 violations；此处不再重复生成永远到不了模型的软告警。
-    warnings: list[dict[str, str]] = []
-    return violations, warnings
+    return violations
 
 
 def _preflight_failure(
@@ -2669,7 +2670,7 @@ class ReportingCodeModeToolkit(Toolkit):
             if tree is not None:
                 # 与 run_script 同一路径策略：draft 阶段即拒绝，避免"保存成功
                 # → 执行被拒"浪费一整个写-跑循环后模型重试退化。一次返回全部违规。
-                violations, preflight_warnings = _collect_preflight(
+                violations = _collect_preflight(
                     tree, source, "write_script", self.context
                 )
                 wrapped = next(
@@ -2686,7 +2687,6 @@ class ReportingCodeModeToolkit(Toolkit):
                     return _preflight_failure(
                         violations, source, draft_sha256=await self._store_draft(source)
                     )
-                warnings.extend(preflight_warnings)
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         if tree is not None:
@@ -2876,9 +2876,8 @@ class ReportingCodeModeToolkit(Toolkit):
             remaining_syntax_error = {"errorType": "SyntaxError", **_syntax_error_details(error)}
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
-        preflight_warnings: list[dict[str, str]] = []
         if tree is not None:
-            violations, preflight_warnings = _collect_preflight(
+            violations = _collect_preflight(
                 tree, updated, "edit_script", self.context
             )
             if violations:
@@ -2917,7 +2916,6 @@ class ReportingCodeModeToolkit(Toolkit):
                 "kind": "edit",
                 "replacedOccurrences": len(edits),
             },
-            **({"warnings": preflight_warnings} if preflight_warnings else {}),
             "readyForExecution": tree is not None,
             **(
                 {"syntaxError": remaining_syntax_error, "nextTools": ["edit_script"]}
@@ -3167,6 +3165,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 if isinstance(result, BaseException) and not isinstance(result, Exception):
                     raise result
                 if isinstance(result, dict) and result.get("ok") is False:
+                    # 多图汇总按 details.path 标注失败项；各失败分支统一补齐路径。
+                    result.setdefault("details", {}).setdefault("path", chunk[index])
                     failures.append(result)
                     continue
                 if isinstance(result, dict):
@@ -3215,21 +3215,6 @@ class ReportingCodeModeToolkit(Toolkit):
         return primary
 
     async def _review_one_image(
-        self,
-        source_path: str,
-        detail: str,
-    ) -> dict[str, Any]:
-        result = await self._review_one_image_inner(source_path, detail)
-        if result.get("ok") is False:
-            # 多图汇总按 details.path 标注失败项；各分支回执统一补齐路径。
-            details = result.get("details")
-            if not isinstance(details, dict):
-                details = {}
-                result["details"] = details
-            details.setdefault("path", source_path)
-        return result
-
-    async def _review_one_image_inner(
         self,
         source_path: str,
         detail: str,
