@@ -398,6 +398,8 @@ class RuntimePublicationMixin:
             revision=int(result.get("revision", 0)),
         )
 
+        audit_complete = True
+
         def issue(code: str, message: str, **details: Any) -> None:
             item: dict[str, Any] = {"code": code, "message": message}
             if details:
@@ -588,6 +590,8 @@ class RuntimePublicationMixin:
                 warning for artifact in section_artifacts for warning in artifact.warnings
             )
         except (TypeError, ValueError, ValidationError, AttributeError):
+            # 分析/语义/章节告警未能收集时，本次审计不完整，不能关闭既有告警。
+            audit_complete = False
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
         if result.get("status") != "validated":
@@ -637,7 +641,9 @@ class RuntimePublicationMixin:
                 tenant = TenantScope(
                     database_name=scope["database"], company_id=str(scope["companyId"])
                 )
-                await audit.flush(service=quality_warning_service, tenant=tenant)
+                await audit.flush(
+                    service=quality_warning_service, tenant=tenant, complete=audit_complete
+                )
         except QualityWarningContractError as error:
             issue("report_quality_audit_invalid", "发布质量告警不符合审计契约。")
             logger.warning(

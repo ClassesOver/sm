@@ -213,3 +213,21 @@ def test_run_subject_ids_are_bounded_and_report_subject_is_stable() -> None:
     assert long_id.startswith(f"{prefix}sha256:") and len(long_id) <= 128
     long_run = _run_subject_prefix("r" * 200)
     assert long_run.startswith("run-sha256-") and len(long_run) <= 49
+
+
+@pytest.mark.anyio
+async def test_incomplete_audit_records_findings_without_reconciliation() -> None:
+    calls = []
+
+    class Service:
+        async def record_successful_checks(self, *, tenant, checks):
+            calls.append(checks)
+
+    collector = QualityAuditCollector(report_run_id="run-1", revision=4)
+    await collector.flush(
+        service=Service(),
+        tenant=TenantScope(database_name="db", company_id="42"),
+        complete=False,
+    )
+
+    assert calls and all(check.reconcile is False for check in calls[0])

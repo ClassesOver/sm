@@ -188,6 +188,8 @@ class WarningCheck(_FrozenModel):
     check_scope: CheckScope = Field(alias="checkScope")
     findings: tuple[WarningFinding, ...] = Field(default=(), max_length=2_000)
     context: CheckContext
+    # 检查未完整执行时仍记录发现，但不得据此关闭覆盖范围内的既有告警。
+    reconcile: bool = True
 
 
 def warning_fingerprint(finding: WarningFinding) -> str:

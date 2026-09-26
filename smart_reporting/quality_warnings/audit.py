@@ -238,12 +238,15 @@ class QualityAuditCollector:
             requires_review=any(item.disposition == "review_required" for item in findings),
         )
 
-    async def flush(self, *, service: Any, tenant: TenantScope) -> WarningAuditResult:
+    async def flush(
+        self, *, service: Any, tenant: TenantScope, complete: bool = True
+    ) -> WarningAuditResult:
         """提交一次完整发布检查。
 
         发布门禁每次都会重算全部规则，因此对每个已登记的规则/主体类型都声明一次检查，
         覆盖范围为本次报告运行的全部主体：本次未再出现的既有告警即被判定为已解决，
-        其他报告运行的告警不受影响。
+        其他报告运行的告警不受影响。``complete=False`` 表示本次只收集到部分告警：
+        仍记录发现，但不关闭任何既有告警。
         """
 
         result = self.build()
@@ -282,6 +285,7 @@ class QualityAuditCollector:
                             covered_subject_prefix=prefix,
                         ),
                         findings=tuple(findings),
+                        reconcile=complete,
                         context=CheckContext(
                             check_id=(
                                 f"publication:{self.report_run_id}:{self.revision}:"

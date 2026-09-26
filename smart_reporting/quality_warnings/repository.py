@@ -252,6 +252,8 @@ class SqlAlchemyQualityWarningRepository:
                         )
                     found_by_check.append((check, found_identity_keys))
                 for check, found_identity_keys in found_by_check:
+                    if not check.reconcile:
+                        continue
                     await self._resolve_absent_covered_warnings(
                         connection,
                         tenant=tenant,

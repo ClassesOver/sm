@@ -209,3 +209,32 @@ async def test_publication_audit_resolves_fixed_warnings_without_touching_other_
     resolved = await service.list_warnings(tenant=tenant, query=WarningQuery(status="resolved"))
     assert [item.subject_id for item in open_records] == ["run-b:claim_001"]
     assert [item.subject_id for item in resolved] == ["run-a:claim_001"]
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_incomplete_publication_audit_keeps_existing_warnings_open(
+    quality_warning_service,
+) -> None:
+    from smart_reporting.quality_warnings import QualityAuditCollector, WarningEmitter
+
+    service, tenant = quality_warning_service
+    first = QualityAuditCollector(report_run_id="run-a", revision=1)
+    first.add(
+        WarningEmitter(source_phase="publication").emit(
+            code="report_period_basis_conflict",
+            subject_type="section_claim",
+            subject_id="claim_001",
+            message="期间口径冲突",
+            details={"sectionCode": "income"},
+        )
+    )
+    await first.flush(service=service, tenant=tenant)
+
+    # 发布门禁未能读取冻结分析产物时，告警收集不完整，不能据此关闭既有告警。
+    await QualityAuditCollector(report_run_id="run-a", revision=2).flush(
+        service=service, tenant=tenant, complete=False
+    )
+
+    open_records = await service.list_warnings(tenant=tenant, query=WarningQuery())
+    assert [item.subject_id for item in open_records] == ["run-a:claim_001"]
