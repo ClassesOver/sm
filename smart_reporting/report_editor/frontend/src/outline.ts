@@ -22,7 +22,9 @@ export function reorderMarkdownSections(markdown: string, from: number, to: numb
         fence = fence ? null : marker
         return { index, level: 0 }
       }
-      return { index, level: fence ? 0 : /^(#{1,6})\s+/.exec(line)?.[1].length ?? 0 }
+      // 与 namedOutlineItems 一致只统计有文字的标题，否则空标题（"## "）会让
+      // 目录下标与这里的标题下标错位，拖拽移动到错误章节。
+      return { index, level: fence ? 0 : /^(#{1,6})[ \t]+\S/.exec(line)?.[1].length ?? 0 }
     })
     .filter((heading) => heading.level > 0)
   if (from < 0 || to < 0 || from >= headings.length || to >= headings.length) return markdown

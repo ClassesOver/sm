@@ -119,7 +119,9 @@ function normalizeLayoutOverlaps(merged: Record<string, unknown>): void {
     // autoshift 对同侧 overlaying 轴无效（实测 plotly.js 3.3.1 不外移），
     // 用官方多轴同侧方案：anchor free + position 外置 + 收缩 x 域腾出空间。
     if (occupiedSides.has(side) && record.anchor !== 'free') {
-      merged[key] = { ...record, anchor: 'free', position: displaced[side] * 0.08 }
+      // position 是纸面坐标：左侧从 0 向内排，右侧从 1 向内排，与 x 域收缩对称。
+      const offset = displaced[side] * 0.08
+      merged[key] = { ...record, anchor: 'free', position: side === 'right' ? 1 - offset : offset }
       displaced[side] += 1
     }
     occupiedSides.add(side)
@@ -319,7 +321,6 @@ export function createInteractiveCharts(
       const spec = matching.length === 1 ? matching[0][1] : undefined
       if (!spec) return
       pending.add(image)
-      failed.add(image)
       const node = document.createElement('div')
       node.className = 'interactive-chart'
       node.setAttribute('role', 'img')
@@ -330,9 +331,17 @@ export function createInteractiveCharts(
         await whenImageLoaded(image)
         if (destroyed || !root.contains(image)) return
         const response = await fetcher(`${plotlyUrl}${spec.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'same-origin' })
-        if (!response.ok) return
+        // 只有确定性失败（资源缺失、figure 无效、渲染异常）才永久放弃该图片；
+        // 图片暂未布局或被编辑器临时移除属于瞬态，下次变更时应重试。
+        if (!response.ok) {
+          failed.add(image)
+          return
+        }
         const figure = await response.json() as PlotlyFigure
-        if (!Array.isArray(figure.data) || figure.data.length === 0) return
+        if (!Array.isArray(figure.data) || figure.data.length === 0) {
+          failed.add(image)
+          return
+        }
         const plot = await loadPlotly()
         if (destroyed || !root.contains(image)) return
         if (!position(image, node)) return
@@ -356,6 +365,7 @@ export function createInteractiveCharts(
         active.set(image, entry)
         startTracking()
       } catch {
+        failed.add(image)
         node.remove()
       } finally {
         pending.delete(image)

@@ -254,3 +254,50 @@ it('applies the reporting visual theme while keeping explicit figure values', as
   expect(figure.layout.title.font).toEqual({ size: 20 })
   controller.destroy()
 })
+
+it('places displaced right-side overlaying axes at the right paper edge', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const figure = {
+    data: [{ type: 'scatter', yaxis: 'y3' }],
+    layout: {
+      yaxis: {},
+      yaxis2: { overlaying: 'y', side: 'right' },
+      yaxis3: { overlaying: 'y', side: 'right' },
+    },
+  }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => figure }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+
+  const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
+  expect(layout.yaxis3).toMatchObject({ anchor: 'free', position: 1 })
+  expect(layout.xaxis.domain).toEqual([0, 0.92])
+  controller.destroy()
+})
+
+it('retries a chart whose image had no layout box on the first attempt', async () => {
+  const image = document.querySelector<HTMLImageElement>('#editor img')!
+  const laidOut = image.getBoundingClientRect
+  image.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ type: 'bar' }] }) }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const first = controller.refresh()
+  loadImages()
+  await first
+  expect(plot.newPlot).not.toHaveBeenCalled()
+
+  image.getBoundingClientRect = laidOut
+  const second = controller.refresh()
+  loadImages()
+  await second
+  expect(plot.newPlot).toHaveBeenCalledOnce()
+  controller.destroy()
+})

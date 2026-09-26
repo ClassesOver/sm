@@ -23,6 +23,12 @@ it('reorders same-level markdown sections without moving child sections out of t
   )
 })
 
+it('counts only named headings so outline indexes match after empty headings', () => {
+  // 目录经 namedOutlineItems 过滤掉空标题；拖拽传入的是过滤后的下标。
+  const markdown = '# 摘要\nA\n## \n# 经营\nB\n# 风险\nD\n'
+  expect(reorderMarkdownSections(markdown, 1, 2)).toBe('# 摘要\nA\n## \n# 风险\nD\n# 经营\nB\n')
+})
+
 it('ignores headings inside fenced code blocks', () => {
   const markdown = '# 真章节\n```md\n# 代码示例\n```\n# 第二章\n正文\n'
   expect(reorderMarkdownSections(markdown, 0, 1)).toBe(
