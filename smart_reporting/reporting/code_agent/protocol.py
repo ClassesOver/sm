@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from agno.models.base import Model
 from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
+from agno.models.openai.types import ReasoningEffort
 from agno.models.response import ModelResponse
 from agno.tools.function import FunctionCall
 from agno.utils.message import normalize_tool_messages, reformat_tool_call_ids
@@ -34,6 +35,7 @@ from ..model_policy import (
 )
 from ..models import ReportingError
 from ..phase import (
+    ReportingPhase,
     current_reporting_run_context,
     record_reporting_projection_metrics,
     reporting_model_route_from_run_context,
@@ -136,7 +138,7 @@ def report_model_tool_name(tool: Any) -> str | None:
     return function_name if isinstance(function_name, str) else None
 
 
-def reporting_phase_from_messages(messages: list[Message]) -> str | None:
+def reporting_phase_from_messages(messages: list[Message]) -> ReportingPhase | None:
     _ = messages
     return reporting_phase_from_run_context(current_reporting_run_context())
 
@@ -210,9 +212,15 @@ def with_reporting_durable_identities(messages: list[Message]) -> list[Message]:
         dataset_id = receipt.get("datasetId")
         snapshot_hash = receipt.get("snapshotHash")
         query = receipt.get("query")
-        if not all(
-            isinstance(value, str) and value
-            for value in (receipt_id, dataset_id, snapshot_hash, query)
+        if not (
+            isinstance(receipt_id, str)
+            and receipt_id
+            and isinstance(dataset_id, str)
+            and dataset_id
+            and isinstance(snapshot_hash, str)
+            and snapshot_hash
+            and isinstance(query, str)
+            and query
         ):
             continue
         identity = {
@@ -1028,7 +1036,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             else None
         )
         next_tools = state.get("nextTools") if isinstance(state, Mapping) else None
-        if isinstance(next_tools, list):
+        if isinstance(state, Mapping) and isinstance(next_tools, list):
             allowed_tools = set(next_tools)
             if "write_script" in allowed_tools:
                 # 首轮允许模型一次返回完整的正式交付链；探索 run 仍不在默认链中。
@@ -1046,7 +1054,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     for call in (metric.get("toolCalls") or ())
                     if isinstance(call, Mapping) and call.get("name") == "view_image"
                 )
-                gate_event = {
+                gate_event: dict[str, Any] = {
                     "code": _VISUALIZATION_BUDGET_GATE_FORCED_SUBMIT,
                     "details": {
                         "remainingToolCalls": remaining_tool_calls,
@@ -1181,7 +1189,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             # 其他兼容协议的策略选择，不能成为本路径的启用条件或 wire 字段。
             # DashScope Responses 在省略 effort 时会回退到 provider 默认思考；
             # 显式关闭必须发送标准 effort=none，不能只依赖 enable_thinking=false。
-            effort = decision.reasoning_effort if decision.enabled else "none"
+            effort: ReasoningEffort | None = (
+                decision.reasoning_effort if decision.enabled else "none"
+            )
             if effort == "max" and str(request_model.id or "").lower().startswith("qwen"):
                 effort = "xhigh"
             request_model.reasoning_effort = effort
@@ -1272,7 +1282,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             self._code_provider_input_hint = 0
         record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
         # 有界投影快照：并入随后一次请求的 requestMetric，供 run 级压缩信号与回放诊断。
-        self._code_last_projection_metrics = {
+        self._code_last_projection_metrics: dict[str, int | bool] | None = {
             "compaction_triggered": metrics.get("compaction_triggered", False),
             "compacted_calls": metrics.get("compacted_calls", 0),
             "metadata_bytes": metrics.get("metadata_bytes", 0),
@@ -1391,14 +1401,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                             str(name)[:128], kind, sorted(declarations),
                         )
                         error = _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
-                        error.details.update({
+                        error.details = {
+                            **(error.details or {}),
                             "toolName": str(name)[:128],
                             "receivedType": kind,
                             "expectedType": declarations.get(name, "undeclared"),
                             "declaredTools": dict(declarations),
                             "itemId": str(_field(item, "id"))[:256],
                             "callId": str(_field(item, "call_id"))[:256],
-                        })
+                        }
                         raise error
             call_identities = {_required_id(item, "id"), _required_id(item, "call_id")}
             if identities.intersection(call_identities):
@@ -1957,7 +1968,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 if message.tool_calls and message.provider_data
                 and message.provider_data.get("reasoning_output") is not None
             }
-            replayed = []
+            replayed: list[Any] = []
             for item in formatted:
                 if isinstance(item, dict) and item.get("type") == "function_call":
                     reasoning = reasoning_by_call.get(item.get("call_id"))
@@ -2160,7 +2171,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         request_metric.update(
             {
                 "providerRequestId": (
-                    response.id if isinstance(getattr(response, "id", None), str)
+                    getattr(response, "id") if isinstance(getattr(response, "id", None), str)
                     else request_metric["providerRequestId"]
                 ),
                 "durationMs": duration_ms,

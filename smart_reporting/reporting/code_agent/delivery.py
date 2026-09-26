@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ...workspace import WorkspaceError
@@ -67,7 +67,7 @@ def _visual_review_model_receipt(
     return result
 
 
-def merge_visual_failures(failures: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def merge_visual_failures(failures: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """合并跨图片完全相同的问题，给修复模型一次统一反馈。"""
 
     groups: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -107,7 +107,7 @@ def merge_visual_failures(failures: list[Mapping[str, Any]]) -> list[dict[str, A
 
 def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> dict[str, Any]:
     details = diagnostic.get("details")
-    result = {
+    result: dict[str, Any] = {
         "code": str(diagnostic.get("code", ""))[:128],
         "message": str(diagnostic.get("message", ""))[:512],
         "details": {
@@ -134,7 +134,10 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
     valid = bool(receipt and receipt.source_file.sha256 == source_hash)
     if valid:
         try:
-            valid = await toolkit._declared_output_identities() == receipt.output_files
+            valid = (
+                receipt is not None
+                and await toolkit._declared_output_identities() == receipt.output_files
+            )
         except (ReportingError, WorkspaceError):
             valid = False
     pending = toolkit.pending_output_validation if valid else None
@@ -155,6 +158,7 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
     if failure and (failure["resolved"] or failure["sourceSha256"] != source_hash):
         failure = None
     submitted = valid and toolkit.submitted_receipt == receipt
+    next_tools: list[str]
     if toolkit.terminal_failure is not None:
         next_tools, action = [], "当前任务已停止；保留失败诊断，不能提交未通过审查的图片。"
     elif submitted:

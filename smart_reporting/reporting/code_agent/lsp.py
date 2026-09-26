@@ -16,7 +16,7 @@ from .lsp_process import ReportingLspProcessError, ReportingLspProcessManager
 
 MAX_HOVER_BYTES = 2048
 MAX_DIAGNOSTICS = 50
-_SEVERITY = {1: "error", 2: "warning", 3: "information", 4: "hint"}
+_SEVERITY: dict[object, str] = {1: "error", 2: "warning", 3: "information", 4: "hint"}
 
 
 class ReportingWorkspaceLsp:
@@ -249,9 +249,12 @@ class ReportingWorkspaceLsp:
     def _diagnostic(item: dict[str, Any], lines: list[str]) -> dict[str, Any]:
         """LSP 原始 range 从 0 开始；统一转为与 read_script、traceback 一致的 1 起行列号。"""
 
-        range_ = item.get("range") if isinstance(item.get("range"), dict) else {}
-        start = range_.get("start") if isinstance(range_.get("start"), dict) else {}
-        end = range_.get("end") if isinstance(range_.get("end"), dict) else start
+        raw_range = item.get("range")
+        range_: dict[str, Any] = raw_range if isinstance(raw_range, dict) else {}
+        raw_start = range_.get("start")
+        start: dict[str, Any] = raw_start if isinstance(raw_start, dict) else {}
+        raw_end = range_.get("end")
+        end: dict[str, Any] = raw_end if isinstance(raw_end, dict) else start
 
         def position(value: Any) -> int | None:
             return value + 1 if isinstance(value, int) and not isinstance(value, bool) else None

@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 from agno.run import RunContext
@@ -196,7 +196,7 @@ def _reject_code_envelope(tree: ast.Module, tool_name: str) -> None:
         key, content = value.keys[0], value.values[0]
         if not isinstance(key, ast.Constant) or key.value not in ("data", "code", "source"):
             break
-        wrapper_keys.append(key.value)
+        wrapper_keys.append(str(key.value))
         if isinstance(content, ast.Constant) and isinstance(content.value, str):
             try:
                 nested = ast.parse(content.value)
@@ -333,7 +333,7 @@ def _call_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
     """调用中承载路径的实参：按签名取位置参数，并加上路径关键字参数。"""
 
     position = _PATH_ARGUMENT_POSITION.get(qualified_name, 0)
-    arguments = list(call.args[position:position + 1])
+    arguments: list[ast.AST] = [*call.args[position:position + 1]]
     arguments.extend(
         keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
     )
@@ -380,7 +380,7 @@ def _referenced_literal_paths(tree: ast.AST) -> set[str]:
 def _resolved_path_literal(
     node: ast.AST,
     aliases: Mapping[str, str],
-    bindings: Mapping[str, str] | Mapping[str, ast.AST],
+    bindings: Mapping[str, ast.AST],
     seen: frozenset[str] = frozenset(),
 ) -> str | None:
     if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
@@ -397,8 +397,9 @@ def _resolved_path_literal(
             return _normalize_literal_path(first) if first is not None else None
         if qualified_name == "os.path.join" and not node.keywords:
             parts = [_literal_string(argument, bindings) for argument in node.args]
-            if parts and all(part is not None for part in parts):
-                return _normalize_literal_path(os.path.join(*parts))
+            literal_parts = [part for part in parts if part is not None]
+            if parts and len(literal_parts) == len(parts):
+                return _normalize_literal_path(os.path.join(*literal_parts))
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         # pathlib 斜杠拼接：Path("charts") / "a.png"；左侧是 os.path.join
         # 解析出的 POSIX 路径时也按同风格拼接。
@@ -419,8 +420,9 @@ def _all_referenced_literal_paths(tree: ast.AST) -> set[str]:
         if _qualified_name(node.func, aliases) != "os.path.join":
             continue
         parts = [_literal_string(argument, bindings) for argument in node.args]
-        if parts and all(part is not None for part in parts):
-            paths.add(_normalize_literal_path(os.path.join(*parts)))
+        literal_parts = [part for part in parts if part is not None]
+        if parts and len(literal_parts) == len(parts):
+            paths.add(_normalize_literal_path(os.path.join(*literal_parts)))
     return paths
 
 
@@ -786,7 +788,7 @@ def _dynamic_path_parser_details(tree: ast.AST) -> dict[str, Any] | None:
                 targets: list[ast.AST] = []
                 value: ast.AST | None = None
                 if isinstance(item, (ast.Assign, ast.AugAssign)):
-                    targets = item.targets if isinstance(item, ast.Assign) else [item.target]
+                    targets = [*item.targets] if isinstance(item, ast.Assign) else [item.target]
                     value = item.value
                 elif isinstance(item, (ast.AnnAssign, ast.NamedExpr)):
                     targets = [item.target]
@@ -870,7 +872,7 @@ def _reject_dynamic_path_parser(tree: ast.AST) -> None:
 
 def _simple_assignment_targets_value(item: ast.AST) -> tuple[list[ast.AST], ast.AST | None]:
     if isinstance(item, ast.Assign):
-        return item.targets, item.value
+        return [*item.targets], item.value
     if isinstance(item, ast.AnnAssign):
         return [item.target], item.value
     if isinstance(item, ast.NamedExpr):
@@ -906,7 +908,8 @@ def _is_load_expression(
         if _is_load_expression(node.args[0], aliases, derived, loaded_sources):
             return True
     if _read_text_call(node, aliases):
-        path_arg = node.func.value.args[0] if node.func.value.args else None
+        read_target = cast(Any, node.func).value
+        path_arg = read_target.args[0] if read_target.args else None
         if path_arg is not None and _loaded_names(path_arg) & derived:
             return True
     return False
@@ -930,7 +933,8 @@ def _path_source_parameter(
     if qn in ("json.load", "json.loads") and node.args:
         return _path_source_parameter(node.args[0], aliases, derived, loaded_sources)
     if _read_text_call(node, aliases):
-        path_arg = node.func.value.args[0] if node.func.value.args else None
+        read_target = cast(Any, node.func).value
+        path_arg = read_target.args[0] if read_target.args else None
         if path_arg is not None:
             names = _loaded_names(path_arg) & derived
             if names:
@@ -1590,7 +1594,7 @@ def _bounded_failure(
     exploration_variables: Mapping[str, str] | None = None,
     next_tools: list[str] | None = None,
 ) -> dict[str, Any]:
-    details = {
+    details: dict[str, Any] = {
         name: str(_cell_field(cell, name, "") or "")
         for name in ("traceback", "stderr", "stdout")
     }
@@ -1677,8 +1681,8 @@ def _bounded_edit_context(
         functions = []
     if functions:
         function = max(functions, key=lambda node: node.lineno)
+        assert function.end_lineno is not None
         region_start, region_end = function.lineno, function.end_lineno
-        assert region_end is not None
         function_source = "".join(lines[region_start - 1:region_end])
         if len(function_source.encode("utf-8")) <= SOURCE_EXCERPT_MAX_BYTES:
             start_line, end_line = region_start, region_end
@@ -2399,7 +2403,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 if (
                     terminal is not None
                     and terminal.code == "report_code_input_wrapped"
-                    and terminal.details.get("stopReason") == "repeated_identical_input"
+                    and (terminal.details or {}).get("stopReason") == "repeated_identical_input"
                 ):
                     self.terminal_failure = None
                     _reset_stop_after_tool_call(fc)
@@ -2856,7 +2860,7 @@ class ReportingCodeModeToolkit(Toolkit):
                     error.code,
                     error.message,
                     _edit_failure_anchor_details(
-                        source, edits, error.details,
+                        source, edits, error.details or {},
                         self.context.script_path, current_sha256,
                     ),
                 )
@@ -2970,7 +2974,7 @@ class ReportingCodeModeToolkit(Toolkit):
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(
-                    draft_source, edits, error.details, self.context.script_path, draft_sha256,
+                    draft_source, edits, error.details or {}, self.context.script_path, draft_sha256,
                 )
             else:
                 details = dict(error.details) if isinstance(error.details, Mapping) else {}
