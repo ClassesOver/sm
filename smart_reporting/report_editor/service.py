@@ -19,6 +19,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..async_utils import complete_cleanup
 from ..reporting.delivery.publishing import (
     ReportArtifactSpec,
     ReportDownloadScope,
@@ -656,11 +657,16 @@ class ReportEditorService:
                 "report_editor_revision_conflict", "新的报告 revision 已存在，请重新载入。"
             )
         cleanup_revision = True
+        # 导出在后台运行期间编辑器仍会自动保存草稿；渲染必须基于已校验 SHA 的内容快照，
+        # 否则 PDF 可能来自更新后的草稿，而新 revision 保存的仍是导出开始时的 Markdown。
+        # 快照与草稿同目录，保证图片等相对资源的解析不变。
+        snapshot_path = str(PurePosixPath(document.path).with_name(f".export-{uuid4().hex}.md"))
+        await self.workspace.awrite_text(scope.workspace_key, snapshot_path, document.markdown)
         try:
             try:
                 rendered = await report_tools._render_report_pair(
                     context.job_id,
-                    document.path,
+                    snapshot_path,
                     output_path,
                     artifact_manifest=None,
                     run_context=run_context,
@@ -669,6 +675,8 @@ class ReportEditorService:
                 raise ReportingError(
                     "report_editor_revision_conflict", "新的报告 revision 已存在，请重新载入。"
                 ) from error
+            finally:
+                await self._delete_export_snapshot(scope.workspace_key, snapshot_path)
             if (
                 not isinstance(rendered, dict)
                 or rendered.get("validation", {}).get("ok") is not True
@@ -725,6 +733,19 @@ class ReportEditorService:
             next_job = stored_jobs.get(context.job_id) if isinstance(stored_jobs, dict) else None
             if not isinstance(next_job, dict):
                 raise ReportingError("report_editor_job_invalid", "报告编辑 job 状态无效。")
+            render_record = next_job.get("render")
+            rendered_markdown = (
+                render_record.get("markdown") if isinstance(render_record, dict) else None
+            )
+            if (
+                not isinstance(rendered_markdown, dict)
+                or rendered_markdown.get("sha256") != document.sha256
+            ):
+                raise ReportingError(
+                    "report_editor_conflict", "导出渲染内容与已校验草稿不一致，请重新导出。"
+                )
+            # 渲染快照随后即被删除；新 revision 的权威 Markdown 是刚写入的 markdown_path。
+            render_record["markdown"] = {**rendered_markdown, "path": markdown_path}
             await self._copy_revision_assets(
                 scope.workspace_key,
                 next_job,
@@ -841,6 +862,16 @@ class ReportEditorService:
                     await copy_identity(identity)
                 migrated[copied.get(image_path, image_path)] = identity
             job["interactiveCharts"] = migrated
+
+    async def _delete_export_snapshot(self, thread_id: str, path: str) -> None:
+        try:
+            await complete_cleanup(self.workspace.adelete_file(thread_id, path))
+        except Exception as error:
+            logger.warning(
+                "report_editor_export_snapshot_cleanup_failed path={} error_type={}",
+                path,
+                type(error).__name__,
+            )
 
     @staticmethod
     async def _cleanup_export_revision(

@@ -986,7 +986,18 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             run_context: RunContext,
         ):
             assert actual_job_id == job_id
-            assert markdown_path == "reports/revision-1/draft/report.md"
+            # 渲染基于导出开始时已校验内容的同目录快照，不受导出期间的自动保存影响。
+            assert markdown_path.startswith("reports/revision-1/draft/.export-")
+            snapshot = (await workspace.afile_bytes(scope.workspace_key, markdown_path))[0]
+            assert snapshot.decode() == draft_markdown
+            rendered_paths.append(markdown_path)
+            # 模拟导出期间编辑器自动保存了新的草稿内容。
+            await workspace.awrite_text(
+                scope.workspace_key,
+                "reports/revision-1/draft/report.md",
+                "# 导出期间的新编辑\n",
+                overwrite=True,
+            )
             assert output_path == "reports/revision-2/report.pdf"
             assert artifact_manifest is None
             assert run_context.session_state["report_workflow_scope"] == scope.as_state()
@@ -997,6 +1008,11 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             stored = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
             stored["render"] = {
                 **stored["render"],
+                "markdown": {
+                    "path": markdown_path,
+                    "size": len(snapshot),
+                    "sha256": hashlib.sha256(snapshot).hexdigest(),
+                },
                 "pdf": {
                     "path": output_path,
                     "size": 7,
@@ -1011,6 +1027,7 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             return {"status": "validated", "validation": {"ok": True}}
 
     persisted: list[object] = []
+    rendered_paths: list[str] = []
 
     class Persistence:
         async def persist(self, **values):
@@ -1084,6 +1101,12 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     )
     next_context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
     assert next_context.markdown_path == "reports/revision-2/report.md"
+    # 渲染快照已删除，新 revision 登记的是其权威 Markdown。
+    assert rendered_paths and not await workspace.apath_exists(
+        scope.workspace_key, rendered_paths[0]
+    )
+    assert next_context.job["render"]["markdown"]["path"] == "reports/revision-2/report.md"
+    assert next_context.job["render"]["markdown"]["sha256"] == draft_sha
     assert next_context.job["render"]["pdf"]["path"] == "reports/revision-2/report.pdf"
     assert next_context.job["render"]["images"] == [
         {
