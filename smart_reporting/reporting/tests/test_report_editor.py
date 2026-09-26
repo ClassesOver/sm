@@ -46,39 +46,49 @@ from smart_reporting.workspace import WorkspacePathConflict
 
 
 def test_editor_export_settings_are_strict_and_whitelisted() -> None:
-    payload = EditorExportPayload.model_validate({
-        "expectedSha256": "a" * 64,
-        "settings": {"cover": True},
-        "note": "运营数据复核后发布",
-    })
+    payload = EditorExportPayload.model_validate(
+        {
+            "expectedSha256": "a" * 64,
+            "settings": {"cover": True},
+            "note": "运营数据复核后发布",
+        }
+    )
     assert payload.settings.model_dump(by_alias=True)["cover"] is True
     assert payload.note == "运营数据复核后发布"
     defaults = EditorExportPayload.model_validate({"expectedSha256": "a" * 64}).settings
     assert defaults is None
     with pytest.raises(ValidationError):
-        EditorExportPayload.model_validate({"expectedSha256": "a" * 64, "settings": {"cover": "true"}})
+        EditorExportPayload.model_validate(
+            {"expectedSha256": "a" * 64, "settings": {"cover": "true"}}
+        )
     with pytest.raises(ValidationError):
-        EditorExportPayload.model_validate({"expectedSha256": "a" * 64, "settings": {"watermark": True}})
+        EditorExportPayload.model_validate(
+            {"expectedSha256": "a" * 64, "settings": {"watermark": True}}
+        )
     with pytest.raises(ValidationError):
         EditorExportPayload.model_validate({"expectedSha256": "a" * 64, "note": "x" * 201})
 
 
 def test_editor_event_payload_rejects_content_and_unknown_events() -> None:
-    event = EditorEventPayload.model_validate({
-        "event": "export_failed",
-        "durationMs": 250,
-        "format": "pdf",
-        "errorCode": "report_editor_export_timeout",
-    })
+    event = EditorEventPayload.model_validate(
+        {
+            "event": "export_failed",
+            "durationMs": 250,
+            "format": "pdf",
+            "errorCode": "report_editor_export_timeout",
+        }
+    )
     assert event.event == "export_failed"
     with pytest.raises(ValidationError):
         EditorEventPayload.model_validate({"event": "document_content", "durationMs": 1})
     with pytest.raises(ValidationError):
-        EditorEventPayload.model_validate({
-            "event": "save_failed",
-            "durationMs": 1,
-            "markdown": "# 不应记录",
-        })
+        EditorEventPayload.model_validate(
+            {
+                "event": "save_failed",
+                "durationMs": 1,
+                "markdown": "# 不应记录",
+            }
+        )
 
 
 def test_sql_editor_repository_requires_postgresql() -> None:
@@ -157,7 +167,7 @@ def _context(markdown_path: str = "reports/revision-1/report.md") -> ReportEdito
 
 
 @pytest.mark.anyio
-async def test_editor_grant_rejects_tampering_expiry_and_reuse() -> None:
+async def test_editor_grant_is_reusable_but_rejects_tampering_and_expiry() -> None:
     now = datetime(2026, 9, 15, 8, tzinfo=UTC)
     repository = InMemoryReportEditorRepository()
     grants = ReportEditorGrantService(
@@ -173,8 +183,15 @@ async def test_editor_grant_rejects_tampering_expiry_and_reuse() -> None:
     assert expires_at == now + timedelta(minutes=5)
     assert session.report_id == "report-1"
     assert await grants.lookup_session(session_token, now=now + timedelta(minutes=2)) == session
-    with pytest.raises(ReportingError, match="已使用"):
-        await grants.exchange(raw, now=now + timedelta(minutes=2))
+    # 链接可重复打开，每次兑换得到独立会话。
+    second_token, second = await grants.exchange(raw, now=now + timedelta(minutes=2))
+    assert second_token != session_token
+    assert second.context_sha256 == session.context_sha256
+    unregistered = ReportEditorGrantService(
+        InMemoryReportEditorRepository(), secret="s" * 32, grant_ttl=timedelta(minutes=5)
+    )
+    with pytest.raises(ReportingError, match="无效"):
+        await unregistered.exchange(raw, now=now + timedelta(minutes=2))
     with pytest.raises(ReportingError, match="无效"):
         await grants.exchange(f"{raw[:-1]}x", now=now + timedelta(minutes=2))
 
@@ -294,7 +311,9 @@ async def test_editor_api_exposes_registered_interactive_chart_and_hardened_json
             return _context()
 
         async def read_document(self, _context):
-            return SimpleNamespace(path="reports/revision-1/report.md", markdown="![收入](chart.png)", sha256="a" * 64)
+            return SimpleNamespace(
+                path="reports/revision-1/report.md", markdown="![收入](chart.png)", sha256="a" * 64
+            )
 
         async def interactive_charts(self, _context):
             return {image_path: spec_path}
@@ -305,7 +324,9 @@ async def test_editor_api_exposes_registered_interactive_chart_and_hardened_json
 
     app = FastAPI()
     app.include_router(create_report_editor_router(grants, editor=Editor(), cookie_secure=False))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://reports.test"
+    ) as client:
         await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
         loaded = await client.get("/reports/v1/editor/report-1/1/api/document")
         resource = await client.get(f"/reports/v1/editor/report-1/1/asset/{spec_path}")
@@ -721,7 +742,9 @@ async def test_editor_save_records_manual_revision_soft_warning(tmp_path: Path) 
         logger.remove(sink)
 
     assert any(
-        "report_editor_manual_save" in message and "report-1" in message and document.sha256 in message
+        "report_editor_manual_save" in message
+        and "report-1" in message
+        and document.sha256 in message
         for message in messages
     )
 
@@ -752,7 +775,9 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     image = b"chart-image"
     spec = b'{"data":[{"type":"bar","x":[1],"y":[2]}]}'
     await workspace.awrite_bytes(scope.workspace_key, "reports/revision-1/chart-001.png", image)
-    await workspace.awrite_bytes(scope.workspace_key, "reports/revision-1/chart-001.plotly.json", spec)
+    await workspace.awrite_bytes(
+        scope.workspace_key, "reports/revision-1/chart-001.plotly.json", spec
+    )
     job = {
         "jobId": job_id,
         "_threadBinding": hashlib.sha256(scope.workspace_key.encode()).hexdigest(),
@@ -779,11 +804,13 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
                 "size": 8,
                 "sha256": hashlib.sha256(b"old-word").hexdigest(),
             },
-            "images": [{
-                "path": "reports/revision-1/chart-001.png",
-                "size": len(image),
-                "sha256": hashlib.sha256(image).hexdigest(),
-            }],
+            "images": [
+                {
+                    "path": "reports/revision-1/chart-001.png",
+                    "size": len(image),
+                    "sha256": hashlib.sha256(image).hexdigest(),
+                }
+            ],
         },
         "interactiveCharts": {
             "reports/revision-1/chart-001.png": {
@@ -927,11 +954,13 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     next_context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
     assert next_context.markdown_path == "reports/revision-2/report.md"
     assert next_context.job["render"]["pdf"]["path"] == "reports/revision-2/report.pdf"
-    assert next_context.job["render"]["images"] == [{
-        "path": "reports/revision-2/chart-001.png",
-        "size": len(image),
-        "sha256": hashlib.sha256(image).hexdigest(),
-    }]
+    assert next_context.job["render"]["images"] == [
+        {
+            "path": "reports/revision-2/chart-001.png",
+            "size": len(image),
+            "sha256": hashlib.sha256(image).hexdigest(),
+        }
+    ]
     assert await service.interactive_charts(next_context) == {
         "reports/revision-2/chart-001.png": "reports/revision-2/chart-001.plotly.json"
     }
@@ -1138,7 +1167,9 @@ async def test_editor_export_timeout_cleans_partial_revision_and_logs_request_id
 
     assert raised.value.code == "report_editor_export_timeout"
     assert not await workspace.apath_exists(scope.workspace_key, "reports/revision-2")
-    assert any(request_id in message and "report_editor_export_failed" in message for message in messages)
+    assert any(
+        request_id in message and "report_editor_export_failed" in message for message in messages
+    )
 
 
 def test_editor_context_is_registered_as_immutable_durable_revision() -> None:
