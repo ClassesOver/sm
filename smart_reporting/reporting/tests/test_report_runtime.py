@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 import zipfile
@@ -306,11 +307,13 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
     assert len(workspace.commands) == 1
     thread, args, timeout, tail = workspace.commands[0]
     assert thread == "report-runtime-package"
-    assert len(workspace.writes) == 1
-    _thread, archive_path, archive = workspace.writes[0]
+    assert len(workspace.writes) == 2
+    (_thread, payload_path, payload), (_thread, archive_path, archive) = workspace.writes
+    assert payload_path.endswith("-payload.json")
+    assert payload == b'{"job":{}}'
     assert archive_path.startswith(".workspace-report-runtime-")
     assert archive_path.endswith(f"-{_report_runtime_digest()}.zip")
-    assert workspace.deletes == [(thread, archive_path)]
+    assert workspace.deletes == [(thread, archive_path), (thread, payload_path)]
     with zipfile.ZipFile(BytesIO(archive)) as package:
         assert set(package.namelist()) == {
             "report_runtime/__init__.py",
@@ -329,9 +332,47 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
     assert _report_runtime_digest() in script
     assert "报表运行时版本不匹配" in script
     assert "validate_pdf" in script
+    assert payload_path in script
     assert timeout == 600
     assert tail == 200
     assert result == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_report_runtime_passes_large_payload_without_argv_limit(tmp_path: Path) -> None:
+    import subprocess
+
+    class Workspace:
+        async def awrite_bytes(self, _thread: str, path: str, content: bytes) -> None:
+            (tmp_path / path).write_bytes(content)
+
+        async def arun_command(
+            self, _thread: str, args: list[str], *, timeout: int, tail: int
+        ) -> str:
+            del tail
+            process = subprocess.run(
+                args, cwd=tmp_path, capture_output=True, text=True, timeout=timeout, check=False
+            )
+            return process.stdout
+
+        async def adelete_file(self, _thread: str, path: str) -> None:
+            (tmp_path / path).unlink(missing_ok=True)
+
+    # 真实渲染回执与产物清单可超过 Linux 单个命令行参数的 128 KiB 上限。
+    payload = {"job": {"notes": ["引用覆盖说明" * 20] * 800}}
+    assert len(json.dumps(payload, ensure_ascii=False).encode()) > 128 * 1024
+
+    with pytest.raises(WorkspaceError) as caught:
+        await WorkspaceReportService(Workspace())._run_report_runtime(  # type: ignore[arg-type]
+            "validate_pdf",
+            payload,
+            RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
+        )
+
+    # 进程成功启动并由 runtime 返回结构化业务错误，而不是 Argument list too long。
+    assert "Argument list too long" not in str(caught.value)
+    assert "报表运行时返回无效结果" not in str(caught.value)
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.anyio

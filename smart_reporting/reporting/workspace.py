@@ -93,9 +93,7 @@ async def inspect_report_chart_file(
             details={"sourcePath": source_path},
         ) from error
     if not 0 < len(content) <= MAX_REPORT_CHART_BYTES:
-        raise ReportingError(
-            "report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。"
-        )
+        raise ReportingError("report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。")
     digest = hashlib.sha256(content).hexdigest()
     try:
         with Image.open(io.BytesIO(content)) as image:
@@ -146,9 +144,7 @@ def _inspect_plotly_value(value: Any, *, depth: int = 0) -> int:
             nodes += _inspect_plotly_value(child, depth=depth + 1)
         return nodes
     if isinstance(value, list):
-        return 1 + sum(
-            _inspect_plotly_value(item, depth=depth + 1) for item in value
-        )
+        return 1 + sum(_inspect_plotly_value(item, depth=depth + 1) for item in value)
     if isinstance(value, str):
         normalized_value = value.lower()
         if (
@@ -157,7 +153,9 @@ def _inspect_plotly_value(value: Any, *, depth: int = 0) -> int:
             or "<" in value
             or ">" in value
         ):
-            raise ReportingError("report_plotly_source_invalid", "Plotly JSON 包含外部或可执行内容。")
+            raise ReportingError(
+                "report_plotly_source_invalid", "Plotly JSON 包含外部或可执行内容。"
+            )
     return 1
 
 
@@ -173,7 +171,9 @@ async def inspect_report_plotly_file(
 ) -> dict[str, Any]:
     source_path = service.normalize_path(path, allow_root=False)[0]
     if not source_path.endswith(".plotly.json"):
-        raise ReportingError("report_plotly_source_invalid", "Plotly 规格必须使用 .plotly.json 扩展名。")
+        raise ReportingError(
+            "report_plotly_source_invalid", "Plotly 规格必须使用 .plotly.json 扩展名。"
+        )
     try:
         content = await service.read_limited_regular_file(
             thread_id, source_path, max_bytes=MAX_REPORT_PLOTLY_BYTES
@@ -361,9 +361,13 @@ class WorkspaceReportService:
         except (TypeError, ValueError) as error:
             raise WorkspaceError("报表运行时 payload 无效。") from error
         runtime_package, expected_runtime_digest = await asyncio.to_thread(_report_runtime_package)
+        invocation = uuid.uuid4().hex
         runtime_package_relative_path = (
-            f".workspace-report-runtime-{uuid.uuid4().hex}-{expected_runtime_digest}.zip"
+            f".workspace-report-runtime-{invocation}-{expected_runtime_digest}.zip"
         )
+        # payload 可能包含完整渲染回执与产物清单；Linux 单个命令行参数上限为 128 KiB，
+        # 不能内联进 `python -c`，改为写入同一次调用的私有文件再由入口读取。
+        payload_relative_path = f".workspace-report-runtime-{invocation}-payload.json"
         thread_id = _thread(run_context)
         # 入口代码和包内容由服务端固定；Agno Workspace 将进程 cwd 固定到会话根。
         script = (
@@ -376,23 +380,30 @@ class WorkspaceReportService:
             "raise SystemExit(1)\n"
             "sys.path.insert(0,str(package))\n"
             "from report_runtime.cli import main\n"
-            f"exit_code=main([{action!r}, {payload_text!r}])\n"
+            f"payload=Path({payload_relative_path!r}).read_text(encoding='utf-8')\n"
+            f"exit_code=main([{action!r}, payload])\n"
             "print(json.dumps({'__reportExitCode':exit_code},separators=(',',':')))\n"
         )
         await self.service.awrite_bytes(
-            thread_id, runtime_package_relative_path, runtime_package
+            thread_id, payload_relative_path, payload_text.encode("utf-8")
         )
         try:
-            stdout = await self.service.arun_command(
-                thread_id,
-                [sys.executable, "-c", script],
-                timeout=REPORT_RUNTIME_TIMEOUT_SECONDS,
-                tail=200,
+            await self.service.awrite_bytes(
+                thread_id, runtime_package_relative_path, runtime_package
             )
+            try:
+                stdout = await self.service.arun_command(
+                    thread_id,
+                    [sys.executable, "-c", script],
+                    timeout=REPORT_RUNTIME_TIMEOUT_SECONDS,
+                    tail=200,
+                )
+            finally:
+                await complete_cleanup(
+                    self.service.adelete_file(thread_id, runtime_package_relative_path)
+                )
         finally:
-            await complete_cleanup(
-                self.service.adelete_file(thread_id, runtime_package_relative_path)
-            )
+            await complete_cleanup(self.service.adelete_file(thread_id, payload_relative_path))
         if len(stdout.encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
             raise WorkspaceError("报表运行时返回结果超过大小限制。")
         lines = [line for line in stdout.splitlines() if line.strip()]
@@ -433,9 +444,7 @@ class WorkspaceReportService:
         recursive: bool,
     ) -> None:
         try:
-            await self.service.adelete_file(
-                _thread(run_context), path, recursive=recursive
-            )
+            await self.service.adelete_file(_thread(run_context), path, recursive=recursive)
         except Exception:
             pass
 
@@ -602,9 +611,7 @@ class WorkspaceReportService:
             thread_id = _thread(run_context)
             await self.service.aensure_directory(thread_id, output.parent.parent.as_posix())
             if await self.service.apath_exists(thread_id, final_directory_relative):
-                raise WorkspacePathConflict(
-                    "报告 revision 输出目录已经存在，请使用新的 revision。"
-                )
+                raise WorkspacePathConflict("报告 revision 输出目录已经存在，请使用新的 revision。")
             if await self.service.apath_exists(thread_id, staging_relative):
                 raise WorkspaceError("报告 revision 暂存目录已经存在。")
             result = await self._run_report_runtime(
@@ -680,9 +687,7 @@ class WorkspaceReportService:
             # 完整 render 只在同一次受控验收中使用；durable job 已分别持有文档上下文、
             # 引用和页面布局。这里只保存后续状态查询与 revision 清理所需的产物身份，
             # 避免重复结构挤占 48 KiB 的会话状态边界。
-            job["render"] = {
-                key: render[key] for key in ("markdown", "pdf", "word", "images")
-            }
+            job["render"] = {key: render[key] for key in ("markdown", "pdf", "word", "images")}
             # 逐页验收结果由本方法返回并写入 Workflow 权威状态；job 只需记录是否通过，
             # 否则最多 200 页的 pages 数组会让 durable job 再次线性越过 48 KiB。
             job["validation"] = {"ok": True}
@@ -699,9 +704,7 @@ class WorkspaceReportService:
         except BaseException:
             if published:
                 await complete_cleanup(
-                    self._delete_report_path(
-                        final_directory_relative, run_context, recursive=True
-                    )
+                    self._delete_report_path(final_directory_relative, run_context, recursive=True)
                 )
             raise
         finally:
@@ -745,9 +748,7 @@ class WorkspaceReportService:
         revision_relative, _revision_host_path = self.service.normalize_path(
             pdf.parent.as_posix(), allow_root=False
         )
-        await self.service.adelete_file(
-            _thread(run_context), revision_relative, recursive=True
-        )
+        await self.service.adelete_file(_thread(run_context), revision_relative, recursive=True)
         job.pop("render", None)
         job.pop("validation", None)
         self._store_job(job, run_context)
