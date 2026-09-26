@@ -1073,6 +1073,62 @@ async def test_editor_export_rejects_occupied_revision_before_rendering(
 
 
 @pytest.mark.anyio
+async def test_editor_export_from_older_revision_link_reports_stale_revision(
+    tmp_path: Path,
+) -> None:
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    markdown = "# 旧版修订\n"
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+
+    def revision_context(revision: int) -> ReportEditorContext:
+        return ReportEditorContext(
+            reportId="report-1",
+            revision=revision,
+            jobId="job-1",
+            workflowRunId="report-1",
+            markdownPath=f"reports/revision-{revision}/report.md",
+            job={
+                "jobId": "job-1",
+                "render": {"pdf": {"path": f"reports/revision-{revision}/report.pdf"}},
+            },
+            scope=scope.as_state(),
+        )
+
+    state = SimpleNamespace(
+        payload={
+            "reportEditorContexts": {
+                str(revision): revision_context(revision).model_dump(mode="json", by_alias=True)
+                for revision in (1, 2, 3)
+            }
+        }
+    )
+    render = AsyncMock()
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),
+        workspace_registry=registry,
+        workspace=workspace,
+        report_tools=SimpleNamespace(_render_report_pair=render),
+        artifact_persistence=object(),
+        download_grants=object(),
+        editor_grants=object(),
+        public_base_url="https://reports.example.com",
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await service.export_revision(
+            revision_context(1),
+            expected_sha256=hashlib.sha256(markdown.encode()).hexdigest(),
+        )
+
+    assert raised.value.code == "report_editor_revision_stale"
+    assert "第 3 版" in raised.value.message
+    render.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_editor_export_maps_atomic_publish_race_to_revision_conflict(
     tmp_path: Path,
 ) -> None:

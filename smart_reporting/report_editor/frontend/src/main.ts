@@ -198,6 +198,9 @@ function setActionsDisabled(disabled: boolean) {
 }
 
 function errorLabel(error: unknown): string {
+  if (error instanceof ReportEditorApiError && error.code === 'report_editor_revision_stale') {
+    return '已有更新版本 · 请打开最新版本的编辑链接'
+  }
   if (error instanceof ReportEditorApiError && error.status === 409) return '保存冲突'
   if (error instanceof ReportEditorApiError && error.status === 410) return '会话已过期'
   if (error instanceof TypeError) return '无法连接报告服务'

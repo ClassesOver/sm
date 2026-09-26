@@ -423,7 +423,11 @@ def _request_id(value: str | None) -> str:
 
 
 def _editor_http_error(error: ReportingError, *, request_id: str | None = None) -> NoReturn:
-    if error.code in {"report_editor_conflict", "report_editor_revision_conflict"}:
+    if error.code in {
+        "report_editor_conflict",
+        "report_editor_revision_conflict",
+        "report_editor_revision_stale",
+    }:
         status = 409
     elif error.code == "report_editor_export_timeout":
         status = 504

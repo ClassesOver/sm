@@ -523,6 +523,18 @@ class ReportEditorService:
                 for key in ("cover", "toc", "headerFooter", "pageNumbers")
                 if key in settings
             }
+        # 编辑链接长期有效，用户可能从旧修订的链接进入；此时下一个 revision 已被占用，
+        # 重新载入也无法解决，必须明确提示改用最新修订继续编辑。
+        latest_revision = max(
+            (candidate.revision for candidate in await self._candidate_revisions(context)),
+            default=context.revision,
+        )
+        if latest_revision > context.revision:
+            raise ReportingError(
+                "report_editor_revision_stale",
+                f"当前编辑的是第 {context.revision} 版，已有更新的第 {latest_revision} 版，"
+                "请打开最新版本的编辑链接后再导出。",
+            )
         output_path = _next_pdf_path(context)
         revision_path = PurePosixPath(output_path).parent.as_posix()
         if await self.workspace.apath_exists(scope.workspace_key, revision_path):
