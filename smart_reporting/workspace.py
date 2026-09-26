@@ -3306,15 +3306,6 @@ class WorkspaceService:
             output = encoded[:MAX_TOOL_OUTPUT_BYTES].decode("utf-8", errors="ignore")
         return output, truncated
 
-    @classmethod
-    def _bounded_output(cls, value: Any) -> dict[str, Any]:
-        output, truncated = cls._bounded_text(getattr(value, "result", ""))
-        return {
-            "exitCode": getattr(value, "exit_code", None),
-            "output": output,
-            "truncated": truncated,
-        }
-
     @staticmethod
     def _validate_timeout(timeout: int, maximum: int = MAX_EXECUTION_TIMEOUT) -> int:
         if isinstance(timeout, bool) or not isinstance(timeout, int):
