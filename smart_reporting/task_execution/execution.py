@@ -21,6 +21,7 @@ from agno.tools import Function
 from agno.utils.log import log_debug
 from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
+from loguru import logger
 
 from ..agent_control import AGENT_PLAN_STATE_KEY
 from ..runtime.observability import suppress_expected_probe_tracing
@@ -938,8 +939,13 @@ class TaskExecutionKernel:
         try:
             async for sandbox in self._sandbox(scope):
                 await sandbox.fs.delete_file(task_dir, recursive=True)
-        except Exception:
-            pass
+        except Exception as error:
+            # 尽力清理：不阻断任务收尾，但残留输出目录需可排查。
+            logger.warning(
+                "task_tool_output_cleanup_failed task_dir={} error_type={}",
+                task_dir,
+                type(error).__name__,
+            )
 
     async def cleanup_old_epoch(self, scope: TaskExecutionScope, current_epoch: int) -> None:
         await self._cleanup_executions(scope, current_epoch, old_only=True)
