@@ -226,7 +226,9 @@ function exportArtifactLabel(
   if (!artifact.size) return filename
   const size = artifact.size < 1024
     ? `${artifact.size} B`
-    : `${Number((artifact.size / 1024).toFixed(1))} KB`
+    : artifact.size < 1024 * 1024
+      ? `${Number((artifact.size / 1024).toFixed(1))} KB`
+      : `${Number((artifact.size / 1024 / 1024).toFixed(1))} MB`
   return `${filename} · ${size}`
 }
 
