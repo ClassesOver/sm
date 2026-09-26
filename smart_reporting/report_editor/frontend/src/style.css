@@ -2439,6 +2439,44 @@ button {
   display: none;
 }
 
+.milkdown-slash-menu li[data-heading-level] span:not(.milkdown-icon) {
+  color: #1b2a41;
+  font-weight: 700;
+}
+
+.milkdown-slash-menu li[data-heading-level="1"] span:not(.milkdown-icon) {
+  font-size: 15.5px;
+  font-weight: 720;
+}
+
+.milkdown-slash-menu li[data-heading-level="2"] span:not(.milkdown-icon) {
+  font-size: 15px;
+  color: #30435a;
+}
+
+.milkdown-slash-menu li[data-heading-level="3"] span:not(.milkdown-icon) {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.milkdown-slash-menu li[data-heading-level="4"] span:not(.milkdown-icon) {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #30435a;
+}
+
+.milkdown-slash-menu li[data-heading-level="5"] span:not(.milkdown-icon) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #526579;
+}
+
+.milkdown-slash-menu li[data-heading-level="6"] span:not(.milkdown-icon) {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #71808f;
+}
+
 #report-editor .milkdown-ai-instruction > .ai-instruction {
   width: min(360px, calc(100vw - 24px));
 }

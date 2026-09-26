@@ -249,6 +249,8 @@ try {
   crepe.editor.use(searchHighlightPlugin)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
+  const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
+  installSlashMenuHeadingPreview()
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, serialized) => {
       // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
