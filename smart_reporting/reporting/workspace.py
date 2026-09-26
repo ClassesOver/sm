@@ -213,6 +213,24 @@ async def inspect_report_plotly_file(
     }
 
 
+def _presentation_identity(presentations: Any) -> Any:
+    if not isinstance(presentations, list):
+        return presentations
+    return [
+        (
+            item.get("citationId"),
+            item.get("label"),
+            tuple(
+                coverage.get("label") if isinstance(coverage, dict) else coverage
+                for coverage in item.get("coverageItems") or ()
+            ),
+        )
+        if isinstance(item, dict)
+        else item
+        for item in presentations
+    ]
+
+
 class WorkspaceReportService:
     def __init__(self, service: WorkspaceService, data_sources: Any | None = None):
         self.service = service
@@ -561,7 +579,11 @@ class WorkspaceReportService:
             raise WorkspaceError("PDF 实际引用展示信息超过状态边界。")
         job = self._load_job(job_id, run_context)
         existing = job.get("_citationPresentations")
-        if existing is not None and existing != presentations:
+        # 覆盖期间只是展示细节（历史版本保存完整列表，现在只保存首尾）；绑定一致性按
+        # 引用身份、标签和覆盖项名称判断，避免跨版本恢复的运行被误判为冲突。
+        if existing is not None and _presentation_identity(existing) != _presentation_identity(
+            presentations
+        ):
             raise WorkspaceError("PDF 实际引用展示信息已经绑定且内容不同。")
         job["_citationPresentations"] = copy.deepcopy(presentations)
         self._store_job(job, run_context)
