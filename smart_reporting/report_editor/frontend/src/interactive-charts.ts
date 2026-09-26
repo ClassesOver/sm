@@ -17,6 +17,73 @@ interface ChartDependencies {
 
 const CHART_FONT = '"Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif'
 
+// 与报告编辑器同一套设计令牌（见 style.css）：墨色正文 + 品牌蓝系。
+const REPORT_INK = '#1b2a41'
+const REPORT_INK_SOFT = '#30435a'
+const REPORT_MUTED = '#526579'
+const REPORT_GRID = '#e1e9ef'
+const REPORT_LINE = '#c7d7e5'
+const REPORT_ZERO = '#d4e0e9'
+const REPORT_HOVER_BG = '#12263a'
+const REPORT_COLORWAY = [
+  '#0b4f8a', '#007ea7', '#56b4e9', '#4f7b66',
+  '#8a5b00', '#9b2c26', '#526579', '#30435a',
+]
+
+// 报告主题：只补未显式声明的键，figure 自带值优先。
+function applyReportingTheme(merged: Record<string, unknown>): void {
+  const font = merged.font as Record<string, unknown>
+  merged.font = { color: REPORT_INK, ...font }
+  merged.colorway = merged.colorway ?? REPORT_COLORWAY
+
+  const title = merged.title
+  const titleFont = { color: REPORT_INK, size: 17 }
+  if (typeof title === 'string') {
+    merged.title = { text: title, font: titleFont }
+  } else if (title && typeof title === 'object') {
+    const record = title as Record<string, unknown>
+    merged.title = { ...record, font: { ...titleFont, ...((record.font as Record<string, unknown>) ?? {}) } }
+  } else {
+    merged.title = { font: titleFont }
+  }
+
+  const axisDefaults = {
+    linecolor: REPORT_LINE,
+    gridcolor: REPORT_GRID,
+    zerolinecolor: REPORT_ZERO,
+    tickfont: { color: REPORT_MUTED, size: 12 },
+    title: { font: { color: REPORT_INK_SOFT, size: 13 } },
+  }
+  const axisKeys = new Set(
+    Object.keys(merged).filter((key) => /^[xy]axis\d*$/.test(key)),
+  )
+  axisKeys.add('xaxis')
+  axisKeys.add('yaxis')
+  for (const key of axisKeys) {
+    const axis = merged[key]
+    const record = axis && typeof axis === 'object' ? axis as Record<string, unknown> : {}
+    merged[key] = {
+      ...axisDefaults,
+      ...record,
+      tickfont: { ...axisDefaults.tickfont, ...((record.tickfont as Record<string, unknown>) ?? {}) },
+      title: record.title && typeof record.title === 'object'
+        ? { ...record.title as Record<string, unknown>, font: { ...axisDefaults.title.font, ...(((record.title as Record<string, unknown>).font) as Record<string, unknown> ?? {}) } }
+        : record.title ?? axisDefaults.title,
+    }
+  }
+
+  const legend = (merged.legend as Record<string, unknown> | undefined) ?? {}
+  merged.legend = { ...legend, font: { color: REPORT_INK_SOFT, ...((legend.font as Record<string, unknown>) ?? {}) } }
+
+  const hoverlabel = (merged.hoverlabel as Record<string, unknown> | undefined) ?? {}
+  merged.hoverlabel = {
+    bgcolor: REPORT_HOVER_BG,
+    bordercolor: REPORT_HOVER_BG,
+    ...hoverlabel,
+    font: { color: '#ffffff', family: CHART_FONT, ...((hoverlabel.font as Record<string, unknown>) ?? {}) },
+  }
+}
+
 // 生成侧模型产出的 spec 常见两类版式冲突，渲染前确定性归一：
 // 1. 顶部水平图例与标题同处顶栏相互压盖（legend.y > 1 且非 top 锚定）
 // 2. 同侧多条 overlaying Y 轴刻度重叠（用 plotly autoshift 自动外移）
@@ -81,6 +148,7 @@ function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] 
   // 纸面与绘图区留白交给容器边框和圆角处理。
   merged.paper_bgcolor = merged.paper_bgcolor ?? '#ffffff'
   merged.plot_bgcolor = merged.plot_bgcolor ?? '#ffffff'
+  applyReportingTheme(merged)
   normalizeLayoutOverlaps(merged)
   return merged
 }

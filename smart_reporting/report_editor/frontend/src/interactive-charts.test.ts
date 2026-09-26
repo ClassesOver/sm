@@ -216,3 +216,41 @@ it('leaves non-colliding legend and axes untouched', async () => {
   expect(layout.yaxis2.autoshift).toBeUndefined()
   controller.destroy()
 })
+
+it('applies the reporting visual theme while keeping explicit figure values', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const figure = {
+    data: [{ type: 'scatter' }],
+    layout: {
+      title: { text: '成本走势', font: { size: 20 } },
+      yaxis: { title: { text: '金额' }, gridcolor: '#ff0000' },
+    },
+  }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => figure }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+
+  const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
+  // 主题默认：品牌色板、墨色字体、轴线/网格/悬浮框令牌
+  expect(layout.colorway[0]).toBe('#0b4f8a')
+  expect(layout.font).toMatchObject({ color: '#1b2a41' })
+  expect(layout.font.family).toContain('Noto Sans CJK SC')
+  expect(layout.hoverlabel).toMatchObject({ bgcolor: '#12263a', bordercolor: '#12263a' })
+  expect(layout.hoverlabel.font.color).toBe('#ffffff')
+  expect(layout.legend.font.color).toBe('#30435a')
+  expect(layout.xaxis).toMatchObject({ linecolor: '#c7d7e5', gridcolor: '#e1e9ef' })
+  expect(layout.xaxis.tickfont.color).toBe('#526579')
+  expect(layout.yaxis.title).toMatchObject({ text: '金额' })
+  expect(layout.yaxis.title.font.color).toBe('#30435a')
+  // figure 显式声明优先：标题字号 20、y 轴红色网格不被覆盖；未声明的标题颜色补墨色
+  expect(layout.title).toMatchObject({ text: '成本走势' })
+  expect(layout.title.font).toMatchObject({ size: 20, color: '#1b2a41' })
+  expect(layout.yaxis.gridcolor).toBe('#ff0000')
+  // 原始 figure 不被修改
+  expect(figure.layout.title.font).toEqual({ size: 20 })
+  controller.destroy()
+})
