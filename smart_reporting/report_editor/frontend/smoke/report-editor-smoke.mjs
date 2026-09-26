@@ -59,8 +59,21 @@ async function runMutationSmoke(page) {
       headers: { ...headers, 'X-Request-ID': crypto.randomUUID() },
       body: JSON.stringify({ expectedSha256: restored.payload.sha256 }),
     })
-    if (!exported.response.ok) throw new Error(`导出失败：${exported.response.status}`)
-    return exported.payload
+    if (exported.response.status !== 202) throw new Error(`导出失败：${exported.response.status}`)
+    // 导出为后台任务，轮询状态接口直到终态。
+    const deadline = Date.now() + 30 * 60 * 1000
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const state = await request(`/api/export/${encodeURIComponent(exported.payload.exportId)}`)
+      if (!state.response.ok) throw new Error(`导出状态查询失败：${state.response.status}`)
+      if (state.payload.status === 'succeeded') {
+        return { ...state.payload.result, requestId: state.payload.requestId }
+      }
+      if (state.payload.status === 'failed') {
+        throw new Error(`导出失败：${state.payload.error?.code ?? 'unknown'}`)
+      }
+    }
+    throw new Error('导出超时')
   })
   for (const [format, magic] of [['pdf', '%PDF-'], ['word', 'PK']]) {
     const artifact = result[format]
