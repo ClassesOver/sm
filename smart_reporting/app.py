@@ -451,6 +451,7 @@ report_editor = ReportEditorService(
     download_grants=report_download_grants,
     editor_grants=report_editor_grants,
     public_base_url=settings.report_public_base_url,
+    export_timeout_seconds=settings.report_editor_export_timeout_seconds,
 )
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
 report_workflow = report_runtime.workflow()

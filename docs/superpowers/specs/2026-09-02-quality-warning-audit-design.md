@@ -21,7 +21,7 @@
 
 ### 边界适配层
 
-`WarningAdapter` 将现有 `SourceWarning`、分析 evidence warning、章节 artifact warning、渲染 warning 转换为统一 notice。适配器只在阶段边界使用：旧协议保持兼容，新代码不再手写多套 warning 字典。适配失败表示审计契约错误，不能静默丢弃。
+`WarningAdapter` 将现有 `SourceWarning`、分析 evidence warning、章节 artifact warning、渲染 warning 转换为统一 notice。适配器只在阶段边界使用：旧协议保持兼容，新代码不再手写多套 warning 字典。适配失败表示审计契约错误，不能静默丢弃：必须记录 `report_quality_warning_notice_invalid` 日志（含规则码与数量），并在审计摘要中给出 `invalidNoticeCount`。
 
 ### 发布审计层
 
@@ -44,7 +44,7 @@
 - `review_required`：允许生成交付物，但 `auditSummary.requiresReview=true`，由上层决定人工复核流程；
 - 身份、权限、血缘、协议、脚本失败和产物完整性规则不注册到该目录，继续由硬门禁产生 issues。
 
-未登记规则、主体缺失、主体类型不匹配或 details 不可规范化属于审计契约错误，加入 issues 并阻断发布，防止新规则意外绕过门禁。
+未登记规则、主体缺失、主体类型不匹配或 details 不可规范化属于审计契约错误。按“语义业务校验只需软告警”，契约错误只跳过该条并记录日志与 `invalidNoticeCount`，不阻断正式发布；出现跳过时本次审计视为不完整，只记录发现，不关闭任何既有告警。新规则漏登记通过日志与摘要暴露，而不是拦截报告交付。
 
 ## 去重与事件审计
 
@@ -65,7 +65,7 @@
 - **重试与恢复**：审计收集结果先保存在当前 Workflow checkpoint，再执行 flush。进程在 flush 前崩溃时可从 checkpoint 重建；flush 中断时事务回滚，恢复后使用同一 checkId 重试。
 - **确定性**：规则分组、主体集合、sourcePhases 和 details 按稳定排序后写入，保证重试、回放和多实例执行得到相同 fingerprint 与汇总。
 - **并发安全**：批量锁按租户、领域、规则、主体类型的字典序获取，避免锁顺序不一致导致死锁；已有“完整成功复检才能 resolve”不变量保持不变。
-- **资源边界**：单次审计限制 notice 数、规则组数、details 大小和汇总条目数；超限属于审计契约错误并阻断发布，不静默截断。
+- **资源边界**：单次审计限制 notice 数、规则组数、details 大小和汇总条目数；超限属于审计契约错误，按上条软处理（记录日志、审计不完整、不关闭既有告警），不静默截断。
 - **失败可见**：flush 失败记录稳定的 Loguru 事件名和非敏感上下文；发布回执标记 `auditSummary.flushStatus=failed` 并返回系统错误，不能伪装成质量 warning。
 - **兼容回退**：旧 checkpoint 没有 source phase 或 disposition 时由适配层使用明确默认值；无法安全推断主体或规则时失败关闭，不猜测、不丢弃。
 

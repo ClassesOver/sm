@@ -622,40 +622,28 @@ class RuntimePublicationMixin:
 
         # 质量告警用于后续修复审计，与完整性/身份类发布阻断相互独立；即使正式发布
         # 被 issues 阻断，也必须保留本次检查发现，避免丢失后续修复所需的历史记录。
+        quality_warning_service = getattr(self, "quality_warning_service", None)
+        tenant = None
+        if quality_warning_service is not None:
+            scope = self._scope(run_context)
+            tenant = TenantScope(
+                database_name=scope["database"], company_id=str(scope["companyId"])
+            )
         try:
-            for item in warnings:
-                if not isinstance(item, Mapping):
-                    continue
-                code = item.get("code")
-                if not isinstance(code, str):
-                    continue
-                notice = _publication_warning_notice(
-                    item,
-                    run_id=audit.report_run_id,
-                    source_phase=("analysis" if code.startswith("analysis_") else "publication"),
-                )
-                audit.add(notice)
-            quality_warning_service = getattr(self, "quality_warning_service", None)
-            if quality_warning_service is not None:
-                scope = self._scope(run_context)
-                tenant = TenantScope(
-                    database_name=scope["database"], company_id=str(scope["companyId"])
-                )
-                await audit.flush(
-                    service=quality_warning_service, tenant=tenant, complete=audit_complete
-                )
-        except QualityWarningContractError as error:
-            issue("report_quality_audit_invalid", "发布质量告警不符合审计契约。")
-            logger.warning(
-                "report_quality_audit_invalid report_run_id={} error_type={}",
-                audit.report_run_id,
-                type(error).__name__,
+            invalid_notice_count = await _record_publication_audit(
+                audit,
+                warnings,
+                service=quality_warning_service,
+                tenant=tenant,
+                complete=audit_complete,
             )
         except Exception as error:
             raise ReportingError(
                 "report_quality_audit_failed", "发布质量告警审计写入失败。"
             ) from error
         audit_summary = audit.build().as_dict()
+        if invalid_notice_count:
+            audit_summary["invalidNoticeCount"] = invalid_notice_count
         return {
             "formalReleaseAllowed": not issues,
             "issues": issues,
@@ -899,6 +887,59 @@ def _analysis_quality_warnings(
                 }
             )
     return tuple(warnings)
+
+
+async def _record_publication_audit(
+    audit: QualityAuditCollector,
+    warnings: list[Any],
+    *,
+    service: Any,
+    tenant: TenantScope | None,
+    complete: bool,
+) -> int:
+    """把发布告警写入质量台账，返回因不符合审计契约而跳过的告警数。
+
+    告警记录不符合审计契约（规则未登记、主体不允许、超出数量上限等）属于审计自身
+    的质量问题，按“语义业务校验只需软告警”只记录日志并跳过，不阻断正式发布；此时
+    本次审计不完整，不得据此关闭既有告警。台账写入失败等其他异常照常抛出。
+    """
+
+    invalid_codes: list[str] = []
+    for item in warnings:
+        if not isinstance(item, Mapping):
+            continue
+        code = item.get("code")
+        if not isinstance(code, str):
+            continue
+        try:
+            audit.add(
+                _publication_warning_notice(
+                    item,
+                    run_id=audit.report_run_id,
+                    source_phase=("analysis" if code.startswith("analysis_") else "publication"),
+                )
+            )
+        except QualityWarningContractError:
+            invalid_codes.append(code[:64])
+    if invalid_codes:
+        logger.warning(
+            "report_quality_warning_notice_invalid report_run_id={} count={} codes={}",
+            audit.report_run_id,
+            len(invalid_codes),
+            sorted(set(invalid_codes))[:10],
+        )
+    if service is not None and tenant is not None:
+        try:
+            await audit.flush(
+                service=service, tenant=tenant, complete=complete and not invalid_codes
+            )
+        except QualityWarningContractError as error:
+            logger.warning(
+                "report_quality_audit_invalid report_run_id={} error_type={}",
+                audit.report_run_id,
+                type(error).__name__,
+            )
+    return len(invalid_codes)
 
 
 def _publication_warning_notice(item: Mapping[str, Any], *, run_id: str, source_phase: str):

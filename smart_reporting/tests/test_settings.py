@@ -538,3 +538,15 @@ def test_database_precedence_and_url_escaping():
     assert current.database_url == (
         "postgresql+psycopg://agent%20user:p%40ss%3A%2Fword@127.0.0.1:55432/agent%20data"
     )
+
+
+def test_report_editor_export_timeout_is_configurable_and_bounded():
+    assert settings().report_editor_export_timeout_seconds == 1200
+    assert (
+        settings(
+            AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS="1800"
+        ).report_editor_export_timeout_seconds
+        == 1800
+    )
+    with pytest.raises(ValueError, match="AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS"):
+        settings(AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS="3601")

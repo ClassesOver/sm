@@ -203,7 +203,7 @@ class ReportEditorService:
         download_grants: Any | None = None,
         editor_grants: ReportEditorGrantService | None = None,
         public_base_url: str | None = None,
-        export_timeout_seconds: float = 120.0,
+        export_timeout_seconds: float = 1200.0,
     ) -> None:
         self.state_repository = state_repository
         self.workspace_registry = workspace_registry

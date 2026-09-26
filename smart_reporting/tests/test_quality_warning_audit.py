@@ -231,3 +231,36 @@ async def test_incomplete_audit_records_findings_without_reconciliation() -> Non
     )
 
     assert calls and all(check.reconcile is False for check in calls[0])
+
+
+@pytest.mark.anyio
+async def test_publication_audit_skips_invalid_notices_without_blocking() -> None:
+    from smart_reporting.reporting.workflow.runtime.publication import _record_publication_audit
+
+    calls = []
+
+    class Service:
+        async def record_successful_checks(self, *, tenant, checks):
+            calls.append(checks)
+
+    collector = QualityAuditCollector(report_run_id="run-1", revision=1)
+    invalid = await _record_publication_audit(
+        collector,
+        [
+            {"code": "report_unregistered_future_rule", "message": "新规则忘记登记"},
+            {
+                "code": "report_period_basis_conflict",
+                "message": "期间口径冲突",
+                "details": {"claimId": "claim_001"},
+            },
+        ],
+        service=Service(),
+        tenant=TenantScope(database_name="db", company_id="42"),
+        complete=True,
+    )
+
+    assert invalid == 1
+    recorded = [finding.subject_id for check in calls[0] for finding in check.findings]
+    assert recorded == ["run-1:claim_001"]
+    # 有告警被跳过时审计不完整，不得关闭既有告警。
+    assert all(check.reconcile is False for check in calls[0])
