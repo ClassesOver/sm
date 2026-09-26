@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
@@ -40,7 +40,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ...workspace import (
     MAX_DOWNLOAD_BYTES,
-    WorkspaceService,
 )
 from ..models import ReportingError
 
@@ -120,6 +119,9 @@ report_artifact_chunks_v1 = Table(
     Column("chunk_index", Integer, primary_key=True),
     Column("content", LargeBinary, nullable=False),
 )
+
+if TYPE_CHECKING:
+    from ..host_workspace import ReportingWorkspaceRouter
 
 
 def _require_postgresql_engine(engine: AsyncEngine) -> None:
@@ -666,7 +668,7 @@ class ReportArtifactPersistenceService:
     def __init__(
         self,
         repository: ReportArtifactRepository,
-        workspace_service: WorkspaceService,
+        workspace_service: ReportingWorkspaceRouter,
     ) -> None:
         self.repository = repository
         self.workspace_service = workspace_service

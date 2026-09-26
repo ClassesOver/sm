@@ -48,10 +48,25 @@ _RECOVERY_STEP_IDS = frozenset({"assemble-report", "validate-report"})
 
 
 class ProcessLifecyclePort(Protocol):
-    async def start_operation(self, **kwargs: Any) -> None: ...
-    async def update_operation(self, **kwargs: Any) -> None: ...
-    async def start_activity(self, **kwargs: Any) -> str | None: ...
-    async def finish_activity(self, **kwargs: Any) -> None: ...
+    async def start_operation(
+        self, *, operation_id: str, session_id: str, run_id: str, title: str, execution: str
+    ) -> None: ...
+    async def update_operation(
+        self, *, operation_id: str, session_id: str, status: str, summary: str | None = None
+    ) -> None: ...
+    async def start_activity(
+        self, *, operation_id: str, session_id: str, run_id: str, step_id: str
+    ) -> str | None: ...
+    async def finish_activity(
+        self,
+        *,
+        operation_id: str,
+        session_id: str,
+        activity_id: str,
+        step_id: str,
+        status: str,
+        summary: str | None = None,
+    ) -> None: ...
 
 
 def reporting_workflow_ids(

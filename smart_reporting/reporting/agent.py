@@ -58,7 +58,6 @@ from ..task_execution import (
     create_task_tool_scheduler_hook,
     is_task_tool_scheduler_hook,
 )
-from ..workspace import WorkspaceService
 from .code_agent.protocol import (
     ReportingCodeOpenAIResponses,
 )
@@ -80,7 +79,7 @@ from .code_agent.protocol import (
 from .code_agent.protocol import (
     with_reporting_durable_identities as _with_reporting_durable_identities,
 )
-from .host_workspace import ReportingWorkspaceRegistry
+from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .instructions import build_report_agent_instructions
 from .model_policy import (
     ReportingReasoningEffort,
@@ -2573,7 +2572,7 @@ def _report_model(
 def create_reporting_phase_agent(
     settings: AgentSettings,
     database: AsyncBaseDb,
-    workspace_service: WorkspaceService,
+    workspace_service: ReportingWorkspaceRouter,
     task_repository: TaskExecutionRepository,
     *,
     state_repository: ReportingStateRepository,

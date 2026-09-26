@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from copy import copy
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -225,7 +225,7 @@ class ReportingStructuredOutputExecutor:
                 if mode is StructuredOutputMode.JSON_SCHEMA:
                     protocol_attempt_number += 1
                 try:
-                    thinking_binding = nullcontext()
+                    thinking_binding: AbstractContextManager[None] = nullcontext()
                     if thinking_request is not None:
                         call_request = replace(
                             thinking_request,

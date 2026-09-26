@@ -10,7 +10,7 @@ import uuid
 import zipfile
 from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
 from loguru import logger as loguru_logger
@@ -21,7 +21,6 @@ from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     WorkspaceError,
     WorkspacePathConflict,
-    WorkspaceService,
     _thread,
 )
 from .models import ReportingError
@@ -52,6 +51,9 @@ _PLOTLY_TRACE_TYPES = frozenset(
 )
 _PLOTLY_FORBIDDEN_KEYS = frozenset({"src", "source", "mapboxaccesstoken"})
 _PLOTLY_FORBIDDEN_STRING_MARKERS = ("http://", "https://", "javascript:", "data:")
+
+if TYPE_CHECKING:
+    from .host_workspace import ReportingWorkspaceRouter
 
 
 def _report_runtime_package() -> tuple[bytes, str]:
@@ -232,7 +234,7 @@ def _presentation_identity(presentations: Any) -> Any:
 
 
 class WorkspaceReportService:
-    def __init__(self, service: WorkspaceService, data_sources: Any | None = None):
+    def __init__(self, service: "ReportingWorkspaceRouter", data_sources: Any | None = None):
         self.service = service
         self.data_sources = data_sources
 

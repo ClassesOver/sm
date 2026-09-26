@@ -824,3 +824,17 @@ async def test_report_runtime_classifies_process_failures(output: str, message: 
             {"job": {}},
             RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
         )
+
+
+def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -> None:
+    from types import SimpleNamespace
+
+    from docx.shared import Mm
+
+    from smart_reporting.reporting.delivery.report_runtime.docx import _usable_width
+
+    bare = SimpleNamespace(page_width=None, left_margin=None, right_margin=None)
+    configured = SimpleNamespace(page_width=Mm(210), left_margin=Mm(20), right_margin=Mm(20))
+
+    assert _usable_width(bare) == Mm(210) - Mm(31.8) - Mm(31.8)
+    assert _usable_width(configured) == Mm(170)

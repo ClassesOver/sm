@@ -3,6 +3,7 @@ import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_network
+from typing import Literal, cast
 from urllib.parse import quote, urlsplit
 
 from dotenv import dotenv_values
@@ -61,15 +62,18 @@ def _temperature(values: MutableMapping[str, str], name: str, default: float) ->
     return value
 
 
+ReportReasoningEffort = Literal["low", "high", "max"]
+
+
 def _report_reasoning_effort(
     values: MutableMapping[str, str],
     name: str,
     default: str = "low",
-) -> str:
+) -> ReportReasoningEffort:
     value = values.get(name, default).strip().lower()
     if value not in {"low", "high", "max"}:
         raise ValueError(f"{name} 必须是 low、high 或 max")
-    return value
+    return cast(ReportReasoningEffort, value)
 
 
 def _structured_output_mode(
@@ -281,10 +285,10 @@ class AgentSettings:
     enable_session_summaries: bool
     report_phase_enable_thinking: bool
     report_phase_temperature: float
-    report_phase_reasoning_effort: str
+    report_phase_reasoning_effort: ReportReasoningEffort
     report_phase_thinking_budget: int
     report_enable_thinking: bool
-    report_planner_reasoning_effort: str
+    report_planner_reasoning_effort: ReportReasoningEffort
     report_planner_thinking_budget: int
     report_enable_vision: bool
     report_vision_model: str

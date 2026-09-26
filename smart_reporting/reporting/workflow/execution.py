@@ -273,16 +273,13 @@ class _TaskModelMetricsSettlement:
                         tool_calls = item.get("toolCalls")
                         if isinstance(tool_calls, (list, tuple)):
                             normalized_request["toolCalls"] = [
-                                {
-                                    "id": call.get("id")[:256],
-                                    "name": call.get("name")[:128],
-                                }
+                                {"id": call_id[:256], "name": call_name[:128]}
                                 for call in tool_calls[:140]
                                 if isinstance(call, Mapping)
-                                and isinstance(call.get("id"), str)
-                                and isinstance(call.get("name"), str)
-                                and call.get("id")
-                                and call.get("name")
+                                and isinstance(call_id := call.get("id"), str)
+                                and isinstance(call_name := call.get("name"), str)
+                                and call_id
+                                and call_name
                             ]
                         tool_call_count = item.get("toolCallCount")
                         if (
@@ -335,7 +332,7 @@ class _TaskModelMetricsSettlement:
         with self._lock:
             result: dict[str, dict[str, int | float | str]] = {}
             for stage, metrics in sorted(self._stage_metrics.items()):
-                stage_result = {
+                stage_result: dict[str, Any] = {
                     field: "unknown" if field in self._stage_unknown_fields[stage] else value
                     for field, value in metrics.items()
                 }

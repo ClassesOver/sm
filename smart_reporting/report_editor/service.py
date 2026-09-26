@@ -621,17 +621,18 @@ class ReportEditorService:
             user_id=context.scope["userId"],
             stored_scope=context.scope,
         )
+        session_state: dict[str, Any] = {
+            "report_workflow_scope": scope.as_state(),
+            REPORT_JOBS_STATE_KEY: {context.job_id: copy.deepcopy(context.job)},
+        }
         run_context = RunContext(
             run_id=context.workflow_run_id,
             session_id=scope.workspace_key,
             user_id=scope.user_id,
-            session_state={
-                "report_workflow_scope": scope.as_state(),
-                REPORT_JOBS_STATE_KEY: {context.job_id: copy.deepcopy(context.job)},
-            },
+            session_state=session_state,
         )
         if settings:
-            run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id][
+            session_state[REPORT_JOBS_STATE_KEY][context.job_id][
                 "_editorExportSettings"
             ] = {
                 key: bool(settings[key])
@@ -729,7 +730,7 @@ class ReportEditorService:
                 revision=next_revision,
                 artifacts=artifacts,
             )
-            stored_jobs = run_context.session_state.get(REPORT_JOBS_STATE_KEY, {})
+            stored_jobs = (run_context.session_state or {}).get(REPORT_JOBS_STATE_KEY, {})
             next_job = stored_jobs.get(context.job_id) if isinstance(stored_jobs, dict) else None
             if not isinstance(next_job, dict):
                 raise ReportingError("report_editor_job_invalid", "报告编辑 job 状态无效。")

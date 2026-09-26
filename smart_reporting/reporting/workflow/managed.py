@@ -166,7 +166,10 @@ class ManagedReportingWorkflow(Workflow):
         try:
             await self.lifecycle.start_run(run_id, session_state)
         except BaseException:
-            await execution.aclose()
+            # AsyncIterator 协议不保证 aclose；缺失时直接抛出原异常，不能被 AttributeError 覆盖。
+            aclose = getattr(execution, "aclose", None)
+            if callable(aclose):
+                await aclose()
             raise
         async for event in self._stream(execution, run_id):
             yield event

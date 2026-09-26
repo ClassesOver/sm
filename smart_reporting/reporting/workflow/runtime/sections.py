@@ -2272,7 +2272,7 @@ class RuntimeSectionsMixin:
                         _analysis_chart_from_registration(
                             raw_chart,
                             source_file,
-                            interactive_by_path.get(raw_chart.get("interactivePath")),
+                            interactive_by_path.get(str(raw_chart.get("interactivePath") or "")),
                             receipt_by_path.get(source_path),
                         )
                     )

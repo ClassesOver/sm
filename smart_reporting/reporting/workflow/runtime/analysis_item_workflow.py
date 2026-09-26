@@ -1051,7 +1051,7 @@ class AnalysisItemWorkflow:
             )
         except ValidationError as error:
             rejection = supplemental_evidence_schema_error(error)
-            issue_summary = rejection.details["issueSummary"]
+            issue_summary = (rejection.details or {}).get("issueSummary", "")
             state.evidence = None
             state.evidence_file = None
             state.failure = rejection

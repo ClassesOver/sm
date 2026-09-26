@@ -239,9 +239,11 @@ class ReportingWorkspaceAdapter:
         *,
         max_bytes: int,
     ) -> bytes:
-        return await self._service.read_limited_regular_file(
-            thread_id, path, max_bytes=max_bytes
-        )
+        # 有界读取只由 Reporting 宿主机工作区提供；普通 WorkspaceService 不具备该原语。
+        reader = getattr(self._service, "read_limited_regular_file", None)
+        if not callable(reader):
+            raise WorkspaceError("当前工作区不支持有界文件读取。")
+        return await reader(thread_id, path, max_bytes=max_bytes)
 
     async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
         from ..workspace import inspect_report_chart_file

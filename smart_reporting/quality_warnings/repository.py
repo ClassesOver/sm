@@ -579,7 +579,7 @@ def _identity_values(
 
 
 def _covered_subject_condition(check_scope: CheckScope) -> Any:
-    conditions = []
+    conditions: list[Any] = []
     if check_scope.covered_subject_ids:
         conditions.append(quality_warnings_v1.c.subject_id.in_(check_scope.covered_subject_ids))
     if check_scope.covered_subject_prefix is not None:

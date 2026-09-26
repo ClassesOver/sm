@@ -202,7 +202,7 @@ class _PostImportHooks(importlib.abc.MetaPathFinder):
                         break
         finally:
             self.active.discard(fullname)
-        loader = getattr(spec, "loader", None) if spec is not None else None
+        loader: Any = getattr(spec, "loader", None) if spec is not None else None
         exec_module = getattr(loader, "exec_module", None)
         if not callable(exec_module):
             return spec
