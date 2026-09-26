@@ -1839,16 +1839,138 @@ button {
     0 6px 18px rgb(27 42 65 / 6%);
   cursor: default;
   animation: interactive-chart-in 240ms ease-out;
-  transition: box-shadow 150ms ease;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .interactive-chart:hover {
+  border-color: #9fc3d8;
   box-shadow:
     0 2px 4px rgb(27 42 65 / 6%),
     0 10px 26px rgb(27 42 65 / 10%);
 }
 
+.interactive-chart:focus-visible {
+  border-color: #56b4e9;
+  outline: 3px solid rgb(86 180 233 / 45%);
+  outline-offset: 2px;
+}
+
 @keyframes interactive-chart-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.interactive-chart-expand {
+  position: absolute;
+  z-index: 6;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #c7d7e5;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 2px 6px rgb(27 42 65 / 10%);
+  color: #516679;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.interactive-chart:hover .interactive-chart-expand,
+.interactive-chart:focus-within .interactive-chart-expand {
+  opacity: 1;
+}
+
+.interactive-chart-expand:hover {
+  border-color: #007ea7;
+  background: #edf5fc;
+  color: #0b4f8a;
+}
+
+.interactive-chart-expand:focus-visible {
+  outline: 3px solid rgb(86 180 233 / 45%);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+.interactive-chart-modal {
+  position: fixed;
+  z-index: 95;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgb(13 27 42 / 48%);
+  backdrop-filter: blur(2px);
+  animation: interactive-chart-modal-in 180ms ease-out;
+  place-items: center;
+}
+
+.interactive-chart-modal-card {
+  position: relative;
+  width: min(1240px, 100%);
+  height: min(78vh, 860px);
+  padding: 14px;
+  border: 1px solid #ccd8e0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 72px rgb(13 27 42 / 30%);
+}
+
+.interactive-chart-modal-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.interactive-chart-modal-close {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 12px;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 90%);
+  color: #697b8e;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.interactive-chart-modal-close:hover {
+  border-color: #d8e2e9;
+  background: #f1f4f6;
+  color: #1b2a41;
+}
+
+.interactive-chart-modal-close:focus-visible {
+  outline: 3px solid rgb(86 180 233 / 45%);
+  outline-offset: 1px;
+}
+
+@keyframes interactive-chart-modal-in {
   from {
     opacity: 0;
   }
@@ -2894,6 +3016,10 @@ button {
   }
 
   .interactive-chart {
+    display: none;
+  }
+
+  .interactive-chart-modal {
     display: none;
   }
 }

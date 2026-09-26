@@ -94,6 +94,55 @@ it('matches the relative image reference emitted by the Markdown renderer', asyn
   controller.destroy()
 })
 
+it('opens an expanded modal with the same figure and closes it cleanly', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const figure = { data: [{ type: 'bar', x: [1], y: [2] }], layout: { title: { text: '趋势' } }, config: {} }
+  const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => figure })
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: fetcher as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+  expect(plot.newPlot).toHaveBeenCalledOnce()
+
+  const expand = document.querySelector<HTMLButtonElement>('.interactive-chart-expand')!
+  expect(expand).not.toBeNull()
+  expand.click()
+  const modal = document.body.querySelector('.interactive-chart-modal')
+  expect(modal).not.toBeNull()
+  expect(modal?.getAttribute('role')).toBe('dialog')
+  expect(document.body.querySelector('.interactive-chart-modal-canvas')).not.toBeNull()
+  // 原图 + 模态大图各渲染一次，模态复用同一份 figure 数据
+  expect(plot.newPlot).toHaveBeenCalledTimes(2)
+  expect(plot.newPlot.mock.calls[1][1]).toBe(figure.data)
+
+  document.body.querySelector<HTMLButtonElement>('.interactive-chart-modal-close')!.click()
+  expect(document.body.querySelector('.interactive-chart-modal')).toBeNull()
+  expect(plot.purge).toHaveBeenCalledOnce()
+  controller.destroy()
+})
+
+it('opens the expanded modal via keyboard on the chart', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ type: 'bar' }] }) })
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: fetcher as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+  const overlay = document.body.querySelector<HTMLElement>('.interactive-chart')!
+  expect(overlay.tabIndex).toBe(0)
+  overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  expect(document.body.querySelector('.interactive-chart-modal')).not.toBeNull()
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  expect(document.body.querySelector('.interactive-chart-modal')).toBeNull()
+  controller.destroy()
+})
+
 it('disposes stale instances when the editor replaces an image', async () => {
   const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
   const editor = document.querySelector<HTMLElement>('#editor')!

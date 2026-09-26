@@ -19,6 +19,11 @@ const CHART_FONT = '"Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-
 
 function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] {
   const merged: Record<string, unknown> = { ...layout }
+  // 尺寸交给容器：figure 自带的固定 width/height 会让大图模态
+  // 或容器尺寸变化时图表无法自适应，统一移除。
+  delete merged.width
+  delete merged.height
+  delete merged.autosize
   // 字体跟随编辑器；figure 自带 font 的其它属性（字号、颜色）保留。
   merged.font = { family: CHART_FONT, ...(layout?.font ?? {}) }
   // 收紧默认边距，让图表在容器边框内不显得拥挤；figure 自带边距优先。
@@ -61,7 +66,13 @@ export function createInteractiveCharts(
   dependencies: ChartDependencies = {},
 ) {
   const plotlyUrl = `${basePath}/asset/`
-  const active = new Map<HTMLImageElement, { node: HTMLElement; plot: PlotlyRenderer; resize?: ResizeObserver }>()
+  interface ActiveEntry {
+    node: HTMLElement
+    plot: PlotlyRenderer
+    figure: PlotlyFigure
+    resize?: ResizeObserver
+  }
+  const active = new Map<HTMLImageElement, ActiveEntry>()
   const pending = new Set<HTMLImageElement>()
   const failed = new WeakSet<HTMLImageElement>()
   let destroyed = false
@@ -109,6 +120,61 @@ export function createInteractiveCharts(
     entry.plot.purge(entry.node)
     entry.node.remove()
     active.delete(image)
+  }
+
+  function openExpanded(entry: ActiveEntry) {
+    if (destroyed) return
+    const overlay = document.createElement('div')
+    overlay.className = 'interactive-chart-modal'
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+    overlay.setAttribute('aria-label', entry.node.getAttribute('aria-label') ?? '交互图表大图')
+    const card = document.createElement('div')
+    card.className = 'interactive-chart-modal-card'
+    const closeButton = document.createElement('button')
+    closeButton.type = 'button'
+    closeButton.className = 'interactive-chart-modal-close'
+    closeButton.setAttribute('aria-label', '关闭大图')
+    closeButton.textContent = '×'
+    const canvas = document.createElement('div')
+    canvas.className = 'interactive-chart-modal-canvas'
+    card.append(closeButton, canvas)
+    overlay.append(card)
+    const close = () => {
+      entry.plot.purge(canvas)
+      overlay.remove()
+      document.removeEventListener('keydown', onKeydown)
+      if (document.contains(entry.node)) entry.node.focus()
+    }
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    document.addEventListener('keydown', onKeydown)
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close()
+    })
+    closeButton.addEventListener('click', close)
+    document.body.append(overlay)
+    void entry.plot.newPlot(canvas, entry.figure.data, beautifyLayout(entry.figure.layout), beautifyConfig(entry.figure.config))
+    closeButton.focus()
+  }
+
+  function attachExpandControl(entry: ActiveEntry) {
+    const expand = document.createElement('button')
+    expand.type = 'button'
+    expand.className = 'interactive-chart-expand'
+    expand.setAttribute('aria-label', '放大查看图表')
+    expand.title = '放大查看'
+    expand.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>'
+    expand.addEventListener('click', () => openExpanded(entry))
+    entry.node.append(expand)
+    entry.node.tabIndex = 0
+    entry.node.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        openExpanded(entry)
+      }
+    })
   }
 
   async function refresh() {
@@ -166,7 +232,9 @@ export function createInteractiveCharts(
           if (position(image, node)) plot.Plots.resize(node)
         })
         resize?.observe(image)
-        active.set(image, { node, plot, resize })
+        const entry = { node, plot, figure, resize }
+        attachExpandControl(entry)
+        active.set(image, entry)
         startTracking()
       } catch {
         node.remove()
