@@ -16,7 +16,7 @@ beforeEach(() => {
     ({ left: 20, top: 40, width: 300, height: 180, right: 320, bottom: 220, x: 20, y: 40, toJSON: () => ({}) })
 })
 
-it('renders a registered chart while preserving the image node and accessible fallback', async () => {
+it('renders a registered chart as a body overlay without mutating the editor image', async () => {
   const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
   const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ type: 'bar', x: [1], y: [2] }] }) })
   const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
@@ -30,24 +30,28 @@ it('renders a registered chart while preserving the image node and accessible fa
   expect(fetcher).toHaveBeenCalledWith(`${basePath}/asset/reports/revision-1/chart.plotly.json`, expect.objectContaining({ credentials: 'same-origin' }))
   expect(plot.newPlot).toHaveBeenCalledOnce()
   expect(document.querySelectorAll('#editor img')).toHaveLength(1)
-  // 覆盖层挂在 body 上，不进入编辑器 DOM，避免 ProseMirror 把它当作文档变更。
+  // 覆盖层挂在 body 上，不进入编辑器 DOM，也绝不修改 img 本身（包括 class），
+  // 避免 ProseMirror 把外部变更当作文档修改或按模型重绘形成渲染循环。
   expect(document.querySelector('#editor .interactive-chart')).toBeNull()
-  expect(document.body.querySelector('.interactive-chart')).not.toBeNull()
-  expect(document.querySelector('#editor img')?.classList.contains('interactive-chart-fallback')).toBe(true)
-  expect(document.body.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('收入趋势')
+  expect(document.querySelector('#editor img')?.classList.length).toBe(0)
+  expect(document.querySelector('#editor img')?.getAttribute('style')).toBeNull()
+  const overlay = document.body.querySelector('.interactive-chart')
+  expect(overlay).not.toBeNull()
+  expect(overlay?.getAttribute('aria-label')).toBe('收入趋势')
+  expect(overlay?.getAttribute('role')).toBe('img')
   controller.destroy()
   expect(plot.purge).toHaveBeenCalledOnce()
   expect(document.body.querySelector('.interactive-chart')).toBeNull()
-  expect(document.querySelector('#editor img')?.classList.contains('interactive-chart-fallback')).toBe(false)
+  expect(document.querySelector('#editor img')?.classList.length).toBe(0)
 })
 
-it('keeps the image visible when loading or rendering fails', async () => {
+it('leaves the image untouched when loading or rendering fails', async () => {
   const fetcher = vi.fn().mockRejectedValue(new Error('offline'))
   const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, { fetcher: fetcher as unknown as typeof fetch })
   const refreshPromise = controller.refresh()
   loadImages()
   await refreshPromise
-  expect(document.querySelector('#editor img')?.classList.contains('interactive-chart-fallback')).toBe(false)
+  expect(document.querySelector('#editor img')?.classList.length).toBe(0)
   expect(document.querySelector('.interactive-chart')).toBeNull()
   controller.destroy()
 })

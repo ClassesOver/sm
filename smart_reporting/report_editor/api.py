@@ -136,7 +136,7 @@ def create_report_editor_router(
                 raise HTTPException(status_code=503, detail={"code": "report_editor_unbuilt"})
             response = FileResponse(index, media_type="text/html")
             response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
                 "object-src 'none'; base-uri 'self'; form-action 'none'; "
                 "frame-ancestors 'none'"

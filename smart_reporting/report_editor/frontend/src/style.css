@@ -1827,13 +1827,10 @@ button {
   outline-offset: 3px;
 }
 
-#report-editor .ProseMirror img.interactive-chart-fallback {
-  visibility: hidden;
-}
-
 .interactive-chart {
   position: absolute;
   z-index: 5;
+  background: #fff;
 }
 
 @media (min-width: 769px) {
@@ -2869,10 +2866,6 @@ button {
   #report-editor .ProseMirror img,
   #report-editor .ProseMirror blockquote {
     break-inside: avoid;
-  }
-
-  #report-editor .ProseMirror img.interactive-chart-fallback {
-    visibility: visible;
   }
 
   .interactive-chart {

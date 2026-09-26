@@ -61,9 +61,23 @@ export function createInteractiveCharts(
       else cleanup(image)
     }
   }
-  // capture 阶段监听可同时捕获 body 滚动与内部滚动容器的滚动事件。
-  window.addEventListener('scroll', reposition, { passive: true, capture: true })
-  window.addEventListener('resize', reposition)
+  // 编辑器渐进渲染、字体加载、图片加载都会造成无事件触发的布局漂移，
+  // 只用 scroll/resize 事件会在瞬态布局下留下错位的覆盖层。
+  // 用 rAF 循环持续把覆盖层钉在图片上，无活动图表时自动停止。
+  let rafId: number | undefined
+  function tick() {
+    reposition()
+    if (destroyed || active.size === 0) {
+      rafId = undefined
+      return
+    }
+    rafId = requestAnimationFrame(tick)
+  }
+  function startTracking() {
+    if (rafId === undefined && active.size > 0 && !destroyed) {
+      rafId = requestAnimationFrame(tick)
+    }
+  }
 
   function cleanup(image: HTMLImageElement) {
     const entry = active.get(image)
@@ -71,7 +85,6 @@ export function createInteractiveCharts(
     entry.resize?.disconnect()
     entry.plot.purge(entry.node)
     entry.node.remove()
-    image.classList.remove('interactive-chart-fallback')
     active.delete(image)
   }
 
@@ -115,8 +128,10 @@ export function createInteractiveCharts(
         const plot = await loadPlotly()
         if (destroyed || !root.contains(image)) return
         if (!position(image, node)) return
-        // 覆盖层挂在 body：不改动 ProseMirror 管理的编辑器 DOM，
-        // 否则编辑器会把外部 DOM 变更当成文档修改，触发脏状态与自动保存。
+        // 覆盖层挂在 body 并以白底遮盖原图，完全不改动 ProseMirror 管理的
+        // 编辑器 DOM（包括 img 的 class）：否则 ProseMirror 会把外部变更当成
+        // 文档修改触发自动保存，或按文档模型重绘 img 形成“改 class → 重绘 →
+        // 再改 class”的渲染循环，页面布局持续抖动、图表错位。
         document.body.append(node)
         await plot.newPlot(node, figure.data, figure.layout, { ...figure.config, responsive: true })
         if (destroyed || !root.contains(image)) {
@@ -124,12 +139,12 @@ export function createInteractiveCharts(
           node.remove()
           return
         }
-        image.classList.add('interactive-chart-fallback')
         const resize = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
           if (position(image, node)) plot.Plots.resize(node)
         })
         resize?.observe(image)
         active.set(image, { node, plot, resize })
+        startTracking()
       } catch {
         node.remove()
       } finally {
@@ -145,8 +160,10 @@ export function createInteractiveCharts(
     destroy() {
       destroyed = true
       observer.disconnect()
-      window.removeEventListener('scroll', reposition, { capture: true })
-      window.removeEventListener('resize', reposition)
+      if (rafId !== undefined) {
+        cancelAnimationFrame(rafId)
+        rafId = undefined
+      }
       for (const image of active.keys()) cleanup(image)
     },
   }
