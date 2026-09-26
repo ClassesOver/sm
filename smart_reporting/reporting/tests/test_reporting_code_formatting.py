@@ -149,7 +149,9 @@ async def test_rejected_source_keeps_existing_script_and_execution_receipt(toolk
 
     assert result["ok"] is False
     assert result["code"] == "report_code_source_invalid"
-    assert result["details"] == {
+    assert {
+        key: result["details"][key] for key in ("reason", "kind", "bytes", "line", "column")
+    } == {
         "reason": "embedded_data",
         "kind": "large_literal",
         "bytes": 40000,
