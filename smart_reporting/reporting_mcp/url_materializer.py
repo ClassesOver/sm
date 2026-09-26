@@ -21,6 +21,23 @@ from .contracts import ReportingUrlAttachment
 MAX_MCP_ATTACHMENT_BYTES = min(MAX_UPLOAD_BYTES, 50 * 1024 * 1024)
 MAX_MCP_ATTACHMENTS_TOTAL_BYTES = 200 * 1024 * 1024
 _DOWNLOAD_CONCURRENCY = 2
+# 255 字节文件名上限，预留 "{index}-" 前缀。
+_MAX_FILENAME_BYTES = 240
+_NAT64_NETWORKS = (
+    ipaddress.IPv6Network("64:ff9b::/96"),
+    ipaddress.IPv6Network("64:ff9b:1::/48"),
+)
+_IPV4_COMPATIBLE_NETWORK = ipaddress.IPv6Network("::/96")
+
+
+def _embedded_ipv4_is_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """NAT64 与 IPv4 兼容地址被 ipaddress 视为公网，但实际会路由到内嵌的 IPv4。"""
+
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return True
+    if any(ip in network for network in (*_NAT64_NETWORKS, _IPV4_COMPATIBLE_NETWORK)):
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF).is_global
+    return True
 
 
 class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
@@ -289,7 +306,11 @@ class UrlMaterializer:
             raise ReportingError(
                 "report_attachment_type_unsupported", "Reporting URL 附件仅支持 CSV。"
             )
-        return name if len(name) <= 255 else f"{name[:251]}.csv"
+        # 文件系统限制的是字节数；落盘名还带有 "{index}-" 前缀，按 UTF-8 字节截断。
+        stem = name[: -len(".csv")]
+        while len(f"{stem}.csv".encode()) > _MAX_FILENAME_BYTES:
+            stem = stem[:-1]
+        return f"{stem}.csv"
 
     @staticmethod
     def _validate_url(value: str):
@@ -318,7 +339,7 @@ class UrlMaterializer:
                 raise ReportingError(
                     "report_attachment_url_unreachable", "报表附件 URL 解析结果无效。"
                 ) from error
-            if not ip.is_global:
+            if not ip.is_global or not _embedded_ipv4_is_global(ip):
                 raise ReportingError(
                     "report_attachment_url_forbidden", "报表附件 URL 指向受限地址。"
                 )
