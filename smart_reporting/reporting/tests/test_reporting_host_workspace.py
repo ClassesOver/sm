@@ -164,9 +164,7 @@ def test_reporting_agent_tools_are_session_scoped_without_duplicate_names(
     ):
         assert tools[0] is expected_workspace
         names = {
-            name
-            for toolkit in tools
-            for name in (*toolkit.functions, *toolkit.async_functions)
+            name for toolkit in tools for name in (*toolkit.functions, *toolkit.async_functions)
         }
         assert expected_native_names <= names
         assert "inspect_chart" not in names
@@ -235,8 +233,6 @@ def test_path_mapper_rejects_symlink_parent(tmp_path: Path) -> None:
         ReportingPathMapper(tmp_path).to_host_path("linked/result.json")
 
 
-
-
 @pytest.mark.anyio
 async def test_host_workspace_writes_reads_and_hashes_regular_file(tmp_path: Path) -> None:
     workspace = _host_workspace(tmp_path)
@@ -262,9 +258,7 @@ async def test_host_workspace_create_and_cas_detect_file_changes(tmp_path: Path)
     await workspace.awrite_bytes("workspace-1", "facts/a.json", b"first")
 
     with pytest.raises(WorkspacePathConflict):
-        await workspace.awrite_bytes(
-            "workspace-1", "facts/a.json", b"duplicate", overwrite=False
-        )
+        await workspace.awrite_bytes("workspace-1", "facts/a.json", b"duplicate", overwrite=False)
     with pytest.raises(WorkspacePathConflict):
         await workspace.awrite_bytes(
             "workspace-1",
@@ -329,9 +323,7 @@ async def test_host_workspace_moves_and_deletes_directories(tmp_path: Path) -> N
     await workspace.awrite_text("workspace-1", "staging/report.md", "report")
 
     await workspace.amove_files("workspace-1", "staging", "reports/revision-1")
-    assert await workspace.aread_text(
-        "workspace-1", "reports/revision-1/report.md"
-    ) == "report"
+    assert await workspace.aread_text("workspace-1", "reports/revision-1/report.md") == "report"
 
     await workspace.adelete_file("workspace-1", "reports/revision-1", recursive=True)
     assert not (workspace.identity.root / "reports/revision-1").exists()
@@ -518,9 +510,9 @@ async def test_runtime_resolves_parent_workspace_from_stored_scope_in_child_cont
     )
 
     assert child is parent
-    assert await child.aread_text(
-        child.identity.workspace_key, "datasets/input.csv"
-    ) == "value\n1\n"
+    assert (
+        await child.aread_text(child.identity.workspace_key, "datasets/input.csv") == "value\n1\n"
+    )
 
 
 @pytest.mark.anyio
@@ -617,3 +609,95 @@ async def test_reporting_runtime_workspace_adapter_inspects_plotly_file(tmp_path
     assert result["size"] == len(content)
     assert result["sha256"] == hashlib.sha256(content).hexdigest()
     assert result["traceCount"] == 1
+
+
+def _host_workspace(tmp_path: Path) -> HostReportingWorkspace:
+    registry = ReportingWorkspaceRegistry(tmp_path, secret=SECRET)
+    return HostReportingWorkspace(
+        registry.resolve(_scope(run_id="run-1", workspace_key="workspace-1"))
+    )
+
+
+def _alive(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # 已退出但尚未被 init 回收的僵尸进程视为已终止。
+    status = Path(f"/proc/{pid}/status")
+    return not (status.exists() and "State:\tZ" in status.read_text())
+
+
+@pytest.mark.anyio
+async def test_host_run_command_keeps_agno_output_protocol(tmp_path: Path) -> None:
+    workspace = _host_workspace(tmp_path)
+
+    ok = await workspace.arun_command(
+        "t", ["bash", "-c", "printf '1\\n2\\n3\\n'"], timeout=10, tail=2
+    )
+    failed = await workspace.arun_command("t", ["bash", "-c", "echo boom >&2; exit 3"], timeout=10)
+
+    assert ok == "2\n3"
+    assert failed == "Error (exit 3): boom"
+
+
+@pytest.mark.anyio
+async def test_host_run_command_timeout_kills_grandchildren(tmp_path: Path) -> None:
+    import asyncio
+
+    workspace = _host_workspace(tmp_path)
+    pid_file = workspace.identity.root / "grandchild.pid"
+    script = f"sleep 60 & echo $! > {pid_file}; wait"
+
+    result = await workspace.arun_command("t", ["bash", "-c", script], timeout=1)
+
+    assert result == "Error: command timed out after 1 seconds"
+    grandchild = int(pid_file.read_text())
+    for _attempt in range(50):
+        if not _alive(grandchild):
+            break
+        await asyncio.sleep(0.05)
+    assert not _alive(grandchild)
+
+
+@pytest.mark.anyio
+async def test_host_run_command_cancellation_kills_process_group(tmp_path: Path) -> None:
+    import asyncio
+
+    workspace = _host_workspace(tmp_path)
+    pid_file = workspace.identity.root / "grandchild.pid"
+    script = f"sleep 60 & echo $! > {pid_file}; wait"
+    task = asyncio.create_task(workspace.arun_command("t", ["bash", "-c", script], timeout=60))
+    for _attempt in range(100):
+        if pid_file.exists() and pid_file.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    grandchild = int(pid_file.read_text())
+    for _attempt in range(50):
+        if not _alive(grandchild):
+            break
+        await asyncio.sleep(0.05)
+    assert not _alive(grandchild)
+
+
+@pytest.mark.anyio
+async def test_host_write_locks_are_released_after_use(tmp_path: Path) -> None:
+    import asyncio
+
+    workspace = _host_workspace(tmp_path)
+
+    await asyncio.gather(
+        *(
+            workspace.awrite_bytes("t", f"data/file-{index % 3}.txt", b"x", overwrite=True)
+            for index in range(9)
+        )
+    )
+
+    assert workspace._write_locks == {}
