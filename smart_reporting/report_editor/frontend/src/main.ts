@@ -247,7 +247,10 @@ try {
   replaceEditorMarkdown = (markdown) => crepe.editor.action(replaceAll(markdown))
   await crepe.create()
   crepe.on((listener) => {
-    listener.markdownUpdated((_ctx, markdown) => {
+    listener.markdownUpdated((_ctx, serialized) => {
+      // Milkdown 序列化会把协议标记转义为 \[\[...]]；变更检测、本地草稿和保存必须
+      // 统一使用还原后的 Markdown，否则服务端导出找不到章节标识。
+      const markdown = restoreProtocolMarkers(serialized)
       if (metricsLabel) metricsLabel.textContent = documentMetrics(markdown)
       if (outlineFrame !== undefined) window.cancelAnimationFrame(outlineFrame)
       outlineFrame = window.requestAnimationFrame(() => {
@@ -350,7 +353,7 @@ try {
       if (currentMarkdown !== lastSavedMarkdown) return saveNow()
       return
     }
-    const markdown = crepe.getMarkdown()
+    const markdown = getEditorMarkdown()
     currentMarkdown = markdown
     if (markdown === lastSavedMarkdown) return
     status('保存中', 'busy')
@@ -438,7 +441,7 @@ try {
     setActionsDisabled(true)
     status(`准备导出 ${formatLabel}`, 'busy')
     try {
-      const warnings = reportPreflight(crepe.getMarkdown(), shell.editor)
+      const warnings = reportPreflight(getEditorMarkdown(), shell.editor)
       if (warnings.length) {
         const proceed = await new Promise<boolean>((resolve) => showPreflightPanel(root!, warnings, resolve))
         if (!proceed) return

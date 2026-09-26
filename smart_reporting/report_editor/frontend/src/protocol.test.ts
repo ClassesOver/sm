@@ -47,3 +47,28 @@ describe('report protocol markers', () => {
     )
   })
 })
+
+describe('Milkdown serialization of protocol markers', () => {
+  it('restores the markers Milkdown escapes before they are saved', async () => {
+    const { Editor, defaultValueCtx, rootCtx } = await import('@milkdown/kit/core')
+    const { commonmark } = await import('@milkdown/kit/preset/commonmark')
+    const { getMarkdown } = await import('@milkdown/kit/utils')
+    const root = document.createElement('div')
+    document.body.append(root)
+    const source = '# 报告\n\n[[section:finance_1]]\n\n## 1. 概览\n\n正文[[citation:c_1]]。\n'
+    const editor = await Editor.make()
+      .config((ctx) => {
+        ctx.set(rootCtx, root)
+        ctx.set(defaultValueCtx, source)
+      })
+      .use(commonmark)
+      .create()
+
+    const serialized = editor.action(getMarkdown())
+
+    expect(serialized).toContain('\\[\\[section:finance\\_1]]')
+    expect(restoreProtocolMarkers(serialized)).toBe(source)
+    await editor.destroy()
+    root.remove()
+  })
+})
