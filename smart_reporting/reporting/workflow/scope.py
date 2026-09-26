@@ -89,13 +89,9 @@ def resolve_reporting_workflow_scope(
     company_id = str(stored.get("companyId") or dependency.get("companyId") or "")
     effective_user_id = str(user_id or stored.get("userId") or "")
     effective_session_id = str(session_id or stored.get("sessionId") or "")
-    external_run_id = str(
-        stored.get("externalRunId") or dependency.get("externalRunId") or run_id
-    )
+    external_run_id = str(stored.get("externalRunId") or dependency.get("externalRunId") or run_id)
     caller_thread_id = str(
-        stored.get("callerThreadId")
-        or dependency.get("threadId")
-        or effective_session_id
+        stored.get("callerThreadId") or dependency.get("threadId") or effective_session_id
     )
 
     token = get_access_token()
@@ -113,13 +109,21 @@ def resolve_reporting_workflow_scope(
             str(value) for value in claim_values
         )
         if database and database != token_database:
-            raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 租户作用域不一致。")
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "Reporting Workflow 租户作用域不一致。"
+            )
         if company_id and company_id != token_company:
-            raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 公司作用域不一致。")
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "Reporting Workflow 公司作用域不一致。"
+            )
         if effective_user_id and effective_user_id != token_user:
-            raise ReportingError("report_workflow_scope_mismatch", "Reporting Workflow 用户作用域不一致。")
+            raise ReportingError(
+                "report_workflow_scope_mismatch", "Reporting Workflow 用户作用域不一致。"
+            )
         if caller_thread_id and caller_thread_id != token_thread:
-            raise ReportingError("report_mcp_thread_mismatch", "MCP session_id 与 capability thread 不一致。")
+            raise ReportingError(
+                "report_mcp_thread_mismatch", "MCP session_id 与 capability thread 不一致。"
+            )
         database = token_database
         company_id = token_company
         effective_user_id = token_user

@@ -61,7 +61,12 @@ class KnowledgeDocument:
         if self.kind == _STATIC_KIND:
             if any(
                 value is not None
-                for value in (self.workspace_key, self.task_kind, self.error_code, self.source_sha256)
+                for value in (
+                    self.workspace_key,
+                    self.task_kind,
+                    self.error_code,
+                    self.source_sha256,
+                )
             ):
                 raise ValueError("静态知识不得包含 workspace 或修复元数据")
             return
@@ -73,7 +78,9 @@ class KnowledgeDocument:
         ):
             raise ValueError("修复知识必须包含 workspace、任务、错误码和源码哈希")
         source_sha256 = self.source_sha256 or ""
-        if len(source_sha256) != 64 or any(char not in "0123456789abcdef" for char in source_sha256):
+        if len(source_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in source_sha256
+        ):
             raise ValueError("source_sha256 必须是小写 SHA-256")
 
     @property
@@ -128,7 +135,9 @@ class ReportingKnowledgeIndex:
             connection = self._connection_or_raise()
             return self._upsert_document(connection, document)
 
-    async def index_static_documents(self, documents_root: str | Path) -> tuple[KnowledgeWriteReceipt, ...]:
+    async def index_static_documents(
+        self, documents_root: str | Path
+    ) -> tuple[KnowledgeWriteReceipt, ...]:
         root = Path(documents_root)
         documents = tuple(sorted(root.glob("*.md")))
         receipts: list[KnowledgeWriteReceipt] = []
@@ -138,7 +147,9 @@ class ReportingKnowledgeIndex:
             except OSError as error:
                 logger.warning("无法读取静态知识文档: {}", path.name)
                 raise KnowledgeIndexError("无法读取静态知识文档") from error
-            receipts.append(await self.upsert_document(KnowledgeDocument.static(path.name, content)))
+            receipts.append(
+                await self.upsert_document(KnowledgeDocument.static(path.name, content))
+            )
         return tuple(receipts)
 
     async def record_successful_repair(
@@ -245,7 +256,8 @@ class ReportingKnowledgeIndex:
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT content_sha256 FROM knowledge_documents WHERE identity = ?", (document.identity,)
+                "SELECT content_sha256 FROM knowledge_documents WHERE identity = ?",
+                (document.identity,),
             ).fetchone()
             changed = existing is None or existing["content_sha256"] != content_sha256
             if changed:
@@ -276,7 +288,9 @@ class ReportingKnowledgeIndex:
                         content_sha256,
                     ),
                 )
-                connection.execute("DELETE FROM knowledge_fts WHERE identity = ?", (document.identity,))
+                connection.execute(
+                    "DELETE FROM knowledge_fts WHERE identity = ?", (document.identity,)
+                )
                 connection.execute(
                     "INSERT INTO knowledge_fts(identity, content) VALUES (?, ?)",
                     (document.identity, document.content),
@@ -295,7 +309,9 @@ class ReportingKnowledgeIndex:
     @staticmethod
     def _visibility_clause(workspace_key: str | None) -> tuple[str, tuple[str, ...]]:
         if workspace_key:
-            return "(d.kind = 'static' OR (d.kind = 'repair' AND d.workspace_key = ?))", (workspace_key,)
+            return "(d.kind = 'static' OR (d.kind = 'repair' AND d.workspace_key = ?))", (
+                workspace_key,
+            )
         return "d.kind = 'static'", ()
 
     def _search_fts(

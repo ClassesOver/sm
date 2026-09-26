@@ -113,7 +113,10 @@ def _write_frozen_bundle(
     required_charts=None,
     declared_outputs=("charts/chart.png",),
 ) -> None:
-    planner_request = {"sectionCode": "section-1", **({"variant": "legacy"} if embed_variant else {})}
+    planner_request = {
+        "sectionCode": "section-1",
+        **({"variant": "legacy"} if embed_variant else {}),
+    }
     if required_charts is not None:
         planner_request["requiredCharts"] = required_charts
     files = {
@@ -462,9 +465,7 @@ def test_adapted_legacy_visualization_binding_mismatch_autocorrects_without_rais
     finally:
         logger.remove(sink)
 
-    events = [
-        r for r in records if "report_visualization_binding_autocorrected" in r["message"]
-    ]
+    events = [r for r in records if "report_visualization_binding_autocorrected" in r["message"]]
     assert len(events) == 1
     assert events[0]["level"].name == "WARNING"
     details = events[0]["message"]
@@ -651,16 +652,18 @@ def test_prepare_frozen_planner_coding_bundle_round_trip(tmp_path) -> None:
             ],
         },
     }
-    model_config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "medium",
-        "reasoningSummary": "auto",
-        "enableThinkingLocation": "top_level",
-        "enableThinking": True,
-        "maxOutputTokens": None,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    model_config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "medium",
+            "reasoningSummary": "auto",
+            "enableThinkingLocation": "top_level",
+            "enableThinking": True,
+            "maxOutputTokens": None,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
 
     prepared = prepare_frozen_planner_coding_bundle(
         bundle,
@@ -673,13 +676,9 @@ def test_prepare_frozen_planner_coding_bundle_round_trip(tmp_path) -> None:
     manifest, payloads = validate_frozen_planner_coding_bundle(bundle)
 
     assert prepared == manifest
-    assert payloads["executionContext"]["codingPayload"]["task"][
-        "workspace_root"
-    ] == "workspace"
+    assert payloads["executionContext"]["codingPayload"]["task"]["workspace_root"] == "workspace"
     assert manifest.inputs[0].path == "workspace/datasets/current.csv"
-    assert (bundle / manifest.inputs[0].path).read_text(encoding="utf-8") == (
-        "income\n100\n"
-    )
+    assert (bundle / manifest.inputs[0].path).read_text(encoding="utf-8") == ("income\n100\n")
 
 
 @pytest.mark.parametrize(
@@ -897,16 +896,18 @@ def test_validate_analysis_bundle_rejects_dataset_identity_mismatch(
 
 
 def test_prepare_frozen_bundle_rejects_planner_output_in_base_facts(tmp_path) -> None:
-    model_config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "medium",
-        "reasoningSummary": "auto",
-        "enableThinkingLocation": "omitted",
-        "enableThinking": None,
-        "maxOutputTokens": None,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    model_config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "medium",
+            "reasoningSummary": "auto",
+            "enableThinkingLocation": "omitted",
+            "enableThinking": None,
+            "maxOutputTokens": None,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
     coding_payload = {
         "task": {
             "task_id": "analysis-001",
@@ -1042,23 +1043,29 @@ def test_analysis_benchmark_rejects_planner_that_does_not_require_coding() -> No
 
 def test_visualization_benchmark_reports_output_path_differences() -> None:
     plan_payload = _legacy_visualization_plan().model_dump(mode="json", by_alias=True)
-    plan_payload["charts"][0].update({
-        "visualForm": "按月折线图",
-        "dataBindings": [{
-            "analysisId": "analysis-1",
-            "factPath": "facts/analysis-1.json",
-            "dataPath": "metrics[0].periodValues",
-            "fields": ["period", "value"],
-            "role": "月度趋势",
-        }],
-    })
-    execution = {"codingPayload": {
-        "task": {
-            "task_kind": "visualization",
-            "declared_output_paths": ["charts/z.png", "charts/a.png"],
-        },
-        "facts": {"visualizationFacts": []},
-    }}
+    plan_payload["charts"][0].update(
+        {
+            "visualForm": "按月折线图",
+            "dataBindings": [
+                {
+                    "analysisId": "analysis-1",
+                    "factPath": "facts/analysis-1.json",
+                    "dataPath": "metrics[0].periodValues",
+                    "fields": ["period", "value"],
+                    "role": "月度趋势",
+                }
+            ],
+        }
+    )
+    execution = {
+        "codingPayload": {
+            "task": {
+                "task_kind": "visualization",
+                "declared_output_paths": ["charts/z.png", "charts/a.png"],
+            },
+            "facts": {"visualizationFacts": []},
+        }
+    }
 
     with pytest.raises(ReportingError, match="图表输出路径") as caught:
         prepare_benchmark_coding_payload(
@@ -1074,33 +1081,40 @@ def test_visualization_benchmark_reports_output_path_differences() -> None:
         "unexpectedPaths": ["charts/chart-1.png"],
     }
     assert execution["codingPayload"]["task"]["declared_output_paths"] == [
-        "charts/z.png", "charts/a.png",
+        "charts/z.png",
+        "charts/a.png",
     ]
 
 
 def _candidate_visualization_plan_payload() -> dict:
     plan_payload = _legacy_visualization_plan().model_dump(mode="json", by_alias=True)
-    plan_payload["charts"][0].update({
-        "visualForm": "按月折线图",
-        "dataBindings": [{
-            "analysisId": "analysis-1",
-            "factPath": "facts/analysis-1.json",
-            "dataPath": "metrics[0].periodValues",
-            "fields": ["period", "value"],
-            "role": "月度趋势",
-        }],
-    })
+    plan_payload["charts"][0].update(
+        {
+            "visualForm": "按月折线图",
+            "dataBindings": [
+                {
+                    "analysisId": "analysis-1",
+                    "factPath": "facts/analysis-1.json",
+                    "dataPath": "metrics[0].periodValues",
+                    "fields": ["period", "value"],
+                    "role": "月度趋势",
+                }
+            ],
+        }
+    )
     return plan_payload
 
 
 def _visualization_execution(declared=("charts/chart-1.png",)) -> dict:
-    return {"codingPayload": {
-        "task": {
-            "task_kind": "visualization",
-            "declared_output_paths": list(declared),
-        },
-        "facts": {"visualizationFacts": []},
-    }}
+    return {
+        "codingPayload": {
+            "task": {
+                "task_kind": "visualization",
+                "declared_output_paths": list(declared),
+            },
+            "facts": {"visualizationFacts": []},
+        }
+    }
 
 
 def test_visualization_benchmark_accepts_plan_matching_required_charts() -> None:
@@ -1279,11 +1293,13 @@ def test_visualization_benchmark_rejects_malformed_required_charts_entry(
 
 
 def test_visualization_benchmark_identity_gate_accepts_mapping_planner_request() -> None:
-    planner_request = MappingProxyType({
-        "requiredCharts": [
-            {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
-        ],
-    })
+    planner_request = MappingProxyType(
+        {
+            "requiredCharts": [
+                {"chartId": "chart-1", "sourcePath": "charts/chart-1.png", "interactivePath": None}
+            ],
+        }
+    )
 
     payload = prepare_benchmark_coding_payload(
         task_kind="visualization",

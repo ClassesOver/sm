@@ -169,21 +169,25 @@ def _reject_source(message: str, details: Mapping[str, Any] | None = None) -> No
 
 def _looks_like_code_text(value: str) -> bool:
     stripped = value.lstrip()
-    return "\n" in value or stripped.startswith(
-        (
-            "import ",
-            "from ",
-            "def ",
-            "class ",
-            "if ",
-            "for ",
-            "while ",
-            "try:",
-            "with ",
-            "print(",
-            "%%bash",
+    return (
+        "\n" in value
+        or stripped.startswith(
+            (
+                "import ",
+                "from ",
+                "def ",
+                "class ",
+                "if ",
+                "for ",
+                "while ",
+                "try:",
+                "with ",
+                "print(",
+                "%%bash",
+            )
         )
-    ) or any(token in value for token in ("=", "(", ")", ";"))
+        or any(token in value for token in ("=", "(", ")", ";"))
+    )
 
 
 def _reject_code_envelope(tree: ast.Module, tool_name: str) -> None:
@@ -224,7 +228,9 @@ def _reject_code_envelope(tree: ast.Module, tool_name: str) -> None:
     # 数字、普通文字、字典等数据仍可直接求值；语句、调用和运算说明内部是代码。
     executable = any(
         (isinstance(node, ast.stmt) and not isinstance(node, ast.Expr))
-        or isinstance(node, (ast.Call, ast.Await, ast.NamedExpr, ast.BinOp, ast.BoolOp, ast.Compare))
+        or isinstance(
+            node, (ast.Call, ast.Await, ast.NamedExpr, ast.BinOp, ast.BoolOp, ast.Compare)
+        )
         for node in ast.walk(tree)
     )
     if wrapper_keys and executable:
@@ -233,8 +239,12 @@ def _reject_code_envelope(tree: ast.Module, tool_name: str) -> None:
             f"{tool_name} 需要原始代码文本，但收到包含代码的字典包装。"
             "本次未执行代码或写入脚本。请直接重新调用，输入原始 Python/cell 文本，"
             '不要添加 {"data": ...}、{"code": ...}、{"source": ...} 或 Markdown 围栏。',
-            details={"reason": "code_envelope", "tool": tool_name,
-                     "wrapperKeys": wrapper_keys, "nextTools": [tool_name]},
+            details={
+                "reason": "code_envelope",
+                "tool": tool_name,
+                "wrapperKeys": wrapper_keys,
+                "nextTools": [tool_name],
+            },
         )
 
 
@@ -333,7 +343,7 @@ def _call_path_arguments(call: ast.Call, qualified_name: str) -> list[ast.AST]:
     """调用中承载路径的实参：按签名取位置参数，并加上路径关键字参数。"""
 
     position = _PATH_ARGUMENT_POSITION.get(qualified_name, 0)
-    arguments: list[ast.AST] = [*call.args[position:position + 1]]
+    arguments: list[ast.AST] = [*call.args[position : position + 1]]
     arguments.extend(
         keyword.value for keyword in call.keywords if keyword.arg in _PATH_ARGUMENT_KEYWORDS
     )
@@ -384,9 +394,7 @@ def _resolved_path_literal(
     seen: frozenset[str] = frozenset(),
 ) -> str | None:
     if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
-        return _resolved_path_literal(
-            bindings[node.id], aliases, bindings, seen | {node.id}
-        )
+        return _resolved_path_literal(bindings[node.id], aliases, bindings, seen | {node.id})
     literal = _literal_string(node, bindings)
     if literal is not None:
         return _normalize_literal_path(literal)
@@ -502,7 +510,7 @@ def _reject_output_write_contract(tree: ast.Module, declared_paths: tuple[str, .
         f'import json\nOUT = "{first_output}"\n'
         'data = json.load(open("<task 签发的 factFile 字面路径>", encoding="utf-8"))\n'
         'rows = data["metrics"][0]["periodValues"]\n'
-        "import matplotlib\nmatplotlib.use(\"Agg\")\nimport matplotlib.pyplot as plt\n"
+        'import matplotlib\nmatplotlib.use("Agg")\nimport matplotlib.pyplot as plt\n'
         'plt.plot([r["value"] for r in rows])\nplt.savefig(OUT)\n'
         "每张图的真实绘制都必须落盘到各自的签发输出路径。",
         details={"declaredOutputCount": len(declared), "detectedOutputWrites": []},
@@ -645,7 +653,9 @@ def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -
         interactive: str | None = path
     else:
         image = path
-        interactive = interactive_spec_path(path) if interactive_spec_path(path) in declared_paths else None
+        interactive = (
+            interactive_spec_path(path) if interactive_spec_path(path) in declared_paths else None
+        )
     if interactive is not None:
         lines = [f"fig.write_image({image!r})"] if image is not None else []
         return "\n".join([*lines, f"fig.write_json({interactive!r})"])
@@ -657,7 +667,9 @@ def _declared_output_write_example(path: str, declared_paths: tuple[str, ...]) -
     )
 
 
-def _output_write_warning(tree: ast.Module, declared_paths: tuple[str, ...]) -> dict[str, str] | None:
+def _output_write_warning(
+    tree: ast.Module, declared_paths: tuple[str, ...]
+) -> dict[str, str] | None:
     declared = frozenset(declared_paths)
     if not declared or not _declared_output_literals(tree, declared):
         return None
@@ -695,9 +707,13 @@ def _embedded_data_details(tree: ast.AST) -> dict[str, Any] | None:
             continue
         literal_bytes = 0
         for child in ast.walk(node):
-            if isinstance(child, ast.Constant) and isinstance(child.value, (str, bytes, int, float)):
+            if isinstance(child, ast.Constant) and isinstance(
+                child.value, (str, bytes, int, float)
+            ):
                 value = child.value
-                literal_bytes += len(value if isinstance(value, bytes) else str(value).encode("utf-8"))
+                literal_bytes += len(
+                    value if isinstance(value, bytes) else str(value).encode("utf-8")
+                )
                 if literal_bytes > MAX_INLINE_COLLECTION_BYTES:
                     return {
                         "kind": "large_collection",
@@ -954,7 +970,11 @@ def _findings_decoder_root(node: ast.AST, parameters: set[str]) -> str | None:
         return None
     innermost = chain[-1]
     key = innermost.slice
-    if not isinstance(key, ast.Constant) or not isinstance(key.value, str) or key.value != "findings":
+    if (
+        not isinstance(key, ast.Constant)
+        or not isinstance(key.value, str)
+        or key.value != "findings"
+    ):
         return None
     if not isinstance(current, ast.Name) or current.id not in parameters:
         return None
@@ -1040,9 +1060,7 @@ def _generic_data_helper_details(tree: ast.AST) -> dict[str, Any] | None:
         for item in scope:
             if isinstance(item, ast.Return) and item.value is not None:
                 if _is_load_expression(item.value, aliases, derived, loaded_sources):
-                    source = _path_source_parameter(
-                        item.value, aliases, derived, loaded_sources
-                    )
+                    source = _path_source_parameter(item.value, aliases, derived, loaded_sources)
                     if source is None and isinstance(item.value, ast.Name):
                         source = loaded_sources.get(item.value.id)
                     return {
@@ -1151,9 +1169,7 @@ def _is_placeholder_script(
 
     if task_kind == "visualization":
         viz_roots = {"matplotlib", "plotly", "seaborn"}
-        if any(
-            module.split(".")[0] in viz_roots for module in aliases.values()
-        ) or any(
+        if any(module.split(".")[0] in viz_roots for module in aliases.values()) or any(
             isinstance(node, ast.Import)
             and any(alias.name.split(".")[0] in viz_roots for alias in node.names)
             for node in ast.walk(tree)
@@ -1211,7 +1227,10 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
                 continue
             parts: set[str] = set()
             left = _literal_string(node.left, bindings)
-            if isinstance(node.left, ast.Call) and _qualified_name(node.left.func, aliases) == "pathlib.Path":
+            if (
+                isinstance(node.left, ast.Call)
+                and _qualified_name(node.left.func, aliases) == "pathlib.Path"
+            ):
                 left = _literal_string(node.left.args[0], bindings) if node.left.args else None
             right = _literal_string(node.right, bindings)
             if left is not None:
@@ -1242,7 +1261,9 @@ def _reject_unauthorized_paths(tree: ast.AST, path: str, authorized_paths: froze
                 "path": path,
                 "unsignedPaths": sorted(unsigned)[:20],
                 "forbiddenPathOperations": sorted(forbidden),
-                **({"line": min(lines), "violationLines": sorted(set(lines))[:20]} if lines else {}),
+                **(
+                    {"line": min(lines), "violationLines": sorted(set(lines))[:20]} if lines else {}
+                ),
             },
         )
 
@@ -1372,9 +1393,7 @@ def _collect_preflight(
         ),
     ]
     if context.task_kind == "visualization":
-        checks.append(
-            lambda: _reject_output_write_contract(tree, context.declared_output_paths)
-        )
+        checks.append(lambda: _reject_output_write_contract(tree, context.declared_output_paths))
     violations: list[ReportingError] = []
     for check in checks:
         try:
@@ -1418,20 +1437,72 @@ def _failure(code: str, message: str, details: Mapping[str, Any] | None = None) 
 
 def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
     allowed = (
-        "path", "line", "column", "endLine", "endColumn", "sourceLine", "reason",
-        "errorType", "retryable", "unsignedPaths", "forbiddenPathOperations",
-        "traceback", "result", "stderr", "stdout", "issueSummary",
-        "used", "limit", "requiredNextTools", "nextTools", "kind", "bytes", "items",
-        "actualBytes", "limitBytes", "missingPaths", "presentPaths", "exitCode", "escalated",
-        "status", "validationRunId", "executionRunId", "sourceSha256",
-        "currentSha256", "expectedSha256", "action", "readRange",
-        "sourceExcerpt", "sourceStartLine", "sourceEndLine", "errorLine", "blockIndex",
-        "variableSummary", "explorationVariables", "allowedEditRegion", "forbiddenEditRegions",
-        "isPlaceholderScript", "allDeclaredOutputsMissing", "declaredOutputCount",
-        "detectedOutputWrites", "functionName", "parameterName",
-        "violations", "draftSha256", "violationLines", "writeExample",
-        "notReferencedPaths", "writeNotExecutedPaths", "unresolvedWritePaths", "outputHint",
-        "hint", "totalLines", "patchFormat", "expectedPath", "anchor", "declaredImagePaths",
+        "path",
+        "line",
+        "column",
+        "endLine",
+        "endColumn",
+        "sourceLine",
+        "reason",
+        "errorType",
+        "retryable",
+        "unsignedPaths",
+        "forbiddenPathOperations",
+        "traceback",
+        "result",
+        "stderr",
+        "stdout",
+        "issueSummary",
+        "used",
+        "limit",
+        "requiredNextTools",
+        "nextTools",
+        "kind",
+        "bytes",
+        "items",
+        "actualBytes",
+        "limitBytes",
+        "missingPaths",
+        "presentPaths",
+        "exitCode",
+        "escalated",
+        "status",
+        "validationRunId",
+        "executionRunId",
+        "sourceSha256",
+        "currentSha256",
+        "expectedSha256",
+        "action",
+        "readRange",
+        "sourceExcerpt",
+        "sourceStartLine",
+        "sourceEndLine",
+        "errorLine",
+        "blockIndex",
+        "variableSummary",
+        "explorationVariables",
+        "allowedEditRegion",
+        "forbiddenEditRegions",
+        "isPlaceholderScript",
+        "allDeclaredOutputsMissing",
+        "declaredOutputCount",
+        "detectedOutputWrites",
+        "functionName",
+        "parameterName",
+        "violations",
+        "draftSha256",
+        "violationLines",
+        "writeExample",
+        "notReferencedPaths",
+        "writeNotExecutedPaths",
+        "unresolvedWritePaths",
+        "outputHint",
+        "hint",
+        "totalLines",
+        "patchFormat",
+        "expectedPath",
+        "anchor",
+        "declaredImagePaths",
     )
     output_fields = {"traceback", "result", "stderr", "stdout"}
     result: dict[str, Any] = {}
@@ -1446,9 +1517,18 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
     for key in allowed:
         value = details.get(key)
         if key in {
-            "unsignedPaths", "forbiddenPathOperations", "requiredNextTools", "nextTools", "missingPaths", "presentPaths",
-            "detectedOutputWrites", "violationLines", "notReferencedPaths",
-            "writeNotExecutedPaths", "unresolvedWritePaths", "declaredImagePaths",
+            "unsignedPaths",
+            "forbiddenPathOperations",
+            "requiredNextTools",
+            "nextTools",
+            "missingPaths",
+            "presentPaths",
+            "detectedOutputWrites",
+            "violationLines",
+            "notReferencedPaths",
+            "writeNotExecutedPaths",
+            "unresolvedWritePaths",
+            "declaredImagePaths",
         }:
             if isinstance(value, list):
                 result[key] = [bounded_text(str(item), 256) for item in value[:20]]
@@ -1510,7 +1590,12 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
                         else item[field]
                     )
                     for field in (
-                        "code", "hint", "line", "lines", "snippet", "unsignedPaths",
+                        "code",
+                        "hint",
+                        "line",
+                        "lines",
+                        "snippet",
+                        "unsignedPaths",
                         "forbiddenPathOperations",
                     )
                     if field in item
@@ -1526,8 +1611,16 @@ def _safe_diagnostic_details(details: Mapping[str, Any]) -> dict[str, Any]:
 
     # 极端元数据也必须满足硬上限；优先保留路径、位置和 retryable。
     for key in (
-        "forbiddenPathOperations", "unsignedPaths", "sourceLine", "reason",
-        "errorType", "endColumn", "endLine", "column", "line", "path",
+        "forbiddenPathOperations",
+        "unsignedPaths",
+        "sourceLine",
+        "reason",
+        "errorType",
+        "endColumn",
+        "endLine",
+        "column",
+        "line",
+        "path",
     ):
         if encoded_size() <= MAX_DIAGNOSTIC_BYTES:
             break
@@ -1595,8 +1688,7 @@ def _bounded_failure(
     next_tools: list[str] | None = None,
 ) -> dict[str, Any]:
     details: dict[str, Any] = {
-        name: str(_cell_field(cell, name, "") or "")
-        for name in ("traceback", "stderr", "stdout")
+        name: str(_cell_field(cell, name, "") or "") for name in ("traceback", "stderr", "stdout")
     }
     variable_summary = _cell_field(cell, "variableSummary")
     if isinstance(variable_summary, Mapping):
@@ -1660,9 +1752,7 @@ def _lsp_parameters(*, path_required: bool, include_position: bool) -> dict[str,
     return {"type": "object", "properties": properties, "required": required}
 
 
-def _bounded_edit_context(
-    source: str, anchor_line: int, script_path: str
-) -> dict[str, Any] | None:
+def _bounded_edit_context(source: str, anchor_line: int, script_path: str) -> dict[str, Any] | None:
     """以 anchor_line 为中心计算模型可直接局部编辑的有界源码上下文。"""
     lines = source.splitlines(keepends=True)
     if not 1 <= anchor_line <= len(lines):
@@ -1672,7 +1762,8 @@ def _bounded_edit_context(
     region_start, region_end = start_line, end_line
     try:
         functions = [
-            node for node in ast.walk(ast.parse(source))
+            node
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.end_lineno is not None
             and node.lineno <= anchor_line <= node.end_lineno
@@ -1683,16 +1774,13 @@ def _bounded_edit_context(
         function = max(functions, key=lambda node: node.lineno)
         assert function.end_lineno is not None
         region_start, region_end = function.lineno, function.end_lineno
-        function_source = "".join(lines[region_start - 1:region_end])
+        function_source = "".join(lines[region_start - 1 : region_end])
         if len(function_source.encode("utf-8")) <= SOURCE_EXCERPT_MAX_BYTES:
             start_line, end_line = region_start, region_end
         else:
             start_line = max(start_line, region_start)
             end_line = min(end_line, region_end)
-    while (
-        len("".join(lines[start_line - 1:end_line]).encode("utf-8"))
-        > SOURCE_EXCERPT_MAX_BYTES
-    ):
+    while len("".join(lines[start_line - 1 : end_line]).encode("utf-8")) > SOURCE_EXCERPT_MAX_BYTES:
         if start_line == end_line:
             return None
         if anchor_line - start_line >= end_line - anchor_line:
@@ -1700,7 +1788,7 @@ def _bounded_edit_context(
         else:
             end_line -= 1
     context: dict[str, Any] = {
-        "sourceExcerpt": "".join(lines[start_line - 1:end_line]),
+        "sourceExcerpt": "".join(lines[start_line - 1 : end_line]),
         "sourceStartLine": start_line,
         "sourceEndLine": end_line,
         "errorLine": anchor_line,
@@ -1763,15 +1851,14 @@ def _edit_failure_anchor_details(
     block_index = repair.get("blockIndex")
     search_text = (
         edits[block_index - 1][0]
-        if isinstance(block_index, int) and not isinstance(block_index, bool)
+        if isinstance(block_index, int)
+        and not isinstance(block_index, bool)
         and 1 <= block_index <= len(edits)
         else (edits[0][0] if edits else "")
     )
     anchor_line = _search_anchor_line(source, search_text)
     context = (
-        _bounded_edit_context(source, anchor_line, script_path)
-        if anchor_line is not None
-        else None
+        _bounded_edit_context(source, anchor_line, script_path) if anchor_line is not None else None
     )
     if context is None:
         # 锚点未命中：excerpt 无法定位，退回整份读取范围。
@@ -1801,7 +1888,8 @@ class ReportingCodeModeToolkit(Toolkit):
         lsp_manager: ReportingLspProcessManager,
         knowledge_index: ReportingKnowledgeIndex | None = None,
         vision_reviewer: ReportVisionReviewer | None = None,
-        output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]] | None = None,
+        output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]]
+        | None = None,
         failure_artifact_recorder: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         self.binding = binding
@@ -1939,8 +2027,16 @@ class ReportingCodeModeToolkit(Toolkit):
                 strict=True,
                 entrypoint=self.run,
             ),
-            Function(name="restart_code_mode", description="重启当前探索会话并清空执行回执；不会删除已保存的脚本。", entrypoint=self.restart_code_mode),
-            Function(name="run_script", description="运行已保存的绑定脚本并校验声明输出；失败时按回执中的源码 SHA 与片段使用 edit_script 局部修复，随后重新运行。", entrypoint=self.run_script),
+            Function(
+                name="restart_code_mode",
+                description="重启当前探索会话并清空执行回执；不会删除已保存的脚本。",
+                entrypoint=self.restart_code_mode,
+            ),
+            Function(
+                name="run_script",
+                description="运行已保存的绑定脚本并校验声明输出；失败时按回执中的源码 SHA 与片段使用 edit_script 局部修复，随后重新运行。",
+                entrypoint=self.run_script,
+            ),
             Function(
                 name="lsp_diagnostics",
                 description=(
@@ -1985,9 +2081,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 Function(
                     name="view_image",
                     description="审查 run_script 生成的图片输出。为减少模型往返，请把所有待审查图片路径"
-                                "放入 `paths` 数组一次性调用；超过 5 张时宿主会自动按 5 张分批审查，"
-                                "无需自行拆分。只有单张图时才使用 `path`。"
-                                "禁止重复审查已通过的图片，修复后重新运行再审查。",
+                    "放入 `paths` 数组一次性调用；超过 5 张时宿主会自动按 5 张分批审查，"
+                    "无需自行拆分。只有单张图时才使用 `path`。"
+                    "禁止重复审查已通过的图片，修复后重新运行再审查。",
                     parameters={
                         "type": "object",
                         "properties": {
@@ -2034,7 +2130,9 @@ class ReportingCodeModeToolkit(Toolkit):
 
     async def _source_sha256(self) -> str | None:
         try:
-            identity = await self.workspace.ahash_file(self.context.task_id, self.context.script_path)
+            identity = await self.workspace.ahash_file(
+                self.context.task_id, self.context.script_path
+            )
         except WorkspaceError:
             return None
         return identity["sha256"]
@@ -2113,8 +2211,10 @@ class ReportingCodeModeToolkit(Toolkit):
             _reset_stop_after_tool_call(fc)
         log_tool_event(
             session_id=self.context.code_mode_session_id,
-            call_id=fc.call_id, tool=fc.function.name,
-            status="started", payload=fc.arguments,
+            call_id=fc.call_id,
+            tool=fc.function.name,
+            status="started",
+            payload=fc.arguments,
         )
 
     async def _record_tool_result(self, fc: Any) -> None:
@@ -2138,26 +2238,30 @@ class ReportingCodeModeToolkit(Toolkit):
             return
         try:
             raw = await self.workspace.read_limited_regular_file(
-                self.context.task_id, self.context.script_path,
+                self.context.task_id,
+                self.context.script_path,
                 max_bytes=self.context.max_source_bytes,
             )
             digest = hashlib.sha256(raw).hexdigest()
             if digest != details.get("sourceSha256"):
                 return
             # 审计源码只交给宿主回调，不进入工具回执、模型上下文或常规指标。
-            self.failure_artifact_recorder({
-                "taskId": self.context.task_id,
-                "scriptPath": self.context.script_path,
-                "sourceSha256": digest,
-                "sourceBytes": len(raw),
-                "source": raw.decode("utf-8"),
-                "code": self.first_run_failure_code,
-                "diagnostic": _safe_diagnostic_details(details),
-            })
+            self.failure_artifact_recorder(
+                {
+                    "taskId": self.context.task_id,
+                    "scriptPath": self.context.script_path,
+                    "sourceSha256": digest,
+                    "sourceBytes": len(raw),
+                    "source": raw.decode("utf-8"),
+                    "code": self.first_run_failure_code,
+                    "diagnostic": _safe_diagnostic_details(details),
+                }
+            )
         except Exception as error:
             logger.warning(
                 "report_code_failure_artifact_record_failed task_id={} error_type={}",
-                self.context.task_id, type(error).__name__,
+                self.context.task_id,
+                type(error).__name__,
             )
 
     async def _update_tool_result(self, fc: Any) -> None:
@@ -2167,7 +2271,10 @@ class ReportingCodeModeToolkit(Toolkit):
             # Agno 在取消的 finally 中也调用 post-hook，缺失结果不能记为成功。
             log_tool_event(
                 session_id=self.context.code_mode_session_id,
-                call_id=fc.call_id, tool=name, status="cancelled", payload={},
+                call_id=fc.call_id,
+                tool=name,
+                status="cancelled",
+                payload={},
             )
             return
         self.last_tool = name
@@ -2223,12 +2330,11 @@ class ReportingCodeModeToolkit(Toolkit):
                         "path": details.get("path", self.context.script_path),
                         "errorLine": details.get("errorLine"),
                         "exitCode": details.get("exitCode"),
-                        "sourceSha256": source_sha
-                        if isinstance(source_sha, str)
-                        else "unknown",
+                        "sourceSha256": source_sha if isinstance(source_sha, str) else "unknown",
                         "detailsBytes": len(
-                            json.dumps(details, ensure_ascii=False, separators=(",", ":"))
-                            .encode("utf-8")
+                            json.dumps(details, ensure_ascii=False, separators=(",", ":")).encode(
+                                "utf-8"
+                            )
                         ),
                     }
                     await self._record_failure_artifact(details)
@@ -2264,17 +2370,15 @@ class ReportingCodeModeToolkit(Toolkit):
                 receipt_payloads.append(fc.result["receipt"])
             receipts = fc.result.get("receipts")
             if isinstance(receipts, list):
-                receipt_payloads.extend(
-                    item for item in receipts if isinstance(item, Mapping)
-                )
+                receipt_payloads.extend(item for item in receipts if isinstance(item, Mapping))
             requires_any_revision = any(
                 item.get("requiresRevision") is True or item.get("requires_revision") is True
                 for item in receipt_payloads
             )
             fresh_count = fc.result.get("freshReviewCount")
-            has_fresh_review = (
-                isinstance(fresh_count, int) and fresh_count > 0
-            ) or (fresh_count is None and bool(receipt_payloads))
+            has_fresh_review = (isinstance(fresh_count, int) and fresh_count > 0) or (
+                fresh_count is None and bool(receipt_payloads)
+            )
             if has_fresh_review:
                 # 对齐 codex 熔断语义：一次 run_script 的产物审查算一轮，同一执行
                 # 分多次 view_image 不重复累计；只有当前执行全部图片都不再要求
@@ -2301,7 +2405,8 @@ class ReportingCodeModeToolkit(Toolkit):
             self._awaiting_first_repair_run = False
         log_tool_event(
             session_id=self.context.code_mode_session_id,
-            call_id=fc.call_id, tool=name,
+            call_id=fc.call_id,
+            tool=name,
             status="failed" if failed else "completed",
             payload={"result": fc.result, "error": fc.error},
         )
@@ -2319,7 +2424,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 "sourceSha256": await self._source_sha256(),
                 "code": str(payload.get("code", "tool_error"))[:128],
                 "message": str(fc.error or payload.get("message", ""))[:512],
-                "details": _safe_diagnostic_details(details) if isinstance(details, Mapping) else {},
+                "details": _safe_diagnostic_details(details)
+                if isinstance(details, Mapping)
+                else {},
             }
             signature = json.dumps(failure, ensure_ascii=False, sort_keys=True)
             if failure["code"] == "report_code_input_wrapped":
@@ -2364,7 +2471,8 @@ class ReportingCodeModeToolkit(Toolkit):
                     fc.function.stop_after_tool_call = True
             if (
                 name == "edit_script"
-                and failure["code"] in {
+                and failure["code"]
+                in {
                     "report_code_script_edit_invalid",
                     "report_code_script_edit_not_local",
                 }
@@ -2389,10 +2497,14 @@ class ReportingCodeModeToolkit(Toolkit):
                 fc.function.stop_after_tool_call = True
             if self._repeated_failure_count > 1 and isinstance(result, dict):
                 result["repeatedFailureCount"] = self._repeated_failure_count
-                result.setdefault("repairHint", "相同源码再次出现相同错误；请检查输入与环境，并调整修复方法。")
+                result.setdefault(
+                    "repairHint", "相同源码再次出现相同错误；请检查输入与环境，并调整修复方法。"
+                )
                 logger.warning(
                     "report_code_repeated_failure tool={} code={} count={}",
-                    name, failure["code"], self._repeated_failure_count,
+                    name,
+                    failure["code"],
+                    self._repeated_failure_count,
                 )
         elif isinstance(result, Mapping) and result.get("ok") is True:
             if self.last_failure is not None and self.last_failure["tool"] == name:
@@ -2418,13 +2530,16 @@ class ReportingCodeModeToolkit(Toolkit):
             "completedToolCalls": self.completed_tool_calls,
             "pendingOutputValidation": self.pending_output_validation,
             "unreviewedOutputPaths": [
-                item.path for item in (receipt.output_files if receipt else ())
+                item.path
+                for item in (receipt.output_files if receipt else ())
                 if self.context.task_kind == "visualization"
                 and not item.path.endswith(".plotly.json")
                 and (
                     (review := self.binding.visual_inspection_receipts.get(item.path)) is None
-                    or review.sha256 != item.sha256 or not review.reviewed
-                    or review.visual_review_status != "passed" or review.requires_revision
+                    or review.sha256 != item.sha256
+                    or not review.reviewed
+                    or review.visual_review_status != "passed"
+                    or review.requires_revision
                 )
             ],
         }
@@ -2528,13 +2643,15 @@ class ReportingCodeModeToolkit(Toolkit):
     @property
     def visual_review_gate_tripped(self) -> bool:
         return (
-            self._consecutive_critical_review_rounds
-            >= VISUALIZATION_CRITICAL_REVIEW_ROUNDS_LIMIT
+            self._consecutive_critical_review_rounds >= VISUALIZATION_CRITICAL_REVIEW_ROUNDS_LIMIT
         )
 
     async def read_script(
-        self, path: str | None = None, run_context: RunContext | None = None,
-        start_line: int | None = None, end_line: int | None = None,
+        self,
+        path: str | None = None,
+        run_context: RunContext | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> dict[str, Any]:
         del run_context
         if path is not None:
@@ -2543,11 +2660,10 @@ class ReportingCodeModeToolkit(Toolkit):
                 "脚本路径由当前任务绑定，read_script 不接受 path 参数。",
                 {"nextTools": ["read_script"]},
             )
-        if (
-            any(value is not None and (type(value) is not int or value < 1)
-                for value in (start_line, end_line))
-            or (start_line is not None and end_line is not None and start_line > end_line)
-        ):
+        if any(
+            value is not None and (type(value) is not int or value < 1)
+            for value in (start_line, end_line)
+        ) or (start_line is not None and end_line is not None and start_line > end_line):
             return _failure(
                 "report_code_script_range_invalid",
                 "行号必须为从 1 开始的整数，start_line 不得大于 end_line。",
@@ -2587,7 +2703,7 @@ class ReportingCodeModeToolkit(Toolkit):
             "ok": True,
             "exists": True,
             "path": self.context.script_path,
-            "source": "".join(lines[first - 1:last]),
+            "source": "".join(lines[first - 1 : last]),
             "totalLines": total_lines,
             "startLine": first if total_lines else None,
             "endLine": last if total_lines else None,
@@ -2641,9 +2757,7 @@ class ReportingCodeModeToolkit(Toolkit):
             draft.sha256, draft.source = sha256, source
         return sha256
 
-    async def _write_source(
-        self, source: str, *, promote_draft: bool = False
-    ) -> dict[str, Any]:
+    async def _write_source(self, source: str, *, promote_draft: bool = False) -> dict[str, Any]:
         """write_script 与草稿提升共用的预检、格式化与落盘。
 
         promote_draft=True 时语法错误不落盘：补丁后的草稿必须先能解析，否则语法错误
@@ -2657,9 +2771,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 tree = ast.parse(source, filename=self.context.script_path)
             except SyntaxError as error:
                 if promote_draft:
-                    return _syntax_edit_failure(
-                        error, await self._store_draft(source), draft=True
-                    )
+                    return _syntax_edit_failure(error, await self._store_draft(source), draft=True)
                 # 草稿允许暂时存在语法错误，供 LSP 和后续修复使用；回执直接给出
                 # 错误位置，模型无需再跑一次 run_script 才能定位。
                 tree = None
@@ -2674,9 +2786,7 @@ class ReportingCodeModeToolkit(Toolkit):
             if tree is not None:
                 # 与 run_script 同一路径策略：draft 阶段即拒绝，避免"保存成功
                 # → 执行被拒"浪费一整个写-跑循环后模型重试退化。一次返回全部违规。
-                violations = _collect_preflight(
-                    tree, source, "write_script", self.context
-                )
+                violations = _collect_preflight(tree, source, "write_script", self.context)
                 wrapped = next(
                     (item for item in violations if item.code == "report_code_input_wrapped"),
                     None,
@@ -2719,9 +2829,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 formatted = candidate != source
                 source = candidate
         if tree is not None and self.context.task_kind == "visualization":
-            output_write_warning = _output_write_warning(
-                tree, self.context.declared_output_paths
-            )
+            output_write_warning = _output_write_warning(tree, self.context.declared_output_paths)
             if output_write_warning is not None:
                 warnings.append(output_write_warning)
         for warning in warnings:
@@ -2741,9 +2849,7 @@ class ReportingCodeModeToolkit(Toolkit):
         self.binding.clear_execution_receipt()
         self.submitted_receipt = None
         self._rejected_draft = None
-        identity = await self.workspace.ahash_file(
-            self.context.task_id, self.context.script_path
-        )
+        identity = await self.workspace.ahash_file(self.context.task_id, self.context.script_path)
         return {
             "ok": True,
             "formatted": formatted,
@@ -2860,8 +2966,11 @@ class ReportingCodeModeToolkit(Toolkit):
                     error.code,
                     error.message,
                     _edit_failure_anchor_details(
-                        source, edits, error.details or {},
-                        self.context.script_path, current_sha256,
+                        source,
+                        edits,
+                        error.details or {},
+                        self.context.script_path,
+                        current_sha256,
                     ),
                 )
             return _failure(error.code, error.message, error.details)
@@ -2881,9 +2990,7 @@ class ReportingCodeModeToolkit(Toolkit):
         except ReportingError as error:
             return _failure(error.code, error.message, error.details)
         if tree is not None:
-            violations = _collect_preflight(
-                tree, updated, "edit_script", self.context
-            )
+            violations = _collect_preflight(tree, updated, "edit_script", self.context)
             if violations:
                 return _preflight_failure(violations, updated)
         try:
@@ -2904,9 +3011,7 @@ class ReportingCodeModeToolkit(Toolkit):
         self.submitted_receipt = None
         # 正式脚本已前进，旧草稿基于过期源码，不得再被提升覆盖当前脚本。
         self._rejected_draft = None
-        identity = await self.workspace.ahash_file(
-            self.context.task_id, self.context.script_path
-        )
+        identity = await self.workspace.ahash_file(self.context.task_id, self.context.script_path)
         if self.first_patch_applied == "unknown":
             self.first_patch_applied = True
         return {
@@ -2974,7 +3079,11 @@ class ReportingCodeModeToolkit(Toolkit):
         except ReportingError as error:
             if error.code in _EDIT_ANCHOR_FAILURE_CODES:
                 details = _edit_failure_anchor_details(
-                    draft_source, edits, error.details or {}, self.context.script_path, draft_sha256,
+                    draft_source,
+                    edits,
+                    error.details or {},
+                    self.context.script_path,
+                    draft_sha256,
                 )
             else:
                 details = dict(error.details) if isinstance(error.details, Mapping) else {}
@@ -3002,9 +3111,7 @@ class ReportingCodeModeToolkit(Toolkit):
             **({"fuzzyMatches": fuzzy_matches} if fuzzy_matches else {}),
         }
 
-    async def run(
-        self, code: str, run_context: RunContext | None = None
-    ) -> dict[str, Any]:
+    async def run(self, code: str, run_context: RunContext | None = None) -> dict[str, Any]:
         del run_context
         try:
             try:
@@ -3031,7 +3138,9 @@ class ReportingCodeModeToolkit(Toolkit):
             if "nextTools" not in details:
                 details["nextTools"] = ["read_script", "edit_script", "run_script"]
                 try:
-                    if not await self.workspace.apath_exists(self.context.task_id, self.context.script_path):
+                    if not await self.workspace.apath_exists(
+                        self.context.task_id, self.context.script_path
+                    ):
                         details["nextTools"] = ["write_script"]
                 except WorkspaceError:
                     pass
@@ -3051,8 +3160,7 @@ class ReportingCodeModeToolkit(Toolkit):
             )
         exploration_variables = await self._exploration_variables()
         outputs = {
-            name: str(_cell_field(cell, name, "") or "")
-            for name in ("result", "stderr", "stdout")
+            name: str(_cell_field(cell, name, "") or "") for name in ("result", "stderr", "stdout")
         }
         diagnostics: dict[str, Any] = dict(outputs)
         if exploration_variables is not None:
@@ -3119,8 +3227,7 @@ class ReportingCodeModeToolkit(Toolkit):
         # 声明图片清单，模型可直接改正，不必再猜路径或重复消耗一轮。
         path_failures: list[dict[str, Any]] = []
         reviewable_paths = [
-            item for item in self.context.declared_output_paths
-            if not item.endswith(".plotly.json")
+            item for item in self.context.declared_output_paths if not item.endswith(".plotly.json")
         ]
         for raw_path in target_paths:
             try:
@@ -3269,7 +3376,9 @@ class ReportingCodeModeToolkit(Toolkit):
         except Exception as error:
             if isinstance(error, ReportingError) and error.code in _LOCAL_CHART_REJECTION_CODES:
                 logger.warning(
-                    "report_code_visual_file_rejected path={} code={}", source_path, error.code,
+                    "report_code_visual_file_rejected path={} code={}",
+                    source_path,
+                    error.code,
                 )
                 return _failure(
                     error.code,
@@ -3311,7 +3420,9 @@ class ReportingCodeModeToolkit(Toolkit):
             "receipt": _visual_review_model_receipt(reviewed),
         }
 
-    async def _review_with_retry(self, source_path: str, detail: str) -> ChartVisualInspectionReceipt:
+    async def _review_with_retry(
+        self, source_path: str, detail: str
+    ) -> ChartVisualInspectionReceipt:
         """视觉审查失败先重试一次，再判为不可用。
 
         模型层重试只覆盖 API 错误，不覆盖输出解析/校验失败；单次失败即判不可用会
@@ -3328,8 +3439,7 @@ class ReportingCodeModeToolkit(Toolkit):
                 )
             except Exception as error:
                 if attempt == 1 or (
-                    isinstance(error, ReportingError)
-                    and error.code in _LOCAL_CHART_REJECTION_CODES
+                    isinstance(error, ReportingError) and error.code in _LOCAL_CHART_REJECTION_CODES
                 ):
                     raise
                 logger.warning(
@@ -3344,7 +3454,9 @@ class ReportingCodeModeToolkit(Toolkit):
         cause = error.__cause__ if error is not None else None
         logger.warning(
             "report_code_visual_review_unavailable path={} error_type={} cause_type={}",
-            path, error_type, type(cause).__name__ if cause is not None else "-",
+            path,
+            error_type,
+            type(cause).__name__ if cause is not None else "-",
         )
         self.terminal_failure = ReportingError(
             "report_code_visual_review_unavailable",
@@ -3352,7 +3464,8 @@ class ReportingCodeModeToolkit(Toolkit):
             details={"path": path, "errorType": error_type, "retryable": False},
         )
         return _failure(
-            self.terminal_failure.code, str(self.terminal_failure),
+            self.terminal_failure.code,
+            str(self.terminal_failure),
             details=self.terminal_failure.details,
         )
 
@@ -3501,9 +3614,7 @@ class ReportingCodeModeToolkit(Toolkit):
             if all_missing:
                 details["allDeclaredOutputsMissing"] = True
             example = (
-                _declared_output_write_example(
-                    missing_paths[0], self.context.declared_output_paths
-                )
+                _declared_output_write_example(missing_paths[0], self.context.declared_output_paths)
                 if self.context.task_kind == "visualization"
                 and missing_paths[0].lower().endswith((".png", ".jpg", ".jpeg", ".plotly.json"))
                 else ""
@@ -3617,8 +3728,7 @@ class ReportingCodeModeToolkit(Toolkit):
             except ReportingError as error:
                 # 交付校验失败也保留进程执行证据，供下一轮直接修复。
                 outputs_text = {
-                    name: str(_cell_field(cell, name, "") or "")
-                    for name in ("stdout", "stderr")
+                    name: str(_cell_field(cell, name, "") or "") for name in ("stdout", "stderr")
                 }
                 details = dict(error.details) if isinstance(error.details, Mapping) else {}
                 variable_summary = _cell_field(cell, "variableSummary")
@@ -3634,7 +3744,8 @@ class ReportingCodeModeToolkit(Toolkit):
                 result = _failure(error.code, error.message, details)
                 truncated = set(_cell_field(cell, "truncated", ()) or ()) & outputs_text.keys()
                 truncated.update(
-                    name for name, value in outputs_text.items()
+                    name
+                    for name, value in outputs_text.items()
                     if result["details"].get(name, "") != value
                 )
                 result["truncated"] = sorted(truncated)
@@ -3699,7 +3810,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 result["outputValidation"] = self.pending_output_validation
                 result["ok"] = False
                 result["nextTools"] = ["read_script", "edit_script", "run_script"]
-                result["repairHint"] = "输出结构预检不可用，请重新执行脚本；最终验收由 Workflow 处理。"
+                result["repairHint"] = (
+                    "输出结构预检不可用，请重新执行脚本；最终验收由 Workflow 处理。"
+                )
                 return result
             await self.require_current_receipt(receipt)
             if diagnostic is not None:
@@ -3714,7 +3827,9 @@ class ReportingCodeModeToolkit(Toolkit):
                 result["outputValidation"] = self.pending_output_validation
                 result["ok"] = False
                 result["nextTools"] = ["read_script", "edit_script", "run_script"]
-                result["repairHint"] = "输出结构校验未通过，请修复后重新执行；最终验收与降级由 Workflow 处理。"
+                result["repairHint"] = (
+                    "输出结构校验未通过，请修复后重新执行；最终验收与降级由 Workflow 处理。"
+                )
             else:
                 self._set_output_validation("passed")
         return result
@@ -3829,10 +3944,7 @@ class ReportingCodeModeToolkit(Toolkit):
                         {"nextTools": ["read_script", "edit_script", "run_script"]},
                     )
         submit_warnings: list[dict[str, Any]] = []
-        if (
-            self.visual_review_gate_tripped
-            and self.context.task_kind == "visualization"
-        ):
+        if self.visual_review_gate_tripped and self.context.task_kind == "visualization":
             flagged = [
                 path
                 for path, reviewed in self.binding.visual_inspection_receipts.items()

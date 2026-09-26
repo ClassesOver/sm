@@ -60,10 +60,13 @@ async def test_batch_preserves_order_stopping_and_total_budget(asynchronous, out
     async def third_async():
         return third()
 
-    entrypoints = (first_async, second_async, third_async) if asynchronous else (first, second, third)
+    entrypoints = (
+        (first_async, second_async, third_async) if asynchronous else (first, second, third)
+    )
     functions = [
         Function(
-            name=f"step_{index}", entrypoint=entrypoint,
+            name=f"step_{index}",
+            entrypoint=entrypoint,
             post_hook=_stop_after_success if index == 0 and outcome == "submitted" else None,
         )
         for index, entrypoint in enumerate(entrypoints)
@@ -93,7 +96,7 @@ async def test_batch_preserves_order_stopping_and_total_budget(asynchronous, out
     if outcome == "success":
         assert all(not result.tool_call_error for result in results)
     else:
-        for result in results[2 if outcome == "limit" else 1:]:
+        for result in results[2 if outcome == "limit" else 1 :]:
             assert result.tool_call_error is True
             payload = json.loads(result.content)
             if outcome == "limit":
@@ -145,7 +148,9 @@ def test_wire_shaped_freedom_call_is_rejected_without_execution():
     executed: list[str] = []
     functions = [
         Function(name="write_script", entrypoint=lambda: executed.append("write_script")),
-        Function(name="run_script", entrypoint=lambda: executed.append("run_script") or {"ok": True}),
+        Function(
+            name="run_script", entrypoint=lambda: executed.append("run_script") or {"ok": True}
+        ),
     ]
     for function in functions:
         function.process_entrypoint()
@@ -223,25 +228,27 @@ def test_wire_shaped_bare_text_arguments_are_rejected_not_parsed():
     model.configure_code_run(tools, max_model_requests=2)
     model.get_request_params(messages=[], tools=tools)
     raw_patch = "*** Begin Edit\n*** SHA256: " + "a" * 64 + "\nrandom\n*** End Edit\n"
-    response = Response.model_validate({
-        "id": "resp-1",
-        "created_at": 0,
-        "model": "test-model",
-        "object": "response",
-        "status": "completed",
-        "tools": [],
-        "output": [
-            {
-                "id": "item-1",
-                "call_id": "call-1",
-                "name": "edit_script",
-                "arguments": raw_patch,
-                "type": "function_call",
-            }
-        ],
-        "parallel_tool_calls": False,
-        "tool_choice": "auto",
-    })
+    response = Response.model_validate(
+        {
+            "id": "resp-1",
+            "created_at": 0,
+            "model": "test-model",
+            "object": "response",
+            "status": "completed",
+            "tools": [],
+            "output": [
+                {
+                    "id": "item-1",
+                    "call_id": "call-1",
+                    "name": "edit_script",
+                    "arguments": raw_patch,
+                    "type": "function_call",
+                }
+            ],
+            "parallel_tool_calls": False,
+            "tool_choice": "auto",
+        }
+    )
 
     parsed = model._parse_provider_response(response)
 
@@ -281,10 +288,14 @@ def test_mixed_custom_function_custom_response_preserves_provider_order():
     parsed = model._parse_provider_response(response)
 
     assert [call["function"]["name"] for call in parsed.tool_calls] == [
-        "write_script", "run_script", "write_script",
+        "write_script",
+        "run_script",
+        "write_script",
     ]
     assert [call["call_id"] for call in parsed.tool_calls] == [
-        "call-1", "call-2", "call-3",
+        "call-1",
+        "call-2",
+        "call-3",
     ]
 
 
@@ -307,24 +318,27 @@ async def test_mixed_batch_failure_executes_once_and_replays_skipped_ids():
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     model.configure_code_run((write, run), max_model_requests=2)
     model.get_request_params(messages=[], tools=(write, run))
-    parsed = model._parse_provider_response(_batch_response(
-        _custom_response("write_script", "# Python\nprint(1)\n", 1),
-        _function_response(2, "run_script", {}),
-        _custom_response("write_script", "# Python\nprint(2)\n", 3),
-    ))
+    parsed = model._parse_provider_response(
+        _batch_response(
+            _custom_response("write_script", "# Python\nprint(1)\n", 1),
+            _function_response(2, "run_script", {}),
+            _custom_response("write_script", "# Python\nprint(2)\n", 3),
+        )
+    )
     assert [
-        item.get("provider_data", {}).get("reporting_wire_type")
-        for item in parsed.tool_calls
+        item.get("provider_data", {}).get("reporting_wire_type") for item in parsed.tool_calls
     ] == ["custom", None, "custom"]
     calls = []
     for item in parsed.tool_calls:
         name = item["function"]["name"]
         arguments = json.loads(item["function"]["arguments"])
-        calls.append(FunctionCall(
-            function=write if name == "write_script" else run,
-            call_id=item["call_id"],
-            arguments=arguments,
-        ))
+        calls.append(
+            FunctionCall(
+                function=write if name == "write_script" else run,
+                call_id=item["call_id"],
+                arguments=arguments,
+            )
+        )
     results: list[Message] = []
 
     _ = [
@@ -339,7 +353,9 @@ async def test_mixed_batch_failure_executes_once_and_replays_skipped_ids():
 
     assert executed == ["write_script"]
     assert [result.tool_call_id for result in results] == [
-        "call-1", "call-2", "call-3",
+        "call-1",
+        "call-2",
+        "call-3",
     ]
     assert all(json.loads(result.content)["status"] == "skipped" for result in results[1:])
 
@@ -415,15 +431,12 @@ async def test_last_three_tool_slots_are_reserved_for_formal_delivery() -> None:
         )
 
     functions = {
-        name: tool(name)
-        for name in ("run", "write_script", "run_script", "submit_script")
+        name: tool(name) for name in ("run", "write_script", "run_script", "submit_script")
     }
     for function in functions.values():
         function.process_entrypoint()
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    model.configure_code_run(
-        tuple(functions.values()), max_model_requests=4, delivery_reserve=3
-    )
+    model.configure_code_run(tuple(functions.values()), max_model_requests=4, delivery_reserve=3)
     rejected_results: list[Message] = []
 
     _ = [
@@ -495,18 +508,13 @@ async def test_reserved_budget_allows_and_recommends_required_source_read() -> N
         function.process_entrypoint()
         return function
 
-    functions = {
-        name: tool(name)
-        for name in ("run", "read_script", "edit_script", "run_script")
-    }
+    functions = {name: tool(name) for name in ("run", "read_script", "edit_script", "run_script")}
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     model.configure_code_run(
         tuple(functions.values()),
         max_model_requests=4,
         delivery_reserve=3,
-        delivery_state_reader=lambda: {
-            "nextTools": ["read_script", "edit_script", "run_script"]
-        },
+        delivery_state_reader=lambda: {"nextTools": ["read_script", "edit_script", "run_script"]},
     )
     rejected: list[Message] = []
     _ = [
@@ -576,9 +584,7 @@ async def test_visual_delivery_reserve_includes_each_image_review() -> None:
         )
     }
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    model.configure_code_run(
-        tuple(functions.values()), max_model_requests=6, delivery_reserve=5
-    )
+    model.configure_code_run(tuple(functions.values()), max_model_requests=6, delivery_reserve=5)
     results: list[Message] = []
 
     _ = [
@@ -707,8 +713,12 @@ async def test_tool_results_include_budget_and_reserved_view_rejects_current_rev
     function = Function(name="view_image", entrypoint=owner.view_image)
     function.process_entrypoint()
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
-    model.configure_code_run((function,), max_model_requests=4, delivery_reserve=3,
-                             redundant_call_check=owner.has_current_visual_review)
+    model.configure_code_run(
+        (function,),
+        max_model_requests=4,
+        delivery_reserve=3,
+        redundant_call_check=owner.has_current_visual_review,
+    )
 
     allowed: list[Message] = []
     _ = [
@@ -781,7 +791,9 @@ async def test_redundant_view_image_rejection_does_not_stop_batch() -> None:
 
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     model.configure_code_run(
-        (view_image, submit_script), max_model_requests=4, delivery_reserve=2,
+        (view_image, submit_script),
+        max_model_requests=4,
+        delivery_reserve=2,
         redundant_call_check=owner.has_current_visual_review,
     )
 

@@ -12,15 +12,15 @@ EDIT_PATCH_GRAMMAR = (
     'patch_envelope: "*** Begin Patch" LF ("*** SHA256: " SHA256 LF)? '
     '"*** Update File: " PATH LF hunks "*** End Patch" LF?\n'
     'edit: "<<<<<<< SEARCH" LF line+ "=======" LF line+ ">>>>>>> REPLACE" LF\n'
-    "hunks: hunk+ (\"*** End of File\" LF)?\n"
+    'hunks: hunk+ ("*** End of File" LF)?\n'
     "hunk: hunk_header? change_line+\n"
     'hunk_header: "@@" TEXT? LF\n'
     "TEXT: /[^\\n]+/\n"
     "change_line: /[ +\\-][^\\n]*/ LF | LF\n"
-    'line: /[^\\n]+/ LF | LF\n'
+    "line: /[^\\n]+/ LF | LF\n"
     "PATH: /[^\\n]+/\n"
-    'SHA256: /[0-9a-f]{64}/\n'
-    '%import common.LF'
+    "SHA256: /[0-9a-f]{64}/\n"
+    "%import common.LF"
 )
 _EDIT_PATCH = re.compile(
     r"\*\*\* Begin Edit\n\*\*\* SHA256: (?P<sha>[0-9a-f]{64})\n"
@@ -87,8 +87,12 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
     if isinstance(patch, str):
         patch_bytes = len(patch.encode("utf-8"))
         if patch_bytes > 2 * max_source_bytes + 256:
-            details = {**_invalid_details, "reason": "oversized_patch",
-                       "actualBytes": patch_bytes, "limitBytes": max_source_bytes}
+            details = {
+                **_invalid_details,
+                "reason": "oversized_patch",
+                "actualBytes": patch_bytes,
+                "limitBytes": max_source_bytes,
+            }
         else:
             patch = _normalize_patch(patch)
             match = _EDIT_PATCH.fullmatch(patch.rstrip() + "\n") if patch.strip() else None
@@ -104,8 +108,11 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                 marker_hint = ""
                 while block := _EDIT_BLOCK.match(body, position):
                     replacement = block["new"] or ""
-                    if any(marker in text.split("\n") for text in (block["old"], replacement)
-                           for marker in _MARKERS):
+                    if any(
+                        marker in text.split("\n")
+                        for text in (block["old"], replacement)
+                        for marker in _MARKERS
+                    ):
                         marker_hint = _marker_hint(block["old"], replacement, len(edits) + 1)
                         break
                     edits.append((block["old"], replacement))
@@ -120,9 +127,9 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                     return edits, match["sha"]
                 details = {
                     **_invalid_details,
-                    "reason": "trailing_text" if edits else (
-                        "marker_in_block" if marker_hint else "no_valid_blocks"
-                    ),
+                    "reason": "trailing_text"
+                    if edits
+                    else ("marker_in_block" if marker_hint else "no_valid_blocks"),
                     "blockIndex": len(edits) + 1 if marker_hint or position < len(body) else None,
                 }
                 if details["blockIndex"] is None:
@@ -222,7 +229,11 @@ def _parse_hunks(body: str) -> tuple[list[tuple[str, str]], tuple[str | None, ..
     edits: list[tuple[str, str]] = []
     anchors: list[str | None] = []
     for index, (hunk, anchor) in enumerate(
-        ((item, hunk_anchor) for item, hunk_anchor in zip(hunks, hunk_anchors, strict=True) if item),
+        (
+            (item, hunk_anchor)
+            for item, hunk_anchor in zip(hunks, hunk_anchors, strict=True)
+            if item
+        ),
         1,
     ):
         old = [line[1:] for line in hunk if line[:1] in {" ", "-", ""}]
@@ -251,8 +262,10 @@ def _looks_like_hunk_body(body: str) -> bool:
     lines = [line for line in body.split("\n") if line]
     if lines and lines[0].startswith(_UPDATE_FILE):
         lines = lines[1:]
-    return bool(lines) and any(line[:1] in {"+", "-"} for line in lines) and all(
-        _HUNK_LINE.match(line) or line == "*** End of File" for line in lines
+    return (
+        bool(lines)
+        and any(line[:1] in {"+", "-"} for line in lines)
+        and all(_HUNK_LINE.match(line) or line == "*** End of File" for line in lines)
     )
 
 
@@ -291,7 +304,7 @@ def parse_script_patch(patch: str, max_source_bytes: int) -> ScriptPatch:
                 edits=edits,
                 sha256=match["sha"],
                 patch_format="apply_patch",
-                path=header[len(_UPDATE_FILE):].strip(),
+                path=header[len(_UPDATE_FILE) :].strip(),
                 anchors=anchors,
             )
         envelope = _EDIT_PATCH.fullmatch(normalized.rstrip() + "\n")
@@ -301,7 +314,7 @@ def parse_script_patch(patch: str, max_source_bytes: int) -> ScriptPatch:
                 path = None
                 if body.startswith(_UPDATE_FILE):
                     header, _, body = body.partition("\n")
-                    path = header[len(_UPDATE_FILE):].strip()
+                    path = header[len(_UPDATE_FILE) :].strip()
                 edits, anchors = _parse_hunks(body)
                 return ScriptPatch(
                     edits=edits,
@@ -331,7 +344,7 @@ def _reindent(text: str, add: str, remove: str) -> str | None:
         elif add:
             lines.append(add + line)
         elif line.startswith(remove):
-            lines.append(line[len(remove):])
+            lines.append(line[len(remove) :])
         else:
             return None
     return "\n".join(lines)
@@ -345,9 +358,9 @@ def _indent_shift(window: list[str], search: list[str]) -> tuple[str, str] | Non
         return None
     source_indent, search_indent = _indent(pairs[0][0]), _indent(pairs[0][1])
     if source_indent.startswith(search_indent):
-        shift = (source_indent[len(search_indent):], "")
+        shift = (source_indent[len(search_indent) :], "")
     elif search_indent.startswith(source_indent):
-        shift = ("", search_indent[len(source_indent):])
+        shift = ("", search_indent[len(source_indent) :])
     else:
         return None
     if shift == ("", ""):
@@ -380,7 +393,7 @@ def _fuzzy_candidates(
     hint = ""
     last = len(lines) - count - (1 if trailing_newline else 0)
     for index in range(last + 1):
-        window = lines[index:index + count]
+        window = lines[index : index + count]
         start = offsets[index]
         end = offsets[index + count - 1] + len(window[-1]) + (1 if trailing_newline else 0)
         if all(a.rstrip() == b.rstrip() for a, b in zip(window, search, strict=True)):
@@ -389,7 +402,7 @@ def _fuzzy_candidates(
         shift = _indent_shift(window, search)
         if shift is None:
             continue
-        if '"""' in new or "\'\'\'" in new:
+        if '"""' in new or "'''" in new:
             # 重排缩进会改变多行字符串字面量的值，不做自动对齐。
             hint = "SEARCH 按缩进偏移可唯一定位，但 REPLACE 含多行字符串，无法安全重排缩进；请按原文缩进逐字复制。"
             continue
@@ -413,9 +426,7 @@ def _cuts_identifier(source: str, start: int, end: int) -> bool:
     """匹配边界是否落在标识符中间，例如 SEARCH `x = 1` 命中 `max = 1` 的尾部。"""
 
     return (
-        start > 0
-        and _is_identifier_char(source[start - 1])
-        and _is_identifier_char(source[start])
+        start > 0 and _is_identifier_char(source[start - 1]) and _is_identifier_char(source[start])
     ) or (
         end < len(source)
         and _is_identifier_char(source[end - 1])
@@ -423,9 +434,7 @@ def _cuts_identifier(source: str, start: int, end: int) -> bool:
     )
 
 
-def _exact_candidates(
-    source: str, old: str, limit: int | None = 2
-) -> tuple[list[int], int]:
+def _exact_candidates(source: str, old: str, limit: int | None = 2) -> tuple[list[int], int]:
     """返回不切断标识符的精确匹配起点（默认最多 2 个）与被排除的切断匹配数。
 
     行内子串替换（如 figsize 参数）仍然允许；只排除边界落在标识符内部的命中，
@@ -450,16 +459,14 @@ def _starts_after_indent(source: str, position: int) -> bool:
     return bool(prefix) and not prefix.strip(" \t")
 
 
-def _anchor_line_start(
-    lines: list[str], offsets: list[int], anchor: str, floor: int
-) -> int | None:
+def _anchor_line_start(lines: list[str], offsets: list[int], anchor: str, floor: int) -> int | None:
     """返回 floor 之后首个 @@ 锚点行的起点；先比较整行去空白，再退化为包含匹配。"""
 
     target = anchor.strip()
     candidates = [
-        index for index, offset in enumerate(offsets) if offset >= floor or (
-            offset < floor <= offset + len(lines[index])
-        )
+        index
+        for index, offset in enumerate(offsets)
+        if offset >= floor or (offset < floor <= offset + len(lines[index]))
     ]
     for matches in (
         lambda line: line.strip() == target,
@@ -508,9 +515,7 @@ def apply_edit_blocks(
         # 顺序消歧只在已有前一个 hunk 定位后生效；首个无锚点 hunk 仍须唯一，不能
         # 默认取文件中第一个命中。
         disambiguate = bool(anchor) or (ordered and previous_end > 0)
-        starts, cut_matches = _exact_candidates(
-            source, old, limit=None if disambiguate else 2
-        )
+        starts, cut_matches = _exact_candidates(source, old, limit=None if disambiguate else 2)
         if starts:
             start = starts[0]
             mode, hint = "", ""
@@ -530,9 +535,7 @@ def apply_edit_blocks(
         else:
             if cut_matches > 1 and not disambiguate:
                 # 多处只能切断标识符命中（如 "aa" 之于 'aaa'）：无法判断意图，按歧义拒绝。
-                raise _edit_error(
-                    "ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index
-                )
+                raise _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
             mode, candidates, hint = _fuzzy_candidates(*split_lines(), old, new)
             if not candidates and cut_matches:
                 hint = (
@@ -602,6 +605,7 @@ def _edit_error(
     reason: str, message: str, block: int | None = None, **extra: object
 ) -> ReportingError:
     return ReportingError(
-        f"report_code_script_edit_{reason}", message,
+        f"report_code_script_edit_{reason}",
+        message,
         details={"nextTools": ["read_script", "edit_script"], "blockIndex": block, **extra},
     )

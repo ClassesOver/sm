@@ -78,10 +78,13 @@ def test_custom_grammar_rejects_wrappers_and_accepts_raw_multiline_source(toolki
     specs = _code_responses_model()._format_tool_params([], toolkit.tool_functions)
     spec = next(item for item in specs if item["name"] == name)
     parser = Lark(spec["format"]["definition"])
-    for source in ('# Python\nprint(1)\n', '# Python\nvalue = {"code": 1}\n',
-                   '# Python\nimport matplotlib\nmatplotlib.use("Agg")\n'):
+    for source in (
+        "# Python\nprint(1)\n",
+        '# Python\nvalue = {"code": 1}\n',
+        '# Python\nimport matplotlib\nmatplotlib.use("Agg")\n',
+    ):
         parser.parse(source)
-    for wrapped in ('{"code": "print(1)"}', '"print(1)"', '```python\nprint(1)\n```'):
+    for wrapped in ('{"code": "print(1)"}', '"print(1)"', "```python\nprint(1)\n```"):
         with pytest.raises(UnexpectedInput):
             parser.parse(wrapped)
 
@@ -89,7 +92,8 @@ def test_custom_grammar_rejects_wrappers_and_accepts_raw_multiline_source(toolki
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_request_custom_grammars_allow_shell_only_for_run(toolkit, newline):
     params = _code_responses_model().get_request_params(
-        messages=[], tools=toolkit.tool_functions,
+        messages=[],
+        tools=toolkit.tool_functions,
     )
     assert params["tool_choice"] == "auto"
     for name in ("write_script", "run"):
@@ -106,8 +110,11 @@ def test_request_custom_grammars_allow_shell_only_for_run(toolkit, newline):
         else:
             with pytest.raises(UnexpectedInput):
                 parser.parse(shell)
-        for wrapped in (json.dumps({"data": source}), json.dumps(source),
-                        f"```python{newline}{source}{newline}```"):
+        for wrapped in (
+            json.dumps({"data": source}),
+            json.dumps(source),
+            f"```python{newline}{source}{newline}```",
+        ):
             with pytest.raises(UnexpectedInput):
                 parser.parse(wrapped)
 
@@ -186,11 +193,14 @@ def test_visualization_request_exposes_only_current_delivery_tools(toolkit):
     toolkit.binding.context = replace(toolkit.context, task_kind="visualization")
     state = {"taskKind": "visualization", "nextTools": ["write_script"]}
     model = _code_responses_model()
-    model.configure_code_run(toolkit.tool_functions, max_model_requests=10,
-                             delivery_state_reader=lambda: state)
+    model.configure_code_run(
+        toolkit.tool_functions, max_model_requests=10, delivery_state_reader=lambda: state
+    )
     params = model.get_request_params(messages=[], tools=toolkit.tool_functions)
     assert {tool["name"] for tool in params["tools"]} == {
-        "write_script", "run_script", "submit_script",
+        "write_script",
+        "run_script",
+        "submit_script",
     }
     assert params["tools"][0]["type"] == "custom"
     state["nextTools"] = ["run_script"]
@@ -210,7 +220,9 @@ def test_analysis_request_exposes_initial_ordered_delivery_chain(toolkit):
     params = model.get_request_params(messages=[], tools=toolkit.tool_functions)
 
     assert {tool["name"] for tool in params["tools"]} == {
-        "write_script", "run_script", "submit_script",
+        "write_script",
+        "run_script",
+        "submit_script",
     }
     assert params["tools"][0]["type"] == "custom"
     assert params["tool_choice"] == "auto"
@@ -232,7 +244,9 @@ def test_visualization_request_exposes_initial_ordered_delivery_chain(toolkit):
     params = model.get_request_params(messages=[], tools=toolkit.tool_functions)
 
     assert {tool["name"] for tool in params["tools"]} == {
-        "write_script", "run_script", "submit_script",
+        "write_script",
+        "run_script",
+        "submit_script",
     }
     assert "run" not in {tool["name"] for tool in params["tools"]}
     assert params["parallel_tool_calls"] is True
@@ -306,14 +320,19 @@ async def test_custom_raw_input_survives_agno_binding_and_replay(toolkit, name):
     call = model._parse_provider_response(_custom_response(name, source)).tool_calls[0]
     function = next(f for f in toolkit.tool_functions if f.name == name)
     function.process_entrypoint()
-    fc = FunctionCall(function=function, call_id=call["call_id"],
-                      arguments=json.loads(call["function"]["arguments"]))
+    fc = FunctionCall(
+        function=function,
+        call_id=call["call_id"],
+        arguments=json.loads(call["function"]["arguments"]),
+    )
     assert await fc.aexecute()
     assert fc.result["ok"] is True
     if name == "run":
         assert toolkit.runtime.execute.await_args.args[2] == source
     else:
-        assert ast.dump(ast.parse((await toolkit.read_script())["source"])) == ast.dump(ast.parse(source))
+        assert ast.dump(ast.parse((await toolkit.read_script())["source"])) == ast.dump(
+            ast.parse(source)
+        )
     replay = model._format_messages(_assistant_and_result_messages(call, fc.result))
     assert replay[-2]["type"] == "custom_tool_call"
     assert replay[-2]["input"] == source
@@ -339,13 +358,16 @@ async def test_wrapped_input_has_recovery_and_stops_after_two_failures(toolkit, 
     function.process_entrypoint()
     argument = "code" if name == "run" else "source"
     for index in range(2):
-        fc = FunctionCall(function=function, call_id=f"wrapped-{index}",
-                          arguments={argument: WRAPPED_INPUTS[0]})
+        fc = FunctionCall(
+            function=function, call_id=f"wrapped-{index}", arguments={argument: WRAPPED_INPUTS[0]}
+        )
         assert await fc.aexecute()
         assert fc.result["details"]["nextTools"] == [name]
-        spec = next(item for item in _code_responses_model()._format_tool_params(
-            [], toolkit.tool_functions
-        ) if item["name"] == name)
+        spec = next(
+            item
+            for item in _code_responses_model()._format_tool_params([], toolkit.tool_functions)
+            if item["name"] == name
+        )
         Lark(spec["format"]["definition"]).parse(fc.result["rawInputExample"])
         assert function.stop_after_tool_call is (index == 1)
     assert toolkit.terminal_failure.code == "report_code_input_wrapped"
@@ -387,14 +409,21 @@ async def test_wrapped_terminal_preserves_batch_receipts(toolkit):
     function = next(f for f in toolkit.tool_functions if f.name == "run")
     function.process_entrypoint()
     for index in range(2):
-        fc = FunctionCall(function=function, call_id=f"prior-{index}",
-                          arguments={"code": WRAPPED_INPUTS[0]})
+        fc = FunctionCall(
+            function=function, call_id=f"prior-{index}", arguments={"code": WRAPPED_INPUTS[0]}
+        )
         assert await fc.aexecute()
     results = []
-    calls = [FunctionCall(function=function, call_id=identity, arguments={"code": source})
-             for identity, source in [("terminal", WRAPPED_INPUTS[0]), ("skipped", "print(1)")]]
-    _ = [event async for event in model.arun_function_calls(
-        function_calls=calls, function_call_results=results)]
+    calls = [
+        FunctionCall(function=function, call_id=identity, arguments={"code": source})
+        for identity, source in [("terminal", WRAPPED_INPUTS[0]), ("skipped", "print(1)")]
+    ]
+    _ = [
+        event
+        async for event in model.arun_function_calls(
+            function_calls=calls, function_call_results=results
+        )
+    ]
     assert [r.tool_call_id for r in results] == ["terminal", "skipped"]
     assert results[0].stop_after_tool_call is True
     assert "report_code_batch_stopped" in results[1].content
@@ -508,7 +537,9 @@ async def test_write_syntax_error_reports_not_ready(toolkit, monkeypatch):
     monkeypatch.setattr(
         toolkit.workspace,
         "ahash_file",
-        AsyncMock(return_value={"path": toolkit.context.script_path, "size": 28, "sha256": "a" * 64}),
+        AsyncMock(
+            return_value={"path": toolkit.context.script_path, "size": 28, "sha256": "a" * 64}
+        ),
     )
 
     result = await toolkit.write_script("if True print('syntax error')\n")
@@ -529,7 +560,9 @@ async def test_write_valid_source_reports_ready(toolkit, monkeypatch):
     monkeypatch.setattr(
         toolkit.workspace,
         "ahash_file",
-        AsyncMock(return_value={"path": toolkit.context.script_path, "size": 12, "sha256": "a" * 64}),
+        AsyncMock(
+            return_value={"path": toolkit.context.script_path, "size": 12, "sha256": "a" * 64}
+        ),
     )
 
     result = await toolkit.write_script("print('ok')\n")
@@ -545,9 +578,7 @@ async def test_wrapped_run_stops_batch_and_replays_original_custom_input(toolkit
     for function in functions.values():
         function.process_entrypoint()
     source = WRAPPED_INPUTS[0]
-    original_call = model._parse_provider_response(
-        _custom_response("run", source)
-    ).tool_calls[0]
+    original_call = model._parse_provider_response(_custom_response("run", source)).tool_calls[0]
     results: list[Message] = []
 
     _ = [

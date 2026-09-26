@@ -322,13 +322,10 @@ def _bound_collection_items(
     indices = {
         int(path[len(prefix) :].split("]", 1)[0])
         for path in data_paths
-        if path.startswith(prefix)
-        and path[len(prefix) :].split("]", 1)[0].isdigit()
+        if path.startswith(prefix) and path[len(prefix) :].split("]", 1)[0].isdigit()
     }
     return [
-        value
-        for value in values
-        if isinstance(value, Mapping) and value.get(index_key) in indices
+        value for value in values if isinstance(value, Mapping) and value.get(index_key) in indices
     ]
 
 
@@ -348,11 +345,7 @@ def visualization_coding_facts(
         "supplementalEvidenceSources",
     )
     projected = [
-        {
-            key: item[key]
-            for key in keys
-            if key in item and item[key] not in (None, [], {})
-        }
+        {key: item[key] for key in keys if key in item and item[key] not in (None, [], {})}
         for item in facts
     ]
     if plan is None:
@@ -365,9 +358,9 @@ def visualization_coding_facts(
     unresolved: set[str] = set()
     for chart in plan.charts:
         for binding in chart.data_bindings:
-            bindings.setdefault(
-                (binding.analysis_id, binding.fact_path), set()
-            ).add(binding.data_path)
+            bindings.setdefault((binding.analysis_id, binding.fact_path), set()).add(
+                binding.data_path
+            )
             if (binding.analysis_id, binding.fact_path, binding.data_path) not in catalog:
                 unresolved.add(binding.analysis_id)
     if unresolved - {item.get("analysisId") for item in projected}:
@@ -391,9 +384,7 @@ def visualization_coding_facts(
             if not isinstance(source, Mapping):
                 continue
             source_file = source.get("sourceFile")
-            source_path = (
-                source_file.get("path") if isinstance(source_file, Mapping) else None
-            )
+            source_path = source_file.get("path") if isinstance(source_file, Mapping) else None
             source_paths = (
                 bindings.get((analysis_id, source_path), set())
                 if isinstance(analysis_id, str) and isinstance(source_path, str)
@@ -402,15 +393,12 @@ def visualization_coding_facts(
             if not source_paths:
                 continue
             filtered_source = {
-                key: source[key]
-                for key in ("sourceFile", "dataPathBase")
-                if key in source
+                key: source[key] for key in ("sourceFile", "dataPathBase") if key in source
             }
             filtered_source["dataDescriptors"] = [
                 descriptor
                 for descriptor in source.get("dataDescriptors", ())
-                if isinstance(descriptor, Mapping)
-                and descriptor.get("dataPath") in source_paths
+                if isinstance(descriptor, Mapping) and descriptor.get("dataPath") in source_paths
             ]
             findings = _bound_collection_items(
                 source.get("findings"),
@@ -424,16 +412,13 @@ def visualization_coding_facts(
         if not main_paths and not sources:
             continue
         filtered = {
-            key: item[key]
-            for key in ("analysisId", "factFile", "dataPathBase")
-            if key in item
+            key: item[key] for key in ("analysisId", "factFile", "dataPathBase") if key in item
         }
         if main_paths:
             filtered["dataDescriptors"] = [
                 descriptor
                 for descriptor in item.get("dataDescriptors", ())
-                if isinstance(descriptor, Mapping)
-                and descriptor.get("dataPath") in main_paths
+                if isinstance(descriptor, Mapping) and descriptor.get("dataPath") in main_paths
             ]
             for key, prefix, index_key in (
                 ("metrics", "metrics[", "metricIndex"),
@@ -458,9 +443,7 @@ def visualization_coding_plan(
 ) -> dict[str, Any]:
     """投影图表计划；legacy 只隐藏 R7 字段，生产默认保持完整计划。"""
 
-    projection = benchmark_projection or BenchmarkProjection.for_variant(
-        BenchmarkVariant.CANDIDATE
-    )
+    projection = benchmark_projection or BenchmarkProjection.for_variant(BenchmarkVariant.CANDIDATE)
     payload = plan.model_dump(mode="json", by_alias=True)
     if projection.include_visual_bindings:
         return payload
@@ -493,11 +476,7 @@ def _validate_visualization_benchmark_planner(
 ) -> None:
     if projection is None or projection.variant is not BenchmarkVariant.LEGACY:
         return
-    if (
-        planner is None
-        or output_type is not LegacyVisualizationPlanDraft
-        or adapter is None
-    ):
+    if planner is None or output_type is not LegacyVisualizationPlanDraft or adapter is None:
         raise ReportingError(
             "report_phase_contract_invalid",
             "legacy 可视化 benchmark 必须在 planner 请求前显式提供旧 planner、旧 schema 和 adapter。",
@@ -604,9 +583,7 @@ def _visualization_repair_facts(
     contract = facts.get("visualizationDataContract")
     if chart_inputs is None or not chart_inputs.files or not isinstance(contract, Mapping):
         return facts
-    authorized = {
-        item.get("analysisId") for item in coding_facts if isinstance(item, Mapping)
-    }
+    authorized = {item.get("analysisId") for item in coding_facts if isinstance(item, Mapping)}
     metrics = [
         item
         for item in contract.get("metrics") or ()
@@ -678,9 +655,7 @@ def _analysis_item_dataset_inputs(
             "columns": list(context.fields),
         }
         if set(field_types) == set(context.fields):
-            dataset_input["columnTypes"] = {
-                field: field_types[field] for field in context.fields
-            }
+            dataset_input["columnTypes"] = {field: field_types[field] for field in context.fields}
         # A3：确定性数据集画像（列角色、基数、缺失率），减少 planner 的字段选择推理。
         roles = {"categorical": "dimension", "numeric": "measure", "temporal": "period"}
         profile = {
@@ -856,9 +831,7 @@ class RuntimeAnalysisMixin:
         benchmark_projection: BenchmarkProjection | None = None,
         visualization_planner: Any | None = None,
         visualization_output_type: type[BaseModel] = VisualizationPlanDraft,
-        visualization_plan_adapter: Callable[
-            [BaseModel, Mapping[str, Any]], VisualizationPlanDraft
-        ]
+        visualization_plan_adapter: Callable[[BaseModel, Mapping[str, Any]], VisualizationPlanDraft]
         | None = None,
     ) -> None:
         """执行单章可视化 Agent；章节草案由 durable submit 工具作为唯一完成信号。
@@ -1114,15 +1087,11 @@ class RuntimeAnalysisMixin:
                     code_runner_instance: ReportingCodeGenerationRunner | None = None
                     # 同一 fixed Workflow 内计划只生成一次；chart-input 按计划物化一次复用。
                     chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
-                    planner_metrics_recorder = (
-                        invocation.model_metrics_settlement.stage_recorder(
-                            "planner", agent_role="visualization-planner"
-                        )
+                    planner_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
+                        "planner", agent_role="visualization-planner"
                     )
-                    coding_metrics_recorder = (
-                        invocation.model_metrics_settlement.stage_recorder(
-                            "coding", agent_role="visualization-coding"
-                        )
+                    coding_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
+                        "coding", agent_role="visualization-coding"
                     )
 
                     async def generate_plan(
@@ -1201,9 +1170,7 @@ class RuntimeAnalysisMixin:
                             else None
                         )
                         coding_task_id = (
-                            binding.get("externalRunId")
-                            if isinstance(binding, Mapping)
-                            else None
+                            binding.get("externalRunId") if isinstance(binding, Mapping) else None
                         ) or task_id
                         parent_scope = self._scope(run_context)
                         task_workspace = self.workspace_for(
@@ -1290,15 +1257,11 @@ class RuntimeAnalysisMixin:
                                 else {}
                             ),
                             **({"visualizationFacts": coding_facts} if coding_facts else {}),
-                            "visualizationWorkspace": instruction_payload[
-                                "visualizationWorkspace"
-                            ],
+                            "visualizationWorkspace": instruction_payload["visualizationWorkspace"],
                             "visualizationPlan": visualization_coding_plan(
                                 plan, benchmark_projection=benchmark_projection
                             ),
-                            **_visualization_repair_facts(
-                                task_facts, chart_inputs, coding_facts
-                            ),
+                            **_visualization_repair_facts(task_facts, chart_inputs, coding_facts),
                         }
                         result = await code_runner().run(
                             coding_context,
@@ -1337,8 +1300,7 @@ class RuntimeAnalysisMixin:
                             [_visualization_registration_payload(item) for item in plan.charts],
                             run_context=task_context,
                             visual_receipts=tuple(
-                                item.model_dump(mode="json", by_alias=True)
-                                for item in _inspections
+                                item.model_dump(mode="json", by_alias=True) for item in _inspections
                             ),
                         )
 
@@ -1480,9 +1442,7 @@ class RuntimeAnalysisMixin:
         for index, metric in enumerate(payload.get("metrics", ())):
             if not isinstance(metric, Mapping):
                 continue
-            data_descriptors.append(
-                {"dataPath": f"metrics[{index}]", "fields": sorted(metric)}
-            )
+            data_descriptors.append({"dataPath": f"metrics[{index}]", "fields": sorted(metric)})
             data_descriptors.extend(
                 {
                     "dataPath": f"metrics[{index}].{collection}",
@@ -2789,9 +2749,7 @@ class RuntimeAnalysisMixin:
         )
         thinking_enabled = self._analysis_thinking_enabled
         thinking_budget_cap = self._analysis_thinking_budget_cap
-        planner_metrics_recorder = (
-            planner_model_metrics_recorder or model_metrics_recorder
-        )
+        planner_metrics_recorder = planner_model_metrics_recorder or model_metrics_recorder
         coding_metrics_recorder = coding_model_metrics_recorder or model_metrics_recorder
         summary_metrics_recorder = summary_model_metrics_recorder or model_metrics_recorder
         if self.code_mode_runtime is None:
@@ -2892,18 +2850,20 @@ class RuntimeAnalysisMixin:
                 stored_scope=parent_scope,
             )
             datasets = task_facts.get("datasets")
-            dataset_paths = tuple(
-                sorted(
-                    str(item["path"])
-                    for item in datasets
-                    if isinstance(item, Mapping) and isinstance(item.get("path"), str)
+            dataset_paths = (
+                tuple(
+                    sorted(
+                        str(item["path"])
+                        for item in datasets
+                        if isinstance(item, Mapping) and isinstance(item.get("path"), str)
+                    )
                 )
-            ) if isinstance(datasets, (list, tuple)) else ()
+                if isinstance(datasets, (list, tuple))
+                else ()
+            )
             evidence_path = str(task_facts.get("evidencePath") or "")
             if not evidence_path:
-                raise ReportingError(
-                    "report_phase_contract_invalid", "补充分析缺少 evidencePath。"
-                )
+                raise ReportingError("report_phase_contract_invalid", "补充分析缺少 evidencePath。")
             coding_context = ReportingCodingTaskContext(
                 task_id=str(task_id),
                 task_kind="analysis",
@@ -2926,18 +2886,23 @@ class RuntimeAnalysisMixin:
                         "message": "补充 evidence 超过 10 MiB 安全上限或大小无效。",
                     }
                 content = await task_workspace.read_limited_regular_file(
-                    coding_context.task_id, output.path,
+                    coding_context.task_id,
+                    output.path,
                     max_bytes=MAX_SUPPLEMENTAL_EVIDENCE_BYTES,
                 )
                 current = task_facts.get("currentAnalysis")
                 try:
                     validate_supplemental_evidence(
-                        content, current if isinstance(current, Mapping) else {},
+                        content,
+                        current if isinstance(current, Mapping) else {},
                     )
                 except ValidationError as error:
                     rejection = supplemental_evidence_schema_error(error)
-                    return {"code": rejection.code, "message": rejection.message,
-                            "details": rejection.details}
+                    return {
+                        "code": rejection.code,
+                        "message": rejection.message,
+                        "details": rejection.details,
+                    }
                 return None
 
             with bind_reporting_thinking(decision):

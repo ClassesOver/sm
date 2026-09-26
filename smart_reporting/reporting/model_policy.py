@@ -248,6 +248,7 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
         reason=reason,
     )
 
+
 _VERIFIED_REPORTING_CONTEXT_TOKEN_LIMITS: tuple[tuple[tuple[str, ...], int], ...] = (
     (("qwen3.6", "qwen3.8"), 256 * 1024),
     (("deepseek-v4",), 256 * 1024),
@@ -308,7 +309,9 @@ class ReportingThinkingProfile:
             raise ValueError("Reporting thinking temperature 必须在 0 到 2 之间")
         if self.enabled:
             if self.reasoning_effort not in {"low", "high", "max"}:
-                raise ValueError("开启 Reporting thinking 时 reasoning_effort 必须是 low、high 或 max")
+                raise ValueError(
+                    "开启 Reporting thinking 时 reasoning_effort 必须是 low、high 或 max"
+                )
             if (
                 isinstance(self.thinking_budget, bool)
                 or not isinstance(self.thinking_budget, int)

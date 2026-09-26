@@ -35,18 +35,16 @@ class BenchmarkFileIdentity(_StrictModel):
 
 class BenchmarkModelConfig(_StrictModel):
     model: str = Field(min_length=1, max_length=256)
-    reasoning_effort: Literal[
-        "none", "minimal", "low", "medium", "high", "xhigh", "max"
-    ] = Field(alias="reasoningEffort")
-    planner_reasoning_effort: Literal[
-        "none", "minimal", "low", "medium", "high", "xhigh", "max"
-    ] | None = Field(default=None, alias="plannerReasoningEffort")
-    reasoning_summary: Literal["auto", "concise", "detailed"] = Field(
-        alias="reasoningSummary"
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] = Field(
+        alias="reasoningEffort"
     )
-    enable_thinking_location: Literal[
-        "top_level", "chat_template_kwargs", "omitted"
-    ] = Field(alias="enableThinkingLocation")
+    planner_reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = Field(default=None, alias="plannerReasoningEffort")
+    reasoning_summary: Literal["auto", "concise", "detailed"] = Field(alias="reasoningSummary")
+    enable_thinking_location: Literal["top_level", "chat_template_kwargs", "omitted"] = Field(
+        alias="enableThinkingLocation"
+    )
     enable_thinking: bool | None = Field(default=None, alias="enableThinking")
     max_output_tokens: int | None = Field(default=None, alias="maxOutputTokens", gt=0)
     parallel_tool_calls: bool = Field(alias="parallelToolCalls")
@@ -57,19 +55,15 @@ class BenchmarkModelConfig(_StrictModel):
         if not self.parallel_tool_calls:
             raise ValueError("benchmark 必须固定 parallelToolCalls=true")
         if self.planner_reasoning_effort is not None and (
-            (self.planner_reasoning_effort == "none")
-            != (self.reasoning_effort == "none")
+            (self.planner_reasoning_effort == "none") != (self.reasoning_effort == "none")
         ):
-            raise ValueError(
-                "plannerReasoningEffort 与 reasoningEffort 不得跨越 none 边界"
-            )
+            raise ValueError("plannerReasoningEffort 与 reasoningEffort 不得跨越 none 边界")
         if self.enable_thinking_location == "omitted" and self.enable_thinking is not None:
             raise ValueError("enableThinkingLocation=omitted 时不得携带 enableThinking")
         if self.enable_thinking_location != "omitted" and self.enable_thinking is None:
             raise ValueError("enableThinking 投影位置存在时必须固定其布尔值")
-        if (
-            self.enable_thinking_location != "omitted"
-            and self.enable_thinking != (self.reasoning_effort != "none")
+        if self.enable_thinking_location != "omitted" and self.enable_thinking != (
+            self.reasoning_effort != "none"
         ):
             raise ValueError("enableThinking 必须与 reasoningEffort 的启用状态一致")
         return self
@@ -162,8 +156,7 @@ def prepare_frozen_planner_coding_bundle(
     if not isinstance(task_payload, dict) or not isinstance(facts, dict):
         raise ValueError("benchmark Coding payload 缺少 task 或 facts")
     if any(
-        field in facts
-        for field in ("evidenceDecision", "codingRequirements", "visualizationPlan")
+        field in facts for field in ("evidenceDecision", "codingRequirements", "visualizationPlan")
     ):
         raise ValueError("benchmark Coding 基础 facts 不得包含 planner 产物")
     task = ReportingCodingTaskContext(**task_payload)
@@ -171,8 +164,7 @@ def prepare_frozen_planner_coding_bundle(
         raise ValueError("benchmark Coding taskKind 不一致")
     source_root = Path(task.workspace_root).resolve()
     sources = [
-        (relative_path, source_root / relative_path)
-        for relative_path in task.authorized_read_paths
+        (relative_path, source_root / relative_path) for relative_path in task.authorized_read_paths
     ]
     missing = [relative_path for relative_path, path in sources if not path.is_file()]
     if missing:
@@ -289,8 +281,7 @@ def validate_frozen_planner_coding_bundle(
             },
         )
     if any(
-        field in facts
-        for field in ("evidenceDecision", "codingRequirements", "visualizationPlan")
+        field in facts for field in ("evidenceDecision", "codingRequirements", "visualizationPlan")
     ):
         raise ValueError("benchmark Coding 基础 facts 不得包含 planner 产物")
     if "variant" in payloads["plannerRequest"] or "variant" in payloads["executionContext"]:

@@ -42,7 +42,8 @@ async def _toolkit_with_script(binding, runtime):  # noqa: F811
 
 @pytest.mark.anyio
 async def test_edit_introducing_syntax_error_is_rejected_and_file_unchanged(
-    binding, runtime  # noqa: F811
+    binding,  # noqa: F811
+    runtime,  # noqa: F811
 ):
     toolkit, source = await _toolkit_with_script(binding, runtime)
 
@@ -59,7 +60,8 @@ async def test_edit_introducing_syntax_error_is_rejected_and_file_unchanged(
 
 @pytest.mark.anyio
 async def test_edit_matches_despite_trailing_whitespace_and_reports_mode(
-    binding, runtime  # noqa: F811
+    binding,  # noqa: F811
+    runtime,  # noqa: F811
 ):
     toolkit, _formatted = await _toolkit_with_script(binding, runtime)
     # 格式化会去掉行尾空白；直接落盘带行尾空白的源码，模拟模型复制 SEARCH 时丢了空白。
@@ -120,9 +122,7 @@ def test_indentation_match_with_multiline_string_reports_hint():
     source = "def f():\n    if a:\n        b = 1\n    return b\n"
 
     with pytest.raises(ReportingError) as caught:
-        apply_edit_blocks(
-            source, [("if a:\n    b = 1", 'if a:\n    b = """\nx\n"""')]
-        )
+        apply_edit_blocks(source, [("if a:\n    b = 1", 'if a:\n    b = """\nx\n"""')])
 
     assert caught.value.code == "report_code_script_edit_not_found"
     assert "多行字符串" in caught.value.details["hint"]
@@ -166,8 +166,9 @@ _ENVELOPE = f"*** Begin Edit\n*** SHA256: {_SHA}\n"
         (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\n>>>>>>> REPLACE\n*** End Edit", ""),
         (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\n\n>>>>>>> REPLACE\n*** End Edit", ""),
         (
-            (_ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit")
-            .replace("\n", "\r\n"),
+            (
+                _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit"
+            ).replace("\n", "\r\n"),
             "x = 2",
         ),
         (
@@ -175,8 +176,16 @@ _ENVELOPE = f"*** Begin Edit\n*** SHA256: {_SHA}\n"
             + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit",
             "x = 2",
         ),
-        (_ENVELOPE + "<<<<<<< SEARCH \nx = 1\n======= \nx = 2\n>>>>>>> REPLACE\t\n*** End Edit", "x = 2"),
-        ("\n\n" + _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit", "x = 2"),
+        (
+            _ENVELOPE + "<<<<<<< SEARCH \nx = 1\n======= \nx = 2\n>>>>>>> REPLACE\t\n*** End Edit",
+            "x = 2",
+        ),
+        (
+            "\n\n"
+            + _ENVELOPE
+            + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit",
+            "x = 2",
+        ),
     ],
 )
 def test_patch_tolerates_unambiguous_format_noise(patch: str, expected: str) -> None:
@@ -193,7 +202,9 @@ def test_patch_tolerates_unambiguous_format_noise(patch: str, expected: str) -> 
     [
         # 缺少 End Edit 多见于输出截断，可能丢失后续块，不能只应用一部分。
         _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n",
-        "```\n" + _ENVELOPE + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit\n```",
+        "```\n"
+        + _ENVELOPE
+        + "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n*** End Edit\n```",
     ],
 )
 def test_patch_still_rejects_truncated_or_fenced_input(patch: str) -> None:
@@ -221,7 +232,11 @@ def test_identifier_cut_match_does_not_make_real_line_ambiguous() -> None:
 @pytest.mark.parametrize(
     ("source", "edit", "expected"),
     [
-        ("plt.figure(figsize=(8, 4))\n", ("figsize=(8, 4)", "figsize=(10, 5)"), "plt.figure(figsize=(10, 5))\n"),
+        (
+            "plt.figure(figsize=(8, 4))\n",
+            ("figsize=(8, 4)", "figsize=(10, 5)"),
+            "plt.figure(figsize=(10, 5))\n",
+        ),
         ('title = "门诊收入趋势"\n', ("收入", "营收"), 'title = "门诊营收趋势"\n'),
     ],
 )
@@ -240,9 +255,7 @@ async def test_syntax_error_receipts_report_location(binding, runtime):  # noqa:
     assert syntax["line"] >= 2 and syntax["reason"]
 
     current = (await toolkit.read_script())["source"]
-    edited = await toolkit.edit_script(
-        multi_edit_patch(current, [("value = 2", "value = 3")])
-    )
+    edited = await toolkit.edit_script(multi_edit_patch(current, [("value = 2", "value = 3")]))
     assert edited["ok"] is True
     assert edited["readyForExecution"] is False
     assert edited["syntaxError"]["errorType"] == "SyntaxError"

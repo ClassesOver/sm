@@ -163,12 +163,8 @@ class PythonRuntime:
         missing = re.search(rb"No module named ['\"]([^'\"]+)['\"]", stderr)
         if missing is not None:
             raise DependencyUnavailable(missing.group(1).decode("utf-8", errors="replace"))
-        stdout_text, stdout_truncated = bounded_python_output(
-            stdout, request.output_limit_bytes
-        )
-        stderr_text, stderr_truncated = bounded_python_output(
-            stderr, request.output_limit_bytes
-        )
+        stdout_text, stdout_truncated = bounded_python_output(stdout, request.output_limit_bytes)
+        stderr_text, stderr_truncated = bounded_python_output(stderr, request.output_limit_bytes)
 
         return RunPythonScriptResult(
             status=(

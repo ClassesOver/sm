@@ -226,30 +226,28 @@ def test_delivery_state_exposes_only_critical_visual_failures(tmp_path: Path) ->
     binding.execution_receipt = ExecutionReceipt(
         runId="run-1", sourceFile=script_file, outputFiles=(chart_file,)
     )
-    binding.visual_inspection_receipts[chart_file.path] = (
-        ChartVisualInspectionReceipt(
-            sourcePath=chart_file.path,
-            sha256=chart_file.sha256,
-            inspectionMode="vision",
-            visualReviewStatus="passed",
-            modelId="vision-test",
-            reviewed=True,
-            requiresRevision=True,
-            issues=(
-                ChartVisualInspectionIssue(
-                    category="text_overlap",
-                    severity="critical",
-                    description="关键标签完全重叠。",
-                ),
-                ChartVisualInspectionIssue(
-                    category="missing_units",
-                    severity="warning",
-                    description="不得进入交付状态的 warning。",
-                ),
+    binding.visual_inspection_receipts[chart_file.path] = ChartVisualInspectionReceipt(
+        sourcePath=chart_file.path,
+        sha256=chart_file.sha256,
+        inspectionMode="vision",
+        visualReviewStatus="passed",
+        modelId="vision-test",
+        reviewed=True,
+        requiresRevision=True,
+        issues=(
+            ChartVisualInspectionIssue(
+                category="text_overlap",
+                severity="critical",
+                description="关键标签完全重叠。",
             ),
-            summary="不得进入交付状态的摘要。",
-            suggestions=("无法确定归属的建议。",),
-        )
+            ChartVisualInspectionIssue(
+                category="missing_units",
+                severity="warning",
+                description="不得进入交付状态的 warning。",
+            ),
+        ),
+        summary="不得进入交付状态的摘要。",
+        suggestions=("无法确定归属的建议。",),
     )
     toolkit = ReportingCodeModeToolkit(
         binding,
@@ -263,7 +261,7 @@ def test_delivery_state_exposes_only_critical_visual_failures(tmp_path: Path) ->
         {
             "path": chart_file.path,
             "paths": [chart_file.path],
-                "summary": "",
+            "summary": "",
             "issues": [
                 {
                     "category": "text_overlap",

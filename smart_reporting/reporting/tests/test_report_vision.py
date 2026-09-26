@@ -10,8 +10,11 @@ from smart_reporting.reporting.vision import ReportVisionReviewer
 def test_visual_model_disables_thinking():
     reviewer = ReportVisionReviewer(
         SimpleNamespace(
-            report_vision_model="vision-model", openai_base_url="https://example.com/v1",
-            openai_api_key="test", model_timeout_seconds=30, debug=False,
+            report_vision_model="vision-model",
+            openai_base_url="https://example.com/v1",
+            openai_api_key="test",
+            model_timeout_seconds=30,
+            debug=False,
         ),
         None,
     )

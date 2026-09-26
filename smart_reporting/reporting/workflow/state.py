@@ -538,9 +538,7 @@ def apply(
                 chart.pop("interactivePath")
         interactive_paths = [item["path"] for item in parsed_interactive_files]
         declared_paths = [
-            chart["interactivePath"]
-            for chart in parsed_charts
-            if chart.get("renderer") == "plotly"
+            chart["interactivePath"] for chart in parsed_charts if chart.get("renderer") == "plotly"
         ]
         if len(chart_ids) != len(set(chart_ids)) or len(source_paths) != len(set(source_paths)):
             raise ReportingStateError(
@@ -660,9 +658,7 @@ def apply(
             ) from error
         contexts = payload.setdefault("reportEditorContexts", {})
         if not isinstance(contexts, dict):
-            raise ReportingStateError(
-                "report_state_invalid", "reportEditorContexts 状态损坏。"
-            )
+            raise ReportingStateError("report_state_invalid", "reportEditorContexts 状态损坏。")
         key = str(context.revision)
         serialized = context.model_dump(mode="json", by_alias=True)
         existing = contexts.get(key)

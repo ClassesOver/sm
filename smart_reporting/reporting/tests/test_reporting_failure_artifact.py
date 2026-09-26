@@ -23,12 +23,16 @@ async def test_first_failure_artifact_survives_edit_without_entering_metrics(bin
     path = tmp_path / "failure.json"
     runtime = ToolkitRuntime()
     toolkit = ReportingCodeModeToolkit(
-        binding, runtime, ReportingLspProcessManager(),
+        binding,
+        runtime,
+        ReportingLspProcessManager(),
         failure_artifact_recorder=lambda payload: artifacts.append(
             replay.write_failure_artifact(path, payload)
         ),
     )
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, SOURCE)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, SOURCE
+    )
     functions = {tool.name: tool for tool in toolkit.tool_functions}
     runtime.next_cell = _failed_cell("ValueError: first failure")
     call = FunctionCall(function=functions["run_script"], arguments={})
@@ -40,12 +44,17 @@ async def test_first_failure_artifact_survives_edit_without_entering_metrics(bin
     assert snapshot["sourceSha256"] == hashlib.sha256(SOURCE.encode()).hexdigest()
     assert "ValueError: first failure" in snapshot["diagnostic"]["traceback"]
     assert "source" not in toolkit.first_run_failure
-    assert artifacts == [{"path": str(path), "sha256": hashlib.sha256(original).hexdigest(), "size": len(original)}]
+    assert artifacts == [
+        {"path": str(path), "sha256": hashlib.sha256(original).hexdigest(), "size": len(original)}
+    ]
     assert path.stat().st_mode & 0o777 == 0o600
 
-    edit = FunctionCall(function=functions["edit_script"], arguments={
-        "patch": edit_patch(SOURCE, "write_text('{}')", "write_text('[]')"),
-    })
+    edit = FunctionCall(
+        function=functions["edit_script"],
+        arguments={
+            "patch": edit_patch(SOURCE, "write_text('{}')", "write_text('[]')"),
+        },
+    )
     assert await edit.aexecute()
     assert edit.result["ok"] is True
     runtime.next_cell = _failed_cell("TypeError: later failure")
@@ -64,10 +73,14 @@ async def test_failure_artifact_recorder_error_preserves_original_failure(bindin
 
     runtime = ToolkitRuntime()
     toolkit = ReportingCodeModeToolkit(
-        binding, runtime, ReportingLspProcessManager(),
+        binding,
+        runtime,
+        ReportingLspProcessManager(),
         failure_artifact_recorder=broken_recorder,
     )
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, SOURCE)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, SOURCE
+    )
     runtime.next_cell = _failed_cell("ValueError: original failure")
     function = next(tool for tool in toolkit.tool_functions if tool.name == "run_script")
     call = FunctionCall(function=function, arguments={})
@@ -81,16 +94,24 @@ async def test_failure_artifact_recorder_error_preserves_original_failure(bindin
 async def test_failure_artifact_does_not_capture_a_changed_source(binding, tmp_path):  # noqa: F811
     class ChangedSourceRuntime(ToolkitRuntime):
         async def execute_script_process(self, session_id, host_workspace, script_path, **kwargs):
-            await host_workspace.awrite_text("task-1", script_path, SOURCE + "# changed\n", overwrite=True)
-            return await super().execute_script_process(session_id, host_workspace, script_path, **kwargs)
+            await host_workspace.awrite_text(
+                "task-1", script_path, SOURCE + "# changed\n", overwrite=True
+            )
+            return await super().execute_script_process(
+                session_id, host_workspace, script_path, **kwargs
+            )
 
     path = tmp_path / "failure.json"
     runtime = ChangedSourceRuntime()
     toolkit = ReportingCodeModeToolkit(
-        binding, runtime, ReportingLspProcessManager(),
+        binding,
+        runtime,
+        ReportingLspProcessManager(),
         failure_artifact_recorder=lambda payload: replay.write_failure_artifact(path, payload),
     )
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, SOURCE)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, SOURCE
+    )
     runtime.next_cell = _failed_cell("ValueError: original failure")
     function = next(tool for tool in toolkit.tool_functions if tool.name == "run_script")
     call = FunctionCall(function=function, arguments={})

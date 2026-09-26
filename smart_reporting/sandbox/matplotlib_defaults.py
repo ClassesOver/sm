@@ -222,9 +222,7 @@ class _PostImportHooks(importlib.abc.MetaPathFinder):
 
 
 def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
-    hooks = _PostImportHooks(
-        {"kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults}
-    )
+    hooks = _PostImportHooks({"kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults})
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
     if "kaleido" in sys.modules:

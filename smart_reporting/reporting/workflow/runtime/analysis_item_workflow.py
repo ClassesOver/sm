@@ -118,13 +118,15 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
     for prop in schema["properties"].values():
         prop.pop("title", None)
         prop.pop("default", None)
-    schema["properties"]["reconciliations"]["items"].update({
-        "properties": {
-            "name": {"type": "string", "minLength": 1, "pattern": r"\S"},
-            "passed": {"type": "boolean"},
-        },
-        "required": ["name", "passed"],
-    })
+    schema["properties"]["reconciliations"]["items"].update(
+        {
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                "passed": {"type": "boolean"},
+            },
+            "required": ["name", "passed"],
+        }
+    )
     return {
         "format": "json",
         "schema": schema,
@@ -142,18 +144,25 @@ def supplemental_evidence_output_contract() -> dict[str, Any]:
 
 
 def validate_supplemental_evidence(
-    content: str | bytes, current_analysis: Mapping[str, Any],
+    content: str | bytes,
+    current_analysis: Mapping[str, Any],
 ) -> SupplementalEvidence:
     """工具预检与 Workflow 验收共享结构契约，身份只取自服务端。"""
     payload = TypeAdapter(dict[str, Any]).validate_json(content)
     for key in ("analysisId", "analysis_id", "datasetIds", "dataset_ids"):
         payload.pop(key, None)
-    dataset_ids = list(dict.fromkeys(
-        value for value in current_analysis.get("datasetIds") or () if isinstance(value, str)
-    ))
-    return SupplementalEvidence.model_validate({
-        **payload, "analysisId": current_analysis.get("analysisId"), "datasetIds": dataset_ids,
-    })
+    dataset_ids = list(
+        dict.fromkeys(
+            value for value in current_analysis.get("datasetIds") or () if isinstance(value, str)
+        )
+    )
+    return SupplementalEvidence.model_validate(
+        {
+            **payload,
+            "analysisId": current_analysis.get("analysisId"),
+            "datasetIds": dataset_ids,
+        }
+    )
 
 
 def supplemental_evidence_schema_error(error: ValidationError) -> ReportingError:
@@ -265,9 +274,7 @@ def _validate_coding_requirements(
     authorized_dataset_ids = frozenset(
         item
         for item in (
-            current_analysis.get("datasetIds", ())
-            if isinstance(current_analysis, Mapping)
-            else ()
+            current_analysis.get("datasetIds", ()) if isinstance(current_analysis, Mapping) else ()
         )
         if isinstance(item, str) and item
     )
@@ -973,9 +980,7 @@ class AnalysisItemWorkflow:
             state.instruction.get("currentAnalysis"),
         )
         current_analysis = state.instruction.get("currentAnalysis")
-        existing_facts = _compact_existing_facts(
-            state.instruction.get("deterministicFacts")
-        )
+        existing_facts = _compact_existing_facts(state.instruction.get("deterministicFacts"))
         if (
             existing_facts is not None
             and isinstance(current_analysis, Mapping)
@@ -985,8 +990,10 @@ class AnalysisItemWorkflow:
                 "report_analysis_facts_invalid",
                 "补证脚本的既有事实与当前分析项身份不一致。",
             )
-        projection = benchmark_projection or self.benchmark_projection or BenchmarkProjection.for_variant(
-            BenchmarkVariant.CANDIDATE
+        projection = (
+            benchmark_projection
+            or self.benchmark_projection
+            or BenchmarkProjection.for_variant(BenchmarkVariant.CANDIDATE)
         )
         facts = {
             "currentAnalysis": current_analysis,
@@ -1005,8 +1012,7 @@ class AnalysisItemWorkflow:
             }
         elif isinstance(decision, AnalysisEvidenceDecision):
             facts["codingRequirements"] = [
-                item.model_dump(mode="json", by_alias=True)
-                for item in decision.coding_requirements
+                item.model_dump(mode="json", by_alias=True) for item in decision.coding_requirements
             ]
         return facts
 
@@ -1047,7 +1053,8 @@ class AnalysisItemWorkflow:
             content = await self._read_supplemental_evidence(state, run_context)
             current_analysis = state.instruction.get("currentAnalysis")
             evidence = validate_supplemental_evidence(
-                content, current_analysis if isinstance(current_analysis, Mapping) else {},
+                content,
+                current_analysis if isinstance(current_analysis, Mapping) else {},
             )
         except ValidationError as error:
             rejection = supplemental_evidence_schema_error(error)
@@ -1144,9 +1151,7 @@ class AnalysisItemWorkflow:
                     )
                     if columns is not None:
                         dataset_columns[str(dataset_id)] = columns
-                warnings.extend(
-                    dimension_coverage_gaps(requirements, dataset_columns, findings)
-                )
+                warnings.extend(dimension_coverage_gaps(requirements, dataset_columns, findings))
             warnings.extend(one_sided_gap_warnings(findings, evidence.warnings))
         except Exception as error:  # noqa: BLE001 - 软校验不得影响补证交付
             logger.warning(
@@ -1277,7 +1282,10 @@ class AnalysisItemWorkflow:
         )
         receipt = state.execution_receipt
         expected = (
-            next((item for item in receipt.output_files if item.path == state.evidence_file.path), None)
+            next(
+                (item for item in receipt.output_files if item.path == state.evidence_file.path),
+                None,
+            )
             if receipt is not None
             else None
         )

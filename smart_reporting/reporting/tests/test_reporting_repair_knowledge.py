@@ -57,13 +57,15 @@ def _visualization_plan() -> VisualizationPlanDraft:
                 sourceDatasetId="dataset_001",
                 aggregationGrain="month",
                 visualForm="按月折线图",
-                dataBindings=({
-                    "analysisId": "analysis_001",
-                    "factPath": "facts/analysis_001.json",
-                    "dataPath": "metrics[0].periodValues",
-                    "fields": ["period", "value"],
-                    "role": "月度趋势",
-                },),
+                dataBindings=(
+                    {
+                        "analysisId": "analysis_001",
+                        "factPath": "facts/analysis_001.json",
+                        "dataPath": "metrics[0].periodValues",
+                        "fields": ["period", "value"],
+                        "role": "月度趋势",
+                    },
+                ),
             ),
         )
     )
@@ -72,14 +74,18 @@ def _visualization_plan() -> VisualizationPlanDraft:
 def _visualization_payload() -> dict[str, object]:
     return {
         "visualizationWorkspace": {"scriptPath": "charts/charts.py"},
-        "visualizationFacts": [{
-            "analysisId": "analysis_001",
-            "factFile": {"path": "facts/analysis_001.json"},
-            "dataDescriptors": [{
-                "dataPath": "metrics[0].periodValues",
-                "fields": ["period", "value"],
-            }],
-        }],
+        "visualizationFacts": [
+            {
+                "analysisId": "analysis_001",
+                "factFile": {"path": "facts/analysis_001.json"},
+                "dataDescriptors": [
+                    {
+                        "dataPath": "metrics[0].periodValues",
+                        "fields": ["period", "value"],
+                    }
+                ],
+            }
+        ],
     }
 
 

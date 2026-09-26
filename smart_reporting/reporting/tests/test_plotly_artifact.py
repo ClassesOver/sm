@@ -64,11 +64,26 @@ async def test_plotly_python_to_json_output_is_accepted() -> None:
     [
         {"data": [{"type": "sunburst", "labels": ["收入"]}]},
         {"data": [{"type": "bar", "x": [1], "y": [2], "src": "remote:1"}]},
-        {"data": [{"type": "bar", "x": [1], "y": [2]}], "layout": {"images": [{"source": "https://example.com/x.png"}]}},
-        {"data": [{"type": "bar", "x": [1], "y": [2]}], "layout": {"hovertemplate": "<script>alert(1)</script>"}},
-        {"data": [{"type": "bar", "x": [1], "y": [2]}], "config": {"onClick": "javascript:alert(1)"}},
-        {"data": [{"type": "bar", "x": [1], "y": [2]}], "layout": {"annotations": [{"text": "<script>alert(1)</script>"}]}},
-        {"data": [{"type": "bar", "x": [1], "y": [2]}], "layout": {"images": [{"source": "//example.com/x.png"}]}},
+        {
+            "data": [{"type": "bar", "x": [1], "y": [2]}],
+            "layout": {"images": [{"source": "https://example.com/x.png"}]},
+        },
+        {
+            "data": [{"type": "bar", "x": [1], "y": [2]}],
+            "layout": {"hovertemplate": "<script>alert(1)</script>"},
+        },
+        {
+            "data": [{"type": "bar", "x": [1], "y": [2]}],
+            "config": {"onClick": "javascript:alert(1)"},
+        },
+        {
+            "data": [{"type": "bar", "x": [1], "y": [2]}],
+            "layout": {"annotations": [{"text": "<script>alert(1)</script>"}]},
+        },
+        {
+            "data": [{"type": "bar", "x": [1], "y": [2]}],
+            "layout": {"images": [{"source": "//example.com/x.png"}]},
+        },
         {"data": [{"type": "bar", "x": [float("nan")], "y": [2]}]},
     ],
 )

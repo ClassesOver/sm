@@ -31,8 +31,12 @@ class ShellCodeMode:
         receipt = shlex.split(code.splitlines()[-2])[-1]
         self.paths.append(receipt)
         process = await asyncio.create_subprocess_exec(
-            "bash", "-c", code.removeprefix("%%bash\n"), cwd=self.root,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "bash",
+            "-c",
+            code.removeprefix("%%bash\n"),
+            cwd=self.root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await process.communicate()
         if self.receipt is not None:
@@ -41,8 +45,12 @@ class ShellCodeMode:
             else:
                 Path(receipt).write_bytes(self.receipt)
         # Deliberately discard both streams, as CodeMode truncation may do.
-        return SimpleNamespace(status="ok" if process.returncode == 0 else "error",
-                               stdout="", stderr="", traceback=None)
+        return SimpleNamespace(
+            status="ok" if process.returncode == 0 else "error",
+            stdout="",
+            stderr="",
+            traceback=None,
+        )
 
 
 def test_visualization_shell_wrapper_runs_font_bootstrap_in_script_process(tmp_path):
@@ -83,8 +91,7 @@ def test_visualization_shell_wrapper_runs_outside_project_cwd(tmp_path):
     output_path = workspace_root / "completed.txt"
     receipt_path = workspace_root / "exit.status"
     (workspace_root / "chart.py").write_text(
-        "from pathlib import Path\n"
-        "Path('completed.txt').write_text('ok', encoding='utf-8')\n",
+        "from pathlib import Path\nPath('completed.txt').write_text('ok', encoding='utf-8')\n",
         encoding="utf-8",
     )
     cell = _script_process_cell(
@@ -114,10 +121,12 @@ async def test_connection_log_precedes_execution_and_refreshes_after_restart(wor
     class ObservableCodeMode(ShellCodeMode):
         def __init__(self):
             super().__init__(workspace.identity.root)
-            self._sessions = {"task": SimpleNamespace(
-                km=SimpleNamespace(connection_file=path, key="must-not-be-logged"),
-                generation=1,
-            )}
+            self._sessions = {
+                "task": SimpleNamespace(
+                    km=SimpleNamespace(connection_file=path, key="must-not-be-logged"),
+                    generation=1,
+                )
+            }
 
         async def arun(self, session_id, code):
             if code == "business()":
@@ -134,7 +143,10 @@ async def test_connection_log_precedes_execution_and_refreshes_after_restart(wor
         assert len(rows) == 1
         command = rows[0].split("qtconsole_command=", 1)[1].strip()
         assert shlex.split(command) == [
-            "jupyter", "qtconsole", "--existing", path,
+            "jupyter",
+            "qtconsole",
+            "--existing",
+            path,
             "--ConsoleWidget.include_other_output=True",
         ]
         assert "session_id=task" in rows[0]
@@ -175,13 +187,19 @@ async def test_script_exit_receipts_survive_output_loss_and_concurrency(workspac
     code_mode = ShellCodeMode(workspace.identity.root)
     runtime = ReportingCodeModeRuntime(code_mode)
     for code in (0, 7):
-        await workspace.awrite_text("task", f"analysis/exit {code}.py",
-                                    f"print('__REPORT_EXIT__=99'); raise SystemExit({code})")
-    results = await asyncio.gather(*(
-        runtime.execute_script_process(str(code), workspace, f"analysis/exit {code}.py",
-                                       matplotlib_agg=False)
-        for code in (0, 7)
-    ))
+        await workspace.awrite_text(
+            "task",
+            f"analysis/exit {code}.py",
+            f"print('__REPORT_EXIT__=99'); raise SystemExit({code})",
+        )
+    results = await asyncio.gather(
+        *(
+            runtime.execute_script_process(
+                str(code), workspace, f"analysis/exit {code}.py", matplotlib_agg=False
+            )
+            for code in (0, 7)
+        )
+    )
     assert [result.exit_code for result in results] == [0, 7]
     assert len(set(code_mode.paths)) == 2
     assert list((workspace.identity.root / ".reporting-exits").iterdir()) == []
@@ -211,7 +229,9 @@ async def test_script_process_cleans_receipt_after_transport_error(workspace):  
 
     runtime = ReportingCodeModeRuntime(BrokenCodeMode(workspace.identity.root))
     with pytest.raises(ReportingError) as caught:
-        await runtime.execute_script_process("task", workspace, "analysis/a.py", matplotlib_agg=False)
+        await runtime.execute_script_process(
+            "task", workspace, "analysis/a.py", matplotlib_agg=False
+        )
     assert caught.value.code == "report_code_mode_execution_failed"
     assert list((workspace.identity.root / ".reporting-exits").iterdir()) == []
 
@@ -220,18 +240,28 @@ async def test_script_process_cleans_receipt_after_transport_error(workspace):  
 async def test_real_agno_kernel_receipts_survive_stream_truncation(workspace):  # noqa: F811
     from agno.tools.code import CodeMode
 
-    runtime = ReportingCodeModeRuntime(CodeMode(
-        snapshot=False, allow_shell=True, cwd=str(workspace.identity.root),
-        timeout=30, max_output_chars=128, max_kernels=1,
-    ))
+    runtime = ReportingCodeModeRuntime(
+        CodeMode(
+            snapshot=False,
+            allow_shell=True,
+            cwd=str(workspace.identity.root),
+            timeout=30,
+            max_output_chars=128,
+            max_kernels=1,
+        )
+    )
     try:
         for code in (0, 7):
             path = f"analysis/exit {code}.py"
-            await workspace.awrite_text("task", path,
+            await workspace.awrite_text(
+                "task",
+                path,
                 f"import sys\nprint('x' * 2000)\nprint('y' * 2000, file=sys.stderr)\n"
-                f"raise SystemExit({code})\n")
-            process = await runtime.execute_script_process("real-kernel", workspace, path,
-                                                           matplotlib_agg=False)
+                f"raise SystemExit({code})\n",
+            )
+            process = await runtime.execute_script_process(
+                "real-kernel", workspace, path, matplotlib_agg=False
+            )
             assert process.exit_code == code
             assert process.cell.status == ("ok" if code == 0 else "error")
             assert "stdout" in process.cell.truncated
@@ -245,12 +275,14 @@ async def test_real_agno_kernel_receipts_survive_stream_truncation(workspace):  
 async def test_real_agno_kernel_exploration_variables_persist_until_shutdown(workspace):  # noqa: F811
     from agno.tools.code import CodeMode
 
-    runtime = ReportingCodeModeRuntime(CodeMode(
-        snapshot=False,
-        cwd=str(workspace.identity.root),
-        timeout=30,
-        max_kernels=1,
-    ))
+    runtime = ReportingCodeModeRuntime(
+        CodeMode(
+            snapshot=False,
+            cwd=str(workspace.identity.root),
+            timeout=30,
+            max_kernels=1,
+        )
+    )
     try:
         first = await runtime.execute(
             "exploration-state",

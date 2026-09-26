@@ -33,9 +33,7 @@ async def test_replay_wall_timeout_is_explicit_and_does_not_retry() -> None:
         await asyncio.sleep(1)
 
     with pytest.raises(replay_visualization_task.ReplayWallTimeout) as exc_info:
-        await replay_visualization_task.run_with_wall_timeout(
-            hanging_run(), seconds=0.001
-        )
+        await replay_visualization_task.run_with_wall_timeout(hanging_run(), seconds=0.001)
 
     assert calls == 1
     assert exc_info.value.seconds == 0.001
@@ -172,9 +170,17 @@ def test_replay_wall_timeout_failure_is_censored() -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("metrics", [None, SimpleNamespace(
-    input_tokens=120, output_tokens=30, reasoning_tokens=20,
-)])
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        None,
+        SimpleNamespace(
+            input_tokens=120,
+            output_tokens=30,
+            reasoning_tokens=20,
+        ),
+    ],
+)
 async def test_replay_wall_timeout_preserves_started_request_metric(
     tmp_path, monkeypatch, metrics
 ) -> None:
@@ -263,15 +269,9 @@ async def test_replay_wall_timeout_preserves_started_request_metric(
         "create_reporting_code_mode_runtime",
         lambda *_args, **_kwargs: FakeCloseable(),
     )
-    monkeypatch.setattr(
-        replay_visualization_task, "ReportingLspProcessManager", FakeCloseable
-    )
-    monkeypatch.setattr(
-        replay_visualization_task, "ReportVisionReviewer", lambda *_args: object()
-    )
-    monkeypatch.setattr(
-        replay_visualization_task, "ReportingCodeGenerationRunner", HangingRunner
-    )
+    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", FakeCloseable)
+    monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
+    monkeypatch.setattr(replay_visualization_task, "ReportingCodeGenerationRunner", HangingRunner)
 
     result = await replay_visualization_task.main(
         None,
@@ -287,12 +287,14 @@ async def test_replay_wall_timeout_preserves_started_request_metric(
     saved = json.loads(output_path.read_text(encoding="utf-8"))
     assert result == 1
     assert saved["status"] == "timed_out"
-    assert saved["modelMetrics"] == [{
-        "requests": 1,
-        "inputTokens": 120 if metrics is not None else None,
-        "outputTokens": 30 if metrics is not None else None,
-        "reasoningTokens": 20 if metrics is not None else None,
-    }]
+    assert saved["modelMetrics"] == [
+        {
+            "requests": 1,
+            "inputTokens": 120 if metrics is not None else None,
+            "outputTokens": 30 if metrics is not None else None,
+            "reasoningTokens": 20 if metrics is not None else None,
+        }
+    ]
     assert saved["requestMetrics"][0]["status"] == "started"
     assert any(args[3:] == (1, "started") for args in heartbeat_messages)
 
@@ -336,17 +338,16 @@ def _analysis_benchmark_payload(source, dataset, *, include_decision: bool) -> d
 
 
 @pytest.mark.anyio
-async def test_replay_runner_setup_failure_cleans_up_heartbeat_and_resources(
-    tmp_path, monkeypatch
-):
+async def test_replay_runner_setup_failure_cleans_up_heartbeat_and_resources(tmp_path, monkeypatch):
     source = tmp_path / "source"
     dataset = source / "datasets/current.csv"
     dataset.parent.mkdir(parents=True)
     dataset.write_text("income\n100\n", encoding="utf-8")
     payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(
-        _analysis_benchmark_payload(source, dataset, include_decision=True)
-    ), encoding="utf-8")
+    payload_path.write_text(
+        json.dumps(_analysis_benchmark_payload(source, dataset, include_decision=True)),
+        encoding="utf-8",
+    )
     closed = []
 
     class Resource:
@@ -359,11 +360,23 @@ async def test_replay_runner_setup_failure_cleans_up_heartbeat_and_resources(
     def failing_runner(*_args, **_kwargs):
         raise RuntimeError("runner setup failed")
 
-    monkeypatch.setattr(replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace())
-    monkeypatch.setattr(replay_visualization_task, "build_replay_model", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_agent_factory", lambda **_kwargs: object())
-    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_mode_runtime", lambda *_args, **_kwargs: Resource("runtime"))
-    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", lambda: Resource("lsp"))
+    monkeypatch.setattr(
+        replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task, "build_replay_model", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task, "create_reporting_code_agent_factory", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "create_reporting_code_mode_runtime",
+        lambda *_args, **_kwargs: Resource("runtime"),
+    )
+    monkeypatch.setattr(
+        replay_visualization_task, "ReportingLspProcessManager", lambda: Resource("lsp")
+    )
     monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
     monkeypatch.setattr(replay_visualization_task, "ReportingCodeGenerationRunner", failing_runner)
     pending_before = asyncio.all_tasks()
@@ -391,9 +404,10 @@ async def test_replay_disable_flags_mark_coding_model(tmp_path, monkeypatch):
     dataset.parent.mkdir(parents=True)
     dataset.write_text("income\n100\n", encoding="utf-8")
     payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(
-        _analysis_benchmark_payload(source, dataset, include_decision=True)
-    ), encoding="utf-8")
+    payload_path.write_text(
+        json.dumps(_analysis_benchmark_payload(source, dataset, include_decision=True)),
+        encoding="utf-8",
+    )
     sentinel = SimpleNamespace()
     closed = []
 
@@ -411,17 +425,36 @@ async def test_replay_disable_flags_mark_coding_model(tmp_path, monkeypatch):
     def failing_runner(*_args, **_kwargs):
         raise RuntimeError("runner setup failed")
 
-    monkeypatch.setattr(replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace())
-    monkeypatch.setattr(replay_visualization_task, "build_replay_model", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_agent_factory", fake_factory)
-    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_mode_runtime", lambda *_args, **_kwargs: Resource("runtime"))
-    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", lambda: Resource("lsp"))
+    monkeypatch.setattr(
+        replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task, "build_replay_model", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task, "create_reporting_code_agent_factory", fake_factory
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "create_reporting_code_mode_runtime",
+        lambda *_args, **_kwargs: Resource("runtime"),
+    )
+    monkeypatch.setattr(
+        replay_visualization_task, "ReportingLspProcessManager", lambda: Resource("lsp")
+    )
     monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
     monkeypatch.setattr(replay_visualization_task, "ReportingCodeGenerationRunner", failing_runner)
 
     result = await replay_visualization_task.main(
-        None, payload_path, "analysis", "low", tmp_path / "result.json", None, None,
-        disable_history_summary=True, disable_metadata_budget=True,
+        None,
+        payload_path,
+        "analysis",
+        "low",
+        tmp_path / "result.json",
+        None,
+        None,
+        disable_history_summary=True,
+        disable_metadata_budget=True,
     )
 
     assert result == 1
@@ -430,7 +463,9 @@ async def test_replay_disable_flags_mark_coding_model(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("case", ["implicit", "same_seed", "input_tamper", "seed_tamper", "different_seed"])
+@pytest.mark.parametrize(
+    "case", ["implicit", "same_seed", "input_tamper", "seed_tamper", "different_seed"]
+)
 async def test_main_validates_frozen_payload_and_loads_signed_seed(tmp_path, monkeypatch, case):
     source = tmp_path / "source"
     dataset = source / "datasets/current.csv"
@@ -441,7 +476,9 @@ async def test_main_validates_frozen_payload_and_loads_signed_seed(tmp_path, mon
     seed.write_bytes(source_bytes)
     bundle = tmp_path / "bundle"
     replay_visualization_task.prepare_replay_bundle(
-        _analysis_benchmark_payload(source, dataset, include_decision=True), bundle, seed,
+        _analysis_benchmark_payload(source, dataset, include_decision=True),
+        bundle,
+        seed,
     )
     explicit = seed if case in {"same_seed", "different_seed"} else None
     invalid = case in {"input_tamper", "seed_tamper", "different_seed"}
@@ -467,18 +504,41 @@ async def test_main_validates_frozen_payload_and_loads_signed_seed(tmp_path, mon
             assert actual == source_bytes
             assert hashlib.sha256(actual).hexdigest() == hashlib.sha256(source_bytes).hexdigest()
             return SimpleNamespace(
-                script_file=SimpleNamespace(model_dump=lambda **_kwargs: {"path": task.script_path}),
-                execution_receipt=SimpleNamespace(output_files=()), visual_inspection_receipts=(),
+                script_file=SimpleNamespace(
+                    model_dump=lambda **_kwargs: {"path": task.script_path}
+                ),
+                execution_receipt=SimpleNamespace(output_files=()),
+                visual_inspection_receipts=(),
             )
 
-    monkeypatch.setattr(replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        replay_visualization_task.AgentSettings, "from_environment", lambda: SimpleNamespace()
+    )
     monkeypatch.setattr(replay_visualization_task, "build_replay_model", model_factory)
-    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_agent_factory", lambda **_kwargs: object())
-    monkeypatch.setattr(replay_visualization_task, "create_reporting_code_mode_runtime", lambda *_args, **_kwargs: Closeable())
+    monkeypatch.setattr(
+        replay_visualization_task, "create_reporting_code_agent_factory", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "create_reporting_code_mode_runtime",
+        lambda *_args, **_kwargs: Closeable(),
+    )
     monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", Closeable)
     monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
-    monkeypatch.setattr(replay_visualization_task, "ReportingCodeGenerationRunner", lambda *_args, **_kwargs: Runner())
-    args = (None, bundle / "payload.json", "analysis", "high", tmp_path / "result.json", None, explicit)
+    monkeypatch.setattr(
+        replay_visualization_task,
+        "ReportingCodeGenerationRunner",
+        lambda *_args, **_kwargs: Runner(),
+    )
+    args = (
+        None,
+        bundle / "payload.json",
+        "analysis",
+        "high",
+        tmp_path / "result.json",
+        None,
+        explicit,
+    )
     if invalid:
         with pytest.raises(ValueError, match="身份不一致"):
             await replay_visualization_task.main(*args)
@@ -493,16 +553,18 @@ def _prepare_linked_analysis_bundles(tmp_path, *, candidate=False):
     dataset.write_text("income\n100\n", encoding="utf-8")
     base_payload = _analysis_benchmark_payload(source, dataset, include_decision=False)
     benchmark_bundle = tmp_path / "benchmark"
-    model_config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "medium",
-        "reasoningSummary": "detailed",
-        "enableThinkingLocation": "top_level",
-        "enableThinking": True,
-        "maxOutputTokens": 65536,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    model_config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "medium",
+            "reasoningSummary": "detailed",
+            "enableThinkingLocation": "top_level",
+            "enableThinking": True,
+            "maxOutputTokens": 65536,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
     prepare_frozen_planner_coding_bundle(
         benchmark_bundle,
         task_kind="analysis",
@@ -515,10 +577,14 @@ def _prepare_linked_analysis_bundles(tmp_path, *, candidate=False):
     payload = _analysis_benchmark_payload(source, dataset, include_decision=True)
     if candidate:
         payload["facts"].pop("evidenceDecision")
-        payload["facts"]["codingRequirements"] = [{
-            "datasetId": "current", "fields": ["income"],
-            "calculation": "计算合计", "outputName": "total",
-        }]
+        payload["facts"]["codingRequirements"] = [
+            {
+                "datasetId": "current",
+                "fields": ["income"],
+                "calculation": "计算合计",
+                "outputName": "total",
+            }
+        ]
         replay_visualization_task.freeze_planner_coding_payload(
             payload, coding_only_bundle, benchmark_bundle, BenchmarkVariant.CANDIDATE
         )
@@ -530,8 +596,8 @@ def _prepare_linked_analysis_bundles(tmp_path, *, candidate=False):
 def test_coding_only_link_uses_signed_legacy_analysis_payload_and_v2_model_config(
     tmp_path,
 ):
-    benchmark_bundle, coding_only_payload, expected_model_config = (
-        _prepare_linked_analysis_bundles(tmp_path)
+    benchmark_bundle, coding_only_payload, expected_model_config = _prepare_linked_analysis_bundles(
+        tmp_path
     )
 
     linked = replay_visualization_task.link_coding_only_benchmark(
@@ -587,8 +653,8 @@ def test_coding_only_link_rejects_extra_unsigned_input_identity(tmp_path):
 async def test_coding_only_benchmark_skips_planner_and_labels_result(
     tmp_path, monkeypatch, candidate
 ):
-    benchmark_bundle, coding_only_payload, expected_model_config = (
-        _prepare_linked_analysis_bundles(tmp_path, candidate=candidate)
+    benchmark_bundle, coding_only_payload, expected_model_config = _prepare_linked_analysis_bundles(
+        tmp_path, candidate=candidate
     )
     output_path = tmp_path / "result.json"
     seen = {}
@@ -607,7 +673,9 @@ async def test_coding_only_benchmark_skips_planner_and_labels_result(
         async def run(self, task, _workspace, facts, **_kwargs):
             seen["task"] = task
             seen["facts"] = facts
-            self.record_failure_artifact({"source": "failed-source", "scriptPath": task.script_path})
+            self.record_failure_artifact(
+                {"source": "failed-source", "scriptPath": task.script_path}
+            )
             return SimpleNamespace(
                 script_file=SimpleNamespace(
                     model_dump=lambda **_kwargs: {"path": task.script_path}
@@ -632,20 +700,15 @@ async def test_coding_only_benchmark_skips_planner_and_labels_result(
     monkeypatch.setattr(
         replay_visualization_task,
         "create_reporting_code_agent_factory",
-        lambda **kwargs: seen.setdefault("instructions", kwargs["instructions"])
-        or object(),
+        lambda **kwargs: seen.setdefault("instructions", kwargs["instructions"]) or object(),
     )
     monkeypatch.setattr(
         replay_visualization_task,
         "create_reporting_code_mode_runtime",
         lambda *_args, **_kwargs: FakeCloseable(),
     )
-    monkeypatch.setattr(
-        replay_visualization_task, "ReportingLspProcessManager", FakeCloseable
-    )
-    monkeypatch.setattr(
-        replay_visualization_task, "ReportVisionReviewer", lambda *_args: object()
-    )
+    monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", FakeCloseable)
+    monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
     monkeypatch.setattr(
         replay_visualization_task,
         "ReportingCodeGenerationRunner",
@@ -771,16 +834,18 @@ def _prepare_linked_visualization_bundles(tmp_path):
             }
         ],
     }
-    model_config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "medium",
-        "reasoningSummary": "detailed",
-        "enableThinkingLocation": "top_level",
-        "enableThinking": True,
-        "maxOutputTokens": 65536,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    model_config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "medium",
+            "reasoningSummary": "detailed",
+            "enableThinkingLocation": "top_level",
+            "enableThinking": True,
+            "maxOutputTokens": 65536,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
     benchmark_bundle = tmp_path / "benchmark"
     prepare_frozen_planner_coding_bundle(
         benchmark_bundle,
@@ -836,9 +901,7 @@ def test_visualization_coding_only_link_reprojects_frozen_plan(tmp_path):
     "change", ["renamed_chart", "facts", "unsigned", "origin", "input", "legacy"]
 )
 def test_visualization_coding_only_link_rejects_identity_drift(tmp_path, change):
-    benchmark_bundle, coding_only_payload, _ = _prepare_linked_visualization_bundles(
-        tmp_path
-    )
+    benchmark_bundle, coding_only_payload, _ = _prepare_linked_visualization_bundles(tmp_path)
     variant = BenchmarkVariant.CANDIDATE
     bundle = coding_only_payload.parent
     manifest_path = bundle / "manifest.json"
@@ -880,9 +943,7 @@ def test_visualization_coding_only_link_rejects_identity_drift(tmp_path, change)
 
 
 @pytest.mark.anyio
-async def test_visualization_coding_only_main_skips_planner_with_frozen_plan(
-    tmp_path, monkeypatch
-):
+async def test_visualization_coding_only_main_skips_planner_with_frozen_plan(tmp_path, monkeypatch):
     benchmark_bundle, coding_only_payload, expected_model_config = (
         _prepare_linked_visualization_bundles(tmp_path)
     )
@@ -930,9 +991,7 @@ async def test_visualization_coding_only_main_skips_planner_with_frozen_plan(
         lambda *_args, **_kwargs: FakeCloseable(),
     )
     monkeypatch.setattr(replay_visualization_task, "ReportingLspProcessManager", FakeCloseable)
-    monkeypatch.setattr(
-        replay_visualization_task, "ReportVisionReviewer", lambda *_args: object()
-    )
+    monkeypatch.setattr(replay_visualization_task, "ReportVisionReviewer", lambda *_args: object())
     monkeypatch.setattr(
         replay_visualization_task,
         "ReportingCodeGenerationRunner",
@@ -964,9 +1023,7 @@ async def test_visualization_coding_only_main_skips_planner_with_frozen_plan(
 
 
 @pytest.mark.anyio
-async def test_visualization_freeze_coding_rejects_legacy_before_planner(
-    tmp_path, monkeypatch
-):
+async def test_visualization_freeze_coding_rejects_legacy_before_planner(tmp_path, monkeypatch):
     benchmark_bundle, _, _ = _prepare_linked_visualization_bundles(tmp_path)
 
     def must_not_load_settings():
@@ -992,18 +1049,14 @@ async def test_visualization_freeze_coding_rejects_legacy_before_planner(
 
 
 @pytest.mark.anyio
-async def test_benchmark_planner_timeout_preserves_started_provider_request(
-    tmp_path, monkeypatch
-):
+async def test_benchmark_planner_timeout_preserves_started_provider_request(tmp_path, monkeypatch):
     benchmark_bundle, _, _ = _prepare_linked_analysis_bundles(tmp_path)
     output_path = tmp_path / "planner-timeout.json"
 
     async def hanging_provider(*_args, **_kwargs):
         await asyncio.Event().wait()
 
-    async def run_hanging_planner(
-        _bundle_dir, *, variant, model, metrics_sink=None
-    ):
+    async def run_hanging_planner(_bundle_dir, *, variant, model, metrics_sink=None):
         del variant, metrics_sink
         await model.ainvoke([], Message(role="assistant"))
         raise AssertionError("unreachable")
@@ -1015,9 +1068,7 @@ async def test_benchmark_planner_timeout_preserves_started_provider_request(
         lambda: SimpleNamespace(
             model_standard_id="test-model",
             openai_api_key="test-key",
-            openai_base_url=(
-                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-            ),
+            openai_base_url=("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
             report_output_token_reserve=8192,
             model_timeout_seconds=60,
         ),
@@ -1162,15 +1213,19 @@ def test_analysis_replay_keeps_signed_read_paths_without_visualization_facts():
 def test_analysis_replay_can_add_signed_compact_existing_facts(tmp_path):
     facts_path = tmp_path / "analysis.json"
     facts_path.write_text(
-        json.dumps({
-            "analysisId": "analysis_001",
-            "metrics": [{
-                "datasetId": "dataset-1",
-                "total": 120,
-                "periodValues": [{"period": "2025-01", "value": 120}],
-                "topGroups": [{"group": "large", "value": 120}],
-            }],
-        }),
+        json.dumps(
+            {
+                "analysisId": "analysis_001",
+                "metrics": [
+                    {
+                        "datasetId": "dataset-1",
+                        "total": 120,
+                        "periodValues": [{"period": "2025-01", "value": 120}],
+                        "topGroups": [{"group": "large", "value": 120}],
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     payload = {
@@ -1212,15 +1267,22 @@ def test_replay_instructions_match_production_task_instructions():
     assert replay_visualization_task.replay_instructions("analysis") == (
         replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
     )
-    assert replay_visualization_task.replay_instructions(
-        "analysis", variant=BenchmarkVariant.CANDIDATE
-    ) == replay_visualization_task._ANALYSIS_CODE_INSTRUCTIONS
-    assert replay_visualization_task.replay_instructions(
-        "analysis", variant=BenchmarkVariant.LEGACY
-    ) == replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
-    assert replay_visualization_task.replay_instructions(
-        "visualization", variant=BenchmarkVariant.LEGACY
-    ) == replay_visualization_task._VISUALIZATION_CODE_LEGACY_INSTRUCTIONS
+    assert (
+        replay_visualization_task.replay_instructions(
+            "analysis", variant=BenchmarkVariant.CANDIDATE
+        )
+        == replay_visualization_task._ANALYSIS_CODE_INSTRUCTIONS
+    )
+    assert (
+        replay_visualization_task.replay_instructions("analysis", variant=BenchmarkVariant.LEGACY)
+        == replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
+    )
+    assert (
+        replay_visualization_task.replay_instructions(
+            "visualization", variant=BenchmarkVariant.LEGACY
+        )
+        == replay_visualization_task._VISUALIZATION_CODE_LEGACY_INSTRUCTIONS
+    )
     assert "codingRequirements" not in "\n".join(
         replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
     )
@@ -1230,9 +1292,7 @@ def test_replay_instructions_match_production_task_instructions():
 
 
 def test_analysis_legacy_instructions_pin_yoy_alignment_and_missing_dimension_nulls():
-    instructions = "\n".join(
-        replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS
-    )
+    instructions = "\n".join(replay_visualization_task._ANALYSIS_CODE_LEGACY_INSTRUCTIONS)
     assert "当前任务的时间粒度和比较窗口" in instructions
     assert "仅月度同比按 month（1-12）对齐" in instructions
     assert "其他粒度不得降为月份" in instructions
@@ -1242,9 +1302,7 @@ def test_analysis_legacy_instructions_pin_yoy_alignment_and_missing_dimension_nu
 
 
 def test_visualization_coding_instructions_bound_repair_to_critical_issue():
-    instructions = "\n".join(
-        replay_visualization_task._VISUALIZATION_CODE_INSTRUCTIONS
-    )
+    instructions = "\n".join(replay_visualization_task._VISUALIZATION_CODE_INSTRUCTIONS)
     assert "critical" in instructions
     assert "禁止插入临时诊断" in instructions
     assert "只修改与该问题直接相关的局部代码" in instructions
@@ -1264,22 +1322,22 @@ def test_benchmark_model_config_reaches_code_responses_request() -> None:
     settings = SimpleNamespace(
         model_standard_id="environment-model",
         openai_api_key="test-key",
-        openai_base_url=(
-            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-        ),
+        openai_base_url=("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
         report_output_token_reserve=8192,
         model_timeout_seconds=60,
     )
-    config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "medium",
-        "reasoningSummary": "detailed",
-        "enableThinkingLocation": "top_level",
-        "enableThinking": True,
-        "maxOutputTokens": None,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "medium",
+            "reasoningSummary": "detailed",
+            "enableThinkingLocation": "top_level",
+            "enableThinking": True,
+            "maxOutputTokens": None,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
 
     model = replay_visualization_task.build_replay_model(
         settings,
@@ -1307,23 +1365,23 @@ def test_benchmark_model_can_lower_planner_effort_without_changing_coding() -> N
     settings = SimpleNamespace(
         model_standard_id="environment-model",
         openai_api_key="test-key",
-        openai_base_url=(
-            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-        ),
+        openai_base_url=("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
         report_output_token_reserve=8192,
         model_timeout_seconds=60,
     )
-    config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "high",
-        "plannerReasoningEffort": "medium",
-        "reasoningSummary": "auto",
-        "enableThinkingLocation": "top_level",
-        "enableThinking": True,
-        "maxOutputTokens": 65536,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "high",
+            "plannerReasoningEffort": "medium",
+            "reasoningSummary": "auto",
+            "enableThinkingLocation": "top_level",
+            "enableThinking": True,
+            "maxOutputTokens": 65536,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
 
     planner = replay_visualization_task.build_replay_model(
         settings,
@@ -1347,17 +1405,19 @@ def test_benchmark_model_config_rejects_planner_effort_crossing_none_boundary() 
         ValueError,
         match="plannerReasoningEffort.*reasoningEffort.*none",
     ):
-        BenchmarkModelConfig.model_validate({
-            "model": "coding-model",
-            "reasoningEffort": "high",
-            "plannerReasoningEffort": "none",
-            "reasoningSummary": "auto",
-            "enableThinkingLocation": "top_level",
-            "enableThinking": True,
-            "maxOutputTokens": 65536,
-            "parallelToolCalls": True,
-            "toolChoice": "auto",
-        })
+        BenchmarkModelConfig.model_validate(
+            {
+                "model": "coding-model",
+                "reasoningEffort": "high",
+                "plannerReasoningEffort": "none",
+                "reasoningSummary": "auto",
+                "enableThinkingLocation": "top_level",
+                "enableThinking": True,
+                "maxOutputTokens": 65536,
+                "parallelToolCalls": True,
+                "toolChoice": "auto",
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -1381,16 +1441,18 @@ def test_benchmark_model_rejects_thinking_location_provider_mismatch(
         report_output_token_reserve=8192,
         model_timeout_seconds=60,
     )
-    config = BenchmarkModelConfig.model_validate({
-        "model": "coding-model",
-        "reasoningEffort": "medium",
-        "reasoningSummary": "auto",
-        "enableThinkingLocation": location,
-        "enableThinking": enable_thinking,
-        "maxOutputTokens": None,
-        "parallelToolCalls": True,
-        "toolChoice": "auto",
-    })
+    config = BenchmarkModelConfig.model_validate(
+        {
+            "model": "coding-model",
+            "reasoningEffort": "medium",
+            "reasoningSummary": "auto",
+            "enableThinkingLocation": location,
+            "enableThinking": enable_thinking,
+            "maxOutputTokens": None,
+            "parallelToolCalls": True,
+            "toolChoice": "auto",
+        }
+    )
 
     with pytest.raises(ValueError, match="enableThinkingLocation"):
         replay_visualization_task.build_replay_model(
@@ -1428,15 +1490,11 @@ def test_find_task_payload_selects_requested_coding_stage():
             "messages": [
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {"task": {"task_kind": "analysis"}, "facts": {}}
-                    ),
+                    "content": json.dumps({"task": {"task_kind": "analysis"}, "facts": {}}),
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {"task": {"task_kind": "visualization"}, "facts": {}}
-                    ),
+                    "content": json.dumps({"task": {"task_kind": "visualization"}, "facts": {}}),
                 },
             ]
         }
@@ -1445,9 +1503,9 @@ def test_find_task_payload_selects_requested_coding_stage():
     assert replay_visualization_task.find_task_payload(rows, "analysis")["task"] == {
         "task_kind": "analysis"
     }
-    assert replay_visualization_task.find_task_payload(rows, "visualization")[
-        "task"
-    ] == {"task_kind": "visualization"}
+    assert replay_visualization_task.find_task_payload(rows, "visualization")["task"] == {
+        "task_kind": "visualization"
+    }
 
 
 @pytest.mark.parametrize("drift", [False, True])
@@ -1460,10 +1518,14 @@ def test_load_task_restores_responses_message_with_same_span_metadata(monkeypatc
     if drift:
         host["script_path"] = "charts/other.py"
     attributes = {
-        "input.value": json.dumps({"messages": [
-            {"role": "assistant", "content": "not a task"},
-            {"role": "user", "content": json.dumps(payload)},
-        ]}),
+        "input.value": json.dumps(
+            {
+                "messages": [
+                    {"role": "assistant", "content": "not a task"},
+                    {"role": "user", "content": json.dumps(payload)},
+                ]
+            }
+        ),
         "metadata": json.dumps({"reportingCodingTaskContext": host}),
     }
     connection = MagicMock()
@@ -1475,7 +1537,8 @@ def test_load_task_restores_responses_message_with_same_span_metadata(monkeypatc
             replay_visualization_task.load_task("run", "visualization")
     else:
         assert replay_visualization_task.load_task("run", "visualization") == {
-            **payload, "task": host,
+            **payload,
+            "task": host,
         }
 
 
@@ -1490,14 +1553,10 @@ def _trace_span(
     attributes = {
         "agno.agent.id": agent_id,
         "input.value": json.dumps(input_payload),
-        "output.value": (
-            json.dumps(output_payload) if output_payload is not None else ""
-        ),
+        "output.value": (json.dumps(output_payload) if output_payload is not None else ""),
     }
     if host_task_context is not None:
-        attributes["metadata"] = json.dumps(
-            {"reportingCodingTaskContext": host_task_context}
-        )
+        attributes["metadata"] = json.dumps({"reportingCodingTaskContext": host_task_context})
     return {
         "span_id": span_id,
         "parent_span_id": "parent-1",
@@ -1505,9 +1564,7 @@ def _trace_span(
     }
 
 
-def _candidate_visualization_plan(
-    chart_path: str, *, interactive_path: str | None = None
-) -> dict:
+def _candidate_visualization_plan(chart_path: str, *, interactive_path: str | None = None) -> dict:
     return {
         "charts": [
             {
@@ -1562,9 +1619,7 @@ def test_extract_analysis_trace_pairs_identity_and_removes_planner_output() -> N
             planner_request,
             span_id="planner-1",
         ),
-        _trace_span(
-            "report-analysis-script-writer", coding_payload, span_id="coding-1"
-        ),
+        _trace_span("report-analysis-script-writer", coding_payload, span_id="coding-1"),
     ]
 
     extracted = replay_visualization_task.extract_benchmark_trace_inputs(
@@ -1605,9 +1660,7 @@ def test_extract_visualization_trace_pairs_declared_output_paths(interactive) ->
     candidate_facts = [
         {
             **planner_request["visualizationFacts"][0],
-            "dataDescriptors": [
-                planner_request["visualizationFacts"][0]["dataDescriptors"][0]
-            ],
+            "dataDescriptors": [planner_request["visualizationFacts"][0]["dataDescriptors"][0]],
         }
     ]
     coding_payload = {
@@ -1644,15 +1697,14 @@ def test_extract_visualization_trace_pairs_declared_output_paths(interactive) ->
 
     assert extracted["plannerRequest"] == planner_request
     assert "visualizationPlan" not in extracted["codingPayload"]["facts"]
-    assert extracted["codingPayload"]["facts"]["visualizationFacts"] == planner_request[
-        "visualizationFacts"
-    ]
+    assert (
+        extracted["codingPayload"]["facts"]["visualizationFacts"]
+        == planner_request["visualizationFacts"]
+    )
 
     drifted_rows = deepcopy(rows)
     drifted_payload = json.loads(drifted_rows[1]["attributes"]["input.value"])
-    drifted_payload["facts"]["visualizationFacts"] = planner_request[
-        "visualizationFacts"
-    ]
+    drifted_payload["facts"]["visualizationFacts"] = planner_request["visualizationFacts"]
     drifted_rows[1]["attributes"]["input.value"] = json.dumps(drifted_payload)
     with pytest.raises(ValueError, match="visualizationFacts 投影不一致"):
         replay_visualization_task.extract_benchmark_trace_inputs(
@@ -1768,9 +1820,9 @@ def test_extract_analysis_trace_restores_host_identity_and_rejects_context_drift
     )
     assert extracted["codingPayload"]["task"] == host_task
 
-    rows[1]["attributes"]["metadata"] = json.dumps({
-        "reportingCodingTaskContext": {**host_task, "script_path": "analysis/other.py"}
-    })
+    rows[1]["attributes"]["metadata"] = json.dumps(
+        {"reportingCodingTaskContext": {**host_task, "script_path": "analysis/other.py"}}
+    )
     with pytest.raises(ValueError, match="模型 task 与宿主 task context 不一致"):
         replay_visualization_task.extract_benchmark_trace_inputs(
             rows, task_kind="analysis", task_identity="analysis-001"
@@ -1932,9 +1984,7 @@ def test_extract_analysis_trace_rejects_unproven_dataset_projection(mismatch) ->
 
 
 @pytest.mark.anyio
-async def test_frozen_benchmark_planner_projects_output_before_coding(
-    monkeypatch, tmp_path
-):
+async def test_frozen_benchmark_planner_projects_output_before_coding(monkeypatch, tmp_path):
     manifest = SimpleNamespace(
         task_kind="analysis",
         model_dump=lambda **_kwargs: {"version": 2, "taskKind": "analysis"},
@@ -1989,12 +2039,10 @@ async def test_frozen_benchmark_planner_projects_output_before_coding(
         FakeExecutor,
     )
 
-    payload, metrics, saved_manifest = (
-        await replay_visualization_task.run_frozen_benchmark_planner(
-            tmp_path,
-            variant=BenchmarkVariant.LEGACY,
-            model=OpenAIChat(id="benchmark-test"),
-        )
+    payload, metrics, saved_manifest = await replay_visualization_task.run_frozen_benchmark_planner(
+        tmp_path,
+        variant=BenchmarkVariant.LEGACY,
+        model=OpenAIChat(id="benchmark-test"),
     )
 
     assert "codingRequirements" not in payload["facts"]
@@ -2017,9 +2065,7 @@ async def test_frozen_benchmark_planner_projects_output_before_coding(
 
 
 @pytest.mark.anyio
-async def test_frozen_benchmark_planner_records_duration_when_planner_fails(
-    monkeypatch, tmp_path
-):
+async def test_frozen_benchmark_planner_records_duration_when_planner_fails(monkeypatch, tmp_path):
     manifest = SimpleNamespace(
         task_kind="analysis",
         model_dump=lambda **_kwargs: {"version": 2, "taskKind": "analysis"},
@@ -2126,15 +2172,11 @@ def _visualization_executor(chart_path):
         async def run(self, _instruction, **kwargs):
             kwargs["model_metrics_recorder"](
                 SimpleNamespace(
-                    metrics=SimpleNamespace(
-                        input_tokens=10, output_tokens=5, reasoning_tokens=3
-                    )
+                    metrics=SimpleNamespace(input_tokens=10, output_tokens=5, reasoning_tokens=3)
                 ),
                 1,
             )
-            return VisualizationPlanDraft.model_validate(
-                _candidate_visualization_plan(chart_path)
-            )
+            return VisualizationPlanDraft.model_validate(_candidate_visualization_plan(chart_path))
 
     return Executor
 
@@ -2160,12 +2202,10 @@ async def test_frozen_visualization_planner_threads_required_charts_to_identity_
         _visualization_executor("charts/chart-1.png"),
     )
 
-    payload, planner_metrics, _ = (
-        await replay_visualization_task.run_frozen_benchmark_planner(
-            tmp_path,
-            variant=BenchmarkVariant.CANDIDATE,
-            model=OpenAIChat(id="benchmark-test"),
-        )
+    payload, planner_metrics, _ = await replay_visualization_task.run_frozen_benchmark_planner(
+        tmp_path,
+        variant=BenchmarkVariant.CANDIDATE,
+        model=OpenAIChat(id="benchmark-test"),
     )
 
     assert captured["planner_request"] == planner_request
@@ -2277,19 +2317,22 @@ async def test_prepare_only_writes_portable_bundle_without_loading_model_setting
     assert json.loads(result_path.read_text(encoding="utf-8"))["status"] == "prepared"
 
     rebundled = tmp_path / "rebundled"
-    assert await replay_visualization_task.main(
-        None,
-        bundle / "payload.json",
-        "analysis",
-        "medium",
-        None,
-        None,
-        None,
-        rebundled,
-    ) == 0
-    assert replay_visualization_task.validate_replay_bundle(
-        rebundled / "payload.json"
-    )["payloadSha256"]
+    assert (
+        await replay_visualization_task.main(
+            None,
+            bundle / "payload.json",
+            "analysis",
+            "medium",
+            None,
+            None,
+            None,
+            rebundled,
+        )
+        == 0
+    )
+    assert replay_visualization_task.validate_replay_bundle(rebundled / "payload.json")[
+        "payloadSha256"
+    ]
 
 
 @pytest.mark.anyio
@@ -2309,22 +2352,23 @@ async def test_prepare_benchmark_from_explicit_files_does_not_load_model_setting
         encoding="utf-8",
     )
     coding_payload.write_text(
-        json.dumps({
-            "task": {
-                "task_id": "analysis-001",
-                "task_kind": "analysis",
-                "code_mode_session_id": "analysis:analysis-001",
-                "workspace_key": "workspace-001",
-                "workspace_root": str(source),
-                "script_path": "analysis/supplement.py",
-                "authorized_read_paths": ["datasets/current.csv"],
-                "authorized_write_paths": [
-                    "analysis/supplement.py",
-                    "analysis/evidence.json",
-                ],
-                "declared_output_paths": ["analysis/evidence.json"],
-                "max_source_bytes": 100_000,
-            },
+        json.dumps(
+            {
+                "task": {
+                    "task_id": "analysis-001",
+                    "task_kind": "analysis",
+                    "code_mode_session_id": "analysis:analysis-001",
+                    "workspace_key": "workspace-001",
+                    "workspace_root": str(source),
+                    "script_path": "analysis/supplement.py",
+                    "authorized_read_paths": ["datasets/current.csv"],
+                    "authorized_write_paths": [
+                        "analysis/supplement.py",
+                        "analysis/evidence.json",
+                    ],
+                    "declared_output_paths": ["analysis/evidence.json"],
+                    "max_source_bytes": 100_000,
+                },
                 "facts": {
                     "currentAnalysis": {"analysisId": "analysis-001"},
                     "evidencePath": "analysis/evidence.json",
@@ -2336,21 +2380,24 @@ async def test_prepare_benchmark_from_explicit_files_does_not_load_model_setting
                         }
                     ],
                 },
-        }),
+            }
+        ),
         encoding="utf-8",
     )
     acceptance.write_text("{}", encoding="utf-8")
     model_config.write_text(
-        json.dumps({
-            "model": "coding-model",
-            "reasoningEffort": "medium",
-            "reasoningSummary": "auto",
-            "enableThinkingLocation": "top_level",
-            "enableThinking": True,
-            "maxOutputTokens": None,
-            "parallelToolCalls": True,
-            "toolChoice": "auto",
-        }),
+        json.dumps(
+            {
+                "model": "coding-model",
+                "reasoningEffort": "medium",
+                "reasoningSummary": "auto",
+                "enableThinkingLocation": "top_level",
+                "enableThinking": True,
+                "maxOutputTokens": None,
+                "parallelToolCalls": True,
+                "toolChoice": "auto",
+            }
+        ),
         encoding="utf-8",
     )
     bundle = tmp_path / "benchmark"
@@ -2377,9 +2424,7 @@ async def test_prepare_benchmark_from_explicit_files_does_not_load_model_setting
     )
 
     assert result == 0
-    assert json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))[
-        "version"
-    ] == 2
+    assert json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))["version"] == 2
     assert json.loads(result_path.read_text(encoding="utf-8"))["status"] == "prepared"
 
 
@@ -2399,16 +2444,18 @@ async def test_extract_benchmark_from_trace_is_offline(monkeypatch, tmp_path):
     model_config = tmp_path / "model-config.json"
     acceptance.write_text("{}", encoding="utf-8")
     model_config.write_text(
-        json.dumps({
-            "model": "coding-model",
-            "reasoningEffort": "medium",
-            "reasoningSummary": "auto",
-            "enableThinkingLocation": "omitted",
-            "enableThinking": None,
-            "maxOutputTokens": None,
-            "parallelToolCalls": True,
-            "toolChoice": "auto",
-        }),
+        json.dumps(
+            {
+                "model": "coding-model",
+                "reasoningEffort": "medium",
+                "reasoningSummary": "auto",
+                "enableThinkingLocation": "omitted",
+                "enableThinking": None,
+                "maxOutputTokens": None,
+                "parallelToolCalls": True,
+                "toolChoice": "auto",
+            }
+        ),
         encoding="utf-8",
     )
     rows = [
@@ -2499,12 +2546,11 @@ def test_validate_replay_bundle_rejects_authorized_input_drift(tmp_path):
     bundle = tmp_path / "bundle"
     replay_visualization_task.prepare_replay_bundle(payload, bundle, None)
 
-    assert replay_visualization_task.validate_replay_bundle(bundle / "payload.json")[
-        "taskKind"
-    ] == "analysis"
-    (bundle / "workspace/datasets/current.csv").write_text(
-        "income\n999\n", encoding="utf-8"
+    assert (
+        replay_visualization_task.validate_replay_bundle(bundle / "payload.json")["taskKind"]
+        == "analysis"
     )
+    (bundle / "workspace/datasets/current.csv").write_text("income\n999\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="身份不一致"):
         replay_visualization_task.validate_replay_bundle(bundle / "payload.json")

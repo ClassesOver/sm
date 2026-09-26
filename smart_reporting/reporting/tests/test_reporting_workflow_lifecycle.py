@@ -41,9 +41,7 @@ class Repository:
         if existing is not None and any(
             existing.get(field) != values.get(field) for field in identity_fields
         ):
-            raise ReportingError(
-                "report_run_identity_conflict", "Reporting run 身份绑定冲突。"
-            )
+            raise ReportingError("report_run_identity_conflict", "Reporting run 身份绑定冲突。")
         row = dict(values)
         self.registrations.append(row)
         if existing is not None:
@@ -84,11 +82,7 @@ class Repository:
 
     async def get_run(self, report_run_id: str) -> dict[str, Any] | None:
         return next(
-            (
-                run
-                for run in self.runs.values()
-                if str(run.get("report_run_id")) == report_run_id
-            ),
+            (run for run in self.runs.values() if str(run.get("report_run_id")) == report_run_id),
             None,
         )
 
@@ -138,7 +132,7 @@ def prepared(
             REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
                 "database": database,
                 "companyId": company_id,
-            }
+            },
         },
     )
 

@@ -52,8 +52,24 @@ def test_plotly_chart_manifest_binds_json_identity() -> None:
     "overrides",
     [
         {"renderer": "plotly"},
-        {"renderer": "matplotlib", "interactiveSpec": {"path": "x.plotly.json", "mediaType": "application/vnd.plotly.v1+json", "size": 1, "sha256": "b" * 64}},
-        {"renderer": "plotly", "interactiveSpec": {"path": "reports/revision-2/chart-001.plotly.json", "mediaType": "application/vnd.plotly.v1+json", "size": 1, "sha256": "b" * 64}},
+        {
+            "renderer": "matplotlib",
+            "interactiveSpec": {
+                "path": "x.plotly.json",
+                "mediaType": "application/vnd.plotly.v1+json",
+                "size": 1,
+                "sha256": "b" * 64,
+            },
+        },
+        {
+            "renderer": "plotly",
+            "interactiveSpec": {
+                "path": "reports/revision-2/chart-001.plotly.json",
+                "mediaType": "application/vnd.plotly.v1+json",
+                "size": 1,
+                "sha256": "b" * 64,
+            },
+        },
     ],
 )
 def test_chart_rejects_missing_or_unbound_plotly_spec(overrides: dict[str, object]) -> None:
@@ -99,7 +115,10 @@ def test_authoritative_manifest_binds_plotly_json_as_accepted_artifact(
         section_numbers=("1",),
         heading_numbers=(
             artifacts_v1.HeadingNumber(
-                level=2, number="1", title="收入", sectionCode="section_001",
+                level=2,
+                number="1",
+                title="收入",
+                sectionCode="section_001",
                 anchor="report-section-section_001",
             ),
         ),
@@ -110,7 +129,9 @@ def test_authoritative_manifest_binds_plotly_json_as_accepted_artifact(
     assert _editor_interactive_charts(manifest) == {
         image_path: {"path": spec_path, "size": 400, "sha256": "b" * 64}
     }
-    assert _accepted_artifacts_match_manifest(manifest, "reports/revision-1/manifest.json", accepted)
+    assert _accepted_artifacts_match_manifest(
+        manifest, "reports/revision-1/manifest.json", accepted
+    )
 
     without_spec = accepted[:-1]
     assert not _accepted_artifacts_match_manifest(

@@ -311,9 +311,7 @@ class ReportDatasetStore:
             completed = tuple(item for item in handles if item is not None)
             completed_staging_paths = tuple(path for path in staging_paths if path is not None)
             if len(completed) != len(validated) or len(completed_staging_paths) != len(validated):
-                raise ReportingError(
-                    "report_dataset_commit_failed", "数据集 staging 结果不完整。"
-                )
+                raise ReportingError("report_dataset_commit_failed", "数据集 staging 结果不完整。")
 
             # 上传可以并发，但身份校验必须在所有文件落盘后串行执行。
             for item, staging_path in zip(completed, completed_staging_paths, strict=True):
@@ -414,9 +412,7 @@ class ReportDatasetStore:
         state[REPORT_DATASET_HANDLES_STATE_KEY] = stored
 
 
-async def _best_effort_delete(
-    service: Any, thread_id: str, path: str, *, recursive: bool
-) -> None:
+async def _best_effort_delete(service: Any, thread_id: str, path: str, *, recursive: bool) -> None:
     try:
         await service.adelete_file(thread_id, path, recursive=recursive)
     except Exception:

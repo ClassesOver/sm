@@ -41,11 +41,13 @@ CURRENT_ANALYSIS = {"analysisId": "analysis_001", "datasetIds": ["dataset_1"]}
 
 def _valid_supplemental_evidence() -> dict[str, object]:
     return {
-        "findings": [{
-            "name": "收入对账示例",
-            "columns": ["项目", "金额"],
-            "rows": [["明细合计", 100.0], ["账面合计", 120.0]],
-        }],
+        "findings": [
+            {
+                "name": "收入对账示例",
+                "columns": ["项目", "金额"],
+                "rows": [["明细合计", 100.0], ["账面合计", 120.0]],
+            }
+        ],
         "reconciliations": [{"name": "明细与账面对账", "passed": False}],
         "warnings": ["示例金额存在差异，应按实际数据填报。"],
     }
@@ -95,7 +97,9 @@ def test_output_contract_uses_schema_as_structural_authority_with_only_runtime_r
     assert "separators=(',', ':')" in rules
 
 
-@pytest.mark.parametrize("invalid", ["row_width", "duplicate_columns", "object_rows", "nonfinite", "passed_string"])
+@pytest.mark.parametrize(
+    "invalid", ["row_width", "duplicate_columns", "object_rows", "nonfinite", "passed_string"]
+)
 def test_example_mutations_are_rejected_by_real_custom_validators(invalid):
     example = _valid_supplemental_evidence()
     finding = example["findings"][0]
@@ -141,14 +145,21 @@ class _ScriptProcessRuntime:
     async def execute_script_process(self, _session_id, task_workspace, path, **_kwargs):
         self.executions += 1
         process = await asyncio.create_subprocess_exec(
-            sys.executable, path, cwd=task_workspace.identity.root,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            sys.executable,
+            path,
+            cwd=task_workspace.identity.root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
-        return ScriptProcessResult(CellResult(
-            status="ok" if process.returncode == 0 else "error",
-            stdout=stdout.decode(), stderr=stderr.decode(),
-        ), process.returncode)
+        return ScriptProcessResult(
+            CellResult(
+                status="ok" if process.returncode == 0 else "error",
+                stdout=stdout.decode(),
+                stderr=stderr.decode(),
+            ),
+            process.returncode,
+        )
 
     async def shutdown(self, session_id):
         self.shutdowns.append(session_id)
@@ -158,11 +169,19 @@ class _ScriptProcessRuntime:
 @pytest.mark.parametrize("scenario", ["repaired", "degraded", "last_slot", "exhausted"])
 async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, scenario):  # noqa: F811
     if scenario in {"last_slot", "exhausted"}:
-        monkeypatch.setattr(code_generation, "ANALYSIS_TOOL_CALL_LIMIT", 3 if scenario == "last_slot" else 2)
-    facts = json.dumps({
-        "analysisId": "analysis_001", "metrics": [], "derivedMetrics": [],
-        "comparisons": [], "reconciliations": [], "warnings": [],
-    })
+        monkeypatch.setattr(
+            code_generation, "ANALYSIS_TOOL_CALL_LIMIT", 3 if scenario == "last_slot" else 2
+        )
+    facts = json.dumps(
+        {
+            "analysisId": "analysis_001",
+            "metrics": [],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "reconciliations": [],
+            "warnings": [],
+        }
+    )
     root = "evidence/analysis_001"
     evidence_path = f"{root}/supplement.json"
     clients, completions, summaries, diagnostics = [], [], [], []
@@ -171,14 +190,21 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
     async def read_file(*, path, **_kwargs):
         content = facts if path == "facts.json" else await workspace.aread_text("task-1", path)
         raw = content.encode()
-        return {"ok": True, "content": content, "sha256": hashlib.sha256(raw).hexdigest(),
-                "totalBytes": len(raw), "nextOffset": len(raw)}
+        return {
+            "ok": True,
+            "content": content,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "totalBytes": len(raw),
+            "nextOffset": len(raw),
+        }
 
     async def run_code(*, script_path, task_facts, diagnostic, run_context):
         diagnostics.append(diagnostic)
         context = replace(
-            _task_context(workspace), script_path=script_path,
-            authorized_write_paths=(script_path, evidence_path), declared_output_paths=(evidence_path,),
+            _task_context(workspace),
+            script_path=script_path,
+            authorized_write_paths=(script_path, evidence_path),
+            declared_output_paths=(evidence_path,),
         )
         source = f"from pathlib import Path\nPath({evidence_path!r}).write_text('{{}}')\n# attempt {len(clients)}\n"
         script_exists = await workspace.apath_exists("task-1", script_path)
@@ -197,14 +223,19 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
                 f"<<<<<<< SEARCH\n{old_line}\n=======\n{new_line}\n"
                 ">>>>>>> REPLACE\n*** End Edit\n"
             )
-            responses = [_batch_response(
-                _custom_response("edit_script", patch, 3), _function_response(4, "run_script", {}),
-            )]
+            responses = [
+                _batch_response(
+                    _custom_response("edit_script", patch, 3),
+                    _function_response(4, "run_script", {}),
+                )
+            ]
         else:
-            responses = [_batch_response(
-                _custom_response("write_script", source, 1),
-                _function_response(2, "run_script", {}),
-            )]
+            responses = [
+                _batch_response(
+                    _custom_response("write_script", source, 1),
+                    _function_response(2, "run_script", {}),
+                )
+            ]
         if scenario == "repaired" and not script_exists:
             valid = json.dumps(_valid_supplemental_evidence(), ensure_ascii=False)
             saved_source = await format_python_source(source)
@@ -216,11 +247,16 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
                 f"<<<<<<< SEARCH\n{old_line}\n=======\n{new_line}\n"
                 ">>>>>>> REPLACE\n*** End Edit\n"
             )
-            responses.append(_batch_response(
-                _custom_response("edit_script", patch, 3), _function_response(4, "run_script", {}),
-            ))
+            responses.append(
+                _batch_response(
+                    _custom_response("edit_script", patch, 3),
+                    _function_response(4, "run_script", {}),
+                )
+            )
         if scenario == "repaired":
-            responses.extend([_function_response(5, "submit_script", {}), _message_response("结束")])
+            responses.extend(
+                [_function_response(5, "submit_script", {}), _message_response("结束")]
+            )
         else:
             # outputValidation 阻断后，交付状态白名单只签发 read_script/edit_script/
             # run_script，submit_script 不在声明内；模型只能以文字结束，宿主按未提交
@@ -229,7 +265,8 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
         client = _ResponsesClient(responses)
         clients.append(client)
         base_factory = create_reporting_code_agent_factory(
-            model=OpenAIChat(id="test", api_key="test", base_url="http://localhost"), name="trajectory",
+            model=OpenAIChat(id="test", api_key="test", base_url="http://localhost"),
+            name="trajectory",
         )
 
         def factory(tools):
@@ -238,30 +275,46 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
             return agent
 
         async def preflight(receipt):
-            raw = await workspace.read_limited_regular_file("task-1", evidence_path, max_bytes=100_000)
+            raw = await workspace.read_limited_regular_file(
+                "task-1", evidence_path, max_bytes=100_000
+            )
             try:
                 validate_supplemental_evidence(raw, task_facts["currentAnalysis"])
             except ValidationError as error:
                 rejection = supplemental_evidence_schema_error(error)
-                return {"code": rejection.code, "message": rejection.message, "details": rejection.details}
+                return {
+                    "code": rejection.code,
+                    "message": rejection.message,
+                    "details": rejection.details,
+                }
             return None
 
         return await code_generation.ReportingCodeGenerationRunner(
-            factory, runtime, ReportingLspProcessManager(),
-        ).run(context, workspace, task_facts, run_context=run_context,
-              diagnostic=diagnostic, output_preflight=preflight)
+            factory,
+            runtime,
+            ReportingLspProcessManager(),
+        ).run(
+            context,
+            workspace,
+            task_facts,
+            run_context=run_context,
+            diagnostic=diagnostic,
+            output_preflight=preflight,
+        )
 
     async def decide(_payload):
         return AnalysisEvidenceDecision(
             requiresSupplementalEvidence=True,
             reason="需要明细",
             missingFacts=("明细",),
-            codingRequirements=({
-                "datasetId": "dataset_1",
-                "fields": ["income"],
-                "calculation": "汇总收入明细",
-                "outputName": "income_details",
-            },),
+            codingRequirements=(
+                {
+                    "datasetId": "dataset_1",
+                    "fields": ["income"],
+                    "calculation": "汇总收入明细",
+                    "outputName": "income_details",
+                },
+            ),
         )
 
     async def summarize(payload):
@@ -273,14 +326,22 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
         return {"status": "accepted", "taskFinished": True}
 
     workflow = AnalysisItemWorkflow(
-        decide_evidence=decide, run_code=run_code, read_file=read_file, summarize=summarize, complete=complete,
+        decide_evidence=decide,
+        run_code=run_code,
+        read_file=read_file,
+        summarize=summarize,
+        complete=complete,
     )
     instruction = {
-        "currentAnalysisId": "analysis_001", "currentAnalysis": CURRENT_ANALYSIS,
+        "currentAnalysisId": "analysis_001",
+        "currentAnalysis": CURRENT_ANALYSIS,
         "analysisOutputRoot": root,
         "datasets": [{"datasetId": "dataset_1", "columns": ["income"]}],
-        "deterministicFactFile": {"path": "facts.json", "size": len(facts.encode()),
-                                  "sha256": hashlib.sha256(facts.encode()).hexdigest()},
+        "deterministicFactFile": {
+            "path": "facts.json",
+            "size": len(facts.encode()),
+            "sha256": hashlib.sha256(facts.encode()).hexdigest(),
+        },
         "deterministicFacts": json.loads(facts),
     }
     # C5（outputValidation 阻断 submit_script）让 schema 校验在 Coding Agent 循环
@@ -298,7 +359,10 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
         assert runtime.executions == 2
         assert completions[0]["evidencePaths"] == [evidence_path]
         assert summaries[0]["supplementalEvidence"]["analysisId"] == "analysis_001"
-        assert any("report_analysis_evidence_reconciliation_warning" in item for item in completions[0]["warnings"])
+        assert any(
+            "report_analysis_evidence_reconciliation_warning" in item
+            for item in completions[0]["warnings"]
+        )
     else:
         assert len(clients) == 3
         assert runtime.executions == 3
@@ -307,22 +371,31 @@ async def test_evidence_feedback_to_workflow_completion(workspace, monkeypatch, 
         )
         assert completions[0]["evidencePaths"] == []
         assert summaries[0]["supplementalEvidence"] is None
-        assert any("report_analysis_supplement_abandoned" in item for item in completions[0]["warnings"])
+        assert any(
+            "report_analysis_supplement_abandoned" in item for item in completions[0]["warnings"]
+        )
     assert len(runtime.shutdowns) == len(clients)
     for client in clients:
         if scenario == "degraded":
             assert len(client.requests) == 3
             assert not client.pending
-        user_message = next(item for item in client.requests[0]["input"] if item.get("role") == "user")
+        user_message = next(
+            item for item in client.requests[0]["input"] if item.get("role") == "user"
+        )
         content = user_message["content"]
         prompt = json.loads(content if isinstance(content, str) else content[0]["text"])
         output_contract = prompt["facts"]["outputContract"]
         assert set(output_contract) == {"format", "schema", "rules"}
         example = validate_supplemental_evidence(
-            json.dumps(_valid_supplemental_evidence()), CURRENT_ANALYSIS,
+            json.dumps(_valid_supplemental_evidence()),
+            CURRENT_ANALYSIS,
         )
         assert example.findings[0]["rows"]
-        outputs = [item for item in client.requests[1]["input"] if item.get("type") == "function_call_output"]
+        outputs = [
+            item
+            for item in client.requests[1]["input"]
+            if item.get("type") == "function_call_output"
+        ]
         assert len(outputs) == 1
         # Agno 原生 function 结果为文本，并会规范化 Responses 调用身份。
         feedback = literal_eval(outputs[0]["output"])

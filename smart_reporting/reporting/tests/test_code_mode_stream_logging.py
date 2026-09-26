@@ -31,8 +31,9 @@ async def test_stream_logged_before_execution_finishes(workspace, script):  # no
         "import sys, time\nfrom pathlib import Path\n"
         "print('progress-marker')\n"
         "print('stderr-marker', file=sys.stderr, flush=True)\n"
-        "sys.stdout.flush()\n" if not script else
-        "import sys, time\nfrom pathlib import Path\n"
+        "sys.stdout.flush()\n"
+        if not script
+        else "import sys, time\nfrom pathlib import Path\n"
         "print('progress-marker')\n"
         "print('stderr-marker', file=sys.stderr)\n"
     )
@@ -45,7 +46,9 @@ async def test_stream_logged_before_execution_finishes(workspace, script):  # no
     try:
         if script:
             await workspace.awrite_text("stream-test", "analysis/progress.py", code)
-            operation = runtime.execute_script("stream-test", workspace, "analysis/progress.py", timeout=15)
+            operation = runtime.execute_script(
+                "stream-test", workspace, "analysis/progress.py", timeout=15
+            )
         else:
             operation = runtime.execute("stream-test", workspace, code)
         task = asyncio.create_task(operation)

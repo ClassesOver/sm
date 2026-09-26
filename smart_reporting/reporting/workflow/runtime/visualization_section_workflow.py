@@ -82,9 +82,7 @@ def _visualization_binding_catalog(
         return {}
     catalog: dict[tuple[str, str, str], frozenset[str]] = {}
 
-    def register(
-        analysis_id: object, source_file: object, descriptors: object
-    ) -> None:
+    def register(analysis_id: object, source_file: object, descriptors: object) -> None:
         path = source_file.get("path") if isinstance(source_file, Mapping) else None
         if (
             not isinstance(analysis_id, str)
@@ -196,9 +194,7 @@ def _validate_visualization_plan_bindings(
                 ),
                 "availableDescriptors": [
                     {"factPath": path, "dataPath": data_path, "fields": sorted(fields)}
-                    for path, data_path, fields in by_analysis.get(
-                        binding.analysis_id, ()
-                    )[:20]
+                    for path, data_path, fields in by_analysis.get(binding.analysis_id, ())[:20]
                 ],
             }
             # 2026-09-25 生产三跑实证：不可唯一修正的错配按软告警继续（AGENTS.md
@@ -232,9 +228,7 @@ def _repair_diagnostic(
     if isinstance(error, ReportingError) and isinstance(error.details, Mapping):
         nested = error.details.get("details")
         last_failure = error.details.get("lastFailure")
-        failure_details = (
-            last_failure.get("details") if isinstance(last_failure, Mapping) else None
-        )
+        failure_details = last_failure.get("details") if isinstance(last_failure, Mapping) else None
         raw_details = {
             **error.details,
             **(nested if isinstance(nested, Mapping) else {}),
@@ -328,7 +322,9 @@ def _visualization_data_contract(payload: Mapping[str, Any]) -> dict[str, Any] |
                 metric.get("topGroupCount"),
                 metric.get("bottomGroupCount"),
             )
-            if not isinstance(data_paths, Mapping) or any(value is None for value in required_values):
+            if not isinstance(data_paths, Mapping) or any(
+                value is None for value in required_values
+            ):
                 continue
             projected_metrics.append(
                 {
@@ -409,9 +405,11 @@ def _with_unchanged_repair(error: Exception, *, script_file: FileIdentity) -> Re
 
     code = error.code if isinstance(error, ReportingError) else "report_visualization_failed"
     message = error.message if isinstance(error, ReportingError) else str(error)
-    details = dict(error.details) if isinstance(error, ReportingError) and isinstance(
-        error.details, Mapping
-    ) else {}
+    details = (
+        dict(error.details)
+        if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
+        else {}
+    )
     details.update(
         {
             "path": script_file.path,
@@ -447,9 +445,7 @@ def _validated_visual_receipts(
     }
     receipts = {item.source_path: item for item in result.visual_inspection_receipts}
     if set(receipts) != expected_paths or set(outputs) != expected_outputs:
-        raise ReportingError(
-            "report_phase_artifact_changed", "图表视觉回执与签发输出不一致。"
-        )
+        raise ReportingError("report_phase_artifact_changed", "图表视觉回执与签发输出不一致。")
     for path in expected_paths:
         output = outputs[path]
         receipt = receipts[path]
@@ -536,9 +532,7 @@ class VisualizationSectionWorkflow:
         self.thinking_budget_cap = thinking_budget_cap
         self.benchmark_projection = benchmark_projection
 
-    async def _degrade(
-        self, error: Exception, run_context: RunContext
-    ) -> Mapping[str, Any]:
+    async def _degrade(self, error: Exception, run_context: RunContext) -> Mapping[str, Any]:
         assert self.degrade is not None
         self._degrade_attempted = True
         return await self.degrade(error, run_context)
@@ -685,9 +679,7 @@ class VisualizationSectionWorkflow:
                         if self.degrade is not None:
                             receipt = await self._degrade(exhausted_error, run_context)
                             _raise_rejected_submission(receipt)
-                            return VisualizationWorkflowResult(
-                                "degraded", plan, None, (), True
-                            )
+                            return VisualizationWorkflowResult("degraded", plan, None, (), True)
                         raise exhausted_error
                     continue
                 # 「可恢复但不可降级」类失败按 _MAX_GENERATE_ATTEMPTS 独立封顶，不能
@@ -742,9 +734,7 @@ class VisualizationSectionWorkflow:
                 repair_count = execution_repairs
                 repair_limit = MAX_VISUALIZATION_EXECUTION_REPAIRS
                 if repair_count >= repair_limit:
-                    exhausted_error = _with_repair_count(
-                        error, execution_repairs=execution_repairs
-                    )
+                    exhausted_error = _with_repair_count(error, execution_repairs=execution_repairs)
                     if self.degrade is not None and _is_degradable(error):
                         receipt = await self._degrade(exhausted_error, run_context)
                         _raise_rejected_submission(receipt)
@@ -794,9 +784,7 @@ class VisualizationSectionWorkflow:
                     repaired_file,
                 )
                 generated_result = repaired
-                repaired_outputs = {
-                    item.path for item in repaired.execution_receipt.output_files
-                }
+                repaired_outputs = {item.path for item in repaired.execution_receipt.output_files}
                 if any(chart.source_path not in repaired_outputs for chart in plan.charts):
                     raise ReportingError(
                         "report_phase_artifact_changed",

@@ -1096,8 +1096,7 @@ class TaskExecutionContextProjector:
                         "identities": identities,
                         "result": result,
                         # 当前调用（最近一次 custom 调用）与交付状态保护身份保留原文。
-                        "compactable": result is not None
-                        and not identities & protected_call_ids,
+                        "compactable": result is not None and not identities & protected_call_ids,
                     }
                 )
         if entries:
@@ -1169,7 +1168,9 @@ class TaskExecutionContextProjector:
                 "bytes": len(str(result.content or "").encode("utf-8")),
                 "callId": entry["call_id"],
             }
-            built.append({"entry": entry, "summary": summary, "receipt": receipt, "truncated": False})
+            built.append(
+                {"entry": entry, "summary": summary, "receipt": receipt, "truncated": False}
+            )
 
         def _encoded_size(value: Any) -> int:
             return len(
@@ -1223,8 +1224,7 @@ class TaskExecutionContextProjector:
                 if _total_bytes() <= CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES:
                     break
                 item["summary"] = {
-                    key: item["summary"][key]
-                    for key in ("marker", "tool", "status", "callId")
+                    key: item["summary"][key] for key in ("marker", "tool", "status", "callId")
                 }
                 item["receipt"] = {
                     key: item["receipt"][key]
@@ -1232,8 +1232,7 @@ class TaskExecutionContextProjector:
                 }
                 item["truncated"] = True
         metadata_budget_exceeded = (
-            metadata_budget_enabled
-            and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
+            metadata_budget_enabled and _total_bytes() > CODING_CUSTOM_HISTORY_METADATA_MAX_BYTES
         )
 
         bytes_before = 0
@@ -1687,10 +1686,7 @@ class TaskExecutionContextProjector:
         idx = 0
         while idx < len(projected):
             message = projected[idx]
-            if (
-                message.role in {"assistant", "model"}
-                and message.tool_calls
-            ):
+            if message.role in {"assistant", "model"} and message.tool_calls:
                 call_identity_sets = [
                     {
                         identity
@@ -1757,10 +1753,7 @@ class TaskExecutionContextProjector:
 
         target = max(1, int(hard_cap * TASK_EXECUTION_CONTEXT_REBASE_TARGET))
         deletable_start = len(protected_rounds)
-        while (
-            len(selected_rounds) > deletable_start
-            and counted_token_count(candidate) > target
-        ):
+        while len(selected_rounds) > deletable_start and counted_token_count(candidate) > target:
             removed = selected_rounds.pop(deletable_start)
             start = next(index for index, message in enumerate(candidate) if message is removed[0])
             del candidate[start : start + len(removed)]

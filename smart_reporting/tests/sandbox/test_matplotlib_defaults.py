@@ -45,8 +45,7 @@ def test_matplotlib_bootstrap_keeps_chinese_font_after_script_overrides(tmp_path
 
 def test_matplotlib_bootstrap_preserves_native_invalid_font_error(tmp_path: Path) -> None:
     script = matplotlib_bootstrap(str(tmp_path / "runtime")) + (
-        "from matplotlib import rcParams\n"
-        "rcParams['font.family'] = object()\n"
+        "from matplotlib import rcParams\nrcParams['font.family'] = object()\n"
     )
 
     result = subprocess.run(

@@ -31,12 +31,14 @@ def test_short_output_remains_exact_and_unmarked():
 
 
 def test_exception_tails_survive_competing_large_ordinary_output():
-    details = _safe_diagnostic_details({
-        "stdout": "输出表头\n" + "行\n" * 5000 + "输出末行",
-        "result": "结果表头\n" + "值\n" * 5000 + "结果末行",
-        "stderr": "warning\n" * 5000 + "ValueError: 根因",
-        "traceback": "frame\n" * 5000 + "KeyError: missing_column",
-    })
+    details = _safe_diagnostic_details(
+        {
+            "stdout": "输出表头\n" + "行\n" * 5000 + "输出末行",
+            "result": "结果表头\n" + "值\n" * 5000 + "结果末行",
+            "stderr": "warning\n" * 5000 + "ValueError: 根因",
+            "traceback": "frame\n" * 5000 + "KeyError: missing_column",
+        }
+    )
 
     assert details["stdout"].startswith("输出表头\n")
     assert details["stdout"].endswith("输出末行")
@@ -48,15 +50,17 @@ def test_exception_tails_survive_competing_large_ordinary_output():
 
 
 def test_json_escape_expansion_stays_bounded_with_metadata():
-    details = _safe_diagnostic_details({
-        "path": "analysis/a.py",
-        "line": 10,
-        "retryable": True,
-        "stderr": '警告\\"\n' * 5000 + "最终根因",
-        "traceback": '栈\\"\n' * 5000 + "最后异常",
-        "stdout": '头\\"\n' * 5000 + "输出结束",
-        "result": '值\\"\n' * 5000 + "结果结束",
-    })
+    details = _safe_diagnostic_details(
+        {
+            "path": "analysis/a.py",
+            "line": 10,
+            "retryable": True,
+            "stderr": '警告\\"\n' * 5000 + "最终根因",
+            "traceback": '栈\\"\n' * 5000 + "最后异常",
+            "stdout": '头\\"\n' * 5000 + "输出结束",
+            "result": '值\\"\n' * 5000 + "结果结束",
+        }
+    )
 
     assert details["path"] == "analysis/a.py"
     assert details["line"] == 10
@@ -67,11 +71,13 @@ def test_json_escape_expansion_stays_bounded_with_metadata():
 
 
 def test_large_allowed_metadata_cannot_exhaust_the_json_limit():
-    details = _safe_diagnostic_details({
-        "requiredNextTools": ['工具\\"\n' * 100] * 20,
-        "missingPaths": ['缺失\\"\n' * 100] * 20,
-        "issueSummary": "问题" * 5000,
-        "stdout": "头\n" + "输出\n" * 5000 + "尾",
-    })
+    details = _safe_diagnostic_details(
+        {
+            "requiredNextTools": ['工具\\"\n' * 100] * 20,
+            "missingPaths": ['缺失\\"\n' * 100] * 20,
+            "issueSummary": "问题" * 5000,
+            "stdout": "头\n" + "输出\n" * 5000 + "尾",
+        }
+    )
 
     assert len(json.dumps(details, ensure_ascii=False).encode("utf-8")) <= MAX_DIAGNOSTIC_BYTES

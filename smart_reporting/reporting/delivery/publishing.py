@@ -693,7 +693,9 @@ class ReportArtifactPersistenceService:
                 or re.fullmatch(r"[0-9a-f]{64}", spec.sha256) is None
             ):
                 raise ReportingError("report_artifact_invalid", "报告产物身份无效。")
-            relative, _host_path = self.workspace_service.normalize_path(spec.path, allow_root=False)
+            relative, _host_path = self.workspace_service.normalize_path(
+                spec.path, allow_root=False
+            )
             if relative != spec.path:
                 raise ReportingError("report_artifact_changed", "报告文件路径已变化。")
             artifact = StoredReportArtifact(

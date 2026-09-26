@@ -91,7 +91,9 @@ class OutputValidationState:
 
         if run_id is None or self.run_id != run_id or not self.blocking:
             return None
-        return self.diagnostic if self.diagnostic is not None else dict(OUTPUT_VALIDATION_UNAVAILABLE)
+        return (
+            self.diagnostic if self.diagnostic is not None else dict(OUTPUT_VALIDATION_UNAVAILABLE)
+        )
 
     @classmethod
     def for_run(

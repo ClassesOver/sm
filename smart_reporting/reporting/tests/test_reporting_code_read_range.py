@@ -18,16 +18,21 @@ from smart_reporting.reporting.tests.test_reporting_interactive_code_agent impor
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("arguments,expected,start,end", [
-    ({}, "# 中文\r\nvalue = 1\nprint(value)", 1, 3),
-    ({"start_line": 2, "end_line": 2}, "value = 1\n", 2, 2),
-    ({"start_line": 2}, "value = 1\nprint(value)", 2, 3),
-    ({"end_line": 2}, "# 中文\r\nvalue = 1\n", 1, 2),
-    ({"start_line": 3, "end_line": 99}, "print(value)", 3, 3),
-])
+@pytest.mark.parametrize(
+    "arguments,expected,start,end",
+    [
+        ({}, "# 中文\r\nvalue = 1\nprint(value)", 1, 3),
+        ({"start_line": 2, "end_line": 2}, "value = 1\n", 2, 2),
+        ({"start_line": 2}, "value = 1\nprint(value)", 2, 3),
+        ({"end_line": 2}, "# 中文\r\nvalue = 1\n", 1, 2),
+        ({"start_line": 3, "end_line": 99}, "print(value)", 3, 3),
+    ],
+)
 async def test_read_range_keeps_full_file_identity(toolkit, arguments, expected, start, end):  # noqa: F811
     source = "# 中文\r\nvalue = 1\nprint(value)"
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, source)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, source
+    )
     result = await toolkit.read_script(**arguments)
     assert result["source"] == expected
     assert result["startLine"] == start
@@ -38,10 +43,17 @@ async def test_read_range_keeps_full_file_identity(toolkit, arguments, expected,
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("arguments", [
-    {"start_line": 0}, {"end_line": -1}, {"start_line": 3, "end_line": 2},
-    {"start_line": True}, {"end_line": 1.5}, {"start_line": "2"},
-])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"start_line": 0},
+        {"end_line": -1},
+        {"start_line": 3, "end_line": 2},
+        {"start_line": True},
+        {"end_line": 1.5},
+        {"start_line": "2"},
+    ],
+)
 async def test_invalid_read_range_is_rejected(toolkit, arguments):  # noqa: F811
     result = await toolkit.read_script(**arguments)
     assert result["code"] == "report_code_script_range_invalid"
@@ -51,7 +63,12 @@ async def test_invalid_read_range_is_rejected(toolkit, arguments):  # noqa: F811
 async def test_range_past_eof_and_empty_file(toolkit):  # noqa: F811
     await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, "")
     empty = await toolkit.read_script()
-    assert (empty["source"], empty["totalLines"], empty["startLine"], empty["endLine"]) == ("", 0, None, None)
+    assert (empty["source"], empty["totalLines"], empty["startLine"], empty["endLine"]) == (
+        "",
+        0,
+        None,
+        None,
+    )
     result = await toolkit.read_script(start_line=2)
     assert result["code"] == "report_code_script_range_invalid"
 
@@ -59,10 +76,17 @@ async def test_range_past_eof_and_empty_file(toolkit):  # noqa: F811
 @pytest.mark.anyio
 async def test_partial_read_through_agno_can_feed_precise_patch(toolkit):  # noqa: F811
     source = "# keep\nvalue = 1\nprint(value)\n"
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, source)
-    spec = next(t for t in _code_responses_model().get_request_params(
-        messages=[], tools=toolkit.tool_functions,
-    )["tools"] if t["name"] == "read_script")
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, source
+    )
+    spec = next(
+        t
+        for t in _code_responses_model().get_request_params(
+            messages=[],
+            tools=toolkit.tool_functions,
+        )["tools"]
+        if t["name"] == "read_script"
+    )
     assert spec["type"] == "function"
     assert {"start_line", "end_line"} <= spec["parameters"]["properties"].keys()
     fn = next(f for f in toolkit.tool_functions if f.name == "read_script")
@@ -70,7 +94,9 @@ async def test_partial_read_through_agno_can_feed_precise_patch(toolkit):  # noq
     call = FunctionCall(function=fn, arguments=json.loads('{"start_line":2,"end_line":2}'))
     assert await call.aexecute()
     result = call.result
-    patch = (f"*** Begin Edit\n*** SHA256: {result['sha256']}\n<<<<<<< SEARCH\n"
-             f"{result['source']}\n=======\nvalue = 2\n\n>>>>>>> REPLACE\n*** End Edit")
+    patch = (
+        f"*** Begin Edit\n*** SHA256: {result['sha256']}\n<<<<<<< SEARCH\n"
+        f"{result['source']}\n=======\nvalue = 2\n\n>>>>>>> REPLACE\n*** End Edit"
+    )
     assert (await toolkit.edit_script(patch))["ok"]
     assert (await toolkit.read_script())["source"] == "# keep\nvalue = 2\nprint(value)\n"

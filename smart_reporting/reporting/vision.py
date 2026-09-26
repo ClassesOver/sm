@@ -38,9 +38,7 @@ blank。legend_occlusion、missing_units 和 misleading 一律只作为 warning�
 或风格，也不要因为图表未采用某种常见形式而判定失败。
 """.strip()
 
-_NON_BLOCKING_ISSUE_CATEGORIES = frozenset(
-    {"legend_occlusion", "missing_units", "misleading"}
-)
+_NON_BLOCKING_ISSUE_CATEGORIES = frozenset({"legend_occlusion", "missing_units", "misleading"})
 _WHOLE_CHART_BLANK_MARKERS = (
     "整张",
     "整个图表",
@@ -204,9 +202,7 @@ class ReportVisionReviewer:
             # 也不能把原始异常或供应商响应带回模型上下文。
             raise WorkspaceError("图表视觉审查暂不可用，请稍后重试。") from error
 
-        result = _normalize_visual_assessment(
-            assessment.model_dump(mode="json", by_alias=True)
-        )
+        result = _normalize_visual_assessment(assessment.model_dump(mode="json", by_alias=True))
         return ChartVisualInspectionReceipt.model_validate(
             {
                 "sourcePath": path,

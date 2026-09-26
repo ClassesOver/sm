@@ -164,7 +164,9 @@ class RuntimePlanningMixin:
         semantic_domains = tuple(dict.fromkeys(normalized.domains))
         report_type = normalized.report_type
         if report_type is None:
-            missing.append(normalized.clarification_question or "请明确报告是整体运营分析还是专题分析。")
+            missing.append(
+                normalized.clarification_question or "请明确报告是整体运营分析还是专题分析。"
+            )
         if report_type == "topic" and not semantic_domains:
             missing.append(normalized.clarification_question or "请明确需要分析的业务主题。")
         if missing:
@@ -411,9 +413,7 @@ class RuntimePlanningMixin:
             workflow_run_id,
             ReportingCommand(
                 name="set_report_editor_context",
-                payload={
-                    "context": editor_context.model_dump(mode="json", by_alias=True)
-                },
+                payload={"context": editor_context.model_dump(mode="json", by_alias=True)},
                 commandId=f"editor-context:{content['revision']}:{editor_context.digest()}",
             ),
             expected_version=durable.state_version,
@@ -3045,9 +3045,7 @@ def _period_terms(text: str) -> frozenset[str]:
     return frozenset(terms - _PERIOD_GENERIC_TERMS)
 
 
-def _preferred_typed_period_column(
-    columns: tuple[Any, ...], *, reference_text: str
-) -> Any | None:
+def _preferred_typed_period_column(columns: tuple[Any, ...], *, reference_text: str) -> Any | None:
     """在类型化日期列中选出与当前期间字段、表用途和报告目标唯一最相关的一列。
 
     只有一列时直接采用；多列时按词元重合度选唯一最高分，并在存在业务日期列时排除

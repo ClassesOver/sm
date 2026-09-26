@@ -1132,7 +1132,9 @@ class ReportWorkflowController:
             session_id=scope["thread_id"],
             run_id=workflow_run_id,
             title="生成报告",
-            execution="background" if self._workflow_entrypoint(run_context) == "mcp" else "foreground",
+            execution="background"
+            if self._workflow_entrypoint(run_context) == "mcp"
+            else "foreground",
         )
         try:
             output = await workflow.arun(
@@ -1158,7 +1160,9 @@ class ReportWorkflowController:
                 operation_id=scope["external_run_id"],
                 session_id=scope["thread_id"],
                 status="cancelled" if isinstance(run_error, asyncio.CancelledError) else "failed",
-                summary="报表生成已取消" if isinstance(run_error, asyncio.CancelledError) else "报表生成失败",
+                summary="报表生成已取消"
+                if isinstance(run_error, asyncio.CancelledError)
+                else "报表生成失败",
             )
             await self._finalize_run_error(
                 run_error,

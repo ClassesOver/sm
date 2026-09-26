@@ -43,21 +43,29 @@ from smart_reporting.reporting.workflow.runtime.code_generation import (
 @pytest.mark.parametrize("with_usage", [True, False])
 @pytest.mark.parametrize("declared_edit", [True, False])
 async def test_rejected_provider_call_keeps_usage_and_safe_identity(
-    monkeypatch, with_usage, declared_edit,
+    monkeypatch,
+    with_usage,
+    declared_edit,
 ):
     response = _function_response(1, "edit_script", {"patch": "PRIVATE_SOURCE"})
     if with_usage:
         response.usage = ResponseUsage(
-            input_tokens=100, output_tokens=70, total_tokens=170,
+            input_tokens=100,
+            output_tokens=70,
+            total_tokens=170,
             input_tokens_details={"cached_tokens": 40, "cache_write_tokens": 0},
             output_tokens_details={"reasoning_tokens": 60},
         )
     model = ReportingCodeOpenAIResponses(id="test-model", api_key="test")
     tools = [Function(name="edit_script" if declared_edit else "run_script")]
     model.configure_code_run(tools, max_model_requests=2)
-    monkeypatch.setattr(model, "get_async_client", lambda: SimpleNamespace(
-        responses=SimpleNamespace(create=AsyncMock(return_value=response)),
-    ))
+    monkeypatch.setattr(
+        model,
+        "get_async_client",
+        lambda: SimpleNamespace(
+            responses=SimpleNamespace(create=AsyncMock(return_value=response)),
+        ),
+    )
     if declared_edit:
         # 任务集内 FREEFORM 工具以 function 形态返回：不执行、补未执行回执，
         # 不是协议异常；usage 照常结算，私密输入不进指标。
@@ -83,10 +91,12 @@ async def test_rejected_provider_call_keeps_usage_and_safe_identity(
     assert metric["visibleOutputTokens"] == (10 if with_usage else "unknown")
     assert caught.value.details == {
         "retryable": False,
-        "toolName": "edit_script", "receivedType": "function",
+        "toolName": "edit_script",
+        "receivedType": "function",
         "expectedType": "undeclared",
         "declaredTools": {"run_script": "function"},
-        "itemId": "item-1", "callId": "call-1",
+        "itemId": "item-1",
+        "callId": "call-1",
     }
     sample = build_coding_metric_sample(duration_ms=1, request_metrics=[metric])
     assert sample["modelRequestMetrics"][0]["reasoningTokens"] == (60 if with_usage else "unknown")
@@ -95,28 +105,30 @@ async def test_rejected_provider_call_keeps_usage_and_safe_identity(
 
 def test_coding_metrics_keep_unknown_separate_from_zero_and_report_tail_latency():
     assert percentile([], 50) == "unknown"
-    summary = summarize_coding_metrics([
-        {
-            "rawProtocolCorrect": True,
-            "firstPatchApplied": True,
-            "firstRepairSuccess": True,
-            "criticalVisualDefect": False,
-            "durationMs": 100,
-            "reasoningTokens": 10,
-            "firstWriteRequestDurationMs": 80,
-            "firstWriteReasoningTokens": 8,
-        },
-        {
-            "rawProtocolCorrect": False,
-            "firstPatchApplied": False,
-            "firstRepairSuccess": True,
-            "criticalVisualDefect": True,
-            "durationMs": 900,
-            "reasoningTokens": 9000,
-            "firstWriteRequestDurationMs": 700,
-            "firstWriteReasoningTokens": 7000,
-        },
-    ])
+    summary = summarize_coding_metrics(
+        [
+            {
+                "rawProtocolCorrect": True,
+                "firstPatchApplied": True,
+                "firstRepairSuccess": True,
+                "criticalVisualDefect": False,
+                "durationMs": 100,
+                "reasoningTokens": 10,
+                "firstWriteRequestDurationMs": 80,
+                "firstWriteReasoningTokens": 8,
+            },
+            {
+                "rawProtocolCorrect": False,
+                "firstPatchApplied": False,
+                "firstRepairSuccess": True,
+                "criticalVisualDefect": True,
+                "durationMs": 900,
+                "reasoningTokens": 9000,
+                "firstWriteRequestDurationMs": 700,
+                "firstWriteReasoningTokens": 7000,
+            },
+        ]
+    )
     assert summary["sampleCount"] == 2
     assert summary["rawProtocolCorrectRate"] == 0.5
     assert summary["durationMs"] == {"p50": 100.0, "p95": 900.0}
@@ -129,7 +141,10 @@ def test_coding_metrics_keep_unknown_separate_from_zero_and_report_tail_latency(
 @pytest.mark.parametrize("failed_tokens,total", [(60, 80), (None, "unknown")])
 def test_failed_task_usage_includes_rejected_response_or_is_unknown(failed_tokens, total):
     sample = build_coding_metric_sample(
-        duration_ms=1, request_count=2, reasoning_tokens=20, model_cost=0.01,
+        duration_ms=1,
+        request_count=2,
+        reasoning_tokens=20,
+        model_cost=0.01,
         request_metrics=[
             {"requestIndex": 1, "status": "completed", "reasoningTokens": 20},
             {"requestIndex": 2, "status": "failed", "reasoningTokens": failed_tokens},
@@ -140,12 +155,14 @@ def test_failed_task_usage_includes_rejected_response_or_is_unknown(failed_token
 
 
 def test_coding_metrics_summarize_first_run_failure_codes_without_full_diagnostics():
-    summary = summarize_coding_metrics([
-        {"firstRunFailureCode": "report_code_execution_failed"},
-        {"firstRunFailureCode": "report_code_execution_failed"},
-        {"firstRunFailureCode": "report_code_script_edit_conflict"},
-        {"firstRunFailureCode": "unknown"},
-    ])
+    summary = summarize_coding_metrics(
+        [
+            {"firstRunFailureCode": "report_code_execution_failed"},
+            {"firstRunFailureCode": "report_code_execution_failed"},
+            {"firstRunFailureCode": "report_code_script_edit_conflict"},
+            {"firstRunFailureCode": "unknown"},
+        ]
+    )
 
     assert summary["firstRunFailureCodes"] == {
         "report_code_execution_failed": 2,
@@ -153,12 +170,15 @@ def test_coding_metrics_summarize_first_run_failure_codes_without_full_diagnosti
     }
 
 
-@pytest.mark.parametrize("code,expected", [
-    (None, "unknown"),
-    ("", "unknown"),
-    ("report_code_input_wrapped", "report_code_input_wrapped"),
-    ("x" * 200, "x" * 128),
-])
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        (None, "unknown"),
+        ("", "unknown"),
+        ("report_code_input_wrapped", "report_code_input_wrapped"),
+        ("x" * 200, "x" * 128),
+    ],
+)
 def test_first_script_failure_code_is_bounded(code, expected):
     sample = build_coding_metric_sample(duration_ms=1, first_script_failure_code=code)
     assert sample["firstScriptFailureCode"] == expected
@@ -178,11 +198,13 @@ def test_input_component_metrics_record_only_bytes_and_stable_hashes():
     assert len(metrics["commonInstructions"]["sha256"]) == 64
     assert metrics["diagnostic"]["bytes"] == 4
     assert "rule-a" not in str(metrics)
-    assert measure_input_components({"task": {"a": 1, "b": 2}})["task"] == (
-        measure_input_components({"task": {"b": 2, "a": 1}})["task"]
+    assert (
+        measure_input_components({"task": {"a": 1, "b": 2}})["task"]
+        == (measure_input_components({"task": {"b": 2, "a": 1}})["task"])
     )
-    assert measure_input_components({"task": {"value": 1}})["task"]["sha256"] != (
-        measure_input_components({"task": {"value": 2}})["task"]["sha256"]
+    assert (
+        measure_input_components({"task": {"value": 1}})["task"]["sha256"]
+        != (measure_input_components({"task": {"value": 2}})["task"]["sha256"])
     )
 
 
@@ -214,9 +236,7 @@ def test_request_params_snapshot_preserves_only_bounded_request_fingerprints():
 
 
 def test_coding_metrics_mark_missing_and_explicit_unknown_observations_unknown():
-    summary = summarize_coding_metrics([
-        {"durationMs": 10, "firstPatchApplied": "unknown"}
-    ])
+    summary = summarize_coding_metrics([{"durationMs": 10, "firstPatchApplied": "unknown"}])
     assert summary["firstPatchAppliedRate"] == "unknown"
     assert summary["reasoningTokens"] == {"p50": "unknown", "p95": "unknown"}
     assert "firstPatchApplied" in summary["unknownFields"]
@@ -224,18 +244,20 @@ def test_coding_metrics_mark_missing_and_explicit_unknown_observations_unknown()
 
 
 def test_coding_metrics_summarize_execution_spans_by_phase():
-    summary = summarize_coding_metrics([
-        {
-            "durationMs": 100,
-            "executionSpans": {
-                "bootstrap": [10, 20],
-                "monitor": [3],
-                "cell": [40],
-                "script": [50],
-                "shutdown": [4],
-            },
-        }
-    ])
+    summary = summarize_coding_metrics(
+        [
+            {
+                "durationMs": 100,
+                "executionSpans": {
+                    "bootstrap": [10, 20],
+                    "monitor": [3],
+                    "cell": [40],
+                    "script": [50],
+                    "shutdown": [4],
+                },
+            }
+        ]
+    )
 
     assert summary["executionSpans"] == {
         "bootstrap": {"p50": 10.0, "p95": 20.0},
@@ -246,10 +268,14 @@ def test_coding_metrics_summarize_execution_spans_by_phase():
     }
     assert "executionSpans" not in summary["unknownFields"]
 
-    partial = summarize_coding_metrics([{
-        "durationMs": 1,
-        "executionSpans": {"bootstrap": [1]},
-    }])
+    partial = summarize_coding_metrics(
+        [
+            {
+                "durationMs": 1,
+                "executionSpans": {"bootstrap": [1]},
+            }
+        ]
+    )
     assert "executionSpans" in partial["unknownFields"]
 
 
@@ -290,9 +316,9 @@ def test_coding_metric_sample_keeps_delivery_evidence_and_unknowns_separate():
         "toolCalls": 6,
         "toolCounts": {"write_script": 1, "edit_script": 2, "run_script": 3},
         "visualReviewDurationMs": 77,
-            "modelRequestMetrics": [],
-            "executionSpans": "unknown",
-            "inputComponents": {},
+        "modelRequestMetrics": [],
+        "executionSpans": "unknown",
+        "inputComponents": {},
         "firstWriteRequestIndex": "unknown",
         "firstWriteRequestDurationMs": "unknown",
         "firstWriteReasoningTokens": "unknown",
@@ -303,9 +329,9 @@ def test_coding_metric_sample_keeps_delivery_evidence_and_unknowns_separate():
         "rawProtocolCorrect": "unknown",
         "envelopeNormalizedInputs": "unknown",
         "wireShapeRejections": "unknown",
-            "firstScriptSuccess": "unknown",
-            "firstScriptFailureCode": "unknown",
-            "firstRunSuccess": "unknown",
+        "firstScriptSuccess": "unknown",
+        "firstScriptFailureCode": "unknown",
+        "firstRunSuccess": "unknown",
         "firstRunFailureCode": "unknown",
         "firstRunFailure": "unknown",
         "firstRepairSuccess": "unknown",
@@ -383,7 +409,9 @@ def test_coding_metric_sample_identifies_first_write_request_without_hiding_unkn
     assert sample["firstWriteRequestDurationMs"] == 573000
     assert sample["modelRequestMetrics"][0]["providerRequestId"] == "resp-1"
     assert sample["modelRequestMetrics"][0]["requestParams"]["parallelToolCalls"] is True
-    assert sample["modelRequestMetrics"][0]["requestParams"]["enableThinkingLocation"] == "top_level"
+    assert (
+        sample["modelRequestMetrics"][0]["requestParams"]["enableThinkingLocation"] == "top_level"
+    )
     assert sample["firstWriteReasoningTokens"] == 41267
     assert sample["modelRequestMetrics"][1]["reasoningTokens"] == "unknown"
 
@@ -486,7 +514,8 @@ def test_coding_metric_sample_replays_bounded_ordered_tool_call_identities_only(
     assert request["toolNames"] == ["run", "write_script"]
     assert "secret" not in str(request)
     assert request["firstToolFailure"] == {
-        "toolName": "write_script", "code": "report_python_source_path_invalid",
+        "toolName": "write_script",
+        "code": "report_python_source_path_invalid",
     }
 
 
@@ -515,7 +544,9 @@ def test_coding_metric_sample_keeps_bounded_first_tool_failure_diagnostics():
                         "errorType": "E" * 300,
                         "exitCode": 0,
                         "declaredOutputCount": 17,
-                        "detectedOutputWrites": [f"charts/chart-{index:02d}.png" for index in range(30)],
+                        "detectedOutputWrites": [
+                            f"charts/chart-{index:02d}.png" for index in range(30)
+                        ],
                         "source": "secret-source",
                     },
                     "details": {"source": "secret-source"},
@@ -613,7 +644,9 @@ def test_coding_metric_sample_persists_bounded_edit_context_diagnostics():
     assert len(diagnostics["sourceExcerpt"].encode("utf-8")) == 1800
     assert diagnostics["readRange"] == {"path": "analysis/a.py", "startLine": 3, "endLine": 30}
     assert diagnostics["allowedEditRegion"] == {
-        "path": "analysis/a.py", "startLine": 1, "endLine": 40,
+        "path": "analysis/a.py",
+        "startLine": 1,
+        "endLine": 40,
     }
     assert "sourceStartLine" not in diagnostics
     assert "forbiddenEditRegions" not in diagnostics
@@ -632,9 +665,7 @@ def test_bounded_failure_diagnostics_trims_source_excerpt_tail_to_byte_limit():
 def test_bounded_failure_diagnostics_keeps_excerpt_within_limit_unchanged():
     excerpt = "中" * 600
 
-    assert bounded_failure_diagnostics({"sourceExcerpt": excerpt}) == {
-        "sourceExcerpt": excerpt
-    }
+    assert bounded_failure_diagnostics({"sourceExcerpt": excerpt}) == {"sourceExcerpt": excerpt}
 
 
 @pytest.mark.parametrize("excerpt", [None, 123, "", ["line"], {"code": 1}])
@@ -642,40 +673,45 @@ def test_bounded_failure_diagnostics_drops_malformed_excerpt(excerpt):
     assert bounded_failure_diagnostics({"sourceExcerpt": excerpt}) == {}
 
 
-@pytest.mark.parametrize("region", [
-    "analysis/a.py",
-    None,
-    42,
-    ["analysis/a.py", 1, 5],
-    {},
-    {"path": "analysis/a.py"},
-    {"path": "analysis/a.py", "startLine": 5},
-    {"path": "analysis/a.py", "startLine": 10, "endLine": 5},
-    {"path": "analysis/a.py", "startLine": 0, "endLine": 5},
-    {"path": "analysis/a.py", "startLine": True, "endLine": 5},
-    {"path": "analysis/a.py", "startLine": 1.0, "endLine": 5},
-    {"path": "analysis/a.py", "startLine": "1", "endLine": 5},
-    {"path": "", "startLine": 1, "endLine": 5},
-    {"path": 42, "startLine": 1, "endLine": 5},
-    {"startLine": 1, "endLine": 5},
-])
+@pytest.mark.parametrize(
+    "region",
+    [
+        "analysis/a.py",
+        None,
+        42,
+        ["analysis/a.py", 1, 5],
+        {},
+        {"path": "analysis/a.py"},
+        {"path": "analysis/a.py", "startLine": 5},
+        {"path": "analysis/a.py", "startLine": 10, "endLine": 5},
+        {"path": "analysis/a.py", "startLine": 0, "endLine": 5},
+        {"path": "analysis/a.py", "startLine": True, "endLine": 5},
+        {"path": "analysis/a.py", "startLine": 1.0, "endLine": 5},
+        {"path": "analysis/a.py", "startLine": "1", "endLine": 5},
+        {"path": "", "startLine": 1, "endLine": 5},
+        {"path": 42, "startLine": 1, "endLine": 5},
+        {"startLine": 1, "endLine": 5},
+    ],
+)
 def test_bounded_failure_diagnostics_drops_malformed_regions(region):
     for key in ("readRange", "allowedEditRegion"):
         assert bounded_failure_diagnostics({key: region}) == {}
 
 
 def test_bounded_failure_diagnostics_projects_only_safe_region_fields():
-    diagnostics = bounded_failure_diagnostics({
-        "readRange": {
-            "path": "a" * 300,
-            "startLine": 2,
-            "endLine": 9,
-            "source": "secret-full-source",
-            "sha256": "b" * 64,
-            "extra": {"nested": "secret"},
-        },
-        "allowedEditRegion": {"path": "charts/a.png", "startLine": 1, "endLine": 12},
-    })
+    diagnostics = bounded_failure_diagnostics(
+        {
+            "readRange": {
+                "path": "a" * 300,
+                "startLine": 2,
+                "endLine": 9,
+                "source": "secret-full-source",
+                "sha256": "b" * 64,
+                "extra": {"nested": "secret"},
+            },
+            "allowedEditRegion": {"path": "charts/a.png", "startLine": 1, "endLine": 12},
+        }
+    )
 
     assert diagnostics == {
         "readRange": {"path": "a" * 256, "startLine": 2, "endLine": 9},
@@ -697,22 +733,25 @@ async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrappe
         _custom_response,
     )
 
-    source = '# Python\nimport os\nprint(os.getcwd())\n'
+    source = "# Python\nimport os\nprint(os.getcwd())\n"
     if wrapped:
         source = json.dumps({"data": source})
-    client = _ResponsesClient([
-        _batch_response(
-            _custom_response("write_script", source, 1),
-            _function_response(2, "run_script", {}),
-        ),
-        _batch_response(
-            _custom_response("write_script", "# Python\n" + SOURCE, 3),
-            _function_response(4, "run_script", {}),
-            _function_response(5, "submit_script", {}),
-        ),
-    ])
+    client = _ResponsesClient(
+        [
+            _batch_response(
+                _custom_response("write_script", source, 1),
+                _function_response(2, "run_script", {}),
+            ),
+            _batch_response(
+                _custom_response("write_script", "# Python\n" + SOURCE, 3),
+                _function_response(4, "run_script", {}),
+                _function_response(5, "submit_script", {}),
+            ),
+        ]
+    )
     factory = create_reporting_code_agent_factory(
-        model=OpenAIChat(id="test", api_key="test"), name="metric-failure-test",
+        model=OpenAIChat(id="test", api_key="test"),
+        name="metric-failure-test",
     )
 
     def make_agent(tools):
@@ -722,7 +761,9 @@ async def test_path_rejection_and_raw_protocol_are_independent(workspace, wrappe
 
     samples = []
     await ReportingCodeGenerationRunner(
-        make_agent, ToolkitRuntime(), ReportingLspProcessManager(),
+        make_agent,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
         coding_metrics_recorder=samples.append,
     ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
     sample = samples[0]
@@ -776,23 +817,26 @@ async def test_declared_output_missing_records_bounded_diagnostics(workspace):  
         async def shutdown(self, _session_id):
             return None
 
-    client = _ResponsesClient([
-        _batch_response(
-            _custom_response("write_script", "# Python\n" + SOURCE, 1),
-            _function_response(2, "run_script", {}),
-        ),
-        _batch_response(
-            _function_response(3, "run_script", {}),
-            _function_response(4, "submit_script", {}),
-        ),
-        # run_script 成功前 submit_script 不在声明表内，同批调用会被阶段门禁拒绝，
-        # 需要第三轮按交付状态单独提交。
-        _batch_response(
-            _function_response(5, "submit_script", {}),
-        ),
-    ])
+    client = _ResponsesClient(
+        [
+            _batch_response(
+                _custom_response("write_script", "# Python\n" + SOURCE, 1),
+                _function_response(2, "run_script", {}),
+            ),
+            _batch_response(
+                _function_response(3, "run_script", {}),
+                _function_response(4, "submit_script", {}),
+            ),
+            # run_script 成功前 submit_script 不在声明表内，同批调用会被阶段门禁拒绝，
+            # 需要第三轮按交付状态单独提交。
+            _batch_response(
+                _function_response(5, "submit_script", {}),
+            ),
+        ]
+    )
     factory = create_reporting_code_agent_factory(
-        model=OpenAIChat(id="test", api_key="test"), name="missing-output-test",
+        model=OpenAIChat(id="test", api_key="test"),
+        name="missing-output-test",
     )
 
     def make_agent(tools):
@@ -802,7 +846,9 @@ async def test_declared_output_missing_records_bounded_diagnostics(workspace):  
 
     samples = []
     await ReportingCodeGenerationRunner(
-        make_agent, MissingThenOkRuntime(), ReportingLspProcessManager(),
+        make_agent,
+        MissingThenOkRuntime(),
+        ReportingLspProcessManager(),
         coding_metrics_recorder=samples.append,
     ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
     sample = samples[0]
@@ -844,18 +890,21 @@ async def test_tool_call_limit_rejection_is_coded(workspace, monkeypatch):  # no
     from smart_reporting.reporting.workflow.runtime import code_generation
 
     monkeypatch.setattr(code_generation, "ANALYSIS_TOOL_CALL_LIMIT", 2)
-    client = _ResponsesClient([
-        _batch_response(
-            _custom_response("write_script", "# Python\n" + SOURCE, 1),
-            _function_response(2, "run_script", {}),
-        ),
-        _batch_response(
-            _function_response(3, "run_script", {}),
-        ),
-        _message_response("结束"),
-    ])
+    client = _ResponsesClient(
+        [
+            _batch_response(
+                _custom_response("write_script", "# Python\n" + SOURCE, 1),
+                _function_response(2, "run_script", {}),
+            ),
+            _batch_response(
+                _function_response(3, "run_script", {}),
+            ),
+            _message_response("结束"),
+        ]
+    )
     factory = create_reporting_code_agent_factory(
-        model=OpenAIChat(id="test", api_key="test"), name="tool-limit-test",
+        model=OpenAIChat(id="test", api_key="test"),
+        name="tool-limit-test",
     )
 
     def make_agent(tools):
@@ -866,7 +915,9 @@ async def test_tool_call_limit_rejection_is_coded(workspace, monkeypatch):  # no
     samples = []
     with pytest.raises(ReportingError):
         await ReportingCodeGenerationRunner(
-            make_agent, ToolkitRuntime(), ReportingLspProcessManager(),
+            make_agent,
+            ToolkitRuntime(),
+            ReportingLspProcessManager(),
             coding_metrics_recorder=samples.append,
         ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
     sample = samples[0]
@@ -903,19 +954,33 @@ def test_coding_metric_sample_keeps_bounded_first_run_failure_context():
         "sourceSha256": "a" * 64,
         "detailsBytes": 999999,
     }
+
+
 def test_coding_metrics_group_by_task_model_effort_and_provider():
-    grouped = group_coding_metrics([
-        {"taskKind": "visualization", "model": "m", "reasoningEffort": "high", "provider": "p", "durationMs": 10},
-        {"taskKind": "visualization", "model": "m", "reasoningEffort": "high", "provider": "p", "durationMs": 20},
-    ])
+    grouped = group_coding_metrics(
+        [
+            {
+                "taskKind": "visualization",
+                "model": "m",
+                "reasoningEffort": "high",
+                "provider": "p",
+                "durationMs": 10,
+            },
+            {
+                "taskKind": "visualization",
+                "model": "m",
+                "reasoningEffort": "high",
+                "provider": "p",
+                "durationMs": 20,
+            },
+        ]
+    )
     assert grouped["visualization|m|high|p"]["sampleCount"] == 2
     assert grouped["visualization|m|high|p"]["durationMs"] == {"p50": 10.0, "p95": 20.0}
 
 
 def test_nonstream_run_output_metrics_are_recorded_with_real_request_count():
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
     output = SimpleNamespace(
         metrics=RunMetrics(
             input_tokens=120,
@@ -942,9 +1007,7 @@ def test_nonstream_run_output_metrics_are_recorded_with_real_request_count():
 
 
 def test_nonstream_request_count_is_kept_when_provider_omits_usage():
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
 
     settlement.record_run_output(SimpleNamespace(metrics=None), request_count=2)
 
@@ -952,9 +1015,7 @@ def test_nonstream_request_count_is_kept_when_provider_omits_usage():
 
 
 def test_task_metrics_partition_planner_and_coding_without_losing_total():
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
     planner_output = SimpleNamespace(
         metrics=RunMetrics(
             input_tokens=100,
@@ -1006,13 +1067,9 @@ def test_task_metrics_partition_planner_and_coding_without_losing_total():
 
 
 def test_task_stage_metrics_keep_missing_usage_unknown():
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
 
-    settlement.stage_recorder("planner")(
-        SimpleNamespace(metrics=None), request_count=1
-    )
+    settlement.stage_recorder("planner")(SimpleNamespace(metrics=None), request_count=1)
 
     assert settlement.stage_snapshot()["planner"] == {
         "requestCount": 1,
@@ -1027,13 +1084,9 @@ def test_task_stage_metrics_keep_missing_usage_unknown():
 
 
 def test_task_stage_metrics_treat_agno_default_zero_usage_as_unknown():
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
 
-    settlement.stage_recorder("planner")(
-        SimpleNamespace(metrics=RunMetrics()), request_count=1
-    )
+    settlement.stage_recorder("planner")(SimpleNamespace(metrics=RunMetrics()), request_count=1)
 
     stage = settlement.stage_snapshot()["planner"]
     assert stage["requestCount"] == 1
@@ -1044,9 +1097,7 @@ def test_task_stage_metrics_treat_agno_default_zero_usage_as_unknown():
 
 
 def test_task_stage_metrics_record_and_enforce_agent_role() -> None:
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
     output = SimpleNamespace(
         metrics=RunMetrics(input_tokens=1, output_tokens=1, reasoning_tokens=1)
     )
@@ -1059,9 +1110,7 @@ def test_task_stage_metrics_record_and_enforce_agent_role() -> None:
 
 
 def test_task_stage_metrics_persist_provider_request_ids() -> None:
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
     output = SimpleNamespace(
         metrics=RunMetrics(input_tokens=1, output_tokens=1, reasoning_tokens=1),
         _reporting_request_metrics=[
@@ -1119,9 +1168,7 @@ def test_task_stage_metrics_persist_provider_request_ids() -> None:
 
 
 def test_task_stage_metrics_preserve_started_request_without_usage() -> None:
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
     output = SimpleNamespace(
         metrics=None,
         _reporting_request_metrics=[
@@ -1142,9 +1189,7 @@ def test_task_stage_metrics_preserve_started_request_without_usage() -> None:
 
 
 def test_task_stage_request_metrics_bound_values() -> None:
-    settlement = _TaskModelMetricsSettlement(
-        task_id="task-1", phase_attempt=1, agno_run_id="run-1"
-    )
+    settlement = _TaskModelMetricsSettlement(task_id="task-1", phase_attempt=1, agno_run_id="run-1")
     output = SimpleNamespace(
         metrics=RunMetrics(input_tokens=1),
         _reporting_request_metrics=[
@@ -1224,13 +1269,16 @@ def test_task_receipt_keeps_summary_separate_from_planner_coding_reasoning() -> 
 
 
 def test_metric_failure_code_ignores_resolved_tool_failure():
-    assert _metric_failure_code(
-        None,
-        {
-            "code": "report_python_source_path_invalid",
-            "resolved": True,
-        },
-    ) is None
+    assert (
+        _metric_failure_code(
+            None,
+            {
+                "code": "report_python_source_path_invalid",
+                "resolved": True,
+            },
+        )
+        is None
+    )
 
 
 def test_metric_failure_code_keeps_terminal_and_unresolved_failures():
@@ -1263,7 +1311,17 @@ async def test_runner_records_metrics_before_no_submission(workspace, protocol_e
         output.metrics = RunMetrics()
 
     class Model:
-        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None, delivery_state_reader=None, tool_call_limit=None, visual_budget_gate_safety_margin=2):
+        def configure_code_run(
+            self,
+            _tools,
+            *,
+            max_model_requests,
+            delivery_reserve=None,
+            redundant_call_check=None,
+            delivery_state_reader=None,
+            tool_call_limit=None,
+            visual_budget_gate_safety_margin=2,
+        ):
             # 30 次工具调用后仍需允许一次模型终止响应。
             assert max_model_requests == 31
             assert delivery_state_reader()["nextTools"] == ["write_script"]
@@ -1330,7 +1388,8 @@ async def test_runner_records_metrics_before_no_submission(workspace, protocol_e
         )
 
     expected_code = (
-        "report_code_custom_tool_protocol_error" if protocol_error
+        "report_code_custom_tool_protocol_error"
+        if protocol_error
         else "report_code_generation_no_submission"
     )
     assert caught.value.code == expected_code
@@ -1371,9 +1430,7 @@ async def test_runner_records_metrics_before_no_submission(workspace, protocol_e
 
 @pytest.mark.anyio
 async def test_runner_rejects_agno_model_without_code_protocol(workspace):  # noqa: F811
-    agent = AgnoAgent(
-        model=OpenAIChat(id="test", api_key="test", base_url="http://localhost")
-    )
+    agent = AgnoAgent(model=OpenAIChat(id="test", api_key="test", base_url="http://localhost"))
     agent.arun = AsyncMock()
 
     class Runtime:
@@ -1398,7 +1455,17 @@ async def test_runner_records_request_count_when_agent_raises(workspace):  # noq
     recorded: list[tuple[object, int]] = []
 
     class Model:
-        def configure_code_run(self, _tools, *, max_model_requests, delivery_reserve=None, redundant_call_check=None, delivery_state_reader=None, tool_call_limit=None, visual_budget_gate_safety_margin=2):
+        def configure_code_run(
+            self,
+            _tools,
+            *,
+            max_model_requests,
+            delivery_reserve=None,
+            redundant_call_check=None,
+            delivery_state_reader=None,
+            tool_call_limit=None,
+            visual_budget_gate_safety_margin=2,
+        ):
             assert max_model_requests == 31
             assert delivery_state_reader()["nextTools"] == ["write_script"]
 
@@ -1456,11 +1523,12 @@ async def test_multi_layer_envelope_still_counts_as_protocol_violation(workspace
         _custom_response,
     )
 
-    source = '# Python\nprint(1)\n'
+    source = "# Python\nprint(1)\n"
     wrapped = json.dumps({"data": json.dumps({"data": source})})
     client = _ResponsesClient([_custom_response("write_script", wrapped, 1)])
     factory = create_reporting_code_agent_factory(
-        model=OpenAIChat(id="test", api_key="test"), name="envelope-multilayer-test",
+        model=OpenAIChat(id="test", api_key="test"),
+        name="envelope-multilayer-test",
     )
 
     def make_agent(tools):
@@ -1471,7 +1539,9 @@ async def test_multi_layer_envelope_still_counts_as_protocol_violation(workspace
     samples = []
     with pytest.raises(ReportingError, match="report_code_generation_agent_failed"):
         await ReportingCodeGenerationRunner(
-            make_agent, ToolkitRuntime(), ReportingLspProcessManager(),
+            make_agent,
+            ToolkitRuntime(),
+            ReportingLspProcessManager(),
             coding_metrics_recorder=samples.append,
         ).run(_task_context(workspace), workspace, {}, run_context=_run_context("task-1"))
     assert samples[0]["rawProtocolCorrect"] is False
