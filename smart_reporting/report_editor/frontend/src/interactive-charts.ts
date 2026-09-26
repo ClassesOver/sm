@@ -38,55 +38,49 @@ export function createInteractiveCharts(
   dependencies: ChartDependencies = {},
 ) {
   const plotlyUrl = `${basePath}/asset/`
-  const active = new Map<HTMLImageElement, { node: HTMLElement; plot: PlotlyRenderer; resize?: ResizeObserver; wrapper: HTMLElement }>()
+  const active = new Map<HTMLImageElement, { node: HTMLElement; plot: PlotlyRenderer; resize?: ResizeObserver }>()
   const pending = new Set<HTMLImageElement>()
   const failed = new WeakSet<HTMLImageElement>()
   let destroyed = false
   const fetcher = dependencies.fetcher ?? fetch
   const loadPlotly = dependencies.loadPlotly ?? (async () => (await import('plotly.js-dist-min')).default)
 
-  function sizeFrom(image: HTMLImageElement) {
+  function position(image: HTMLImageElement, node: HTMLElement) {
     const box = image.getBoundingClientRect()
-    return { width: box.width, height: box.height }
+    if (box.width <= 0 || box.height <= 0) return false
+    node.style.left = `${box.left + window.scrollX}px`
+    node.style.top = `${box.top + window.scrollY}px`
+    node.style.width = `${box.width}px`
+    node.style.height = `${box.height}px`
+    return true
   }
 
-  function fitWrapper(image: HTMLImageElement, wrapper: HTMLElement) {
-    const { width, height } = sizeFrom(image)
-    wrapper.style.width = `${width}px`
-    wrapper.style.height = `${height}px`
+  function reposition() {
+    for (const [image, entry] of active) {
+      if (root.contains(image)) position(image, entry.node)
+      else cleanup(image)
+    }
   }
+  // capture 阶段监听可同时捕获 body 滚动与内部滚动容器的滚动事件。
+  window.addEventListener('scroll', reposition, { passive: true, capture: true })
+  window.addEventListener('resize', reposition)
 
   function cleanup(image: HTMLImageElement) {
     const entry = active.get(image)
     if (!entry) return
     entry.resize?.disconnect()
     entry.plot.purge(entry.node)
-    const parent = entry.wrapper.parentNode
-    if (parent) {
-      parent.insertBefore(image, entry.wrapper)
-    }
-    entry.wrapper.remove()
+    entry.node.remove()
     image.classList.remove('interactive-chart-fallback')
     active.delete(image)
   }
-
-  function reposition() {
-    for (const [image, entry] of active) {
-      if (!root.contains(image)) {
-        cleanup(image)
-      } else {
-        fitWrapper(image, entry.wrapper)
-        entry.plot.Plots.resize(entry.node)
-      }
-    }
-  }
-  window.addEventListener('resize', reposition)
 
   async function refresh() {
     if (destroyed) return
     const images = new Set(root.querySelectorAll<HTMLImageElement>('img'))
     for (const image of active.keys()) {
       if (!images.has(image)) cleanup(image)
+      else position(image, active.get(image)!.node)
     }
     await Promise.all(Array.from(images, async (image) => {
       if (active.has(image) || pending.has(image) || failed.has(image)) return
@@ -105,7 +99,13 @@ export function createInteractiveCharts(
       if (!spec) return
       pending.add(image)
       failed.add(image)
+      const node = document.createElement('div')
+      node.className = 'interactive-chart'
+      node.setAttribute('role', 'img')
+      node.setAttribute('aria-label', image.alt || '交互图表')
+      node.contentEditable = 'false'
       try {
+        // 图片未加载完成时 rect 可能是 0 或占位尺寸，先等加载结束再测量。
         await whenImageLoaded(image)
         if (destroyed || !root.contains(image)) return
         const response = await fetcher(`${plotlyUrl}${spec.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'same-origin' })
@@ -114,36 +114,24 @@ export function createInteractiveCharts(
         if (!Array.isArray(figure.data) || figure.data.length === 0) return
         const plot = await loadPlotly()
         if (destroyed || !root.contains(image)) return
-
-        const parent = image.parentNode
-        if (!parent) return
-        const wrapper = document.createElement('div')
-        wrapper.className = 'interactive-chart-wrapper'
-        fitWrapper(image, wrapper)
-        const node = document.createElement('div')
-        node.className = 'interactive-chart'
-        node.setAttribute('role', 'img')
-        node.setAttribute('aria-label', image.alt || '交互图表')
-        node.contentEditable = 'false'
-        parent.insertBefore(wrapper, image)
-        wrapper.appendChild(image)
-        wrapper.appendChild(node)
-
+        if (!position(image, node)) return
+        // 覆盖层挂在 body：不改动 ProseMirror 管理的编辑器 DOM，
+        // 否则编辑器会把外部 DOM 变更当成文档修改，触发脏状态与自动保存。
+        document.body.append(node)
         await plot.newPlot(node, figure.data, figure.layout, { ...figure.config, responsive: true })
         if (destroyed || !root.contains(image)) {
           plot.purge(node)
-          wrapper.remove()
+          node.remove()
           return
         }
         image.classList.add('interactive-chart-fallback')
         const resize = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
-          fitWrapper(image, wrapper)
-          plot.Plots.resize(node)
+          if (position(image, node)) plot.Plots.resize(node)
         })
-        resize?.observe(wrapper)
-        active.set(image, { node, plot, resize, wrapper })
+        resize?.observe(image)
+        active.set(image, { node, plot, resize })
       } catch {
-        image.classList.remove('interactive-chart-fallback')
+        node.remove()
       } finally {
         pending.delete(image)
       }
@@ -157,6 +145,7 @@ export function createInteractiveCharts(
     destroy() {
       destroyed = true
       observer.disconnect()
+      window.removeEventListener('scroll', reposition, { capture: true })
       window.removeEventListener('resize', reposition)
       for (const image of active.keys()) cleanup(image)
     },
