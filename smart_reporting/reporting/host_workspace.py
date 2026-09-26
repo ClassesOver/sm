@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
 import mimetypes
 import os
+import re
 import shutil
+import signal
 import stat
 import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +24,7 @@ from agno.media import Image
 from agno.tools.function import ToolResult
 from agno.tools.workspace import Workspace
 
+from ..async_utils import complete_cleanup
 from ..workspace import (
     MAX_DOWNLOAD_BYTES,
     MAX_PATCH_FILES,
@@ -160,13 +165,26 @@ def _write_regular_file(
             os.unlink(temporary)
 
 
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+    # 回收进程必须完成，即使调用方正在被取消，否则会留下僵尸进程。
+    await complete_cleanup(process.wait())
+
+
 class HostReportingWorkspace:
     """固定 Workflow 使用的宿主机二进制和文件身份适配。"""
 
     def __init__(self, identity: ReportingWorkspaceIdentity) -> None:
         self.identity = identity
         self.paths = ReportingPathMapper(identity.root)
-        self._write_locks: dict[str, asyncio.Lock] = {}
+        # 按路径串行化写入；记录等待者数量，最后一个使用者释放后移除，避免长会话中
+        # 每个写过的路径都永久保留一把锁。
+        self._write_locks: dict[str, tuple[asyncio.Lock, int]] = {}
         self._changes_lock = asyncio.Lock()
 
     normalize_path = staticmethod(WorkspaceService.normalize_path)
@@ -174,6 +192,20 @@ class HostReportingWorkspace:
     @staticmethod
     def validate_content(content: bytes) -> None:
         WorkspaceService._validate_content(content)
+
+    @contextlib.asynccontextmanager
+    async def _path_write_lock(self, relative: str) -> AsyncIterator[None]:
+        lock, users = self._write_locks.get(relative, (asyncio.Lock(), 0))
+        self._write_locks[relative] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            lock, users = self._write_locks[relative]
+            if users <= 1:
+                del self._write_locks[relative]
+            else:
+                self._write_locks[relative] = (lock, users - 1)
 
     async def awrite_bytes(
         self,
@@ -186,8 +218,7 @@ class HostReportingWorkspace:
     ) -> dict[str, Any]:
         relative = self.paths.normalize(path)
         target = self.paths.to_host_path(relative)
-        lock = self._write_locks.setdefault(relative, asyncio.Lock())
-        async with lock:
+        async with self._path_write_lock(relative):
             await anyio.to_thread.run_sync(
                 lambda: _write_regular_file(
                     target,
@@ -233,19 +264,13 @@ class HostReportingWorkspace:
 
     async def aensure_directory(self, _thread_id: str, path: str) -> None:
         target = self.paths.to_host_path(path)
-        await anyio.to_thread.run_sync(
-            lambda: _ensure_directory(target, self.identity.root)
-        )
+        await anyio.to_thread.run_sync(lambda: _ensure_directory(target, self.identity.root))
 
     async def apath_exists(self, _thread_id: str, path: str) -> bool:
         target = self.paths.to_host_path(path)
-        return await anyio.to_thread.run_sync(
-            lambda: target.exists() and not target.is_symlink()
-        )
+        return await anyio.to_thread.run_sync(lambda: target.exists() and not target.is_symlink())
 
-    async def amove_files(
-        self, _thread_id: str, source: str, destination: str
-    ) -> None:
+    async def amove_files(self, _thread_id: str, source: str, destination: str) -> None:
         source_path = self.paths.to_host_path(source)
         destination_path = self.paths.to_host_path(destination)
 
@@ -263,9 +288,7 @@ class HostReportingWorkspace:
 
         await anyio.to_thread.run_sync(move)
 
-    async def adelete_file(
-        self, _thread_id: str, path: str, recursive: bool = False
-    ) -> None:
+    async def adelete_file(self, _thread_id: str, path: str, recursive: bool = False) -> None:
         target = self.paths.to_host_path(path)
 
         def delete() -> None:
@@ -295,9 +318,35 @@ class HostReportingWorkspace:
         timeout: int,
         tail: int = 100,
     ) -> str:
-        return await anyio.to_thread.run_sync(
-            lambda: self.identity.workspace.run_command(args, tail=tail, timeout=timeout)
+        """与 Agno ``Workspace.run_command`` 相同的输出协议，但超时与取消会终止整个进程组。
+
+        Agno 的同步实现在线程中阻塞、无法被取消；异步实现在取消时不终止子进程，超时
+        也只杀直接子进程。报表运行时还会拉起 LibreOffice、pdftoppm 等孙进程，因此这里
+        以独立进程组启动，并在超时或上层取消（如编辑器导出超时）时整组终止。
+        """
+
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self.identity.workspace.root),
+            start_new_session=True,
         )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=timeout
+            )
+        except TimeoutError:
+            await _terminate_process_group(process)
+            return f"Error: command timed out after {timeout} seconds"
+        except BaseException:
+            await _terminate_process_group(process)
+            raise
+        if process.returncode != 0:
+            stderr = _ANSI_ESCAPE.sub("", stderr_bytes.decode("utf-8", errors="replace"))
+            return f"Error (exit {process.returncode}): " + "\n".join(stderr.splitlines()[-tail:])
+        stdout = _ANSI_ESCAPE.sub("", stdout_bytes.decode("utf-8", errors="replace"))
+        return "\n".join(stdout.splitlines()[-tail:])
 
     async def read_limited_regular_file(
         self,
@@ -322,9 +371,7 @@ class HostReportingWorkspace:
             "sha256": hashlib.sha256(content).hexdigest(),
         }
 
-    async def abatch_hash_files(
-        self, thread_id: str, paths: list[str]
-    ) -> list[dict[str, Any]]:
+    async def abatch_hash_files(self, thread_id: str, paths: list[str]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for path in paths:
             relative = self.paths.normalize(path)
@@ -344,9 +391,7 @@ class HostReportingWorkspace:
 
         return await inspect_report_plotly_file(self, thread_id=thread_id, path=path)
 
-    async def aapply_changes(
-        self, thread_id: str, changes: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    async def aapply_changes(self, thread_id: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
             raise WorkspaceError(f"变更集必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
         keys_by_operation = {
@@ -635,9 +680,7 @@ class ReportingWorkspaceRouter:
     async def ahash_file(self, thread_id: str, path: str) -> dict[str, Any]:
         return await self.workspace(thread_id).ahash_file(thread_id, path)
 
-    async def abatch_hash_files(
-        self, thread_id: str, paths: list[str]
-    ) -> list[dict[str, Any]]:
+    async def abatch_hash_files(self, thread_id: str, paths: list[str]) -> list[dict[str, Any]]:
         return await self.workspace(thread_id).abatch_hash_files(thread_id, paths)
 
     async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
@@ -658,9 +701,7 @@ class ReportingWorkspaceRouter:
     async def amove_files(self, thread_id: str, source: str, destination: str) -> None:
         await self.workspace(thread_id).amove_files(thread_id, source, destination)
 
-    async def adelete_file(
-        self, thread_id: str, path: str, recursive: bool = False
-    ) -> None:
+    async def adelete_file(self, thread_id: str, path: str, recursive: bool = False) -> None:
         await self.workspace(thread_id).adelete_file(thread_id, path, recursive)
 
     async def arun_command(
@@ -675,9 +716,7 @@ class ReportingWorkspaceRouter:
             thread_id, args, timeout=timeout, tail=tail
         )
 
-    async def aapply_changes(
-        self, thread_id: str, changes: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    async def aapply_changes(self, thread_id: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
         return await self.workspace(thread_id).aapply_changes(thread_id, changes)
 
 

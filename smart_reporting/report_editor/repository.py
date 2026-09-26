@@ -81,6 +81,13 @@ class SqlAlchemyReportEditorRepository:
 
     async def put_session(self, session_hash: str, session: ReportEditorSession) -> None:
         async with self.engine.begin() as connection:
+            # 授权可重复打开，每次兑换都会新增会话；顺带清理过期会话，避免长期运行时
+            # 会话表只在进程启动时才收缩。
+            await connection.execute(
+                delete(report_editor_sessions_v1).where(
+                    report_editor_sessions_v1.c.expires_at <= datetime.now(UTC)
+                )
+            )
             await connection.execute(
                 insert(report_editor_sessions_v1).values(
                     session_hash=session_hash,

@@ -14,11 +14,10 @@ from uuid import uuid4
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
 from agno.exceptions import AgentRunException, StopAgentRun
-from agno.models.deepseek import DeepSeek
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
-from agno.run import RunContext, RunStatus
+from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
 from agno.run.team import TeamRunOutputEvent
 from loguru import logger
@@ -192,8 +191,6 @@ _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
-_REPORT_CODE_REASONING_MARKER_MODEL_ID = "deepseek-v4-flash"
-_REPORT_CODE_REASONING_DEGRADED_ERROR = "report_code_reasoning_degraded"
 # Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
 # 复杂综合报告的单章输入会合并多个分析证据，真实 CLI 已观察到 16K 输出在完整
 # SectionDecision JSON 结束前被截断。章节和可视化统一允许 128K，实际请求仍取该
@@ -2839,117 +2836,6 @@ def _reporting_code_model(model: Any) -> ReportingCodeOpenAIResponses:
         if hasattr(model, attribute):
             setattr(code_model, attribute, getattr(model, attribute))
     return code_model
-
-
-class ReportingCodeReasoningAgent(Agent):
-    """在 Agno 软降级前记录可观测的 reasoning 调用结果。"""
-
-    async def arun(self, *args: Any, **kwargs: Any) -> Any:
-        model_route = reporting_model_route_from_run_context(current_reporting_run_context())
-        model_id = (
-            model_route[1]
-            if model_route is not None
-            else str(getattr(self.model, "id", "") or "")
-        )
-        started_at = perf_counter()
-        logger.bind(
-            model_id=model_id,
-            duration_ms=0,
-            status="started",
-            degraded=False,
-            error_type=None,
-        ).info(
-            "report_code_reasoning_started model_id={} duration_ms=0 "
-            "status=started degraded=false error_type=-",
-            model_id,
-        )
-        try:
-            response = await super().arun(*args, **kwargs)
-        except Exception as error:
-            duration_ms = elapsed_ms(started_at)
-            error_type = type(error).__name__
-            logger.bind(
-                model_id=model_id,
-                duration_ms=duration_ms,
-                status="degraded",
-                degraded=True,
-                error_type=error_type,
-            ).warning(
-                "report_code_reasoning_completed model_id={} duration_ms={} "
-                "status=degraded degraded=true error_type={}",
-                model_id,
-                duration_ms,
-                error_type,
-            )
-            raise RuntimeError(_REPORT_CODE_REASONING_DEGRADED_ERROR) from None
-
-        messages = getattr(response, "messages", None)
-        has_reasoning = isinstance(messages, list) and any(
-            isinstance(message.reasoning_content, str) and bool(message.reasoning_content.strip())
-            for message in messages
-        )
-        run_status = getattr(response, "status", None)
-        if run_status != RunStatus.completed or not has_reasoning:
-            error_type = (
-                f"run_status_{run_status.name}"
-                if isinstance(run_status, RunStatus) and run_status != RunStatus.completed
-                else "missing_reasoning_content"
-            )
-            duration_ms = elapsed_ms(started_at)
-            logger.bind(
-                model_id=model_id,
-                duration_ms=duration_ms,
-                status="degraded",
-                degraded=True,
-                error_type=error_type,
-            ).warning(
-                "report_code_reasoning_completed model_id={} duration_ms={} "
-                "status=degraded degraded=true error_type={}",
-                model_id,
-                duration_ms,
-                error_type,
-            )
-            raise RuntimeError(_REPORT_CODE_REASONING_DEGRADED_ERROR) from None
-
-        duration_ms = elapsed_ms(started_at)
-        logger.bind(
-            model_id=model_id,
-            duration_ms=duration_ms,
-            status="completed",
-            degraded=False,
-            error_type=None,
-        ).info(
-            "report_code_reasoning_completed model_id={} duration_ms={} "
-            "status=completed degraded=false error_type=-",
-            model_id,
-            duration_ms,
-        )
-        return response
-
-
-def _reporting_code_reasoning(
-    model: OpenAIChat,
-) -> tuple[DeepSeek | None, Agent | None]:
-    profile = reporting_thinking_profile_from_model(model)
-    if not profile.enabled:
-        return None, None
-    model_id = str(model.id or "").strip().lower().rsplit("/", 1)[-1]
-    marker_model_id = (
-        model.id if model_id.startswith("deepseek-v4") else _REPORT_CODE_REASONING_MARKER_MODEL_ID
-    )
-    return DeepSeek(id=marker_model_id), ReportingCodeReasoningAgent(
-        model=model,
-        tools=[],
-        add_history_to_context=False,
-        num_history_runs=0,
-        store_history_messages=False,
-        read_chat_history=False,
-        read_tool_call_history=False,
-        enable_session_summaries=False,
-        retries=0,
-        exponential_backoff=False,
-        telemetry=False,
-    )
 
 
 CodeAgentFactory = Callable[[Sequence[Any]], Agent]

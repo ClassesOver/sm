@@ -64,8 +64,6 @@ def test_settings_defaults():
     assert current.report_vision_model == "qwen3.6-flash"
     assert current.model_timeout_seconds == 900
     assert current.tracing_enabled is False
-    assert current.context_token_budget == 262144
-    assert current.output_token_reserve == 32768
     assert current.report_context_token_budget == 1048576
     assert current.report_output_token_reserve == 393216
     assert current.report_analysis_concurrency == 1
@@ -103,8 +101,6 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_REPORT_PLANNER_THINKING_BUDGET="2048",
         AGENT_REPORT_ENABLE_VISION="true",
         AGENT_REPORT_VISION_MODEL="vision-model",
-        AGENT_CONTEXT_TOKEN_BUDGET="131072",
-        AGENT_OUTPUT_TOKEN_RESERVE="16384",
         AGENT_REPORT_CONTEXT_TOKEN_BUDGET="524288",
         AGENT_REPORT_OUTPUT_TOKEN_RESERVE="131072",
         AGENT_REPORT_ANALYSIS_CONCURRENCY="3",
@@ -122,8 +118,6 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.report_planner_thinking_budget == 2048
     assert current.report_enable_vision is True
     assert current.report_vision_model == "vision-model"
-    assert current.context_token_budget == 131072
-    assert current.output_token_reserve == 16384
     assert current.report_context_token_budget == 524288
     assert current.report_output_token_reserve == 131072
     assert current.report_analysis_concurrency == 3
@@ -448,10 +442,10 @@ def test_reporting_host_workspace_root_rejects_symlink(tmp_path: Path) -> None:
 
 
 def test_context_budget_rejects_invalid_reserve():
-    with pytest.raises(ValueError, match="AGENT_OUTPUT_TOKEN_RESERVE"):
+    with pytest.raises(ValueError, match="AGENT_REPORT_OUTPUT_TOKEN_RESERVE"):
         settings(
-            AGENT_CONTEXT_TOKEN_BUDGET="1024",
-            AGENT_OUTPUT_TOKEN_RESERVE="1024",
+            AGENT_REPORT_CONTEXT_TOKEN_BUDGET="1024",
+            AGENT_REPORT_OUTPUT_TOKEN_RESERVE="1024",
         )
 
 
@@ -550,3 +544,12 @@ def test_report_editor_export_timeout_is_configurable_and_bounded():
     )
     with pytest.raises(ValueError, match="AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS"):
         settings(AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS="3601")
+
+
+def test_unused_generic_token_budget_settings_do_not_block_startup():
+    # Reporting 只使用 AGENT_REPORT_* 预算；旧的通用预算变量既不生效，也不能因
+    # 相互校验阻止启动。
+    current = settings(AGENT_CONTEXT_TOKEN_BUDGET="1000", AGENT_OUTPUT_TOKEN_RESERVE="5000")
+
+    assert current.report_context_token_budget == 1048576
+    assert not hasattr(current, "context_token_budget")

@@ -14,6 +14,7 @@ const history = [
 const digest = () => createHash('sha256').update(markdown).digest('hex')
 const pdf = Buffer.from('%PDF-1.7\n%%EOF\n')
 const word = Buffer.from('PK\u0003\u0004fixture-docx')
+const exports = new Map()
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -69,12 +70,26 @@ const server = http.createServer(async (request, response) => {
       response.end(JSON.stringify({ detail: { code: 'report_editor_conflict' } }))
       return
     }
-    json(response, {
-      requestId: request.headers['x-request-id'],
+    // 与服务端一致：导出为后台任务，提交返回 202，结果通过状态接口轮询。
+    const exportId = String(request.headers['x-request-id'] || 'fixture-export')
+    exports.set(exportId, {
       revision: 2,
       pdf: { downloadUrl: `http://127.0.0.1:${port}/fixture.pdf`, size: pdf.length },
       word: { downloadUrl: `http://127.0.0.1:${port}/fixture.docx`, size: word.length },
     })
+    response.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({ exportId, status: 'running', requestId: exportId }))
+    return
+  }
+  if (request.method === 'GET' && url.pathname.startsWith(`${editorPath}/api/export/`)) {
+    const exportId = decodeURIComponent(url.pathname.slice(`${editorPath}/api/export/`.length))
+    const result = exports.get(exportId)
+    if (!result) {
+      response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ detail: { code: 'report_editor_export_missing' } }))
+      return
+    }
+    json(response, { exportId, status: 'succeeded', requestId: exportId, result })
     return
   }
   if (request.method === 'POST' && url.pathname === `${editorPath}/api/events`) {

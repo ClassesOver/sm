@@ -22,6 +22,7 @@ from smart_reporting.report_editor import (
     ReportEditorContext,
     ReportEditorGrantService,
     ReportEditorService,
+    ReportEditorSession,
     SqlAlchemyReportEditorRepository,
     create_report_editor_router,
 )
@@ -96,6 +97,38 @@ def test_sql_editor_repository_requires_postgresql() -> None:
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         SqlAlchemyReportEditorRepository(engine)  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_sql_editor_repository_prunes_expired_sessions_on_insert() -> None:
+    executed: list[object] = []
+
+    class _Connection:
+        async def execute(self, statement: object) -> None:
+            executed.append(statement)
+
+    class _Begin:
+        async def __aenter__(self) -> _Connection:
+            return _Connection()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), begin=_Begin)
+    repository = SqlAlchemyReportEditorRepository(engine)  # type: ignore[arg-type]
+
+    await repository.put_session(
+        "h" * 64,
+        ReportEditorSession(
+            report_id="r",
+            revision=1,
+            workflow_run_id="run",
+            context_sha256="c" * 64,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    assert [type(statement).__name__ for statement in executed] == ["Delete", "Insert"]
 
 
 def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> None:
@@ -595,14 +628,21 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
                 sha256="b" * 64,
             )
 
-        async def export_revision(self, _context, *, expected_sha256: str, request_id: str):
+        async def start_export(self, _context, *, expected_sha256: str, request_id: str):
             assert expected_sha256 == "b" * 64
             assert request_id
+            return {"exportId": request_id, "status": "running", "requestId": request_id}
+
+        def export_status(self, _context, export_id: str):
             return {
-                "reportId": "report-1",
-                "revision": 2,
-                "pdf": {"downloadUrl": "/reports/v1/download/pdf"},
-                "word": {"downloadUrl": "/reports/v1/download/word"},
+                "exportId": export_id,
+                "status": "succeeded",
+                "result": {
+                    "reportId": "report-1",
+                    "revision": 2,
+                    "pdf": {"downloadUrl": "/reports/v1/download/pdf"},
+                    "word": {"downloadUrl": "/reports/v1/download/word"},
+                },
             }
 
     app = FastAPI()
@@ -634,6 +674,9 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
             json={"expectedSha256": "b" * 64},
             headers={"Origin": "http://reports.test", "X-CSRF-Token": csrf},
         )
+        polled = await client.get(
+            f"/reports/v1/editor/report-1/1/api/export/{exported.json()['exportId']}"
+        )
 
     assert missing_origin.status_code == 403
     assert wrong_csrf.status_code == 403
@@ -643,8 +686,92 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
         "sha256": "b" * 64,
     }
     assert saved == ["# 人工修订\n"]
-    assert exported.json()["revision"] == 2
-    assert exported.json()["pdf"]["downloadUrl"] == "/reports/v1/download/pdf"
+    # 导出在后台运行：提交立即返回 202，结果通过状态接口轮询。
+    assert exported.status_code == 202
+    assert exported.json()["status"] == "running"
+    assert polled.json()["status"] == "succeeded"
+    assert polled.json()["result"]["revision"] == 2
+    assert polled.json()["result"]["pdf"]["downloadUrl"] == "/reports/v1/download/pdf"
+
+
+def _export_service(export_revision) -> ReportEditorService:
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(),
+        workspace_registry=SimpleNamespace(),  # type: ignore[arg-type]
+        workspace=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+    service.export_revision = export_revision  # type: ignore[method-assign]
+    return service
+
+
+@pytest.mark.anyio
+async def test_background_export_reports_running_then_result() -> None:
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def export_revision(_context, **options):
+        await release.wait()
+        return {"revision": 2, "requestId": options["request_id"]}
+
+    service = _export_service(export_revision)
+    started = await service.start_export(_context(), expected_sha256="a" * 64, request_id="e-1")
+
+    assert started == {"exportId": "e-1", "status": "running", "requestId": "e-1"}
+    assert service.export_status(_context(), "e-1")["status"] == "running"
+    # 同一修订同时只允许一个导出，避免两个任务争抢 revision N+1。
+    with pytest.raises(ReportingError, match="正在导出"):
+        await service.start_export(_context(), expected_sha256="a" * 64)
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    finished = service.export_status(_context(), "e-1")
+    assert finished["status"] == "succeeded"
+    assert finished["result"] == {"revision": 2, "requestId": "e-1"}
+
+
+@pytest.mark.anyio
+async def test_background_export_failure_and_scope_are_reported() -> None:
+    import asyncio
+
+    async def export_revision(_context, **_options):
+        raise ReportingError("report_editor_revision_stale", "已有更新的第 3 版。")
+
+    service = _export_service(export_revision)
+    await service.start_export(_context(), expected_sha256="a" * 64, request_id="e-2")
+    await asyncio.sleep(0)
+
+    failed = service.export_status(_context(), "e-2")
+    assert failed["status"] == "failed"
+    assert failed["error"] == {
+        "code": "report_editor_revision_stale",
+        "message": "已有更新的第 3 版。",
+    }
+    other_revision = _context().model_copy(update={"revision": 2})
+    with pytest.raises(ReportingError, match="导出任务不存在"):
+        service.export_status(other_revision, "e-2")
+
+
+@pytest.mark.anyio
+async def test_closing_editor_service_cancels_running_exports() -> None:
+    import asyncio
+
+    cancelled = asyncio.Event()
+
+    async def export_revision(_context, **_options):
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    service = _export_service(export_revision)
+    await service.start_export(_context(), expected_sha256="a" * 64, request_id="e-3")
+    await asyncio.sleep(0)
+
+    await service.aclose()
+
+    assert cancelled.is_set()
 
 
 @pytest.mark.anyio
@@ -892,7 +1019,18 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             run_context: RunContext,
         ):
             assert actual_job_id == job_id
-            assert markdown_path == "reports/revision-1/draft/report.md"
+            # 渲染基于导出开始时已校验内容的同目录快照，不受导出期间的自动保存影响。
+            assert markdown_path.startswith("reports/revision-1/draft/.export-")
+            snapshot = (await workspace.afile_bytes(scope.workspace_key, markdown_path))[0]
+            assert snapshot.decode() == draft_markdown
+            rendered_paths.append(markdown_path)
+            # 模拟导出期间编辑器自动保存了新的草稿内容。
+            await workspace.awrite_text(
+                scope.workspace_key,
+                "reports/revision-1/draft/report.md",
+                "# 导出期间的新编辑\n",
+                overwrite=True,
+            )
             assert output_path == "reports/revision-2/report.pdf"
             assert artifact_manifest is None
             assert run_context.session_state["report_workflow_scope"] == scope.as_state()
@@ -903,6 +1041,11 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             stored = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
             stored["render"] = {
                 **stored["render"],
+                "markdown": {
+                    "path": markdown_path,
+                    "size": len(snapshot),
+                    "sha256": hashlib.sha256(snapshot).hexdigest(),
+                },
                 "pdf": {
                     "path": output_path,
                     "size": 7,
@@ -917,6 +1060,7 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             return {"status": "validated", "validation": {"ok": True}}
 
     persisted: list[object] = []
+    rendered_paths: list[str] = []
 
     class Persistence:
         async def persist(self, **values):
@@ -990,6 +1134,12 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     )
     next_context = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
     assert next_context.markdown_path == "reports/revision-2/report.md"
+    # 渲染快照已删除，新 revision 登记的是其权威 Markdown。
+    assert rendered_paths and not await workspace.apath_exists(
+        scope.workspace_key, rendered_paths[0]
+    )
+    assert next_context.job["render"]["markdown"]["path"] == "reports/revision-2/report.md"
+    assert next_context.job["render"]["markdown"]["sha256"] == draft_sha
     assert next_context.job["render"]["pdf"]["path"] == "reports/revision-2/report.pdf"
     assert next_context.job["render"]["images"] == [
         {

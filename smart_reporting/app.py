@@ -517,6 +517,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
+    application.router.add_event_handler("shutdown", report_editor.aclose)
     return application
 
 

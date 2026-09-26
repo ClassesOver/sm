@@ -289,8 +289,6 @@ class AgentSettings:
     report_enable_vision: bool
     report_vision_model: str
     tracing_enabled: bool
-    context_token_budget: int
-    output_token_reserve: int
     report_context_token_budget: int
     report_output_token_reserve: int
     report_analysis_concurrency: int
@@ -335,18 +333,6 @@ class AgentSettings:
             )
             if origin.strip()
         )
-        context_token_budget = _positive_int(
-            values,
-            "AGENT_CONTEXT_TOKEN_BUDGET",
-            262144,
-        )
-        output_token_reserve = _positive_int(
-            values,
-            "AGENT_OUTPUT_TOKEN_RESERVE",
-            32768,
-        )
-        if output_token_reserve >= context_token_budget:
-            raise ValueError("AGENT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_CONTEXT_TOKEN_BUDGET")
         report_context_token_budget = _positive_int(
             values,
             "AGENT_REPORT_CONTEXT_TOKEN_BUDGET",
@@ -476,8 +462,6 @@ class AgentSettings:
                 or DEFAULT_REPORT_VISION_MODEL_ID
             ),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
-            context_token_budget=context_token_budget,
-            output_token_reserve=output_token_reserve,
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
             report_analysis_concurrency=report_analysis_concurrency,
