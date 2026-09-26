@@ -13,6 +13,8 @@ import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
 import { editorViewCtx } from '@milkdown/kit/core'
+import { indent } from '@milkdown/kit/plugin/indent'
+import { trailing } from '@milkdown/kit/plugin/trailing'
 import { outline } from '@milkdown/kit/utils'
 import { replaceAll } from '@milkdown/kit/utils'
 import {
@@ -248,6 +250,8 @@ try {
   )
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(searchHighlightPlugin)
+  crepe.editor.use(indent)
+  crepe.editor.use(trailing)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
   const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
