@@ -9,9 +9,13 @@ _DANGEROUS_FUNCTIONS = frozenset(
     {
         "benchmark",
         "connection_id",
+        # sqlglot 会把 database()/schema() 规范化为 CurrentSchema，只按原名拦截会漏过。
+        "current_schema",
         "current_user",
         "database",
         "load_file",
+        "schema",
+        "session_user",
         "sleep",
         "system_user",
         "user",
@@ -67,6 +71,9 @@ def validate_starrocks_read_only_sql(
             name = str(getattr(function, "sql_name", lambda: "")() or "").lower()
         if name in _DANGEROUS_FUNCTIONS:
             raise ReportingError("sql_function_denied", f"SQL 函数 {name} 不允许使用。")
+    # @@ 系统变量会暴露服务端配置，报告查询不需要。
+    if any(True for _ in statement.find_all(exp.SessionParameter)):
+        raise ReportingError("sql_function_denied", "SQL 不允许读取系统变量。")
     allowed = {_normalize_table_name(table, database) for table in allowed_tables}
     for table in statement.find_all(exp.Table):
         table_name = str(table.name or "").lower()

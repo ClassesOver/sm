@@ -74,3 +74,14 @@ def test_starrocks_validation_rejects_cte_names_that_do_not_scope_the_reference(
 )
 def test_starrocks_validation_accepts_visible_cte_references(sql: str) -> None:
     assert validate_starrocks_read_only_sql(sql, database="rj", allowed_tables=_ALLOWED) == sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["SELECT database()", "SELECT schema()", "SELECT session_user()", "SELECT @@hostname"],
+)
+def test_starrocks_validation_rejects_normalized_session_functions(sql: str) -> None:
+    with pytest.raises(ReportingError) as caught:
+        validate_starrocks_read_only_sql(sql, database="rj", allowed_tables=_ALLOWED)
+
+    assert caught.value.code == "sql_function_denied"
