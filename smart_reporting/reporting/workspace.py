@@ -474,8 +474,14 @@ class WorkspaceReportService:
     ) -> None:
         try:
             await self.service.adelete_file(_thread(run_context), path, recursive=recursive)
-        except Exception:
-            pass
+        except Exception as error:
+            # 尽力清理不阻断主流程，但必须留痕，否则残留临时文件无从排查。
+            loguru_logger.warning(
+                "report_path_cleanup_failed path={} recursive={} error_type={}",
+                path,
+                recursive,
+                type(error).__name__,
+            )
 
     async def report_prepare_dataset(
         self,

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import anyio
 import polars as pl
 from agno.run import RunContext
+from loguru import logger
 
 from ..async_utils import complete_cleanup
 from ..workspace import WorkspaceHashResultError, _thread
@@ -415,8 +416,14 @@ class ReportDatasetStore:
 async def _best_effort_delete(service: Any, thread_id: str, path: str, *, recursive: bool) -> None:
     try:
         await service.adelete_file(thread_id, path, recursive=recursive)
-    except Exception:
-        pass
+    except Exception as error:
+        # 尽力清理不阻断主流程，但必须留痕，否则残留临时文件无从排查。
+        logger.warning(
+            "report_dataset_cleanup_failed path={} recursive={} error_type={}",
+            path,
+            recursive,
+            type(error).__name__,
+        )
 
 
 def _first_batch_error(error: Exception) -> Exception:
