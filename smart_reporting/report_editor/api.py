@@ -8,7 +8,13 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
@@ -296,10 +302,38 @@ def create_report_editor_router(
                     export_options["settings"] = payload.settings.model_dump(by_alias=True)
                 if payload.note is not None:
                     export_options["note"] = payload.note
-                result = await editor.export_revision(context, **export_options)
-                return result
+                # 渲染与验收可能持续数分钟，改为后台任务并立即返回，由编辑器轮询状态，
+                # 避免同步请求被网关读超时切断。
+                started = await editor.start_export(context, **export_options)
             except ReportingError as error:
                 _editor_http_error(error, request_id=request_id)
+            return JSONResponse(started, status_code=202)
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/export/{export_id}",
+            include_in_schema=False,
+        )
+        async def read_report_export(
+            report_id: str,
+            revision: int,
+            export_id: str,
+            request: Request,
+        ) -> dict[str, object]:
+            _raw_session, context = await _read_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                status = editor.export_status(context, export_id)
+            except ReportingError as error:
+                _editor_http_error(error)
+            error = status.get("error")
+            if isinstance(error, dict):
+                # 与同步错误响应使用同一状态码映射，编辑器据此选择提示文案。
+                status = {
+                    **status,
+                    "error": {**error, "status": _editor_error_status(error["code"])},
+                }
+            return status
 
         @router.post(
             "/reports/v1/editor/{report_id}/{revision}/api/events",
@@ -422,21 +456,29 @@ def _request_id(value: str | None) -> str:
         return str(uuid4())
 
 
-def _editor_http_error(error: ReportingError, *, request_id: str | None = None) -> NoReturn:
-    if error.code in {
+def _editor_error_status(code: str) -> int:
+    if code in {
         "report_editor_conflict",
         "report_editor_revision_conflict",
         "report_editor_revision_stale",
+        "report_editor_export_running",
     }:
-        status = 409
-    elif error.code == "report_editor_export_timeout":
-        status = 504
-    elif error.code == "report_editor_session_expired":
-        status = 410
-    elif error.code.startswith("report_editor_ai_"):
-        status = 400
-    else:
-        status = 404
+        return 409
+    if code == "report_editor_export_busy":
+        return 429
+    if code == "report_editor_export_timeout":
+        return 504
+    if code == "report_editor_session_expired":
+        return 410
+    if code.startswith("report_editor_ai_"):
+        return 400
+    if code in {"report_artifact_validation_failed", "report_editor_export_failed"}:
+        return 422
+    return 404
+
+
+def _editor_http_error(error: ReportingError, *, request_id: str | None = None) -> NoReturn:
+    status = _editor_error_status(error.code)
     raise HTTPException(
         status_code=status,
         detail={

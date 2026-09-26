@@ -191,6 +191,19 @@ class ReportEditorGrantService:
         return hmac.new(self._csrf_key, raw_session.encode(), hashlib.sha256).hexdigest()
 
 
+_MAX_EXPORT_JOBS = 64
+_EXPORT_JOB_RETENTION_SECONDS = 3600
+
+
+@dataclass
+class _ExportJob:
+    report_id: str
+    revision: int
+    task: asyncio.Task[dict[str, object]]
+    started_at: float
+    finished_at: float | None = None
+
+
 class ReportEditorService:
     def __init__(
         self,
@@ -216,6 +229,7 @@ class ReportEditorService:
         if export_timeout_seconds <= 0:
             raise ValueError("报告编辑导出超时必须大于 0 秒")
         self.export_timeout_seconds = export_timeout_seconds
+        self._export_jobs: dict[str, _ExportJob] = {}
 
     async def context_for_session(self, session: ReportEditorSession) -> ReportEditorContext:
         state = await self.state_repository.get(session.workflow_run_id)
@@ -447,6 +461,106 @@ class ReportEditorService:
             elapsed_ms,
         )
         return {**result, "requestId": correlation_id}
+
+    async def start_export(
+        self,
+        expected: ReportEditorContext,
+        *,
+        expected_sha256: str,
+        settings: dict[str, bool] | None = None,
+        note: str = "",
+        request_id: str | None = None,
+    ) -> dict[str, object]:
+        """在后台启动导出并立即返回任务标识。
+
+        渲染与验收可能持续数分钟，同步 HTTP 请求会先被网关读超时切断；导出改为服务端
+        后台任务，由编辑器轮询 ``export_status``。服务以单 worker 运行，任务状态保存在
+        进程内；同一 revision 同时只允许一个导出，避免两个任务争抢 revision N+1。
+        """
+
+        self._prune_export_jobs()
+        key = (expected.report_id, expected.revision)
+        if any(
+            (job.report_id, job.revision) == key and not job.task.done()
+            for job in self._export_jobs.values()
+        ):
+            raise ReportingError(
+                "report_editor_export_running", "当前版本正在导出，请等待完成后再试。"
+            )
+        if len(self._export_jobs) >= _MAX_EXPORT_JOBS:
+            raise ReportingError("report_editor_export_busy", "导出任务过多，请稍后再试。")
+        export_id = request_id or str(uuid4())
+        if export_id in self._export_jobs:
+            export_id = str(uuid4())
+        task = asyncio.create_task(
+            self.export_revision(
+                expected,
+                expected_sha256=expected_sha256,
+                settings=settings,
+                note=note,
+                request_id=export_id,
+            ),
+            name=f"report-editor-export:{export_id}",
+        )
+        # 结果由轮询读取；预先取走异常，避免任务结束后无人等待时产生未处理异常告警。
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self._export_jobs[export_id] = _ExportJob(
+            report_id=expected.report_id,
+            revision=expected.revision,
+            task=task,
+            started_at=time.monotonic(),
+        )
+        return {"exportId": export_id, "status": "running", "requestId": export_id}
+
+    def export_status(self, expected: ReportEditorContext, export_id: str) -> dict[str, object]:
+        job = self._export_jobs.get(export_id)
+        if job is None or (job.report_id, job.revision) != (
+            expected.report_id,
+            expected.revision,
+        ):
+            raise ReportingError("report_editor_export_missing", "导出任务不存在或已过期。")
+        if not job.task.done():
+            return {"exportId": export_id, "status": "running", "requestId": export_id}
+        if job.finished_at is None:
+            job.finished_at = time.monotonic()
+        error = (
+            ReportingError("report_editor_export_failed", "报告导出失败。")
+            if job.task.cancelled()
+            else job.task.exception()
+        )
+        if error is None:
+            return {
+                "exportId": export_id,
+                "status": "succeeded",
+                "requestId": export_id,
+                "result": job.task.result(),
+            }
+        if not isinstance(error, ReportingError):
+            error = ReportingError("report_editor_export_failed", "报告导出失败。")
+        return {
+            "exportId": export_id,
+            "status": "failed",
+            "requestId": export_id,
+            "error": {"code": error.code, "message": error.message},
+        }
+
+    def _prune_export_jobs(self) -> None:
+        now = time.monotonic()
+        for export_id, job in list(self._export_jobs.items()):
+            if job.task.done():
+                if job.finished_at is None:
+                    job.finished_at = now
+                if now - job.finished_at > _EXPORT_JOB_RETENTION_SECONDS:
+                    del self._export_jobs[export_id]
+
+    async def aclose(self) -> None:
+        """应用关闭时取消仍在运行的导出，由取消链路终止渲染进程组并清理临时 revision。"""
+
+        running = [job.task for job in self._export_jobs.values() if not job.task.done()]
+        for task in running:
+            task.cancel()
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
 
     @staticmethod
     def _log_export_failure(

@@ -595,14 +595,21 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
                 sha256="b" * 64,
             )
 
-        async def export_revision(self, _context, *, expected_sha256: str, request_id: str):
+        async def start_export(self, _context, *, expected_sha256: str, request_id: str):
             assert expected_sha256 == "b" * 64
             assert request_id
+            return {"exportId": request_id, "status": "running", "requestId": request_id}
+
+        def export_status(self, _context, export_id: str):
             return {
-                "reportId": "report-1",
-                "revision": 2,
-                "pdf": {"downloadUrl": "/reports/v1/download/pdf"},
-                "word": {"downloadUrl": "/reports/v1/download/word"},
+                "exportId": export_id,
+                "status": "succeeded",
+                "result": {
+                    "reportId": "report-1",
+                    "revision": 2,
+                    "pdf": {"downloadUrl": "/reports/v1/download/pdf"},
+                    "word": {"downloadUrl": "/reports/v1/download/word"},
+                },
             }
 
     app = FastAPI()
@@ -634,6 +641,9 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
             json={"expectedSha256": "b" * 64},
             headers={"Origin": "http://reports.test", "X-CSRF-Token": csrf},
         )
+        polled = await client.get(
+            f"/reports/v1/editor/report-1/1/api/export/{exported.json()['exportId']}"
+        )
 
     assert missing_origin.status_code == 403
     assert wrong_csrf.status_code == 403
@@ -643,8 +653,92 @@ async def test_editor_write_api_requires_same_origin_and_csrf() -> None:
         "sha256": "b" * 64,
     }
     assert saved == ["# 人工修订\n"]
-    assert exported.json()["revision"] == 2
-    assert exported.json()["pdf"]["downloadUrl"] == "/reports/v1/download/pdf"
+    # 导出在后台运行：提交立即返回 202，结果通过状态接口轮询。
+    assert exported.status_code == 202
+    assert exported.json()["status"] == "running"
+    assert polled.json()["status"] == "succeeded"
+    assert polled.json()["result"]["revision"] == 2
+    assert polled.json()["result"]["pdf"]["downloadUrl"] == "/reports/v1/download/pdf"
+
+
+def _export_service(export_revision) -> ReportEditorService:
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(),
+        workspace_registry=SimpleNamespace(),  # type: ignore[arg-type]
+        workspace=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+    service.export_revision = export_revision  # type: ignore[method-assign]
+    return service
+
+
+@pytest.mark.anyio
+async def test_background_export_reports_running_then_result() -> None:
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def export_revision(_context, **options):
+        await release.wait()
+        return {"revision": 2, "requestId": options["request_id"]}
+
+    service = _export_service(export_revision)
+    started = await service.start_export(_context(), expected_sha256="a" * 64, request_id="e-1")
+
+    assert started == {"exportId": "e-1", "status": "running", "requestId": "e-1"}
+    assert service.export_status(_context(), "e-1")["status"] == "running"
+    # 同一修订同时只允许一个导出，避免两个任务争抢 revision N+1。
+    with pytest.raises(ReportingError, match="正在导出"):
+        await service.start_export(_context(), expected_sha256="a" * 64)
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    finished = service.export_status(_context(), "e-1")
+    assert finished["status"] == "succeeded"
+    assert finished["result"] == {"revision": 2, "requestId": "e-1"}
+
+
+@pytest.mark.anyio
+async def test_background_export_failure_and_scope_are_reported() -> None:
+    import asyncio
+
+    async def export_revision(_context, **_options):
+        raise ReportingError("report_editor_revision_stale", "已有更新的第 3 版。")
+
+    service = _export_service(export_revision)
+    await service.start_export(_context(), expected_sha256="a" * 64, request_id="e-2")
+    await asyncio.sleep(0)
+
+    failed = service.export_status(_context(), "e-2")
+    assert failed["status"] == "failed"
+    assert failed["error"] == {
+        "code": "report_editor_revision_stale",
+        "message": "已有更新的第 3 版。",
+    }
+    other_revision = _context().model_copy(update={"revision": 2})
+    with pytest.raises(ReportingError, match="导出任务不存在"):
+        service.export_status(other_revision, "e-2")
+
+
+@pytest.mark.anyio
+async def test_closing_editor_service_cancels_running_exports() -> None:
+    import asyncio
+
+    cancelled = asyncio.Event()
+
+    async def export_revision(_context, **_options):
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    service = _export_service(export_revision)
+    await service.start_export(_context(), expected_sha256="a" * 64, request_id="e-3")
+    await asyncio.sleep(0)
+
+    await service.aclose()
+
+    assert cancelled.is_set()
 
 
 @pytest.mark.anyio
