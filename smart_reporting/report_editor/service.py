@@ -626,6 +626,9 @@ class ReportEditorService:
                 ),
                 expected_version=durable.state_version,
             )
+            # durable 编辑上下文已提交：之后签发授权失败不得再删除 revision 文件，
+            # 否则历史里会留下一个已提交却没有 Markdown/图片的版本。
+            cleanup_revision = False
             raw_download, download_grant = await download_grants.issue(
                 scope=download_scope,
                 report_id=context.report_id,

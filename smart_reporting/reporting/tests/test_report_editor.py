@@ -727,8 +727,10 @@ async def test_editor_save_records_manual_revision_soft_warning(tmp_path: Path) 
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("editor_grant_fails", [False, True])
 async def test_editor_export_creates_new_revision_without_overwriting_published_markdown(
     tmp_path: Path,
+    editor_grant_fails: bool,
 ) -> None:
     scope = _scope()
     registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
@@ -874,6 +876,8 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
 
     class EditorGrants:
         async def issue(self, issued_context):
+            if editor_grant_fails:
+                raise RuntimeError("editor grant store unavailable")
             assert issued_context.revision == 2
             assert issued_context.source == "manual"
             assert issued_context.note == "运营数据复核后发布"
@@ -890,6 +894,20 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
         editor_grants=EditorGrants(),
         public_base_url="https://reports.example.com",
     )
+
+    if editor_grant_fails:
+        with pytest.raises(RuntimeError, match="editor grant store unavailable"):
+            await service.export_revision(
+                context, expected_sha256=draft_sha, note="运营数据复核后发布"
+            )
+        # 编辑上下文已提交后签发失败：revision-2 必须完整保留，与已提交状态一致。
+        assert "2" in durable.payload["reportEditorContexts"]
+        assert (
+            await workspace.aread_text(scope.workspace_key, "reports/revision-2/report.md")
+            == draft_markdown
+        )
+        assert await workspace.apath_exists(scope.workspace_key, "reports/revision-2/chart-001.png")
+        return
 
     result = await service.export_revision(
         context,
