@@ -43,7 +43,7 @@ ThinkingFailureKind = Literal[
     "semantic_warning",
 ]
 
-_COMPLEXITY_BUDGETS = {"simple": 1024, "standard": 2048, "complex": 4096}
+_COMPLEXITY_BUDGETS: dict[TaskComplexity, int] = {"simple": 1024, "standard": 2048, "complex": 4096}
 _INITIAL_THINKING_BUDGETS: dict[ThinkingOperation, int | dict[TaskComplexity, int]] = {
     "request_normalization": 0,
     "domain_resolution": 0,

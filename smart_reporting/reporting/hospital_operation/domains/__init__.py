@@ -4,7 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-DOMAIN_CODES = (
+DomainCode = Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"]
+DOMAIN_CODES: tuple[DomainCode, ...] = (
     "income",
     "workload",
     "budget",
@@ -12,7 +13,6 @@ DOMAIN_CODES = (
     "cost_control",
     "funds",
 )
-DomainCode = Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"]
 
 
 @dataclass(frozen=True)

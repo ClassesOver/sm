@@ -3,6 +3,7 @@ import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_network
+from typing import Literal, cast
 from urllib.parse import quote, urlsplit
 
 from dotenv import dotenv_values
@@ -61,15 +62,18 @@ def _temperature(values: MutableMapping[str, str], name: str, default: float) ->
     return value
 
 
+ReportReasoningEffort = Literal["low", "high", "max"]
+
+
 def _report_reasoning_effort(
     values: MutableMapping[str, str],
     name: str,
     default: str = "low",
-) -> str:
+) -> ReportReasoningEffort:
     value = values.get(name, default).strip().lower()
     if value not in {"low", "high", "max"}:
         raise ValueError(f"{name} 必须是 low、high 或 max")
-    return value
+    return cast(ReportReasoningEffort, value)
 
 
 def _structured_output_mode(
@@ -281,16 +285,14 @@ class AgentSettings:
     enable_session_summaries: bool
     report_phase_enable_thinking: bool
     report_phase_temperature: float
-    report_phase_reasoning_effort: str
+    report_phase_reasoning_effort: ReportReasoningEffort
     report_phase_thinking_budget: int
     report_enable_thinking: bool
-    report_planner_reasoning_effort: str
+    report_planner_reasoning_effort: ReportReasoningEffort
     report_planner_thinking_budget: int
     report_enable_vision: bool
     report_vision_model: str
     tracing_enabled: bool
-    context_token_budget: int
-    output_token_reserve: int
     report_context_token_budget: int
     report_output_token_reserve: int
     report_analysis_concurrency: int
@@ -335,18 +337,6 @@ class AgentSettings:
             )
             if origin.strip()
         )
-        context_token_budget = _positive_int(
-            values,
-            "AGENT_CONTEXT_TOKEN_BUDGET",
-            262144,
-        )
-        output_token_reserve = _positive_int(
-            values,
-            "AGENT_OUTPUT_TOKEN_RESERVE",
-            32768,
-        )
-        if output_token_reserve >= context_token_budget:
-            raise ValueError("AGENT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_CONTEXT_TOKEN_BUDGET")
         report_context_token_budget = _positive_int(
             values,
             "AGENT_REPORT_CONTEXT_TOKEN_BUDGET",
@@ -476,8 +466,6 @@ class AgentSettings:
                 or DEFAULT_REPORT_VISION_MODEL_ID
             ),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
-            context_token_budget=context_token_budget,
-            output_token_reserve=output_token_reserve,
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
             report_analysis_concurrency=report_analysis_concurrency,

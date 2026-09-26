@@ -10,7 +10,7 @@ import uuid
 import zipfile
 from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.run import RunContext
 from loguru import logger as loguru_logger
@@ -21,7 +21,6 @@ from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     WorkspaceError,
     WorkspacePathConflict,
-    WorkspaceService,
     _thread,
 )
 from .models import ReportingError
@@ -52,6 +51,9 @@ _PLOTLY_TRACE_TYPES = frozenset(
 )
 _PLOTLY_FORBIDDEN_KEYS = frozenset({"src", "source", "mapboxaccesstoken"})
 _PLOTLY_FORBIDDEN_STRING_MARKERS = ("http://", "https://", "javascript:", "data:")
+
+if TYPE_CHECKING:
+    from .host_workspace import ReportingWorkspaceRouter
 
 
 def _report_runtime_package() -> tuple[bytes, str]:
@@ -213,8 +215,26 @@ async def inspect_report_plotly_file(
     }
 
 
+def _presentation_identity(presentations: Any) -> Any:
+    if not isinstance(presentations, list):
+        return presentations
+    return [
+        (
+            item.get("citationId"),
+            item.get("label"),
+            tuple(
+                coverage.get("label") if isinstance(coverage, dict) else coverage
+                for coverage in item.get("coverageItems") or ()
+            ),
+        )
+        if isinstance(item, dict)
+        else item
+        for item in presentations
+    ]
+
+
 class WorkspaceReportService:
-    def __init__(self, service: WorkspaceService, data_sources: Any | None = None):
+    def __init__(self, service: "ReportingWorkspaceRouter", data_sources: Any | None = None):
         self.service = service
         self.data_sources = data_sources
 
@@ -404,6 +424,15 @@ class WorkspaceReportService:
                 )
         finally:
             await complete_cleanup(self.service.adelete_file(thread_id, payload_relative_path))
+        # Agno Workspace.run_command 不抛异常，超时与非零退出以 "Error..." 文本返回；
+        # 在解析前分类，避免统一落成含义模糊的“返回无效结果”。
+        if stdout.startswith("Error: command timed out"):
+            raise WorkspaceError("报表运行时执行超时。")
+        if stdout.startswith(("Error (exit ", "Error running command")):
+            loguru_logger.warning(
+                "report_runtime_process_failed action={} detail={}", action, stdout[-2000:]
+            )
+            raise WorkspaceError("报表运行时进程异常退出。")
         if len(stdout.encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
             raise WorkspaceError("报表运行时返回结果超过大小限制。")
         lines = [line for line in stdout.splitlines() if line.strip()]
@@ -561,7 +590,11 @@ class WorkspaceReportService:
             raise WorkspaceError("PDF 实际引用展示信息超过状态边界。")
         job = self._load_job(job_id, run_context)
         existing = job.get("_citationPresentations")
-        if existing is not None and existing != presentations:
+        # 覆盖期间只是展示细节（历史版本保存完整列表，现在只保存首尾）；绑定一致性按
+        # 引用身份、标签和覆盖项名称判断，避免跨版本恢复的运行被误判为冲突。
+        if existing is not None and _presentation_identity(existing) != _presentation_identity(
+            presentations
+        ):
             raise WorkspaceError("PDF 实际引用展示信息已经绑定且内容不同。")
         job["_citationPresentations"] = copy.deepcopy(presentations)
         self._store_job(job, run_context)

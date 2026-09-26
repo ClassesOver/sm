@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from ..models import ReportingError
 
@@ -36,7 +36,7 @@ _EDIT_BLOCK = re.compile(
 )
 _MARKERS = ("*** Begin Edit", "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE", "*** End Edit")
 
-_invalid_details = {"nextTools": ["read_script", "edit_script"]}
+_invalid_details: dict[str, Any] = {"nextTools": ["read_script", "edit_script"]}
 # 块间与 End Edit 之后只含空白的多余内容不承载任何源码，按协议噪声容忍。
 _BLANK_GAP = re.compile(r"[ \t\r\n]*")
 
@@ -83,7 +83,7 @@ def _marker_hint(old: str, new: str, block_index: int) -> str:
 
 def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str, str]], str]:
     """分隔符前的一个 LF 属于协议；块内字节（含 CRLF）原样保留。"""
-    details = _invalid_details
+    details: dict[str, Any] = _invalid_details
     if isinstance(patch, str):
         patch_bytes = len(patch.encode("utf-8"))
         if patch_bytes > 2 * max_source_bytes + 256:
@@ -110,7 +110,10 @@ def parse_edit_patch(patch: str, max_source_bytes: int) -> tuple[list[tuple[str,
                         break
                     edits.append((block["old"], replacement))
                     position = block.end()
-                    gap_end = _BLANK_GAP.match(body, position).end()
+                    # _BLANK_GAP 可匹配空串，对任意位置必定命中。
+                    gap = _BLANK_GAP.match(body, position)
+                    assert gap is not None
+                    gap_end = gap.end()
                     if gap_end == len(body) or body.startswith("<<<<<<< SEARCH", gap_end):
                         position = gap_end
                 if edits and position == len(body):
@@ -537,10 +540,12 @@ def apply_edit_blocks(
                     "变量；请从 read_script 原样复制完整的源码行。"
                 )
         if not candidates:
-            error = _edit_error("not_found", "SEARCH 文本在原始脚本中不存在，请重新读取。", index)
-            if hint:
-                error.details["hint"] = hint
-            raise error
+            raise _edit_error(
+                "not_found",
+                "SEARCH 文本在原始脚本中不存在，请重新读取。",
+                index,
+                **({"hint": hint} if hint else {}),
+            )
         if len(candidates) > 1 and disambiguate:
             floor = previous_end if ordered else 0
             # ordered 时锚点也只在上一个 hunk 之后查找，保持 Codex 的顺序语义。
@@ -548,23 +553,31 @@ def apply_edit_blocks(
             if anchor:
                 anchor_start = _anchor_line_start(*split_lines(), anchor, floor)
                 if anchor_start is None:
-                    error = _edit_error(
-                        "ambiguous", "SEARCH 匹配多个位置，且 @@ 锚点行在脚本中不存在。", index
+                    raise _edit_error(
+                        "ambiguous",
+                        "SEARCH 匹配多个位置，且 @@ 锚点行在脚本中不存在。",
+                        index,
+                        anchor=anchor[:200],
                     )
-                    error.details["anchor"] = anchor[:200]
-                    raise error
                 lower = anchor_start
             after = [item for item in candidates if item[0] >= lower]
             if after:
                 candidates = after[:1]
                 mode = "anchor" if not mode else f"{mode}+anchor"
         if len(candidates) > 1:
-            error = _edit_error("ambiguous", "SEARCH 匹配多个位置，请增加上下文使其唯一。", index)
-            if ordered or anchor:
-                error.details["hint"] = (
-                    "apply_patch hunk 可在 @@ 后写该位置之前最近的一行原文（如 def/for 行）作为锚点。"
-                )
-            raise error
+            raise _edit_error(
+                "ambiguous",
+                "SEARCH 匹配多个位置，请增加上下文使其唯一。",
+                index,
+                **(
+                    {
+                        "hint": "apply_patch hunk 可在 @@ 后写该位置之前最近的一行原文"
+                        "（如 def/for 行）作为锚点。"
+                    }
+                    if ordered or anchor
+                    else {}
+                ),
+            )
         replacements.append((*candidates[0], index))
         previous_end = candidates[0][1]
         if mode:
@@ -585,8 +598,10 @@ def apply_edit_blocks(
     return source, fuzzy
 
 
-def _edit_error(reason: str, message: str, block: int | None = None) -> ReportingError:
+def _edit_error(
+    reason: str, message: str, block: int | None = None, **extra: object
+) -> ReportingError:
     return ReportingError(
         f"report_code_script_edit_{reason}", message,
-        details={"nextTools": ["read_script", "edit_script"], "blockIndex": block},
+        details={"nextTools": ["read_script", "edit_script"], "blockIndex": block, **extra},
     )

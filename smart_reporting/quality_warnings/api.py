@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from .models import TenantScope, WarningDisposition, WarningQuery
+from .repository import _decode_cursor
 from .service import QualityWarningService
 
 
@@ -37,6 +38,14 @@ def create_quality_warning_router() -> APIRouter:
     ):
         tenant = _tenant_scope(request)
         service = _service(request)
+        if cursor is not None:
+            # 游标由客户端回传，格式错误属于请求错误而不是服务端异常。
+            try:
+                _decode_cursor(cursor)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail="quality_warning_cursor_invalid"
+                ) from None
         page = await service.list_warning_page(
             tenant=tenant,
             query=WarningQuery(

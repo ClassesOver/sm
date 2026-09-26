@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from agno.agent import Agent
 from agno.media import Image
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ..integrations.model_config import OPENAI_COMPATIBLE_ROLE_MAP
 from ..runtime.settings import AgentSettings
-from ..workspace import WorkspaceError, WorkspaceService
+from ..workspace import WorkspaceError
 from .workflow.checkpoint import (
     ChartVisualInspectionIssue,
     ChartVisualInspectionReceipt,
@@ -54,6 +54,9 @@ _WHOLE_CHART_BLANK_MARKERS = (
     "plot area",
     "canvas",
 )
+
+if TYPE_CHECKING:
+    from .host_workspace import ReportingWorkspaceRouter
 
 
 def _is_non_blocking_issue(issue: dict[str, Any]) -> bool:
@@ -106,7 +109,7 @@ class ReportVisionReviewer:
     def __init__(
         self,
         settings: AgentSettings,
-        workspace_service: WorkspaceService,
+        workspace_service: ReportingWorkspaceRouter,
         *,
         agent_factory: Callable[[], Any] | None = None,
     ) -> None:

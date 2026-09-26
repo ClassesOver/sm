@@ -9,9 +9,13 @@ _DANGEROUS_FUNCTIONS = frozenset(
     {
         "benchmark",
         "connection_id",
+        # sqlglot 会把 database()/schema() 规范化为 CurrentSchema，只按原名拦截会漏过。
+        "current_schema",
         "current_user",
         "database",
         "load_file",
+        "schema",
+        "session_user",
         "sleep",
         "system_user",
         "user",
@@ -67,14 +71,17 @@ def validate_starrocks_read_only_sql(
             name = str(getattr(function, "sql_name", lambda: "")() or "").lower()
         if name in _DANGEROUS_FUNCTIONS:
             raise ReportingError("sql_function_denied", f"SQL 函数 {name} 不允许使用。")
+    # @@ 系统变量会暴露服务端配置，报告查询不需要。
+    if any(True for _ in statement.find_all(exp.SessionParameter)):
+        raise ReportingError("sql_function_denied", "SQL 不允许读取系统变量。")
     allowed = {_normalize_table_name(table, database) for table in allowed_tables}
-    ctes = {
-        str(cte.alias_or_name).lower() for cte in statement.find_all(exp.CTE) if cte.alias_or_name
-    }
     for table in statement.find_all(exp.Table):
         table_name = str(table.name or "").lower()
         table_database = str(table.db or "").lower()
-        if not table_database and table_name in ctes:
+        # 只有在该位置按 SQL 作用域确实可见的同名 CTE 才能豁免白名单：非递归 CTE 的
+        # 定义体里同名或后定义的名字指向真实表，例如
+        # `WITH secret AS (SELECT * FROM secret)` 会读取表 secret。
+        if not table_database and table_name in _visible_cte_names(table):
             continue
         if table.catalog:
             raise ReportingError("sql_table_denied", "SQL 不允许跨数据库查询。")
@@ -84,6 +91,30 @@ def validate_starrocks_read_only_sql(
         if qualified not in allowed:
             raise ReportingError("sql_table_denied", f"数据表 {qualified} 不在允许范围内。")
     return normalized
+
+
+def _visible_cte_names(node: exp.Expression) -> set[str]:
+    visible: set[str] = set()
+    child: exp.Expression = node
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.With):
+            ctes = list(parent.expressions)
+            names = ctes
+            if isinstance(child, exp.CTE) and not parent.args.get("recursive"):
+                # 非递归 WITH 中，CTE 定义体只能看到排在它之前的 CTE。
+                names = ctes[: next(i for i, item in enumerate(ctes) if item is child)]
+            visible.update(str(cte.alias_or_name).lower() for cte in names if cte.alias_or_name)
+        else:
+            with_clause = parent.args.get("with_") or parent.args.get("with")
+            if isinstance(with_clause, exp.With) and child is not with_clause:
+                visible.update(
+                    str(cte.alias_or_name).lower()
+                    for cte in with_clause.expressions
+                    if cte.alias_or_name
+                )
+        child, parent = parent, parent.parent
+    return visible
 
 
 def _normalize_table_name(table: str, database: str) -> str:

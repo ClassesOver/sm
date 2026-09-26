@@ -381,7 +381,11 @@ def visualization_coding_facts(
             continue
         fact_file = item.get("factFile")
         fact_path = fact_file.get("path") if isinstance(fact_file, Mapping) else None
-        main_paths = bindings.get((analysis_id, fact_path), set())
+        main_paths = (
+            bindings.get((analysis_id, fact_path), set())
+            if isinstance(analysis_id, str) and isinstance(fact_path, str)
+            else set()
+        )
         sources: list[dict[str, Any]] = []
         for source in item.get("supplementalEvidenceSources", ()):
             if not isinstance(source, Mapping):
@@ -390,7 +394,11 @@ def visualization_coding_facts(
             source_path = (
                 source_file.get("path") if isinstance(source_file, Mapping) else None
             )
-            source_paths = bindings.get((analysis_id, source_path), set())
+            source_paths = (
+                bindings.get((analysis_id, source_path), set())
+                if isinstance(analysis_id, str) and isinstance(source_path, str)
+                else set()
+            )
             if not source_paths:
                 continue
             filtered_source = {
@@ -1171,7 +1179,7 @@ class RuntimeAnalysisMixin:
                                 self.code_mode_runtime,
                                 registry=self.coding_task_registry,
                                 knowledge_index=knowledge_index,
-                                lsp_manager=getattr(self, "lsp_manager", None),
+                                lsp_manager=cast(Any, getattr(self, "lsp_manager", None)),
                                 vision_reviewer=self.vision_reviewer,
                                 model_metrics_recorder=coding_metrics_recorder,
                                 compact_continuation=True,
@@ -2795,7 +2803,7 @@ class RuntimeAnalysisMixin:
             self._analysis_script_agent_factory,
             self.code_mode_runtime,
             knowledge_index=getattr(self, "knowledge_index", None),
-            lsp_manager=getattr(self, "lsp_manager", None),
+            lsp_manager=cast(Any, getattr(self, "lsp_manager", None)),
             registry=self.coding_task_registry,
             model_metrics_recorder=coding_metrics_recorder,
             compact_continuation=True,

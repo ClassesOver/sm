@@ -631,48 +631,6 @@ class ContextBudgetController(ProtectedCompressionManager):
         )
 
     @staticmethod
-    def _protected_start(messages: list[Message]) -> int:
-        assistant_indexes = [
-            index
-            for index, message in enumerate(messages)
-            if message.role in {"assistant", "model"}
-        ]
-        if len(assistant_indexes) < TASK_EXECUTION_RECENT_ASSISTANT_TURNS:
-            return 0
-        return assistant_indexes[-TASK_EXECUTION_RECENT_ASSISTANT_TURNS]
-
-    @classmethod
-    def _protected_indexes(cls, messages: list[Message]) -> set[int]:
-        protected_start = cls._protected_start(messages)
-        protected = set(range(protected_start, len(messages)))
-        for role in ("user",):
-            latest = next(
-                (
-                    index
-                    for index in range(len(messages) - 1, -1, -1)
-                    if messages[index].role == role
-                ),
-                None,
-            )
-            if latest is not None:
-                protected.add(latest)
-        for tool_name in ("update_plan", "verify", "finish_task"):
-            latest = next(
-                (
-                    index
-                    for index in range(len(messages) - 1, -1, -1)
-                    if messages[index].role == "tool" and messages[index].tool_name == tool_name
-                ),
-                None,
-            )
-            if latest is not None:
-                protected.add(latest)
-        for index in range(max(0, len(messages) - SKILL_CONTENT_WINDOW), len(messages)):
-            if messages[index].tool_name in SKILL_TOOL_NAMES:
-                protected.add(index)
-        return protected
-
-    @staticmethod
     def _task_execution_receipt(message: Message) -> str:
         content = str(message.content or "")
         args = dict(message.tool_args) if isinstance(message.tool_args, dict) else {}

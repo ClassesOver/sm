@@ -137,6 +137,7 @@ from ...instructions import (
 from ...knowledge import ReportingKnowledgeIndex
 from ...metadata import ReportingMetadataClient
 from ...model_policy import (
+    ReportingReasoningEffort,
     ReportingThinkingProfile,
     ThinkingFailureKind,
     ThinkingPolicyConfig,
@@ -490,7 +491,7 @@ class _ReportWorkflowRuntimeBase:
         section_recovery: Agent | None = None,
         vision_reviewer: ReportVisionReviewer | None = None,
         vision_enabled: bool | None = None,
-        workspace_service: WorkspaceService | ReportingWorkspaceRouter,
+        workspace_service: ReportingWorkspaceRouter,
         workspace_registry: ReportingWorkspaceRegistry | None = None,
         code_mode_runtime: Any | None = None,
         knowledge_index: ReportingKnowledgeIndex | None = None,
@@ -499,7 +500,7 @@ class _ReportWorkflowRuntimeBase:
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
-        planner_reasoning_effort: str = "high",
+        planner_reasoning_effort: ReportingReasoningEffort = "high",
         planner_thinking_budget: int = 8192,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
@@ -1261,7 +1262,8 @@ class _ReportWorkflowRuntimeBase:
     def _workspace_for_scope(
         self, scope: ReportingWorkflowScope
     ) -> HostReportingWorkspace:
-        if getattr(self, "workspace_registry", None) is None:
+        registry = getattr(self, "workspace_registry", None)
+        if registry is None:
             raise ReportingError(
                 "report_host_workspace_missing",
                 "Reporting Workspace 注册表未配置。",
@@ -1272,7 +1274,7 @@ class _ReportWorkflowRuntimeBase:
             self._host_workspaces = workspaces
         workspace = workspaces.get(scope.workspace_key)
         if workspace is None:
-            workspace = HostReportingWorkspace(self.workspace_registry.resolve(scope))
+            workspace = HostReportingWorkspace(registry.resolve(scope))
             workspaces[scope.workspace_key] = workspace
         return workspace
 

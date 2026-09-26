@@ -15,6 +15,14 @@ export interface ExportResult {
   editor?: { openUrl: string }
 }
 
+interface ExportJobState {
+  exportId: string
+  status: 'running' | 'succeeded' | 'failed'
+  requestId?: string
+  result?: ExportResult
+  error?: { code: string; message?: string; status?: number }
+}
+
 export interface ReportHistoryItem {
   revision: number
   sha256: string
@@ -43,6 +51,7 @@ export class ReportEditorClient {
   constructor(
     private readonly basePath: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly exportPollIntervalMs = 2000,
   ) {}
 
   async load(): Promise<ReportDocument> {
@@ -72,11 +81,37 @@ export class ReportEditorClient {
     note = '',
   ): Promise<ExportResult> {
     const requestId = globalThis.crypto.randomUUID()
-    return this.request<ExportResult>('/api/export', {
+    // 渲染与验收可能持续数分钟：服务端立即返回后台任务标识，这里轮询到终态，
+    // 避免同步请求被网关读超时切断。
+    const started = await this.request<ExportJobState>('/api/export', {
       method: 'POST',
       body: JSON.stringify({ expectedSha256, settings, ...(note ? { note } : {}) }),
       headers: { 'X-Request-ID': requestId },
     })
+    const statusPath = `/api/export/${encodeURIComponent(started.exportId)}`
+    let transientFailures = 0
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, this.exportPollIntervalMs))
+      let state: ExportJobState
+      try {
+        state = await this.request<ExportJobState>(statusPath)
+        transientFailures = 0
+      } catch (error) {
+        // 短暂断网不应让仍在服务端运行的导出失败；连续失败才放弃。
+        if (error instanceof TypeError && ++transientFailures < 5) continue
+        throw error
+      }
+      if (state.status === 'succeeded' && state.result) {
+        return { ...state.result, requestId: state.requestId }
+      }
+      if (state.status === 'failed') {
+        throw new ReportEditorApiError(
+          state.error?.status ?? 500,
+          state.error?.code ?? 'report_editor_export_failed',
+          state.requestId,
+        )
+      }
+    }
   }
 
   async reportEvent(payload: {

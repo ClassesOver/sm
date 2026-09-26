@@ -197,3 +197,18 @@ def test_request_identity_rejects_cross_thread() -> None:
 
     with pytest.raises(ValueError, match="thread"):
         identity.require_thread("thread-2")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("claims", [[], 7, "thread-1"])
+async def test_capability_verifier_rejects_non_object_claims_without_crashing(
+    claims: object,
+) -> None:
+    secret = "s" * 32
+    verifier = CapabilityTokenVerifier(secret, clock=lambda: 1_800_000_000)
+
+    unsigned = f"{_segment({'alg': 'HS256', 'typ': 'WORKSPACE-CAP'})}.{_segment(claims)}.x"
+    signed = _signed_token(secret, {"alg": "HS256", "typ": "WORKSPACE-CAP"}, claims)
+
+    assert await verifier.verify_token(unsigned) is None
+    assert await verifier.verify_token(signed) is None

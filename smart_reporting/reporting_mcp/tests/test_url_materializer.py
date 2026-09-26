@@ -385,3 +385,31 @@ async def test_url_materializer_reports_operation_cleanup_failure() -> None:
         await materializer.cleanup_operation("thread-1", "operation-1")
 
     assert error.value.code == "report_attachment_cleanup_failed"
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["64:ff9b::a9fe:a9fe", "64:ff9b:1::7f00:1", "::127.0.0.1"],
+    ids=["nat64_metadata", "local_nat64_loopback", "ipv4_compatible_loopback"],
+)
+def test_url_materializer_rejects_ipv6_embedding_restricted_ipv4(address: str) -> None:
+    with pytest.raises(ReportingError) as error:
+        UrlMaterializer._public_addresses(
+            [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, 443, 0, 0))]
+        )
+
+    assert error.value.code == "report_attachment_url_forbidden"
+
+
+def test_url_materializer_allows_nat64_of_public_ipv4() -> None:
+    assert UrlMaterializer._public_addresses(
+        [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::5db8:d822", 443, 0, 0))]
+    ) == frozenset({"64:ff9b::5db8:d822"})
+
+
+def test_url_materializer_truncates_long_filenames_by_utf8_bytes() -> None:
+    name = UrlMaterializer._safe_filename("营收" * 200 + ".csv")
+
+    assert name.endswith(".csv")
+    assert len(name.encode()) <= 240
+    assert len(f"199-{name}".encode()) <= 255

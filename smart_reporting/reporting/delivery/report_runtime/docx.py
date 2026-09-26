@@ -28,6 +28,17 @@ _DOCX_FORBIDDEN_PARTS = ("word/vbaProject.bin", "word/embeddings/", "word/active
 _WORD_PAGE_FIELDS = {"page": "PAGE", "pages": "SECTIONPAGES"}
 
 
+def _usable_width(section: Any) -> int:
+    """正文可用宽度；模板分节缺少 pgSz/pgMar 时 python-docx 返回 None，按 A4 与 Word 默认页边距回退。"""
+
+    from docx.shared import Emu, Mm
+
+    page_width = section.page_width if section.page_width is not None else Mm(210)
+    left = section.left_margin if section.left_margin is not None else Mm(31.8)
+    right = section.right_margin if section.right_margin is not None else Mm(31.8)
+    return Emu(int(page_width - left - right))
+
+
 def _fit_image_dimensions(
     width: int, height: int, maximum_width: int, maximum_height: int
 ) -> tuple[int, int]:
@@ -83,8 +94,7 @@ def _render_docx(
             ]
         process = subprocess.run(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=DOCX_RENDER_TIMEOUT_SECONDS,
             check=False,
             cwd=source_parent,
@@ -356,9 +366,7 @@ def _postprocess_docx(
         toc_style = f"TOC {item['level'] - 1}"
         if toc_style in document.styles:
             paragraph.style = document.styles[toc_style]
-        usable_width = (
-            sections[-1].page_width - sections[-1].left_margin - sections[-1].right_margin
-        )
+        usable_width = _usable_width(sections[-1])
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
         hyperlink = OxmlElement("w:hyperlink")
         bookmark_name = item["anchor"].replace("-", "_")
@@ -405,9 +413,7 @@ def _postprocess_docx(
         return paragraph
 
     def add_template(paragraph: Any, left: str, right: str) -> None:
-        usable_width = (
-            sections[-1].page_width - sections[-1].left_margin - sections[-1].right_margin
-        )
+        usable_width = _usable_width(sections[-1])
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
 
         def append(value: str) -> None:
@@ -495,7 +501,7 @@ def _postprocess_docx(
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.font.color.rgb = theme_colors["primary"]
-    available_width = sections[-1].page_width - sections[-1].left_margin - sections[-1].right_margin
+    available_width = _usable_width(sections[-1])
     maximum_height = Mm(180)
     for shape in document.inline_shapes:
         new_width, new_height = _fit_image_dimensions(

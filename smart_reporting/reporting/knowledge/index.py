@@ -8,12 +8,12 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from loguru import logger
 
-_DYNAMIC_KIND = "repair"
-_STATIC_KIND = "static"
+_DYNAMIC_KIND: Final = "repair"
+_STATIC_KIND: Final = "static"
 _MAX_RESULTS = 5
 _MAX_SNIPPET_BYTES = 1200
 _MAX_REPAIR_SUMMARY_BYTES = 4096

@@ -6,14 +6,14 @@ import io
 import secrets
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import anyio
 import polars as pl
 from agno.run import RunContext
 
 from ..async_utils import complete_cleanup
-from ..workspace import WorkspaceHashResultError, WorkspaceService, _thread
+from ..workspace import WorkspaceHashResultError, _thread
 from .contract import ReportFileInput
 from .data_source import DataSourceAdapter
 from .models import ReportingError
@@ -29,6 +29,9 @@ MAX_REPORT_INPUTS = 100
 MAX_DATASET_FILE_BYTES = 200 * 1024 * 1024
 _DATASET_HASH_ATTEMPTS = 3
 _DATASET_HASH_RETRY_DELAY_SECONDS = 0.2
+
+if TYPE_CHECKING:
+    from .host_workspace import ReportingWorkspaceRouter
 
 
 @dataclass(frozen=True)
@@ -123,7 +126,7 @@ class _BatchItemError(Exception):
 class ReportDatasetStore:
     """执行已审核 SQL，并在全部查询成功后登记不可变数据集。"""
 
-    def __init__(self, service: WorkspaceService):
+    def __init__(self, service: ReportingWorkspaceRouter):
         self.service = service
 
     async def register_external_csv(

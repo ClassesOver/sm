@@ -54,21 +54,24 @@ def _draft_payload(**overrides: object) -> dict[str, object]:
     return {
         **_chart_payload(**overrides),
         "visualForm": "按月折线图",
-        "dataBindings": [{
-            "analysisId": "analysis_001",
-            "factPath": "facts/analysis_001.json",
-            "dataPath": "metrics[0].periodValues",
-            "fields": ["period", "value"],
-            "role": "月度趋势",
-        }],
+        "dataBindings": [
+            {
+                "analysisId": "analysis_001",
+                "factPath": "facts/analysis_001.json",
+                "dataPath": "metrics[0].periodValues",
+                "fields": ["period", "value"],
+                "role": "月度趋势",
+            }
+        ],
     }
 
 
 def test_report_request_visualization_mode_defaults_to_auto_and_serializes_override() -> None:
     assert _request().visualization_mode == "auto"
-    assert _request(visualizationMode="interactive").model_dump(by_alias=True)[
-        "visualizationMode"
-    ] == "interactive"
+    assert (
+        _request(visualizationMode="interactive").model_dump(by_alias=True)["visualizationMode"]
+        == "interactive"
+    )
 
 
 def test_legacy_chart_payload_defaults_to_matplotlib() -> None:
@@ -220,3 +223,34 @@ def test_analysis_freeze_rejects_missing_plotly_identity() -> None:
             {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64},
             None,
         )
+
+
+_SOURCE_FILE = {"path": "analysis/charts/income.png", "size": 10, "sha256": "a" * 64}
+_VISION_RECEIPT = {
+    "sourcePath": "analysis/charts/income.png",
+    "sha256": "a" * 64,
+    "inspectionMode": "vision",
+    "visualReviewStatus": "passed",
+    "modelId": "vision-model",
+    "reviewed": True,
+    "requiresRevision": False,
+}
+
+
+@pytest.mark.parametrize(
+    ("receipt", "expected_mode", "expected_status"),
+    [
+        (_VISION_RECEIPT, "vision", "passed"),
+        ({**_VISION_RECEIPT, "sha256": "c" * 64}, "deterministic", "not_run"),
+        (None, "deterministic", "not_run"),
+    ],
+    ids=["matching-vision-receipt", "stale-receipt", "no-receipt"],
+)
+def test_analysis_freeze_keeps_matching_visual_receipt(
+    receipt: dict[str, object] | None, expected_mode: str, expected_status: str
+) -> None:
+    chart = _analysis_chart_from_registration(_chart_payload(), _SOURCE_FILE, None, receipt)
+
+    frozen = chart.model_dump(by_alias=True)["visualInspectionReceipt"]
+    assert frozen["inspectionMode"] == expected_mode
+    assert frozen["visualReviewStatus"] == expected_status

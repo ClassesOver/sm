@@ -66,38 +66,6 @@ class RuntimeVisualizationMixin:
             ) from error
 
     @staticmethod
-    def _section_chart_draft_catalog(
-        payload: Mapping[str, Any],
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-        """读取 durable 章节图表草案；状态损坏或含重复身份时失败关闭，不猜测。"""
-
-        raw_sections = payload.get("visualizationSections", {})
-        if not isinstance(raw_sections, Mapping):
-            raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-        charts_by_id: dict[str, dict[str, Any]] = {}
-        files_by_path: dict[str, dict[str, Any]] = {}
-        for section_code, section_draft in raw_sections.items():
-            if not isinstance(section_code, str) or not isinstance(section_draft, Mapping):
-                raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-            raw_charts = section_draft.get("charts", ())
-            raw_files = section_draft.get("files", ())
-            if not isinstance(raw_charts, list) or not isinstance(raw_files, list):
-                raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-            for chart in raw_charts:
-                if not isinstance(chart, Mapping) or not isinstance(chart.get("chartId"), str):
-                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-                if chart["chartId"] in charts_by_id:
-                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-                charts_by_id[chart["chartId"]] = dict(chart)
-            for file in raw_files:
-                if not isinstance(file, Mapping) or not isinstance(file.get("path"), str):
-                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-                if file["path"] in files_by_path:
-                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
-                files_by_path[file["path"]] = dict(file)
-        return charts_by_id, files_by_path
-
-    @staticmethod
     def _require_chart_output_path(path: str, output_root: str) -> str:
         try:
             normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
@@ -321,9 +289,14 @@ class RuntimeVisualizationMixin:
             interactive_files: list[dict[str, Any]] = []
             for registration in parsed:
                 source_path = self._require_chart_output_path(registration.source_path, output_root)
-                identity = await self._inspect_chart_file(
+                # 同一次检查得到文件身份与尺寸类质量告警（分辨率、有效 DPI、宽高比），
+                # 这些告警只作为非阻断质量信号随章节回执与 durable 告警保留。
+                identity, quality_warnings = await self._inspect_chart(
                     thread_id=scope.thread_id,
-                    path=source_path,
+                    registration=registration.model_copy(update={"source_path": source_path}),
+                )
+                warnings.extend(
+                    {**warning, "sectionCode": sectionCode} for warning in quality_warnings
                 )
                 inspected.append(_serialized_chart_registration(registration))
                 files.append(

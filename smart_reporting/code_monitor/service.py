@@ -4,7 +4,7 @@ import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from queue import Empty
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
@@ -52,7 +52,7 @@ class CodeMonitor:
 
                 client = AsyncKernelClient()
                 try:
-                    client.load_connection_info(target.connection)
+                    client.load_connection_info(cast(Any, target.connection))
                     client.start_channels(shell=wait_for_ready, iopub=True, stdin=False,
                                           hb=wait_for_ready, control=False)
                     if wait_for_ready:

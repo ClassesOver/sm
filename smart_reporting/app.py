@@ -56,7 +56,7 @@ from .reporting.diagnostics import (
     ReportingDependencyDiagnostics,
     create_reporting_dependency_diagnostics_router,
 )
-from .reporting.host_workspace import ReportingWorkspaceRegistry
+from .reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .reporting.workflow.controller import ReportWorkflowController
 from .reporting.workflow.repository import REPORTING_DB_SCHEMA
 from .reporting_mcp.identity import CapabilityTokenVerifier
@@ -130,9 +130,10 @@ quality_warning_repository = SqlAlchemyQualityWarningRepository(agent_database.a
 quality_warning_service = QualityWarningService(quality_warning_repository)
 report_artifact_repository = SqlAlchemyReportArtifactRepository(agent_database.async_engine)
 report_download_grants = ReportDownloadGrantService(report_download_repository)
+# 报告产物读取依赖 Reporting 宿主机工作区的有界读取接口，普通 WorkspaceService 不提供。
 report_artifact_persistence = ReportArtifactPersistenceService(
     report_artifact_repository,
-    workspace_service,
+    ReportingWorkspaceRouter(reporting_workspace_registry),
 )
 report_downloads = ReportDownloadHttpService(
     report_download_grants,
@@ -517,6 +518,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
+    application.router.add_event_handler("shutdown", report_editor.aclose)
     return application
 
 

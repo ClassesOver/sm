@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import perf_counter
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from agno.agent import Agent
 from agno.exceptions import ModelRateLimitError
@@ -362,6 +362,11 @@ class ReportingCodeGenerationRunner:
                     return
                 metric_recorded = True
 
+                def summed_tokens(field: str) -> int | None:
+                    # token 计数是整数；汇总结果只在缺少观测时为 None。
+                    value = summed_usage(field)
+                    return None if value is None else int(value)
+
                 def summed_usage(field: str) -> int | float | None:
                     total: int | float = 0
                     observed = False
@@ -397,10 +402,10 @@ class ReportingCodeGenerationRunner:
                     provider=getattr(model, "provider", None),
                     reasoning_effort=getattr(model, "reasoning_effort", None),
                     request_count=metric_request_count,
-                    input_tokens=summed_usage("input_tokens"),
-                    output_tokens=summed_usage("output_tokens"),
-                    reasoning_tokens=summed_usage("reasoning_tokens"),
-                    cache_read_tokens=summed_usage("cache_read_tokens"),
+                    input_tokens=summed_tokens("input_tokens"),
+                    output_tokens=summed_tokens("output_tokens"),
+                    reasoning_tokens=summed_tokens("reasoning_tokens"),
+                    cache_read_tokens=summed_tokens("cache_read_tokens"),
                     model_cost=summed_usage("cost"),
                     tool_counts=(
                         toolkit.tool_call_metrics()
@@ -614,7 +619,7 @@ class ReportingCodeGenerationRunner:
                 compact_reconnect_summary: dict[str, Any] | None = None
                 while True:
                     previous_requests = request_count
-                    previous_output = run_output
+                    previous_output: Any = run_output
                     run_output = None
                     window_request_metrics: list[Any] = []
                     try:
@@ -738,7 +743,9 @@ class ReportingCodeGenerationRunner:
                     ):
                         break
                     if attempt == 0:
-                        remaining = agent.model.claim_delivery_continuation(model_tool_limit)
+                        remaining = cast(Any, agent.model).claim_delivery_continuation(
+                            model_tool_limit
+                        )
                         if remaining is None:
                             break
                     else:

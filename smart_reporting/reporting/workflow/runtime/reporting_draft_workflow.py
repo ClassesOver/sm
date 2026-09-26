@@ -300,7 +300,7 @@ class ReportingAnalysisAndDraftWorkflow(Workflow):
             batch: Sequence[ReportingDraftWorkflow], *, parallel: bool
         ) -> list[ReportingDraftWorkflowResult]:
             results: list[ReportingDraftWorkflowResult] = []
-            errors: dict[str, Exception] = {}
+            errors: dict[str | None, Exception] = {}
 
             async def execute_section(
                 _input: StepInput, section: ReportingDraftWorkflow, **_kwargs: Any

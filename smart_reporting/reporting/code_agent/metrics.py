@@ -212,10 +212,10 @@ def bounded_request_params_snapshot(value: Any) -> dict[str, Any] | None:
             else "unknown"
         ),
         "maxOutputTokens": (
-            value.get("maxOutputTokens")
-            if isinstance(value.get("maxOutputTokens"), int)
-            and not isinstance(value.get("maxOutputTokens"), bool)
-            and value.get("maxOutputTokens") >= 0
+            max_output_tokens
+            if isinstance(max_output_tokens := value.get("maxOutputTokens"), int)
+            and not isinstance(max_output_tokens, bool)
+            and max_output_tokens >= 0
             else "unknown"
         ),
         "parallelToolCalls": (
@@ -337,21 +337,21 @@ def build_coding_metric_sample(
         source_sha = first_run_failure.get("sourceSha256")
         failure_snapshot = {
             "code": (
-                first_run_failure.get("code")[:128]
-                if isinstance(first_run_failure.get("code"), str)
-                and first_run_failure.get("code")
+                failure_code[:128]
+                if isinstance(failure_code := first_run_failure.get("code"), str)
+                and failure_code
                 else "unknown"
             ),
             "errorType": (
-                first_run_failure.get("errorType")[:128]
-                if isinstance(first_run_failure.get("errorType"), str)
-                and first_run_failure.get("errorType")
+                failure_errortype[:128]
+                if isinstance(failure_errortype := first_run_failure.get("errorType"), str)
+                and failure_errortype
                 else "unknown"
             ),
             "path": (
-                first_run_failure.get("path")[:256]
-                if isinstance(first_run_failure.get("path"), str)
-                and first_run_failure.get("path")
+                failure_path[:256]
+                if isinstance(failure_path := first_run_failure.get("path"), str)
+                and failure_path
                 else "unknown"
             ),
             "errorLine": bounded_nonnegative(first_run_failure.get("errorLine")),
@@ -537,7 +537,7 @@ def build_coding_metric_sample(
     return sample
 
 
-def percentile(values: Iterable[float | int], rank: float) -> float | str:
+def percentile(values: Iterable[object], rank: float) -> float | str:
     """计算最近秩 P50/P95；没有观测时返回 unknown。"""
 
     numbers = sorted(

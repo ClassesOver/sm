@@ -797,3 +797,44 @@ def test_semantic_documents_without_cover_keep_title_in_body() -> None:
     assert "<h1>目录</h1>" not in word_document
     body = word_document.split(_WORD_MARKERS["body_start"], 1)[1]
     assert "<h1>测试报告</h1>" in body
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        ("Error: command timed out after 600 seconds", "报表运行时执行超时"),
+        ("Error (exit 137): Killed", "报表运行时进程异常退出"),
+    ],
+)
+async def test_report_runtime_classifies_process_failures(output: str, message: str) -> None:
+    class Workspace:
+        async def awrite_bytes(self, *_args: object) -> None:
+            return None
+
+        async def arun_command(self, *_args: object, **_kwargs: object) -> str:
+            return output
+
+        async def adelete_file(self, *_args: object) -> None:
+            return None
+
+    with pytest.raises(WorkspaceError, match=message):
+        await WorkspaceReportService(Workspace())._run_report_runtime(  # type: ignore[arg-type]
+            "render_markdown",
+            {"job": {}},
+            RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
+        )
+
+
+def test_docx_usable_width_falls_back_when_template_section_lacks_page_setup() -> None:
+    from types import SimpleNamespace
+
+    from docx.shared import Mm
+
+    from smart_reporting.reporting.delivery.report_runtime.docx import _usable_width
+
+    bare = SimpleNamespace(page_width=None, left_margin=None, right_margin=None)
+    configured = SimpleNamespace(page_width=Mm(210), left_margin=Mm(20), right_margin=Mm(20))
+
+    assert _usable_width(bare) == Mm(210) - Mm(31.8) - Mm(31.8)
+    assert _usable_width(configured) == Mm(170)

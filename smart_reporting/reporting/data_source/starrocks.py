@@ -165,7 +165,13 @@ class StarRocksDataSourceAdapter:
                     config.limits.query_concurrency,
                 ),
                 max_overflow=0,
-                connect_args={"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30},
+                # 客户端读超时必须长于服务端 query_timeout，否则可配置的语句超时
+                # 超过 30 秒时会被驱动提前断开并误报为查询失败。
+                connect_args={
+                    "connect_timeout": 10,
+                    "read_timeout": config.statement_timeout_seconds + 30,
+                    "write_timeout": 30,
+                },
             )
         except Exception as error:
             raise ReportingError(

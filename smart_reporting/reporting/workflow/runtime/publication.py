@@ -980,6 +980,22 @@ def _publication_warning_notice(item: Mapping[str, Any], *, run_id: str, source_
     )
 
 
+_MAX_PRESENTED_COVERAGE_PERIODS = 12
+
+
+def _coverage_period_bounds(periods: set[str]) -> list[str]:
+    """PDF 不再展示来源附录，覆盖期间只用于展示信息的结构校验。
+
+    日粒度数据一年就有数百个期间，完整列表会让绑定到 job 的展示信息越过状态边界，
+    导致整份报告渲染失败；期间较多时只保留覆盖首尾。
+    """
+
+    ordered = sorted(periods)
+    if len(ordered) <= _MAX_PRESENTED_COVERAGE_PERIODS:
+        return ordered
+    return [ordered[0], ordered[-1]]
+
+
 def _citation_presentations(
     *,
     lineage: tuple[DatasetLineage, ...],
@@ -1039,7 +1055,9 @@ def _citation_presentations(
             missing = {
                 str(period) for period in fact.get("missingPeriods", []) if isinstance(period, str)
             }
-            coverage_items.append({"label": coverage_label, "periods": sorted(coverage - missing)})
+            coverage_items.append(
+                {"label": coverage_label, "periods": _coverage_period_bounds(coverage - missing)}
+            )
         presentations.append(
             {
                 "citationId": citation.citation_id,

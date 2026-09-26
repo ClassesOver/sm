@@ -168,12 +168,12 @@ class DingyiProcessAdapter:
         self, *, operation_id: str, session_id: str, run_id: str, step_id: str
     ) -> str | None:
         async with _best_effort("start_activity", operation_id):
-            if await self._snapshot(self._operation_ids.get(operation_id, operation_id)) is None:
+            # 只读取一次快照：两次读取之间 operation 可能已被清理，第二次结果为 None。
+            snapshot = await self._snapshot(self._operation_ids.get(operation_id, operation_id))
+            if snapshot is None:
                 return None
             title, _ = _STEP_TITLES.get(step_id, (step_id, "步骤执行完成"))
-            operation = (await self._snapshot(self._operation_ids.get(operation_id, operation_id)))[
-                "operation"
-            ]
+            operation = snapshot["operation"]
             publisher = ProcessPublisher(
                 self._ensure_journal(),
                 owner=OWNER,

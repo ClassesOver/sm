@@ -716,9 +716,9 @@ class VisualizationSectionWorkflow:
         while True:
             try:
                 if pending_repair_error is not None:
-                    error = pending_repair_error
+                    pending = pending_repair_error
                     pending_repair_error = None
-                    raise error
+                    raise pending
                 inspections = _validated_visual_receipts(generated_result, plan)
                 receipt = await self.submit(plan, inspections, run_context)
                 _raise_rejected_submission(receipt)

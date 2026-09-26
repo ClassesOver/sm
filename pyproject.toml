@@ -92,6 +92,7 @@ testpaths = [
     "smart_reporting/reporting_mcp/tests",
     "smart_reporting/tests",
 ]
+pythonpath = ["."]
 addopts = "-m 'not integration'"
 markers = ["integration: requires external services such as PostgreSQL"]
 

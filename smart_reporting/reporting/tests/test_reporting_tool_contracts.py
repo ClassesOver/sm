@@ -182,6 +182,8 @@ async def test_section_visualization_requires_signed_visual_receipt() -> None:
             return_value={
                 "sourcePath": chart["sourcePath"],
                 "size": 10,
+                "width": 1600,
+                "height": 900,
                 "sha256": "a" * 64,
             }
         )
@@ -219,6 +221,8 @@ async def test_section_visualization_persists_plotly_companion_identity() -> Non
             return_value={
                 "sourcePath": chart["sourcePath"],
                 "size": 10,
+                "width": 1600,
+                "height": 900,
                 "sha256": "a" * 64,
             }
         ),
@@ -266,7 +270,13 @@ async def test_section_visualization_keeps_gate_tripped_revision_receipt_as_warn
     toolkit = _toolkit()
     toolkit.runtime.workspace = SimpleNamespace(
         inspect_chart_file=AsyncMock(
-            return_value={"sourcePath": chart["sourcePath"], "size": 10, "sha256": "a" * 64}
+            return_value={
+                "sourcePath": chart["sourcePath"],
+                "size": 10,
+                "width": 1600,
+                "height": 900,
+                "sha256": "a" * 64,
+            }
         )
     )
     # 视觉审查轮次耗尽后 submit_script 与 Workflow 均按软告警放行；提交工具不得再硬拒。
@@ -287,7 +297,9 @@ async def test_section_visualization_keeps_gate_tripped_revision_receipt_as_warn
 
 
 @pytest.mark.anyio
-async def test_section_visualization_reports_missing_workspace_capability_not_attribute_error() -> None:
+async def test_section_visualization_reports_missing_workspace_capability_not_attribute_error() -> (
+    None
+):
     chart = {
         "chartId": "income",
         "sourcePath": "analysis/charts/section_001/income.png",
@@ -309,6 +321,8 @@ async def test_section_visualization_reports_missing_workspace_capability_not_at
             return_value={
                 "sourcePath": chart["sourcePath"],
                 "size": 10,
+                "width": 1600,
+                "height": 900,
                 "sha256": "a" * 64,
             }
         )
@@ -329,7 +343,9 @@ async def test_section_visualization_reports_missing_workspace_capability_not_at
 
 
 @pytest.mark.anyio
-async def test_static_visualization_mode_rejects_plotly_registration_before_file_inspection() -> None:
+async def test_static_visualization_mode_rejects_plotly_registration_before_file_inspection() -> (
+    None
+):
     toolkit = _toolkit()
     toolkit._phase_parameters = lambda *_args: (
         {},
@@ -344,15 +360,21 @@ async def test_static_visualization_mode_rejects_plotly_registration_before_file
     )
     result = await toolkit.submit_visualization_charts(
         sectionCode="section_001",
-        charts=[{
-            "chartId": "income", "renderer": "plotly",
-            "sourcePath": "analysis/charts/section_001/income.png",
-            "interactivePath": "analysis/charts/section_001/income.plotly.json",
-            "title": "收入趋势", "altText": "收入趋势图",
-            "citationIds": ["citation-1"], "metricCodes": ["income"],
-            "currentPeriod": "2026-01", "sourceDatasetId": "dataset-1",
-            "aggregationGrain": "month",
-        }],
+        charts=[
+            {
+                "chartId": "income",
+                "renderer": "plotly",
+                "sourcePath": "analysis/charts/section_001/income.png",
+                "interactivePath": "analysis/charts/section_001/income.plotly.json",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
     assert result["ok"] is False
@@ -382,6 +404,8 @@ async def test_section_visualization_warns_and_keeps_unfrozen_dataset_chart() ->
             return_value={
                 "sourcePath": chart["sourcePath"],
                 "size": 10,
+                "width": 1600,
+                "height": 900,
                 "sha256": "a" * 64,
             }
         )
@@ -434,6 +458,8 @@ async def test_section_visualization_warning_persistence_failure_does_not_fail_s
             return_value={
                 "sourcePath": chart["sourcePath"],
                 "size": 10,
+                "width": 1600,
+                "height": 900,
                 "sha256": "a" * 64,
             }
         )
@@ -795,3 +821,50 @@ async def test_visualization_script_settlement_ignores_non_runner_terminal_execu
     scope = SimpleNamespace(external_run_id="external-1", internal_run_id="internal-1")
 
     await toolkit._ensure_visualization_script_settled(scope)
+
+
+@pytest.mark.anyio
+async def test_section_visualization_reports_low_resolution_as_soft_warning() -> None:
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "comparability": "strict",
+    }
+    toolkit = _toolkit()
+    toolkit.runtime.workspace = SimpleNamespace(
+        inspect_chart_file=AsyncMock(
+            return_value={
+                "sourcePath": chart["sourcePath"],
+                "size": 10,
+                "width": 400,
+                "height": 300,
+                "sha256": "a" * 64,
+            }
+        )
+    )
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+        visual_receipts=(_visual_receipt(chart["sourcePath"]),),
+    )
+
+    # 尺寸类质量问题只作为软告警，图表照常提交。
+    assert result["ok"] is True
+    assert result["chartCount"] == 1
+    assert [warning["code"] for warning in result["warnings"]] == [
+        "chart_low_resolution",
+        "chart_low_effective_dpi",
+    ]
+    assert all(warning["sectionCode"] == "section_001" for warning in result["warnings"])
+    assert all(warning["chartId"] == "income" for warning in result["warnings"])

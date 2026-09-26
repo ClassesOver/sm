@@ -71,16 +71,29 @@ describe('ReportEditorClient', () => {
         ),
       )
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({ exportId: 'export-1', status: 'running', requestId: 'export-1' }), {
+          status: 202,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ exportId: 'export-1', status: 'running' }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            revision: 2,
-            pdf: { downloadUrl: '/reports/v1/download/pdf' },
-            word: { downloadUrl: '/reports/v1/download/word' },
+            exportId: 'export-1',
+            status: 'succeeded',
+            requestId: 'export-1',
+            result: {
+              revision: 2,
+              pdf: { downloadUrl: '/reports/v1/download/pdf' },
+              word: { downloadUrl: '/reports/v1/download/word' },
+            },
           }),
           { status: 200 },
         ),
       )
-    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher, 0)
 
     const loaded = await client.load()
     const saved = await client.save('# 修订\n', loaded.sha256)
@@ -88,6 +101,12 @@ describe('ReportEditorClient', () => {
 
     expect(saved.sha256).toBe('b'.repeat(64))
     expect(exported.revision).toBe(2)
+    expect(exported.requestId).toBe('export-1')
+    expect(fetcher).toHaveBeenNthCalledWith(
+      5,
+      '/reports/v1/editor/report-1/1/api/export/export-1',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    )
     expect(fetcher).toHaveBeenNthCalledWith(
       2,
       '/reports/v1/editor/report-1/1/api/document',
@@ -199,5 +218,52 @@ describe('ReportEditorClient', () => {
         signal: controller.signal,
       }),
     )
+  })
+  it('surfaces a failed background export with its status and code', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ exportId: 'export-2', status: 'running' }), { status: 202 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            exportId: 'export-2',
+            status: 'failed',
+            requestId: 'export-2',
+            error: { code: 'report_editor_revision_stale', status: 409 },
+          }),
+          { status: 200 },
+        ),
+      )
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher, 0)
+
+    await expect(client.export('a'.repeat(64))).rejects.toMatchObject({
+      status: 409,
+      code: 'report_editor_revision_stale',
+      requestId: 'export-2',
+    })
+  })
+
+  it('keeps polling through a transient network failure', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ exportId: 'export-3', status: 'running' }), { status: 202 }),
+      )
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            exportId: 'export-3',
+            status: 'succeeded',
+            result: { revision: 3, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' } },
+          }),
+          { status: 200 },
+        ),
+      )
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher, 0)
+
+    expect((await client.export('a'.repeat(64))).revision).toBe(3)
   })
 })

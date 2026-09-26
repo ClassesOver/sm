@@ -114,3 +114,12 @@ def test_polars_csv超过精确字节上限时失败关闭() -> None:
         materializer.append((("123456789",),))
 
     assert captured.value.code == "query_result_too_large"
+
+
+def test_polars_csv去重列名不与原始后缀列名冲突() -> None:
+    materializer = CsvMaterializer(("a", "a_2", "a"), max_bytes=1024)
+    materializer.append(((1, 2, 3),))
+
+    header = materializer.finish().content.decode().splitlines()[0]
+
+    assert header == "a,a_2,a_3"

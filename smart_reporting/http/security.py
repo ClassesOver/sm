@@ -58,6 +58,8 @@ def verify_capability(
 
     if header != {"alg": "HS256", "typ": "WORKSPACE-CAP"}:
         raise CapabilityError("capability_header_invalid")
+    if not isinstance(claims, dict):
+        raise CapabilityError("capability_invalid")
     if claims.get("aud") != CAPABILITY_AUDIENCE:
         raise CapabilityError("capability_audience_invalid")
     current = int(time.time() if now is None else now)
