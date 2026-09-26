@@ -363,8 +363,10 @@ def _semantic_documents(
         else ""
     )
     toc_section = f'<section class="report-toc"><h1>目录</h1>{toc}</section>' if include_toc else ""
+    # 无封面导出时报告标题随正文起始，避免成品中完全缺失标题。
+    body_title = "" if include_cover else f'<h1 class="report-title">{title}</h1>'
     shared = (
-        f"{cover}{toc_section}<main class=\"report-body\">{body}"
+        f'{cover}{toc_section}<main class="report-body">{body_title}{body}'
         f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>'
         "</footer></main>"
     )
@@ -406,6 +408,9 @@ def _semantic_documents(
         f"{theme['grid']}"
         ";transform:translateY(-1.5mm)}.toc-page{min-width:3ch;text-align:right}"
         ".report-body{page:body}"
+        ".report-title{color:"
+        f"{theme['primary']}"
+        ";font-size:22pt;margin:0 0 8mm}"
         "h2{color:"
         f"{theme['primary']}"
         ";border-left:3pt solid "
@@ -453,22 +458,20 @@ def _semantic_documents(
         f"<body>{shared}</body></html>"
     )
     word_cover = (
-        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p>"
-        f"<p>{generated_label}</p>"
+        f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p><p>{generated_label}</p>"
         if include_cover
         else ""
     )
+    # 版式标记始终存在，由 Word 后处理按导出设置决定是否形成封面/目录分节。
     word_toc = (
-        f"<h1>目录</h1><p>{_WORD_MARKERS['toc_field_start']}</p>{toc}"
-        f"<p>{_WORD_MARKERS['toc_field_end']}</p>"
-        if include_toc
-        else ""
+        f"{'<h1>目录</h1>' if include_toc else ''}<p>{_WORD_MARKERS['toc_field_start']}</p>"
+        f"{toc if include_toc else ''}<p>{_WORD_MARKERS['toc_field_end']}</p>"
     )
     word_document = (
         "<meta charset='utf-8'><body>"
         f"{word_cover}<p>{_WORD_MARKERS['cover_end']}</p>"
         f"{word_toc}<p>{_WORD_MARKERS['toc_end']}</p>"
-        f"<p>{_WORD_MARKERS['body_start']}</p>{body}"
+        f"<p>{_WORD_MARKERS['body_start']}</p>{'' if include_cover else f'<h1>{title}</h1>'}{body}"
         f"<p>{organization}</p><p>{generated_date}</p></body>"
     )
     return pdf_document, word_document

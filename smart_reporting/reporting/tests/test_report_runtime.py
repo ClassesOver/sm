@@ -11,8 +11,8 @@ import pytest
 from agno.run import RunContext
 
 from smart_reporting.reporting.delivery.report_runtime import cli as runtime_cli
-from smart_reporting.reporting.delivery.report_runtime import runtime as runtime_module
 from smart_reporting.reporting.delivery.report_runtime import docx as docx_module
+from smart_reporting.reporting.delivery.report_runtime import runtime as runtime_module
 from smart_reporting.reporting.delivery.report_runtime.docx import (
     _WORD_PAGE_FIELDS,
     _fit_image_dimensions,
@@ -35,17 +35,26 @@ from smart_reporting.reporting.delivery.report_runtime.validation import (
 from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
 from smart_reporting.workspace import WorkspaceError
 
+
 def test_render_docx_uses_libreoffice_when_pandoc_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output = tmp_path / "render.docx"
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(docx_module.shutil, "which", lambda name: "/usr/bin/libreoffice" if name == "libreoffice" else None)
+    monkeypatch.setattr(
+        docx_module.shutil,
+        "which",
+        lambda name: "/usr/bin/libreoffice" if name == "libreoffice" else None,
+    )
+
     def fake_run(command, **_kwargs):
         calls.append(command)
-        Path(command[command.index("--outdir") + 1], output.name).write_bytes(b"PK\x03\x04fake-docx")
+        Path(command[command.index("--outdir") + 1], output.name).write_bytes(
+            b"PK\x03\x04fake-docx"
+        )
         return type("Completed", (), {"returncode": 0})()
+
     monkeypatch.setattr(docx_module.subprocess, "run", fake_run)
     monkeypatch.setattr(docx_module, "_postprocess_docx", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(docx_module, "_validate_docx_structure", lambda *_args, **_kwargs: {})
@@ -64,7 +73,6 @@ def test_render_docx_uses_libreoffice_when_pandoc_is_unavailable(
     assert calls[0][2:6] == ["--headless", "--convert-to", "docx:MS Word 2007 XML", "--outdir"]
     assert "--outdir" in calls[0]
     assert output.is_file()
-
 
 
 @pytest.mark.parametrize("kind", ["render", "validate"])
@@ -337,10 +345,7 @@ async def test_report_runtime_preserves_structured_error_before_stderr_warning(
             return None
 
         async def arun_command(self, *_args: object, **_kwargs: object) -> str:
-            return (
-                '{"error":"Markdown 正式章节标识与已批准提纲不一致"}\n'
-                '{"__reportExitCode":1}'
-            )
+            return '{"error":"Markdown 正式章节标识与已批准提纲不一致"}\n{"__reportExitCode":1}'
 
         async def adelete_file(self, *_args: object) -> None:
             return None
@@ -605,3 +610,149 @@ def test_manifest_fallback_prefers_ancestor_and_rejects_ambiguity(tmp_path: Path
         runtime._images(
             tmp_path / "other/draft/report.md", _image_tokens("![图](chart.png)"), state
         )
+
+
+@pytest.mark.parametrize(
+    ("physical_page", "body_start_page", "expected"),
+    [(1, 1, (1, 5)), (5, 1, (5, 5)), (1, 2, ("i", "i")), (2, 2, (1, 4))],
+)
+def test_page_number_context_without_cover_numbers_from_first_page(
+    physical_page: int, body_start_page: int, expected: tuple[str | int, str | int]
+) -> None:
+    assert (
+        _page_number_context(
+            physical_page,
+            body_start_page=body_start_page,
+            physical_page_count=5,
+            first_numbered_page=1,
+        )
+        == expected
+    )
+
+
+def test_pdf_decorations_without_cover_cover_every_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pypdf
+
+    path = tmp_path / "report.pdf"
+    writer = pypdf.PdfWriter()
+    for _index in range(2):
+        writer.add_blank_page(width=595.276, height=841.89)
+    with path.open("wb") as stream:
+        writer.write(stream)
+    monkeypatch.setattr(
+        "smart_reporting.reporting.delivery.report_runtime.pdf._pdf_section_pages",
+        lambda _reader, _sections: {"section_001": 1},
+    )
+
+    _apply_pdf_page_decorations(
+        path,
+        context={
+            "title": "Report",
+            "organizationName": "Org",
+            "watermarkText": "Internal",
+            "sections": [{"code": "section_001"}],
+        },
+        layout=DEFAULT_PAGE_LAYOUT,
+        include_cover=False,
+    )
+
+    texts = [page.extract_text() or "" for page in pypdf.PdfReader(str(path)).pages]
+    assert all("Internal" in text for text in texts)
+
+
+@pytest.mark.parametrize(
+    ("include_cover", "include_toc"), [(False, True), (True, False), (False, False)]
+)
+def test_postprocess_docx_follows_cover_and_toc_export_settings(
+    tmp_path: Path, include_cover: bool, include_toc: bool
+) -> None:
+    docx = pytest.importorskip("docx")
+    from smart_reporting.reporting.delivery.report_runtime.markdown import _WORD_MARKERS
+
+    context = {
+        **_docx_postprocess_context(),
+        "headingNumbers": [
+            {
+                "level": 2,
+                "number": "1",
+                "title": "经营概览",
+                "sectionCode": "overview",
+                "anchor": "report-heading-overview",
+            }
+        ],
+    }
+    document = docx.Document()
+    texts = [
+        *(["测试报告"] if include_cover else []),
+        _WORD_MARKERS["cover_end"],
+        *(["目录"] if include_toc else []),
+        _WORD_MARKERS["toc_field_start"],
+        *(["1. 经营概览"] if include_toc else []),
+        _WORD_MARKERS["toc_field_end"],
+        _WORD_MARKERS["toc_end"],
+        _WORD_MARKERS["body_start"],
+        *([] if include_cover else ["测试报告"]),
+        "1. 经营概览",
+        "测试机构",
+        "2026-08-17",
+    ]
+    for text in texts:
+        document.add_paragraph(text)
+    path = tmp_path / "report.docx"
+    document.save(path)
+
+    _postprocess_docx(
+        path,
+        context=context,
+        layout=DEFAULT_PAGE_LAYOUT,
+        include_cover=include_cover,
+        include_toc=include_toc,
+    )
+
+    processed = docx.Document(path)
+    assert len(processed.sections) == 1 + include_cover + include_toc
+    paragraph_texts = [item.text for item in processed.paragraphs]
+    assert not any(marker in paragraph_texts for marker in _WORD_MARKERS.values())
+    # 无封面时首个分节即带页眉页脚；有封面时封面分节不带页面元素。
+    first_header = processed.sections[0].header
+    assert first_header.is_linked_to_previous is include_cover
+    with zipfile.ZipFile(path) as package:
+        document_xml = package.read("word/document.xml").decode()
+    assert ('TOC \\o "1-3"' in document_xml) is include_toc
+
+
+def test_semantic_documents_without_cover_keep_title_in_body() -> None:
+    from smart_reporting.reporting.delivery.report_runtime.markdown import (
+        _WORD_MARKERS,
+        _semantic_documents,
+    )
+
+    context = {
+        **_docx_postprocess_context(),
+        "headingNumbers": [
+            {
+                "level": 2,
+                "number": "1",
+                "title": "经营概览",
+                "sectionCode": "overview",
+                "anchor": "report-heading-overview",
+            }
+        ],
+    }
+    pdf_document, word_document = _semantic_documents(
+        "<h2>1 经营概览</h2>",
+        context=context,
+        layout=DEFAULT_PAGE_LAYOUT,
+        include_cover=False,
+        include_toc=False,
+    )
+
+    assert 'class="report-cover"' not in pdf_document
+    assert 'class="report-toc"' not in pdf_document
+    assert '<h1 class="report-title">测试报告</h1>' in pdf_document
+    assert all(marker in word_document for marker in _WORD_MARKERS.values())
+    assert "<h1>目录</h1>" not in word_document
+    body = word_document.split(_WORD_MARKERS["body_start"], 1)[1]
+    assert "<h1>测试报告</h1>" in body

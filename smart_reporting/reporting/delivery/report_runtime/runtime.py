@@ -252,7 +252,9 @@ class ReportRuntime:
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
             export_settings = state.get("_editorExportSettings")
-            include_cover = not isinstance(export_settings, dict) or export_settings.get("cover", True)
+            include_cover = not isinstance(export_settings, dict) or export_settings.get(
+                "cover", True
+            )
             include_toc = not isinstance(export_settings, dict) or export_settings.get("toc", True)
             include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
                 "headerFooter", True
@@ -355,6 +357,7 @@ class ReportRuntime:
                 temporary,
                 context=context,
                 layout=layout,
+                include_cover=include_cover,
             )
             word_structure = _render_docx(
                 word_document,
@@ -540,12 +543,20 @@ class ReportRuntime:
                     raise ReportFailure("PDF 视觉验收栅格化失败")
                 extracted_pages: list[str] = []
                 export_settings = render.get("exportSettings")
-                include_header_footer = not isinstance(export_settings, dict) or export_settings.get(
-                    "headerFooter", True
-                )
+                include_header_footer = not isinstance(
+                    export_settings, dict
+                ) or export_settings.get("headerFooter", True)
                 include_page_numbers = not isinstance(export_settings, dict) or export_settings.get(
                     "pageNumbers", True
                 )
+                include_cover = not isinstance(export_settings, dict) or export_settings.get(
+                    "cover", True
+                )
+                include_toc = not isinstance(export_settings, dict) or export_settings.get(
+                    "toc", True
+                )
+                # 首个参与编号和页面装饰的物理页；无封面导出时正文或目录从第 1 页开始。
+                first_numbered_page = 2 if include_cover else 1
                 layout = _page_layout(
                     render.get("pageLayout"),
                     include_header_footer=include_header_footer,
@@ -559,10 +570,10 @@ class ReportRuntime:
                 toc_link_count = (
                     _pdf_link_count(
                         reader,
-                        start_page=2,
+                        start_page=first_numbered_page,
                         end_page=body_start_page - 1,
                     )
-                    if body_start_page > 2
+                    if include_toc and body_start_page > first_numbered_page
                     else 0
                 )
                 for index, (page, rendered_page) in enumerate(
@@ -578,7 +589,7 @@ class ReportRuntime:
                     ratio = round(non_white / len(samples), 6) if samples else 0.0
                     image_count = len(page.images)
                     rendered_image_count += image_count
-                    if index == 1:
+                    if index < first_numbered_page:
                         role = "cover"
                         page_value: str | int = 1
                         pages_value: str | int = 1
@@ -589,6 +600,7 @@ class ReportRuntime:
                             index,
                             body_start_page=body_start_page,
                             physical_page_count=len(reader.pages),
+                            first_numbered_page=first_numbered_page,
                         )
                         layout_present = _has_page_layout(
                             page_text,
@@ -598,9 +610,10 @@ class ReportRuntime:
                             page=page_value,
                             pages=pages_value,
                         )
-                    watermark_present = index > 1 and context["watermarkText"] in page_text
+                    numbered = index >= first_numbered_page
+                    watermark_present = numbered and context["watermarkText"] in page_text
                     substantive_text = "".join(page_text.split())
-                    if index > 1:
+                    if numbered:
                         decorations = [
                             context["watermarkText"],
                             *(
@@ -621,10 +634,10 @@ class ReportRuntime:
                                 "".join(decoration.split()), "", 1
                             )
                     text_char_count = len(substantive_text)
-                    if index > 1 and not layout_present:
+                    if numbered and not layout_present:
                         missing_page_layout.append(index)
                     blank = (
-                        text_char_count == 0 and image_count == 0 and (index > 1 or ratio < 0.0005)
+                        text_char_count == 0 and image_count == 0 and (numbered or ratio < 0.0005)
                     )
                     if blank:
                         blank_pages.append(index)
@@ -637,7 +650,7 @@ class ReportRuntime:
                             "textCharCount": text_char_count,
                             "imageCount": image_count,
                             "pageLayoutPresent": layout_present,
-                            "pageLayoutExpected": index > 1,
+                            "pageLayoutExpected": numbered,
                             "watermarkPresent": watermark_present,
                             "role": role,
                             "blank": blank,
@@ -645,7 +658,7 @@ class ReportRuntime:
                     )
                 extracted_text = "\n".join(extracted_pages)
                 cover_text = extracted_pages[0]
-                toc_text = "\n".join(extracted_pages[1 : body_start_page - 1])
+                toc_text = "\n".join(extracted_pages[first_numbered_page - 1 : body_start_page - 1])
                 final_text = extracted_pages[-1]
                 cover_values = (
                     context["title"],
@@ -664,6 +677,13 @@ class ReportRuntime:
                     all("".join(value.split()) in cover_compact for value in cover_values)
                     and cover_compact.count(watermark_compact) == expected_cover_occurrences
                 )
+                # 无封面导出时标题随正文首页出现；目录关闭时不存在目录页与目录链接。
+                title_ok = (
+                    cover_ok
+                    if include_cover
+                    else "".join(title.split())
+                    in "".join(extracted_pages[body_start_page - 1].split())
+                )
                 toc_ok = "目录" in toc_text and all(
                     format_heading_label(
                         level=item["level"], number=item["number"], title=item["title"]
@@ -676,7 +696,9 @@ class ReportRuntime:
                     and context["generatedDate"] in final_text
                 )
                 watermark_pages = [
-                    item["page"] for item in pages if item["page"] > 1 and item["watermarkPresent"]
+                    item["page"]
+                    for item in pages
+                    if item["page"] >= first_numbered_page and item["watermarkPresent"]
                 ]
                 word_structure = _validate_docx_structure(
                     word,
@@ -689,6 +711,7 @@ class ReportRuntime:
                     temp_path / "word-validation",
                     context=context,
                     layout=layout,
+                    include_cover=include_cover,
                 )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
@@ -703,12 +726,17 @@ class ReportRuntime:
                 and missing_images == 0
                 and not word_rendering["blankPages"]
                 and word_structure["embeddedImageCount"] >= markdown_image_count
-                and cover_ok
-                and toc_ok
-                and toc_link_count >= len(context["headingNumbers"])
+                and title_ok
                 and signature_ok
-                and word_structure["nativeTocPresent"]
                 and word_structure["tocEntryCount"] == len(context["headingNumbers"])
+                and (
+                    not include_toc
+                    or (
+                        toc_ok
+                        and toc_link_count >= len(context["headingNumbers"])
+                        and word_structure["nativeTocPresent"]
+                    )
+                )
             )
             validation = {
                 "ok": ok,
@@ -726,8 +754,8 @@ class ReportRuntime:
                 "sectionIds": section_ids,
                 "blankPages": blank_pages,
                 "missingPageLayoutPages": missing_page_layout,
-                "coverPresent": cover_ok,
-                "tocPresent": toc_ok,
+                "coverPresent": include_cover and cover_ok,
+                "tocPresent": include_toc and toc_ok,
                 "tocLinkCount": toc_link_count,
                 "bodyStartPage": body_start_page,
                 "watermarkPages": watermark_pages,

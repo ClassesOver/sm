@@ -7,8 +7,8 @@ import os
 import shutil
 import subprocess
 import tempfile
-import zipfile
 import uuid
+import zipfile
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -224,10 +224,15 @@ def _postprocess_docx(
             value.append(page_number)
         return value
 
-    for marker_name, page_format in (("cover_end", None), ("toc_end", "lowerRoman")):
+    # 仅对启用的封面/目录形成分节；关闭的部分只清空标记，保存前整体移除。
+    for marker_name, page_format, enabled in (
+        ("cover_end", None, include_cover),
+        ("toc_end", "lowerRoman", include_toc),
+    ):
         paragraph = markers[marker_name]
         clear_paragraph(paragraph)
-        paragraph._p.get_or_add_pPr().append(section_properties(page_format=page_format))
+        if enabled:
+            paragraph._p.get_or_add_pPr().append(section_properties(page_format=page_format))
     final_sect_pr = document._element.body.sectPr
     for child in list(final_sect_pr):
         if child.tag in {qn("w:headerReference"), qn("w:footerReference"), qn("w:pgNumType")}:
@@ -238,8 +243,8 @@ def _postprocess_docx(
     final_sect_pr.append(body_page_number)
 
     sections = document.sections
-    if len(sections) != 3:
-        raise ReportFailure("Word 必须包含封面、目录和正文三个分节")
+    if len(sections) != 1 + int(include_cover) + int(include_toc):
+        raise ReportFailure("Word 分节数与封面、目录导出设置不一致")
     for section in sections:
         section.page_width = Mm(210)
         section.page_height = Mm(297)
@@ -300,7 +305,8 @@ def _postprocess_docx(
             title_paragraph.style = document.styles["Title"]
     if include_toc:
         toc_title = next(
-            (item for item in paragraphs[cover_end_index:toc_start_index] if item.text == "目录"), None
+            (item for item in paragraphs[cover_end_index:toc_start_index] if item.text == "目录"),
+            None,
         )
         if toc_title is None:
             raise ReportFailure("Word 缺少目录标题")
@@ -341,14 +347,18 @@ def _postprocess_docx(
         for paragraph in paragraphs[toc_start_index + 1 : toc_end_index]
         if paragraph.text.strip()
     ]
-    if len(toc_entries) != len(context["headingNumbers"]):
+    if len(toc_entries) != (len(context["headingNumbers"]) if include_toc else 0):
         raise ReportFailure("Word 缓存目录与正式标题不一致")
-    for paragraph, item in zip(toc_entries, context["headingNumbers"], strict=True):
+    for paragraph, item in zip(
+        toc_entries, context["headingNumbers"] if include_toc else (), strict=True
+    ):
         clear_paragraph(paragraph)
         toc_style = f"TOC {item['level'] - 1}"
         if toc_style in document.styles:
             paragraph.style = document.styles[toc_style]
-        usable_width = sections[1].page_width - sections[1].left_margin - sections[1].right_margin
+        usable_width = (
+            sections[-1].page_width - sections[-1].left_margin - sections[-1].right_margin
+        )
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
         hyperlink = OxmlElement("w:hyperlink")
         bookmark_name = item["anchor"].replace("-", "_")
@@ -374,14 +384,15 @@ def _postprocess_docx(
         )
 
     clear_paragraph(markers["toc_field_start"])
-    field_run(
-        markers["toc_field_start"],
-        'TOC \\o "1-3" \\h \\z \\u',
-        result="",
-        close=False,
-    )
     clear_paragraph(markers["toc_field_end"])
-    field_end(markers["toc_field_end"])
+    if include_toc:
+        field_run(
+            markers["toc_field_start"],
+            'TOC \\o "1-3" \\h \\z \\u',
+            result="",
+            close=False,
+        )
+        field_end(markers["toc_field_end"])
     clear_paragraph(markers["body_start"])
 
     def clear_story(story: Any) -> Any:
@@ -394,7 +405,9 @@ def _postprocess_docx(
         return paragraph
 
     def add_template(paragraph: Any, left: str, right: str) -> None:
-        usable_width = sections[1].page_width - sections[1].left_margin - sections[1].right_margin
+        usable_width = (
+            sections[-1].page_width - sections[-1].left_margin - sections[-1].right_margin
+        )
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
 
         def append(value: str) -> None:
@@ -438,7 +451,7 @@ def _postprocess_docx(
         paragraph._p.append(watermark)
 
     for index, section in enumerate(sections):
-        if index == 0:
+        if include_cover and index == 0:
             continue
         section.header.is_linked_to_previous = False
         section.footer.is_linked_to_previous = False
@@ -510,6 +523,13 @@ def _postprocess_docx(
     document.core_properties.keywords = context["generatedByLabel"]
     document.core_properties.modified = datetime.now(UTC)
 
+    removed_markers = (() if include_cover else ("cover_end",)) + (
+        () if include_toc else ("toc_field_start", "toc_field_end", "toc_end")
+    )
+    for marker_name in removed_markers:
+        element = markers[marker_name]._p
+        element.getparent().remove(element)
+
     postprocessed = path.with_name("render.postprocessed.docx")
     document.save(str(postprocessed))
     if postprocessed.stat().st_size > MAX_DOCX_BYTES:
@@ -574,12 +594,14 @@ def _validate_docx_rendering(
     *,
     context: dict[str, Any],
     layout: dict[str, str],
+    include_cover: bool = True,
 ) -> dict[str, Any]:
     try:
         import pypdf
         from PIL import Image
     except ImportError as error:
         raise ReportFailure("Word 可渲染性验收依赖不可用") from error
+    first_numbered_page = 2 if include_cover else 1
     libreoffice = shutil.which("libreoffice") or shutil.which("soffice")
     if libreoffice is None:
         raise ReportFailure("Word 验收命令 LibreOffice 不可用")
@@ -650,22 +672,23 @@ def _validate_docx_rendering(
     first_section_pages = [
         index
         for index, page_text in enumerate(extracted_pages, start=1)
-        if index > 1
+        if index >= first_numbered_page
         and first_section_title in "".join(page_text.split()).replace(report_title, "", 1)
     ]
     # LibreOffice 会在转换后的 PDF 文本层为中文标题插入布局空格。该位置只用于
     # 识别页码装饰，不再把目录缓存方式和正文分页形态作为发布门禁。
-    body_start_page = first_section_pages[-1] if first_section_pages else 2
+    body_start_page = first_section_pages[-1] if first_section_pages else first_numbered_page
     blank_pages: list[int] = []
     for index, (page_text, current_image_count) in enumerate(
         zip(extracted_pages, page_image_counts, strict=True), start=1
     ):
         substantive_text = "".join(page_text.split())
-        if index > 1:
+        if index >= first_numbered_page:
             page_value, pages_value = _page_number_context(
                 index,
                 body_start_page=body_start_page,
                 physical_page_count=len(reader.pages),
+                first_numbered_page=first_numbered_page,
             )
             decorations = [
                 context["watermarkText"],
@@ -689,11 +712,12 @@ def _validate_docx_rendering(
             blank_pages.append(index)
     extracted_text = "\n".join(extracted_pages)
     compact_extracted_text = "".join(extracted_text.split())
+    # 分析期间与生成标识只出现在封面；无封面导出不再要求它们。
+    cover_only_text = (context["periodLabel"], context["generatedByLabel"]) if include_cover else ()
     required_text = (
         context["title"],
-        context["periodLabel"],
+        *cover_only_text,
         context["organizationName"],
-        context["generatedByLabel"],
         context["generatedDate"],
         *(item["title"] for item in context["sections"]),
     )
