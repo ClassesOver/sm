@@ -253,10 +253,47 @@ async def test_editor_open_exchanges_grant_for_http_only_cookie_without_token_ur
     assert response.status_code == 303
     assert response.headers["location"] == "/reports/v1/editor/report-1/1"
     assert raw not in response.headers["location"]
-    cookie = response.headers["set-cookie"]
-    assert "report_editor_session=" in cookie
-    assert "HttpOnly" in cookie
-    assert "SameSite=strict" in cookie
+    session_cookie, legacy_cookie = response.headers.get_list("set-cookie")
+    assert "report_editor_session=" in session_cookie
+    assert "HttpOnly" in session_cookie
+    # 跨站点击链接后的重定向需要携带会话；写操作另有 Origin + CSRF 保护。
+    assert "SameSite=lax" in session_cookie
+    assert "Path=/reports/v1/editor/report-1/1" in session_cookie
+    assert 'report_editor_session=""' in legacy_cookie
+    assert "Path=/reports/v1/editor;" in legacy_cookie
+    assert "Max-Age=0" in legacy_cookie
+
+
+@pytest.mark.anyio
+async def test_editor_sessions_for_different_revisions_coexist() -> None:
+    repository = InMemoryReportEditorRepository()
+    grants = ReportEditorGrantService(repository, secret="s" * 32)
+    first, _ = await grants.issue(_context())
+    second, _ = await grants.issue(_context().model_copy(update={"revision": 2}))
+
+    class Editor:
+        async def context_for_session(self, session):
+            return SimpleNamespace(revision=session.revision)
+
+        async def read_document(self, context):
+            return SimpleNamespace(
+                path=f"reports/revision-{context.revision}/report.md",
+                markdown="# 报告\n",
+                sha256="a" * 64,
+            )
+
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=Editor(), cookie_secure=False))
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://reports.test"
+    ) as client:
+        await client.get(f"/reports/v1/editor/open/{first}", follow_redirects=False)
+        await client.get(f"/reports/v1/editor/open/{second}", follow_redirects=False)
+        revision_1 = await client.get("/reports/v1/editor/report-1/1/api/document")
+        revision_2 = await client.get("/reports/v1/editor/report-1/2/api/document")
+
+    assert revision_1.json()["path"] == "reports/revision-1/report.md"
+    assert revision_2.json()["path"] == "reports/revision-2/report.md"
 
 
 @pytest.mark.anyio
