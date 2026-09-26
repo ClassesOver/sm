@@ -14,6 +14,17 @@ MAX_AI_SELECTION_CHARS = 12_000
 ReportEditorAIAction = Literal["polish", "shorten", "expand", "professional"]
 
 _PROTOCOL_MARKER = re.compile(r"\[\[(?:section|citation):[A-Za-z0-9_.:-]{1,128}\]\]")
+# 编辑器以 Markdown 序列化选区，协议标记会被转义为 \[\[section:x\_1]]。
+_ESCAPED_PROTOCOL_MARKER = re.compile(r"\\\[\\\[((?:\\.|[^\]]){1,256})\]\]")
+
+
+def _contains_protocol_marker(markdown: str) -> bool:
+    restored = _ESCAPED_PROTOCOL_MARKER.sub(
+        lambda match: "[[" + re.sub(r"\\(.)", r"\1", match.group(1)) + "]]", markdown
+    )
+    return _PROTOCOL_MARKER.search(restored) is not None
+
+
 _ACTION_INSTRUCTIONS: dict[str, str] = {
     "polish": "润色表达，提升清晰度和可读性，同时保持原意、事实和 Markdown 结构。",
     "shorten": "精简内容，保留关键事实、结论和必要限定条件。",
@@ -35,19 +46,15 @@ class ReportEditorAIService:
     ) -> AsyncIterator[str]:
         normalized = selection.strip()
         if not normalized:
-            raise ReportingError(
-                "report_editor_ai_selection_required", "请先选择需要改写的正文。"
-            )
+            raise ReportingError("report_editor_ai_selection_required", "请先选择需要改写的正文。")
         instruction = _ACTION_INSTRUCTIONS.get(action)
         if instruction is None:
-            raise ReportingError(
-                "report_editor_ai_action_invalid", "报告 AI 改写动作无效。"
-            )
+            raise ReportingError("report_editor_ai_action_invalid", "报告 AI 改写动作无效。")
         if len(normalized) > MAX_AI_SELECTION_CHARS:
             raise ReportingError(
                 "report_editor_ai_selection_too_large", "选择的正文过长，请缩小范围。"
             )
-        if _PROTOCOL_MARKER.search(normalized):
+        if _contains_protocol_marker(normalized):
             raise ReportingError(
                 "report_editor_ai_protocol_marker", "包含报告协议标记的正文不能使用 AI 改写。"
             )
@@ -60,6 +67,7 @@ class ReportEditorAIService:
             f"{normalized}\n"
             "</selected_markdown>"
         )
+
         async def stream() -> AsyncIterator[str]:
             try:
                 events = self.agent.arun(
