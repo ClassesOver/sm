@@ -333,14 +333,10 @@ export function createInteractiveCharts(
         const response = await fetcher(`${plotlyUrl}${spec.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'same-origin' })
         // 只有确定性失败（资源缺失、figure 无效、渲染异常）才永久放弃该图片；
         // 图片暂未布局或被编辑器临时移除属于瞬态，下次变更时应重试。
-        if (!response.ok) {
-          failed.add(image)
-          return
-        }
+        if (!response.ok) throw new Error('interactive chart asset unavailable')
         const figure = await response.json() as PlotlyFigure
         if (!Array.isArray(figure.data) || figure.data.length === 0) {
-          failed.add(image)
-          return
+          throw new Error('interactive chart figure is empty')
         }
         const plot = await loadPlotly()
         if (destroyed || !root.contains(image)) return

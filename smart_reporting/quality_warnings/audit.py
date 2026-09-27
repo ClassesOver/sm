@@ -25,15 +25,20 @@ _SUBJECT_ID_MAX_LENGTH = 128
 _RUN_KEY_MAX_LENGTH = 48
 
 
-def _run_subject_prefix(report_run_id: str) -> str:
-    """报告内主体（claim/block/chart 等）只在单次报告运行内唯一，台账身份需带运行前缀。"""
+def _run_key(report_run_id: str) -> str:
+    """有界运行键：常规运行 ID 原样保留，超长或含分隔符时退化为摘要。"""
 
-    run_key = (
+    return (
         report_run_id
         if len(report_run_id) <= _RUN_KEY_MAX_LENGTH and ":" not in report_run_id
         else f"run-sha256-{hashlib.sha256(report_run_id.encode()).hexdigest()[:32]}"
     )
-    return f"{run_key}:"
+
+
+def _run_subject_prefix(report_run_id: str) -> str:
+    """报告内主体（claim/block/chart 等）只在单次报告运行内唯一，台账身份需带运行前缀。"""
+
+    return f"{_run_key(report_run_id)}:"
 
 
 def _run_subject_id(prefix: str, *, subject_type: str, subject_id: str) -> str:
@@ -287,10 +292,8 @@ class QualityAuditCollector:
                         findings=tuple(findings),
                         reconcile=complete,
                         context=CheckContext(
-                            # 运行键与主体前缀同一压缩规则：常规运行 ID 保持原格式（幂等键
-                            # 不变），超长 ID 退化为摘要，避免超过 check_id 256 字符上限。
                             check_id=(
-                                f"publication:{prefix[:-1]}:{self.revision}:"
+                                f"publication:{_run_key(self.report_run_id)}:{self.revision}:"
                                 f"{rule.code}:{subject_type}"
                             ),
                             report_run_id=self.report_run_id,

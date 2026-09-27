@@ -23,6 +23,7 @@ from ..workspace import (
     WorkspacePathConflict,
     _thread,
 )
+from .data_sources import _best_effort_delete
 from .models import ReportingError
 
 REPORT_JOBS_STATE_KEY = "report_jobs"
@@ -472,16 +473,7 @@ class WorkspaceReportService:
         *,
         recursive: bool,
     ) -> None:
-        try:
-            await self.service.adelete_file(_thread(run_context), path, recursive=recursive)
-        except Exception as error:
-            # 尽力清理不阻断主流程，但必须留痕，否则残留临时文件无从排查。
-            loguru_logger.warning(
-                "report_path_cleanup_failed path={} recursive={} error_type={}",
-                path,
-                recursive,
-                type(error).__name__,
-            )
+        await _best_effort_delete(self.service, _thread(run_context), path, recursive=recursive)
 
     async def report_prepare_dataset(
         self,

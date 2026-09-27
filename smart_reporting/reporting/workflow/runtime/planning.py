@@ -10,6 +10,7 @@ from pydantic import ConfigDict, Field
 from sqlglot import exp
 
 from ....report_editor.service import ReportEditorContext
+from ....workspace import WorkspacePathConflict
 from ...structured_output import StructuredOutputCallBudget
 from .base import (
     _PLANNER_DISPLAY_NAMES,
@@ -363,9 +364,11 @@ class RuntimePlanningMixin:
                 if not await self.workspace_service.apath_exists(thread_id, source_path):
                     return None
                 content_bytes, _ = await self.workspace_service.afile_bytes(thread_id, source_path)
-                # 发布可能重放：目标已存在时与 Markdown 快照同语义，内容一致即复用，
-                # 不一致视为 revision 冲突，不能因 overwrite=False 让重试失败。
-                if await self.workspace_service.apath_exists(thread_id, target_path):
+                # 发布可能重放：先直接写入（首次发布无额外往返）；目标已存在时与 Markdown
+                # 快照同语义，内容一致即复用，不一致视为 revision 冲突。
+                try:
+                    await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
+                except WorkspacePathConflict:
                     existing_bytes, _ = await self.workspace_service.afile_bytes(
                         thread_id, target_path
                     )
@@ -373,9 +376,7 @@ class RuntimePlanningMixin:
                         raise ReportingError(
                             "report_editor_revision_conflict",
                             "当前报告 revision 已存在不同的资源快照。",
-                        )
-                else:
-                    await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
+                        ) from None
                 path_map[source_path] = target_path
                 return target_path
 
