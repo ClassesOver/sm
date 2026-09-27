@@ -827,6 +827,9 @@ def _correction_instruction(
             "不得输出解释、Markdown 或省略未报错的必填字段。"
         ),
     }
+    fragment = _fragment_hint(issues)
+    if fragment is not None:
+        correction["structureHint"] = fragment
     candidate = _json_safe(previous_output)
     if candidate is not None:
         encoded_candidate = json.dumps(
@@ -858,6 +861,44 @@ def _correction_instruction(
             ),
         ),
     ]
+
+
+def _fragment_hint(issues: list[dict[str, str]]) -> dict[str, Any] | None:
+    """识别"返回了子对象/数组元素而非要求对象"的片段响应，给出明确的结构纠错提示。
+
+    同一层同时缺少多个必填字段、又出现多个 schema 外字段时，几乎总是模型只回传了
+    某个嵌套元素（例如纠错轮只返回被修正的单条 claim）。逐字段 issues 会诱导模型
+    继续在片段上修补，这里指出应返回的是完整的该层对象。
+    """
+
+    levels: dict[str, tuple[list[str], list[str]]] = {}
+    for issue in issues:
+        parent, _separator, leaf = issue.get("path", "").rpartition(".")
+        if not parent or not leaf or "[" in leaf:
+            continue
+        missing, unexpected = levels.setdefault(parent, ([], []))
+        if issue.get("type") == "missing":
+            missing.append(leaf)
+        elif issue.get("type") == "extra_forbidden":
+            unexpected.append(leaf)
+    candidates = [
+        (parent, missing, unexpected)
+        for parent, (missing, unexpected) in levels.items()
+        if len(missing) >= 2 and len(unexpected) >= 2
+    ]
+    if not candidates:
+        return None
+    parent, missing, unexpected = min(candidates, key=lambda item: len(item[0]))
+    return {
+        "path": parent,
+        "missingFields": missing,
+        "unexpectedFields": unexpected,
+        "diagnosis": (
+            "上一响应在该层返回的是其他对象（常见为只返回了某个数组元素或子对象），"
+            "不是要求的对象；必须返回包含 missingFields 的完整该层对象，"
+            "unexpectedFields 只能出现在其所属的子对象内。"
+        ),
+    }
 
 
 def _json_safe(value: Any) -> Any:

@@ -972,3 +972,44 @@ def test_citation_markers_do_not_break_a_block_ending_with_a_code_fence() -> Non
     assert "[[citation:c1]]" in text
     assert "heading_open" in types
     assert _marker_lines("普通段落", ("c1",), ()) == "普通段落[[citation:c1]]"
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("#### 收入规模\n\n正文", "### 收入规模\n\n正文"),
+        # 并列 H4 必须一起提升，否则后续 H4 会被错挂成首个标题的子标题。
+        (
+            "#### 门诊收入\n\n正文\n\n#### 住院收入\n\n正文\n",
+            "### 门诊收入\n\n正文\n\n### 住院收入\n\n正文\n",
+        ),
+        ("#### 收入\n\n### 成本\n\n#### 药品\n", "### 收入\n\n### 成本\n\n#### 药品\n"),
+        ("```\n#### 代码\n```\n\n#### 收入\n", "```\n#### 代码\n```\n\n### 收入\n"),
+        ("### 收入\n\n#### 成本\n", None),
+        ("正文", None),
+    ],
+)
+def test_promote_orphan_h4_headings_promotes_every_h4_before_first_h3(
+    markdown: str, expected: str | None
+) -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import promote_orphan_h4_headings
+
+    assert promote_orphan_h4_headings(markdown) == expected
+
+
+def test_promote_orphan_h4_headings_strips_duplicate_section_title_first() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import promote_orphan_h4_headings
+
+    assert (
+        promote_orphan_h4_headings(
+            "## 收入分析\n\n#### 门诊收入\n\n正文\n\n#### 住院收入\n",
+            expected_section_title="收入分析",
+        )
+        == "### 门诊收入\n\n正文\n\n### 住院收入\n"
+    )
+
+
+def test_promote_orphan_h4_headings_returns_none_for_invalid_heading_levels() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import promote_orphan_h4_headings
+
+    assert promote_orphan_h4_headings("## 其他标题\n\n#### 门诊收入\n") is None

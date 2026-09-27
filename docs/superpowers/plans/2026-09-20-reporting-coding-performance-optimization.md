@@ -10,7 +10,7 @@
 
 | 配置或阶段 | 当前约定 |
 | --- | --- |
-| Coding | 默认 low；首轮思考保持开启 |
+| Coding | 2026-09-27 起默认 high、失败恢复 max；temperature/top_p 按最终路由模型取厂商推荐值（DeepSeek-V4 1.0/0.95，Qwen 0.6/0.95），未知模型沿用继承配置；首轮思考保持开启 |
 | `_run_planner` 路径的 Workflow planner | 可配置 low/high/max；默认 high；启用思考的首轮使用配置值 |
 | 请求标准化、提纲等初始 off 阶段 | 保留 off，不因 planner 配置 low 而开启思考 |
 | 失败恢复 | 命中既有恢复条件时仍采用阶段 high/max 策略；不增加重试次数 |

@@ -987,6 +987,9 @@ class RuntimePlanningMixin:
         previous_output: dict[str, Any] | None = None
         allowed_paths: tuple[str, ...] = ()
         outline: ReportOutline | None = None
+        ordered_analysis_ids = tuple(item.analysis_id for item in detailed_plan.analyses)
+        last_proposal: ReportOutlineProposal | None = None
+        reference_corrections = 0
         call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
@@ -1025,29 +1028,27 @@ class RuntimePlanningMixin:
                     "issues": validation_issues,
                 }
                 continue
-            assert isinstance(output, ReportOutlineProposal)
-            issues: list[dict[str, Any]] = []
-            if output.report_type != envelope.report_type:
-                issues.append(
-                    {
-                        "path": "reportType",
-                        "rejectedValue": output.report_type,
-                        "allowedValues": [envelope.report_type],
-                        "reason": "提纲报告类型必须与已确认请求一致",
-                    }
+            except ReportingError as error:
+                # 共享预算耗尽或超时：已有结构有效的提纲时交给下方确定性兜底。
+                if error.code not in _PLANNER_MODEL_EXHAUSTED_CODES or last_proposal is None:
+                    raise
+                loguru_logger.bind(error_code=error.code, attempt=attempt).warning(
+                    "report_outline_model_path_exhausted"
                 )
-            if issues:
-                previous_output = output.model_dump(mode="json", by_alias=True)
-                allowed_paths = tuple(str(item["path"]) for item in issues)
-                validation_feedback = {
-                    "code": "report_outline_invalid",
-                    "summary": "报告提纲违反动态章节契约",
-                    "issues": issues,
-                }
-                continue
+                break
+            assert isinstance(output, ReportOutlineProposal)
+            last_proposal = output
+            # 冻结校验失败已回灌过一次时，模型仍无法修正的引用走确定性兜底。
+            output = _repair_outline_proposal(
+                output,
+                report_type=envelope.report_type,
+                ordered_analysis_ids=ordered_analysis_ids,
+                fallback=reference_corrections >= 1,
+            )
             try:
                 outline = freeze_outline(output, analyses=detailed_plan.analyses)
             except ValueError as error:
+                reference_corrections += 1
                 previous_output = output.model_dump(mode="json", by_alias=True)
                 # freeze_outline 会再次校验服务端生成的稳定提纲。Pydantic 错误必须
                 # 保留真实顶层字段，否则 assumptions 失败却只授权修改 sections，
@@ -1066,6 +1067,19 @@ class RuntimePlanningMixin:
                 }
                 continue
             break
+        if outline is None and last_proposal is not None:
+            try:
+                outline = freeze_outline(
+                    _repair_outline_proposal(
+                        last_proposal,
+                        report_type=envelope.report_type,
+                        ordered_analysis_ids=ordered_analysis_ids,
+                        fallback=True,
+                    ),
+                    analyses=detailed_plan.analyses,
+                )
+            except ValueError:
+                outline = None
         if outline is None:
             raise ReportingError(
                 "report_outline_invalid",
@@ -1419,14 +1433,29 @@ class RuntimePlanningMixin:
                         "不返回补丁、解释或 Markdown"
                     ),
                 }
-            output = await self._run_planner(
-                self._sql_agent,
-                payload,
-                run_context,
-                call_budget=call_budget,
-                attempt=min(attempt - 1, 1),
-                failure_kind="sql_validation_failure" if validation_feedback is not None else None,
-            )
+            try:
+                output = await self._run_planner(
+                    self._sql_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                    attempt=min(attempt - 1, 1),
+                    failure_kind=(
+                        "sql_validation_failure" if validation_feedback is not None else None
+                    ),
+                )
+            except ReportingError as error:
+                # 共享调用预算耗尽或结构化输出超时时，模型路径已无法产出结果；必须落到
+                # 下方确定性编译兜底，而不是绕过兜底让整条报表失败。
+                if error.code not in _PLANNER_MODEL_EXHAUSTED_CODES:
+                    raise
+                loguru_logger.bind(error_code=error.code, attempt=attempt).warning(
+                    "report_sql_model_path_exhausted"
+                )
+                if validation_feedback is None:
+                    validation_feedback = {"code": error.code, "summary": error.message}
+                approved = None
+                break
             assert isinstance(output, GeneratedQueryBatch)
             approved, issues = _approve_generated_queries(
                 output,
@@ -1493,6 +1522,82 @@ class RuntimePlanningMixin:
             item.model_dump(mode="json", by_alias=True) for item in approved
         ]
         return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
+
+
+def _repair_outline_proposal(
+    proposal: ReportOutlineProposal,
+    *,
+    report_type: str,
+    ordered_analysis_ids: tuple[str, ...],
+    fallback: bool = False,
+) -> ReportOutlineProposal:
+    """确定性修复提纲中可由已确认事实唯一决定的部分，省去模型往返（软告警）。
+
+    - reportType 已由确认请求冻结，直接覆盖；
+    - 恰有一个未注册 analysisId 且恰有一个遗漏的已注册 analysisId 时原位替换，
+      保留模型给出的章节归属；
+    - 没有遗漏时，未注册 analysisId 只是多余引用，剔除（剔空的章节移除）；
+    - 其余歧义交给模型纠错。fallback=True 时（模型已获得纠错机会或预算耗尽）剔除
+      剩余未注册 analysisId，并把遗漏项按分析计划顺序归入末章。
+    """
+
+    registered = set(ordered_analysis_ids)
+    payload = proposal.model_dump(mode="json", by_alias=True)
+    repairs: list[str] = []
+    if payload["reportType"] != report_type:
+        payload["reportType"] = report_type
+        repairs.append("report_type")
+    referenced = {item for section in payload["sections"] for item in section["analysisIds"]}
+    unknown = [
+        item
+        for section in payload["sections"]
+        for item in section["analysisIds"]
+        if item not in registered
+    ]
+    missing = [item for item in ordered_analysis_ids if item not in referenced]
+    if len(unknown) == 1 and len(missing) == 1:
+        substitution = {unknown[0]: missing[0]}
+        payload["sections"] = [
+            {
+                **section,
+                "analysisIds": [substitution.get(item, item) for item in section["analysisIds"]],
+            }
+            for section in payload["sections"]
+        ]
+        repairs.append("unknown_analysis_id_substituted")
+        unknown, missing = [], []
+    if unknown and (fallback or not missing):
+        payload["sections"] = [
+            {
+                **section,
+                "analysisIds": [item for item in section["analysisIds"] if item in registered],
+            }
+            for section in payload["sections"]
+        ]
+        repairs.append("unknown_analysis_id_dropped")
+    if missing and fallback:
+        # 先归入末章再移除空章节：全部引用都未注册时，末章仍可承接遗漏项。
+        last = payload["sections"][-1]
+        payload["sections"][-1] = {**last, "analysisIds": [*last["analysisIds"], *missing]}
+        repairs.append("missing_analysis_assigned")
+    payload["sections"] = [section for section in payload["sections"] if section["analysisIds"]]
+    if not repairs or not payload["sections"]:
+        return proposal
+    try:
+        repaired = ReportOutlineProposal.model_validate(payload)
+    except ValidationError:
+        return proposal
+    loguru_logger.bind(
+        repair_types=repairs,
+        unknown_analysis_ids=unknown,
+        missing_analysis_ids=missing if fallback else [],
+    ).warning("report_outline_proposal_repaired")
+    return repaired
+
+
+_PLANNER_MODEL_EXHAUSTED_CODES = frozenset(
+    {"report_phase_output_invalid", "report_structured_output_timeout"}
+)
 
 
 def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | None:
@@ -2137,6 +2242,7 @@ def _data_understanding_result(
     else:
         raw_output = output
 
+    raw_output = _repair_data_understanding_tables(raw_output, snapshots)
     plan: DataUnderstandingPlan | None = None
     structural_issues: list[dict[str, Any]] = []
     try:
@@ -2159,6 +2265,61 @@ def _data_understanding_result(
         "issues": issues,
     }
     return None, raw_output, feedback
+
+
+def _repair_data_understanding_tables(
+    raw_output: Any,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> Any:
+    """确定性修复可唯一定位的表引用，省去模型往返（软告警）。
+
+    - table 大小写不同或 sourceId 写错，但 database.table 在全部输入 Schema 中
+      唯一时，改写为规范 sourceId 与 table；
+    - 同一 sourceId/table 被重复选择时保留首次出现的条目。
+    无法唯一定位的引用保持原样，由语义校验回灌模型纠错。
+    """
+
+    if not isinstance(raw_output, dict) or not isinstance(raw_output.get("tables"), list):
+        return raw_output
+    canonical: dict[str, list[tuple[str, str]]] = {}
+    for reference in dict.fromkeys(
+        (item.source_id, item.table) for item in _table_references(snapshots)
+    ):
+        canonical.setdefault(reference[1].lower(), []).append(reference)
+    available = {
+        (source_id, table.lower()) for matches in canonical.values() for source_id, table in matches
+    }
+    repairs: set[str] = set()
+    selected: set[tuple[str, str]] = set()
+    tables: list[Any] = []
+    for raw_table in raw_output["tables"]:
+        if not isinstance(raw_table, dict):
+            tables.append(raw_table)
+            continue
+        source_id = raw_table.get("sourceId")
+        table = raw_table.get("table")
+        if not isinstance(source_id, str) or not isinstance(table, str):
+            tables.append(raw_table)
+            continue
+        matches = canonical.get(table.lower(), [])
+        if (source_id, table.lower()) in available:
+            matches = [item for item in matches if item[0] == source_id]
+        if len(matches) == 1 and matches[0] != (source_id, table):
+            source_id, table = matches[0]
+            raw_table = {**raw_table, "sourceId": source_id, "table": table}
+            repairs.add("table_reference")
+        key = (source_id, table.lower())
+        if key in available and key in selected:
+            repairs.add("duplicate_table")
+            continue
+        selected.add(key)
+        tables.append(raw_table)
+    if not repairs:
+        return raw_output
+    loguru_logger.bind(repair_types=sorted(repairs)).warning(
+        "report_data_understanding_tables_repaired"
+    )
+    return {**raw_output, "tables": tables}
 
 
 def _structure_validation_issue(

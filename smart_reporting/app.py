@@ -496,6 +496,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
                 and settings.report_public_base_url.startswith("https://")
             ),
             allowed_origin=settings.report_public_base_url,
+            static_dir=settings.report_editor_static_dir,
         )
     )
     application.include_router(create_quality_warning_router())

@@ -453,6 +453,38 @@ def validate_report_draft_blocks(
                 )
 
 
+def promote_orphan_h4_headings(
+    markdown: str,
+    *,
+    expected_section_title: str | None = None,
+) -> str | None:
+    """章节尚无 H3 时，把当前 block 中先于首个 H3 的全部 H4 提升为 H3。
+
+    H4 缺少父标题是纯层级错误，由服务端修正可省去一次模型重写。模型把本应并列的
+    小节都写成 H4 时，只提升第一个会把其余 H4 错挂成它的子标题，因此首个 H3 之前的
+    H4 一并提升。首块开头与章节同名的 H1/H2 与校验、装配一致先行剥离。只改写
+    CommonMark 解析出的真实标题行，围栏内容不受影响；标题协议无效或没有可提升的
+    标题时返回 None，交回模型纠错。
+    """
+
+    if expected_section_title is not None:
+        markdown, _heading_removed = _strip_duplicate_section_heading(
+            markdown, expected_title=expected_section_title
+        )
+    try:
+        headings = _validated_block_headings(markdown)
+    except ReportingError:
+        return None
+    lines = markdown.splitlines(keepends=True)
+    promoted = False
+    for level, line_index, _match, _markdown_title, _title in headings:
+        if level == 3:
+            break
+        lines[line_index] = lines[line_index][1:]
+        promoted = True
+    return "".join(lines) if promoted else None
+
+
 def _number_block_headings(
     markdown: str,
     *,

@@ -31,6 +31,7 @@ from ...integrations.model_config import is_dashscope_endpoint
 from ...runtime.observability import duration_ms as elapsed_ms
 from ..model_policy import (
     current_reporting_thinking_decision,
+    reporting_coding_sampling,
     resolve_reporting_input_token_hard_cap,
 )
 from ..models import ReportingError
@@ -1161,6 +1162,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         model_route = reporting_model_route_from_run_context(current_reporting_run_context())
         if model_route is not None:
             _, request_model.id = model_route
+        # 采样参数按最终路由模型取厂商推荐值；未知模型沿用继承配置。
+        sampling = reporting_coding_sampling(request_model.id)
+        if sampling is not None:
+            request_model.temperature, request_model.top_p = sampling
         # 仅自动启用真实探针通过的 endpoint/model；其他部署保留显式配置。
         probed_reasoning_route = urlsplit(
             str(request_model.base_url or "")

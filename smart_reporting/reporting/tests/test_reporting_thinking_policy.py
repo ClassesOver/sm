@@ -119,8 +119,7 @@ def test_initial_thinking_budget_matrix(operation: str, complexity: str, budget:
 
     assert decision.thinking_budget == budget
     assert decision.enabled is (budget > 0)
-    expected_effort = "low" if operation in {"analysis_script", "visualization_script"} else "high"
-    assert decision.reasoning_effort == (expected_effort if budget else None)
+    assert decision.reasoning_effort == ("high" if budget else None)
     assert decision.reason == ("initial_policy" if budget else "initial_off")
 
 
@@ -136,12 +135,12 @@ def test_initial_thinking_budget_matrix(operation: str, complexity: str, budget:
         ("analysis_planning", "schema_failure", 4096, "high"),
         ("analysis_evidence", "evidence_incomplete", 6144, "max"),
         ("analysis_evidence", "fact_incomplete", 6144, "max"),
-        ("analysis_script", "python_compile_failure", 2048, "high"),
-        ("analysis_script", "python_execution_failure", 2048, "high"),
+        ("analysis_script", "python_compile_failure", 2048, "max"),
+        ("analysis_script", "python_execution_failure", 2048, "max"),
         ("visualization_plan", "schema_failure", 4096, "high"),
-        ("visualization_script", "python_compile_failure", 4096, "high"),
-        ("visualization_script", "python_execution_failure", 4096, "high"),
-        ("visualization_script", "visual_review_failure", 8192, "high"),
+        ("visualization_script", "python_compile_failure", 4096, "max"),
+        ("visualization_script", "python_execution_failure", 4096, "max"),
+        ("visualization_script", "visual_review_failure", 8192, "max"),
         ("section_planning", "schema_failure", 2048, "high"),
         ("section_generation", "schema_failure", 2048, "high"),
     ],
@@ -264,3 +263,20 @@ def test_thinking_log_contains_only_stable_decision_fields(monkeypatch) -> None:
             ),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        ("deepseek-v4-flash-0731", (1.0, 0.95)),
+        ("DeepSeek-V4-Flash", (1.0, 0.95)),
+        ("qwen3.8-flash", (0.6, 0.95)),
+        ("vendor/qwen3.6-35b-a3b", (0.6, 0.95)),
+        ("unknown-model", None),
+        (None, None),
+    ],
+)
+def test_coding_sampling_follows_vendor_recommendation(model_id, expected) -> None:
+    from smart_reporting.reporting.model_policy import reporting_coding_sampling
+
+    assert reporting_coding_sampling(model_id) == expected

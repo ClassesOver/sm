@@ -83,15 +83,16 @@ _RECOVERY_THINKING_BUDGETS: dict[
         "fact_incomplete": (6144, "max"),
     },
     "analysis_summary": {"schema_failure": (4096, "high")},
+    # Coding 失败恢复升级到 max：DeepSeek-V4-Flash-0731 官方 Code Agent 评测使用 max。
     "analysis_script": {
-        "python_compile_failure": (2048, "high"),
-        "python_execution_failure": (2048, "high"),
+        "python_compile_failure": (2048, "max"),
+        "python_execution_failure": (2048, "max"),
     },
     "visualization_plan": {"schema_failure": (4096, "high")},
     "visualization_script": {
-        "python_compile_failure": (4096, "high"),
-        "python_execution_failure": (4096, "high"),
-        "visual_review_failure": (8192, "high"),
+        "python_compile_failure": (4096, "max"),
+        "python_execution_failure": (4096, "max"),
+        "visual_review_failure": (8192, "max"),
     },
     "section_planning": {"schema_failure": (2048, "high")},
     "section_generation": {"schema_failure": (2048, "high")},
@@ -202,9 +203,9 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
         budget_source[request.complexity] if isinstance(budget_source, dict) else budget_source
     )
     budget = initial_budget
-    effort: ReportingReasoningEffort = request.reasoning_effort or (
-        "low" if request.operation in {"analysis_script", "visualization_script"} else "high"
-    )
+    # Coding 首轮与其他阶段统一使用 high（百炼 deepseek-v4-flash-0731 默认档位）；
+    # 快速收敛优先于单轮推理耗时，失败恢复再升级到 max。
+    effort: ReportingReasoningEffort = request.reasoning_effort or "high"
     reason = "initial_policy" if budget else "initial_off"
 
     recovery = _RECOVERY_THINKING_BUDGETS.get(request.operation, {}).get(
@@ -292,6 +293,22 @@ def reporting_model_output_token_limit(model_id: str | None) -> int | None:
         return 64 * 1024
     if family.startswith("deepseek-v4"):
         return 128 * 1024
+    return None
+
+
+def reporting_coding_sampling(model_id: str | None) -> tuple[float, float] | None:
+    """返回 Coding Agent 按模型族采用的厂商推荐 (temperature, top_p)，未知模型不推测。
+
+    Coding 始终运行在思考模式：DeepSeek-V4-Flash 官方推荐智能体场景 temperature=1.0、
+    top_p=0.95（Code Agent 评测同配置）；Qwen 精确编码推荐 temperature=0.6、top_p=0.95，
+    百炼 qwen3.8-flash 思考模式也会把更低温度自动抬到 0.6。
+    """
+
+    family = str(model_id or "").strip().lower().rsplit("/", 1)[-1]
+    if family.startswith("deepseek-v4"):
+        return 1.0, 0.95
+    if family.startswith("qwen"):
+        return 0.6, 0.95
     return None
 
 

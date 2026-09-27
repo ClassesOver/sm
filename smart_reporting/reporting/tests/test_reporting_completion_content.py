@@ -1,3 +1,5 @@
+import pytest
+
 from smart_reporting.reporting.agent import _completed_report_content
 
 
@@ -74,6 +76,16 @@ def test_completed_report_content_falls_back_on_bad_template() -> None:
         "[下载 PDF](https://reports.example/report.pdf) · "
         "[下载 Word](https://reports.example/report.docx)"
     )
+
+
+@pytest.mark.parametrize("template", ["# {0}", "# {report_title.missing}", "# {report_title[key]}"])
+def test_completed_report_content_falls_back_on_positional_or_attribute_template(
+    template: str,
+) -> None:
+    content = _completed_report_content(_completed_payload(), template=template)
+
+    assert content is not None
+    assert content.startswith("## 报表已生成\n\n### 年度运营分析报告")
 
 
 def test_completed_report_content_uses_report_id_when_title_missing() -> None:

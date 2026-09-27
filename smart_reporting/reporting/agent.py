@@ -204,6 +204,29 @@ _REPORT_MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error",
     default=None,
 )
+
+
+class ReportingResponseValidationError(ValueError):
+    """领域校验失败越过 Agno run 边界时的脱敏替身。
+
+    Agno 会把 run 异常 str() 写入 ERROR 日志并持久化到 RunOutput.content；pydantic
+    的默认错误文本携带 input_value，会把模型候选中的业务数据带出进程。原始
+    ValidationError 已由 _record_report_run_error 记录，结构化执行器仍据此纠错。
+    """
+
+    def __init__(self, error: ValidationError) -> None:
+        issues = error.errors(include_url=False, include_context=False, include_input=False)
+        summary = ", ".join(
+            f"{'.'.join(str(part) for part in item.get('loc', ())) or '$'}:{item.get('type')}"
+            for item in issues[:8]
+        )
+        if len(issues) > 8:
+            summary += f", …(+{len(issues) - 8})"
+        super().__init__(
+            f"结构化响应未通过 {error.title} 校验（{len(issues)} 项，已回灌纠错）：{summary}"
+        )
+
+
 _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
     "request_analysis_rework": {
         "analysisIds": ["analysis_001"],
@@ -1688,9 +1711,7 @@ def _completed_report_content(
     if report_title is None:
         return "## 报告发布未完成\n\n未获取到有效的报表名称，请重试报表发布。"
 
-    actions = _format_completion_actions(
-        {"editor": editor_url, "pdf": pdf_url, "word": word_url}
-    )
+    actions = _format_completion_actions({"editor": editor_url, "pdf": pdf_url, "word": word_url})
     if not actions:
         return "## 报告发布未完成\n\n未生成有效的编辑、PDF 或 Word 交付链接，请重试报表发布。"
 
@@ -1703,8 +1724,10 @@ def _completed_report_content(
             word_url=word_url or "",
             actions=actions,
         ).strip()
-    except (KeyError, ValueError):
-        # 自定义模板格式错误时回退到默认模板，保证始终有可读输出。
+    except (KeyError, ValueError, IndexError, AttributeError, TypeError) as error:
+        # 自定义模板格式错误（未知变量、位置参数、属性/索引访问、花括号不配对）时回退到
+        # 默认模板；报告已发布，不能因展示模板让 facade 回合失败。
+        logger.bind(error_type=type(error).__name__).warning("report_completion_template_invalid")
         return _DEFAULT_COMPLETION_TEMPLATE.format(
             report_title=report_title,
             editor_url=editor_url or "",
@@ -2068,6 +2091,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 planner_recorder.finish(error=error)
             if isinstance(error, Exception):
                 self._record_report_run_error(error)
+            if isinstance(error, ValidationError):
+                raise ReportingResponseValidationError(error) from error
             raise
 
     async def aresponse(
@@ -2111,6 +2136,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 planner_recorder.finish(error=error)
             if isinstance(error, Exception):
                 self._record_report_run_error(error)
+            if isinstance(error, ValidationError):
+                raise ReportingResponseValidationError(error) from error
             raise
 
     def response_stream(
@@ -2521,12 +2548,9 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
     _report_completion_template: str | None = None
 
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return (
-            _forced_review_response(
-                messages, completion_template=self._report_completion_template
-            )
-            or _without_facade_tool_preamble(super().invoke(messages, *args, **kwargs))
-        )
+        return _forced_review_response(
+            messages, completion_template=self._report_completion_template
+        ) or _without_facade_tool_preamble(super().invoke(messages, *args, **kwargs))
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         forced = _forced_review_response(
