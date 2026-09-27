@@ -1,0 +1,51 @@
+2026-09-27 12:30:55.259 | INFO     | smart_reporting.model_routing.observability:log_thinking_selection:29 - report_thinking_selected operation=section_planning complexity=standard enabled=True effort=high budget=2048 attempt=1 reason=retry_same_budget policy_version=v1
+2026-09-27 12:30:55.263 | DEBUG    | smart_reporting.reporting.structured_output.execution:_execute_mode:426 - report_structured_output_attempt
+2026-09-27 12:30:55.274 | DEBUG    | smart_reporting.context_management:project_with_metrics:1636 - context_projection_timing window_rebased=False message_count=2 projection_ms=6 count_calls=2 count_ms=5
+2026-09-27 12:31:40.880 | DEBUG    | smart_reporting.context_management:ainvoke:2053 - model_provider_request_completed mode=async model_id=deepseek-v4-flash-0731 host=token-plan.cn-beijing.maas.aliyuncs.com duration_ms=45605 failed=false
+2026-09-27 12:31:40.881 | WARNING  | smart_reporting.reporting.workflow.runtime.sections:_generate_section_in_blocks:1073 - report_section_plan_correction_requested
+2026-09-27 12:31:40.881 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_run_section_stage:773 - report_section_generation_started section_code=section_004 stage=plan attempt=1 failure_kind=-
+2026-09-27 12:31:40.885 | INFO     | smart_reporting.model_routing.observability:log_thinking_selection:29 - report_thinking_selected operation=section_planning complexity=standard enabled=True effort=high budget=2048 attempt=1 reason=retry_same_budget policy_version=v1
+2026-09-27 12:31:40.889 | DEBUG    | smart_reporting.reporting.structured_output.execution:_execute_mode:426 - report_structured_output_attempt
+2026-09-27 12:31:40.904 | DEBUG    | smart_reporting.context_management:project_with_metrics:1636 - context_projection_timing window_rebased=False message_count=2 projection_ms=9 count_calls=2 count_ms=7
+2026-09-27 12:31:56.224 | DEBUG    | smart_reporting.context_management:ainvoke:2053 - model_provider_request_completed mode=async model_id=deepseek-v4-flash-0731 host=token-plan.cn-beijing.maas.aliyuncs.com duration_ms=15320 failed=false
+ERROR   Error in Agent run: 17 validation errors for RenderSectionPlan
+sectionCode
+  Field required [type=missing, input_value={'claimId': 'claim_012', ...医用设备-SPECT/CT'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+blocks
+  Field required [type=missing, input_value={'claimId': 'claim_012', ...医用设备-SPECT/CT'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+claims
+  Field required [type=missing, input_value={'claimId': 'claim_012', ...医用设备-SPECT/CT'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+claimId
+  Extra inputs are not permitted [type=extra_forbidden, input_value='claim_012', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+metricCode
+  Extra inputs are not permitted [type=extra_forbidden, input_value='contract_amount', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+value
+  Extra inputs are not permitted [type=extra_forbidden, input_value='一般医用设备-SPECT...00万元，执行完毕', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+comparison
+  Extra inputs are not permitted [type=extra_forbidden, input_value=None, input_type=NoneType]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+managementQuestionRef
+  Extra inputs are not permitted [type=extra_forbidden, input_value='analysis_005', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+currentPeriod
+  Extra inputs are not permitted [type=extra_forbidden, input_value='2025年', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+comparisonPeriod
+  Extra inputs are not permitted [type=extra_forbidden, input_value=None, input_type=NoneType]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+comparisonType
+  Extra inputs are not permitted [type=extra_forbidden, input_value='none', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+citationIds
+  Extra inputs are not permitted [type=extra_forbidden, input_value=['citation_007'], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+chartIds
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+comparability
