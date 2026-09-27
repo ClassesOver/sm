@@ -4401,3 +4401,96 @@ def test_typed_period_skips_audit_timestamp_when_single_business_date_exists() -
     )
 
     assert normalized.tables[0].period_column == "biz_date"
+
+
+@pytest.mark.anyio
+async def test_sql_planner_budget_exhaustion_falls_back_to_compiler(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    compiled = object()
+    approved_query = SimpleNamespace(model_dump=lambda **_kwargs: {"queryId": "q1"})
+    monkeypatch.setattr(reporting_planning, "_planning_schema_payload", lambda *a, **k: [])
+    monkeypatch.setattr(
+        reporting_planning, "_compile_single_table_queries", lambda *a, **k: compiled
+    )
+
+    def approve(batch, **_kwargs):
+        assert batch is compiled
+        return (approved_query,), []
+
+    monkeypatch.setattr(reporting_planning, "_approve_generated_queries", approve)
+    planner_calls: list[int] = []
+
+    async def exhausted_planner(*_args, **_kwargs):
+        planner_calls.append(1)
+        raise ReportingError("report_phase_output_invalid", "结构化 Agent 业务调用已达到上限。")
+
+    state: dict[str, Any] = {reporting_planning.REPORT_DATA_REQUIREMENTS_STATE_KEY: []}
+    envelope = SimpleNamespace(
+        period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
+        period_windows=lambda: SimpleNamespace(public_dict=lambda: {}),
+    )
+    runtime = SimpleNamespace(
+        _state=lambda _context: state,
+        _data_shapes=lambda _context: (),
+        _snapshots=lambda _context: (),
+        _envelope=lambda _context: envelope,
+        _feedback=lambda _step_input: None,
+        _sources=lambda _context: (),
+        _run_planner=exhausted_planner,
+        _sql_agent=object(),
+    )
+
+    output = await reporting_planning.RuntimePlanningMixin.generate_query_candidates(
+        runtime, SimpleNamespace(), RunContext(run_id="run-1", session_id="session-1")
+    )
+
+    assert planner_calls == [1]
+    assert output.content == {"queries": [{"queryId": "q1"}]}
+
+
+def test_outline_proposal_repair_overwrites_report_type_and_drops_unknown_analyses() -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    proposal = ReportOutlineProposal.model_validate(
+        {
+            "reportType": "topic",
+            "title": "年度运营分析",
+            "sections": [
+                {"title": "收入", "analysisIds": ["analysis_001", "analysis_999"]},
+                {"title": "幻觉章节", "analysisIds": ["analysis_404"]},
+                {"title": "成本", "analysisIds": ["analysis_002"]},
+            ],
+        }
+    )
+
+    repaired = reporting_planning._repair_outline_proposal(
+        proposal,
+        report_type="comprehensive",
+        analysis_ids={"analysis_001", "analysis_002"},
+    )
+
+    assert repaired.report_type == "comprehensive"
+    assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
+        ("收入", ("analysis_001",)),
+        ("成本", ("analysis_002",)),
+    ]
+
+
+def test_outline_proposal_repair_keeps_valid_proposal_identity() -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    proposal = ReportOutlineProposal.model_validate(
+        {
+            "reportType": "comprehensive",
+            "title": "年度运营分析",
+            "sections": [{"title": "收入", "analysisIds": ["analysis_001"]}],
+        }
+    )
+
+    assert (
+        reporting_planning._repair_outline_proposal(
+            proposal, report_type="comprehensive", analysis_ids={"analysis_001"}
+        )
+        is proposal
+    )

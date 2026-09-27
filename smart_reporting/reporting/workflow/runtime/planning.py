@@ -1026,25 +1026,11 @@ class RuntimePlanningMixin:
                 }
                 continue
             assert isinstance(output, ReportOutlineProposal)
-            issues: list[dict[str, Any]] = []
-            if output.report_type != envelope.report_type:
-                issues.append(
-                    {
-                        "path": "reportType",
-                        "rejectedValue": output.report_type,
-                        "allowedValues": [envelope.report_type],
-                        "reason": "提纲报告类型必须与已确认请求一致",
-                    }
-                )
-            if issues:
-                previous_output = output.model_dump(mode="json", by_alias=True)
-                allowed_paths = tuple(str(item["path"]) for item in issues)
-                validation_feedback = {
-                    "code": "report_outline_invalid",
-                    "summary": "报告提纲违反动态章节契约",
-                    "issues": issues,
-                }
-                continue
+            output = _repair_outline_proposal(
+                output,
+                report_type=envelope.report_type,
+                analysis_ids={item.analysis_id for item in detailed_plan.analyses},
+            )
             try:
                 outline = freeze_outline(output, analyses=detailed_plan.analyses)
             except ValueError as error:
@@ -1419,14 +1405,29 @@ class RuntimePlanningMixin:
                         "不返回补丁、解释或 Markdown"
                     ),
                 }
-            output = await self._run_planner(
-                self._sql_agent,
-                payload,
-                run_context,
-                call_budget=call_budget,
-                attempt=min(attempt - 1, 1),
-                failure_kind="sql_validation_failure" if validation_feedback is not None else None,
-            )
+            try:
+                output = await self._run_planner(
+                    self._sql_agent,
+                    payload,
+                    run_context,
+                    call_budget=call_budget,
+                    attempt=min(attempt - 1, 1),
+                    failure_kind=(
+                        "sql_validation_failure" if validation_feedback is not None else None
+                    ),
+                )
+            except ReportingError as error:
+                # 共享调用预算耗尽或结构化输出超时时，模型路径已无法产出结果；必须落到
+                # 下方确定性编译兜底，而不是绕过兜底让整条报表失败。
+                if error.code not in _SQL_MODEL_EXHAUSTED_CODES:
+                    raise
+                loguru_logger.bind(error_code=error.code, attempt=attempt).warning(
+                    "report_sql_model_path_exhausted"
+                )
+                if validation_feedback is None:
+                    validation_feedback = {"code": error.code, "summary": error.message}
+                approved = None
+                break
             assert isinstance(output, GeneratedQueryBatch)
             approved, issues = _approve_generated_queries(
                 output,
@@ -1493,6 +1494,48 @@ class RuntimePlanningMixin:
             item.model_dump(mode="json", by_alias=True) for item in approved
         ]
         return StepOutput(content={"queries": state[REPORT_APPROVED_QUERIES_STATE_KEY]})
+
+
+def _repair_outline_proposal(
+    proposal: ReportOutlineProposal,
+    *,
+    report_type: str,
+    analysis_ids: set[str],
+) -> ReportOutlineProposal:
+    """确定性修复提纲中可由已确认事实唯一决定的字段，省去模型往返（软告警）。
+
+    reportType 已由确认请求冻结，直接覆盖；章节引用的未注册 analysisId 剔除，
+    剔空的章节整体移除。遗漏的 analysisId 归属哪一章是语义选择，仍交给模型纠错。
+    """
+
+    repairs: list[str] = []
+    payload = proposal.model_dump(mode="json", by_alias=True)
+    if payload["reportType"] != report_type:
+        payload["reportType"] = report_type
+        repairs.append("report_type")
+    sections = []
+    for section in payload["sections"]:
+        known = [item for item in section["analysisIds"] if item in analysis_ids]
+        if len(known) != len(section["analysisIds"]):
+            repairs.append("unknown_analysis_id")
+        if known:
+            sections.append({**section, "analysisIds": known})
+    if not repairs or not sections:
+        return proposal
+    payload["sections"] = sections
+    try:
+        repaired = ReportOutlineProposal.model_validate(payload)
+    except ValidationError:
+        return proposal
+    loguru_logger.bind(repair_types=sorted(set(repairs))).warning(
+        "report_outline_proposal_repaired"
+    )
+    return repaired
+
+
+_SQL_MODEL_EXHAUSTED_CODES = frozenset(
+    {"report_phase_output_invalid", "report_structured_output_timeout"}
+)
 
 
 def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | None:
