@@ -31,6 +31,7 @@ from smart_reporting.reporting.delivery.publishing import (
     ReportDownloadAccessLogFilter,
     ReportDownloadGrant,
 )
+from smart_reporting.reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,
@@ -363,6 +364,7 @@ async def test_editor_document_api_binds_cookie_to_report_revision() -> None:
         "markdown": "# 报告\n",
         "sha256": "a" * 64,
         "csrfToken": loaded.json()["csrfToken"],
+        "visualTheme": REPORT_VISUAL_THEME,
     }
     assert len(loaded.json()["csrfToken"]) >= 32
     assert mismatched.status_code == 404
