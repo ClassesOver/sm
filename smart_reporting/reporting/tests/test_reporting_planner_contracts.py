@@ -4526,7 +4526,8 @@ def test_outline_repair_fallback_drops_unknowns_and_assigns_missing_to_last_sect
     )
 
     assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
-        ("收入", ("analysis_001", "analysis_002", "analysis_003")),
+        ("收入", ("analysis_001",)),
+        ("效率", ("analysis_002", "analysis_003")),
     ]
 
 
@@ -4699,3 +4700,14 @@ async def test_outline_budget_exhaustion_uses_last_valid_proposal(monkeypatch) -
 
     assert len(calls) == 2
     assert output.content.sections[-1].analysis_ids == ("analysis_001", "analysis_002")
+
+
+def test_outline_repair_fallback_keeps_last_section_when_every_reference_is_unknown() -> None:
+    repaired = _repair_outline(
+        _outline_proposal(("成本", ["analysis_098"]), ("效率", ["analysis_099"])),
+        fallback=True,
+    )
+
+    assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
+        ("效率", ("analysis_001", "analysis_002", "analysis_003")),
+    ]

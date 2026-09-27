@@ -868,8 +868,8 @@ def _section_plan_reference_issues(
     return issues
 
 
-# 服务端先确定性修复可唯一推断的引用，模型只负责剩余歧义；两轮后仍无效的 claim
-# 被剔除，避免单条结论拖垮整章（原先 5 轮纠错后整章失败并从头重试）。
+# 服务端先确定性修复可唯一推断的引用，模型只负责剩余歧义；两轮后仍未解决的引用
+# 交给渲染工具软告警处理，避免单条结论拖垮整章（原先 5 轮纠错后整章失败并从头重试）。
 _MAX_PLAN_REFERENCE_CORRECTIONS = 2
 
 
@@ -972,8 +972,8 @@ def _repair_section_plan_references(
 
     只做无歧义修复并软告警：metricCode 写成指标名称或大小写不同的代码；
     managementQuestionRef 不在目录内但目录唯一或 metricCode 唯一归属；
-    citationIds/chartIds 混入当前 WorkItem 外的 ID 时剔除，citation 剔空后仅在
-    所属 analysis 恰有一个 citation 时回填。单个 claim 修复后不满足提交契约时
+    citationIds/chartIds 混入当前 WorkItem 外的 ID 时剔除，citation 剔空后优先使用
+    已绑定冻结图表的 citation，否则仅在所属 analysis 恰有一个 citation 时回填。单个 claim 修复后不满足提交契约时
     保持原样，交给纠错循环。
     """
 
@@ -985,6 +985,7 @@ def _repair_section_plan_references(
     known_questions = {item.ref for item in work_item.management_question_catalog}
     known_citations = {item.citation_id for item in work_item.citations}
     known_charts = {item.chart_id for item in work_item.charts}
+    chart_citations = {item.chart_id: item.citation_ids for item in work_item.charts}
     analysis_citations = {
         item.analysis_id: tuple(
             dict.fromkeys(cid for cid in item.citation_ids if cid in known_citations)
@@ -1013,6 +1014,17 @@ def _repair_section_plan_references(
             claim_repairs.add("chart_ids")
         citation_ids = [item for item in claim.citation_ids if item in known_citations]
         if not citation_ids:
+            # 与渲染工具一致：已绑定冻结图表的 citation 是可验证锚点；否则仅在所属
+            # analysis 恰有一个 citation 时回填。
+            citation_ids = list(
+                dict.fromkeys(
+                    citation_id
+                    for chart_id in chart_ids
+                    for citation_id in chart_citations[chart_id]
+                    if citation_id in known_citations
+                )
+            )
+        if not citation_ids:
             owned = analysis_citations.get(payload["managementQuestionRef"], ())
             citation_ids = list(owned) if len(owned) == 1 else []
         if citation_ids and citation_ids != list(claim.citation_ids):
@@ -1034,48 +1046,12 @@ def _repair_section_plan_references(
     return decision.model_copy(update={"claims": tuple(repaired_claims)})
 
 
-_PLAN_CLAIM_ISSUE_PATH = re.compile(r"^\$\.claims\[(\d+)\]")
+def _has_verifiable_anchor(claim: SectionClaimSubmission, work_item: SectionWorkItem) -> bool:
+    """claim 是否仍有渲染工具可接受的事实锚点（已知 citation 或已知图表）。"""
 
-
-def _prune_unresolved_plan_claims(
-    decision: RenderSectionPlan,
-    issues: Sequence[Mapping[str, Any]],
-    work_item: SectionWorkItem,
-) -> RenderSectionPlan | None:
-    """纠错预算耗尽后剔除仍引用 WorkItem 外 ID 的 claim，保住其余有效规划。
-
-    引用问题属于单条结论的语义缺陷：删除该 claim 及其 block 引用并软告警，比整章
-    重新规划更快收敛；剔除后没有可渲染的 block 或 claim 时返回 None 失败关闭。
-    """
-
-    invalid_indexes = {
-        int(match.group(1))
-        for item in issues
-        if (match := _PLAN_CLAIM_ISSUE_PATH.match(str(item.get("path", "")))) is not None
-    }
-    invalid_ids = {
-        decision.claims[index].claim_id for index in invalid_indexes if index < len(decision.claims)
-    }
-    if not invalid_ids:
-        return None
-    payload = decision.model_dump(mode="json", by_alias=True)
-    payload["claims"] = [item for item in payload["claims"] if item["claimId"] not in invalid_ids]
-    blocks = []
-    for block in payload["blocks"]:
-        claim_ids = [item for item in block["claimIds"] if item not in invalid_ids]
-        if claim_ids:
-            blocks.append({**block, "claimIds": claim_ids})
-    payload["blocks"] = blocks
-    try:
-        pruned = RenderSectionPlan.model_validate(payload)
-    except ValidationError:
-        return None
-    loguru_logger.bind(
-        section_code=work_item.section_code,
-        pruned_claim_ids=sorted(invalid_ids),
-        issue_types=sorted({str(item.get("type")) for item in issues}),
-    ).warning("report_section_plan_unresolved_claims_pruned")
-    return pruned
+    known_citations = {item.citation_id for item in work_item.citations}
+    known_charts = {item.chart_id for item in work_item.charts}
+    return bool(set(claim.citation_ids) & known_citations or set(claim.chart_ids) & known_charts)
 
 
 def _backfill_claim_management_question_refs(candidate: Any, work_item: SectionWorkItem) -> Any:
@@ -1227,14 +1203,20 @@ async def _generate_section_in_blocks(
         if not reference_issues:
             break
         if plan_call > _MAX_PLAN_REFERENCE_CORRECTIONS:
-            pruned = _prune_unresolved_plan_claims(decision, reference_issues, work_item)
-            if pruned is None:
+            # 纠错预算耗尽后交给渲染工具按软告警契约处理：未知指标/管理问题保留并告警，
+            # 未知 citation/chart 解绑，失去全部 claim 的 block 并入相邻 block，告警写入
+            # 章节产物。只有没有任何 claim 保留事实锚点时才提前失败，避免白跑正文生成。
+            if not any(_has_verifiable_anchor(claim, work_item) for claim in decision.claims):
                 raise ReportingError(
                     "report_section_plan_reference_invalid",
                     "章节规划引用了当前 WorkItem 外的指标、管理问题、citation 或 chart。",
                     details={"issues": reference_issues},
                 )
-            decision = pruned
+            loguru_logger.bind(
+                section_code=work_item.section_code,
+                issue_count=len(reference_issues),
+                issue_types=sorted({str(item["type"]) for item in reference_issues}),
+            ).warning("report_section_plan_references_unresolved")
             break
         previous_output = decision.model_dump(mode="json", by_alias=True)
         encoded_previous = json.dumps(

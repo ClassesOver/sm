@@ -79,3 +79,58 @@ def test_chart_semantics_conflict_only_unbinds_conflicting_charts() -> None:
         item for item in warnings if item["code"] == "report_section_claim_chart_semantics_conflict"
     )
     assert conflict["details"]["unboundChartIds"] == ["chart_002"]
+
+
+def test_entity_ratio_without_grains_is_downgraded_instead_of_omitted() -> None:
+    claims, warnings = RuntimeSectionsMixin._normalize_section_claims(
+        section_code="section_001",
+        claims=[
+            _claim(
+                citationIds=["citation_001"],
+                chartIds=[],
+                currentPeriod="2026-08",
+                conclusionType="entity_ratio",
+                aggregationGrain="department",
+            )
+        ],
+        work_item=_work_item(),
+    )
+
+    assert [claim.conclusion_type for claim in claims] == ["value"]
+    warning = next(
+        item for item in warnings if item["code"] == "report_section_claim_entity_grain_missing"
+    )
+    assert warning["details"]["claimId"] == "claim_001"
+
+
+def test_claimless_blocks_merge_into_neighbouring_block() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+
+    blocks = [
+        ReportDraftBlock(blockId="b1", markdown="### 收入\n\n首段。", claimIds=()),
+        ReportDraftBlock(
+            blockId="b2", markdown="第二段。", citationIds=("citation_001",), claimIds=("c1",)
+        ),
+        ReportDraftBlock(blockId="b3", markdown="第三段。", chartIds=("chart_001",), claimIds=()),
+    ]
+
+    merged, warnings = RuntimeSectionsMixin._merge_claimless_blocks("section_001", blocks)
+
+    assert [(block.block_id, block.markdown) for block in merged] == [
+        ("b2", "### 收入\n\n首段。\n\n第二段。\n\n第三段。")
+    ]
+    assert merged[0].chart_ids == ("chart_001",)
+    assert merged[0].claim_ids == ("c1",)
+    assert [item["details"]["blockId"] for item in warnings] == ["b1", "b3"]
+    assert {item["code"] for item in warnings} == {"report_section_block_claims_omitted"}
+
+
+def test_claimless_blocks_stay_when_no_block_keeps_a_claim() -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+
+    blocks = [ReportDraftBlock(blockId="b1", markdown="正文", claimIds=())]
+
+    merged, warnings = RuntimeSectionsMixin._merge_claimless_blocks("section_001", blocks)
+
+    assert merged == blocks
+    assert warnings == []

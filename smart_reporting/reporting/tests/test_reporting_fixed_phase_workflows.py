@@ -1378,6 +1378,55 @@ def test_section_plan_references_repaired_when_unambiguous() -> None:
     assert reporting_sections._section_plan_reference_issues(repaired, work_item) == []
 
 
+def test_section_plan_citations_fall_back_to_bound_chart_anchor() -> None:
+    base = _revenue_work_item()
+    work_item = base.model_copy(
+        update={
+            "citations": (
+                *base.citations,
+                SectionCitation(
+                    citationId="citation_002",
+                    datasetId="dataset_001",
+                    requirementId="requirement_002",
+                    snapshotHash="b" * 64,
+                ),
+            ),
+            "evidence": (
+                base.evidence[0].model_copy(
+                    update={"citation_ids": ("citation_001", "citation_002")}
+                ),
+            ),
+            "charts": (
+                AnalysisChart(
+                    chartId="chart_001",
+                    sourceFile=FileIdentity(path="charts/revenue.png", size=1024, sha256="c" * 64),
+                    title="2025年收入趋势",
+                    altText="2025年收入趋势图",
+                    citationIds=("citation_002",),
+                    metricCodes=("revenue",),
+                    currentPeriod="2025年",
+                    sourceDatasetId="dataset_001",
+                    aggregationGrain="month",
+                ),
+            ),
+        }
+    )
+    decision = RenderSectionPlan.model_validate(
+        {
+            "sectionCode": "section_001",
+            "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+            "claims": [
+                _plan_claim("claim_001", citationIds=["citation_999"], chartIds=["chart_001"])
+            ],
+        }
+    )
+
+    repaired = reporting_sections._repair_section_plan_references(decision, work_item)
+
+    assert repaired.claims[0].citation_ids == ("citation_002",)
+    assert reporting_sections._section_plan_reference_issues(repaired, work_item) == []
+
+
 def test_section_plan_references_keep_ambiguous_metric_for_model_correction() -> None:
     work_item = _revenue_work_item()
     decision = RenderSectionPlan.model_validate(
@@ -1397,8 +1446,10 @@ def test_section_plan_references_keep_ambiguous_metric_for_model_correction() ->
     ] == ["unknown_metric_code"]
 
 
-async def _generate_with_plan(monkeypatch, plan: dict, stages: list[str]):
-    work_item = _revenue_work_item()
+async def _generate_with_plan(
+    monkeypatch, plan: dict, stages: list[str], work_item: SectionWorkItem | None = None
+):
+    work_item = work_item or _revenue_work_item()
     evidence = SectionEvidenceBundle(
         sectionCode="section_001",
         files=(
@@ -1429,7 +1480,7 @@ async def _generate_with_plan(monkeypatch, plan: dict, stages: list[str]):
 
 
 @pytest.mark.anyio
-async def test_section_plan_prunes_unresolved_claims_after_correction_budget(
+async def test_section_plan_passes_unresolved_references_to_render_after_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stages: list[str] = []
@@ -1445,13 +1496,13 @@ async def test_section_plan_prunes_unresolved_claims_after_correction_budget(
 
     result = await _generate_with_plan(monkeypatch, plan, stages)
 
-    assert stages == ["plan", "plan", "plan", "block-1"]
-    assert [claim.claim_id for claim in result.claims] == ["claim_001"]
-    assert [block.claim_ids for block in result.blocks] == [("claim_001",)]
+    # 未知指标交给渲染工具保留并写入产物告警，而不是静默剔除结论。
+    assert stages == ["plan", "plan", "plan", "block-1", "block-2"]
+    assert [claim.claim_id for claim in result.claims] == ["claim_001", "claim_002"]
 
 
 @pytest.mark.anyio
-async def test_section_plan_fails_closed_when_every_claim_is_unresolved(
+async def test_section_plan_fails_closed_when_no_claim_keeps_an_anchor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stages: list[str] = []
@@ -1459,11 +1510,32 @@ async def test_section_plan_fails_closed_when_every_claim_is_unresolved(
         "kind": "render",
         "sectionCode": "section_001",
         "blocks": [{"blockId": "block_001", "objective": "利润", "claimIds": ["claim_001"]}],
-        "claims": [_plan_claim("claim_001", metricCode="profit")],
+        "claims": [_plan_claim("claim_001", citationIds=["citation_999"])],
     }
 
+    base = _revenue_work_item()
+    # 所属 analysis 拥有两个 citation，锚点无法唯一回填。
+    work_item = base.model_copy(
+        update={
+            "citations": (
+                *base.citations,
+                SectionCitation(
+                    citationId="citation_002",
+                    datasetId="dataset_001",
+                    requirementId="requirement_002",
+                    snapshotHash="b" * 64,
+                ),
+            ),
+            "evidence": (
+                base.evidence[0].model_copy(
+                    update={"citation_ids": ("citation_001", "citation_002")}
+                ),
+            ),
+        }
+    )
+
     with pytest.raises(ReportingError) as raised:
-        await _generate_with_plan(monkeypatch, plan, stages)
+        await _generate_with_plan(monkeypatch, plan, stages, work_item)
 
     assert raised.value.code == "report_section_plan_reference_invalid"
     assert stages == ["plan", "plan", "plan"]

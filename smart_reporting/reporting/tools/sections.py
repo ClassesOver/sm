@@ -218,6 +218,27 @@ class RuntimeSectionsMixin:
                 )
                 continue
 
+            conclusion_type = submission.conclusion_type
+            if conclusion_type == "entity_ratio" and (
+                submission.aggregation_grain is None or submission.entity_grain is None
+            ):
+                # 实体级比例缺少粒度声明时无法按实体比例口径校验；降级为普通数值/比较
+                # 结论并软告警，避免整条 claim 被省略、其正文 block 失去事实锚点。
+                conclusion_type = "comparison" if comparison_type != "none" else "value"
+                warnings.append(
+                    {
+                        "code": "report_section_claim_entity_grain_missing",
+                        "message": (
+                            "实体级比例 claim 缺少 aggregationGrain 或 entityGrain，"
+                            "已按普通结论类型保留。"
+                        ),
+                        "details": {
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                            "conclusionType": conclusion_type,
+                        },
+                    }
+                )
             try:
                 normalized_claim = SectionClaim(
                     claimId=submission.claim_id,
@@ -236,7 +257,7 @@ class RuntimeSectionsMixin:
                     citationIds=tuple(citation_ids),
                     chartIds=chart_ids,
                     comparability=comparability,
-                    conclusionType=submission.conclusion_type,
+                    conclusionType=conclusion_type,
                     aggregationGrain=submission.aggregation_grain,
                     entityGrain=submission.entity_grain,
                 )
@@ -258,6 +279,63 @@ class RuntimeSectionsMixin:
                 continue
             normalized.append(normalized_claim)
         return tuple(normalized), tuple(warnings)
+
+    @staticmethod
+    def _merge_claimless_blocks(
+        section_code: str,
+        blocks: list[ReportDraftBlock],
+    ) -> tuple[list[ReportDraftBlock], list[dict[str, Any]]]:
+        """把 claim 全部被省略的正文 block 并入相邻仍有 claim 的 block。
+
+        SectionArtifact 要求每个正文 block 至少引用一个 claim。个别 claim 因无可验证
+        citation 等原因被省略后，其 block 若整体失去 claim，会让整章以泛化参数错误
+        被拒绝并重新生成。按原顺序并入前一个（首块则并入后一个）有 claim 的 block，
+        正文、标题顺序与图表/citation 绑定均保留，并记录告警。没有任何 block 保留
+        claim 时原样返回，由既有降级/拒绝语义处理。
+        """
+
+        anchors = [index for index, block in enumerate(blocks) if block.claim_ids]
+        if not anchors or len(anchors) == len(blocks):
+            return blocks, []
+        groups: dict[int, list[int]] = {anchor: [anchor] for anchor in anchors}
+        warnings: list[dict[str, Any]] = []
+        for index, block in enumerate(blocks):
+            if block.claim_ids:
+                continue
+            previous = [anchor for anchor in anchors if anchor < index]
+            target = previous[-1] if previous else anchors[0]
+            groups[target].append(index)
+            warnings.append(
+                {
+                    "code": "report_section_block_claims_omitted",
+                    "message": "正文 block 的 claim 均已省略，正文已并入相邻 block。",
+                    "details": {
+                        "sectionCode": section_code,
+                        "blockId": block.block_id,
+                        "mergedIntoBlockId": blocks[target].block_id,
+                    },
+                }
+            )
+        merged: list[ReportDraftBlock] = []
+        for anchor in anchors:
+            ordered = [blocks[index] for index in sorted(groups[anchor])]
+            anchor_block = blocks[anchor]
+            merged.append(
+                ReportDraftBlock.model_validate(
+                    {
+                        "blockId": anchor_block.block_id,
+                        "markdown": "\n\n".join(block.markdown.strip("\n") for block in ordered),
+                        "citationIds": list(
+                            dict.fromkeys(item for block in ordered for item in block.citation_ids)
+                        ),
+                        "chartIds": list(
+                            dict.fromkeys(item for block in ordered for item in block.chart_ids)
+                        ),
+                        "claimIds": list(anchor_block.claim_ids),
+                    }
+                )
+            )
+        return merged, warnings
 
     @staticmethod
     def _require_analysis_rework_constraints(
@@ -425,12 +503,28 @@ class RuntimeSectionsMixin:
             work_item=work_item,
         )
         referenced_claim_ids = {claim_id for block in parsed_blocks for claim_id in block.claim_ids}
+        warning_items = list(claim_warnings)
+        unreferenced_claim_ids = [
+            claim.claim_id
+            for claim in normalized_claims
+            if claim.claim_id not in referenced_claim_ids
+        ]
+        if unreferenced_claim_ids:
+            warning_items.append(
+                {
+                    "code": "report_section_claim_unreferenced",
+                    "message": "章节 claim 未被任何正文 block 引用，已省略。",
+                    "details": {
+                        "sectionCode": section_code,
+                        "claimIds": unreferenced_claim_ids,
+                    },
+                }
+            )
         normalized_claims = tuple(
             claim for claim in normalized_claims if claim.claim_id in referenced_claim_ids
         )
         normalized_claim_ids = {claim.claim_id for claim in normalized_claims}
         normalized_blocks: list[ReportDraftBlock] = []
-        warning_items = list(claim_warnings)
         chart_owner: dict[str, str] = {}
         for block in parsed_blocks:
             unknown_claim_ids = set(block.claim_ids) - normalized_claim_ids
@@ -592,6 +686,15 @@ class RuntimeSectionsMixin:
                         },
                     }
                 )
+        normalized_blocks, merge_warnings = self._merge_claimless_blocks(
+            section_code, normalized_blocks
+        )
+        if merge_warnings:
+            warning_items.extend(merge_warnings)
+            validate_report_draft_blocks(
+                tuple(normalized_blocks),
+                expected_section_title=work_item.title,
+            )
         # 未知引用可以局部丢弃，但整章必须仍保留至少一个冻结 citation 作为事实锚点。
         # 这里在 SectionArtifact 结构校验前判断，避免 claims 全部因未知 citation 被省略
         # 时落成泛化的 Pydantic 错误，向模型返回稳定且可重试的领域错误码。

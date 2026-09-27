@@ -1567,19 +1567,20 @@ def _repair_outline_proposal(
         repairs.append("unknown_analysis_id_substituted")
         unknown, missing = [], []
     if unknown and (fallback or not missing):
-        sections = [
+        payload["sections"] = [
             {
                 **section,
                 "analysisIds": [item for item in section["analysisIds"] if item in registered],
             }
             for section in payload["sections"]
         ]
-        payload["sections"] = [section for section in sections if section["analysisIds"]]
         repairs.append("unknown_analysis_id_dropped")
-    if missing and fallback and payload["sections"]:
+    if missing and fallback:
+        # 先归入末章再移除空章节：全部引用都未注册时，末章仍可承接遗漏项。
         last = payload["sections"][-1]
         payload["sections"][-1] = {**last, "analysisIds": [*last["analysisIds"], *missing]}
         repairs.append("missing_analysis_assigned")
+    payload["sections"] = [section for section in payload["sections"] if section["analysisIds"]]
     if not repairs or not payload["sections"]:
         return proposal
     try:

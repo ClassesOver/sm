@@ -297,3 +297,19 @@ def test_informational_normalization_rules_keep_their_declared_subjects() -> Non
         rule = get_warning_rule(code)
         assert rule.subject_types == frozenset({"report", "section"})
         assert rule.disposition == "informational"
+
+
+def test_every_section_tool_warning_code_is_registered() -> None:
+    import re
+    from pathlib import Path
+
+    from smart_reporting.quality_warnings.policy import get_warning_rule
+
+    source = (Path(__file__).parents[1] / "reporting" / "tools" / "sections.py").read_text(
+        encoding="utf-8"
+    )
+    codes = set(re.findall(r'"code": "(report_[a-z_]+)"', source))
+
+    assert codes
+    for code in sorted(codes):
+        get_warning_rule(code)
