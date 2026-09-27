@@ -1470,6 +1470,9 @@ def test_section_block_stage_instructions_keep_heading_metadata_out_of_markdown(
     assert "citationIds、chartIds" in instructions
     assert "<sup>" in instructions
     assert "report_draft_heading_title_too_long" in instructions
+    assert "口径纪律" in instructions
+    assert "数据质量优先" in instructions
+    assert "发现—证据—管理动作" in instructions
 
 
 @pytest.mark.anyio

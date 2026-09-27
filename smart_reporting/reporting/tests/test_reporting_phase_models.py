@@ -78,6 +78,26 @@ def test_visualization_plan_accepts_zero_charts() -> None:
     assert VisualizationPlanDraft(charts=()).charts == ()
 
 
+def test_visualization_plan_limits_section_chart_count() -> None:
+    charts = tuple(
+        _chart(f"report/charts/chart-{index:03d}.png").model_copy(
+            update={"chart_id": f"chart_{index:03d}"}
+        )
+        for index in range(1, 4)
+    )
+
+    assert len(VisualizationPlanDraft(charts=charts).charts) == 3
+    with pytest.raises(ValidationError):
+        VisualizationPlanDraft(
+            charts=(
+                *charts,
+                _chart("report/charts/chart-004.png").model_copy(
+                    update={"chart_id": "chart_004"}
+                ),
+            )
+        )
+
+
 def test_visualization_plan_requires_charts_field() -> None:
     with pytest.raises(ValidationError):
         VisualizationPlanDraft()

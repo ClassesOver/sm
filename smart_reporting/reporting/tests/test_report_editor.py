@@ -1283,6 +1283,117 @@ async def test_editor_export_from_older_revision_link_reports_stale_revision(
 
 
 @pytest.mark.anyio
+async def test_editor_export_rebases_when_latest_revision_content_unchanged(
+    tmp_path: Path,
+) -> None:
+    """重复导出：最新 revision 内容与当前草稿一致时，自动以最新 revision 为基准，
+    不再报 report_editor_revision_stale。"""
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    markdown = "# 重复导出\n"
+    markdown_sha = hashlib.sha256(markdown.encode()).hexdigest()
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-3/report.md", markdown)
+
+    def revision_context(revision: int) -> ReportEditorContext:
+        return ReportEditorContext(
+            reportId="report-1",
+            revision=revision,
+            jobId=f"job-{revision}",
+            workflowRunId="report-1",
+            markdownPath=f"reports/revision-{revision}/report.md",
+            job={
+                "jobId": f"job-{revision}",
+                "render": {"pdf": {"path": f"reports/revision-{revision}/report.pdf"}},
+            },
+            scope=scope.as_state(),
+        )
+
+    state = SimpleNamespace(
+        state_version=4,
+        payload={
+            "reportEditorContexts": {
+                str(revision): revision_context(revision).model_dump(mode="json", by_alias=True)
+                for revision in (1, 2, 3)
+            }
+        }
+    )
+
+    rendered: list[str] = []
+
+    class ReportTools:
+        async def _render_report_pair(
+            self, job_id, markdown_path, output_path, *, artifact_manifest, run_context
+        ):
+            rendered.append(output_path)
+            await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")
+            word_path = str(Path(output_path).with_suffix(".docx"))
+            await workspace.awrite_bytes(scope.workspace_key, word_path, b"new-word")
+            stored = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
+            stored["render"] = {
+                **stored["render"],
+                "markdown": {
+                    "path": markdown_path,
+                    "size": len(markdown.encode()),
+                    "sha256": markdown_sha,
+                },
+            }
+            return {"status": "validated", "validation": {"ok": True}}
+
+    class StateRepository:
+        async def get(self, _run_id: str):
+            return state
+
+        async def apply(self, _run_id: str, command, *, expected_version: int):
+            state.payload.setdefault("reportEditorContexts", {})["4"] = command.payload["context"]
+
+    class Persistence:
+        async def persist(self, **values):
+            return None
+
+    class DownloadGrants:
+        async def issue(self, **values):
+            return "download-raw", ReportDownloadGrant(
+                grant_hash="d" * 64,
+                scope=values["scope"],
+                report_id=values["report_id"],
+                revision=values["revision"],
+                pdf_path=values["pdf_path"],
+                pdf_size=values["pdf_size"],
+                pdf_sha256=values["pdf_sha256"],
+                word_path=values["word_path"],
+                word_size=values["word_size"],
+                word_sha256=values["word_sha256"],
+                expires_at=datetime(2026, 10, 15, tzinfo=UTC),
+            )
+
+    class EditorGrants:
+        async def issue(self, _context):
+            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+
+    service = ReportEditorService(
+        state_repository=StateRepository(),
+        workspace_registry=registry,
+        workspace=workspace,
+        report_tools=ReportTools(),
+        artifact_persistence=Persistence(),
+        download_grants=DownloadGrants(),
+        editor_grants=EditorGrants(),
+        public_base_url="https://reports.example.com",
+    )
+
+    result = await service.export_revision(
+        revision_context(1),
+        expected_sha256=markdown_sha,
+    )
+
+    assert result["revision"] == 4
+    assert rendered == ["reports/revision-4/report.pdf"]
+
+
+@pytest.mark.anyio
 async def test_editor_export_maps_atomic_publish_race_to_revision_conflict(
     tmp_path: Path,
 ) -> None:

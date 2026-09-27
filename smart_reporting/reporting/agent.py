@@ -144,6 +144,7 @@ from .vision import ReportVisionReviewer
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 from .workflow.orchestration import current_planner_request_recorder
 from .workflow.repository import ReportingStateRepository
+from .workflow.runtime.phase_models import MAX_SECTION_CHART_COUNT
 
 _REPORT_FACADE_TOOL_NAMES = frozenset(
     {
@@ -2845,6 +2846,18 @@ def create_reporting_generator_agent(
         instructions.append(
             "每个 charts[].sourceDatasetId 必须逐字复制 allowedDatasetIds 中的一个值，不得使用"
             "数据集名称、文件名或自行生成的标识。"
+        )
+        instructions.append(
+            f"每章最多生成 {MAX_SECTION_CHART_COUNT} 张图；常规章节目标 2-{MAX_SECTION_CHART_COUNT} 张，"
+            "不要为每个分析、维度或证据表各配一张图；合并同质信息，删除弱相关或重复图，"
+            "每张图只表达一个明确管理问题并绑定可信数据。高质量图要求：标题明确表达核心结论，"
+            "坐标轴、单位、图例和数据标签完整，标签不重叠、不截断，系列与颜色克制，主信息突出。"
+        )
+        instructions.append(
+            "图表规划必须沿用同一 chart binding 的数据集、期间、单位和分子分母；"
+            "输入存在多个口径时，在 visualForm 或 warnings 中明确标注差异，禁止无标记混用。"
+            "若事实含未入账、字段为零或不可比告警，图表只能支持软告警，不能把缺失值补成零，"
+            "也不能仅凭相关变化命名为确定的因果驱动。"
         )
         if output_schema_name == "VisualizationPlanDraft":
             instructions.append(

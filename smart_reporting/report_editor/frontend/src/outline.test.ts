@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createOutlineController, namedOutlineItems, reorderMarkdownSections } from './outline'
+import { createOutlineController, displayOutlineText, namedOutlineItems, reorderMarkdownSections } from './outline'
+
+it('strips analysis binding markers from outline display text', () => {
+  expect(displayOutlineText('1. 收入规模与结构分析[[analysis:analysis_001]][[analysis:analysis_005]]'))
+    .toBe('1. 收入规模与结构分析')
+  expect(displayOutlineText('2. 工作量分析  [[analysis:analysis_002]]')).toBe('2. 工作量分析')
+  expect(displayOutlineText('3. 无绑定标记')).toBe('3. 无绑定标记')
+})
 
 it('drops empty or whitespace-only headings from the outline', () => {
   expect(

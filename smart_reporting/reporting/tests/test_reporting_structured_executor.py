@@ -378,6 +378,10 @@ def test_visualization_generator_explains_renderer_selection_for_each_mode() -> 
     assert "dataBindings" in instructions
     assert "dataDescriptors" in instructions
     assert "不得自行生成 factPath、dataPath 或 fields" in instructions
+    assert "每章最多生成 3 张图" in instructions
+    assert "标签不重叠" in instructions
+    assert "禁止无标记混用" in instructions
+    assert "不能仅凭相关变化命名为确定的因果驱动" in instructions
 
 
 def test_reporting_agno_parser_accepts_complete_alias_object() -> None:

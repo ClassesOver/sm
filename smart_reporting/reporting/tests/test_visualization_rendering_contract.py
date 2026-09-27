@@ -66,8 +66,8 @@ def _draft_payload(**overrides: object) -> dict[str, object]:
     }
 
 
-def test_report_request_visualization_mode_defaults_to_auto_and_serializes_override() -> None:
-    assert _request().visualization_mode == "auto"
+def test_report_request_visualization_mode_defaults_to_static_and_serializes_override() -> None:
+    assert _request().visualization_mode == "static"
     assert (
         _request(visualizationMode="interactive").model_dump(by_alias=True)["visualizationMode"]
         == "interactive"

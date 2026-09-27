@@ -341,6 +341,8 @@ def test_visualization_generator_only_adds_r7_instructions_to_candidate() -> Non
 
     assert "sourceDatasetId" in legacy_text
     assert "renderer=plotly" in legacy_text
+    assert "每章最多生成 3 张图" in legacy_text
+    assert "每章最多生成 3 张图" in candidate_text
     assert "visualForm" not in legacy_text
     assert "dataBindings" not in legacy_text
     assert "visualForm" in candidate_text

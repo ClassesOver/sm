@@ -1306,6 +1306,7 @@ def test_visualization_coding_instructions_bound_repair_to_critical_issue():
     assert "critical" in instructions
     assert "禁止插入临时诊断" in instructions
     assert "只修改与该问题直接相关的局部代码" in instructions
+    assert "标签不得重叠、截断或超出画布" in instructions
 
 
 def test_visualization_instructions_forbid_exploration_placeholder_scripts():

@@ -59,37 +59,69 @@ async def test_plotly_python_to_json_output_is_accepted() -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"data": [{"type": "sunburst", "labels": ["收入"]}]},
-        {"data": [{"type": "bar", "x": [1], "y": [2], "src": "remote:1"}]},
+async def test_plotly_artifact_accepts_default_hover_extra_tag() -> None:
+    service = _service(
         {
-            "data": [{"type": "bar", "x": [1], "y": [2]}],
+            "data": [
+                {
+                    "type": "bar",
+                    "x": ["一月"],
+                    "y": [10],
+                    "hovertemplate": "%{x}<extra></extra>",
+                }
+            ],
+            "layout": {
+                "annotations": [
+                    {
+                        "text": (
+                            "<script>alert(1)</script> "
+                            "https://example.com/x.png "
+                            "javascript:alert(1) "
+                            "data:image/png;base64,xx "
+                            "//example.com/x.png"
+                        )
+                    }
+                ]
+            },
+        }
+    )
+
+    result = await inspect_report_plotly_file(
+        service,
+        thread_id="thread-1",
+        path="analysis/charts/income.plotly.json",
+    )
+
+    assert result["traceCount"] == 1
+
+
+@pytest.mark.anyio
+async def test_plotly_artifact_accepts_extended_plotly_fields() -> None:
+    service = _service(
+        {
+            "data": [
+                {"type": "sunburst", "labels": ["收入"], "src": "remote:1"},
+                {"type": "bar", "x": [1], "y": [2]},
+            ],
             "layout": {"images": [{"source": "https://example.com/x.png"}]},
-        },
-        {
-            "data": [{"type": "bar", "x": [1], "y": [2]}],
-            "layout": {"hovertemplate": "<script>alert(1)</script>"},
-        },
-        {
-            "data": [{"type": "bar", "x": [1], "y": [2]}],
             "config": {"onClick": "javascript:alert(1)"},
-        },
-        {
-            "data": [{"type": "bar", "x": [1], "y": [2]}],
-            "layout": {"annotations": [{"text": "<script>alert(1)</script>"}]},
-        },
-        {
-            "data": [{"type": "bar", "x": [1], "y": [2]}],
-            "layout": {"images": [{"source": "//example.com/x.png"}]},
-        },
-        {"data": [{"type": "bar", "x": [float("nan")], "y": [2]}]},
-    ],
-)
-async def test_plotly_artifact_rejects_unsupported_or_executable_content(
-    payload: object,
-) -> None:
+            "frames": [{"name": "frame-1", "data": []}],
+        }
+    )
+
+    result = await inspect_report_plotly_file(
+        service,
+        thread_id="thread-1",
+        path="analysis/charts/income.plotly.json",
+    )
+
+    assert result["traceCount"] == 2
+
+
+@pytest.mark.anyio
+async def test_plotly_artifact_rejects_nonfinite_values() -> None:
+    payload = {"data": [{"type": "bar", "x": [float("nan")], "y": [2]}]}
+
     with pytest.raises(ReportingError, match="Plotly"):
         await inspect_report_plotly_file(
             _service(payload),

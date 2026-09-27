@@ -649,6 +649,52 @@ button {
 
 .modal-overlay[hidden] { display: none; }
 
+/* 导出阻塞遮罩：渲染与验收可持续数分钟，期间禁止一切编辑操作 */
+.export-block-overlay {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(27 42 65 / 36%);
+  backdrop-filter: blur(2px);
+}
+
+.export-block-overlay[hidden] { display: none; }
+
+.export-block-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(420px, 100%);
+  padding: 18px 24px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 18px 48px rgb(27 42 65 / 22%);
+  color: #30435a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.export-block-spinner {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border: 3px solid #d8e2eb;
+  border-top-color: #0b4f8a;
+  border-radius: 50%;
+  animation: export-block-spin 0.9s linear infinite;
+}
+
+@keyframes export-block-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .export-block-spinner { animation-duration: 2.4s; }
+}
+
 .modal-card {
   position: relative;
   width: min(440px, 100%);
@@ -1311,12 +1357,15 @@ button {
 
 .outline-list {
   display: grid;
-  gap: 3px;
+  gap: 4px;
 }
 
 .outline-link {
   position: relative;
   width: 100%;
+  /* overflow:hidden 的 button 作为 grid item 时 Chrome 会把内容高度算成 0，
+     必须显式给 min-height，否则条目塌叠（PC 目录挤压的根因） */
+  min-height: calc(1.45em + 14px);
   padding: 7px 12px;
   overflow: hidden;
   border: 0;
@@ -1337,6 +1386,11 @@ button {
   font-weight: 650;
 }
 
+/* 一级条目（报告标题）：与后续章节留出分组间距 */
+.outline-list > .outline-link.level-1:not(:first-child) {
+  margin-top: 12px;
+}
+
 /* 章节（二级）：墨色加粗 + 章节分组间距，文档主干一眼可辨 */
 .outline-link.level-2 {
   padding-left: 26px;
@@ -1344,8 +1398,9 @@ button {
   font-weight: 600;
 }
 
+/* 章节之间加大分隔，多章长目录不再糊成一片 */
 .outline-list > .outline-link.level-2:not(:first-child) {
-  margin-top: 10px;
+  margin-top: 16px;
 }
 
 .outline-link.level-3 {
@@ -1436,12 +1491,32 @@ button {
   .outline-list {
     min-height: 0;
     flex: 1 1 auto;
-    padding-right: 4px;
-    overflow-y: auto;
+    padding-right: 6px;
+    overflow-y: scroll;
     overscroll-behavior: contain;
-    scrollbar-color: #c2d0da transparent;
+    scrollbar-color: #b8c8d6 transparent;
     scrollbar-gutter: stable;
-    scrollbar-width: thin;
+    scrollbar-width: auto;
+  }
+
+  .outline-list::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .outline-list::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .outline-list::-webkit-scrollbar-thumb {
+    background: #c2d0da;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+
+  .outline-list::-webkit-scrollbar-thumb:hover {
+    background: #9fb4c7;
+    background-clip: content-box;
   }
 
   .outline-count {
@@ -2900,11 +2975,49 @@ button {
     right: 0;
     bottom: 64px;
     left: 0;
+    display: flex;
+    flex-direction: column;
     max-height: none;
     padding: 20px;
+    overflow: hidden;
     border-top: 1px solid #d8e2eb;
     background: rgb(248 251 253 / 98%);
     box-shadow: 0 12px 32px rgb(27 42 65 / 12%);
+  }
+
+  .outline-heading {
+    flex: 0 0 auto;
+  }
+
+  .outline-list {
+    min-height: 0;
+    flex: 1 1 auto;
+    padding-right: 6px;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    scrollbar-color: #b8c8d6 transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: auto;
+  }
+
+  .outline-list::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .outline-list::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .outline-list::-webkit-scrollbar-thumb {
+    background: #c2d0da;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+
+  .outline-list::-webkit-scrollbar-thumb:hover {
+    background: #9fb4c7;
+    background-clip: content-box;
   }
 
   .outline-close {

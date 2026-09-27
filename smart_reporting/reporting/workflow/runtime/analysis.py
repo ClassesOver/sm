@@ -972,7 +972,7 @@ class RuntimeAnalysisMixin:
                 visualization_mode = envelope.visualization_mode
             except ReportingError:
                 report_goal = ""
-                visualization_mode = "auto"
+                visualization_mode = "static"
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_section",

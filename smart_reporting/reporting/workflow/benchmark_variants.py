@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .runtime.phase_models import MAX_SECTION_CHART_COUNT
+
 
 class BenchmarkVariant(StrEnum):
     LEGACY = "legacy"
@@ -103,7 +105,7 @@ class LegacyVisualizationPlanDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    charts: tuple[LegacyChartDraft, ...] = Field(max_length=100)
+    charts: tuple[LegacyChartDraft, ...] = Field(max_length=MAX_SECTION_CHART_COUNT)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
     @model_validator(mode="after")

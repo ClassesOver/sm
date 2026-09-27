@@ -109,7 +109,7 @@ async def test_thinking_binding_is_isolated_between_concurrent_tasks() -> None:
         ("visualization_script", "standard", 2048),
         ("visualization_script", "complex", 4096),
         ("section_planning", "standard", 2048),
-        ("section_generation", "complex", 0),
+        ("section_generation", "standard", 2048),
     ],
 )
 def test_initial_thinking_budget_matrix(operation: str, complexity: str, budget: int) -> None:
@@ -119,7 +119,8 @@ def test_initial_thinking_budget_matrix(operation: str, complexity: str, budget:
 
     assert decision.thinking_budget == budget
     assert decision.enabled is (budget > 0)
-    assert decision.reasoning_effort == ("high" if budget else None)
+    expected_effort = "low" if operation in {"analysis_script", "visualization_script"} else "high"
+    assert decision.reasoning_effort == (expected_effort if budget else None)
     assert decision.reason == ("initial_policy" if budget else "initial_off")
 
 

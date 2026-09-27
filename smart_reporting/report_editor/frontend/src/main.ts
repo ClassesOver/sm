@@ -51,7 +51,7 @@ import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
 import { createEditorShell } from './shell'
-import { createOutlineController, namedOutlineItems, type OutlineItem } from './outline'
+import { createOutlineController, displayOutlineText, namedOutlineItems, type OutlineItem } from './outline'
 import { documentMetrics } from './metrics'
 import { headingStructureStatus } from './structure'
 import { createLocalDraftController } from './draft'
@@ -100,6 +100,23 @@ shell.shortcuts.addEventListener('click', async () => {
 const preferences = createEditorPreferenceController(root, basePath)
 createFocusModeController(root, shell.focus, shell.focusExit)
 const exportPanel = createExportPanel()
+// 导出阻塞遮罩（blockUI/unblockUI）：渲染与验收可持续数分钟，期间全屏禁止编辑，
+// 避免用户在导出进行中改内容导致 revision 错乱。
+const blockOverlay = document.createElement('div')
+blockOverlay.className = 'export-block-overlay'
+blockOverlay.hidden = true
+blockOverlay.setAttribute('role', 'alert')
+blockOverlay.setAttribute('aria-live', 'assertive')
+blockOverlay.innerHTML = '<div class="export-block-card"><span class="export-block-spinner" aria-hidden="true"></span><p class="export-block-message"></p></div>'
+root.append(blockOverlay)
+const blockMessage = blockOverlay.querySelector<HTMLElement>('.export-block-message')!
+const blockUI = (message: string) => {
+  blockMessage.textContent = message
+  blockOverlay.hidden = false
+}
+const unblockUI = () => {
+  blockOverlay.hidden = true
+}
 const exportSettingsPanel = createExportSettingsPanel(root)
 let pendingExportSettings: ExportSettings | null = null
 shell.exportSettings.addEventListener('click', () => exportSettingsPanel.open())
@@ -119,7 +136,7 @@ const outlineController = createOutlineController({
   initialCollapsed: preferences.outlineCollapsed || undefined,
   onCollapsedChange: preferences.setOutlineCollapsed,
   onActive: (item) => {
-    if (currentSectionLabel) currentSectionLabel.textContent = `当前位置：${item.text}`
+    if (currentSectionLabel) currentSectionLabel.textContent = `当前位置：${displayOutlineText(item.text)}`
   },
 })
 const revisionLabel = root.querySelector<HTMLElement>('.revision-label')
@@ -475,6 +492,7 @@ try {
       }
       await saveNow()
       status(`正在生成 ${formatLabel}`, 'busy')
+      blockUI(`正在生成 ${formatLabel}，渲染与验收可能需要几分钟，期间请勿关闭页面…`)
       const { note = '', ...settings } = pendingExportSettings ?? {
         cover: false,
         toc: true,
@@ -483,6 +501,7 @@ try {
         note: '',
       }
       const result = await client.export(sha256, settings, note)
+      unblockUI()
       void telemetry.record({
         event: 'export_succeeded',
         durationMs: Math.round(performance.now() - exportStartedAt),
@@ -499,6 +518,7 @@ try {
       })
       status(`${formatLabel} 导出失败：${errorStatusLabel(error)}`, 'error', () => void exportFormat(format))
     } finally {
+      unblockUI()
       setActionsDisabled(false)
     }
   }

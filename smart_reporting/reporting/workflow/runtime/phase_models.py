@@ -26,6 +26,7 @@ from ...models import ReportingError
 from ..checkpoint import FileIdentity, SectionClaimSubmission
 
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
+MAX_SECTION_CHART_COUNT = 3
 _CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t]+)")
 _RUNON_HEADING_BREAK_RE = re.compile(r"[。！？；：]")
@@ -348,7 +349,7 @@ class ChartDraft(StrictModel):
 
 
 class VisualizationPlanDraft(StrictModel):
-    charts: tuple[ChartDraft, ...] = Field(max_length=100)
+    charts: tuple[ChartDraft, ...] = Field(max_length=MAX_SECTION_CHART_COUNT)
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
     @model_validator(mode="after")

@@ -58,7 +58,9 @@ _INITIAL_THINKING_BUDGETS: dict[ThinkingOperation, int | dict[TaskComplexity, in
     "visualization_plan": _COMPLEXITY_BUDGETS,
     "visualization_script": _COMPLEXITY_BUDGETS,
     "section_planning": 2048,
-    "section_generation": 0,
+    # 章节成稿开启思考：零思考直写导致"先总后分"模板化重复段落与归因因果跳跃，
+    # 与 section_planning 同档 2048，让模型先规划本节内容与已生成章节的边界。
+    "section_generation": 2048,
 }
 _RECOVERY_THINKING_BUDGETS: dict[
     ThinkingOperation, dict[ThinkingFailureKind, tuple[int, ReportingReasoningEffort]]
@@ -203,9 +205,11 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
         budget_source[request.complexity] if isinstance(budget_source, dict) else budget_source
     )
     budget = initial_budget
-    # Coding 首轮与其他阶段统一使用 high（百炼 deepseek-v4-flash-0731 默认档位）；
-    # 快速收敛优先于单轮推理耗时，失败恢复再升级到 max。
-    effort: ReportingReasoningEffort = request.reasoning_effort or "high"
+    # Coding 脚本首轮用 low，与 AGENT_REPORT_CODING_REASONING_EFFORT 的默认档对齐；
+    # 失败恢复升级到 max，其余阶段维持 high。
+    effort: ReportingReasoningEffort = request.reasoning_effort or (
+        "low" if request.operation in {"analysis_script", "visualization_script"} else "high"
+    )
     reason = "initial_policy" if budget else "initial_off"
 
     recovery = _RECOVERY_THINKING_BUDGETS.get(request.operation, {}).get(

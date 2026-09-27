@@ -4,6 +4,13 @@ export interface OutlineItem {
   id: string
 }
 
+// 章节标题尾部的 [[analysis:...]] 是工作流编排绑定标记（存在 Markdown 里），
+// 目录只展示纯文本标题，剥掉标记并收敛多余空白。
+const BINDING_MARKER = /\[\[[^\]]*\]\]/g
+export function displayOutlineText(text: string): string {
+  return text.replace(BINDING_MARKER, '').replace(/[ \t]{2,}/g, ' ').trim()
+}
+
 // 刚插入还没输入文字的标题不进目录：否则大纲会留下"未命名章节"占位噪声，
 // 且章节计数与层级结构状态会被空标题干扰。
 export function namedOutlineItems(items: OutlineItem[]): OutlineItem[] {
@@ -186,7 +193,7 @@ export function createOutlineController({
           button.type = 'button'
           button.draggable = Boolean(getMarkdown && replaceMarkdown)
           button.className = `outline-link level-${Math.min(6, Math.max(1, item.level))}`
-          button.textContent = item.text || '未命名章节'
+          button.textContent = displayOutlineText(item.text) || '未命名章节'
           button.title = button.textContent
           button.addEventListener('click', () => {
             setActive(index)

@@ -478,13 +478,17 @@ def _raise_rejected_submission(receipt: Mapping[str, Any]) -> None:
         if isinstance(rejection_code, str)
         else "report_visualization_submit_rejected"
     )
-    message = receipt.get("message")
-    logger.bind(rejection_code=code).warning("report_visualization_submission_rejected")
-    raise ReportingError(
+    raw_message = receipt.get("message")
+    message = raw_message if isinstance(raw_message, str) else "图表提交未被服务端接受。"
+    # 控制台 sink 只渲染 {message}，bind 字段不可见；闸门拒绝的 code 与 details
+    # 必须直接进入日志正文，否则只能翻 checkpoint 才能定位是哪个闸门拒的。
+    logger.bind(rejection_code=code).warning(
+        "report_visualization_submission_rejected code={} message={} details={}",
         code,
-        message if isinstance(message, str) else "图表提交未被服务端接受。",
-        details=dict(receipt),
+        message[:500],
+        json.dumps(receipt, ensure_ascii=False, default=str)[:2000],
     )
+    raise ReportingError(code, message, details=dict(receipt))
 
 
 @dataclass(frozen=True, slots=True)

@@ -70,6 +70,12 @@ _VISUALIZATION_CODE_COMMON_INSTRUCTIONS = (
     "Plotly 图还必须生成签发路径的 .plotly.json。"
     "使用 Matplotlib 时在导入 pyplot 前设置 Agg；Plotly 的静态图使用 fig.write_image()"
     "（Kaleido 已随环境提供），交互产物使用 fig.write_json()。",
+    "高质量图必须做到：标题明确表达核心结论，坐标轴、单位、图例和数据标签完整；"
+    "标签不得重叠、截断或超出画布；系列、颜色和标注克制，主信息突出；"
+    "所有数值、单位和比较口径必须与 facts 一致。",
+    "图表标题、注释和图例必须标明数据期间及必要的口径（实际/预算、台账/汇总等）；"
+    "若 facts 含未入账、字段为零或不可比告警，图中只能作为软告警呈现，不得用图形把"
+    "缺失数据补成零值或把相关性表达成确定因果。",
     "不得调用或导入 run_python_script、submit_visualization_charts 等编排工具。",
 )
 

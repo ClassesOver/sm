@@ -132,7 +132,7 @@ class ReportRequestEnvelope(StrictModel):
         default=("yoy",), alias="comparisonRoles", max_length=2
     )
     visualization_mode: Literal["auto", "static", "interactive"] = Field(
-        default="auto", alias="visualizationMode"
+        default="static", alias="visualizationMode"
     )
     file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
 

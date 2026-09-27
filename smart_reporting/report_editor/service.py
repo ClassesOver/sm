@@ -637,18 +637,33 @@ class ReportEditorService:
                 for key in ("cover", "toc", "headerFooter", "pageNumbers")
                 if key in settings
             }
-        # 编辑链接长期有效，用户可能从旧修订的链接进入；此时下一个 revision 已被占用，
-        # 重新载入也无法解决，必须明确提示改用最新修订继续编辑。
-        latest_revision = max(
-            (candidate.revision for candidate in await self._candidate_revisions(context)),
-            default=context.revision,
-        )
+        # 编辑链接长期有效，用户可能从旧修订的链接进入。导出过一次会产生更新的
+        # revision；若最新 revision 的 Markdown 与当前草稿一致（用户未再改动），
+        # 自动以最新 revision 为基准再次导出，实现重复导出的幂等。只有内容确实
+        # 落后于更新版本时才拒绝，必须明确提示改用最新修订继续编辑。
+        candidates = await self._candidate_revisions(context)
+        latest_revision = max((candidate.revision for candidate in candidates), default=context.revision)
         if latest_revision > context.revision:
-            raise ReportingError(
-                "report_editor_revision_stale",
-                f"当前编辑的是第 {context.revision} 版，已有更新的第 {latest_revision} 版，"
-                "请打开最新版本的编辑链接后再导出。",
-            )
+            latest = max(candidates, key=lambda item: item.revision)
+            try:
+                _, _, latest_sha256 = await self._read_revision_markdown(latest)
+            except Exception:
+                latest_sha256 = None
+            if latest_sha256 is not None and secrets.compare_digest(
+                latest_sha256, document.sha256
+            ):
+                # 后续渲染/登记都按 context.job_id 从 run_context 取 job 状态，
+                # 重定基后必须同步换成最新 revision 的 job，否则索引错位。
+                context = latest
+                session_state[REPORT_JOBS_STATE_KEY][context.job_id] = copy.deepcopy(
+                    context.job
+                )
+            else:
+                raise ReportingError(
+                    "report_editor_revision_stale",
+                    f"当前编辑的是第 {context.revision} 版，已有更新的第 {latest_revision} 版，"
+                    "请打开最新版本的编辑链接后再导出。",
+                )
         output_path = _next_pdf_path(context)
         revision_path = PurePosixPath(output_path).parent.as_posix()
         if await self.workspace.apath_exists(scope.workspace_key, revision_path):

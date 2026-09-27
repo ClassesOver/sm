@@ -230,9 +230,16 @@ describe('report editor visual hierarchy', () => {
     expect(base('.outline-link[aria-current="location"]').background).toBe('rgb(237, 245, 252)')
     expect(base('.outline-link.level-1').fontWeight).toBe('650')
     expect(base('.outline-link.level-2').fontWeight).toBe('600')
-    expect(base('.outline-list > .outline-link.level-2:not(:first-child)').marginTop).toBe('10px')
+    expect(base('.outline-list > .outline-link.level-1:not(:first-child)').marginTop).toBe('12px')
+    expect(base('.outline-list > .outline-link.level-2:not(:first-child)').marginTop).toBe('16px')
+    expect(base('.outline-list').gap).toBe('4px')
+    expect(base('.outline-link').minHeight).toBe('calc(1.45em + 14px)')
     expect(base('.outline-link.level-3::after').background).toBe('rgb(225, 233, 239)')
     expect(base('.outline-link.level-4').paddingLeft).toBe('50px')
+    expect(base('.export-block-overlay').position).toBe('fixed')
+    expect(base('.export-block-overlay').zIndex).toBe('90')
+    expect(base('.export-block-card').display).toBe('flex')
+    expect(base('.export-block-spinner').borderTopColor).toBe('rgb(11, 79, 138)')
   })
 
   it('gives export actions a quieter visual weight than save', () => {
@@ -493,9 +500,10 @@ describe('report editor visual hierarchy', () => {
     expect(outline.display).toBe('flex')
     expect(outline.flexDirection).toBe('column')
     expect(outline.overflow).toBe('hidden')
-    expect(list.overflowY).toBe('auto')
+    expect(list.overflowY).toBe('scroll')
     expect(list.overscrollBehavior).toBe('contain')
     expect(list.scrollbarGutter).toBe('stable')
+    expect(list.scrollbarWidth).toBe('auto')
   })
 
   it('aligns desktop status details with the report sheet across view and outline modes', () => {
