@@ -120,6 +120,30 @@ def test_reporting_compose_mounts_writable_tiktoken_cache() -> None:
     }
 
 
+def test_report_editor_static_lives_outside_source_bind_mount() -> None:
+    """源码只读 bind mount 会遮蔽源码树内的前端产物；命名卷只首播种，升级后仍是旧前端。"""
+
+    repository_root = Path(__file__).parents[2]
+    dockerfile = (repository_root / "Dockerfile").read_text(encoding="utf-8")
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    service = compose["services"]["reporting-os"]
+
+    assert "COPY --from=report-editor-frontend /build/static /opt/report-editor-static" in (
+        dockerfile
+    )
+    assert "AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static" in dockerfile
+    assert not any(
+        str(mount.get("target", "") if isinstance(mount, dict) else mount).startswith(
+            "/app/smart_reporting/report_editor/static"
+        )
+        for mount in service["volumes"]
+    )
+    assert "volumes" not in compose
+
+
 def test_agentos_readme_only_references_existing_compose_services() -> None:
     repository_root = Path(__file__).parents[2]
     readme = (repository_root / "README.md").read_text(encoding="utf-8")
