@@ -553,3 +553,11 @@ def test_unused_generic_token_budget_settings_do_not_block_startup():
 
     assert current.report_context_token_budget == 1048576
     assert not hasattr(current, "context_token_budget")
+
+
+def test_blank_numeric_settings_fall_back_to_defaults():
+    defaults = settings()
+    blank = settings(AGENT_OS_PORT="", AGENT_MODEL_TIMEOUT_SECONDS="  ")
+
+    assert blank.port == defaults.port
+    assert blank.model_timeout_seconds == defaults.model_timeout_seconds
