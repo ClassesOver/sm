@@ -66,9 +66,7 @@ def _user_message_text(request: dict) -> str:
         if isinstance(content, str):
             chunks.append(content)
         elif isinstance(content, list):
-            chunks.extend(
-                str(part.get("text", "")) for part in content if isinstance(part, dict)
-            )
+            chunks.extend(str(part.get("text", "")) for part in content if isinstance(part, dict))
     return "\n".join(chunks)
 
 
@@ -79,17 +77,21 @@ def low_compaction_threshold(monkeypatch):
 
 @pytest.mark.anyio
 async def test_in_run_compaction_reconnects_with_fresh_window_and_summary(
-    workspace, low_compaction_threshold, monkeypatch  # noqa: F811
+    workspace,  # noqa: F811
+    low_compaction_threshold,
+    monkeypatch,  # noqa: F811
 ):
     first = _batch_response(
         _custom_response("write_script", SOURCE, 1),
         _function_response(2, "run_script", {}),
     )
-    client = _ResponsesClient([
-        _with_usage(first, 150),
-        _with_usage(_message_response("已完成"), 150),
-        _with_usage(_function_response(3, "submit_script", {}), 10),
-    ])
+    client = _ResponsesClient(
+        [
+            _with_usage(first, 150),
+            _with_usage(_message_response("已完成"), 150),
+            _with_usage(_function_response(3, "submit_script", {}), 10),
+        ]
+    )
     agents = []
 
     async def forbidden_continue(*args, **kwargs):
@@ -122,7 +124,8 @@ async def test_in_run_compaction_reconnects_with_fresh_window_and_summary(
     assert len(client.requests) == 3
     last_input = client.requests[-1]["input"]
     assert not any(
-        item.get("type") in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
+        item.get("type")
+        in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
         for item in last_input
     )
     text = _user_message_text(client.requests[-1])
@@ -134,18 +137,22 @@ async def test_in_run_compaction_reconnects_with_fresh_window_and_summary(
 
 @pytest.mark.anyio
 async def test_compaction_reconnect_is_bounded_and_reports_failure_fields(
-    workspace, low_compaction_threshold, monkeypatch  # noqa: F811
+    workspace,  # noqa: F811
+    low_compaction_threshold,
+    monkeypatch,  # noqa: F811
 ):
     first = _batch_response(
         _custom_response("write_script", SOURCE, 1),
         _function_response(2, "run_script", {}),
     )
-    client = _ResponsesClient([
-        _with_usage(first, 150),
-        _with_usage(_message_response("还未提交"), 150),
-        _with_usage(_message_response("继续说明但不调用工具"), 150),
-        _with_usage(_message_response("仍不提交"), 150),
-    ])
+    client = _ResponsesClient(
+        [
+            _with_usage(first, 150),
+            _with_usage(_message_response("还未提交"), 150),
+            _with_usage(_message_response("继续说明但不调用工具"), 150),
+            _with_usage(_message_response("仍不提交"), 150),
+        ]
+    )
     agents = []
 
     async def forbidden_continue(*args, **kwargs):
@@ -178,17 +185,20 @@ async def test_compaction_reconnect_is_bounded_and_reports_failure_fields(
 
 @pytest.mark.anyio
 async def test_without_compaction_signal_single_continuation_and_no_summary(
-    workspace, monkeypatch  # noqa: F811
+    workspace,  # noqa: F811
+    monkeypatch,  # noqa: F811
 ):
     first = _batch_response(
         _custom_response("write_script", SOURCE, 1),
         _function_response(2, "run_script", {}),
     )
-    client = _ResponsesClient([
-        first,
-        _message_response("已完成"),
-        _function_response(3, "submit_script", {}),
-    ])
+    client = _ResponsesClient(
+        [
+            first,
+            _message_response("已完成"),
+            _function_response(3, "submit_script", {}),
+        ]
+    )
     agents = []
     metrics = []
     result = await ReportingCodeGenerationRunner(
@@ -213,17 +223,20 @@ async def test_without_compaction_signal_single_continuation_and_no_summary(
 
 @pytest.mark.anyio
 async def test_compaction_reconnect_disabled_by_default(
-    workspace, low_compaction_threshold  # noqa: F811
+    workspace,  # noqa: F811
+    low_compaction_threshold,  # noqa: F811
 ):
     first = _batch_response(
         _custom_response("write_script", SOURCE, 1),
         _function_response(2, "run_script", {}),
     )
-    client = _ResponsesClient([
-        _with_usage(first, 150),
-        _with_usage(_message_response("已完成"), 150),
-        _with_usage(_function_response(3, "submit_script", {}), 10),
-    ])
+    client = _ResponsesClient(
+        [
+            _with_usage(first, 150),
+            _with_usage(_message_response("已完成"), 150),
+            _with_usage(_function_response(3, "submit_script", {}), 10),
+        ]
+    )
     agents = []
     metrics = []
     result = await ReportingCodeGenerationRunner(
@@ -244,7 +257,8 @@ async def test_compaction_reconnect_disabled_by_default(
     assert metrics[0]["truncatedCallCount"] == 0
     last_input = client.requests[-1]["input"]
     assert any(
-        item.get("type") in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
+        item.get("type")
+        in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
         for item in last_input
     )
 
@@ -255,11 +269,13 @@ async def test_failure_without_compaction_keeps_unknown_usage(workspace):  # noq
         _custom_response("write_script", SOURCE, 1),
         _function_response(2, "run_script", {}),
     )
-    client = _ResponsesClient([
-        first,
-        _message_response("已完成"),
-        _message_response("还是没有提交"),
-    ])
+    client = _ResponsesClient(
+        [
+            first,
+            _message_response("已完成"),
+            _message_response("还是没有提交"),
+        ]
+    )
     agents = []
     with pytest.raises(ReportingError, match="report_code_generation_no_submission") as caught:
         await ReportingCodeGenerationRunner(
@@ -280,22 +296,26 @@ async def test_failure_without_compaction_keeps_unknown_usage(workspace):  # noq
 
 @pytest.mark.anyio
 async def test_compaction_reconnect_respects_request_budget_before_reconnect(
-    workspace, low_compaction_threshold, monkeypatch  # noqa: F811
+    workspace,  # noqa: F811
+    low_compaction_threshold,
+    monkeypatch,  # noqa: F811
 ):
     # 请求预算在压缩重连前耗尽时必须干净收尾（no_submission + 验收字段），
     # 不能等到 arun 内部才抛出 report_code_model_request_limit。
     # tool_limit=5 → request_limit = max(4, 5+1) = 6：窗口 0 消耗 5 次请求（4 工具），
     # 窗口 1 后请求数恰好到达 6，重连前预算检查必须命中。
     monkeypatch.setattr(code_generation, "ANALYSIS_TOOL_CALL_LIMIT", 5)
-    client = _ResponsesClient([
-        _with_usage(_custom_response("write_script", SOURCE, 1), 150),
-        _with_usage(_function_response(2, "run_script", {}), 150),
-        _with_usage(_function_response(3, "read_script", {}), 150),
-        _with_usage(_function_response(4, "run_script", {}), 150),
-        _with_usage(_message_response("还未提交"), 150),
-        _with_usage(_message_response("继续说明"), 150),
-        _with_usage(_message_response("这个响应不应被消费"), 150),
-    ])
+    client = _ResponsesClient(
+        [
+            _with_usage(_custom_response("write_script", SOURCE, 1), 150),
+            _with_usage(_function_response(2, "run_script", {}), 150),
+            _with_usage(_function_response(3, "read_script", {}), 150),
+            _with_usage(_function_response(4, "run_script", {}), 150),
+            _with_usage(_message_response("还未提交"), 150),
+            _with_usage(_message_response("继续说明"), 150),
+            _with_usage(_message_response("这个响应不应被消费"), 150),
+        ]
+    )
     agents = []
     runtime = ToolkitRuntime()
     runtime.next_cell = SimpleNamespace(status="error", stdout="", stderr="boom", traceback=None)
@@ -327,11 +347,16 @@ async def test_compaction_reconnect_respects_request_budget_before_reconnect(
 
 
 def test_observed_truncated_calls_sums_across_entries():
-    assert code_generation._observed_truncated_calls([
-        {"truncated_calls": 2},
-        {"truncated_calls": 0},
-        {"truncatedCallCount": 3},
-        {"truncated_calls": "unknown"},
-        None,
-        "not-a-mapping",
-    ]) == 5
+    assert (
+        code_generation._observed_truncated_calls(
+            [
+                {"truncated_calls": 2},
+                {"truncated_calls": 0},
+                {"truncatedCallCount": 3},
+                {"truncated_calls": "unknown"},
+                None,
+                "not-a-mapping",
+            ]
+        )
+        == 5
+    )

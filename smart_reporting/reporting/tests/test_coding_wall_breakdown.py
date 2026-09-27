@@ -120,9 +120,9 @@ def test_wilson_interval_matches_known_values():
 
 
 def test_expected_seconds_per_delivery_charges_failures_by_pass_rate():
-    assert coding_wall_breakdown.expected_seconds_per_delivery(
-        796, 833, 0.55
-    ) == pytest.approx(796 + 0.45 / 0.55 * 833)
+    assert coding_wall_breakdown.expected_seconds_per_delivery(796, 833, 0.55) == pytest.approx(
+        796 + 0.45 / 0.55 * 833
+    )
     with pytest.raises(ValueError):
         coding_wall_breakdown.expected_seconds_per_delivery(1, 1, 0)
 
@@ -168,6 +168,5 @@ def test_summary_excludes_censored_samples_and_reports_gate_rate(tmp_path):
     assert lines[1].endswith("n=3")
     assert "expectedSecondsPerDelivery=300.0" in lines
     assert any(
-        line.startswith("gateTrippedRate=50% (1/2)") and "text_overlap" in line
-        for line in lines
+        line.startswith("gateTrippedRate=50% (1/2)") and "text_overlap" in line for line in lines
     )

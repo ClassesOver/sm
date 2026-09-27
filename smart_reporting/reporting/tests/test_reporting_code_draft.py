@@ -48,9 +48,7 @@ async def _rejected(toolkit):
     result = await toolkit.write_script(REJECTED_SOURCE)
     assert result["ok"] is False
     assert result["code"] == "report_python_source_path_invalid"
-    assert result["details"]["draftSha256"] == hashlib.sha256(
-        REJECTED_SOURCE.encode()
-    ).hexdigest()
+    assert result["details"]["draftSha256"] == hashlib.sha256(REJECTED_SOURCE.encode()).hexdigest()
     assert result["details"]["violations"][0]["line"] == 2
     return result
 
@@ -96,9 +94,7 @@ async def test_draft_patch_with_syntax_error_stays_isolated(binding, runtime):  
     assert toolkit.rejected_draft_sha256 == new_sha256
     assert (await toolkit.read_script())["exists"] is False
 
-    fixed = await toolkit.edit_script(
-        multi_edit_patch(broken, [('"w")\n', '"w"))\n')])
-    )
+    fixed = await toolkit.edit_script(multi_edit_patch(broken, [('"w")\n', '"w"))\n')]))
     assert fixed["ok"] is True
     assert fixed["status"] == "draft_promoted"
 
@@ -181,13 +177,12 @@ def test_edit_patch_marker_failure_names_missing_line():
 
 @pytest.mark.anyio
 async def test_missing_output_diagnosis_separates_unreferenced_and_unexecuted(
-    binding, runtime  # noqa: F811
+    binding,  # noqa: F811
+    runtime,  # noqa: F811
 ):
     toolkit = _toolkit(binding, runtime)
     await toolkit.write_script(
-        "import json\n"
-        "def unused():\n"
-        '    json.dump({}, open("analysis/out.json", "w"))\n'
+        'import json\ndef unused():\n    json.dump({}, open("analysis/out.json", "w"))\n'
     )
 
     diagnosis = _missing_output_diagnosis(
@@ -203,7 +198,8 @@ async def test_missing_output_diagnosis_separates_unreferenced_and_unexecuted(
 
 @pytest.mark.anyio
 async def test_applied_draft_patch_with_remaining_violations_keeps_draft(
-    binding, runtime  # noqa: F811
+    binding,  # noqa: F811
+    runtime,  # noqa: F811
 ):
     toolkit = _toolkit(binding, runtime)
     source = (
@@ -220,7 +216,7 @@ async def test_applied_draft_patch_with_remaining_violations_keeps_draft(
     assert first["code"] == "report_python_source_path_invalid"
     patched = source.replace('"data/x.json"', '"analysis/out.json"')
     second = await toolkit.edit_script(
-        multi_edit_patch(patched, [("\njson.dump({}, open(\"data/y.json\", \"w\"))", "")])
+        multi_edit_patch(patched, [('\njson.dump({}, open("data/y.json", "w"))', "")])
     )
     await _post_hook(toolkit, "edit_script", second)
 
@@ -299,9 +295,10 @@ def test_deterministic_setup_failures_are_not_final_attempt_degradable():
 
     for code in ("report_coding_task_workspace_mismatch", "report_capability_state_invalid"):
         assert final_attempt_degradable(ReportingError(code, "m")) is False
-    assert final_attempt_degradable(
-        ReportingError("report_code_custom_tool_protocol_error", "m")
-    ) is True
+    assert (
+        final_attempt_degradable(ReportingError("report_code_custom_tool_protocol_error", "m"))
+        is True
+    )
 
 
 @pytest.mark.anyio
@@ -426,7 +423,9 @@ async def test_execution_failure_reports_outputs_written_before_crash(workspace)
 
 @pytest.mark.anyio
 async def test_run_script_workspace_error_is_not_reported_as_missing_script(
-    binding, runtime, monkeypatch  # noqa: F811
+    binding,  # noqa: F811
+    runtime,  # noqa: F811
+    monkeypatch,  # noqa: F811
 ):
     from smart_reporting.workspace import WorkspaceError
 

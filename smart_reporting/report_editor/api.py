@@ -18,6 +18,7 @@ from fastapi.responses import (
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from .service import ReportEditorGrantService
 
@@ -171,6 +172,8 @@ def create_report_editor_router(
                 "markdown": document.markdown,
                 "sha256": document.sha256,
                 "csrfToken": grants.csrf_token(raw_session),
+                # 交互图表与 PDF/Word、静态图共用同一份报表视觉主题。
+                "visualTheme": REPORT_VISUAL_THEME,
             }
             chart_reader = getattr(editor, "interactive_charts", None)
             interactive_charts = await chart_reader(context) if callable(chart_reader) else {}

@@ -23,6 +23,7 @@ from ..workspace import (
     WorkspacePathConflict,
     _thread,
 )
+from .data_sources import _best_effort_delete
 from .models import ReportingError
 
 REPORT_JOBS_STATE_KEY = "report_jobs"
@@ -472,10 +473,7 @@ class WorkspaceReportService:
         *,
         recursive: bool,
     ) -> None:
-        try:
-            await self.service.adelete_file(_thread(run_context), path, recursive=recursive)
-        except Exception:
-            pass
+        await _best_effort_delete(self.service, _thread(run_context), path, recursive=recursive)
 
     async def report_prepare_dataset(
         self,

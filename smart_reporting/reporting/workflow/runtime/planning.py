@@ -10,6 +10,7 @@ from pydantic import ConfigDict, Field
 from sqlglot import exp
 
 from ....report_editor.service import ReportEditorContext
+from ....workspace import WorkspacePathConflict
 from ...structured_output import StructuredOutputCallBudget
 from .base import (
     _PLANNER_DISPLAY_NAMES,
@@ -164,7 +165,9 @@ class RuntimePlanningMixin:
         semantic_domains = tuple(dict.fromkeys(normalized.domains))
         report_type = normalized.report_type
         if report_type is None:
-            missing.append(normalized.clarification_question or "请明确报告是整体运营分析还是专题分析。")
+            missing.append(
+                normalized.clarification_question or "请明确报告是整体运营分析还是专题分析。"
+            )
         if report_type == "topic" and not semantic_domains:
             missing.append(normalized.clarification_question or "请明确需要分析的业务主题。")
         if missing:
@@ -360,12 +363,20 @@ class RuntimePlanningMixin:
                     return target_path
                 if not await self.workspace_service.apath_exists(thread_id, source_path):
                     return None
-                content_bytes, _ = await self.workspace_service.afile_bytes(
-                    thread_id, source_path
-                )
-                await self.workspace_service.awrite_bytes(
-                    thread_id, target_path, content_bytes
-                )
+                content_bytes, _ = await self.workspace_service.afile_bytes(thread_id, source_path)
+                # 发布可能重放：先直接写入（首次发布无额外往返）；目标已存在时与 Markdown
+                # 快照同语义，内容一致即复用，不一致视为 revision 冲突。
+                try:
+                    await self.workspace_service.awrite_bytes(thread_id, target_path, content_bytes)
+                except WorkspacePathConflict:
+                    existing_bytes, _ = await self.workspace_service.afile_bytes(
+                        thread_id, target_path
+                    )
+                    if existing_bytes != content_bytes:
+                        raise ReportingError(
+                            "report_editor_revision_conflict",
+                            "当前报告 revision 已存在不同的资源快照。",
+                        ) from None
                 path_map[source_path] = target_path
                 return target_path
 
@@ -385,8 +396,7 @@ class RuntimePlanningMixin:
             def _remap_paths(obj: Any) -> Any:
                 if isinstance(obj, dict):
                     return {
-                        path_map.get(key, key): _remap_paths(value)
-                        for key, value in obj.items()
+                        path_map.get(key, key): _remap_paths(value) for key, value in obj.items()
                     }
                 if isinstance(obj, list):
                     return [_remap_paths(item) for item in obj]
@@ -462,9 +472,7 @@ class RuntimePlanningMixin:
             workflow_run_id,
             ReportingCommand(
                 name="set_report_editor_context",
-                payload={
-                    "context": editor_context.model_dump(mode="json", by_alias=True)
-                },
+                payload={"context": editor_context.model_dump(mode="json", by_alias=True)},
                 commandId=f"editor-context:{content['revision']}:{editor_context.digest()}",
             ),
             expected_version=durable.state_version,
@@ -3096,9 +3104,7 @@ def _period_terms(text: str) -> frozenset[str]:
     return frozenset(terms - _PERIOD_GENERIC_TERMS)
 
 
-def _preferred_typed_period_column(
-    columns: tuple[Any, ...], *, reference_text: str
-) -> Any | None:
+def _preferred_typed_period_column(columns: tuple[Any, ...], *, reference_text: str) -> Any | None:
     """在类型化日期列中选出与当前期间字段、表用途和报告目标唯一最相关的一列。
 
     只有一列时直接采用；多列时按词元重合度选唯一最高分，并在存在业务日期列时排除

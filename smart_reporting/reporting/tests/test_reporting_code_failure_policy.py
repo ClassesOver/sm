@@ -10,19 +10,35 @@ from smart_reporting.reporting.tests.test_reporting_interactive_code_agent impor
 
 @pytest.mark.parametrize("task", ["analysis", "visualization"])
 def test_explicit_recovery_overrides_legacy_retryable(task):
-    error = ReportingError("new_provider_error", "failed", details={
-        "retryable": False, "recovery": "retry_then_degrade",
-    })
+    error = ReportingError(
+        "new_provider_error",
+        "failed",
+        details={
+            "retryable": False,
+            "recovery": "retry_then_degrade",
+        },
+    )
     assert recovery_for(error, task) == "retry_then_degrade"
-    assert recovery_for(ReportingError("unknown", "failed", details={"retryable": False}), task) == "fatal"
-    assert recovery_for(ReportingError("report_code_generation_no_submission", "failed",
-                                      details={"retryable": False}), task) == "retry_then_degrade"
+    assert (
+        recovery_for(ReportingError("unknown", "failed", details={"retryable": False}), task)
+        == "fatal"
+    )
+    assert (
+        recovery_for(
+            ReportingError(
+                "report_code_generation_no_submission", "failed", details={"retryable": False}
+            ),
+            task,
+        )
+        == "retry_then_degrade"
+    )
 
 
 @pytest.mark.parametrize("task", ["analysis", "visualization"])
 def test_identity_failure_cannot_be_downgraded(task):
-    error = ReportingError("report_phase_artifact_changed", "changed",
-                           details={"recovery": "retry_then_degrade"})
+    error = ReportingError(
+        "report_phase_artifact_changed", "changed", details={"recovery": "retry_then_degrade"}
+    )
     assert recovery_for(error, task) == "fatal"
 
 

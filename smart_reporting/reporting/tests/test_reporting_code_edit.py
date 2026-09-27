@@ -30,13 +30,16 @@ def edit_patch(source, old, new):
     return multi_edit_patch(source, [(old, new)])
 
 
-@pytest.mark.parametrize("case,reason", [
-    ("bad_sha", "missing_envelope"),
-    ("missing_blocks", "no_valid_blocks"),
-    ("trailing", "trailing_text"),
-    ("oversized", "oversized_patch"),
-    ("wrapped", "missing_envelope"),
-])
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("bad_sha", "missing_envelope"),
+        ("missing_blocks", "no_valid_blocks"),
+        ("trailing", "trailing_text"),
+        ("oversized", "oversized_patch"),
+        ("wrapped", "missing_envelope"),
+    ],
+)
 def test_parse_edit_patch_invalid_reports_bounded_reason(case, reason):
     """candidate-15 观测缺口：edit_script invalid 失败必须带可归因的 reason。"""
     from smart_reporting.reporting.code_agent.edit_patch import parse_edit_patch
@@ -47,7 +50,8 @@ def test_parse_edit_patch_invalid_reports_bounded_reason(case, reason):
         patch = patch.replace(hashlib.sha256(source.encode()).hexdigest(), "not-a-sha")
     elif case == "missing_blocks":
         patch = (
-            "*** Begin Edit\n*** SHA256: " + hashlib.sha256(source.encode()).hexdigest()
+            "*** Begin Edit\n*** SHA256: "
+            + hashlib.sha256(source.encode()).hexdigest()
             + "\nrandom text without edit markers\n*** End Edit\n"
         )
     elif case == "trailing":
@@ -75,7 +79,8 @@ def test_parse_edit_patch_invalid_message_contains_copyable_template():
     source = "# keep\nvalue = 1\n"
     digest = hashlib.sha256(source.encode()).hexdigest()
     patch = (
-        "*** Begin Edit\n*** SHA256: " + digest
+        "*** Begin Edit\n*** SHA256: "
+        + digest
         + "\n*** Update File: charts.py\n- value = 1\n+ value = 2\n*** End Edit\n"
     )
     with pytest.raises(ReportingError) as caught:
@@ -95,33 +100,59 @@ def test_parse_edit_patch_invalid_message_contains_copyable_template():
 
 def multi_edit_patch(source, edits):
     digest = hashlib.sha256(source.encode()).hexdigest()
-    return f"*** Begin Edit\n*** SHA256: {digest}\n" + "".join(
-        f"<<<<<<< SEARCH\n{old}\n=======\n{new}\n>>>>>>> REPLACE\n"
-        for old, new in edits
-    ) + "*** End Edit"
+    return (
+        f"*** Begin Edit\n*** SHA256: {digest}\n"
+        + "".join(f"<<<<<<< SEARCH\n{old}\n=======\n{new}\n>>>>>>> REPLACE\n" for old, new in edits)
+        + "*** End Edit"
+    )
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source,edits,expected", [
-    ("# keep\na = 1\nb = 2\nprint(a, b)\n",
-     [("b = 2", "b = 20"), ("a = 1", "a = 10\nc = 3")],
-     "# keep\na = 10\nc = 3\nb = 20\nprint(a, b)\n"),
-    ("# keep\na = 1\nb = 2\nprint(a, b)\n",
-     [("a = 1", "b = 2"), ("b = 2", "a = 1")],
-     "# keep\nb = 2\na = 1\nprint(a, b)\n"),
-    ("# keep\ndef helper():\n    return 1\n\nvalue = 2\nprint(value)\n",
-     [("def helper():\n    return 1\n\n", ""),
-      ("print(value)", "def helper():\n    return 1\n\nprint(value)")],
-     "# keep\nvalue = 2\ndef helper():\n    return 1\n\nprint(value)\n"),
-    ("# keep\r\na = 1\r\nb = 2", [("a = 1", "a = 10"), ("b = 2", "b = 20")],
-     "# keep\r\na = 10\r\nb = 20"),
-])
-async def test_multi_edit_uses_original_snapshot_and_commits_once(toolkit, script, source, edits, expected):  # noqa: F811
+@pytest.mark.parametrize(
+    "source,edits,expected",
+    [
+        (
+            "# keep\na = 1\nb = 2\nprint(a, b)\n",
+            [("b = 2", "b = 20"), ("a = 1", "a = 10\nc = 3")],
+            "# keep\na = 10\nc = 3\nb = 20\nprint(a, b)\n",
+        ),
+        (
+            "# keep\na = 1\nb = 2\nprint(a, b)\n",
+            [("a = 1", "b = 2"), ("b = 2", "a = 1")],
+            "# keep\nb = 2\na = 1\nprint(a, b)\n",
+        ),
+        (
+            "# keep\ndef helper():\n    return 1\n\nvalue = 2\nprint(value)\n",
+            [
+                ("def helper():\n    return 1\n\n", ""),
+                ("print(value)", "def helper():\n    return 1\n\nprint(value)"),
+            ],
+            "# keep\nvalue = 2\ndef helper():\n    return 1\n\nprint(value)\n",
+        ),
+        (
+            "# keep\r\na = 1\r\nb = 2",
+            [("a = 1", "a = 10"), ("b = 2", "b = 20")],
+            "# keep\r\na = 10\r\nb = 20",
+        ),
+    ],
+)
+async def test_multi_edit_uses_original_snapshot_and_commits_once(
+    toolkit,  # noqa: F811
+    script,
+    source,
+    edits,
+    expected,  # noqa: F811
+):  # noqa: F811
     script["source"] = source
     patch = multi_edit_patch(source, edits)
-    spec = next(t for t in _code_responses_model()._format_tool_params(
-        [], toolkit.tool_functions,
-    ) if t["name"] == "edit_script")
+    spec = next(
+        t
+        for t in _code_responses_model()._format_tool_params(
+            [],
+            toolkit.tool_functions,
+        )
+        if t["name"] == "edit_script"
+    )
     Lark(spec["format"]["definition"]).parse(patch)
     result = await toolkit.edit_script(patch)
     assert result["ok"] is True
@@ -129,20 +160,39 @@ async def test_multi_edit_uses_original_snapshot_and_commits_once(toolkit, scrip
     assert result["sourceSha256"] == result["sha256"]
     assert result["sourceBytes"] == result["size"]
     assert result["changeSummary"] == {
-        "kind": "edit", "replacedOccurrences": len(edits),
+        "kind": "edit",
+        "replacedOccurrences": len(edits),
     }
     assert script["source"] == expected
     assert script["writes"] == 1
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("edits,code", [
-    ([("value = 1", "value = 2"), ("missing", "value = 3")], "report_code_script_edit_not_found"),
-    ([("value = 1", "value = 2"), ("value = 2", "value = 3")], "report_code_script_edit_not_found"),
-    ([("value = 1", "value = 2"), ("value = 1\nprint(value)", "pass")], "report_code_script_edit_overlap"),
-    ([("value = 1", "value = 2"), ("value = 1", "value = 3")], "report_code_script_edit_overlap"),
-    ([("# 保留中文\nvalue = 1\n", "x = 3\n"), ("print(value)\n", "print(x)\n")], "report_code_script_edit_not_local"),
-])
+@pytest.mark.parametrize(
+    "edits,code",
+    [
+        (
+            [("value = 1", "value = 2"), ("missing", "value = 3")],
+            "report_code_script_edit_not_found",
+        ),
+        (
+            [("value = 1", "value = 2"), ("value = 2", "value = 3")],
+            "report_code_script_edit_not_found",
+        ),
+        (
+            [("value = 1", "value = 2"), ("value = 1\nprint(value)", "pass")],
+            "report_code_script_edit_overlap",
+        ),
+        (
+            [("value = 1", "value = 2"), ("value = 1", "value = 3")],
+            "report_code_script_edit_overlap",
+        ),
+        (
+            [("# 保留中文\nvalue = 1\n", "x = 3\n"), ("print(value)\n", "print(x)\n")],
+            "report_code_script_edit_not_local",
+        ),
+    ],
+)
 async def test_multi_edit_failure_is_atomic(toolkit, script, edits, code):  # noqa: F811
     source = script["source"]
     receipt = _receipt()
@@ -169,8 +219,11 @@ def script(toolkit, monkeypatch):  # noqa: F811
     state = {"source": "# 保留中文\nvalue = 1\nprint(value)\n", "writes": 0}
 
     async def identity(*args, **kwargs):
-        return {"sha256": hashlib.sha256(state["source"].encode()).hexdigest(),
-                "path": toolkit.context.script_path, "size": len(state["source"].encode())}
+        return {
+            "sha256": hashlib.sha256(state["source"].encode()).hexdigest(),
+            "path": toolkit.context.script_path,
+            "size": len(state["source"].encode()),
+        }
 
     async def read(*args, **kwargs):
         return state["source"].encode()
@@ -214,7 +267,8 @@ def test_edit_mixed_batch_replays_native_custom_and_function_calls(toolkit):  # 
     model.get_request_params(messages=[], tools=toolkit.tool_functions)
     patch = edit_patch("value = 1\n", "value = 1", "value = 2")
     response = _batch_response(
-        _custom_response("edit_script", patch), _function_response(2, "run_script", {}),
+        _custom_response("edit_script", patch),
+        _function_response(2, "run_script", {}),
     )
     parsed = model._parse_provider_response(response)
     assert [c["function"]["name"] for c in parsed.tool_calls] == ["edit_script", "run_script"]
@@ -223,7 +277,10 @@ def test_edit_mixed_batch_replays_native_custom_and_function_calls(toolkit):  # 
         messages.extend(_assistant_and_result_messages(call, {"ok": True}))
     replay = model._format_messages(messages)
     assert [item["type"] for item in replay] == [
-        "custom_tool_call", "custom_tool_call_output", "function_call", "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "function_call",
+        "function_call_output",
     ]
 
 
@@ -235,20 +292,36 @@ def test_edit_cannot_downgrade_to_json_function_call(toolkit):  # noqa: F811
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source,old,new,expected", [
-    ("# 保留中文\nvalue = 1\nprint(value)\n", "value = 1", "value = 2",
-     "# 保留中文\nvalue = 2\nprint(value)\n"),
-    ("# keep\r\na = 1\r\nb = 2\r\n", "a = 1\r\nb = 2", "a = 3\r\nb = 4",
-     "# keep\r\na = 3\r\nb = 4\r\n"),
-    ("# keep\nvalue = 1", "value = 1", "value = 2", "# keep\nvalue = 2"),
-    ("# keep\nvalue = 1\nprint(2)\n", "value = 1\n", "", "# keep\nprint(2)\n"),
-])
+@pytest.mark.parametrize(
+    "source,old,new,expected",
+    [
+        (
+            "# 保留中文\nvalue = 1\nprint(value)\n",
+            "value = 1",
+            "value = 2",
+            "# 保留中文\nvalue = 2\nprint(value)\n",
+        ),
+        (
+            "# keep\r\na = 1\r\nb = 2\r\n",
+            "a = 1\r\nb = 2",
+            "a = 3\r\nb = 4",
+            "# keep\r\na = 3\r\nb = 4\r\n",
+        ),
+        ("# keep\nvalue = 1", "value = 1", "value = 2", "# keep\nvalue = 2"),
+        ("# keep\nvalue = 1\nprint(2)\n", "value = 1\n", "", "# keep\nprint(2)\n"),
+    ],
+)
 async def test_edit_changes_only_exact_block(toolkit, script, source, old, new, expected):  # noqa: F811
     script["source"] = source
     patch = edit_patch(source, old, new)
-    spec = next(t for t in _code_responses_model()._format_tool_params(
-        [], toolkit.tool_functions,
-    ) if t["name"] == "edit_script")
+    spec = next(
+        t
+        for t in _code_responses_model()._format_tool_params(
+            [],
+            toolkit.tool_functions,
+        )
+        if t["name"] == "edit_script"
+    )
     Lark(spec["format"]["definition"]).parse(patch)
     toolkit.binding.execution_receipt = _receipt()
     toolkit.submitted_receipt = _receipt()
@@ -261,27 +334,34 @@ async def test_edit_changes_only_exact_block(toolkit, script, source, old, new, 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("case,code", [
-    ("missing", "report_code_script_edit_not_found"),
-    ("ambiguous", "report_code_script_edit_ambiguous"),
-    ("stale", "report_code_script_edit_conflict"),
-    ("whole", "report_code_script_edit_not_local"),
-    ("whole_without_newline", "report_code_script_edit_not_local"),
-    ("unchanged", "report_code_script_edit_unchanged"),
-    ("empty", "report_code_script_edit_invalid"),
-    ("wrapped", "report_code_script_edit_invalid"),
-    ("two_blocks", "report_code_script_edit_invalid"),
-    ("bad_sha", "report_code_script_edit_invalid"),
-    ("trailing", "report_code_script_edit_invalid"),
-    ("oversized", "report_code_script_edit_invalid"),
-    ("path", "report_code_script_edit_invalid"),
-])
+@pytest.mark.parametrize(
+    "case,code",
+    [
+        ("missing", "report_code_script_edit_not_found"),
+        ("ambiguous", "report_code_script_edit_ambiguous"),
+        ("stale", "report_code_script_edit_conflict"),
+        ("whole", "report_code_script_edit_not_local"),
+        ("whole_without_newline", "report_code_script_edit_not_local"),
+        ("unchanged", "report_code_script_edit_unchanged"),
+        ("empty", "report_code_script_edit_invalid"),
+        ("wrapped", "report_code_script_edit_invalid"),
+        ("two_blocks", "report_code_script_edit_invalid"),
+        ("bad_sha", "report_code_script_edit_invalid"),
+        ("trailing", "report_code_script_edit_invalid"),
+        ("oversized", "report_code_script_edit_invalid"),
+        ("path", "report_code_script_edit_invalid"),
+    ],
+)
 async def test_rejected_edit_never_writes_or_invalidates_receipts(toolkit, script, case, code):  # noqa: F811
     if case == "ambiguous":
         script["source"] += "value = 1\n"
     source = script["source"]
-    old = {"missing": "value=1", "whole": source, "whole_without_newline": source.rstrip(),
-           "empty": ""}.get(case, "value = 1")
+    old = {
+        "missing": "value=1",
+        "whole": source,
+        "whole_without_newline": source.rstrip(),
+        "empty": "",
+    }.get(case, "value = 1")
     patch = edit_patch(source, old, old if case == "unchanged" else "value = 2")
     if case == "stale":
         patch = edit_patch("old revision", old, "value = 2")
@@ -312,6 +392,7 @@ async def test_edit_cas_conflict_leaves_concurrent_source_intact(toolkit, script
     async def conflict(*args, **kwargs):
         script["source"] = "# concurrent edit\nvalue = 3\n"
         raise WorkspaceError("conflict")
+
     monkeypatch.setattr(toolkit.workspace, "awrite_text", conflict)
     result = await toolkit.edit_script(edit_patch(script["source"], "value = 1", "value = 2"))
     assert result["code"] == "report_code_script_edit_conflict"
@@ -350,8 +431,11 @@ async def test_edit_first_custom_response_executes_through_agno(toolkit, script,
     call = model._parse_provider_response(_custom_response("edit_script", patch)).tool_calls[0]
     function = next(t for t in toolkit.tool_functions if t.name == "edit_script")
     function.process_entrypoint()
-    fc = FunctionCall(function=function, call_id=call["call_id"],
-                      arguments=json.loads(call["function"]["arguments"]))
+    fc = FunctionCall(
+        function=function,
+        call_id=call["call_id"],
+        arguments=json.loads(call["function"]["arguments"]),
+    )
     assert await fc.aexecute()
     assert fc.result["ok"] is True
     assert script["source"] == "# 保留中文\nvalue = 2\nprint(value)\n"
@@ -369,11 +453,17 @@ async def test_edit_provider_data_envelope_applies_once_and_replays_raw_patch(to
     ).tool_calls[0]
     function = next(t for t in toolkit.tool_functions if t.name == "edit_script")
     function.process_entrypoint()
-    fc = FunctionCall(function=function, call_id=call["call_id"],
-                      arguments=json.loads(call["function"]["arguments"]))
+    fc = FunctionCall(
+        function=function,
+        call_id=call["call_id"],
+        arguments=json.loads(call["function"]["arguments"]),
+    )
     assert await fc.aexecute()
     assert fc.result["ok"] is True
-    assert script["source"] == '# 保留\\n字面量\nfor d in [x[0] for x in dims]:\n    print(d["name"])\n'
+    assert (
+        script["source"]
+        == '# 保留\\n字面量\nfor d in [x[0] for x in dims]:\n    print(d["name"])\n'
+    )
     assert script["writes"] == 1
     replay = model._format_messages(_assistant_and_result_messages(call, fc.result))
     assert replay[-2]["type"] == "custom_tool_call"
@@ -383,16 +473,19 @@ async def test_edit_provider_data_envelope_applies_once_and_replays_raw_patch(to
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("case,code", [
-    ("nested", "report_code_script_edit_invalid"),
-    ("extra_key", "report_code_script_edit_invalid"),
-    ("fenced", "report_code_script_edit_invalid"),
-    ("literal_newlines", "report_code_script_edit_invalid"),
-    ("stale", "report_code_script_edit_conflict"),
-    ("ambiguous", "report_code_script_edit_ambiguous"),
-    ("missing_second_block", "report_code_script_edit_not_found"),
-    ("whole", "report_code_script_edit_not_local"),
-])
+@pytest.mark.parametrize(
+    "case,code",
+    [
+        ("nested", "report_code_script_edit_invalid"),
+        ("extra_key", "report_code_script_edit_invalid"),
+        ("fenced", "report_code_script_edit_invalid"),
+        ("literal_newlines", "report_code_script_edit_invalid"),
+        ("stale", "report_code_script_edit_conflict"),
+        ("ambiguous", "report_code_script_edit_ambiguous"),
+        ("missing_second_block", "report_code_script_edit_not_found"),
+        ("whole", "report_code_script_edit_not_local"),
+    ],
+)
 async def test_edit_provider_envelope_keeps_patch_guards(toolkit, script, case, code):  # noqa: F811
     if case == "ambiguous":
         script["source"] += "value = 1\n"
@@ -410,9 +503,13 @@ async def test_edit_provider_envelope_keeps_patch_guards(toolkit, script, case, 
     envelope = {"data": patch}
     if case == "extra_key":
         envelope["path"] = "other.py"
-    call = _code_responses_model()._parse_provider_response(
-        _custom_response("edit_script", json.dumps(envelope)),
-    ).tool_calls[0]
+    call = (
+        _code_responses_model()
+        ._parse_provider_response(
+            _custom_response("edit_script", json.dumps(envelope)),
+        )
+        .tool_calls[0]
+    )
     receipt = _receipt()
     toolkit.binding.execution_receipt = toolkit.submitted_receipt = receipt
     result = await toolkit.edit_script(**json.loads(call["function"]["arguments"]))
@@ -453,7 +550,9 @@ async def test_edit_not_found_receipt_carries_bounded_anchor_context(toolkit, sc
     assert details["sourceEndLine"] == 3
     assert details["errorLine"] == 2
     assert details["allowedEditRegion"] == {
-        "path": toolkit.context.script_path, "startLine": 1, "endLine": 3,
+        "path": toolkit.context.script_path,
+        "startLine": 1,
+        "endLine": 3,
     }
     assert "readRange" not in details
     assert details["nextTools"] == ["edit_script", "run_script"]
@@ -483,7 +582,9 @@ async def test_edit_failure_without_anchor_falls_back_to_full_read_range(toolkit
     assert "sourceExcerpt" not in details
     assert "sourceSha256" not in details
     assert details["readRange"] == {
-        "path": toolkit.context.script_path, "startLine": 1, "endLine": 3,
+        "path": toolkit.context.script_path,
+        "startLine": 1,
+        "endLine": 3,
     }
     assert details["nextTools"] == ["read_script", "edit_script"]
     assert script["writes"] == 0
@@ -495,9 +596,7 @@ async def test_edit_can_retry_directly_from_failure_receipt_without_read(toolkit
     # 修正 SEARCH 并直接重试，中间不需要再 read_script。
     source = "# keep\nvalue = 1\nprint(value)\n"
     script["source"] = source
-    failed = await toolkit.edit_script(
-        edit_patch(source, "value = 1\nprint(total)", "value = 2")
-    )
+    failed = await toolkit.edit_script(edit_patch(source, "value = 1\nprint(total)", "value = 2"))
     assert failed["code"] == "report_code_script_edit_not_found"
     details = failed["details"]
     assert details["sourceExcerpt"] == source
@@ -522,7 +621,9 @@ async def test_edit_conflict_receipt_completes_read_range_and_keeps_anchor_excer
     assert details["expectedSha256"] == hashlib.sha256(b"stale source").hexdigest()
     assert details["action"] == "read_script"
     assert details["readRange"] == {
-        "path": toolkit.context.script_path, "startLine": 1, "endLine": 3,
+        "path": toolkit.context.script_path,
+        "startLine": 1,
+        "endLine": 3,
     }
     # SEARCH 首行仍命中当前源码：excerpt + sourceSha256 可支撑直接重试。
     assert details["sourceSha256"] == details["currentSha256"]

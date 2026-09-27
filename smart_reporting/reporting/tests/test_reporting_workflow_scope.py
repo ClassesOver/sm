@@ -28,27 +28,36 @@ def test_scope_keys_isolate_tenants_users_threads_and_runs() -> None:
         run_id="run-1",
     )
 
-    assert first.thread_lease_key != reporting_scope_keys(
-        database="db-b",
-        company_id="company-a",
-        user_id="user-a",
-        thread_id="thread-1",
-        run_id="run-1",
-    ).thread_lease_key
-    assert first.thread_lease_key != reporting_scope_keys(
-        database="db-a",
-        company_id="company-b",
-        user_id="user-a",
-        thread_id="thread-1",
-        run_id="run-1",
-    ).thread_lease_key
-    assert first.thread_lease_key != reporting_scope_keys(
-        database="db-a",
-        company_id="company-a",
-        user_id="user-b",
-        thread_id="thread-1",
-        run_id="run-1",
-    ).thread_lease_key
+    assert (
+        first.thread_lease_key
+        != reporting_scope_keys(
+            database="db-b",
+            company_id="company-a",
+            user_id="user-a",
+            thread_id="thread-1",
+            run_id="run-1",
+        ).thread_lease_key
+    )
+    assert (
+        first.thread_lease_key
+        != reporting_scope_keys(
+            database="db-a",
+            company_id="company-b",
+            user_id="user-a",
+            thread_id="thread-1",
+            run_id="run-1",
+        ).thread_lease_key
+    )
+    assert (
+        first.thread_lease_key
+        != reporting_scope_keys(
+            database="db-a",
+            company_id="company-a",
+            user_id="user-b",
+            thread_id="thread-1",
+            run_id="run-1",
+        ).thread_lease_key
+    )
     second_run = reporting_scope_keys(
         database="db-a",
         company_id="company-a",

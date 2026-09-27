@@ -522,3 +522,64 @@ def test_deterministic_bundle_warns_instead_of_guessing_unconfirmed_numeric_fiel
 
     assert bundle.metrics == ()
     assert any("没有已确认指标语义" in warning for warning in bundle.warnings)
+
+
+def test_deterministic_daily_yoy_spans_a_leap_day_present_on_one_side() -> None:
+    current = (
+        b"month,department,amount\n2024-02-27,A,1\n2024-02-28,A,1\n2024-02-29,A,1\n"
+        b"2024-03-01,A,1\n2024-03-02,A,1\n"
+    )
+    yoy = (
+        b"month,department,amount\n2023-02-27,A,1\n2023-02-28,A,1\n2023-03-01,A,1\n2023-03-02,A,1\n"
+    )
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (
+            ("current", current, context("current"), ("current",)),
+            ("yoy", yoy, context("yoy"), ("yoy",)),
+        ),
+    )
+
+    comparison = bundle.comparisons[0]
+    # 闰日只存在于当期一侧：窗口不应在 2 月 29 日处断开，且整期口径计入闰日。
+    assert comparison.period_start == "2024-02-27"
+    assert comparison.period_end == "2024-03-02"
+    assert comparison.current_total == 5
+    assert comparison.baseline_total == 4
+
+
+def test_deterministic_daily_yoy_counts_leap_day_on_the_baseline_side() -> None:
+    current = b"month,department,amount\n2025-02-27,A,1\n2025-02-28,A,1\n2025-03-01,A,1\n"
+    yoy = (
+        b"month,department,amount\n2024-02-27,A,1\n2024-02-28,A,1\n2024-02-29,A,1\n2024-03-01,A,1\n"
+    )
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (
+            ("current", current, context("current"), ("current",)),
+            ("yoy", yoy, context("yoy"), ("yoy",)),
+        ),
+    )
+
+    comparison = bundle.comparisons[0]
+    assert comparison.period_start == "2025-02-27"
+    assert comparison.period_end == "2025-03-01"
+    assert comparison.current_total == 3
+    assert comparison.baseline_total == 4
+    assert not any("共同连续窗口" in warning for warning in comparison.warnings)
+
+
+def test_deterministic_period_order_uses_calendar_order_for_unpadded_months() -> None:
+    rows = "".join(f"2025-{month},A,{0 if month > 10 else 10}\n" for month in range(1, 13))
+    current = ("month,department,amount\n" + rows).encode()
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (("current", current, context("current"), ("current",)),),
+    )
+
+    fact = bundle.metrics[0]
+    assert [item.period for item in fact.period_values][-2:] == ["2025-9", "2025-10"]
+    assert any("2025-11 至 2025-12" in warning for warning in fact.warnings)

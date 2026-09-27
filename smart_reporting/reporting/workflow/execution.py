@@ -167,7 +167,11 @@ class _TaskModelMetricsSettlement:
     def record_run_output(self, run_output: Any, request_count: int) -> None:
         """汇总 Agno 非流式 RunOutput，并使用协议层的真实请求计数。"""
         metrics = getattr(run_output, "metrics", None)
-        if isinstance(request_count, bool) or not isinstance(request_count, int) or request_count < 0:
+        if (
+            isinstance(request_count, bool)
+            or not isinstance(request_count, int)
+            or request_count < 0
+        ):
             raise ValueError("request_count 必须大于等于 0")
         with self._lock:
             self._metrics["requestCount"] += request_count
@@ -214,9 +218,7 @@ class _TaskModelMetricsSettlement:
                 request_count > 0
                 and metrics is not None
                 and not any(
-                    isinstance(value, int | float)
-                    and not isinstance(value, bool)
-                    and value > 0
+                    isinstance(value, int | float) and not isinstance(value, bool) and value > 0
                     for value in usage_values
                 )
                 and not getattr(metrics, "details", None)
@@ -241,10 +243,7 @@ class _TaskModelMetricsSettlement:
                             continue
                         normalized_index: int | str = (
                             request_index
-                            if (
-                                isinstance(request_index, int)
-                                and request_index >= 0
-                            )
+                            if (isinstance(request_index, int) and request_index >= 0)
                             else request_index[:128]
                             if isinstance(request_index, str)
                             else "unknown"
@@ -265,11 +264,11 @@ class _TaskModelMetricsSettlement:
                         if status not in {"started", "completed", "failed"}:
                             status = "unknown"
                         normalized_request = {
-                                "requestIndex": normalized_index,
-                                "providerRequestId": normalized_provider_id,
-                                "durationMs": duration,
-                                "status": status,
-                            }
+                            "requestIndex": normalized_index,
+                            "providerRequestId": normalized_provider_id,
+                            "durationMs": duration,
+                            "status": status,
+                        }
                         tool_calls = item.get("toolCalls")
                         if isinstance(tool_calls, (list, tuple)):
                             normalized_request["toolCalls"] = [
@@ -288,9 +287,7 @@ class _TaskModelMetricsSettlement:
                             and tool_call_count >= 0
                         ):
                             normalized_request["toolCallCount"] = tool_call_count
-                        request_params = bounded_request_params_snapshot(
-                            item.get("requestParams")
-                        )
+                        request_params = bounded_request_params_snapshot(item.get("requestParams"))
                         if request_params is not None:
                             normalized_request["requestParams"] = request_params
                         request_metrics.append(normalized_request)
@@ -710,9 +707,7 @@ class ReportingTaskCoordinator:
         task: Any,
         *,
         model_metrics: Mapping[str, int | float] | None = None,
-        model_metrics_by_stage: Mapping[
-            str, Mapping[str, int | float | str]
-        ] | None = None,
+        model_metrics_by_stage: Mapping[str, Mapping[str, int | float | str]] | None = None,
         projection_metrics: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         receipt = task.finish_receipt
@@ -726,8 +721,7 @@ class ReportingTaskCoordinator:
             result["modelMetrics"] = dict(model_metrics)
         if model_metrics_by_stage:
             result["modelMetricsByStage"] = {
-                stage: dict(metrics)
-                for stage, metrics in sorted(model_metrics_by_stage.items())
+                stage: dict(metrics) for stage, metrics in sorted(model_metrics_by_stage.items())
             }
             result["plannerCodingReasoningTokens"] = planner_coding_reasoning_tokens(
                 model_metrics_by_stage

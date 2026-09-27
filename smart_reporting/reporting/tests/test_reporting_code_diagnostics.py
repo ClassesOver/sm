@@ -214,13 +214,15 @@ def test_analysis_script_facts_keep_dataset_identity_nulls_and_period_roles():
                         "total": None,
                     },
                 ],
-                "comparisons": [{
-                    "currentDatasetId": "current",
-                    "baselineDatasetId": "baseline",
-                    "currentTotal": 10.0,
-                    "baselineTotal": None,
-                    "changeRate": None,
-                }],
+                "comparisons": [
+                    {
+                        "currentDatasetId": "current",
+                        "baselineDatasetId": "baseline",
+                        "currentTotal": 10.0,
+                        "baselineTotal": None,
+                        "changeRate": None,
+                    }
+                ],
                 "reconciliations": [{"name": "total", "passed": False}],
             },
             "datasets": [
@@ -252,9 +254,7 @@ def test_analysis_script_facts_keep_dataset_identity_nulls_and_period_roles():
 
     existing = workflow._script_task_facts(state)["existingFacts"]
 
-    assert [item["datasetId"] for item in existing["metrics"]] == [
-        "current", "baseline"
-    ]
+    assert [item["datasetId"] for item in existing["metrics"]] == ["current", "baseline"]
     assert existing["metrics"][1]["total"] is None
     assert existing["metrics"][0]["periodRoles"] == ["current"]
     assert existing["metrics"][1]["periodRoles"] == ["yoy"]
@@ -319,13 +319,19 @@ async def test_write_script_rejects_large_embedded_data_before_workspace_write(
 
 
 def test_failure_details_are_bounded_and_allowlisted():
-    result = _failure("invalid", "invalid", {
-        "path": "analysis/a.py", "line": 2, "retryable": False,
-        "unsignedPaths": ["secret.csv"] * 1000,
-        "forbiddenPathOperations": ["os.getcwd"],
-        "traceback": "trace\n" * 5000 + "ValueError: bad value",
-        "credentials": {"token": "do-not-disclose"},
-    })
+    result = _failure(
+        "invalid",
+        "invalid",
+        {
+            "path": "analysis/a.py",
+            "line": 2,
+            "retryable": False,
+            "unsignedPaths": ["secret.csv"] * 1000,
+            "forbiddenPathOperations": ["os.getcwd"],
+            "traceback": "trace\n" * 5000 + "ValueError: bad value",
+            "credentials": {"token": "do-not-disclose"},
+        },
+    )
     details = result["details"]
     assert details["path"] == "analysis/a.py"
     assert details["line"] == 2
@@ -338,10 +344,14 @@ def test_failure_details_are_bounded_and_allowlisted():
 
 
 def test_runtime_traceback_survives_noisy_output_and_keeps_exception_tail():
-    result = _bounded_failure("execution_failed", {
-        "stdout": "noise" * 5000, "stderr": "warning" * 5000,
-        "traceback": "frame\n" * 5000 + "KeyError: missing_column",
-    })
+    result = _bounded_failure(
+        "execution_failed",
+        {
+            "stdout": "noise" * 5000,
+            "stderr": "warning" * 5000,
+            "traceback": "frame\n" * 5000 + "KeyError: missing_column",
+        },
+    )
     assert "KeyError: missing_column" in result["details"]["traceback"]
     assert len(json.dumps(result["details"], ensure_ascii=False).encode()) <= MAX_DIAGNOSTIC_BYTES
 
@@ -352,7 +362,7 @@ def test_traceback_tail_survives_json_escape_expansion():
         "failed",
         {
             "path": "analysis/a.py",
-            "traceback": ("\\\"\n" * 5000) + "RuntimeError: escaped failure",
+            "traceback": ('\\"\n' * 5000) + "RuntimeError: escaped failure",
         },
     )
 
@@ -474,9 +484,7 @@ async def test_run_script_forwards_structured_variable_summary_without_guessing(
         variableSummary={"current_income": {"type": "int", "value": "120"}},
     )
     runtime = SimpleNamespace(  # noqa: F811
-        execute_script_process=AsyncMock(
-            return_value=ScriptProcessResult(cell=cell, exit_code=1)
-        )
+        execute_script_process=AsyncMock(return_value=ScriptProcessResult(cell=cell, exit_code=1))
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     await toolkit.write_script("raise TypeError('bad')\n")
@@ -497,9 +505,7 @@ async def test_run_script_marks_variable_summary_unknown_when_runtime_does_not_e
         status="error", stdout="", stderr="", traceback="TypeError: bad", truncated=[]
     )
     runtime = SimpleNamespace(  # noqa: F811
-        execute_script_process=AsyncMock(
-            return_value=ScriptProcessResult(cell=cell, exit_code=1)
-        )
+        execute_script_process=AsyncMock(return_value=ScriptProcessResult(cell=cell, exit_code=1))
     )
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     await toolkit.write_script("raise TypeError('bad')\n")
@@ -530,7 +536,11 @@ async def test_declared_outputs_report_all_missing_paths_without_runtime(binding
     binding.context = replace(
         binding.context,
         declared_output_paths=("analysis/a.json", "analysis/b.json"),
-        authorized_write_paths=(*binding.context.authorized_write_paths, "analysis/a.json", "analysis/b.json"),
+        authorized_write_paths=(
+            *binding.context.authorized_write_paths,
+            "analysis/a.json",
+            "analysis/b.json",
+        ),
     )
     toolkit = ReportingCodeModeToolkit(binding, AsyncMock(), ReportingLspProcessManager())
     binding.workspace.ahash_file = AsyncMock(side_effect=WorkspaceError("missing"))
@@ -552,7 +562,11 @@ async def test_declared_outputs_partial_missing_keeps_rewrite_gate_closed(bindin
     binding.context = replace(
         binding.context,
         declared_output_paths=("analysis/a.json", "analysis/b.json"),
-        authorized_write_paths=(*binding.context.authorized_write_paths, "analysis/a.json", "analysis/b.json"),
+        authorized_write_paths=(
+            *binding.context.authorized_write_paths,
+            "analysis/a.json",
+            "analysis/b.json",
+        ),
     )
     toolkit = ReportingCodeModeToolkit(binding, AsyncMock(), ReportingLspProcessManager())
 
@@ -595,11 +609,15 @@ async def test_analysis_no_submission_degrades_supplemental_evidence():
     策略一致——先重试到 MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS 耗尽才软降级，
     而不是第一次失败就放弃（后者会与 test_evidence_feedback_to_workflow_
     completion 长期验证的重试行为冲突）。"""
-    error = ReportingError("report_code_generation_no_submission", "failed",
-                           details={"retryable": False})
+    error = ReportingError(
+        "report_code_generation_no_submission", "failed", details={"retryable": False}
+    )
     workflow = AnalysisItemWorkflow(
-        decide_evidence=AsyncMock(), run_code=AsyncMock(side_effect=error),
-        summarize=AsyncMock(), read_file=AsyncMock(), complete=AsyncMock(),
+        decide_evidence=AsyncMock(),
+        run_code=AsyncMock(side_effect=error),
+        summarize=AsyncMock(),
+        read_file=AsyncMock(),
+        complete=AsyncMock(),
     )
     state = _AnalysisItemState(
         instruction={
@@ -610,14 +628,19 @@ async def test_analysis_no_submission_degrades_supplemental_evidence():
             },
             "datasets": [{"datasetId": "dataset_1", "columns": ["trend"]}],
         },
-        decision=AnalysisEvidenceDecision(requiresSupplementalEvidence=True,
-                                         reason="missing", missingFacts=("trend",),
-                                         codingRequirements=({
-                                             "datasetId": "dataset_1",
-                                             "fields": ["trend"],
-                                             "calculation": "计算趋势",
-                                             "outputName": "trend",
-                                         },)),
+        decision=AnalysisEvidenceDecision(
+            requiresSupplementalEvidence=True,
+            reason="missing",
+            missingFacts=("trend",),
+            codingRequirements=(
+                {
+                    "datasetId": "dataset_1",
+                    "fields": ["trend"],
+                    "calculation": "计算趋势",
+                    "outputName": "trend",
+                },
+            ),
+        ),
     )
     run_context = RunContext(run_id="run", session_id="session")
     for attempt in range(1, MAX_ANALYSIS_SCRIPT_GENERATION_ATTEMPTS):
@@ -632,11 +655,13 @@ async def test_analysis_no_submission_degrades_supplemental_evidence():
 
 @pytest.mark.anyio
 async def test_visualization_no_submission_degrades_after_repair_budget():
-    error = ReportingError("report_code_generation_no_submission", "failed",
-                           details={"retryable": False})
+    error = ReportingError(
+        "report_code_generation_no_submission", "failed", details={"retryable": False}
+    )
     workflow = VisualizationSectionWorkflow(
         generate_plan=AsyncMock(return_value=_visualization_plan()),
-        run_code=AsyncMock(side_effect=error), submit=AsyncMock(),
+        run_code=AsyncMock(side_effect=error),
+        submit=AsyncMock(),
         degrade=AsyncMock(return_value={"status": "accepted"}),
     )
     result = await workflow.run(
@@ -803,13 +828,7 @@ async def test_write_script_rejects_generic_loader_load_p(
     runtime,  # noqa: F811
 ):
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
-    source = (
-        "import json\n"
-        "def load(p):\n"
-        "    return json.load(open(p))\n"
-        "\n"
-        "load('analysis/a.py')\n"
-    )
+    source = "import json\ndef load(p):\n    return json.load(open(p))\n\nload('analysis/a.py')\n"
     result = await toolkit.write_script(source)
     assert result["ok"] is False
     assert result["code"] == "report_code_generic_data_helper"
@@ -824,12 +843,7 @@ async def test_write_script_rejects_generic_findings_decoder_rows_of(
     runtime,  # noqa: F811
 ):
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
-    source = (
-        "def rows_of(src, idx):\n"
-        '    return src["findings"][idx]["rows"]\n'
-        "\n"
-        "print(rows_of)\n"
-    )
+    source = 'def rows_of(src, idx):\n    return src["findings"][idx]["rows"]\n\nprint(rows_of)\n'
     result = await toolkit.write_script(source)
     assert result["ok"] is False
     assert result["code"] == "report_code_generic_data_helper"
@@ -882,11 +896,7 @@ async def test_write_script_allows_inline_literal_path_load(
     runtime,  # noqa: F811
 ):
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
-    source = (
-        "import json\n"
-        'data = json.load(open("analysis/a.py"))\n'
-        "print(data)\n"
-    )
+    source = 'import json\ndata = json.load(open("analysis/a.py"))\nprint(data)\n'
     assert (await toolkit.write_script(source))["ok"] is True
 
 
@@ -999,8 +1009,13 @@ def test_apply_patch_path_mismatch_keeps_format_and_expected_path():
     result = _failure(
         "report_code_script_edit_invalid",
         "path",
-        {"reason": "apply_patch_path_mismatch", "patchFormat": "apply_patch",
-         "path": "x.py", "expectedPath": "analysis/a.py", "totalLines": 12},
+        {
+            "reason": "apply_patch_path_mismatch",
+            "patchFormat": "apply_patch",
+            "path": "x.py",
+            "expectedPath": "analysis/a.py",
+            "totalLines": 12,
+        },
     )
 
     assert result["details"]["patchFormat"] == "apply_patch"

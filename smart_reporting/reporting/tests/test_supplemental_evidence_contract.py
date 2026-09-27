@@ -10,12 +10,15 @@ from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
 )
 
 
-@pytest.mark.parametrize("reconciliation,valid", [
-    ({"kind": "total", "passed": True}, False),
-    ({"name": "   ", "passed": True}, False),
-    ({"name": "total", "passed": "true"}, False),
-    ({"name": "total", "passed": False, "difference": 3}, True),
-])
+@pytest.mark.parametrize(
+    "reconciliation,valid",
+    [
+        ({"kind": "total", "passed": True}, False),
+        ({"name": "   ", "passed": True}, False),
+        ({"name": "total", "passed": "true"}, False),
+        ({"name": "total", "passed": False, "difference": 3}, True),
+    ],
+)
 def test_reconciliation_wire_contract_matches_acceptance(reconciliation, valid):
     payload = {
         "findings": [{"value": 3}],

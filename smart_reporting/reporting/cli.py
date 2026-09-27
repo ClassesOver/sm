@@ -219,9 +219,7 @@ class _CliProgressSink:
         self._last_write = current
 
 
-async def _emit_cli_progress_heartbeats(
-    sink: _CliProgressSink, interval_seconds: float
-) -> None:
+async def _emit_cli_progress_heartbeats(sink: _CliProgressSink, interval_seconds: float) -> None:
     while True:
         await asyncio.sleep(interval_seconds)
         sink.emit_heartbeat()
@@ -237,9 +235,7 @@ async def _bind_cli_progress(
         sink.emit_log_record,
         filter=lambda record: bool(record["extra"].get("reporting_progress")),
     )
-    heartbeat = asyncio.create_task(
-        _emit_cli_progress_heartbeats(sink, heartbeat_interval_seconds)
-    )
+    heartbeat = asyncio.create_task(_emit_cli_progress_heartbeats(sink, heartbeat_interval_seconds))
     try:
         yield
     finally:

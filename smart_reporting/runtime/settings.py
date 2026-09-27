@@ -39,7 +39,8 @@ def _positive_int(
     *,
     maximum: int | None = None,
 ) -> int:
-    raw = values.get(name, str(default)).strip()
+    # 留空（NAME=）与未设置同义，回退默认值。
+    raw = (values.get(name) or "").strip() or str(default)
     try:
         value = int(raw)
     except ValueError as error:
@@ -52,7 +53,7 @@ def _positive_int(
 
 
 def _temperature(values: MutableMapping[str, str], name: str, default: float) -> float:
-    raw = values.get(name, str(default)).strip()
+    raw = (values.get(name) or "").strip() or str(default)
     try:
         value = float(raw)
     except ValueError as error:

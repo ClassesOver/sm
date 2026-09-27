@@ -59,6 +59,24 @@ describe('createLocalDraftController', () => {
     }
   })
 
+  it('flushes a pending draft when the page is hidden or discarded on mobile', () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createLocalDraftController(document.body, 'draft-key', vi.fn())
+      controller.store('pagehide')
+      window.dispatchEvent(new Event('pagehide'))
+      expect(localStorage.getItem('draft-key')).toBe('pagehide')
+
+      controller.store('hidden')
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(localStorage.getItem('draft-key')).toBe('hidden')
+    } finally {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps editing usable when localStorage quota is exhausted', () => {
     vi.useFakeTimers()
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {

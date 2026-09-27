@@ -56,6 +56,8 @@ class _FakeAgent:
         ("正文[[citation:x]]", "polish", "report_editor_ai_protocol_marker"),
         # 编辑器以 Markdown 序列化选区，协议标记以转义形态到达。
         ("正文\\[\\[citation:x\\_1]]", "polish", "report_editor_ai_protocol_marker"),
+        ("正文[[analysis:analysis_001]]", "polish", "report_editor_ai_protocol_marker"),
+        ("正文\\[\\[analysis:analysis\\_001]]", "polish", "report_editor_ai_protocol_marker"),
     ],
 )
 async def test_report_editor_ai_validation_rejects_invalid_selection_before_model_call(

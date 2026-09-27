@@ -225,8 +225,7 @@ class RuntimeDatasetsMixin:
                         stored_profile = b""
                     if (
                         len(stored_profile) == cached.profile_file.size
-                        and hashlib.sha256(stored_profile).hexdigest()
-                        == cached.profile_file.sha256
+                        and hashlib.sha256(stored_profile).hexdigest() == cached.profile_file.sha256
                     ):
                         contexts[index] = cached
                         return
@@ -269,8 +268,7 @@ class RuntimeDatasetsMixin:
                             if table.source_id == handle.source_id
                             and (
                                 not requirement_tables
-                                or f"{table.database}.{table.name}".lower()
-                                in requirement_tables
+                                or f"{table.database}.{table.name}".lower() in requirement_tables
                                 or table.name.lower() in requirement_tables
                             )
                         ],

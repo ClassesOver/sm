@@ -19,8 +19,15 @@ class KernelState:
 
     def accept(self, message: dict[str, Any]) -> None:
         kind = message.get("header", {}).get("msg_type")
-        if kind not in {"execute_input", "execute_result", "display_data", "stream",
-                        "error", "status", "clear_output"}:
+        if kind not in {
+            "execute_input",
+            "execute_result",
+            "display_data",
+            "stream",
+            "error",
+            "status",
+            "clear_output",
+        }:
             return
         content = message.get("content", {})
         parent = message.get("parent_header", {}).get("msg_id")
@@ -40,8 +47,13 @@ class KernelState:
         if parent not in self.cells:
             # 允许中途接入：没有 execute_input 也保留正在产生的输出。
             self.cells[parent] = {
-                "id": parent, "code": None, "output": "", "status": "running",
-                "started_at": time(), "finished_at": None, "truncated": False,
+                "id": parent,
+                "code": None,
+                "output": "",
+                "status": "running",
+                "started_at": time(),
+                "finished_at": None,
+                "truncated": False,
                 "clear_pending": False,
             }
             while len(self.cells) > MAX_CELLS:
@@ -84,8 +96,13 @@ class KernelState:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "id": self.kernel_id, "label": self.label, "status": self.status,
-            "notice": self.notice, "last_event_at": self.last_event_at,
-            "cells": [{k: v for k, v in cell.items() if k != "clear_pending"}
-                      for cell in self.cells.values()],
+            "id": self.kernel_id,
+            "label": self.label,
+            "status": self.status,
+            "notice": self.notice,
+            "last_event_at": self.last_event_at,
+            "cells": [
+                {k: v for k, v in cell.items() if k != "clear_pending"}
+                for cell in self.cells.values()
+            ],
         }

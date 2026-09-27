@@ -399,11 +399,18 @@ def _period_values(
         )
         .sort("__period")
     )
-    return tuple(
+    values = tuple(
         PeriodValue(period=str(row["__period"]), value=_finite(row["__value"]))
         for row in grouped.iter_rows(named=True)
         if row["__period"] is not None and row["__valid"] > 0 and row["__value"] is not None
     )
+    # 字符串排序会把不补零的月份排成 2025-1, 2025-10, 2025-2；期末零值裁剪等依赖
+    # 期间先后，能全部解析为日历期间时按日历顺序排列。
+    parsed = [_parse_period(item.period) for item in values]
+    if all(item is not None for item in parsed):
+        order = sorted(range(len(values)), key=lambda index: parsed[index].value)  # type: ignore[union-attr]
+        values = tuple(values[index] for index in order)
+    return values
 
 
 def _aggregation_expression(field: str, aggregation: Aggregation) -> pl.Expr:
@@ -576,6 +583,22 @@ def _fact_total_for_periods(
     return None
 
 
+def _is_leap_day(value: _ParsedPeriod) -> bool:
+    return value.granularity == "day" and (value.value.month, value.value.day) == (2, 29)
+
+
+def _follows(previous: _ParsedPeriod, current: _ParsedPeriod) -> bool:
+    """current 是否紧接 previous；日粒度允许跨过只存在于闰年一侧的 2 月 29 日。"""
+    if current.value == _next_period(previous):
+        return True
+    return (
+        current.granularity == "day"
+        and (previous.value.month, previous.value.day) == (2, 28)
+        and (current.value.month, current.value.day) == (3, 1)
+        and current.value.year == previous.value.year
+    )
+
+
 def _latest_contiguous_pairs(
     pairs: list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]],
 ) -> list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]]:
@@ -588,8 +611,8 @@ def _latest_contiguous_pairs(
         if (
             pair[0].granularity == previous[0].granularity
             and pair[2].granularity == previous[2].granularity
-            and pair[0].value == _next_period(previous[0])
-            and pair[2].value == _next_period(previous[2])
+            and _follows(previous[0], pair[0])
+            and _follows(previous[2], pair[2])
         ):
             current_run.append(pair)
         else:
@@ -597,6 +620,24 @@ def _latest_contiguous_pairs(
             current_run = [pair]
     runs.append(current_run)
     return runs[-1]
+
+
+def _with_inner_leap_days(
+    periods: tuple[PeriodValue, ...],
+    first: _ParsedPeriod,
+    last: _ParsedPeriod,
+    values: list[tuple[_ParsedPeriod, PeriodValue]],
+) -> tuple[PeriodValue, ...]:
+    """同比按整期口径：窗口内部的闰日虽无对侧配对，仍计入闰年一侧的总量。"""
+    leap_days = [
+        item
+        for parsed, item in values
+        if _is_leap_day(parsed) and first.value < parsed.value < last.value
+    ]
+    if not leap_days:
+        return periods
+    ordered = {item.period: item for item in (*periods, *leap_days)}
+    return tuple(item for _parsed, item in values if item.period in ordered)
 
 
 def _aligned_comparison_values(
@@ -647,14 +688,18 @@ def _aligned_comparison_values(
     selected = _latest_contiguous_pairs(pairs)
     if not selected:
         return None
-    current_periods = tuple(item[1] for item in selected)
-    baseline_periods = tuple(item[3] for item in selected)
+    current_periods = _with_inner_leap_days(
+        tuple(item[1] for item in selected), selected[0][0], selected[-1][0], current_values
+    )
+    baseline_periods = _with_inner_leap_days(
+        tuple(item[3] for item in selected), selected[0][2], selected[-1][2], baseline_values
+    )
     current_total = _fact_total_for_periods(current, current_periods)
     baseline_total = _fact_total_for_periods(baseline, baseline_periods)
     if current_total is None or baseline_total is None:
         return None
     warnings: tuple[str, ...] = ()
-    if len(selected) != len(current_values) or len(selected) != len(baseline_values):
+    if len(current_periods) != len(current_values) or len(baseline_periods) != len(baseline_values):
         warnings = (
             "同比仅使用共同连续窗口 "
             f"{current_periods[0].period} 至 {current_periods[-1].period} 对比 "

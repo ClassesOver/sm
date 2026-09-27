@@ -571,8 +571,16 @@ def test_complete_rounds_drops_round_missing_any_call_coverage():
     assistant = Message(
         role="assistant",
         tool_calls=[
-            {"id": "call-a", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
-            {"id": "call-b", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+            {
+                "id": "call-a",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+            {
+                "id": "call-b",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
         ],
     )
     result = Message(role="tool", tool_call_id="call-a", content="ok")
@@ -582,22 +590,39 @@ def test_complete_rounds_drops_round_missing_any_call_coverage():
 
 @pytest.mark.parametrize("incomplete", [False, True])
 def test_rebase_keeps_protected_or_incomplete_batch_before_recent_rounds(incomplete):
-    assistant = Message(role="assistant", tool_calls=[
-        {"id": "item-a", "call_id": "call-a", "function": {"name": "read_script", "arguments": "{}"}},
-        {"id": "item-b", "call_id": "call-b", "function": {"name": "run", "arguments": "{}"}},
-    ], provider_data={"reasoning_output": {"id": "rs-protected", "type": "reasoning", "summary": []}})
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "item-a",
+                "call_id": "call-a",
+                "function": {"name": "read_script", "arguments": "{}"},
+            },
+            {"id": "item-b", "call_id": "call-b", "function": {"name": "run", "arguments": "{}"}},
+        ],
+        provider_data={
+            "reasoning_output": {"id": "rs-protected", "type": "reasoning", "summary": []}
+        },
+    )
     batch = [assistant, Message(role="tool", tool_call_id="call-a", content="current source")]
     if not incomplete:
         batch.append(Message(role="tool", tool_call_id="item-b", content="failed"))
-    messages = [Message(role="user", content="task"), *batch,
-                Message(role="assistant", content="x" * 4000),
-                Message(role="assistant", content="recent")]
+    messages = [
+        Message(role="user", content="task"),
+        *batch,
+        Message(role="assistant", content="x" * 4000),
+        Message(role="assistant", content="recent"),
+    ]
     projected, metrics = TaskExecutionContextProjector.project_with_metrics(
-        messages, model=CountingModel(), hard_cap=2000,
+        messages,
+        model=CountingModel(),
+        hard_cap=2000,
         protected_call_ids=frozenset() if incomplete else frozenset({"call-a"}),
     )
     retained = [message for message in projected if message.tool_calls or message.role == "tool"]
-    assert [message.model_dump() for message in retained] == [message.model_dump() for message in batch]
+    assert [message.model_dump() for message in retained] == [
+        message.model_dump() for message in batch
+    ]
     assert metrics["window_rebased"] is True
     assert messages[1] is assistant
 
@@ -1286,7 +1311,9 @@ def test_coding_context_projector_tracks_old_freeform_custom_history_without_rew
         }
 
     messages = [
-        Message(role="assistant", tool_calls=[custom_call("call-old", "write_script", first_source)]),
+        Message(
+            role="assistant", tool_calls=[custom_call("call-old", "write_script", first_source)]
+        ),
         Message(
             role="tool",
             tool_name="write_script",
@@ -1339,7 +1366,9 @@ def _coding_custom_call(call_id: str, name: str, raw_input: str) -> dict[str, An
 def _coding_custom_round(
     call_id: str, name: str, raw_input: str, result: dict[str, Any] | None
 ) -> list[Message]:
-    round_messages = [Message(role="assistant", tool_calls=[_coding_custom_call(call_id, name, raw_input)])]
+    round_messages = [
+        Message(role="assistant", tool_calls=[_coding_custom_call(call_id, name, raw_input)])
+    ]
     if result is not None:
         round_messages.append(
             Message(
@@ -1420,9 +1449,7 @@ def test_coding_custom_history_token_gate_triggers_compaction():
         messages.extend(
             _coding_custom_round(call_id, name, raw, {"ok": True, "stdout": "y" * 2000})
         )
-    messages.extend(
-        _coding_custom_round("call-run", "run", "# Python\nprint(x)\n", {"ok": True})
-    )
+    messages.extend(_coding_custom_round("call-run", "run", "# Python\nprint(x)\n", {"ok": True}))
 
     projected, metrics = TaskExecutionContextProjector.project_with_metrics(
         messages, model=CountingModel(), hard_cap=1000
@@ -1513,10 +1540,7 @@ def test_coding_custom_history_rejects_oversized_result_sha():
     summary = json.loads(projected[1].tool_calls[0]["provider_data"]["raw_input"])
     assert summary["sourceSha256"] is None
     assert summary["patchSha256"] == hashlib.sha256(edit_patch.encode()).hexdigest()
-    assert (
-        len(json.dumps(summary, ensure_ascii=False).encode())
-        <= 8 * 1024
-    )
+    assert len(json.dumps(summary, ensure_ascii=False).encode()) <= 8 * 1024
 
 
 def test_coding_custom_history_enforces_batch_metadata_budget():
@@ -1565,9 +1589,7 @@ def test_coding_custom_history_summary_disabled_keeps_baseline_rebase():
         messages.extend(
             _coding_custom_round(call_id, name, raw, {"ok": True, "stdout": "y" * 2000})
         )
-    messages.extend(
-        _coding_custom_round("call-run", "run", "# Python\nprint(x)\n", {"ok": True})
-    )
+    messages.extend(_coding_custom_round("call-run", "run", "# Python\nprint(x)\n", {"ok": True}))
 
     projected, metrics = TaskExecutionContextProjector.project_with_metrics(
         messages, model=CountingModel(), hard_cap=1000, history_summary_enabled=False
@@ -1656,13 +1678,12 @@ def test_coding_custom_history_compaction_avoids_window_rebase():
 def test_rebase_metrics_reflect_metadata_after_dropping_summarized_rounds():
     messages = [
         Message(role="user", content="task"),
+        *_coding_custom_round("call-old", "write_script", "# Python\nprint('old')\n", {"ok": True}),
         *_coding_custom_round(
-            "call-old", "write_script", "# Python\nprint('old')\n", {"ok": True}
-        ),
-        *_coding_custom_round(
-            "call-current", "run", "# Python\nprint('current')\n", {
-                "ok": True, "stdout": "large result " * 6_000
-            }
+            "call-current",
+            "run",
+            "# Python\nprint('current')\n",
+            {"ok": True, "stdout": "large result " * 6_000},
         ),
     ]
 
@@ -2061,11 +2082,13 @@ def test_history_summary_disabled_restores_legacy_forced_rebase(summary_enabled,
 def test_rebase_keeps_trailing_incomplete_batch_after_recent_rounds():
     trailing_call = Message(
         role="assistant",
-        tool_calls=[{
-            "id": "item-x",
-            "call_id": "call-x",
-            "function": {"name": "read_script", "arguments": "{}"},
-        }],
+        tool_calls=[
+            {
+                "id": "item-x",
+                "call_id": "call-x",
+                "function": {"name": "read_script", "arguments": "{}"},
+            }
+        ],
     )
     recent = Message(role="assistant", content="recent")
     messages = [

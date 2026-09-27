@@ -395,6 +395,7 @@ class SqlAlchemyQualityWarningRepository:
                 .where(quality_warnings_v1.c.warning_id == row["warning_id"])
                 .values(
                     status="open",
+                    severity=finding.severity,
                     disposition=finding.disposition,
                     source_phase=finding.source_phase,
                     message=finding.message,

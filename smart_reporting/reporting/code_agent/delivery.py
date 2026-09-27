@@ -23,8 +23,11 @@ def bounded_edit_region(region: Any) -> dict[str, Any] | None:
     start, end = region.get("startLine"), region.get("endLine")
     path = region.get("path")
     if (
-        type(start) is int and type(end) is int and 1 <= start <= end
-        and isinstance(path, str) and 0 < len(path) <= 1024
+        type(start) is int
+        and type(end) is int
+        and 1 <= start <= end
+        and isinstance(path, str)
+        and 0 < len(path) <= 1024
     ):
         return {"path": path, "startLine": start, "endLine": end}
     return None
@@ -54,9 +57,7 @@ def _visual_review_model_receipt(
     if not receipt.requires_revision:
         result.update(
             {
-                "warningCount": sum(
-                    issue.severity == "warning" for issue in receipt.issues
-                ),
+                "warningCount": sum(issue.severity == "warning" for issue in receipt.issues),
                 "message": "非阻断问题已记录，无需修改。",
             }
         )
@@ -77,9 +78,13 @@ def merge_visual_failures(failures: Sequence[Mapping[str, Any]]) -> list[dict[st
         if not isinstance(path, str) or not isinstance(issues, list):
             continue
         normalized_issues = [
-            issue for issue in issues
+            issue
+            for issue in issues
             if isinstance(issue, Mapping)
-            and all(isinstance(issue.get(field), str) for field in ("category", "severity", "description"))
+            and all(
+                isinstance(issue.get(field), str)
+                for field in ("category", "severity", "description")
+            )
         ]
         key = tuple(
             (issue["category"], issue["severity"], issue["description"])
@@ -112,10 +117,21 @@ def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> dict[str, Any]:
         "message": str(diagnostic.get("message", ""))[:512],
         "details": {
             key: str(details[key])[-limit:]
-            for key, limit in (("reason", 256), ("errorType", 128), ("line", 12), ("column", 12),
-                               ("traceback", 1024), ("stderr", 512), ("issueSummary", 1024),
-                               ("path", 1024), ("sourceSha256", 64), ("sourceExcerpt", SOURCE_EXCERPT_MAX_BYTES),
-                               ("sourceStartLine", 12), ("sourceEndLine", 12), ("errorLine", 12))
+            for key, limit in (
+                ("reason", 256),
+                ("errorType", 128),
+                ("line", 12),
+                ("column", 12),
+                ("traceback", 1024),
+                ("stderr", 512),
+                ("issueSummary", 1024),
+                ("path", 1024),
+                ("sourceSha256", 64),
+                ("sourceExcerpt", SOURCE_EXCERPT_MAX_BYTES),
+                ("sourceStartLine", 12),
+                ("sourceEndLine", 12),
+                ("errorLine", 12),
+            )
             if isinstance(details, Mapping) and details.get(key) is not None
         },
     }
@@ -142,18 +158,22 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
             valid = False
     pending = toolkit.pending_output_validation if valid else None
     reviews = [
-        item.path for item in (receipt.output_files if receipt and valid else ())
+        item.path
+        for item in (receipt.output_files if receipt and valid else ())
         if binding.context.task_kind == "visualization"
         and not item.path.endswith(".plotly.json")
         and not toolkit.has_current_visual_review(item.path)
     ]
     visual_failures = [
-        review for path in reviews
+        review
+        for path in reviews
         if (review := binding.visual_inspection_receipts.get(path)) is not None
         and receipt is not None
         and any(item.path == path and item.sha256 == review.sha256 for item in receipt.output_files)
     ]
-    reviews = [path for path in reviews if all(item.source_path != path for item in visual_failures)]
+    reviews = [
+        path for path in reviews if all(item.source_path != path for item in visual_failures)
+    ]
     failure = toolkit.last_failure
     if failure and (failure["resolved"] or failure["sourceSha256"] != source_hash):
         failure = None
@@ -186,19 +206,34 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
                 action = "结合最近失败诊断用 edit_script 局部修复现有脚本，再 run_script；write_script 不可用，不要整段重写或原样重复失败操作。"
             else:
                 action = "当前源码或输出尚无有效执行回执；修改已完成时直接 run_script。若仍需修改，可读取并继续精确局部编辑；不能整段重写，运行通过前不能提交。"
-    elif failure and failure["tool"] == "view_image" and failure["code"] in {
-        "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
-        "report_code_visual_output_changed",
-    }:
+    elif (
+        failure
+        and failure["tool"] == "view_image"
+        and failure["code"]
+        in {
+            "report_chart_file_missing",
+            "report_chart_source_invalid",
+            "report_chart_blank",
+            "report_code_visual_output_changed",
+        }
+    ):
         next_tools = ["read_script", "edit_script", "run_script"]
         action = "根据图片检查失败诊断局部修复现有脚本，再运行并审查；不要重复查看未修复的图片。"
     elif visual_failures:
         next_tools = ["read_script", "edit_script", "run_script"]
-        action = "根据 visualFailures 修复脚本后重新运行并审查新图片；重复查看当前图片只会返回缓存结论。"
+        action = (
+            "根据 visualFailures 修复脚本后重新运行并审查新图片；重复查看当前图片只会返回缓存结论。"
+        )
     elif reviews:
-        next_tools, action = ["view_image", "submit_script"], "只审查 nextReviewPaths 中尚未通过的当前图片；全部通过后直接 submit_script 提交，不要重复运行或查看已通过的图片。"
+        next_tools, action = (
+            ["view_image", "submit_script"],
+            "只审查 nextReviewPaths 中尚未通过的当前图片；全部通过后直接 submit_script 提交，不要重复运行或查看已通过的图片。",
+        )
     else:
-        next_tools, action = ["submit_script"], "当前执行与审查已满足提交条件，直接提交，无需重复运行。"
+        next_tools, action = (
+            ["submit_script"],
+            "当前执行与审查已满足提交条件，直接提交，无需重复运行。",
+        )
     draft_sha256 = getattr(toolkit, "rejected_draft_sha256", None)
     if (
         isinstance(draft_sha256, str)
@@ -250,9 +285,7 @@ async def build_delivery_state(toolkit: ReportingCodeModeToolkit) -> dict[str, A
         "script": {"path": binding.context.script_path, "sha256": source_hash},
         "execution": {"runId": receipt.run_id, "valid": valid} if receipt else None,
         "outputValidation": binding.output_validation.status if valid else "not_checked",
-        "validationFailure": (
-            _diagnostic_summary(pending) if pending else None
-        ),
+        "validationFailure": (_diagnostic_summary(pending) if pending else None),
         "lastFailure": (
             {
                 "tool": failure["tool"],

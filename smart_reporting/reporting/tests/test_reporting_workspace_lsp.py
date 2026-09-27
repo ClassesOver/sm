@@ -81,17 +81,11 @@ async def test_hover_definition_references_and_symbols_stay_inside_bound_workspa
 ) -> None:
     await _write_script(
         binding,
-        "def helper(value: int) -> int:\n"
-        "    return value + 1\n"
-        "\n"
-        "answer = helper(2)\n",
+        "def helper(value: int) -> int:\n    return value + 1\n\nanswer = helper(2)\n",
     )
     lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
     source_sha256 = hashlib.sha256(
-        b"def helper(value: int) -> int:\n"
-        b"    return value + 1\n"
-        b"\n"
-        b"answer = helper(2)\n"
+        b"def helper(value: int) -> int:\n    return value + 1\n\nanswer = helper(2)\n"
     ).hexdigest()
 
     hover = await lsp.hover("analysis/script.py", line=3, character=10)
@@ -151,9 +145,7 @@ async def test_definition_does_not_expose_paths_outside_workspace(
     await _write_script(binding, "value = len([])\n")
 
     lsp = ReportingWorkspaceLsp(binding, ReportingLspProcessManager())
-    result = await lsp.definition(
-        "analysis/script.py", line=0, character=9
-    )
+    result = await lsp.definition("analysis/script.py", line=0, character=9)
 
     assert result == {
         "ok": True,
@@ -165,7 +157,9 @@ async def test_definition_does_not_expose_paths_outside_workspace(
 
 async def test_lsp_rejects_paths_outside_the_workspace(binding: ReportingCodingTaskBinding) -> None:
     with pytest.raises(ReportingError, match="report_lsp_invalid_request"):
-        await ReportingWorkspaceLsp(binding, ReportingLspProcessManager()).document_symbols("../outside.py")
+        await ReportingWorkspaceLsp(binding, ReportingLspProcessManager()).document_symbols(
+            "../outside.py"
+        )
 
 
 async def test_lsp_missing_bound_script_is_recoverable_without_starting_process(
@@ -218,6 +212,7 @@ async def test_lsp_versions_every_snapshot_response_and_rejects_stale_request(
     class UnavailableManager:
         async def synchronize_document(self, *_args: object) -> int:
             from smart_reporting.reporting.code_agent.lsp_process import ReportingLspProcessError
+
             raise ReportingLspProcessError("unavailable")
 
     lsp.manager = UnavailableManager()  # type: ignore[assignment]
@@ -306,19 +301,13 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
     ) == {"tool": "hover"}
     assert await toolkit.lsp_definition(
         "analysis/script.py", line=1, character=2, expectedSourceSha256=expected_source_sha256
-    ) == {
-        "tool": "definition"
-    }
+    ) == {"tool": "definition"}
     assert await toolkit.lsp_references(
         "analysis/script.py", line=1, character=2, expectedSourceSha256=expected_source_sha256
-    ) == {
-        "tool": "references"
-    }
+    ) == {"tool": "references"}
     assert await toolkit.lsp_document_symbols(
         "analysis/script.py", expectedSourceSha256=expected_source_sha256
-    ) == {
-        "tool": "document_symbols"
-    }
+    ) == {"tool": "document_symbols"}
     assert calls == [
         ("diagnostics", (None, expected_source_sha256)),
         ("hover", ("analysis/script.py", 1, 2, expected_source_sha256)),
@@ -327,13 +316,16 @@ async def test_toolkit_exposes_read_only_lsp_tools_through_its_task_binding(
         ("document_symbols", ("analysis/script.py", expected_source_sha256)),
     ]
     schemas = {function.name: function.parameters for function in toolkit.tool_functions}
-    assert all("expectedSourceSha256" in schemas[name]["properties"] for name in {
-        "lsp_diagnostics",
-        "lsp_hover",
-        "lsp_definition",
-        "lsp_references",
-        "lsp_document_symbols",
-    })
+    assert all(
+        "expectedSourceSha256" in schemas[name]["properties"]
+        for name in {
+            "lsp_diagnostics",
+            "lsp_hover",
+            "lsp_definition",
+            "lsp_references",
+            "lsp_document_symbols",
+        }
+    )
 
 
 def test_location_decodes_percent_encoded_workspace_uri(

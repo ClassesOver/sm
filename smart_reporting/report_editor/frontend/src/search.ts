@@ -122,6 +122,23 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
     const active = editor?.querySelector<HTMLElement>('.search-match-active')
     if (active && typeof active.scrollIntoView === 'function') active.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
+  // 替换文本自身含搜索词时（收入→总收入），替换后会在原位置产生新匹配；
+  // 跳过这些新匹配并在末尾回绕，否则重复点击"替换"只会反复替换同一处。
+  const replaceCurrent = () => {
+    const replaced = current
+    if (backend) {
+      backend.replace(query.value, replacement.value, current)
+    } else {
+      const text = getText()
+      const start = matches[current]
+      replaceText(text.slice(0, start) + replacement.value + text.slice(start + query.value.length))
+    }
+    refresh()
+    const skip = replacement.value.split(query.value).length - 1
+    if (!skip || !total) return
+    current = (replaced + skip) % total
+    refresh()
+  }
   const close = () => {
     panel.hidden = true
     matches = []
@@ -149,14 +166,8 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
     if (action === 'close') close()
     if (action === 'prev') { move(-1); query.focus() }
     if (action === 'next') { move(1); query.focus() }
-    if (action === 'replace' && query.value && total && backend) {
-      backend.replace(query.value, replacement.value, current)
-      refresh()
-    } else if (action === 'replace' && query.value && matches.length) {
-      const text = getText()
-      const start = matches[current]
-      replaceText(text.slice(0, start) + replacement.value + text.slice(start + query.value.length))
-      refresh()
+    if (action === 'replace' && query.value && (backend ? total : matches.length)) {
+      replaceCurrent()
     }
     if (action === 'all' && query.value && backend) {
       backend.replace(query.value, replacement.value, null)

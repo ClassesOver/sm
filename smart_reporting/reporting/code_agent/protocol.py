@@ -61,13 +61,14 @@ _WIRE_SHAPE_REJECTION_LIMIT = 3
 # provider 以 function 形态返回、已补未执行回执的 FREEFORM 调用在历史中的标记。
 _WIRE_REJECTED_FUNCTION = "function_rejected"
 # 用合法代码首行固定 raw input 形状，避免任意文本 grammar 接受 JSON 包装。
-_FREEFORM_TOOL_GRAMMARS: Mapping[str, str] = MappingProxyType({
-    "write_script": 'start: "# Python" NEWLINE SOURCE\n'
-    'NEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/',
-    "run": 'start: ("# Python" | "%%bash") NEWLINE SOURCE\n'
-    'NEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/',
-    "edit_script": EDIT_PATCH_GRAMMAR,
-})
+_FREEFORM_TOOL_GRAMMARS: Mapping[str, str] = MappingProxyType(
+    {
+        "write_script": 'start: "# Python" NEWLINE SOURCE\nNEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/',
+        "run": 'start: ("# Python" | "%%bash") NEWLINE SOURCE\n'
+        "NEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/",
+        "edit_script": EDIT_PATCH_GRAMMAR,
+    }
+)
 _STREAMING_UNSUPPORTED = "report_code_streaming_unsupported"
 _TEXTUAL_TOOL_MARKERS = (
     "<|recipient=",
@@ -115,6 +116,8 @@ def _responses_thinking_extra_body(
     else:
         body.pop("enable_thinking", None)
     return body or None
+
+
 _ATTACH_BUDGET_MAX_ENCODED_BYTES = 16 * 1024
 _MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error", default=None
@@ -336,9 +339,7 @@ def _filter_read_script_rounds(
             and function.get("name") == "read_script"
         ):
             identities = {
-                value
-                for key in ("id", "call_id")
-                if isinstance(value := calls[0].get(key), str)
+                value for key in ("id", "call_id") if isinstance(value := calls[0].get(key), str)
             }
             results: list[Message] = []
             lookahead = index + 1
@@ -361,6 +362,7 @@ def _filter_read_script_rounds(
         index += 1
     return kept, frozenset(current_call_ids)
 
+
 def _contains_textual_tool_marker(output: list[Any]) -> bool:
     for item in output:
         if _field(item, "type") != "message" or _field(item, "role") != "assistant":
@@ -368,9 +370,7 @@ def _contains_textual_tool_marker(output: list[Any]) -> bool:
         content = _field(item, "content")
         for part in content if isinstance(content, (list, tuple)) else ():
             text = _field(part, "text")
-            if isinstance(text, str) and any(
-                marker in text for marker in _TEXTUAL_TOOL_MARKERS
-            ):
+            if isinstance(text, str) and any(marker in text for marker in _TEXTUAL_TOOL_MARKERS):
                 return True
     return False
 
@@ -491,9 +491,7 @@ def _validated_custom_replay_call(call: Any) -> dict[str, Any] | None:
     }
 
 
-_TRACEBACK_FRAME = re.compile(
-    r'File "([^"]+)", line (\d+), in (\S+)(?:\r?\n[ \t]+(\S[^\r\n]*))?'
-)
+_TRACEBACK_FRAME = re.compile(r'File "([^"]+)", line (\d+), in (\S+)(?:\r?\n[ \t]+(\S[^\r\n]*))?')
 _LIBRARY_FRAME_MARKERS = ("site-packages", "dist-packages", "/lib/python", "<frozen")
 
 
@@ -516,7 +514,8 @@ def _run_failure_signature(failure: Mapping[str, Any]) -> tuple[str, str] | None
             if frames:
                 break
     script_frames = [
-        frame for frame in frames
+        frame
+        for frame in frames
         if not any(marker in frame[0] for marker in _LIBRARY_FRAME_MARKERS)
     ]
     if not isinstance(error_type, str) or not error_type or not script_frames:
@@ -555,9 +554,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         return CodeBudget.snapshot(used, limit)
 
     @classmethod
-    def _attach_tool_budget(
-        cls, messages: list[Message], *, used: int, limit: int
-    ) -> None:
+    def _attach_tool_budget(cls, messages: list[Message], *, used: int, limit: int) -> None:
         budget = cls._budget_payload(used, limit)
         for message in messages:
             content = message.content
@@ -586,7 +583,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             try:
                 encoded = (
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-                    if use_json else repr(payload)
+                    if use_json
+                    else repr(payload)
                 )
                 encoded_size = len(encoded.encode("utf-8"))
             except (TypeError, ValueError, UnicodeError, RecursionError, MemoryError):
@@ -632,7 +630,11 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         names = [report_model_tool_name(tool) for tool in tools]
         if not names or any(not name for name in names) or len(set(names)) != len(names):
             raise _custom_protocol_error("Coding Agent 任务工具声明为空或无效。")
-        if isinstance(max_model_requests, bool) or not isinstance(max_model_requests, int) or max_model_requests < 1:
+        if (
+            isinstance(max_model_requests, bool)
+            or not isinstance(max_model_requests, int)
+            or max_model_requests < 1
+        ):
             raise ValueError("max_model_requests must be a positive integer")
         self._code_tool_names = frozenset(names)
         if delivery_reserve is not None and (
@@ -682,9 +684,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             "streak": 0,
         }
 
-    def _record_run_outcome(
-        self, succeeded: bool, failure: Mapping[str, Any] | None
-    ) -> None:
+    def _record_run_outcome(self, succeeded: bool, failure: Mapping[str, Any] | None) -> None:
         """记录 run_script 进展；只使用宿主已有回执，不新增模型请求。"""
 
         progress = getattr(self, "_code_progress", None)
@@ -746,8 +746,14 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         self._check_code_progress(budget)
         if not budget.consume_request():
             raise ReportingError(
-                "report_code_model_request_limit", "Coding Agent 模型请求次数已达上限。",
-                details={"retryable": False, "recovery": "retry_then_degrade", "modelRequestCount": budget.requests, "modelRequestLimit": budget.request_limit},
+                "report_code_model_request_limit",
+                "Coding Agent 模型请求次数已达上限。",
+                details={
+                    "retryable": False,
+                    "recovery": "retry_then_degrade",
+                    "modelRequestCount": budget.requests,
+                    "modelRequestLimit": budget.request_limit,
+                },
             )
 
     def code_run_request_count(self) -> int:
@@ -803,13 +809,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         reasoning = params.get("reasoning")
         extra_body = params.get("extra_body")
         template_kwargs = (
-            extra_body.get("chat_template_kwargs")
-            if isinstance(extra_body, Mapping)
-            else None
+            extra_body.get("chat_template_kwargs") if isinstance(extra_body, Mapping) else None
         )
-        if isinstance(extra_body, Mapping) and isinstance(
-            extra_body.get("enable_thinking"), bool
-        ):
+        if isinstance(extra_body, Mapping) and isinstance(extra_body.get("enable_thinking"), bool):
             enable_thinking = extra_body["enable_thinking"]
             enable_thinking_location = "top_level"
         elif isinstance(template_kwargs, Mapping) and isinstance(
@@ -845,9 +847,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         return {
             "model": params.get("model") or "unknown",
             "reasoningEffort": (
-                reasoning.get("effort")
-                if isinstance(reasoning, Mapping)
-                else "unknown"
+                reasoning.get("effort") if isinstance(reasoning, Mapping) else "unknown"
             ),
             "reasoningSummary": (
                 reasoning.get("summary")
@@ -864,9 +864,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             ),
             "parallelToolCalls": params.get("parallel_tool_calls", "unknown"),
             "toolChoice": tool_choice,
-            "extraBodyKeys": sorted(extra_body)
-            if isinstance(extra_body, Mapping)
-            else [],
+            "extraBodyKeys": sorted(extra_body) if isinstance(extra_body, Mapping) else [],
             "systemPrefixSha256": system_sha256,
             "systemPrefixBytes": system_bytes,
             "toolDeclarationsSha256": tools_sha256,
@@ -918,9 +916,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
 
         if state.get("taskKind") != "visualization":
             return False
-        if remaining_tool_calls > getattr(
-            self, "_code_visual_budget_gate_safety_margin", 2
-        ):
+        if remaining_tool_calls > getattr(self, "_code_visual_budget_gate_safety_margin", 2):
             return False
         execution = state.get("execution")
         if not isinstance(execution, Mapping) or execution.get("valid") is not True:
@@ -958,10 +954,16 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     "description": (
                         "这是 FREEFORM custom 工具，输入就是原始文本；"
                         "不要构造参数对象、字符串引号或 Markdown 围栏。"
-                        + ("补丁以 *** Begin Edit 或 *** Begin Patch 和真实换行开头。"
-                           if name == "edit_script"
-                           else "Python 输入以 # Python 和真实换行开头。")
-                        + ("仅 run 支持以 %%bash 和真实换行开头的 Shell cell。" if name == "run" else "")
+                        + (
+                            "补丁以 *** Begin Edit 或 *** Begin Patch 和真实换行开头。"
+                            if name == "edit_script"
+                            else "Python 输入以 # Python 和真实换行开头。"
+                        )
+                        + (
+                            "仅 run 支持以 %%bash 和真实换行开头的 Shell cell。"
+                            if name == "run"
+                            else ""
+                        )
                         + str(tool.get("description") or name)
                     ),
                     "format": {
@@ -1043,9 +1045,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 allowed_tools.update({"run_script", "submit_script"})
                 if state.get("taskKind") == "visualization":
                     allowed_tools.add("view_image")
-            if (
-                remaining_tool_calls is not None
-                and self._visual_budget_gate_triggered(state, remaining_tool_calls)
+            if remaining_tool_calls is not None and self._visual_budget_gate_triggered(
+                state, remaining_tool_calls
             ):
                 allowed_tools = {"submit_script"}
                 view_image_rounds = sum(
@@ -1088,9 +1089,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     and request_metrics
                     and request_metrics[-1].get("status") == "started"
                 ):
-                    request_metrics[-1].setdefault("warnings", []).append(
-                        rounds_gate_event
-                    )
+                    request_metrics[-1].setdefault("warnings", []).append(rounds_gate_event)
                 logger.bind(
                     reporting_progress="code_visual_review_gate",
                     critical_rounds=visual_gate.get("criticalRounds"),
@@ -1099,9 +1098,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     visual_gate.get("criticalRounds"),
                 )
             # 分析与图表都以宿主交付状态为工具白名单；空列表必须保持关闭。
-            formatted_tools = [
-                tool for tool in formatted_tools if tool["name"] in allowed_tools
-            ]
+            formatted_tools = [tool for tool in formatted_tools if tool["name"] in allowed_tools]
             if allowed_tools and not formatted_tools:
                 raise _custom_protocol_error("交付状态没有可用的任务工具。")
             params["tools"] = formatted_tools
@@ -1128,9 +1125,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             params.pop("extra_body", None)
         else:
             params["extra_body"] = extra_body
-        reasoning_fields = (
-            sorted(reasoning.keys()) if isinstance(reasoning, Mapping) else []
-        )
+        reasoning_fields = sorted(reasoning.keys()) if isinstance(reasoning, Mapping) else []
         logger.bind(
             reporting_progress="code_provider_request_params",
             model_id=self.id,
@@ -1167,16 +1162,22 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         if model_route is not None:
             _, request_model.id = model_route
         # 仅自动启用真实探针通过的 endpoint/model；其他部署保留显式配置。
-        probed_reasoning_route = (
-            urlsplit(str(request_model.base_url or "")).hostname
-            == "token-plan.cn-beijing.maas.aliyuncs.com"
-            and request_model.id in {"deepseek-v4-flash-0731", "qwen3.8-flash"}
-        )
+        probed_reasoning_route = urlsplit(
+            str(request_model.base_url or "")
+        ).hostname == "token-plan.cn-beijing.maas.aliyuncs.com" and request_model.id in {
+            "deepseek-v4-flash-0731",
+            "qwen3.8-flash",
+        }
         if probed_reasoning_route:
             request_model.store = False
-            request_model.include = list(dict.fromkeys([
-                *(request_model.include or []), "reasoning.encrypted_content",
-            ]))
+            request_model.include = list(
+                dict.fromkeys(
+                    [
+                        *(request_model.include or []),
+                        "reasoning.encrypted_content",
+                    ]
+                )
+            )
         request_model.max_output_tokens = (
             request_model.max_output_tokens
             if isinstance(request_model.max_output_tokens, int)
@@ -1198,8 +1199,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             request_model.reasoning = None
         # Responses 使用标准 reasoning.effort/summary；provider 开关按端点契约投影。
         responses_reasoning_enabled = bool(
-            request_model.reasoning_effort
-            and request_model.reasoning_effort != "none"
+            request_model.reasoning_effort and request_model.reasoning_effort != "none"
         )
         request_model.extra_body = _responses_thinking_extra_body(
             request_model.extra_body,
@@ -1213,7 +1213,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         configured_summary = self.reasoning_summary or (self.reasoning or {}).get("summary")
         request_model.reasoning_summary = (
             (configured_summary or ("auto" if probed_reasoning_route else None))
-            if responses_reasoning_enabled else None
+            if responses_reasoning_enabled
+            else None
         )
         return request_model
 
@@ -1256,9 +1257,13 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 )
                 protected_call_ids = protected_call_ids | current_read_ids
                 # 每轮从绑定状态生成，不依赖历史工具结果的 JSON/repr 格式。
-                projected_input = [*projected_input, Message(
-                    role="user", content=json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-                )]
+                projected_input = [
+                    *projected_input,
+                    Message(
+                        role="user",
+                        content=json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+                    ),
+                ]
         provider_input_hint = getattr(self, "_code_provider_input_hint", None)
         projected, metrics = TaskExecutionContextProjector.project_with_metrics(
             projected_input,
@@ -1315,20 +1320,21 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             for key, value in (
                 ("inputTokens", _field(usage, "input_tokens")),
                 ("outputTokens", _field(usage, "output_tokens")),
-                ("reasoningTokens", _field(_field(usage, "output_tokens_details"), "reasoning_tokens")),
+                (
+                    "reasoningTokens",
+                    _field(_field(usage, "output_tokens_details"), "reasoning_tokens"),
+                ),
                 ("cacheReadTokens", _field(_field(usage, "input_tokens_details"), "cached_tokens")),
             ):
                 metric[key] = value if type(value) is int and value >= 0 else "unknown"
             if type(metric["outputTokens"]) is int and type(metric["reasoningTokens"]) is int:
-                metric["visibleOutputTokens"] = max(0, metric["outputTokens"] - metric["reasoningTokens"])
+                metric["visibleOutputTokens"] = max(
+                    0, metric["outputTokens"] - metric["reasoningTokens"]
+                )
             # 估算 vs 实报比值观测：只为校准 0.60 门禁采数据，不改变任何触发逻辑。
             provider_input = metric.get("inputTokens")
             estimated_input = metric.get("projected_estimated_tokens")
-            if (
-                type(provider_input) is int
-                and type(estimated_input) is int
-                and estimated_input > 0
-            ):
+            if type(provider_input) is int and type(estimated_input) is int and estimated_input > 0:
                 logger.bind(
                     reporting_progress="code_projection_estimate_ratio",
                     model_id=self.id,
@@ -1343,9 +1349,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         output = _field(response, "output")
         output = list(output) if isinstance(output, (list, tuple)) else []
         actionable = [
-            item
-            for item in output
-            if _field(item, "type") in {"custom_tool_call", "function_call"}
+            item for item in output if _field(item, "type") in {"custom_tool_call", "function_call"}
         ]
         # 父类按 provider 原始 wire 类型解析；还原为 custom 的 function_call 仍占用
         # 父类 function 调用序列中的一个位置，重组时必须按原始类型对齐消费。
@@ -1376,7 +1380,10 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         budget.record_stage_mismatch_rejection()
                     logger.warning(
                         "report_code_stage_tool_unavailable name={} kind={} declared={} required={}",
-                        str(name)[:128], kind, sorted(declarations), sorted(task_tools),
+                        str(name)[:128],
+                        kind,
+                        sorted(declarations),
+                        sorted(task_tools),
                     )
                 else:
                     if (
@@ -1391,16 +1398,21 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         wire_rejected_call_ids.append(_required_id(item, "call_id"))
                         logger.warning(
                             "report_code_wire_shape_rejected name={} rejection={}",
-                            str(name)[:128], budget.wire_shape_rejections,
+                            str(name)[:128],
+                            budget.wire_shape_rejections,
                         )
                     else:
                         if budget is not None:
                             budget.record_protocol_violation()
                         logger.warning(
                             "report_code_tool_declaration_mismatch name={} kind={} declared={}",
-                            str(name)[:128], kind, sorted(declarations),
+                            str(name)[:128],
+                            kind,
+                            sorted(declarations),
                         )
-                        error = _custom_protocol_error("Coding Agent 返回未声明或类型不匹配的工具调用。")
+                        error = _custom_protocol_error(
+                            "Coding Agent 返回未声明或类型不匹配的工具调用。"
+                        )
                         error.details = {
                             **(error.details or {}),
                             "toolName": str(name)[:128],
@@ -1493,12 +1505,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     tool_name=call.function.name,
                     tool_args=call.arguments,
                     tool_call_error=True,
-                    content=json.dumps({
-                        "ok": False,
-                        "status": "skipped",
-                        "code": "report_code_batch_stopped",
-                        "message": "前序工具失败或任务已提交；本次调用未执行。",
-                    }, ensure_ascii=False),
+                    content=json.dumps(
+                        {
+                            "ok": False,
+                            "status": "skipped",
+                            "code": "report_code_batch_stopped",
+                            "message": "前序工具失败或任务已提交；本次调用未执行。",
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
                 if function_call_limit is not None:
                     self._attach_tool_budget(
@@ -1522,17 +1537,18 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     tool_name=tool_name,
                     tool_args=call.arguments,
                     tool_call_error=True,
-                    content=json.dumps({
-                        "ok": False,
-                        "status": "rejected",
-                        "code": "report_code_tool_call_limit",
-                        "message": "工具调用次数已达上限；本次调用未执行。",
-                        "details": {"used": current_count, "limit": function_call_limit},
-                    }, ensure_ascii=False),
+                    content=json.dumps(
+                        {
+                            "ok": False,
+                            "status": "rejected",
+                            "code": "report_code_tool_call_limit",
+                            "message": "工具调用次数已达上限；本次调用未执行。",
+                            "details": {"used": current_count, "limit": function_call_limit},
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
-                self._attach_tool_budget(
-                    [limited], used=current_count, limit=function_call_limit
-                )
+                self._attach_tool_budget([limited], used=current_count, limit=function_call_limit)
                 results.append(limited)
                 if request_metric is not None and "firstToolFailure" not in request_metric:
                     request_metric["firstToolFailure"] = {
@@ -1557,21 +1573,24 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     tool_name=tool_name,
                     tool_args=call.arguments,
                     tool_call_error=True,
-                    content=json.dumps({
-                        "ok": False,
-                        "status": "rejected",
-                        "code": "report_code_tool_wire_type_invalid",
-                        "message": (
-                            f"{tool_name} 只能以原生 custom 工具调用（free-form 原文），"
-                            "不能使用 JSON function 形态；本次未执行，请用 custom 工具重新发送。"
-                        ),
-                        "details": {
-                            "toolName": tool_name,
-                            "receivedType": "function",
-                            "expectedType": "custom",
-                            "inputPrefixes": list(_custom_input_prefixes(tool_name)),
+                    content=json.dumps(
+                        {
+                            "ok": False,
+                            "status": "rejected",
+                            "code": "report_code_tool_wire_type_invalid",
+                            "message": (
+                                f"{tool_name} 只能以原生 custom 工具调用（free-form 原文），"
+                                "不能使用 JSON function 形态；本次未执行，请用 custom 工具重新发送。"
+                            ),
+                            "details": {
+                                "toolName": tool_name,
+                                "receivedType": "function",
+                                "expectedType": "custom",
+                                "inputPrefixes": list(_custom_input_prefixes(tool_name)),
+                            },
                         },
-                    }, ensure_ascii=False),
+                        ensure_ascii=False,
+                    ),
                 )
                 if function_call_limit is not None:
                     self._attach_tool_budget(
@@ -1609,26 +1628,29 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     tool_name=tool_name,
                     tool_args=call.arguments,
                     tool_call_error=True,
-                    content=json.dumps({
-                        "ok": False,
-                        "status": "rejected",
-                        "code": "report_code_stage_tool_unavailable",
-                        "message": (
-                            "该工具当前不可用；请按交付状态的 requiredAction 使用 "
-                            "nextTools 中的工具继续。"
-                        ),
-                        "details": {
-                            "nextTools": sorted(
-                                set(stage_next_tools or ())
-                                & (getattr(self, "_code_tool_names", None) or frozenset())
+                    content=json.dumps(
+                        {
+                            "ok": False,
+                            "status": "rejected",
+                            "code": "report_code_stage_tool_unavailable",
+                            "message": (
+                                "该工具当前不可用；请按交付状态的 requiredAction 使用 "
+                                "nextTools 中的工具继续。"
                             ),
-                            "requiredAction": (
-                                stage_state.get("requiredAction")
-                                if isinstance(stage_state, Mapping)
-                                else None
-                            ),
+                            "details": {
+                                "nextTools": sorted(
+                                    set(stage_next_tools or ())
+                                    & (getattr(self, "_code_tool_names", None) or frozenset())
+                                ),
+                                "requiredAction": (
+                                    stage_state.get("requiredAction")
+                                    if isinstance(stage_state, Mapping)
+                                    else None
+                                ),
+                            },
                         },
-                    }, ensure_ascii=False),
+                        ensure_ascii=False,
+                    ),
                 )
                 if function_call_limit is not None:
                     self._attach_tool_budget(
@@ -1658,12 +1680,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         tool_name=tool_name,
                         tool_args=call.arguments,
                         tool_call_error=True,
-                        content=json.dumps({
-                            "ok": False,
-                            "status": "skipped",
-                            "code": "report_code_visual_review_redundant",
-                            "message": "该图片内容已通过当前审查，无需再次调用 view_image。",
-                        }, ensure_ascii=False),
+                        content=json.dumps(
+                            {
+                                "ok": False,
+                                "status": "skipped",
+                                "code": "report_code_visual_review_redundant",
+                                "message": "该图片内容已通过当前审查，无需再次调用 view_image。",
+                            },
+                            ensure_ascii=False,
+                        ),
                     )
                     if function_call_limit is not None:
                         self._attach_tool_budget(
@@ -1675,9 +1700,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                         tool_name=tool_name,
                         status="skipped",
                         code="report_code_visual_review_redundant",
-                    ).info(
-                        "report_code_tool_progress tool_name={} status=skipped", tool_name
-                    )
+                    ).info("report_code_tool_progress tool_name={} status=skipped", tool_name)
                     continue
                 escalated = budget.reject_exploration()
                 rejected = Message(
@@ -1686,35 +1709,36 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                     tool_name=tool_name,
                     tool_args=call.arguments,
                     tool_call_error=True,
-                    content=json.dumps({
-                        "ok": False,
-                        "status": "rejected",
-                        "code": "report_code_delivery_budget_reserved",
-                        "message": (
-                            "剩余额度仅供交付；请立即调用 requiredNextTools 中的工具，"
-                            "不要再调用探索工具。"
-                            if escalated
-                            else "剩余工具调用额度仅供正式脚本写入、运行、审查和提交。"
-                        ),
-                        "details": {
-                            "used": current_count,
-                            "limit": function_call_limit,
-                            "requiredNextTools": sorted(
-                                required_delivery_tools
-                                & (getattr(self, "_code_tool_names", None) or frozenset())
+                    content=json.dumps(
+                        {
+                            "ok": False,
+                            "status": "rejected",
+                            "code": "report_code_delivery_budget_reserved",
+                            "message": (
+                                "剩余额度仅供交付；请立即调用 requiredNextTools 中的工具，"
+                                "不要再调用探索工具。"
+                                if escalated
+                                else "剩余工具调用额度仅供正式脚本写入、运行、审查和提交。"
                             ),
-                            "escalated": escalated,
+                            "details": {
+                                "used": current_count,
+                                "limit": function_call_limit,
+                                "requiredNextTools": sorted(
+                                    required_delivery_tools
+                                    & (getattr(self, "_code_tool_names", None) or frozenset())
+                                ),
+                                "escalated": escalated,
+                            },
                         },
-                    }, ensure_ascii=False),
+                        ensure_ascii=False,
+                    ),
                 )
                 charge = int(escalated and current_count < function_call_limit)
                 charged_count = current_count + charge
                 current_count = charged_count
                 if budget is not None:
                     budget.tool_calls += charge
-                self._attach_tool_budget(
-                    [rejected], used=charged_count, limit=function_call_limit
-                )
+                self._attach_tool_budget([rejected], used=charged_count, limit=function_call_limit)
                 results.append(rejected)
                 stopped = True
                 logger.bind(
@@ -1736,18 +1760,15 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             if budget is not None:
                 # Agno 的超限回执也计数，但未执行的超限调用不再消耗任务额度。
                 budget.tool_calls += (
-                    charge if function_call_limit is None
+                    charge
+                    if function_call_limit is None
                     else min(charge, max(0, function_call_limit - current_count))
                 )
             current_count += charge
             if function_call_limit is not None:
                 if isinstance(call.result, dict):
-                    call.result["budget"] = self._budget_payload(
-                        current_count, function_call_limit
-                    )
-                self._attach_tool_budget(
-                    completed, used=current_count, limit=function_call_limit
-                )
+                    call.result["budget"] = self._budget_payload(current_count, function_call_limit)
+                self._attach_tool_budget(completed, used=current_count, limit=function_call_limit)
             stopped = any(item.stop_after_tool_call or item.tool_call_error for item in completed)
             stopped = stopped or (
                 isinstance(call.result, Mapping) and call.result.get("ok") is False
@@ -1810,7 +1831,9 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 progress["code"] = code
             logger.bind(**progress).info(
                 "report_code_tool_progress tool_name={} status={} code={}",
-                tool_name, status, code[:128] if isinstance(code, str) and code else "-",
+                tool_name,
+                status,
+                code[:128] if isinstance(code, str) and code else "-",
             )
 
     def run_function_calls(
@@ -1830,7 +1853,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             result_store,
         ):
             yield from super().run_function_calls(
-                [call], function_call_results,
+                [call],
+                function_call_results,
                 current_function_call_count=count,
                 function_call_limit=function_call_limit,
                 result_store=result_store,
@@ -1857,7 +1881,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
             result_store,
         ):
             async for event in super().arun_function_calls(
-                [call], function_call_results,
+                [call],
+                function_call_results,
                 current_function_call_count=count,
                 function_call_limit=function_call_limit,
                 skip_pause_check=skip_pause_check,
@@ -1951,10 +1976,7 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
                 and result_identity not in wire_rejected_ids
             ):
                 raise _custom_protocol_error("Coding Agent custom 工具结果类型不匹配。")
-        if any(
-            custom_result_counts.get(custom["call_id"], 0) != 1
-            for custom in custom_replays
-        ):
+        if any(custom_result_counts.get(custom["call_id"], 0) != 1 for custom in custom_replays):
             raise _custom_protocol_error("Coding Agent custom 工具调用缺少对应结果。")
 
         formatted = super()._format_messages(messages, compress_tool_results, tools)
@@ -1962,10 +1984,12 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         # 按第一条调用身份插回原始 item，同一批多个调用只插入一次。
         if self.store is False:
             reasoning_by_call = {
-                message.tool_calls[0].get("call_id", message.tool_calls[0].get("id")):
-                    message.provider_data["reasoning_output"]
+                message.tool_calls[0].get(
+                    "call_id", message.tool_calls[0].get("id")
+                ): message.provider_data["reasoning_output"]
                 for message in normalized_messages
-                if message.tool_calls and message.provider_data
+                if message.tool_calls
+                and message.provider_data
                 and message.provider_data.get("reasoning_output") is not None
             }
             replayed: list[Any] = []
@@ -2171,7 +2195,8 @@ class ReportingCodeOpenAIResponses(OpenAIResponses):
         request_metric.update(
             {
                 "providerRequestId": (
-                    getattr(response, "id") if isinstance(getattr(response, "id", None), str)
+                    getattr(response, "id")
+                    if isinstance(getattr(response, "id", None), str)
                     else request_metric["providerRequestId"]
                 ),
                 "durationMs": duration_ms,

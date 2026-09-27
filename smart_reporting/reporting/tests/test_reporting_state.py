@@ -734,9 +734,9 @@ def test_submit_visualization_charts_persists_plotly_companion_and_rejects_chang
     }
 
     result = ReportingStateReducer.apply(make_visualization_state(), command)
-    assert result.state.payload["visualizationSections"]["section_001"][
-        "interactiveFiles"
-    ] == [companion]
+    assert result.state.payload["visualizationSections"]["section_001"]["interactiveFiles"] == [
+        companion
+    ]
 
     command["commandId"] = "plotly-section-changed"
     command["payload"]["interactiveFiles"] = [companion | {"sha256": "b" * 64}]

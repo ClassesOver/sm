@@ -48,7 +48,8 @@ from smart_reporting.workspace import WorkspaceError
 @pytest.mark.anyio
 async def test_plotly_sidecar_is_not_scheduled_for_visual_review(workspace):  # noqa: F811
     task_binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, ToolkitRuntime(),
+        workspace,
+        ToolkitRuntime(),
     )
     sidecar = output.model_copy(update={"path": "charts/chart.plotly.json"})
     task_binding.execution_receipt = task_binding.execution_receipt.model_copy(
@@ -64,15 +65,22 @@ async def test_plotly_sidecar_is_not_scheduled_for_visual_review(workspace):  # 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("code", [
-    "report_chart_file_missing", "report_chart_source_invalid", "report_chart_blank",
-    "report_code_visual_review_unavailable",
-])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "report_chart_file_missing",
+        "report_chart_source_invalid",
+        "report_chart_blank",
+        "report_code_visual_review_unavailable",
+    ],
+)
 async def test_visual_check_failure_routes_repair_or_stops(workspace, code):  # noqa: F811
     reviewer = AsyncMock()
     reviewer.review.side_effect = ReportingError(code, "private provider body")
     task_binding, toolkit, output = await _prepared_visualization_toolkit(
-        workspace, ToolkitRuntime(), reviewer,
+        workspace,
+        ToolkitRuntime(),
+        reviewer,
     )
     function = next(tool for tool in toolkit.tool_functions if tool.name == "view_image")
     call = FunctionCall(function=function, arguments={"path": output.path})
@@ -93,27 +101,37 @@ async def test_visual_check_failure_routes_repair_or_stops(workspace, code):  # 
 
 
 def test_visual_failures_merge_identical_issues_across_paths():
-    merged = merge_visual_failures([
+    merged = merge_visual_failures(
+        [
+            {
+                "path": "charts/a.png",
+                "summary": "需修订",
+                "issues": [
+                    {"category": "text_overlap", "severity": "critical", "description": "标签重叠"}
+                ],
+                "suggestions": ["调整布局"],
+            },
+            {
+                "path": "charts/b.png",
+                "summary": "需修订",
+                "issues": [
+                    {"category": "text_overlap", "severity": "critical", "description": "标签重叠"}
+                ],
+                "suggestions": ["调整布局"],
+            },
+        ]
+    )
+    assert merged == [
         {
             "path": "charts/a.png",
+            "paths": ["charts/a.png", "charts/b.png"],
             "summary": "需修订",
-            "issues": [{"category": "text_overlap", "severity": "critical", "description": "标签重叠"}],
+            "issues": [
+                {"category": "text_overlap", "severity": "critical", "description": "标签重叠"}
+            ],
             "suggestions": ["调整布局"],
-        },
-        {
-            "path": "charts/b.png",
-            "summary": "需修订",
-            "issues": [{"category": "text_overlap", "severity": "critical", "description": "标签重叠"}],
-            "suggestions": ["调整布局"],
-        },
-    ])
-    assert merged == [{
-        "path": "charts/a.png",
-        "paths": ["charts/a.png", "charts/b.png"],
-        "summary": "需修订",
-        "issues": [{"category": "text_overlap", "severity": "critical", "description": "标签重叠"}],
-        "suggestions": ["调整布局"],
-    }]
+        }
+    ]
 
 
 def test_visual_review_model_receipt_hides_non_blocking_text() -> None:
@@ -265,7 +283,9 @@ async def test_delivery_state_tracks_write_run_submit_and_invalidates_edit(bindi
     assert state["nextTools"] == ["submit_script"]
     assert state["execution"]["valid"] is True
     assert state["script"]["sha256"] == binding.execution_receipt.source_file.sha256
-    await FunctionCall(function=functions["write_script"], arguments={"source": SOURCE + "\n# changed"}).aexecute()
+    await FunctionCall(
+        function=functions["write_script"], arguments={"source": SOURCE + "\n# changed"}
+    ).aexecute()
     assert toolkit.delivery_state()["execution"] is None
     assert toolkit.delivery_state()["nextTools"] == ["read_script", "edit_script", "run_script"]
     await FunctionCall(function=functions["run_script"], arguments={}).aexecute()
@@ -286,7 +306,8 @@ async def test_rewrite_gate_opens_after_repeated_edit_failures_and_closes_on_rew
     await FunctionCall(function=functions["write_script"], arguments={"source": SOURCE}).aexecute()
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
     model.configure_code_run(
-        toolkit.tool_functions, max_model_requests=10,
+        toolkit.tool_functions,
+        max_model_requests=10,
         delivery_state_reader=toolkit.delivery_state,
     )
 
@@ -358,11 +379,14 @@ async def test_successive_patches_remain_declared_until_execution(binding):  # n
     await write.aexecute()
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
     model.configure_code_run(
-        toolkit.tool_functions, max_model_requests=10,
+        toolkit.tool_functions,
+        max_model_requests=10,
         delivery_state_reader=toolkit.delivery_state,
     )
-    for old, new in [('write_text("{}")', 'write_text("{ }")'),
-                     ('write_text("{ }")', 'write_text("{  }")')]:
+    for old, new in [
+        ('write_text("{}")', 'write_text("{ }")'),
+        ('write_text("{ }")', 'write_text("{  }")'),
+    ]:
         read = FunctionCall(function=functions["read_script"], arguments={})
         await read.aexecute()
         patch = edit_patch(read.result["source"], old, new)
@@ -371,7 +395,9 @@ async def test_successive_patches_remain_declared_until_execution(binding):  # n
         assert edit.result["ok"] is True
         params = model.get_request_params(messages=[], tools=toolkit.tool_functions)
         assert {tool["name"]: tool["type"] for tool in params["tools"]} == {
-            "read_script": "function", "edit_script": "custom", "run_script": "function",
+            "read_script": "function",
+            "edit_script": "custom",
+            "run_script": "function",
         }
         assert params["parallel_tool_calls"] is True
     run = FunctionCall(function=functions["run_script"], arguments={})
@@ -384,7 +410,9 @@ async def test_successive_patches_remain_declared_until_execution(binding):  # n
 async def test_edit_script_replaces_one_exact_block_without_rewriting_whole_source(binding):  # noqa: F811
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     source = SOURCE + "print('done')\n"
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, source)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, source
+    )
     before = await toolkit.read_script()
 
     result = await toolkit.edit_script(edit_patch(source, "print('done')", "print('finished')"))
@@ -401,14 +429,13 @@ async def test_edit_script_replaces_one_exact_block_without_rewriting_whole_sour
 @pytest.mark.anyio
 @pytest.mark.parametrize("repair_succeeds", [True, False])
 async def test_first_repair_success_tracks_first_run_after_applied_patch(
-    binding, repair_succeeds  # noqa: F811
+    binding,  # noqa: F811
+    repair_succeeds,  # noqa: F811
 ):
     runtime = ToolkitRuntime()
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
     functions = {tool.name: tool for tool in toolkit.tool_functions}
-    write = FunctionCall(
-        function=functions["write_script"], arguments={"source": SOURCE}
-    )
+    write = FunctionCall(function=functions["write_script"], arguments={"source": SOURCE})
     assert await write.aexecute()
     saved_source = write.result.get("savedSource") or SOURCE
     runtime.next_cell = _failed_cell("ValueError: first run failed")
@@ -418,9 +445,10 @@ async def test_first_repair_success_tracks_first_run_after_applied_patch(
     assert toolkit.first_run_success is False
     assert toolkit.first_run_failure_code == first_run.result["code"]
     assert toolkit.first_run_failure["code"] == first_run.result["code"]
-    assert toolkit.first_run_failure["sourceSha256"] == hashlib.sha256(
-        saved_source.encode()
-    ).hexdigest()
+    assert (
+        toolkit.first_run_failure["sourceSha256"]
+        == hashlib.sha256(saved_source.encode()).hexdigest()
+    )
 
     patch = edit_patch(
         saved_source,
@@ -450,7 +478,9 @@ async def test_first_repair_success_tracks_first_run_after_applied_patch(
 async def test_edit_script_rejects_ambiguous_match_without_mutating_source(binding):  # noqa: F811
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     source = "value = 1\nvalue = 1\n"
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, source)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, source
+    )
 
     result = await toolkit.edit_script(edit_patch(source, "value = 1", "value = 2"))
 
@@ -466,19 +496,27 @@ async def test_delivery_state_survives_rebase_without_parsing_tool_results(bindi
     await toolkit.run_script()
     await toolkit.refresh_delivery_state()
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
-    model.configure_code_run(toolkit.tool_functions, max_model_requests=30,
-                             delivery_state_reader=toolkit.delivery_state)
+    model.configure_code_run(
+        toolkit.tool_functions, max_model_requests=30, delivery_state_reader=toolkit.delivery_state
+    )
     model._task_execution_input_token_budget = 1800
-    model.count_tokens = lambda messages, *args, **kwargs: sum(len(str(m.content)) // 4 + 1 for m in messages)
+    model.count_tokens = lambda messages, *args, **kwargs: sum(
+        len(str(m.content)) // 4 + 1 for m in messages
+    )
     messages = [Message(role="user", content="complete task")]
     for index in range(12):
-        messages.extend([
-            Message(role="assistant", content="exploration " * 400),
-            Message(role="user", content="continue"),
-        ])
+        messages.extend(
+            [
+                Message(role="assistant", content="exploration " * 400),
+                Message(role="user", content="continue"),
+            ]
+        )
     projected = model._project(messages, (), {})
-    states = [json.loads(m.content) for m in projected if isinstance(m.content, str)
-              and '"marker":"REPORTING_CODE_DELIVERY_STATE"' in m.content]
+    states = [
+        json.loads(m.content)
+        for m in projected
+        if isinstance(m.content, str) and '"marker":"REPORTING_CODE_DELIVERY_STATE"' in m.content
+    ]
     assert len(states) == 1
     assert states[0]["execution"]["valid"] is True
     assert states[0]["nextTools"] == ["submit_script"]
@@ -500,14 +538,18 @@ async def test_failure_identity_survives_delivery_without_disabling_repeat_detec
 
 @pytest.mark.anyio
 async def test_delivery_feedback_tracks_visual_receipts_and_changed_output(workspace):  # noqa: F811
-    task_binding, toolkit, output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
     await toolkit.refresh_delivery_state()
     assert toolkit.delivery_state()["nextReviewPaths"] == [output.path]
     assert toolkit.delivery_state()["nextTools"] == ["view_image", "submit_script"]
     task_binding.visual_inspection_receipts[output.path] = _visual_receipt(output)
     await toolkit.refresh_delivery_state()
     assert toolkit.delivery_state()["nextTools"] == ["submit_script"]
-    await workspace.awrite_text(task_binding.context.task_id, output.path, "changed", overwrite=True)
+    await workspace.awrite_text(
+        task_binding.context.task_id, output.path, "changed", overwrite=True
+    )
     await toolkit.refresh_delivery_state()
     assert toolkit.delivery_state()["execution"]["valid"] is False
     assert toolkit.delivery_state()["nextTools"] == ["read_script", "edit_script", "run_script"]
@@ -515,7 +557,9 @@ async def test_delivery_feedback_tracks_visual_receipts_and_changed_output(works
 
 @pytest.mark.anyio
 async def test_visual_warning_is_recorded_without_repair_loop(workspace):  # noqa: F811
-    task_binding, toolkit, output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
     await toolkit.refresh_delivery_state()
     task_binding.visual_inspection_receipts[output.path] = ChartVisualInspectionReceipt(
         sourcePath=output.path,
@@ -525,11 +569,13 @@ async def test_visual_warning_is_recorded_without_repair_loop(workspace):  # noq
         modelId="vision-test",
         reviewed=True,
         requiresRevision=False,
-        issues=(ChartVisualInspectionIssue(
-            category="text_overlap",
-            severity="warning",
-            description="图例轻微重叠，仅记录告警。",
-        ),),
+        issues=(
+            ChartVisualInspectionIssue(
+                category="text_overlap",
+                severity="warning",
+                description="图例轻微重叠，仅记录告警。",
+            ),
+        ),
     )
     await toolkit.refresh_delivery_state()
     state = toolkit.delivery_state()
@@ -571,10 +617,13 @@ async def test_run_script_failure_receipt_advises_next_tools(binding, monkeypatc
 async def test_delivery_state_carries_edit_failure_anchor_excerpt(binding):  # noqa: F811
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     source = "value = 1\nprint(value)\n"
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, source)
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, source
+    )
     function = next(tool for tool in toolkit.tool_functions if tool.name == "edit_script")
     call = FunctionCall(
-        function=function, call_id="edit-anchor",
+        function=function,
+        call_id="edit-anchor",
         arguments={"patch": edit_patch(source, "print(value)\nmissing", "print(2)")},
     )
     assert await call.aexecute()
@@ -588,7 +637,9 @@ async def test_delivery_state_carries_edit_failure_anchor_excerpt(binding):  # n
     assert failure["details"]["sourceEndLine"] == "2"
     assert failure["details"]["errorLine"] == "2"
     assert failure["details"]["allowedEditRegion"] == {
-        "path": toolkit.context.script_path, "startLine": 1, "endLine": 2,
+        "path": toolkit.context.script_path,
+        "startLine": 1,
+        "endLine": 2,
     }
 
 
@@ -606,7 +657,7 @@ async def test_run_script_failure_includes_matching_source_context_for_direct_ed
         toolkit.context.task_id, toolkit.context.script_path, source
     )
     runtime.next_cell = _failed_cell(
-        'Traceback (most recent call last):\n'
+        "Traceback (most recent call last):\n"
         '  File "analysis/a.py", line 3, in <module>\n'
         "KeyError: ('income_type', '收入类型构成（门诊/住院）')"
     )
@@ -624,7 +675,9 @@ async def test_run_script_failure_includes_matching_source_context_for_direct_ed
     assert details["sourceExcerpt"] == source
     assert details["errorType"] == "KeyError"
     assert details["allowedEditRegion"] == {
-        "path": "analysis/a.py", "startLine": 1, "endLine": 4,
+        "path": "analysis/a.py",
+        "startLine": 1,
+        "endLine": 4,
     }
     assert details["forbiddenEditRegions"][0]["outside"]["allowedStartLine"] == 1
     assert details["nextTools"] == ["edit_script", "run_script"]
@@ -644,11 +697,11 @@ async def test_run_script_failure_points_to_innermost_script_frame(binding):  # 
         toolkit.context.task_id, toolkit.context.script_path, source
     )
     runtime.next_cell = _failed_cell(
-        'Traceback (most recent call last):\n'
+        "Traceback (most recent call last):\n"
         '  File "analysis/a.py", line 28, in <module>\n'
         '  File "analysis/a.py", line 20, in build_chart\n'
         '  File "analysis/a.py", line 4, in parse_number\n'
-        'ValueError: null value'
+        "ValueError: null value"
     )
 
     result = await toolkit.run_script()
@@ -661,12 +714,18 @@ async def test_run_script_failure_points_to_innermost_script_frame(binding):  # 
 async def test_run_script_failure_does_not_offer_stale_source_excerpt(binding):  # noqa: F811
     class ChangingRuntime(ToolkitRuntime):
         async def execute_script_process(self, session_id, received_workspace, path, **kwargs):
-            await received_workspace.awrite_text("task-1", path, "print('changed')\n", overwrite=True)
-            return await super().execute_script_process(session_id, received_workspace, path, **kwargs)
+            await received_workspace.awrite_text(
+                "task-1", path, "print('changed')\n", overwrite=True
+            )
+            return await super().execute_script_process(
+                session_id, received_workspace, path, **kwargs
+            )
 
     runtime = ChangingRuntime()
     toolkit = ReportingCodeModeToolkit(binding, runtime, ReportingLspProcessManager())
-    await toolkit.workspace.awrite_text(toolkit.context.task_id, toolkit.context.script_path, "print('original')\n")
+    await toolkit.workspace.awrite_text(
+        toolkit.context.task_id, toolkit.context.script_path, "print('original')\n"
+    )
     runtime.next_cell = _failed_cell('  File "analysis/a.py", line 1\nValueError: failed')
 
     result = await toolkit.run_script()
@@ -726,8 +785,13 @@ def test_edit_tool_description_rejects_json_envelope(binding):  # noqa: F811
     assert "会话" in descriptions["restart_code_mode"]
     assert "explorationVariables" in descriptions["run"]
     for name in (
-        "read_script", "run", "lsp_diagnostics", "lsp_hover", "lsp_definition",
-        "lsp_references", "lsp_document_symbols",
+        "read_script",
+        "run",
+        "lsp_diagnostics",
+        "lsp_hover",
+        "lsp_definition",
+        "lsp_references",
+        "lsp_document_symbols",
     ):
         assert descriptions[name]
 
@@ -736,16 +800,23 @@ def test_code_tool_descriptions_reach_provider_wire(binding):  # noqa: F811
     toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager())
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
     wire = {
-        tool["name"]: tool
-        for tool in model._format_tool_params([], list(toolkit.tool_functions))
+        tool["name"]: tool for tool in model._format_tool_params([], list(toolkit.tool_functions))
     }
     for name in ("write_script", "edit_script", "run"):
         assert wire[name]["type"] == "custom"
         assert "parameters" not in wire[name]
     assert '{"data": ...}' in wire["edit_script"]["description"]
-    for name in ("read_script", "run_script", "submit_script", "restart_code_mode",
-                 "lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references",
-                 "lsp_document_symbols"):
+    for name in (
+        "read_script",
+        "run_script",
+        "submit_script",
+        "restart_code_mode",
+        "lsp_diagnostics",
+        "lsp_hover",
+        "lsp_definition",
+        "lsp_references",
+        "lsp_document_symbols",
+    ):
         assert wire[name]["type"] == "function"
         assert wire[name]["description"]
 
@@ -754,7 +825,9 @@ def test_code_tool_descriptions_reach_provider_wire(binding):  # noqa: F811
 async def test_visual_tool_description_targets_current_output(workspace):  # noqa: F811
     _, toolkit, _ = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
     model = ReportingCodeOpenAIResponses(id="test", api_key="test")
-    wire = {tool["name"]: tool for tool in model._format_tool_params([], list(toolkit.tool_functions))}
+    wire = {
+        tool["name"]: tool for tool in model._format_tool_params([], list(toolkit.tool_functions))
+    }
     assert wire["view_image"]["type"] == "function"
     assert "paths" in wire["view_image"]["description"]
     assert "自动按 5 张分批审查" in wire["view_image"]["description"]
@@ -772,23 +845,31 @@ async def test_submit_script_without_execution_advises_run_script(binding):  # n
 
 @pytest.mark.anyio
 async def test_failed_visual_review_requires_edit_instead_of_cached_review(workspace):  # noqa: F811
-    task_binding, toolkit, output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
+    task_binding, toolkit, output = await _prepared_visualization_toolkit(
+        workspace, ToolkitRuntime()
+    )
     receipt = _visual_receipt(output, requires_revision=True)
     task_binding.visual_inspection_receipts[output.path] = receipt.model_copy(
-        update={"issues": (ChartVisualInspectionIssue(
-            category="text_overlap", severity="critical", description="关键标签无法辨认。"
-        ),)}
+        update={
+            "issues": (
+                ChartVisualInspectionIssue(
+                    category="text_overlap", severity="critical", description="关键标签无法辨认。"
+                ),
+            )
+        }
     )
     await toolkit.refresh_delivery_state()
     state = toolkit.delivery_state()
     assert state["nextTools"] == ["read_script", "edit_script", "run_script"]
     assert state["nextReviewPaths"] == []
     assert state["visualFailures"][0]["summary"] == ""
-    assert state["visualFailures"][0]["issues"] == [{
-        "category": "text_overlap",
-        "severity": "critical",
-        "description": "关键标签无法辨认。",
-    }]
+    assert state["visualFailures"][0]["issues"] == [
+        {
+            "category": "text_overlap",
+            "severity": "critical",
+            "description": "关键标签无法辨认。",
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -912,12 +993,8 @@ async def test_first_visual_repair_fails_when_repaired_output_still_requires_rev
     assert toolkit.first_repair_success == "unknown"
 
     current_output = task_binding.execution_receipt.output_files[0]
-    reviewer.review.return_value = _visual_receipt(
-        current_output, requires_revision=True
-    )
-    review = FunctionCall(
-        function=functions["view_image"], arguments={"path": output.path}
-    )
+    reviewer.review.return_value = _visual_receipt(current_output, requires_revision=True)
+    review = FunctionCall(function=functions["view_image"], arguments={"path": output.path})
     assert await review.aexecute()
     assert review.result["ok"] is True
     assert toolkit.first_repair_success is False
@@ -927,7 +1004,10 @@ async def test_first_visual_repair_fails_when_repaired_output_still_requires_rev
 async def test_delivery_preflight_diagnostic_is_bounded(binding):  # noqa: F811
     async def preflight(receipt):
         return {"ok": False, "code": "invalid_structure", "message": "缺少字段" * 10000}
-    toolkit = ReportingCodeModeToolkit(binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight)
+
+    toolkit = ReportingCodeModeToolkit(
+        binding, ToolkitRuntime(), ReportingLspProcessManager(), output_preflight=preflight
+    )
     await toolkit.write_script(SOURCE)
     await toolkit.run_script()
     await toolkit.refresh_delivery_state()
@@ -961,15 +1041,9 @@ async def test_view_image_reviews_multiple_paths_in_one_call(workspace):  # noqa
     await workspace.awrite_text("task-1", "analysis/chart.py", "# script")
     await workspace.awrite_text("task-1", "charts/a.png", "image-a")
     await workspace.awrite_text("task-1", "charts/b.png", "image-b")
-    source = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "analysis/chart.py")
-    )
-    output_a = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "charts/a.png")
-    )
-    output_b = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "charts/b.png")
-    )
+    source = FileIdentity.model_validate(await workspace.ahash_file("task-1", "analysis/chart.py"))
+    output_a = FileIdentity.model_validate(await workspace.ahash_file("task-1", "charts/a.png"))
+    output_b = FileIdentity.model_validate(await workspace.ahash_file("task-1", "charts/b.png"))
     task_binding.execution_receipt = ExecutionReceipt(
         runId="visual-run",
         sourceFile=source,
@@ -983,7 +1057,10 @@ async def test_view_image_reviews_multiple_paths_in_one_call(workspace):  # noqa
     # 多图并发审查的调用顺序不确定，按路径返回回执，不能依赖 side_effect 列表顺序。
     reviewer.review.side_effect = lambda _workspace, path, **_kwargs: receipts[path]
     toolkit = ReportingCodeModeToolkit(
-        task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+        task_binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        vision_reviewer=reviewer,
     )
     result = await toolkit.view_image(paths=["charts/a.png", "charts/b.png"])
     assert result["ok"] is True
@@ -1017,15 +1094,9 @@ async def test_view_image_reviews_valid_paths_and_reports_bad_path_with_hint(wor
     await workspace.awrite_text("task-1", "analysis/chart.py", "# script")
     await workspace.awrite_text("task-1", "charts/a.png", "image-a")
     await workspace.awrite_text("task-1", "charts/b.png", "image-b")
-    source = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "analysis/chart.py")
-    )
-    output_a = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "charts/a.png")
-    )
-    output_b = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "charts/b.png")
-    )
+    source = FileIdentity.model_validate(await workspace.ahash_file("task-1", "analysis/chart.py"))
+    output_a = FileIdentity.model_validate(await workspace.ahash_file("task-1", "charts/a.png"))
+    output_b = FileIdentity.model_validate(await workspace.ahash_file("task-1", "charts/b.png"))
     task_binding.execution_receipt = ExecutionReceipt(
         runId="visual-run",
         sourceFile=source,
@@ -1039,7 +1110,10 @@ async def test_view_image_reviews_valid_paths_and_reports_bad_path_with_hint(wor
     # 多图并发审查的调用顺序不确定，按路径返回回执，不能依赖 side_effect 列表顺序。
     reviewer.review.side_effect = lambda _workspace, path, **_kwargs: receipts[path]
     toolkit = ReportingCodeModeToolkit(
-        task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+        task_binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        vision_reviewer=reviewer,
     )
     result = await toolkit.view_image(paths=["charts/a.png", "chart/b.png", "charts/b.png"])
 
@@ -1074,12 +1148,8 @@ async def test_view_image_auto_chunks_more_than_five_paths(workspace):  # noqa: 
     output_files = []
     for path in output_paths:
         await workspace.awrite_text("task-1", path, f"image-{path}")
-        output_files.append(
-            FileIdentity.model_validate(await workspace.ahash_file("task-1", path))
-        )
-    source = FileIdentity.model_validate(
-        await workspace.ahash_file("task-1", "analysis/chart.py")
-    )
+        output_files.append(FileIdentity.model_validate(await workspace.ahash_file("task-1", path)))
+    source = FileIdentity.model_validate(await workspace.ahash_file("task-1", "analysis/chart.py"))
     task_binding.execution_receipt = ExecutionReceipt(
         runId="visual-run",
         sourceFile=source,
@@ -1096,7 +1166,10 @@ async def test_view_image_auto_chunks_more_than_five_paths(workspace):  # noqa: 
 
     reviewer.review.side_effect = review
     toolkit = ReportingCodeModeToolkit(
-        task_binding, ToolkitRuntime(), ReportingLspProcessManager(), vision_reviewer=reviewer,
+        task_binding,
+        ToolkitRuntime(),
+        ReportingLspProcessManager(),
+        vision_reviewer=reviewer,
     )
 
     result = await toolkit.view_image(paths=list(output_paths))
@@ -1231,9 +1304,7 @@ def _view_image_review_call(
     requires_revision: bool,
     fresh_review_count: int,
 ) -> FunctionCall:
-    call = FunctionCall(
-        function=functions["view_image"], arguments={"path": "charts/chart.png"}
-    )
+    call = FunctionCall(function=functions["view_image"], arguments={"path": "charts/chart.png"})
     call.result = {
         "ok": True,
         "receipt": {"requiresRevision": requires_revision},
@@ -1281,9 +1352,7 @@ async def test_consecutive_critical_review_rounds_trip_gate_and_allow_submit(wor
 
 @pytest.mark.anyio
 async def test_consecutive_critical_review_rounds_counter_resets_on_clean_round(workspace):  # noqa: F811
-    _binding, toolkit, _output = await _prepared_visualization_toolkit(
-        workspace, ToolkitRuntime()
-    )
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
     functions = {tool.name: tool for tool in toolkit.tool_functions}
 
     # 合并 origin/code 后的语义：同一 execution 的多次 view_image 只累计一轮
@@ -1320,9 +1389,7 @@ async def test_consecutive_critical_review_rounds_counter_resets_on_clean_round(
 
 @pytest.mark.anyio
 async def test_cached_view_image_round_does_not_reset_critical_rounds(workspace):  # noqa: F811
-    _binding, toolkit, _output = await _prepared_visualization_toolkit(
-        workspace, ToolkitRuntime()
-    )
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
     functions = {tool.name: tool for tool in toolkit.tool_functions}
     toolkit._consecutive_critical_review_rounds = 2
 
@@ -1341,17 +1408,13 @@ async def test_view_image_reports_fresh_review_count_and_cached_round(workspace)
     reviewer.review.return_value = _visual_receipt(output)
     functions = {tool.name: tool for tool in toolkit.tool_functions}
 
-    review = FunctionCall(
-        function=functions["view_image"], arguments={"path": output.path}
-    )
+    review = FunctionCall(function=functions["view_image"], arguments={"path": output.path})
     assert await review.aexecute()
     assert review.result["ok"] is True
     assert review.result["freshReviewCount"] == 1
     assert toolkit.consecutive_critical_review_rounds == 0
 
-    cached = FunctionCall(
-        function=functions["view_image"], arguments={"path": output.path}
-    )
+    cached = FunctionCall(function=functions["view_image"], arguments={"path": output.path})
     assert await cached.aexecute()
     assert cached.result["ok"] is True
     assert cached.result["freshReviewCount"] == 0
@@ -1360,9 +1423,7 @@ async def test_view_image_reports_fresh_review_count_and_cached_round(workspace)
 
 @pytest.mark.anyio
 async def test_visual_review_rounds_gate_records_protocol_warning(workspace):  # noqa: F811
-    _binding, toolkit, _output = await _prepared_visualization_toolkit(
-        workspace, ToolkitRuntime()
-    )
+    _binding, toolkit, _output = await _prepared_visualization_toolkit(workspace, ToolkitRuntime())
     await toolkit.refresh_delivery_state()
     state = toolkit.delivery_state()
     state["visualReviewGate"] = {"tripped": True, "criticalRounds": 3}
@@ -1385,8 +1446,7 @@ async def test_visual_review_rounds_gate_records_protocol_warning(workspace):  #
     assert params["tools"]
     warnings = model.code_run_request_metrics()[-1].get("warnings", [])
     assert any(
-        warning["code"] == "report_code_visual_review_rounds_exhausted"
-        for warning in warnings
+        warning["code"] == "report_code_visual_review_rounds_exhausted" for warning in warnings
     )
     assert warnings[-1]["details"]["criticalRounds"] == 3
 

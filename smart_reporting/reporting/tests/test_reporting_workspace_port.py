@@ -1144,7 +1144,8 @@ async def test_visualization_python_source_accepts_plotly_and_matplotlib_fallbac
     path = "analysis/charts/s1/charts.py"
     harness = object.__new__(RuntimeAnalysisMixin)
     harness._phase_parameters = lambda *_args: (
-        {}, {"taskKind": "visualization_section", "visualizationWorkspace": {"scriptPath": path}}
+        {},
+        {"taskKind": "visualization_section", "visualizationWorkspace": {"scriptPath": path}},
     )
     source = (
         "import plotly.graph_objects as go\n"

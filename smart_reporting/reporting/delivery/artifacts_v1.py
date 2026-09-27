@@ -64,8 +64,7 @@ class ChartArtifact(ArtifactFile):
             raise ValueError("Plotly 图表必须且仅能绑定交互规格")
         if self.interactive_spec is not None and (
             self.interactive_spec.media_type != "application/vnd.plotly.v1+json"
-            or self.interactive_spec.path
-            != interactive_spec_path(self.path)
+            or self.interactive_spec.path != interactive_spec_path(self.path)
         ):
             raise ValueError("Plotly 交互规格必须与静态图同目录同名")
         if len(set(self.dataset_ids)) != len(self.dataset_ids):

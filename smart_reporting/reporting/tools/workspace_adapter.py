@@ -69,15 +69,11 @@ class _HostSandboxFS:
         )
 
     async def download_file(self, path: str) -> bytes:
-        content, _mime = await self._service.afile_bytes(
-            self._thread_id, self._relative(path)
-        )
+        content, _mime = await self._service.afile_bytes(self._thread_id, self._relative(path))
         return content
 
     async def delete_file(self, path: str, recursive: bool = False) -> None:
-        await self._service.adelete_file(
-            self._thread_id, self._relative(path), recursive=recursive
-        )
+        await self._service.adelete_file(self._thread_id, self._relative(path), recursive=recursive)
 
     async def move_files(self, source: str, destination: str) -> None:
         await self._service.amove_files(

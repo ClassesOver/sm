@@ -705,11 +705,7 @@ def _schema_constraints(
         resolved = _resolve_schema_ref(node, root)
         return _schema_constraints(resolved, root, seen_refs | {ref})
     patterns = [node["pattern"]] if isinstance(node.get("pattern"), str) else []
-    enum_values = (
-        [str(item) for item in node["enum"]]
-        if isinstance(node.get("enum"), list)
-        else []
-    )
+    enum_values = [str(item) for item in node["enum"]] if isinstance(node.get("enum"), list) else []
     for keyword in ("anyOf", "oneOf"):
         branches = node.get(keyword)
         if not isinstance(branches, list):
@@ -785,7 +781,8 @@ def _union_or_property_node(
                 if not isinstance(property_schema, dict):
                     continue
                 if property_schema.get("const") == part or (
-                    isinstance(property_schema.get("enum"), list) and part in property_schema["enum"]
+                    isinstance(property_schema.get("enum"), list)
+                    and part in property_schema["enum"]
                 ):
                     return resolved
         return None

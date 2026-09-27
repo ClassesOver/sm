@@ -340,9 +340,7 @@ async def prepare_chart_inputs(
             if hashlib.sha256(content).hexdigest() != identity.get("sha256"):
                 raise ChartInputError(f"事实文件身份不一致：{path}")
             documents[path] = json.loads(content)
-        materialized = materialize_chart_inputs(
-            plan, facts, documents, output_root=output_root
-        )
+        materialized = materialize_chart_inputs(plan, facts, documents, output_root=output_root)
         for item in materialized.files:
             await workspace.awrite_bytes(thread_id, item.path, item.content, overwrite=True)
     except Exception as error:  # noqa: BLE001 - 物化是优化路径，失败回退原始 facts

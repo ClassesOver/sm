@@ -383,12 +383,8 @@ class DaytonaExecutionApi:
             script,
             timeout=max(1, math.ceil(request.timeout_ms / 1000)),
         )
-        stdout, stdout_truncated = bounded_python_output(
-            result.stdout, request.output_limit_bytes
-        )
-        stderr, stderr_truncated = bounded_python_output(
-            result.stderr, request.output_limit_bytes
-        )
+        stdout, stdout_truncated = bounded_python_output(result.stdout, request.output_limit_bytes)
+        stderr, stderr_truncated = bounded_python_output(result.stderr, request.output_limit_bytes)
         return RunPythonScriptResult(
             status=result.status,
             exit_code=result.exit_code,

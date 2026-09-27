@@ -951,3 +951,24 @@ def test_assemble_single_unmatched_chart_keeps_block_text_verbatim() -> None:
 
     assert "第一段。\n\n\n第二段。[[citation:citation_001]]\n\n![" in rendered.markdown
     assert all(item["code"] != "chart_placed_within_block" for item in rendered.auto_fixes)
+
+
+def test_assemble_keeps_leading_quantities_that_are_not_heading_numbers() -> None:
+    rendered = _render("### 2025 年门诊收入\n\n正文\n\n#### 30 天回款率", "### 3. 成本结构")
+
+    assert "### 1.1 2025 年门诊收入" in rendered.markdown
+    assert "#### 1.1.1 30 天回款率" in rendered.markdown
+    assert "### 1.2 成本结构" in rendered.markdown
+
+
+def test_citation_markers_do_not_break_a_block_ending_with_a_code_fence() -> None:
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.draft_v1 import _marker_lines
+
+    text = _marker_lines("说明\n\n```text\nA=1\n```", ("c1",), ())
+    types = [token.type for token in MarkdownIt("commonmark").parse(text + "\n\n## 下一章\n")]
+
+    assert "[[citation:c1]]" in text
+    assert "heading_open" in types
+    assert _marker_lines("普通段落", ("c1",), ()) == "普通段落[[citation:c1]]"

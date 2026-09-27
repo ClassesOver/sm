@@ -10,34 +10,32 @@ export interface PlotlyRenderer {
   Plots: { resize(node: HTMLElement): void }
 }
 
+/** 报表视觉主题令牌，由服务端 REPORT_VISUAL_THEME 下发，与 PDF/Word、静态图同源。 */
+export interface ReportVisualTheme {
+  ink: string
+  muted: string
+  grid: string
+  gridline: string
+  chartPalette: string[]
+}
+
 interface ChartDependencies {
   fetcher?: typeof fetch
   loadPlotly?: () => Promise<PlotlyRenderer>
+  theme?: ReportVisualTheme
 }
 
 const CHART_FONT = '"Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif'
 
-// 与报告编辑器同一套设计令牌（见 style.css）：墨色正文 + 品牌蓝系。
-const REPORT_INK = '#1b2a41'
-const REPORT_INK_SOFT = '#30435a'
-const REPORT_MUTED = '#526579'
-const REPORT_GRID = '#e1e9ef'
-const REPORT_LINE = '#c7d7e5'
-const REPORT_ZERO = '#d4e0e9'
-const REPORT_HOVER_BG = '#12263a'
-const REPORT_COLORWAY = [
-  '#0b4f8a', '#007ea7', '#56b4e9', '#4f7b66',
-  '#8a5b00', '#9b2c26', '#526579', '#30435a',
-]
-
 // 报告主题：只补未显式声明的键，figure 自带值优先。
-function applyReportingTheme(merged: Record<string, unknown>): void {
+// 沙箱导出的 figure 通常已内嵌同源 Plotly 模板；这里只为缺失的键补同一套令牌。
+function applyReportingTheme(merged: Record<string, unknown>, theme: ReportVisualTheme): void {
   const font = merged.font as Record<string, unknown>
-  merged.font = { color: REPORT_INK, ...font }
-  merged.colorway = merged.colorway ?? REPORT_COLORWAY
+  merged.font = { color: theme.ink, ...font }
+  merged.colorway = merged.colorway ?? [...theme.chartPalette]
 
   const title = merged.title
-  const titleFont = { color: REPORT_INK, size: 17 }
+  const titleFont = { color: theme.ink, size: 17 }
   if (typeof title === 'string') {
     merged.title = { text: title, font: titleFont }
   } else if (title && typeof title === 'object') {
@@ -48,11 +46,11 @@ function applyReportingTheme(merged: Record<string, unknown>): void {
   }
 
   const axisDefaults = {
-    linecolor: REPORT_LINE,
-    gridcolor: REPORT_GRID,
-    zerolinecolor: REPORT_ZERO,
-    tickfont: { color: REPORT_MUTED, size: 12 },
-    title: { font: { color: REPORT_INK_SOFT, size: 13 } },
+    linecolor: theme.grid,
+    gridcolor: theme.gridline,
+    zerolinecolor: theme.grid,
+    tickfont: { color: theme.muted, size: 12 },
+    title: { font: { color: theme.ink, size: 13 } },
   }
   const axisKeys = new Set(
     Object.keys(merged).filter((key) => /^[xy]axis\d*$/.test(key)),
@@ -73,12 +71,12 @@ function applyReportingTheme(merged: Record<string, unknown>): void {
   }
 
   const legend = (merged.legend as Record<string, unknown> | undefined) ?? {}
-  merged.legend = { ...legend, font: { color: REPORT_INK_SOFT, ...((legend.font as Record<string, unknown>) ?? {}) } }
+  merged.legend = { ...legend, font: { color: theme.ink, ...((legend.font as Record<string, unknown>) ?? {}) } }
 
   const hoverlabel = (merged.hoverlabel as Record<string, unknown> | undefined) ?? {}
   merged.hoverlabel = {
-    bgcolor: REPORT_HOVER_BG,
-    bordercolor: REPORT_HOVER_BG,
+    bgcolor: theme.ink,
+    bordercolor: theme.ink,
     ...hoverlabel,
     font: { color: '#ffffff', family: CHART_FONT, ...((hoverlabel.font as Record<string, unknown>) ?? {}) },
   }
@@ -119,7 +117,9 @@ function normalizeLayoutOverlaps(merged: Record<string, unknown>): void {
     // autoshift 对同侧 overlaying 轴无效（实测 plotly.js 3.3.1 不外移），
     // 用官方多轴同侧方案：anchor free + position 外置 + 收缩 x 域腾出空间。
     if (occupiedSides.has(side) && record.anchor !== 'free') {
-      merged[key] = { ...record, anchor: 'free', position: displaced[side] * 0.08 }
+      // position 是纸面坐标：左侧从 0 向内排，右侧从 1 向内排，与 x 域收缩对称。
+      const offset = displaced[side] * 0.08
+      merged[key] = { ...record, anchor: 'free', position: side === 'right' ? 1 - offset : offset }
       displaced[side] += 1
     }
     occupiedSides.add(side)
@@ -134,7 +134,10 @@ function normalizeLayoutOverlaps(merged: Record<string, unknown>): void {
   }
 }
 
-function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] {
+function beautifyLayout(
+  layout: PlotlyFigure['layout'],
+  theme: ReportVisualTheme | undefined,
+): PlotlyFigure['layout'] {
   const merged: Record<string, unknown> = { ...layout }
   // 尺寸交给容器：figure 自带的固定 width/height 会让大图模态
   // 或容器尺寸变化时图表无法自适应，统一移除。
@@ -148,7 +151,7 @@ function beautifyLayout(layout: PlotlyFigure['layout']): PlotlyFigure['layout'] 
   // 纸面与绘图区留白交给容器边框和圆角处理。
   merged.paper_bgcolor = merged.paper_bgcolor ?? '#ffffff'
   merged.plot_bgcolor = merged.plot_bgcolor ?? '#ffffff'
-  applyReportingTheme(merged)
+  if (theme) applyReportingTheme(merged, theme)
   normalizeLayoutOverlaps(merged)
   return merged
 }
@@ -274,7 +277,7 @@ export function createInteractiveCharts(
     })
     closeButton.addEventListener('click', close)
     document.body.append(overlay)
-    void entry.plot.newPlot(canvas, entry.figure.data, beautifyLayout(entry.figure.layout), beautifyConfig(entry.figure.config))
+    void entry.plot.newPlot(canvas, entry.figure.data, beautifyLayout(entry.figure.layout, dependencies.theme), beautifyConfig(entry.figure.config))
     closeButton.focus()
   }
 
@@ -319,7 +322,6 @@ export function createInteractiveCharts(
       const spec = matching.length === 1 ? matching[0][1] : undefined
       if (!spec) return
       pending.add(image)
-      failed.add(image)
       const node = document.createElement('div')
       node.className = 'interactive-chart'
       node.setAttribute('role', 'img')
@@ -330,9 +332,13 @@ export function createInteractiveCharts(
         await whenImageLoaded(image)
         if (destroyed || !root.contains(image)) return
         const response = await fetcher(`${plotlyUrl}${spec.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'same-origin' })
-        if (!response.ok) return
+        // 只有确定性失败（资源缺失、figure 无效、渲染异常）才永久放弃该图片；
+        // 图片暂未布局或被编辑器临时移除属于瞬态，下次变更时应重试。
+        if (!response.ok) throw new Error('interactive chart asset unavailable')
         const figure = await response.json() as PlotlyFigure
-        if (!Array.isArray(figure.data) || figure.data.length === 0) return
+        if (!Array.isArray(figure.data) || figure.data.length === 0) {
+          throw new Error('interactive chart figure is empty')
+        }
         const plot = await loadPlotly()
         if (destroyed || !root.contains(image)) return
         if (!position(image, node)) return
@@ -341,7 +347,7 @@ export function createInteractiveCharts(
         // 文档修改触发自动保存，或按文档模型重绘 img 形成“改 class → 重绘 →
         // 再改 class”的渲染循环，页面布局持续抖动、图表错位。
         document.body.append(node)
-        await plot.newPlot(node, figure.data, beautifyLayout(figure.layout), beautifyConfig(figure.config))
+        await plot.newPlot(node, figure.data, beautifyLayout(figure.layout, dependencies.theme), beautifyConfig(figure.config))
         if (destroyed || !root.contains(image)) {
           plot.purge(node)
           node.remove()
@@ -356,6 +362,7 @@ export function createInteractiveCharts(
         active.set(image, entry)
         startTracking()
       } catch {
+        failed.add(image)
         node.remove()
       } finally {
         pending.delete(image)

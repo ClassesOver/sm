@@ -92,6 +92,10 @@ def _subject_types(code: str) -> frozenset[str]:
         return frozenset({"metric"})
     if code == "unused_chart_excluded":
         return frozenset({"report"})
+    # 精确登记的规则码必须先于按名称片段（claim/chart）的推断匹配，否则
+    # chart_path_normalized 会被 "chart" 分支截走，永远得不到声明的主体范围。
+    if code in _INFORMATIONAL_CODES:
+        return frozenset({"report", "section"})
     if code.startswith("report_section_block_"):
         return frozenset({"section_block"})
     # 发布语义门禁的 review-required 规则全部以具体 claim 为审计主体；其中
@@ -110,12 +114,6 @@ def _subject_types(code: str) -> frozenset[str]:
         return frozenset({"analysis_chart", "section"})
     if code in {"report_section_citation_missing", "report_reference_only_marker_missing"}:
         return frozenset({"section"})
-    if code in {
-        "chart_path_normalized",
-        "markdown_strong_marker_normalized",
-        "duplicate_section_heading_removed",
-    }:
-        return frozenset({"report", "section"})
     return frozenset({"section", "report"})
 
 

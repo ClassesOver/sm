@@ -59,8 +59,11 @@ class PlannerRequestRecorder:
     """记录 planner 到 provider 的逐请求生命周期，不保存 prompt 或源码。"""
 
     def __init__(
-        self, planner_id: str, model_id: str,
-        *, sink: list[dict[str, Any]] | None = None,
+        self,
+        planner_id: str,
+        model_id: str,
+        *,
+        sink: list[dict[str, Any]] | None = None,
     ) -> None:
         self.planner_id = planner_id
         self.model_id = model_id
@@ -150,12 +153,8 @@ class PlannerRequestRecorder:
             value = getattr(model, source, None)
             if isinstance(value, (str, int, float, bool, type(None))):
                 request_params[target] = value
-        self.requests[-1]["reasoningEffort"] = request_params.get(
-            "reasoning_effort", "unknown"
-        )
-        self.requests[-1]["reasoningSummary"] = request_params.get(
-            "reasoning_summary", "unknown"
-        )
+        self.requests[-1]["reasoningEffort"] = request_params.get("reasoning_effort", "unknown")
+        self.requests[-1]["reasoningSummary"] = request_params.get("reasoning_summary", "unknown")
 
     def finish(self, response: Any = None, error: BaseException | None = None) -> None:
         if not self.requests or self.requests[-1].get("status") != "started":
@@ -197,7 +196,8 @@ class PlannerRequestRecorder:
                 request[field] = value
         provider_data = getattr(response, "provider_data", None)
         response_id = (
-            provider_data.get("id") if isinstance(provider_data, Mapping)
+            provider_data.get("id")
+            if isinstance(provider_data, Mapping)
             else getattr(response, "id", None)
         )
         if isinstance(response_id, str) and response_id:
@@ -264,7 +264,11 @@ def record_step_model_metrics(value: Any, request_count: int | None = None) -> N
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)
     additional_metrics: dict[str, int | float] = {}
-    if isinstance(request_count, int) and not isinstance(request_count, bool) and request_count >= 0:
+    if (
+        isinstance(request_count, int)
+        and not isinstance(request_count, bool)
+        and request_count >= 0
+    ):
         additional_metrics["request_count"] = request_count
     for alias, field in (
         ("requestCount", "request_count"),
@@ -296,9 +300,16 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
         dependencies = getattr(run_context, "dependencies", None)
         if isinstance(dependencies, dict):
             lifecycle = dependencies.get("Reporting Process Lifecycle")
-        scope = dependencies.get("Reporting Workflow Scope") if isinstance(dependencies, dict) else None
-        operation_id = str(scope.get("externalRunId") or getattr(run_context, "run_id", "")) if isinstance(scope, dict) else str(getattr(run_context, "run_id", ""))
+        scope = (
+            dependencies.get("Reporting Workflow Scope") if isinstance(dependencies, dict) else None
+        )
+        operation_id = (
+            str(scope.get("externalRunId") or getattr(run_context, "run_id", ""))
+            if isinstance(scope, dict)
+            else str(getattr(run_context, "run_id", ""))
+        )
         activity_id = None
+
         async def finish_activity(status: str, summary: str | None = None) -> None:
             if lifecycle is None or not activity_id:
                 return
@@ -306,11 +317,14 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
                 await lifecycle.finish_activity(
                     operation_id=operation_id,
                     session_id=str(getattr(run_context, "session_id", "")),
-                    activity_id=activity_id, step_id=step_id,
-                    status=status, summary=summary,
+                    activity_id=activity_id,
+                    step_id=step_id,
+                    status=status,
+                    summary=summary,
                 )
             except Exception:
                 logger.warning("report_process_activity_finish_failed step_id={}", step_id)
+
         if lifecycle is not None and isinstance(scope, dict):
             try:
                 activity_id = await lifecycle.start_activity(

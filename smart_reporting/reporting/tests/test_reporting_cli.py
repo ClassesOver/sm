@@ -651,7 +651,7 @@ async def test_drive_workflow_delegates_reporting_error_cleanup() -> None:
             user_id="cli",
             database="odoo",
             company_id="3",
-    )
+        )
 
     assert raised.value.code == "report_workflow_step_failed"
     assert current_runtime.state_repository.status_updates == []
@@ -710,7 +710,7 @@ async def test_drive_workflow_delegates_cleanup_when_review_continue_raises() ->
             user_id="cli",
             database="odoo",
             company_id="3",
-    )
+        )
 
     assert raised.value.code == "report_workflow_step_failed"
     assert current_runtime.state_repository.status_updates == []
@@ -958,12 +958,8 @@ async def test_assemble_error_pause_retries_only_assembly_step() -> None:
 
 def test_reporting_cli_applies_requested_debug_setting(tmp_path: Path) -> None:
     base = {"REPORTING_HOST_WORKSPACE_ROOT": str(tmp_path / "workspaces")}
-    enabled = AgentSettings.from_environment(
-        {**base, "AGENT_DEBUG": "true"}, load_env_file=False
-    )
-    disabled = AgentSettings.from_environment(
-        {**base, "AGENT_DEBUG": "false"}, load_env_file=False
-    )
+    enabled = AgentSettings.from_environment({**base, "AGENT_DEBUG": "true"}, load_env_file=False)
+    disabled = AgentSettings.from_environment({**base, "AGENT_DEBUG": "false"}, load_env_file=False)
 
     assert _cli_settings(enabled, debug=False).debug is False
     assert _cli_settings(disabled, debug=True).debug is True

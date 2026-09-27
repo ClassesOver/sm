@@ -40,7 +40,13 @@ export function createLocalDraftController(
     removeStorage(storageKey)
     hide()
   })
+  // 移动端浏览器常常不触发 beforeunload（切后台、被系统回收），需同时在
+  // pagehide 与页面转入后台时落盘，避免最后一次防抖窗口内的编辑丢失。
   window.addEventListener('beforeunload', flush)
+  window.addEventListener('pagehide', flush)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush()
+  })
   return {
     banner,
     offer(serverMarkdown: string) {

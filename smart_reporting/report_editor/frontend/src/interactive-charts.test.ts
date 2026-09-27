@@ -2,6 +2,14 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { createInteractiveCharts } from './interactive-charts'
 
 const basePath = '/reports/v1/editor/report-1/1'
+// 与服务端 REPORT_VISUAL_THEME 同形的令牌，由文档接口下发。
+const theme = {
+  ink: '#1B2A41',
+  muted: '#5B6B7A',
+  grid: '#C7D7E5',
+  gridline: '#E1E9EF',
+  chartPalette: ['#0B4F8A', '#007EA7', '#2F80ED'],
+}
 const charts = { 'reports/revision-1/chart.png': 'reports/revision-1/chart.plotly.json' }
 
 function loadImages() {
@@ -229,28 +237,92 @@ it('applies the reporting visual theme while keeping explicit figure values', as
   const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
     fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => figure }) as unknown as typeof fetch,
     loadPlotly: async () => plot,
+    theme,
   })
   const refreshPromise = controller.refresh()
   loadImages()
   await refreshPromise
 
   const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
-  // 主题默认：品牌色板、墨色字体、轴线/网格/悬浮框令牌
-  expect(layout.colorway[0]).toBe('#0b4f8a')
-  expect(layout.font).toMatchObject({ color: '#1b2a41' })
+  // 主题默认全部来自服务端下发的报表令牌：色板、墨色、次要色、轴线/网格
+  expect(layout.colorway).toEqual(theme.chartPalette)
+  expect(layout.font).toMatchObject({ color: theme.ink })
   expect(layout.font.family).toContain('Noto Sans CJK SC')
-  expect(layout.hoverlabel).toMatchObject({ bgcolor: '#12263a', bordercolor: '#12263a' })
+  expect(layout.hoverlabel).toMatchObject({ bgcolor: theme.ink, bordercolor: theme.ink })
   expect(layout.hoverlabel.font.color).toBe('#ffffff')
-  expect(layout.legend.font.color).toBe('#30435a')
-  expect(layout.xaxis).toMatchObject({ linecolor: '#c7d7e5', gridcolor: '#e1e9ef' })
-  expect(layout.xaxis.tickfont.color).toBe('#526579')
+  expect(layout.legend.font.color).toBe(theme.ink)
+  expect(layout.xaxis).toMatchObject({ linecolor: theme.grid, gridcolor: theme.gridline })
+  expect(layout.xaxis.tickfont.color).toBe(theme.muted)
   expect(layout.yaxis.title).toMatchObject({ text: '金额' })
-  expect(layout.yaxis.title.font.color).toBe('#30435a')
+  expect(layout.yaxis.title.font.color).toBe(theme.ink)
   // figure 显式声明优先：标题字号 20、y 轴红色网格不被覆盖；未声明的标题颜色补墨色
   expect(layout.title).toMatchObject({ text: '成本走势' })
-  expect(layout.title.font).toMatchObject({ size: 20, color: '#1b2a41' })
+  expect(layout.title.font).toMatchObject({ size: 20, color: theme.ink })
   expect(layout.yaxis.gridcolor).toBe('#ff0000')
   // 原始 figure 不被修改
   expect(figure.layout.title.font).toEqual({ size: 20 })
+  controller.destroy()
+})
+
+it('places displaced right-side overlaying axes at the right paper edge', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const figure = {
+    data: [{ type: 'scatter', yaxis: 'y3' }],
+    layout: {
+      yaxis: {},
+      yaxis2: { overlaying: 'y', side: 'right' },
+      yaxis3: { overlaying: 'y', side: 'right' },
+    },
+  }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => figure }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+
+  const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
+  expect(layout.yaxis3).toMatchObject({ anchor: 'free', position: 1 })
+  expect(layout.xaxis.domain).toEqual([0, 0.92])
+  controller.destroy()
+})
+
+it('retries a chart whose image had no layout box on the first attempt', async () => {
+  const image = document.querySelector<HTMLImageElement>('#editor img')!
+  const laidOut = image.getBoundingClientRect
+  image.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ type: 'bar' }] }) }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const first = controller.refresh()
+  loadImages()
+  await first
+  expect(plot.newPlot).not.toHaveBeenCalled()
+
+  image.getBoundingClientRect = laidOut
+  const second = controller.refresh()
+  loadImages()
+  await second
+  expect(plot.newPlot).toHaveBeenCalledOnce()
+  controller.destroy()
+})
+
+it('leaves figure colors to the embedded template when no report theme is provided', async () => {
+  const plot = { newPlot: vi.fn().mockResolvedValue(undefined), purge: vi.fn(), Plots: { resize: vi.fn() } }
+  const controller = createInteractiveCharts(document.querySelector('#editor')!, charts, basePath, {
+    fetcher: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [{ type: 'bar' }] }) }) as unknown as typeof fetch,
+    loadPlotly: async () => plot,
+  })
+  const refreshPromise = controller.refresh()
+  loadImages()
+  await refreshPromise
+
+  const layout = plot.newPlot.mock.calls[0][2] as Record<string, any>
+  expect(layout.colorway).toBeUndefined()
+  expect(layout.font.family).toContain('Noto Sans CJK SC')
   controller.destroy()
 })

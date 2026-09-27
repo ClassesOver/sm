@@ -190,7 +190,9 @@ def test_execution_context_creates_shared_knowledge_index_under_host_root(
     )
 
     assert isinstance(context.reporting_knowledge_index, ReportingKnowledgeIndex)
-    assert context.reporting_knowledge_index.database_path == tmp_path / "knowledge" / "index.sqlite3"
+    assert (
+        context.reporting_knowledge_index.database_path == tmp_path / "knowledge" / "index.sqlite3"
+    )
 
 
 @pytest.mark.anyio
@@ -224,9 +226,11 @@ async def test_upserted_document_has_stable_identity_and_content_hash(tmp_path: 
     second = await index.upsert_document(document)
 
     assert first.identity == second.identity == "static:api-contract"
-    assert first.content_sha256 == second.content_sha256 == hashlib.sha256(
-        document.content.encode("utf-8")
-    ).hexdigest()
+    assert (
+        first.content_sha256
+        == second.content_sha256
+        == hashlib.sha256(document.content.encode("utf-8")).hexdigest()
+    )
     assert first.changed is True
     assert second.changed is False
     await index.aclose()
@@ -274,7 +278,9 @@ async def test_repair_knowledge_is_not_visible_outside_its_workspace(tmp_path: P
 
 
 @pytest.mark.anyio
-async def test_repair_identity_is_stable_when_its_bounded_summary_is_updated(tmp_path: Path) -> None:
+async def test_repair_identity_is_stable_when_its_bounded_summary_is_updated(
+    tmp_path: Path,
+) -> None:
     index = ReportingKnowledgeIndex(tmp_path)
     source_sha256 = hashlib.sha256(b"print('fixed')\n").hexdigest()
     first = await index.record_successful_repair(
@@ -310,7 +316,9 @@ async def test_fts_treats_special_characters_as_a_phrase(tmp_path: Path) -> None
 
 
 @pytest.mark.anyio
-async def test_static_markdown_documents_are_indexed_in_deterministic_path_order(tmp_path: Path) -> None:
+async def test_static_markdown_documents_are_indexed_in_deterministic_path_order(
+    tmp_path: Path,
+) -> None:
     documents = tmp_path / "knowledge_docs"
     documents.mkdir()
     (documents / "z.md").write_text("最后一份 API 文档", encoding="utf-8")

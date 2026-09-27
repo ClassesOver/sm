@@ -173,7 +173,8 @@ async def test_visualization_workflow_autocorrects_retargetable_binding_mismatch
     assert corrected_binding.fact_path == "facts/analysis_001.json"
     assert corrected_binding.data_path == "metrics[0].periodValues"
     warnings = [
-        message for message in messages
+        message
+        for message in messages
         if "report_visualization_binding_autocorrected" in str(message)
     ]
     assert len(warnings) == 1
@@ -219,8 +220,7 @@ async def test_visualization_workflow_warns_on_uncorrectable_binding_mismatch(
 
     assert result.status == "accepted"
     warnings = [
-        message for message in messages
-        if "report_visualization_binding_mismatch" in str(message)
+        message for message in messages if "report_visualization_binding_mismatch" in str(message)
     ]
     assert len(warnings) == 1
     extra = warnings[0].record["extra"]
@@ -477,9 +477,7 @@ def test_analysis_script_facts_reject_untrusted_coding_requirements(
 
 
 def test_analysis_script_facts_reject_dataset_outside_current_analysis() -> None:
-    state = _analysis_state_with_requirement(
-        dataset_id="dataset_other", fields=("income",)
-    )
+    state = _analysis_state_with_requirement(dataset_id="dataset_other", fields=("income",))
     state.instruction["datasets"].append(
         {
             "datasetId": "dataset_other",
@@ -789,13 +787,16 @@ async def test_visualization_fact_projection_declares_nullable_columns() -> None
         _read_identity_bytes=AsyncMock(
             return_value=json.dumps(
                 {
-                    "findings": [{
-                        "name": "科室同比",
-                        "columns": ["科室", "同比增速(%)"],
-                        "rows": [["普通外科", 23.84], ["高血压研究所", None]],
-                    }],
+                    "findings": [
+                        {
+                            "name": "科室同比",
+                            "columns": ["科室", "同比增速(%)"],
+                            "rows": [["普通外科", 23.84], ["高血压研究所", None]],
+                        }
+                    ],
                     "reconciliations": [{"name": "同比口径核对", "passed": True}],
-                }, ensure_ascii=False
+                },
+                ensure_ascii=False,
             ).encode()
         ),
     )
@@ -803,8 +804,13 @@ async def test_visualization_fact_projection_declares_nullable_columns() -> None
     supplement_file = FileIdentity(path="analysis/a/supplement.json", size=2, sha256="b" * 64)
 
     projection = await RuntimeAnalysisMixin._visualization_section_fact_projection(
-        runtime, "analysis_001", fact_file,
-        {"datasetIds": ["dataset_001"], "evidenceFiles": [supplement_file.model_dump(mode="json", by_alias=True)]},
+        runtime,
+        "analysis_001",
+        fact_file,
+        {
+            "datasetIds": ["dataset_001"],
+            "evidenceFiles": [supplement_file.model_dump(mode="json", by_alias=True)],
+        },
     )
 
     descriptor = projection["supplementalEvidenceSources"][0]["findings"][0]
@@ -863,9 +869,7 @@ def _execution_receipt(
 @pytest.mark.anyio
 async def test_visualization_workflow_consumes_code_agent_visual_receipts() -> None:
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64)
-    receipt = _execution_receipt(
-        "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
-    )
+    receipt = _execution_receipt("charts/charts.py", 1, "b" * 64, ("charts/chart.png",))
     result = CodeGenerationResult(
         script_file=script_file,
         execution_receipt=receipt,
@@ -881,17 +885,13 @@ async def test_visualization_workflow_consumes_code_agent_visual_receipts() -> N
 
     assert workflow_result.status == "accepted"
     assert workflow_result.inspections == (_inspection(),)
-    submit.assert_awaited_once_with(
-        _visualization_plan(), (_inspection(),), _context()
-    )
+    submit.assert_awaited_once_with(_visualization_plan(), (_inspection(),), _context())
 
 
 @pytest.mark.anyio
 async def test_visualization_workflow_passes_benchmark_projection_to_coding() -> None:
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64)
-    receipt = _execution_receipt(
-        "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
-    )
+    receipt = _execution_receipt("charts/charts.py", 1, "b" * 64, ("charts/chart.png",))
     result = CodeGenerationResult(
         script_file=script_file,
         execution_receipt=receipt,
@@ -913,9 +913,7 @@ async def test_visualization_workflow_passes_benchmark_projection_to_coding() ->
 @pytest.mark.anyio
 async def test_visualization_workflow_preserves_benchmark_projection_for_repair() -> None:
     script_file = FileIdentity(path="charts/charts.py", size=1, sha256="b" * 64)
-    receipt = _execution_receipt(
-        "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
-    )
+    receipt = _execution_receipt("charts/charts.py", 1, "b" * 64, ("charts/chart.png",))
     result = CodeGenerationResult(
         script_file=script_file,
         execution_receipt=receipt,
@@ -933,9 +931,10 @@ async def test_visualization_workflow_preserves_benchmark_projection_for_repair(
         benchmark_projection=projection,
     ).run(_visualization_payload(), _context())
 
-    assert [
-        call.kwargs["benchmark_projection"] for call in run_code.await_args_list
-    ] == [projection, projection]
+    assert [call.kwargs["benchmark_projection"] for call in run_code.await_args_list] == [
+        projection,
+        projection,
+    ]
     assert all(
         "benchmarkProjection" not in (call.kwargs["task_facts"] or {})
         for call in run_code.await_args_list
@@ -966,16 +965,19 @@ async def test_visualization_execution_repair_preserves_benchmark_projection() -
     await VisualizationSectionWorkflow(
         generate_plan=AsyncMock(return_value=_visualization_plan()),
         run_code=run_code,
-        submit=AsyncMock(side_effect=[
-            ReportingError("report_chart_file_missing", "missing"),
-            {"status": "accepted"},
-        ]),
+        submit=AsyncMock(
+            side_effect=[
+                ReportingError("report_chart_file_missing", "missing"),
+                {"status": "accepted"},
+            ]
+        ),
         benchmark_projection=projection,
     ).run(_visualization_payload(), _context())
 
-    assert [
-        call.kwargs["benchmark_projection"] for call in run_code.await_args_list
-    ] == [projection, projection]
+    assert [call.kwargs["benchmark_projection"] for call in run_code.await_args_list] == [
+        projection,
+        projection,
+    ]
     assert run_code.await_args.kwargs["task_facts"]["repairAttempt"] == 1
     assert "benchmarkProjection" not in run_code.await_args.kwargs["task_facts"]
 
@@ -2312,9 +2314,7 @@ def test_validated_visual_receipts_soft_accepts_gate_degraded_revision():
         execution_receipt=_execution_receipt(
             "charts/charts.py", 1, "b" * 64, ("charts/chart.png",)
         ),
-        visual_inspection_receipts=(_inspection().model_copy(
-            update={"requires_revision": True}
-        ),),
+        visual_inspection_receipts=(_inspection().model_copy(update={"requires_revision": True}),),
     )
     plan = _visualization_plan()
 

@@ -97,9 +97,7 @@ class ReportingLspProcessManager:
         finally:
             state.active_requests = max(state.active_requests - 1, 0)
 
-    async def _publish_document(
-        self, state: _LspState, uri: str, text: str, version: int
-    ) -> None:
+    async def _publish_document(self, state: _LspState, uri: str, text: str, version: int) -> None:
         if version == 1:
             await self._notify(
                 state,
@@ -129,8 +127,7 @@ class ReportingLspProcessManager:
             expired = [
                 state
                 for state in self._states.values()
-                if state.active_requests == 0
-                and now - state.last_used >= self.idle_ttl_seconds
+                if state.active_requests == 0 and now - state.last_used >= self.idle_ttl_seconds
             ]
             for state in expired:
                 self._states.pop(state.root, None)
@@ -221,9 +218,7 @@ class ReportingLspProcessManager:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            logger.warning(
-                "report_lsp_idle_reaper_failed error_type={}", type(error).__name__
-            )
+            logger.warning("report_lsp_idle_reaper_failed error_type={}", type(error).__name__)
 
     async def _request(self, state: _LspState, method: str, params: dict[str, Any]) -> Any:
         loop = asyncio.get_running_loop()

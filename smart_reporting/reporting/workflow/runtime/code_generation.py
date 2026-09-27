@@ -205,20 +205,14 @@ class ReportingCodeGenerationRunner:
                 if not isinstance(item, Mapping):
                     continue
                 projected_item = {
-                    key: item[key]
-                    for key in ("datasetId", "path", "columns")
-                    if key in item
+                    key: item[key] for key in ("datasetId", "path", "columns") if key in item
                 }
                 provenance = item.get("provenance")
                 if isinstance(provenance, Mapping):
                     period_roles = provenance.get("periodRoles")
                     if isinstance(period_roles, list):
                         projected_item["provenance"] = {
-                            "periodRoles": [
-                                role
-                                for role in period_roles
-                                if isinstance(role, str)
-                            ]
+                            "periodRoles": [role for role in period_roles if isinstance(role, str)]
                         }
                 projected_datasets.append(projected_item)
             projected["datasets"] = projected_datasets
@@ -244,11 +238,7 @@ class ReportingCodeGenerationRunner:
     @classmethod
     def _trace_task_context(cls, task_context: ReportingCodingTaskContext) -> Any:
         return using_metadata(
-            {
-                REPORTING_CODING_TASK_CONTEXT_METADATA_KEY: cls._host_task_payload(
-                    task_context
-                )
-            }
+            {REPORTING_CODING_TASK_CONTEXT_METADATA_KEY: cls._host_task_payload(task_context)}
         )
 
     def __init__(
@@ -283,7 +273,8 @@ class ReportingCodeGenerationRunner:
         *,
         run_context: RunContext,
         diagnostic: Mapping[str, Any] | None = None,
-        output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]] | None = None,
+        output_preflight: Callable[[ExecutionReceipt], Awaitable[Mapping[str, Any] | None]]
+        | None = None,
     ) -> CodeGenerationResult:
         if task_context.task_kind == "visualization" and self.vision_reviewer is None:
             raise ReportingError(
@@ -413,46 +404,38 @@ class ReportingCodeGenerationRunner:
                         else {}
                     ),
                     completed_tool_calls=getattr(toolkit, "completed_tool_calls", None),
-                    visual_review_duration_ms=getattr(
-                        toolkit, "visual_review_duration_ms", None
-                    ),
+                    visual_review_duration_ms=getattr(toolkit, "visual_review_duration_ms", None),
                     request_metrics=(
-                        request_metrics_reader()
-                        if callable(request_metrics_reader)
-                        else None
+                        request_metrics_reader() if callable(request_metrics_reader) else None
                     ),
                     input_components=input_components,
                     raw_protocol_correct=(
-                        raw_protocol_reader()
-                        if callable(raw_protocol_reader)
-                        else "unknown"
+                        raw_protocol_reader() if callable(raw_protocol_reader) else "unknown"
                     ),
                     envelope_normalized_inputs=(
                         envelope_reader()
-                        if callable(envelope_reader := getattr(model, "code_run_envelope_normalized_inputs", None))
+                        if callable(
+                            envelope_reader := getattr(
+                                model, "code_run_envelope_normalized_inputs", None
+                            )
+                        )
                         else "unknown"
                     ),
                     wire_shape_rejections=(
                         wire_reader()
-                        if callable(wire_reader := getattr(model, "code_run_wire_shape_rejections", None))
+                        if callable(
+                            wire_reader := getattr(model, "code_run_wire_shape_rejections", None)
+                        )
                         else "unknown"
                     ),
-                    first_script_success=getattr(
-                        toolkit, "first_script_success", "unknown"
-                    ),
-                    first_script_failure_code=getattr(
-                        toolkit, "first_script_failure_code", None
-                    ),
+                    first_script_success=getattr(toolkit, "first_script_success", "unknown"),
+                    first_script_failure_code=getattr(toolkit, "first_script_failure_code", None),
                     first_run_success=getattr(toolkit, "first_run_success", "unknown"),
-                    first_run_failure_code=getattr(
-                        toolkit, "first_run_failure_code", None
-                    ),
+                    first_run_failure_code=getattr(toolkit, "first_run_failure_code", None),
                     first_run_failure=getattr(toolkit, "first_run_failure", None),
                     first_patch_applied=getattr(toolkit, "first_patch_applied", "unknown"),
                     patch_format_counts=getattr(toolkit, "patch_format_counts", None),
-                    first_repair_success=getattr(
-                        toolkit, "first_repair_success", "unknown"
-                    ),
+                    first_repair_success=getattr(toolkit, "first_repair_success", "unknown"),
                     critical_visual_defect=visual_defect,
                     failure_code=_metric_failure_code(
                         terminal_failure_code,
@@ -509,14 +492,11 @@ class ReportingCodeGenerationRunner:
                         task_context.task_id,
                         type(error).__name__,
                     )
+
             try:
                 model_tool_limit = min(MAX_TOOL_CALL_LIMIT, requested_tool_call_limit)
                 delivery_state_reader = getattr(toolkit, "delivery_state", None)
-                state = (
-                    delivery_state_reader()
-                    if callable(delivery_state_reader)
-                    else {}
-                )
+                state = delivery_state_reader() if callable(delivery_state_reader) else {}
                 # 按语义判断“脚本已存在、尚无执行回执、也无失败诊断”，不能精确比较
                 # nextTools 列表：7cfbe87 为保留局部编辑工具改成 read/edit/run 后，
                 # 精确比较永远为假，宿主预执行被静默关闭。
@@ -533,11 +513,16 @@ class ReportingCodeGenerationRunner:
                 ):
                     # 宿主预执行不是 provider 调用；复用 Agno hooks，不生成工具回放消息。
                     call = FunctionCall(
-                        function=next(tool for tool in toolkit.tool_functions if tool.name == "run_script"),
+                        function=next(
+                            tool for tool in toolkit.tool_functions if tool.name == "run_script"
+                        ),
                         arguments={},
                         call_id=f"host-initial-run-{task_context.task_id}",
                     )
-                    logger.info("report_code_host_execution_started task_id={} tool_name=run_script", task_context.task_id)
+                    logger.info(
+                        "report_code_host_execution_started task_id={} tool_name=run_script",
+                        task_context.task_id,
+                    )
                     with self._trace_task_context(task_context):
                         await call.aexecute()
                     host_tool_results += 1
@@ -545,17 +530,15 @@ class ReportingCodeGenerationRunner:
                     if toolkit.last_failure is not None:
                         # hook 已完成白名单与大小裁剪，保留 SHA、片段及函数修复范围。
                         payload["diagnostic"] = {
-                            key: toolkit.last_failure[key]
-                            for key in ("code", "message", "details")
+                            key: toolkit.last_failure[key] for key in ("code", "message", "details")
                         }
                     logger.info(
                         "report_code_host_execution_completed task_id={} tool_name=run_script success={}",
-                        task_context.task_id, toolkit.first_run_success,
+                        task_context.task_id,
+                        toolkit.first_run_success,
                     )
                 agent = self.agent_factory(toolkit.tool_functions)
-                instruction_components = agent.__dict__.get(
-                    "_reporting_instruction_components", {}
-                )
+                instruction_components = agent.__dict__.get("_reporting_instruction_components", {})
                 input_components = measure_input_components(
                     {
                         "commonInstructions": instruction_components.get("common", ()),
@@ -573,7 +556,9 @@ class ReportingCodeGenerationRunner:
                     }
                 )
                 agent.tool_call_limit = model_tool_limit
-                configure_code_run = getattr(getattr(agent, "model", None), "configure_code_run", None)
+                configure_code_run = getattr(
+                    getattr(agent, "model", None), "configure_code_run", None
+                )
                 if isinstance(agent, Agent) and not callable(configure_code_run):
                     raise ReportingError(
                         "report_code_model_protocol_missing",
@@ -657,10 +642,12 @@ class ReportingCodeGenerationRunner:
                             with self._trace_task_context(task_context):
                                 run_output = await agent.acontinue_run(
                                     run_response=previous_output,
-                                    input=self._prompt({
-                                        "instruction": "任务尚未提交，请根据当前交付状态完成剩余步骤并调用 submit_script。",
-                                        "delivery": toolkit.delivery_state(),
-                                    }),
+                                    input=self._prompt(
+                                        {
+                                            "instruction": "任务尚未提交，请根据当前交付状态完成剩余步骤并调用 submit_script。",
+                                            "delivery": toolkit.delivery_state(),
+                                        }
+                                    ),
                                     run_context=run_context,
                                 )
                     finally:
@@ -668,9 +655,7 @@ class ReportingCodeGenerationRunner:
                             request_count_reader() if callable(request_count_reader) else 0
                         )
                         recordable_output = run_output
-                        request_metrics_reader = getattr(
-                            model, "code_run_request_metrics", None
-                        )
+                        request_metrics_reader = getattr(model, "code_run_request_metrics", None)
                         if callable(request_metrics_reader):
                             all_request_metrics = request_metrics_reader()
                             request_metrics = (
@@ -692,7 +677,10 @@ class ReportingCodeGenerationRunner:
                                     metrics=getattr(run_output, "metrics", None),
                                     _reporting_request_metrics=request_metrics,
                                 )
-                        if run_compaction["triggered"] and run_compaction["afterTokens"] == "unknown":
+                        if (
+                            run_compaction["triggered"]
+                            and run_compaction["afterTokens"] == "unknown"
+                        ):
                             for entry in window_request_metrics:
                                 observed = _request_metric_tokens(entry)
                                 if observed is not None:
@@ -808,35 +796,44 @@ class ReportingCodeGenerationRunner:
                     else:
                         logger.info(
                             "report_code_delivery_continuation task_id={} remaining_tools={} model_requests={}",
-                            task_context.task_id, remaining, request_count,
+                            task_context.task_id,
+                            remaining,
+                            request_count,
                         )
                     attempt += 1
                 receipt = toolkit.submitted_receipt
                 if receipt is None:
                     details = await toolkit.submission_diagnostic()
-                    tool_results = tool_count_reader() if callable(tool_count_reader) else sum(
-                        message.role == "tool" for message in (getattr(run_output, "messages", None) or ())
+                    tool_results = (
+                        tool_count_reader()
+                        if callable(tool_count_reader)
+                        else sum(
+                            message.role == "tool"
+                            for message in (getattr(run_output, "messages", None) or ())
+                        )
                     )
-                    details.update({
-                        "retryable": False,
-                        "recovery": "retry_then_degrade",
-                        "toolCallLimit": requested_tool_call_limit,
-                        "toolResultCount": tool_results + host_tool_results,
-                        "providerToolResultCount": tool_results,
-                        "hostToolResultCount": host_tool_results,
-                        "modelRequests": request_count,
-                        "compactionTriggered": run_compaction["triggered"],
-                        "compactionBeforeTokens": run_compaction["beforeTokens"],
-                        "compactionAfterTokens": run_compaction["afterTokens"],
-                        "compactionWindowId": run_compaction["windowId"],
-                        "retainedCallCount": run_compaction["retainedCallCount"],
-                        "truncatedCallCount": run_compaction["truncatedCallCount"],
-                        "terminationReason": (
-                            "tool_call_limit_reached"
-                            if tool_results >= model_tool_limit
-                            else "model_ended_without_submission"
-                        ),
-                    })
+                    details.update(
+                        {
+                            "retryable": False,
+                            "recovery": "retry_then_degrade",
+                            "toolCallLimit": requested_tool_call_limit,
+                            "toolResultCount": tool_results + host_tool_results,
+                            "providerToolResultCount": tool_results,
+                            "hostToolResultCount": host_tool_results,
+                            "modelRequests": request_count,
+                            "compactionTriggered": run_compaction["triggered"],
+                            "compactionBeforeTokens": run_compaction["beforeTokens"],
+                            "compactionAfterTokens": run_compaction["afterTokens"],
+                            "compactionWindowId": run_compaction["windowId"],
+                            "retainedCallCount": run_compaction["retainedCallCount"],
+                            "truncatedCallCount": run_compaction["truncatedCallCount"],
+                            "terminationReason": (
+                                "tool_call_limit_reached"
+                                if tool_results >= model_tool_limit
+                                else "model_ended_without_submission"
+                            ),
+                        }
+                    )
                     raise ReportingError(
                         "report_code_generation_no_submission",
                         "Coding Agent 未签发成功执行的 Python 脚本。",
@@ -940,8 +937,17 @@ class ReportingCodeGenerationRunner:
         forbidden = _bounded_forbidden_path_operations(details.get("forbiddenPathOperations"))
         if forbidden:
             safe["forbiddenPathOperations"] = forbidden
-        for field in ("line", "offset", "size", "lineCount", "maxLineLength", "exitCode",
-                      "sourceStartLine", "sourceEndLine", "errorLine"):
+        for field in (
+            "line",
+            "offset",
+            "size",
+            "lineCount",
+            "maxLineLength",
+            "exitCode",
+            "sourceStartLine",
+            "sourceEndLine",
+            "errorLine",
+        ):
             value = details.get(field)
             if (
                 isinstance(value, int)

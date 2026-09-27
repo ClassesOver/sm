@@ -46,8 +46,10 @@ def test_subscription_failure_is_bounded_and_isolated(monkeypatch, failure):
 
     async def scenario():
         monitor = service.CodeMonitor()
-        targets = [service.Target("bad", "bad", {"bad": True}),
-                   service.Target("good", "good", {"bad": False})]
+        targets = [
+            service.Target("bad", "bad", {"bad": True}),
+            service.Target("good", "good", {"bad": False}),
+        ]
         try:
             if failure == "cancel":
                 with pytest.raises(asyncio.CancelledError):
@@ -264,8 +266,7 @@ def test_source_snapshot_tolerates_concurrent_session_mutation():
 
 
 def message(kind, parent="cell-1", **content):
-    return {"header": {"msg_type": kind}, "parent_header": {"msg_id": parent},
-            "content": content}
+    return {"header": {"msg_type": kind}, "parent_header": {"msg_id": parent}, "content": content}
 
 
 def test_monitor_package_exists():

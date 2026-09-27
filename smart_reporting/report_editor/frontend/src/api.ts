@@ -1,9 +1,12 @@
+import type { ReportVisualTheme } from './interactive-charts'
+
 export interface ReportDocument {
   path: string
   markdown: string
   sha256: string
   csrfToken?: string
   interactiveCharts?: Record<string, string>
+  visualTheme?: ReportVisualTheme
 }
 
 export interface ExportResult {

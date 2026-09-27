@@ -49,9 +49,7 @@ class LegacyChartDraft(BaseModel):
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
     metric_codes: tuple[str, ...] = Field(alias="metricCodes", min_length=1, max_length=100)
     current_period: str = Field(alias="currentPeriod", min_length=1, max_length=200)
-    comparison_period: str | None = Field(
-        default=None, alias="comparisonPeriod", max_length=200
-    )
+    comparison_period: str | None = Field(default=None, alias="comparisonPeriod", max_length=200)
     comparison_type: Literal["none", "yoy", "mom", "period"] = Field(
         default="none", alias="comparisonType"
     )

@@ -42,6 +42,8 @@ _ANALYSIS_SUMMARY_PERIOD_PATTERN = re.compile(
 )
 _ANALYSIS_SUMMARY_SENTENCE_PATTERN = re.compile(r"[^。！？\n]+[。！？]?|\n")
 _INCOMPARABLE_YOY_WARNING = "摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"
+
+
 def _valid_visualization_source(tree: ast.Module) -> bool:
     forbidden_names = {
         "__file__",
@@ -930,11 +932,7 @@ class RuntimeAnalysisMixin:
             # payload 含上一 attempt 目录的补证与服务端追加的固定事实路径，均不在当前
             # attempt 输出目录中。已绑定路径由下方 payload 全等比对兜底，只校验新路径。
             bound_paths = {
-                *(
-                    durable_item.get("evidencePaths", ())
-                    if isinstance(durable_item, dict)
-                    else ()
-                ),
+                *(durable_item.get("evidencePaths", ()) if isinstance(durable_item, dict) else ()),
                 *(
                     (deterministic_identity.get("path"),)
                     if isinstance(deterministic_identity, dict)

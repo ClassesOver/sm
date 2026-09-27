@@ -63,6 +63,21 @@ describe('createSearchController', () => {
     expect(markdown).toBe('支出\n支出\n[[section:finance]]')
   })
 
+  it('moves to the next original match when the replacement contains the query', () => {
+    const controller = createSearchController({ root, getText: () => markdown, replaceText })
+    controller.open()
+    const query = root.querySelector<HTMLInputElement>('.search-query')!
+    const replacement = root.querySelector<HTMLInputElement>('.search-replacement')!
+    query.value = '收入'
+    replacement.value = '总收入'
+    query.dispatchEvent(new Event('input'))
+    const replace = root.querySelector<HTMLButtonElement>('[data-search="replace"]')!
+    replace.click()
+    replace.click()
+    expect(markdown).toBe('总收入\n总收入\n[[section:finance]]')
+    expect(root.querySelector('.search-count')?.textContent).toBe('1 / 2 个匹配')
+  })
+
   it('does not replace protected protocol markers and can close', () => {
     const controller = createSearchController({ root, getText: () => markdown, replaceText })
     controller.open()

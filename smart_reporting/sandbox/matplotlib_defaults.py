@@ -6,11 +6,19 @@ import warnings
 from collections.abc import Callable
 from typing import Any
 
-MATPLOTLIBRC_CONTENT = """backend: Agg
-font.family: sans-serif
-font.sans-serif: Noto Sans CJK SC, DejaVu Sans
-axes.unicode_minus: False
-"""
+from ..reporting.delivery.report_runtime.theme import (
+    REPORT_CHART_FONTS,
+    matplotlib_theme_rc,
+    plotly_theme_layout,
+)
+
+# 字体与报表主题配色一并作为默认样式；脚本显式设置的颜色、网格等仍然优先。
+MATPLOTLIBRC_CONTENT = (
+    "backend: Agg\n"
+    "font.family: sans-serif\n"
+    f"font.sans-serif: {', '.join(REPORT_CHART_FONTS)}\n"
+    "axes.unicode_minus: False\n"
+) + matplotlib_theme_rc()
 
 LOCAL_MATPLOTLIB_ROOT = "/workspace/.sandbox-matplotlib"
 LOCAL_MATPLOTLIBRC_PATH = f"{LOCAL_MATPLOTLIB_ROOT}/matplotlibrc"
@@ -34,7 +42,14 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
         f"_reporting_matplotlib_root = {runtime_root!r}\n"
         "_reporting_os.makedirs(_reporting_matplotlib_root, exist_ok=True)\n"
         f"_reporting_matplotlibrc = {config_path!r}\n"
-        "if not _reporting_os.path.exists(_reporting_matplotlibrc):\n"
+        f"_reporting_matplotlibrc_content = {MATPLOTLIBRC_CONTENT!r}\n"
+        "try:\n"
+        "    with open(_reporting_matplotlibrc, encoding='ascii') as _reporting_file:\n"
+        "        _reporting_matplotlibrc_current = _reporting_file.read()\n"
+        "except OSError:\n"
+        "    _reporting_matplotlibrc_current = None\n"
+        "# 运行根目录可能跨版本持久保留；内容变化（如主题更新）时必须重写。\n"
+        "if _reporting_matplotlibrc_current != _reporting_matplotlibrc_content:\n"
         "    _reporting_matplotlibrc_temporary = (\n"
         "        f'{_reporting_matplotlibrc}.{_reporting_os.getpid()}.tmp'\n"
         "    )\n"
@@ -42,7 +57,7 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
         "        with open(\n"
         "            _reporting_matplotlibrc_temporary, 'w', encoding='ascii'\n"
         "        ) as _reporting_file:\n"
-        f"            _reporting_file.write({MATPLOTLIBRC_CONTENT!r})\n"
+        "            _reporting_file.write(_reporting_matplotlibrc_content)\n"
         "        _reporting_os.replace("
         "_reporting_matplotlibrc_temporary, _reporting_matplotlibrc)\n"
         "    finally:\n"
@@ -104,7 +119,7 @@ def matplotlib_bootstrap(runtime_root: str) -> str:
 
 
 _KALEIDO_SYNC_FUNCTIONS = ("calc_fig_sync", "write_fig_sync", "write_fig_from_object_sync")
-_PLOTLY_AUTOMARGIN_TEMPLATE = "reporting_automargin"
+_PLOTLY_REPORTING_TEMPLATE = "reporting_theme"
 
 
 class _KaleidoSession:
@@ -162,19 +177,14 @@ class _KaleidoSession:
 
 
 def _apply_plotly_layout_defaults(module: Any) -> None:
-    """为 Plotly 默认模板叠加 automargin，避免长刻度标签被裁切或重叠。"""
+    """为 Plotly 默认模板叠加报表主题（含 automargin，避免长刻度标签被裁切或重叠）。"""
 
     try:
         base = module.templates.default or "plotly"
-        if _PLOTLY_AUTOMARGIN_TEMPLATE in str(base).split("+"):
+        if _PLOTLY_REPORTING_TEMPLATE in str(base).split("+"):
             return
-        module.templates[_PLOTLY_AUTOMARGIN_TEMPLATE] = {
-            "layout": {
-                "xaxis": {"automargin": True},
-                "yaxis": {"automargin": True},
-            }
-        }
-        module.templates.default = f"{base}+{_PLOTLY_AUTOMARGIN_TEMPLATE}"
+        module.templates[_PLOTLY_REPORTING_TEMPLATE] = {"layout": plotly_theme_layout()}
+        module.templates.default = f"{base}+{_PLOTLY_REPORTING_TEMPLATE}"
     except Exception:
         pass
 
@@ -222,9 +232,7 @@ class _PostImportHooks(importlib.abc.MetaPathFinder):
 
 
 def _install_import_hooks(kaleido: _KaleidoSession) -> _PostImportHooks:
-    hooks = _PostImportHooks(
-        {"kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults}
-    )
+    hooks = _PostImportHooks({"kaleido": kaleido.patch, "plotly.io": _apply_plotly_layout_defaults})
     sys.meta_path.insert(0, hooks)
     # 包装器之前已导入的模块直接应用默认值。
     if "kaleido" in sys.modules:

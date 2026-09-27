@@ -107,13 +107,15 @@ async def test_structured_executor_extracts_complete_json_object_from_model_prea
                 "aggregationGrain": "month",
                 "comparability": "strict",
                 "visualForm": "按月折线图",
-                "dataBindings": [{
-                    "analysisId": "analysis_001",
-                    "factPath": "facts/analysis_001.json",
-                    "dataPath": "metrics[0].periodValues",
-                    "fields": ["period", "value"],
-                    "role": "月度趋势",
-                }],
+                "dataBindings": [
+                    {
+                        "analysisId": "analysis_001",
+                        "factPath": "facts/analysis_001.json",
+                        "dataPath": "metrics[0].periodValues",
+                        "fields": ["period", "value"],
+                        "role": "月度趋势",
+                    }
+                ],
             }
         ],
         "warnings": [],
@@ -202,7 +204,11 @@ def _section_plan_with_claims_missing_question_ref() -> dict:
         "kind": "render",
         "sectionCode": "section_003",
         "blocks": [
-            {"blockId": "block_001", "objective": "说明收入", "claimIds": ["claim_001", "claim_002"]}
+            {
+                "blockId": "block_001",
+                "objective": "说明收入",
+                "claimIds": ["claim_001", "claim_002"],
+            }
         ],
         "claims": [
             {"claimId": "claim_001", "metricCode": "revenue", "value": 100, "citationIds": ["c1"]},
@@ -361,13 +367,15 @@ def test_reporting_agno_parser_accepts_complete_alias_object() -> None:
                     "aggregationGrain": "month",
                     "comparability": "strict",
                     "visualForm": "按月折线图",
-                    "dataBindings": [{
-                        "analysisId": "analysis_001",
-                        "factPath": "facts/analysis_001.json",
-                        "dataPath": "metrics[0].periodValues",
-                        "fields": ["period", "value"],
-                        "role": "月度趋势",
-                    }],
+                    "dataBindings": [
+                        {
+                            "analysisId": "analysis_001",
+                            "factPath": "facts/analysis_001.json",
+                            "dataPath": "metrics[0].periodValues",
+                            "fields": ["period", "value"],
+                            "role": "月度趋势",
+                        }
+                    ],
                 }
             ],
             "warnings": [],

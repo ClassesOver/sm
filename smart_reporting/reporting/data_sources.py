@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import anyio
 import polars as pl
 from agno.run import RunContext
+from loguru import logger
 
 from ..async_utils import complete_cleanup
 from ..workspace import WorkspaceHashResultError, _thread
@@ -311,9 +312,7 @@ class ReportDatasetStore:
             completed = tuple(item for item in handles if item is not None)
             completed_staging_paths = tuple(path for path in staging_paths if path is not None)
             if len(completed) != len(validated) or len(completed_staging_paths) != len(validated):
-                raise ReportingError(
-                    "report_dataset_commit_failed", "数据集 staging 结果不完整。"
-                )
+                raise ReportingError("report_dataset_commit_failed", "数据集 staging 结果不完整。")
 
             # 上传可以并发，但身份校验必须在所有文件落盘后串行执行。
             for item, staging_path in zip(completed, completed_staging_paths, strict=True):
@@ -414,13 +413,17 @@ class ReportDatasetStore:
         state[REPORT_DATASET_HANDLES_STATE_KEY] = stored
 
 
-async def _best_effort_delete(
-    service: Any, thread_id: str, path: str, *, recursive: bool
-) -> None:
+async def _best_effort_delete(service: Any, thread_id: str, path: str, *, recursive: bool) -> None:
     try:
         await service.adelete_file(thread_id, path, recursive=recursive)
-    except Exception:
-        pass
+    except Exception as error:
+        # 尽力清理不阻断主流程，但必须留痕，否则残留临时文件无从排查。
+        logger.warning(
+            "report_dataset_cleanup_failed path={} recursive={} error_type={}",
+            path,
+            recursive,
+            type(error).__name__,
+        )
 
 
 def _first_batch_error(error: Exception) -> Exception:

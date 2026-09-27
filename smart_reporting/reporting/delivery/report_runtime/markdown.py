@@ -6,31 +6,13 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
+# 视觉主题属于服务端渲染契约，而不是模型自由生成的正文内容。PDF、Word、沙箱内
+# Matplotlib/Plotly 默认样式与编辑器交互图表共同引用 theme.py 中这一份科技蓝
+# 颜色事实，避免封面、正文和图表各自选色；图表类型、系列数量和强调对象仍由模型
+# 根据数据决定，琥珀/绿色仅用于语义强调。
+from .theme import REPORT_VISUAL_THEME
 from .validation import ReportFailure
 
-# 视觉主题属于服务端渲染契约，而不是模型自由生成的正文内容。PDF、Word 与
-# Reporting 生成的图表共同引用这一份科技蓝颜色事实，避免封面、正文和图表各自选色；
-# 图表类型、系列数量和强调对象仍由模型根据数据决定，琥珀/绿色仅用于语义强调。
-REPORT_VISUAL_THEME = {
-    "name": "enterprise-tech-blue",
-    "primary": "#0B4F8A",
-    "accent": "#007EA7",
-    "highlight": "#F2B134",
-    "ink": "#1B2A41",
-    "muted": "#5B6B7A",
-    "grid": "#C7D7E5",
-    "surface": "#EDF5FC",
-    "chartPalette": [
-        "#0B4F8A",
-        "#007EA7",
-        "#2F80ED",
-        "#56B4E9",
-        "#F2B134",
-        "#2E9F6B",
-        "#7A5AF8",
-        "#D66B3D",
-    ],
-}
 _WORD_MARKERS = {
     "cover_end": "__REPORT_COVER_END__",
     "toc_field_start": "__REPORT_TOC_FIELD_START__",

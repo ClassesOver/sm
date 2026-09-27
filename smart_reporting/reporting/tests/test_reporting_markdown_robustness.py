@@ -51,3 +51,25 @@ def test_decode_page_rejects_binary_and_misaligned_offset() -> None:
         _decode_utf8_page(b"\x89PNG\r\n\x1a\n" + b"\xff" * 64, offset=0, end=72)
     with pytest.raises(WorkspaceError, match="字符边界"):
         _decode_utf8_page("收入".encode(), offset=1, end=6)
+
+
+@pytest.mark.parametrize("file_name", ["收入 趋势.png", "收入(2025.png", "a%20b.png", "plain.png"])
+def test_chart_figure_destination_survives_unsafe_file_names(file_name: str) -> None:
+    from urllib.parse import unquote
+
+    from markdown_it import MarkdownIt
+
+    from smart_reporting.reporting.delivery.draft_v1 import ReportChartInput, _chart_figure_markdown
+
+    chart = ReportChartInput(
+        chartId="chart_001",
+        fileName=file_name,
+        title="收入趋势",
+        altText="收入趋势",
+        citationIds=("cite_1",),
+    )
+    tokens = MarkdownIt("commonmark").parse(_chart_figure_markdown(chart, file_name))
+    images = [child for token in tokens for child in token.children or () if child.type == "image"]
+
+    assert len(images) == 1
+    assert unquote(str(images[0].attrGet("src"))) == file_name

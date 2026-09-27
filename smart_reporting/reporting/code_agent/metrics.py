@@ -67,8 +67,11 @@ def _bounded_edit_region(value: Any) -> dict[str, Any] | None:
     start, end = value.get("startLine"), value.get("endLine")
     path = value.get("path")
     if (
-        type(start) is int and type(end) is int and 1 <= start <= end
-        and isinstance(path, str) and path
+        type(start) is int
+        and type(end) is int
+        and 1 <= start <= end
+        and isinstance(path, str)
+        and path
     ):
         return {"path": path[:256], "startLine": start, "endLine": end}
     return None
@@ -84,8 +87,16 @@ def bounded_failure_diagnostics(value: Any) -> dict[str, Any]:
         candidate = value.get(key)
         if isinstance(candidate, str) and candidate:
             diagnostics[key] = candidate[:256]
-    for key in ("errorLine", "exitCode", "used", "limit", "declaredOutputCount",
-                "blockIndex", "actualBytes", "limitBytes"):
+    for key in (
+        "errorLine",
+        "exitCode",
+        "used",
+        "limit",
+        "declaredOutputCount",
+        "blockIndex",
+        "actualBytes",
+        "limitBytes",
+    ):
         candidate = value.get(key)
         if isinstance(candidate, int) and not isinstance(candidate, bool):
             diagnostics[key] = candidate
@@ -167,8 +178,7 @@ def bounded_request_params_snapshot(value: Any) -> dict[str, Any] | None:
         candidate = value.get(name)
         return (
             candidate
-            if isinstance(candidate, str)
-            and re.fullmatch(r"[0-9a-f]{64}", candidate)
+            if isinstance(candidate, str) and re.fullmatch(r"[0-9a-f]{64}", candidate)
             else "unknown"
         )
 
@@ -176,9 +186,7 @@ def bounded_request_params_snapshot(value: Any) -> dict[str, Any] | None:
         candidate = value.get(name)
         return (
             candidate
-            if isinstance(candidate, int)
-            and not isinstance(candidate, bool)
-            and candidate >= 0
+            if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0
             else "unknown"
         )
 
@@ -190,14 +198,12 @@ def bounded_request_params_snapshot(value: Any) -> dict[str, Any] | None:
         ),
         "reasoningEffort": (
             value.get("reasoningEffort")
-            if isinstance(value.get("reasoningEffort"), str)
-            and value.get("reasoningEffort")
+            if isinstance(value.get("reasoningEffort"), str) and value.get("reasoningEffort")
             else "unknown"
         ),
         "reasoningSummary": (
             value.get("reasoningSummary")
-            if isinstance(value.get("reasoningSummary"), str)
-            and value.get("reasoningSummary")
+            if isinstance(value.get("reasoningSummary"), str) and value.get("reasoningSummary")
             else "unknown"
         ),
         "enableThinking": (
@@ -229,9 +235,7 @@ def bounded_request_params_snapshot(value: Any) -> dict[str, Any] | None:
             else "unknown"
         ),
         "extraBodyKeys": [
-            key[:64]
-            for key in value.get("extraBodyKeys", [])
-            if isinstance(key, str) and key
+            key[:64] for key in value.get("extraBodyKeys", []) if isinstance(key, str) and key
         ][:20],
     }
     for name in (
@@ -323,7 +327,11 @@ def build_coding_metric_sample(
     """构造单个 Coding task 样本；没有证据的核心字段保留 ``unknown``。"""
 
     def bounded_nonnegative(value: Any) -> int | str:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else "unknown"
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else "unknown"
+        )
 
     def bounded_nonnegative_number(value: Any) -> int | float | str:
         return (
@@ -338,8 +346,7 @@ def build_coding_metric_sample(
         failure_snapshot = {
             "code": (
                 failure_code[:128]
-                if isinstance(failure_code := first_run_failure.get("code"), str)
-                and failure_code
+                if isinstance(failure_code := first_run_failure.get("code"), str) and failure_code
                 else "unknown"
             ),
             "errorType": (
@@ -350,16 +357,14 @@ def build_coding_metric_sample(
             ),
             "path": (
                 failure_path[:256]
-                if isinstance(failure_path := first_run_failure.get("path"), str)
-                and failure_path
+                if isinstance(failure_path := first_run_failure.get("path"), str) and failure_path
                 else "unknown"
             ),
             "errorLine": bounded_nonnegative(first_run_failure.get("errorLine")),
             "exitCode": bounded_nonnegative(first_run_failure.get("exitCode")),
             "sourceSha256": (
                 source_sha
-                if isinstance(source_sha, str)
-                and re.fullmatch(r"[0-9a-f]{64}", source_sha)
+                if isinstance(source_sha, str) and re.fullmatch(r"[0-9a-f]{64}", source_sha)
                 else "unknown"
             ),
             "detailsBytes": bounded_nonnegative(first_run_failure.get("detailsBytes")),
@@ -370,39 +375,32 @@ def build_coding_metric_sample(
         tool_names = item.get("toolNames")
         tool_calls = _bounded_tool_calls(item.get("toolCalls"))
         normalized: dict[str, Any] = {
-                "requestIndex": bounded_nonnegative(item.get("requestIndex")),
-                "providerRequestId": (
-                    item.get("providerRequestId")
-                    if isinstance(item.get("providerRequestId"), str)
-                    and item.get("providerRequestId")
-                    else "unknown"
-                ),
-                "durationMs": bounded_nonnegative(item.get("durationMs")),
-                "inputTokens": bounded_nonnegative(item.get("inputTokens")),
-                "outputTokens": bounded_nonnegative(item.get("outputTokens")),
-                "reasoningTokens": bounded_nonnegative(item.get("reasoningTokens")),
-                "visibleOutputTokens": bounded_nonnegative(
-                    item.get("visibleOutputTokens")
-                ),
-                "cacheReadTokens": bounded_nonnegative(item.get("cacheReadTokens")),
-                "timeToFirstTokenSeconds": bounded_nonnegative_number(
-                    item.get("timeToFirstTokenSeconds")
-                ),
-                "toolNames": [
-                    name[:128]
-                    for name in tool_names
-                    if isinstance(name, str) and name
-                ][:20]
-                if isinstance(tool_names, (list, tuple))
-                else [],
-                "toolCalls": tool_calls,
-                "toolCallCount": bounded_nonnegative(item.get("toolCallCount")),
-                "status": (
-                    item.get("status")
-                    if item.get("status") in {"started", "completed", "failed"}
-                    else "unknown"
-                ),
-            }
+            "requestIndex": bounded_nonnegative(item.get("requestIndex")),
+            "providerRequestId": (
+                item.get("providerRequestId")
+                if isinstance(item.get("providerRequestId"), str) and item.get("providerRequestId")
+                else "unknown"
+            ),
+            "durationMs": bounded_nonnegative(item.get("durationMs")),
+            "inputTokens": bounded_nonnegative(item.get("inputTokens")),
+            "outputTokens": bounded_nonnegative(item.get("outputTokens")),
+            "reasoningTokens": bounded_nonnegative(item.get("reasoningTokens")),
+            "visibleOutputTokens": bounded_nonnegative(item.get("visibleOutputTokens")),
+            "cacheReadTokens": bounded_nonnegative(item.get("cacheReadTokens")),
+            "timeToFirstTokenSeconds": bounded_nonnegative_number(
+                item.get("timeToFirstTokenSeconds")
+            ),
+            "toolNames": [name[:128] for name in tool_names if isinstance(name, str) and name][:20]
+            if isinstance(tool_names, (list, tuple))
+            else [],
+            "toolCalls": tool_calls,
+            "toolCallCount": bounded_nonnegative(item.get("toolCallCount")),
+            "status": (
+                item.get("status")
+                if item.get("status") in {"started", "completed", "failed"}
+                else "unknown"
+            ),
+        }
         request_params = bounded_request_params_snapshot(item.get("requestParams"))
         failure = item.get("firstToolFailure")
         if isinstance(failure, Mapping):
@@ -431,19 +429,15 @@ def build_coding_metric_sample(
             values = execution_spans.get(name)
             normalized_spans[name] = (
                 [
-                    value for value in values[:64]
-                    if isinstance(value, int | float)
-                    and not isinstance(value, bool)
-                    and value >= 0
+                    value
+                    for value in values[:64]
+                    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
                 ]
-                if isinstance(values, (list, tuple)) else "unknown"
+                if isinstance(values, (list, tuple))
+                else "unknown"
             )
     first_write = next(
-        (
-            item
-            for item in normalized_requests
-            if "write_script" in item["toolNames"]
-        ),
+        (item for item in normalized_requests if "write_script" in item["toolNames"]),
         None,
     )
 
@@ -453,7 +447,9 @@ def build_coding_metric_sample(
         "taskKind": task_kind if isinstance(task_kind, str) and task_kind else "unknown",
         "model": model if isinstance(model, str) and model else "unknown",
         "provider": provider if isinstance(provider, str) and provider else "unknown",
-        "reasoningEffort": reasoning_effort if isinstance(reasoning_effort, str) and reasoning_effort else "unknown",
+        "reasoningEffort": reasoning_effort
+        if isinstance(reasoning_effort, str) and reasoning_effort
+        else "unknown",
         "modelRequests": bounded_nonnegative(request_count),
         "inputTokens": bounded_nonnegative(input_tokens),
         "outputTokens": bounded_nonnegative(output_tokens),
@@ -477,8 +473,7 @@ def build_coding_metric_sample(
                 "bytes": bounded_nonnegative(identity.get("bytes")),
                 "sha256": (
                     identity.get("sha256")
-                    if isinstance(identity.get("sha256"), str)
-                    and len(identity["sha256"]) == 64
+                    if isinstance(identity.get("sha256"), str) and len(identity["sha256"]) == 64
                     else "unknown"
                 ),
             }
@@ -522,7 +517,9 @@ def build_coding_metric_sample(
         },
         "firstRepairSuccess": first_repair_success,
         "criticalVisualDefect": critical_visual_defect,
-        "failureCode": failure_code if isinstance(failure_code, str) and failure_code else "unknown",
+        "failureCode": failure_code
+        if isinstance(failure_code, str) and failure_code
+        else "unknown",
     }
     if any(item["status"] != "completed" for item in normalized_requests):
         # Agno 的累计用量可能只包含解析成功的响应，不能当作失败任务总量。
@@ -530,7 +527,8 @@ def build_coding_metric_sample(
         for key in ("inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens"):
             values = [item[key] for item in normalized_requests]
             sample[key] = (
-                sum(values) if complete and all(type(value) is int for value in values)
+                sum(values)
+                if complete and all(type(value) is int for value in values)
                 else "unknown"
             )
         sample["modelCost"] = "unknown"
@@ -584,10 +582,9 @@ def summarize_coding_metrics(samples: Iterable[Mapping[str, Any]]) -> dict[str, 
             values = spans.get(name)
             if isinstance(values, (list, tuple)):
                 execution_span_values[name].extend(
-                    value for value in values
-                    if isinstance(value, int | float)
-                    and not isinstance(value, bool)
-                    and value >= 0
+                    value
+                    for value in values
+                    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
                 )
             else:
                 execution_spans_complete = False
@@ -596,9 +593,7 @@ def summarize_coding_metrics(samples: Iterable[Mapping[str, Any]]) -> dict[str, 
         code = row.get("firstRunFailureCode")
         if isinstance(code, str) and code and code != "unknown":
             bounded_code = code[:128]
-            first_run_failure_codes[bounded_code] = (
-                first_run_failure_codes.get(bounded_code, 0) + 1
-            )
+            first_run_failure_codes[bounded_code] = first_run_failure_codes.get(bounded_code, 0) + 1
     unknown_fields = {
         field
         for row in rows

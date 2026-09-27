@@ -41,7 +41,9 @@ def _apply_patch(path: str, hunks: str, *, sha: str | None = None) -> str:
 @pytest.mark.parametrize(
     "patch",
     [
-        _apply_patch("analysis/a.py", "@@ def main():\n     value = 1\n-    print(value)\n+    print(2)\n"),
+        _apply_patch(
+            "analysis/a.py", "@@ def main():\n     value = 1\n-    print(value)\n+    print(2)\n"
+        ),
         _apply_patch("a.py", "@@\n x\n-y\n+z\n", sha=SHA),
         f"*** Begin Edit\n*** SHA256: {SHA}\n- value = 1\n+ value = 2\n*** End Edit\n",
     ],
@@ -120,7 +122,9 @@ def test_apply_patch_invalid_hunks_report_reason(hunks: str, reason: str) -> Non
 
 @pytest.mark.anyio
 async def test_edit_script_applies_sha_less_apply_patch_and_counts_format(toolkit, script):  # noqa: F811
-    patch = _apply_patch(toolkit.context.script_path, " value = 1\n-print(value)\n+print(value + 1)\n")
+    patch = _apply_patch(
+        toolkit.context.script_path, " value = 1\n-print(value)\n+print(value + 1)\n"
+    )
 
     result = await toolkit.edit_script(patch)
 
@@ -141,7 +145,9 @@ async def test_edit_script_apply_patch_with_stale_sha_still_conflicts(toolkit, s
 
 @pytest.mark.anyio
 async def test_edit_script_sha_less_patch_requires_bound_path(toolkit, script):  # noqa: F811
-    result = await toolkit.edit_script(_apply_patch("other.py", " value = 1\n-print(value)\n+print(0)\n"))
+    result = await toolkit.edit_script(
+        _apply_patch("other.py", " value = 1\n-print(value)\n+print(0)\n")
+    )
 
     assert result["code"] == "report_code_script_edit_invalid"
     assert result["details"]["reason"] == "apply_patch_path_mismatch"
@@ -201,7 +207,9 @@ def _apply(patch: str) -> tuple[str, list[dict[str, object]]]:
 
 def test_anchor_disambiguates_repeated_hunk() -> None:
     updated, matches = _apply(
-        _apply_patch("a.py", "@@ def plot():\n     value = 1\n-    return value\n+    return value * 2\n")
+        _apply_patch(
+            "a.py", "@@ def plot():\n     value = 1\n-    return value\n+    return value * 2\n"
+        )
     )
 
     assert updated.endswith("def plot():\n    value = 1\n    return value * 2\n")
@@ -248,7 +256,9 @@ def test_search_replace_ambiguity_ignores_anchor_semantics() -> None:
 
 def test_codex_style_double_at_header_is_parsed_as_anchor() -> None:
     parsed = parse_script_patch(
-        _apply_patch("a.py", "@@ def plot(): @@\n     value = 1\n-    return value\n+    return 0\n"),
+        _apply_patch(
+            "a.py", "@@ def plot(): @@\n     value = 1\n-    return value\n+    return 0\n"
+        ),
         64 * 1024,
     )
 

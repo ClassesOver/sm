@@ -82,9 +82,7 @@ class ManagedReportingWorkflow(Workflow):
         session_id = str(kwargs.get("session_id") or uuid4())
         user_id = kwargs.get("user_id") or self.user_id
         dependencies_value = kwargs.get("dependencies")
-        dependencies = (
-            dict(dependencies_value) if isinstance(dependencies_value, Mapping) else None
-        )
+        dependencies = dict(dependencies_value) if isinstance(dependencies_value, Mapping) else None
         kwargs["run_id"] = run_id
         kwargs["session_id"] = session_id
         session_state = self.lifecycle.prepare_run(
@@ -109,11 +107,7 @@ class ManagedReportingWorkflow(Workflow):
         if kwargs.get("background"):
             raise ValueError("Reporting Workflow 只允许 background=false")
         run_response = kwargs.get("run_response")
-        run_id = str(
-            kwargs.get("run_id")
-            or getattr(run_response, "run_id", None)
-            or ""
-        )
+        run_id = str(kwargs.get("run_id") or getattr(run_response, "run_id", None) or "")
         if not run_id:
             raise ValueError("继续 Reporting Workflow 必须提供 run_id")
         await self.lifecycle.assert_resumable(run_id)
