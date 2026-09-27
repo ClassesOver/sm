@@ -1061,7 +1061,10 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
     else:
         assert selected["reasoning"]["effort"] == "none"
         assert "summary" not in selected.get("reasoning", {})
-    assert selected["temperature"] == 0.2
+    # 已知模型族使用厂商推荐采样，而不是继承的阶段温度 0.2。
+    expected_temperature = 1.0 if model_id.startswith("deepseek") else 0.6
+    assert selected["temperature"] == expected_temperature
+    assert selected["top_p"] == 0.95
     assert selected["tools"][0]["type"] == "custom"
     assert selected["tool_choice"] == "auto"
     assert original["enable_thinking"] is True

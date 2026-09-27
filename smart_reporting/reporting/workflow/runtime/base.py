@@ -746,7 +746,7 @@ class _ReportWorkflowRuntimeBase:
         analysis_code_model = copy(reporting_agent_template.model)
         if not planner_enable_thinking:
             apply_reporting_thinking_profile(analysis_code_model, planner_off)
-        analysis_code_model.top_p = 1.0
+        analysis_code_model.top_p = 0.95
         analysis_code_model.retries = 0
         analysis_code_model.exponential_backoff = False
         analysis_code_model.__dict__.pop("_report_escalation_thinking_profile", None)

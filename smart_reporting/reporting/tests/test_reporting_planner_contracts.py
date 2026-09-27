@@ -4711,3 +4711,22 @@ def test_outline_repair_fallback_keeps_last_section_when_every_reference_is_unkn
     assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
         ("效率", ("analysis_001", "analysis_002", "analysis_003")),
     ]
+
+
+def test_analysis_coding_agent_uses_unified_recommended_top_p() -> None:
+    template_model = ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    template_model.top_p = 0.95
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(),
+        reporting_agent_template=Agent(model=template_model),
+        task_runner=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_enable_thinking=True,
+        planner_thinking_budget=8192,
+        state_repository=SimpleNamespace(),
+    )
+
+    # 分析与可视化 Coding 统一使用厂商智能体场景推荐的 top_p=0.95。
+    assert runtime._analysis_script_agent_factory([]).model.top_p == 0.95
