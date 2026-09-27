@@ -284,3 +284,16 @@ async def test_flush_keeps_check_ids_within_limit_for_long_run_ids() -> None:
     assert result.flush_status == "committed"
     assert all(len(check.context.check_id) <= 256 for check in calls[0])
     assert all(check.context.report_run_id == run_id for check in calls[0])
+
+
+def test_informational_normalization_rules_keep_their_declared_subjects() -> None:
+    from smart_reporting.quality_warnings.policy import get_warning_rule
+
+    for code in (
+        "chart_path_normalized",
+        "markdown_strong_marker_normalized",
+        "duplicate_section_heading_removed",
+    ):
+        rule = get_warning_rule(code)
+        assert rule.subject_types == frozenset({"report", "section"})
+        assert rule.disposition == "informational"
