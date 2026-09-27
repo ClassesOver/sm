@@ -463,7 +463,9 @@ report_workflow_controller = ReportWorkflowController(
     terminal_cleanup=report_runtime.cleanup_terminal,
     process_lifecycle=dingyi_process,
 )
-report_agent = create_report_agent(reporting_agent_template, report_workflow_controller)
+report_agent = create_report_agent(
+    reporting_agent_template, report_workflow_controller, settings=settings
+)
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
     sources=tuple(
         source

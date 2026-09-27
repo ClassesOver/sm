@@ -22,4 +22,6 @@
 **/*.pdf
 **/.local-artifacts/
 smart_reporting/report_editor/static/
+smart_reporting/report_editor/frontend/node_modules/
+**/.mimosa/
 **/.run-logs/

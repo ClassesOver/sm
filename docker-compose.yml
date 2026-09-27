@@ -9,7 +9,9 @@ services:
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.m.daocloud.io/library/python:3.12-slim}
         UV_IMAGE: ${UV_IMAGE:-ghcr.m.daocloud.io/astral-sh/uv:0.11.26}
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-slim}
         APT_MIRROR_HOST: ${APT_MIRROR_HOST:-mirrors.aliyun.com}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
         UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://mirrors.aliyun.com/pypi/simple/}
     env_file:
       - path: .env
@@ -48,6 +50,10 @@ services:
         source: ./smart_reporting
         target: /app/smart_reporting
         read_only: true
+      # 保留镜像内构建好的前端静态文件，避免被宿主 ./smart_reporting bind mount 的空 static 目录覆盖。
+      - type: volume
+        source: report-editor-static
+        target: /app/smart_reporting/report_editor/static
       - ./data/reporting-logs:/var/log/agentos
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
       - type: bind
@@ -76,6 +82,9 @@ services:
     volumes:
       - ./data/reporting-db:/var/lib/postgresql
     restart: unless-stopped
+
+volumes:
+  report-editor-static:
 
 networks:
   default:

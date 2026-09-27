@@ -312,6 +312,9 @@ class AgentSettings:
     # 编辑器导出同步执行渲染与验收两次报表运行时调用（各自上限 600 秒）；网关/反向
     # 代理的读超时必须不小于该值，否则请求会先于服务端被切断。
     report_editor_export_timeout_seconds: int = 1200
+    # 报表完成时返回给调用方的 markdown 模板；未设置时使用默认紧凑格式。
+    # 可用变量：{report_title}、{editor_url}、{pdf_url}、{word_url}
+    report_completion_template: str | None = None
 
     @classmethod
     def from_environment(
@@ -489,6 +492,9 @@ class AgentSettings:
                 "AGENT_REPORT_VISUALIZATION_TOTAL_DEADLINE_SECONDS",
                 2400,
                 maximum=14400,
+            ),
+            report_completion_template=(
+                values.get("AGENT_REPORT_COMPLETION_TEMPLATE", "").strip() or None
             ),
             model_fast_structured_mode=_structured_output_mode(
                 values, "AGENT_MODEL_FAST_STRUCTURED_MODE"

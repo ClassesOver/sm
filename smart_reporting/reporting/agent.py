@@ -1599,7 +1599,79 @@ def _review_content(payload: dict[str, Any]) -> str | None:
     return "\n\n".join(parts)
 
 
-def _completed_report_content(payload: dict[str, Any]) -> str | None:
+_DEFAULT_COMPLETION_TEMPLATE = """## 报表已生成
+
+### {report_title}
+
+报告已完成发布。
+
+{actions}
+"""
+
+_DEFAULT_ACTION_TEMPLATES = {
+    "editor": "[**编辑报告**]({url})",
+    "pdf": "[下载 PDF]({url})",
+    "word": "[下载 Word]({url})",
+}
+_DEFAULT_ACTION_SEPARATOR = " · "
+
+
+def _is_valid_delivery_url(url: object) -> bool:
+    if (
+        not isinstance(url, str)
+        or not url
+        or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in url)
+    ):
+        return False
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return False
+    hostname_text = hostname if isinstance(hostname, str) else ""
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and bool(hostname_text)
+        and not any(char.isspace() for char in hostname_text)
+    )
+
+
+def _normalize_report_title(report: dict[str, Any]) -> str | None:
+    title = report.get("reportTitle")
+    if isinstance(title, str):
+        title = title.strip()
+        if title:
+            return title
+    report_id = report.get("reportId")
+    if isinstance(report_id, str) and report_id.strip():
+        return report_id.strip()
+    return None
+
+
+def _format_completion_actions(
+    urls: dict[str, str | None],
+    templates: dict[str, str] | None = None,
+    separator: str | None = None,
+) -> str:
+    templates = templates or _DEFAULT_ACTION_TEMPLATES
+    separator = separator if separator is not None else _DEFAULT_ACTION_SEPARATOR
+    actions: list[str] = []
+    for key in ("editor", "pdf", "word"):
+        url = urls.get(key)
+        if not _is_valid_delivery_url(url):
+            continue
+        template = templates.get(key) or _DEFAULT_ACTION_TEMPLATES.get(key, "[{key}]({url})")
+        actions.append(template.format(url=url))
+    return separator.join(actions)
+
+
+def _completed_report_content(
+    payload: dict[str, Any],
+    *,
+    template: str | None = None,
+) -> str | None:
     if payload.get("status") != "completed":
         return None
     report = payload.get("report")
@@ -1611,41 +1683,42 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
     pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
     word_url = word.get("downloadUrl") if isinstance(word, dict) else None
     editor_url = editor.get("openUrl") if isinstance(editor, dict) else None
-    urls = (pdf_url, word_url, editor_url)
 
-    def is_valid_delivery_url(url: object) -> bool:
-        if (
-            not isinstance(url, str)
-            or not url
-            or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in url)
-        ):
-            return False
-        try:
-            parsed = urlparse(url)
-            hostname = parsed.hostname
-            parsed.port
-        except ValueError:
-            return False
-        hostname_text = hostname if isinstance(hostname, str) else ""
-        return (
-            parsed.scheme in {"http", "https"}
-            and bool(parsed.netloc)
-            and bool(hostname_text)
-            and not any(char.isspace() for char in hostname_text)
-        )
-
-    if not all(is_valid_delivery_url(url) for url in urls):
-        return "## 报告发布未完成\n\n未生成有效的编辑、PDF 和 Word 交付链接，请重试报表发布。"
-    report_title = report.get("reportTitle")
-    if not isinstance(report_title, str) or not report_title.strip():
+    report_title = _normalize_report_title(report)
+    if report_title is None:
         return "## 报告发布未完成\n\n未获取到有效的报表名称，请重试报表发布。"
-    parts = ["## 报表已生成", f"### {report_title.strip()}", "报告已完成发布。"]
-    parts.append(f"[**编辑报告**]({editor_url}) · [下载 PDF]({pdf_url}) · [下载 Word]({word_url})")
-    return "\n\n".join(parts)
+
+    actions = _format_completion_actions(
+        {"editor": editor_url, "pdf": pdf_url, "word": word_url}
+    )
+    if not actions:
+        return "## 报告发布未完成\n\n未生成有效的编辑、PDF 或 Word 交付链接，请重试报表发布。"
+
+    template = template if template is not None else _DEFAULT_COMPLETION_TEMPLATE
+    try:
+        return template.format(
+            report_title=report_title,
+            editor_url=editor_url or "",
+            pdf_url=pdf_url or "",
+            word_url=word_url or "",
+            actions=actions,
+        ).strip()
+    except (KeyError, ValueError):
+        # 自定义模板格式错误时回退到默认模板，保证始终有可读输出。
+        return _DEFAULT_COMPLETION_TEMPLATE.format(
+            report_title=report_title,
+            editor_url=editor_url or "",
+            pdf_url=pdf_url or "",
+            word_url=word_url or "",
+            actions=actions,
+        ).strip()
 
 
 def _forced_review_response(
-    messages: list[Message], *, stream: bool = False
+    messages: list[Message],
+    *,
+    stream: bool = False,
+    completion_template: str | None = None,
 ) -> ModelResponse | None:
     for message in reversed(messages):
         if message.role != "tool":
@@ -1673,7 +1746,11 @@ def _forced_review_response(
             except (SyntaxError, ValueError):
                 return None
         if not isinstance(payload, dict) or payload.get("status") != "paused":
-            completed = _completed_report_content(payload) if isinstance(payload, dict) else None
+            completed = (
+                _completed_report_content(payload, template=completion_template)
+                if isinstance(payload, dict)
+                else None
+            )
             return ModelResponse(content=completed) if completed is not None else None
         review = payload.get("review")
         stage = review.get("stage") if isinstance(review, dict) else None
@@ -2441,19 +2518,28 @@ class ReportingPhaseOpenAIChat(ReportingOpenAIChat):
 class ReportFacadeOpenAIChat(ReportingOpenAIChat):
     """把内层 Workflow 暂停确定性提升为 facade Agent HITL。"""
 
+    _report_completion_template: str | None = None
+
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return _forced_review_response(messages) or _without_facade_tool_preamble(
-            super().invoke(messages, *args, **kwargs)
+        return (
+            _forced_review_response(
+                messages, completion_template=self._report_completion_template
+            )
+            or _without_facade_tool_preamble(super().invoke(messages, *args, **kwargs))
         )
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        forced = _forced_review_response(messages)
+        forced = _forced_review_response(
+            messages, completion_template=self._report_completion_template
+        )
         if forced is not None:
             return forced
         return _without_facade_tool_preamble(await super().ainvoke(messages, *args, **kwargs))
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
-        forced = _forced_review_response(messages, stream=True)
+        forced = _forced_review_response(
+            messages, stream=True, completion_template=self._report_completion_template
+        )
         if forced is not None:
             yield forced
             return
@@ -2471,7 +2557,9 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
     ) -> AsyncIterator[Any]:
-        forced = _forced_review_response(messages, stream=True)
+        forced = _forced_review_response(
+            messages, stream=True, completion_template=self._report_completion_template
+        )
         if forced is not None:
             yield forced
             return
@@ -2935,11 +3023,15 @@ def create_reporting_code_agent_factory(
 def create_report_agent(
     reporting_agent_template: Agent,
     controller: ReportWorkflowController,
+    *,
+    settings: AgentSettings | None = None,
 ) -> Agent:
     """创建公开 facade；实际分析只由 Workflow 内的 smart-reporting Agent 执行。"""
     if not isinstance(reporting_agent_template.model, ProjectedOpenAIChat):
         raise TypeError("Report facade requires ProjectedOpenAIChat")
     facade_model = _report_facade_model(reporting_agent_template.model)
+    if isinstance(facade_model, ReportFacadeOpenAIChat) and settings is not None:
+        facade_model._report_completion_template = settings.report_completion_template
     apply_reporting_thinking_profile(
         facade_model,
         ReportingThinkingProfile.off(temperature=1.0),
