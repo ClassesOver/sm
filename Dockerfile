@@ -47,6 +47,7 @@ RUN apt-get update \
         libcairo2 libmagic1 libpango-1.0-0 libpangoft2-1.0-0 shared-mime-info \
         graphviz librsvg2-bin pandoc poppler-utils qpdf \
         libreoffice-calc libreoffice-impress libreoffice-writer \
+        chromium \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
@@ -55,9 +56,8 @@ COPY pyproject.toml uv.lock ./
 RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
-# Kaleido 1.x 的 PNG 导出需要 Chrome；下载 choreographer 管理的专用副本，
-# 不依赖系统浏览器。
-RUN /app/.venv/bin/choreo_get_chrome
+# Kaleido 1.x 的 PNG 导出需要 Chrome；使用 Debian 包管理器安装的 Chromium，
+# 避免构建阶段从外部地址下载专用副本。
 
 RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do command -v "$tool" || exit 1; done \
     && /app/.venv/bin/python -c "import docx, matplotlib, pypandoc, pypdf, scipy, seaborn, statsmodels, sympy, tabulate, adjustText, altair, bokeh, plotnine, pygal, graphviz, PIL, xlsxwriter, odf, pptx, reportlab, pdfplumber, pymupdf, pikepdf, cairosvg, bs4, jinja2, pyarrow, duckdb; from weasyprint import HTML" \
