@@ -1261,6 +1261,57 @@ def test_section_plan_validator_merges_correction_claim_patch(patch_shape: str) 
     assert result.blocks[0].claim_ids == ("claim_001", "claim_002")
 
 
+@pytest.mark.anyio
+async def test_section_plan_validation_error_reaches_agno_without_candidate_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agno.agent import _run as agno_run
+    from agno.models.response import ModelResponse
+
+    from smart_reporting.context_management import ProjectedOpenAIChat
+
+    secret = "一般医用设备-SPECT执行完毕"
+    responses = iter(
+        [
+            {"claimId": "claim_001", "metricCode": "revenue", "value": secret},
+            _render_plan_payload(),
+        ]
+    )
+    agno_errors: list[str] = []
+
+    async def fake_aresponse(_model, *_args, **_kwargs):
+        return ModelResponse(content=json.dumps(next(responses), ensure_ascii=False))
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", fake_aresponse)
+    monkeypatch.setattr(agno_run, "log_error", lambda message, *a, **k: agno_errors.append(message))
+    work_item = _section_work_item().model_copy(
+        update={
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+            ),
+        }
+    )
+
+    result = await reporting_sections._run_section_stage(
+        Agent(model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
+        RenderSectionPlan,
+        "plan",
+        {"sectionCode": "section_001"},
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_planning", complexity="standard"),
+        section_code="section_001",
+        response_validator=reporting_sections._section_plan_response_validator(
+            work_item, RenderSectionPlan
+        ),
+    )
+
+    assert isinstance(result, RenderSectionPlan)
+    assert len(agno_errors) == 1
+    assert "sectionCode:missing" in agno_errors[0]
+    assert secret not in agno_errors[0]
+
+
 def test_section_plan_validator_keeps_unknown_claim_patch_failing() -> None:
     previous = _previous_two_claim_plan()
     unknown = {**previous["claims"][1], "claimId": "claim_404"}
