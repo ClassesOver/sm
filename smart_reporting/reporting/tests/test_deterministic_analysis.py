@@ -569,3 +569,17 @@ def test_deterministic_daily_yoy_counts_leap_day_on_the_baseline_side() -> None:
     assert comparison.current_total == 3
     assert comparison.baseline_total == 4
     assert not any("共同连续窗口" in warning for warning in comparison.warnings)
+
+
+def test_deterministic_period_order_uses_calendar_order_for_unpadded_months() -> None:
+    rows = "".join(f"2025-{month},A,{0 if month > 10 else 10}\n" for month in range(1, 13))
+    current = ("month,department,amount\n" + rows).encode()
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (("current", current, context("current"), ("current",)),),
+    )
+
+    fact = bundle.metrics[0]
+    assert [item.period for item in fact.period_values][-2:] == ["2025-9", "2025-10"]
+    assert any("2025-11 至 2025-12" in warning for warning in fact.warnings)

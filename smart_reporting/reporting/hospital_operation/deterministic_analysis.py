@@ -399,11 +399,18 @@ def _period_values(
         )
         .sort("__period")
     )
-    return tuple(
+    values = tuple(
         PeriodValue(period=str(row["__period"]), value=_finite(row["__value"]))
         for row in grouped.iter_rows(named=True)
         if row["__period"] is not None and row["__valid"] > 0 and row["__value"] is not None
     )
+    # 字符串排序会把不补零的月份排成 2025-1, 2025-10, 2025-2；期末零值裁剪等依赖
+    # 期间先后，能全部解析为日历期间时按日历顺序排列。
+    parsed = [_parse_period(item.period) for item in values]
+    if all(item is not None for item in parsed):
+        order = sorted(range(len(values)), key=lambda index: parsed[index].value)  # type: ignore[union-attr]
+        values = tuple(values[index] for index in order)
+    return values
 
 
 def _aggregation_expression(field: str, aggregation: Aggregation) -> pl.Expr:
