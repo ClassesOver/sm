@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
+from urllib.parse import quote
 
 from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -525,10 +526,22 @@ def _chart_alt_text(text: str) -> str:
     return _WHITESPACE_RUN.sub(" ", text).strip().translate(_ALT_TEXT_TRANSLATION)
 
 
+# 链接目标中的空白、尖括号与括号会让 CommonMark 放弃解析图片，整张图退化为原文；
+# 下游读取路径时统一 unquote，因此对这些字符（及 % 自身）做百分号编码即可无损还原。
+_LINK_DESTINATION_UNSAFE = frozenset(" \t%()<>")
+
+
+def _link_destination(file_name: str) -> str:
+    return "".join(
+        quote(character) if character in _LINK_DESTINATION_UNSAFE else character
+        for character in file_name
+    )
+
+
 def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
     title = _markdown_inline_text(chart.title)
     return (
-        f'![{_chart_alt_text(chart.alt_text)}]({file_name} "{title}")'
+        f'![{_chart_alt_text(chart.alt_text)}]({_link_destination(file_name)} "{title}")'
         + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
         + f"\n\n*图表：{title}*"
     )
