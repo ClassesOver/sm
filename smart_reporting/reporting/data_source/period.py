@@ -53,6 +53,17 @@ def _same_month_day_previous_year(value: date) -> date:
         return value.replace(year=value.year - 1, month=2, day=28)
 
 
+def _previous_year_end(value: date) -> date:
+    """同比窗口的结束日：月末映射到上年同月月末。
+
+    平年 2 月 28 日是完整月份的结束，上年若为闰年必须包含 2 月 29 日，否则完整二月
+    或"年初至二月末"的同比基数会少一天。
+    """
+    if (value + relativedelta(days=1)).month != value.month:
+        return value.replace(day=1) - relativedelta(years=1) + relativedelta(months=1, days=-1)
+    return _same_month_day_previous_year(value)
+
+
 def build_period_windows(
     period_start: date,
     period_end: date,
@@ -71,7 +82,7 @@ def build_period_windows(
             PeriodWindow(
                 "yoy",
                 _same_month_day_previous_year(period_start),
-                _same_month_day_previous_year(period_end),
+                _previous_year_end(period_end),
             )
         )
     if include_mom:
