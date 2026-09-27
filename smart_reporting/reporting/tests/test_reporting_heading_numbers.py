@@ -972,3 +972,20 @@ def test_citation_markers_do_not_break_a_block_ending_with_a_code_fence() -> Non
     assert "[[citation:c1]]" in text
     assert "heading_open" in types
     assert _marker_lines("普通段落", ("c1",), ()) == "普通段落[[citation:c1]]"
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("#### 收入规模\n\n正文", "### 收入规模\n\n正文"),
+        ("正文\n\n#### 收入\n\n#### 成本\n", "正文\n\n### 收入\n\n#### 成本\n"),
+        ("### 收入\n\n#### 成本\n", "### 收入\n\n#### 成本\n"),
+        ("```\n#### 代码\n```\n\n#### 收入\n", "```\n#### 代码\n```\n\n### 收入\n"),
+    ],
+)
+def test_promote_orphan_h4_heading_only_rewrites_first_real_orphan(
+    markdown: str, expected: str
+) -> None:
+    from smart_reporting.reporting.delivery.draft_v1 import promote_orphan_h4_heading
+
+    assert promote_orphan_h4_heading(markdown) == expected

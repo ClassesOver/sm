@@ -1261,6 +1261,156 @@ def test_section_plan_validator_merges_correction_claim_patch(patch_shape: str) 
     assert result.blocks[0].claim_ids == ("claim_001", "claim_002")
 
 
+def _revenue_work_item() -> SectionWorkItem:
+    return _section_work_item().model_copy(
+        update={
+            "metric_definitions": (
+                MetricDefinition(
+                    code="revenue",
+                    name="收入",
+                    definition="收入合计",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+            ),
+            "management_question_catalog": (
+                SectionManagementQuestion(ref="analysis_001", question="收入表现如何？"),
+            ),
+        }
+    )
+
+
+def _plan_claim(claim_id: str, **overrides: object) -> dict:
+    return {
+        "claimId": claim_id,
+        "metricCode": "revenue",
+        "value": 100,
+        "managementQuestionRef": "analysis_001",
+        "currentPeriod": "2025年",
+        "citationIds": ["citation_001"],
+        **overrides,
+    }
+
+
+def test_section_plan_references_repaired_when_unambiguous() -> None:
+    work_item = _revenue_work_item()
+    decision = RenderSectionPlan.model_validate(
+        {
+            "sectionCode": "section_001",
+            "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+            "claims": [
+                _plan_claim(
+                    "claim_001",
+                    metricCode="收入",
+                    managementQuestionRef="analysis_404",
+                    citationIds=["citation_999"],
+                    chartIds=["chart_999"],
+                )
+            ],
+        }
+    )
+
+    repaired = reporting_sections._repair_section_plan_references(decision, work_item)
+
+    claim = repaired.claims[0]
+    assert claim.metric_code == "revenue"
+    assert claim.management_question_ref == "analysis_001"
+    assert claim.citation_ids == ("citation_001",)
+    assert claim.chart_ids == ()
+    assert reporting_sections._section_plan_reference_issues(repaired, work_item) == []
+
+
+def test_section_plan_references_keep_ambiguous_metric_for_model_correction() -> None:
+    work_item = _revenue_work_item()
+    decision = RenderSectionPlan.model_validate(
+        {
+            "sectionCode": "section_001",
+            "blocks": [{"blockId": "block_001", "objective": "利润", "claimIds": ["claim_001"]}],
+            "claims": [_plan_claim("claim_001", metricCode="profit")],
+        }
+    )
+
+    repaired = reporting_sections._repair_section_plan_references(decision, work_item)
+
+    assert repaired is decision
+    assert [
+        item["type"]
+        for item in reporting_sections._section_plan_reference_issues(repaired, work_item)
+    ] == ["unknown_metric_code"]
+
+
+async def _generate_with_plan(monkeypatch, plan: dict, stages: list[str]):
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+
+    async def fake_run_stage(_agent, _schema, stage, _payload, **_kwargs):
+        stages.append(stage)
+        if stage == "plan":
+            return SectionPlanOutput.model_validate(plan)
+        return SectionBlockContent(markdown="### 收入规模\n\n收入为100元。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+    return await reporting_sections._generate_section_in_blocks(
+        object(),
+        {"reportGoal": "分析2025年收入", "sectionGoal": {"sectionCode": "section_001"}},
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+    )
+
+
+@pytest.mark.anyio
+async def test_section_plan_prunes_unresolved_claims_after_correction_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages: list[str] = []
+    plan = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [
+            {"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001", "claim_002"]},
+            {"blockId": "block_002", "objective": "利润", "claimIds": ["claim_002"]},
+        ],
+        "claims": [_plan_claim("claim_001"), _plan_claim("claim_002", metricCode="profit")],
+    }
+
+    result = await _generate_with_plan(monkeypatch, plan, stages)
+
+    assert stages == ["plan", "plan", "plan", "block-1"]
+    assert [claim.claim_id for claim in result.claims] == ["claim_001"]
+    assert [block.claim_ids for block in result.blocks] == [("claim_001",)]
+
+
+@pytest.mark.anyio
+async def test_section_plan_fails_closed_when_every_claim_is_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages: list[str] = []
+    plan = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [{"blockId": "block_001", "objective": "利润", "claimIds": ["claim_001"]}],
+        "claims": [_plan_claim("claim_001", metricCode="profit")],
+    }
+
+    with pytest.raises(ReportingError) as raised:
+        await _generate_with_plan(monkeypatch, plan, stages)
+
+    assert raised.value.code == "report_section_plan_reference_invalid"
+    assert stages == ["plan", "plan", "plan"]
+
+
 @pytest.mark.anyio
 async def test_section_plan_validation_error_reaches_agno_without_candidate_data(
     monkeypatch: pytest.MonkeyPatch,
@@ -1717,7 +1867,7 @@ def test_section_recovery_only_classifies_structured_output_as_schema_failure(
 
 
 @pytest.mark.anyio
-async def test_section_generation_locally_regenerates_block_with_missing_heading_parent(
+async def test_section_generation_promotes_orphan_h4_without_model_correction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     work_item = _section_work_item().model_copy(
@@ -1781,28 +1931,9 @@ async def test_section_generation_locally_regenerates_block_with_missing_heading
                 }
             )
         block_payloads.append(dict(payload))
+        assert "correction" not in payload
         if len(block_payloads) == 1:
             return SectionBlockContent(markdown="#### 收入规模\n\n收入为100元。")
-        if len(block_payloads) == 2:
-            correction = payload["correction"]
-            assert correction == {
-                "attempt": 1,
-                "code": "report_draft_heading_parent_missing",
-                "issues": [
-                    {
-                        "path": "$.blocks[0].markdown",
-                        "type": "heading_parent_missing",
-                        "message": "H4 标题必须位于当前章节的 H3 标题之后。",
-                    }
-                ],
-                "previousOutput": {"markdown": "#### 收入规模\n\n收入为100元。"},
-                "requiredAction": (
-                    "仅修正 issues 指向的当前 block；在 output_schema.markdown 字段中返回完整正文，"
-                    "保留其余有效内容，不得返回解释、代码围栏或 schema 外字段。"
-                ),
-            }
-            return SectionBlockContent(markdown="### 收入规模\n\n收入为100元。")
-        assert "correction" not in payload
         return SectionBlockContent(markdown="#### 管理影响\n\n收入表现稳定。")
 
     monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
@@ -1824,8 +1955,8 @@ async def test_section_generation_locally_regenerates_block_with_missing_heading
         ),
     )
 
-    assert stages == ["plan", "block-1", "block-1", "block-2"]
-    assert result.blocks[0].markdown.startswith("### ")
+    assert stages == ["plan", "block-1", "block-2"]
+    assert result.blocks[0].markdown == "### 收入规模\n\n收入为100元。"
     assert result.blocks[1].markdown.startswith("#### ")
 
 

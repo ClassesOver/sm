@@ -453,6 +453,22 @@ def validate_report_draft_blocks(
                 )
 
 
+def promote_orphan_h4_heading(markdown: str) -> str:
+    """章节尚无 H3 时，把当前 block 首个先于 H3 出现的 H4 提升为 H3。
+
+    H4 缺少父标题是纯层级错误，提升后语义与编号都确定；由服务端修正可省去一次
+    模型重写。只改写 CommonMark 解析出的真实标题行，围栏内容不受影响。
+    """
+
+    lines = markdown.splitlines(keepends=True)
+    for level, line_index, _match, _markdown_title, _title in _validated_block_headings(markdown):
+        if level == 3:
+            return markdown
+        lines[line_index] = lines[line_index][1:]
+        return "".join(lines)
+    return markdown
+
+
 def _number_block_headings(
     markdown: str,
     *,

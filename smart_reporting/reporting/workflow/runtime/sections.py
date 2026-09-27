@@ -14,7 +14,7 @@ from ....task_execution import (
 )
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...contract import interactive_spec_path
-from ...delivery.draft_v1 import ReportDraftBlock
+from ...delivery.draft_v1 import ReportDraftBlock, promote_orphan_h4_heading
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
     ThinkingFailureKind,
@@ -24,7 +24,12 @@ from ...model_policy import (
 from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
-from ..checkpoint import ChartVisualInspectionReceipt, CheckpointError, ProfileReadReceipt
+from ..checkpoint import (
+    ChartVisualInspectionReceipt,
+    CheckpointError,
+    ProfileReadReceipt,
+    SectionClaimSubmission,
+)
 from ..execution import ReportingTaskInvocation
 from .analysis import (
     _finalize_semantic_catalog,
@@ -863,6 +868,11 @@ def _section_plan_reference_issues(
     return issues
 
 
+# 服务端先确定性修复可唯一推断的引用，模型只负责剩余歧义；两轮后仍无效的 claim
+# 被剔除，避免单条结论拖垮整章（原先 5 轮纠错后整章失败并从头重试）。
+_MAX_PLAN_REFERENCE_CORRECTIONS = 2
+
+
 def _section_plan_response_validator(
     work_item: SectionWorkItem,
     output_schema: type[SectionPlanOutput] | type[RenderSectionPlan] = SectionPlanOutput,
@@ -935,6 +945,136 @@ def _merge_claim_patch(
     return {**previous_output, "claims": merged}
 
 
+def _management_question_ref_index(
+    work_item: SectionWorkItem,
+) -> tuple[str | None, dict[str, str]]:
+    """返回唯一管理问题引用，以及 metricCode 唯一归属 analysis 的确定性映射。"""
+
+    catalog = work_item.management_question_catalog
+    single_ref = catalog[0].ref if len(catalog) == 1 else None
+    metric_refs: dict[str, set[str]] = {}
+    for evidence_item in work_item.evidence:
+        for metric in evidence_item.metrics:
+            metric_refs.setdefault(metric, set()).add(evidence_item.analysis_id)
+    unique_metric_refs = {
+        metric: next(iter(refs)) for metric, refs in metric_refs.items() if len(refs) == 1
+    }
+    return single_ref, unique_metric_refs
+
+
+def _repair_section_plan_references(
+    decision: RenderSectionPlan, work_item: SectionWorkItem
+) -> RenderSectionPlan:
+    """确定性修复可唯一推断的规划引用错误，剩余问题才回灌模型纠错。
+
+    只做无歧义修复并软告警：metricCode 写成指标名称或大小写不同的代码；
+    managementQuestionRef 不在目录内但目录唯一或 metricCode 唯一归属；
+    citationIds/chartIds 混入当前 WorkItem 外的 ID 时剔除，citation 剔空后仅在
+    所属 analysis 恰有一个 citation 时回填。单个 claim 修复后不满足提交契约时
+    保持原样，交给纠错循环。
+    """
+
+    known_metrics = {item.code for item in work_item.metric_definitions}
+    metric_aliases: dict[str, set[str]] = {}
+    for item in work_item.metric_definitions:
+        for alias in (item.code, item.name):
+            metric_aliases.setdefault(alias.strip().casefold(), set()).add(item.code)
+    known_questions = {item.ref for item in work_item.management_question_catalog}
+    known_citations = {item.citation_id for item in work_item.citations}
+    known_charts = {item.chart_id for item in work_item.charts}
+    analysis_citations = {
+        item.analysis_id: tuple(
+            dict.fromkeys(cid for cid in item.citation_ids if cid in known_citations)
+        )
+        for item in work_item.evidence
+    }
+    single_ref, unique_metric_refs = _management_question_ref_index(work_item)
+    repaired_claims: list[SectionClaimSubmission] = []
+    repair_types: set[str] = set()
+    for claim in decision.claims:
+        payload = claim.model_dump(mode="json", by_alias=True)
+        claim_repairs: set[str] = set()
+        if claim.metric_code not in known_metrics:
+            aliases = metric_aliases.get(claim.metric_code.strip().casefold(), set())
+            if len(aliases) == 1:
+                payload["metricCode"] = next(iter(aliases))
+                claim_repairs.add("metric_code")
+        if claim.management_question_ref not in known_questions:
+            replacement = single_ref or unique_metric_refs.get(payload["metricCode"])
+            if replacement in known_questions:
+                payload["managementQuestionRef"] = replacement
+                claim_repairs.add("management_question_ref")
+        chart_ids = [item for item in claim.chart_ids if item in known_charts]
+        if len(chart_ids) != len(claim.chart_ids):
+            payload["chartIds"] = chart_ids
+            claim_repairs.add("chart_ids")
+        citation_ids = [item for item in claim.citation_ids if item in known_citations]
+        if not citation_ids:
+            owned = analysis_citations.get(payload["managementQuestionRef"], ())
+            citation_ids = list(owned) if len(owned) == 1 else []
+        if citation_ids and citation_ids != list(claim.citation_ids):
+            payload["citationIds"] = citation_ids
+            claim_repairs.add("citation_ids")
+        if claim_repairs:
+            try:
+                claim = SectionClaimSubmission.model_validate(payload)
+            except ValidationError:
+                claim_repairs.clear()
+        repair_types |= claim_repairs
+        repaired_claims.append(claim)
+    if not repair_types:
+        return decision
+    loguru_logger.bind(
+        section_code=work_item.section_code,
+        repair_types=sorted(repair_types),
+    ).warning("report_section_plan_references_repaired")
+    return decision.model_copy(update={"claims": tuple(repaired_claims)})
+
+
+_PLAN_CLAIM_ISSUE_PATH = re.compile(r"^\$\.claims\[(\d+)\]")
+
+
+def _prune_unresolved_plan_claims(
+    decision: RenderSectionPlan,
+    issues: Sequence[Mapping[str, Any]],
+    work_item: SectionWorkItem,
+) -> RenderSectionPlan | None:
+    """纠错预算耗尽后剔除仍引用 WorkItem 外 ID 的 claim，保住其余有效规划。
+
+    引用问题属于单条结论的语义缺陷：删除该 claim 及其 block 引用并软告警，比整章
+    重新规划更快收敛；剔除后没有可渲染的 block 或 claim 时返回 None 失败关闭。
+    """
+
+    invalid_indexes = {
+        int(match.group(1))
+        for item in issues
+        if (match := _PLAN_CLAIM_ISSUE_PATH.match(str(item.get("path", "")))) is not None
+    }
+    invalid_ids = {
+        decision.claims[index].claim_id for index in invalid_indexes if index < len(decision.claims)
+    }
+    if not invalid_ids:
+        return None
+    payload = decision.model_dump(mode="json", by_alias=True)
+    payload["claims"] = [item for item in payload["claims"] if item["claimId"] not in invalid_ids]
+    blocks = []
+    for block in payload["blocks"]:
+        claim_ids = [item for item in block["claimIds"] if item not in invalid_ids]
+        if claim_ids:
+            blocks.append({**block, "claimIds": claim_ids})
+    payload["blocks"] = blocks
+    try:
+        pruned = RenderSectionPlan.model_validate(payload)
+    except ValidationError:
+        return None
+    loguru_logger.bind(
+        section_code=work_item.section_code,
+        pruned_claim_ids=sorted(invalid_ids),
+        issue_types=sorted({str(item.get("type")) for item in issues}),
+    ).warning("report_section_plan_unresolved_claims_pruned")
+    return pruned
+
+
 def _backfill_claim_management_question_refs(candidate: Any, work_item: SectionWorkItem) -> Any:
     """仅无歧义时回填模型遗漏的 managementQuestionRef，歧义时保持缺失由严格校验失败关闭。
 
@@ -958,17 +1098,9 @@ def _backfill_claim_management_question_refs(candidate: Any, work_item: SectionW
     claims = render.get("claims")
     if not isinstance(claims, list):
         return candidate
-    catalog = work_item.management_question_catalog
-    if not catalog:
+    if not work_item.management_question_catalog:
         return candidate
-    single_ref = catalog[0].ref if len(catalog) == 1 else None
-    metric_refs: dict[str, set[str]] = {}
-    for evidence_item in work_item.evidence:
-        for metric in evidence_item.metrics:
-            metric_refs.setdefault(metric, set()).add(evidence_item.analysis_id)
-    unique_metric_refs = {
-        metric: next(iter(refs)) for metric, refs in metric_refs.items() if len(refs) == 1
-    }
+    single_ref, unique_metric_refs = _management_question_ref_index(work_item)
     backfilled = 0
     normalized_claims: list[Any] = []
     for claim in claims:
@@ -1053,7 +1185,7 @@ async def _generate_section_in_blocks(
     if recovery is not None:
         plan_payload["recovery"] = dict(recovery)
     previous_output: dict[str, Any] | None = None
-    for plan_call in range(1, 7):
+    for plan_call in range(1, _MAX_PLAN_REFERENCE_CORRECTIONS + 2):
         planned = await _run_section_stage(
             agent,
             plan_schema,
@@ -1087,15 +1219,20 @@ async def _generate_section_in_blocks(
             raise ReportingError(
                 "report_section_artifact_invalid", "章节规划没有绑定当前 sectionCode。"
             )
+        decision = _repair_section_plan_references(decision, work_item)
         reference_issues = _section_plan_reference_issues(decision, work_item)
         if not reference_issues:
             break
-        if plan_call >= 6:
-            raise ReportingError(
-                "report_section_plan_reference_invalid",
-                "章节规划引用了当前 WorkItem 外的指标、管理问题、citation 或 chart。",
-                details={"issues": reference_issues},
-            )
+        if plan_call > _MAX_PLAN_REFERENCE_CORRECTIONS:
+            pruned = _prune_unresolved_plan_claims(decision, reference_issues, work_item)
+            if pruned is None:
+                raise ReportingError(
+                    "report_section_plan_reference_invalid",
+                    "章节规划引用了当前 WorkItem 外的指标、管理问题、citation 或 chart。",
+                    details={"issues": reference_issues},
+                )
+            decision = pruned
+            break
         previous_output = decision.model_dump(mode="json", by_alias=True)
         encoded_previous = json.dumps(
             previous_output,
@@ -1241,6 +1378,10 @@ async def _generate_section_in_blocks(
                     expected_section_title=work_item.title,
                 )
             except ReportingError as error:
+                promoted = _promoted_heading_block(error, candidate, blocks, work_item)
+                if promoted is not None:
+                    blocks.append(promoted)
+                    break
                 if error.code != "report_draft_heading_parent_missing" or block_attempt == 1:
                     raise
                 issues = error.details.get("issues") if isinstance(error.details, Mapping) else None
@@ -1264,6 +1405,37 @@ async def _generate_section_in_blocks(
         blocks=tuple(blocks),
         claims=decision.claims,
     )
+
+
+def _promoted_heading_block(
+    error: ReportingError,
+    candidate: ReportDraftBlock,
+    blocks: Sequence[ReportDraftBlock],
+    work_item: SectionWorkItem,
+) -> ReportDraftBlock | None:
+    """孤立 H4 由服务端确定性提升为 H3，省去一次模型重写；无法修正时交回模型纠错。"""
+
+    if error.code != "report_draft_heading_parent_missing":
+        return None
+    markdown = promote_orphan_h4_heading(candidate.markdown)
+    if markdown == candidate.markdown:
+        return None
+    promoted = ReportDraftBlock(
+        blockId=candidate.block_id,
+        markdown=markdown,
+        citationIds=candidate.citation_ids,
+        chartIds=candidate.chart_ids,
+        claimIds=candidate.claim_ids,
+    )
+    try:
+        validate_report_draft_blocks((*blocks, promoted), expected_section_title=work_item.title)
+    except ReportingError:
+        return None
+    loguru_logger.bind(
+        section_code=work_item.section_code,
+        block_id=candidate.block_id,
+    ).warning("report_section_block_heading_promoted")
+    return promoted
 
 
 def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, Any]:
