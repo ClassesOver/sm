@@ -1221,6 +1221,59 @@ def test_section_plan_validator_never_overrides_explicit_null_ref() -> None:
     assert raised.value._report_candidate["claims"][0]["managementQuestionRef"] is None
 
 
+def _previous_two_claim_plan() -> dict:
+    payload = _render_plan_payload()
+    payload["blocks"][0]["claimIds"] = ["claim_001", "claim_002"]
+    payload["claims"] = [
+        {**payload["claims"][0], "managementQuestionRef": "analysis_001"},
+        {
+            "claimId": "claim_002",
+            "metricCode": "revenue",
+            "value": 90,
+            "managementQuestionRef": "analysis_999",
+            "citationIds": ["citation_001"],
+        },
+    ]
+    return payload
+
+
+@pytest.mark.parametrize(
+    "patch_shape",
+    ["single_claim", "claims_wrapper", "claim_list"],
+)
+def test_section_plan_validator_merges_correction_claim_patch(patch_shape: str) -> None:
+    previous = _previous_two_claim_plan()
+    fixed = {**previous["claims"][1], "managementQuestionRef": "analysis_001"}
+    content = {
+        "single_claim": fixed,
+        "claims_wrapper": {"claims": [fixed]},
+        "claim_list": [fixed],
+    }[patch_shape]
+    validator = reporting_sections._section_plan_response_validator(
+        _section_work_item(), RenderSectionPlan, previous
+    )
+
+    result = validator(json.dumps(content, ensure_ascii=False))
+
+    assert result.section_code == "section_001"
+    assert [claim.claim_id for claim in result.claims] == ["claim_001", "claim_002"]
+    assert result.claims[1].management_question_ref == "analysis_001"
+    assert result.blocks[0].claim_ids == ("claim_001", "claim_002")
+
+
+def test_section_plan_validator_keeps_unknown_claim_patch_failing() -> None:
+    previous = _previous_two_claim_plan()
+    unknown = {**previous["claims"][1], "claimId": "claim_404"}
+    validator = reporting_sections._section_plan_response_validator(
+        _section_work_item(), RenderSectionPlan, previous
+    )
+
+    with pytest.raises(ValidationError) as raised:
+        validator(json.dumps(unknown, ensure_ascii=False))
+
+    assert raised.value._report_candidate["claimId"] == "claim_404"
+
+
 @pytest.mark.anyio
 async def test_section_generation_attaches_response_validator_to_plan_stage(
     monkeypatch: pytest.MonkeyPatch,
@@ -1757,11 +1810,23 @@ async def test_section_generation_corrects_plan_references_before_rendering_bloc
     )
     stages: list[str] = []
 
-    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+    async def fake_run_stage(_agent, _schema, stage, payload, **kwargs):
         stages.append(stage)
         if stage == "plan":
             metric_code = "invented_revenue" if stages.count("plan") == 1 else "revenue"
             if stages.count("plan") == 2:
+                # 修正轮校验器持有上一版规划：只回传被修正 claim 也能合并成完整规划。
+                merged = kwargs["response_validator"](
+                    json.dumps(
+                        {
+                            "claimId": "claim_001",
+                            "metricCode": "revenue",
+                            "value": 100,
+                            "citationIds": ["citation_001"],
+                        }
+                    )
+                )
+                assert merged.root.blocks[0].claim_ids == ("claim_001",)
                 correction = payload["correction"]
                 assert correction["code"] == "report_section_plan_reference_invalid"
                 assert correction["issues"] == [

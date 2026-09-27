@@ -866,11 +866,14 @@ def _section_plan_reference_issues(
 def _section_plan_response_validator(
     work_item: SectionWorkItem,
     output_schema: type[SectionPlanOutput] | type[RenderSectionPlan] = SectionPlanOutput,
+    previous_output: Mapping[str, Any] | None = None,
 ) -> Callable[[Any], SectionPlanOutput | RenderSectionPlan]:
-    """规划响应先做无歧义 claim 引用回填，再进入领域校验。"""
+    """规划响应先合并修正补丁、做无歧义 claim 引用回填，再进入领域校验。"""
 
     def validate_response(content: Any) -> SectionPlanOutput | RenderSectionPlan:
         candidate = _planner_candidate(content)
+        if previous_output is not None:
+            candidate = _merge_claim_patch(candidate, previous_output, work_item)
         if (
             output_schema is RenderSectionPlan
             and isinstance(candidate, Mapping)
@@ -887,6 +890,49 @@ def _section_plan_response_validator(
             raise
 
     return validate_response
+
+
+def _merge_claim_patch(
+    candidate: Any, previous_output: Mapping[str, Any], work_item: SectionWorkItem
+) -> Any:
+    """引用纠错轮中模型只回传被修正的 claim 时，按 claimId 合并回上一版完整规划。
+
+    弱模型在 correction 中高频只返回单个 claim、claim 数组或 {"claims": [...]}，
+    缺少 sectionCode/blocks 必然结构失败；结构纠错又把这个补丁当 previousOutput
+    回灌，模型继续输出补丁，章节阶段被整轮重试放大。上一版规划已通过结构校验，
+    claimId 全部命中时替换是确定性合并；任一 claimId 未知则保持原样由严格校验失败关闭。
+    """
+
+    patches: list[Any] | None = None
+    if isinstance(candidate, Mapping):
+        if "blocks" in candidate or "sectionCode" in candidate or "section_code" in candidate:
+            return candidate
+        if "claimId" in candidate and "claims" not in candidate:
+            patches = [candidate]
+        elif set(candidate) <= {"claims", "kind"} and isinstance(candidate.get("claims"), list):
+            patches = list(candidate["claims"])
+    elif isinstance(candidate, list):
+        patches = list(candidate)
+    previous_claims = previous_output.get("claims")
+    if not patches or not isinstance(previous_claims, list):
+        return candidate
+    index = {
+        claim.get("claimId"): position
+        for position, claim in enumerate(previous_claims)
+        if isinstance(claim, Mapping)
+    }
+    if any(
+        not isinstance(patch, Mapping) or patch.get("claimId") not in index for patch in patches
+    ):
+        return candidate
+    merged = list(previous_claims)
+    for patch in patches:
+        merged[index[patch["claimId"]]] = dict(patch)
+    loguru_logger.bind(
+        section_code=work_item.section_code,
+        patched_claim_count=len(patches),
+    ).warning("report_section_plan_claim_patch_merged")
+    return {**previous_output, "claims": merged}
 
 
 def _backfill_claim_management_question_refs(candidate: Any, work_item: SectionWorkItem) -> Any:
@@ -1006,6 +1052,7 @@ async def _generate_section_in_blocks(
         )
     if recovery is not None:
         plan_payload["recovery"] = dict(recovery)
+    previous_output: dict[str, Any] | None = None
     for plan_call in range(1, 7):
         planned = await _run_section_stage(
             agent,
@@ -1016,7 +1063,9 @@ async def _generate_section_in_blocks(
             run_context=run_context,
             thinking_request=_section_stage_thinking_request(thinking_request, "plan"),
             section_code=work_item.section_code,
-            response_validator=_section_plan_response_validator(work_item, plan_schema),
+            response_validator=_section_plan_response_validator(
+                work_item, plan_schema, previous_output
+            ),
         )
         if analysis_rework_allowed:
             if not isinstance(planned, SectionPlanOutput):
@@ -1058,8 +1107,8 @@ async def _generate_section_in_blocks(
             "code": "report_section_plan_reference_invalid",
             "issues": reference_issues,
             "requiredAction": (
-                "逐项修正 issues，保留其余有效规划；返回完整 SectionPlanOutput，"
-                "不得输出补丁、解释或 schema 外字段。"
+                "逐项修正 issues，保留其余有效规划；返回包含 kind、sectionCode、blocks、"
+                "claims 的完整规划对象，不得只返回被修正的 claim、补丁、解释或 schema 外字段。"
             ),
         }
         if len(encoded_previous) <= 32 * 1024:
