@@ -341,6 +341,10 @@ def _marker_lines(
 ) -> str:
     markers = "".join(f"[[citation:{citation_id}]]" for citation_id in citation_ids)
     markers += "".join(f"[[analysis:{analysis_id}]]" for analysis_id in analysis_ids)
+    if markers and _FENCE_LINE.match(text.rstrip("\n").rsplit("\n", 1)[-1]):
+        # 闭合围栏后不能跟其他文字：追加在同一行会让围栏失去闭合，后续整篇报告
+        # 都被吞进代码块。标记改为独立段落。
+        return f"{text.rstrip()}\n\n{markers}"
     return f"{text}{markers}"
 
 
