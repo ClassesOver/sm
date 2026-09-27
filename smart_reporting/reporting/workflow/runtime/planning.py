@@ -989,6 +989,7 @@ class RuntimePlanningMixin:
         outline: ReportOutline | None = None
         ordered_analysis_ids = tuple(item.analysis_id for item in detailed_plan.analyses)
         last_proposal: ReportOutlineProposal | None = None
+        reference_corrections = 0
         call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
@@ -1036,18 +1037,18 @@ class RuntimePlanningMixin:
                 )
                 break
             assert isinstance(output, ReportOutlineProposal)
+            last_proposal = output
+            # 冻结校验失败已回灌过一次时，模型仍无法修正的引用走确定性兜底。
             output = _repair_outline_proposal(
                 output,
                 report_type=envelope.report_type,
-                analysis_ids=set(ordered_analysis_ids),
+                ordered_analysis_ids=ordered_analysis_ids,
+                fallback=reference_corrections >= 1,
             )
-            last_proposal = output
-            if attempt >= 2:
-                # 遗漏 analysisId 已给过模型一次纠错机会，仍遗漏时确定性归入末章。
-                output = _assign_missing_outline_analyses(output, ordered_analysis_ids)
             try:
                 outline = freeze_outline(output, analyses=detailed_plan.analyses)
             except ValueError as error:
+                reference_corrections += 1
                 previous_output = output.model_dump(mode="json", by_alias=True)
                 # freeze_outline 会再次校验服务端生成的稳定提纲。Pydantic 错误必须
                 # 保留真实顶层字段，否则 assumptions 失败却只授权修改 sections，
@@ -1069,7 +1070,12 @@ class RuntimePlanningMixin:
         if outline is None and last_proposal is not None:
             try:
                 outline = freeze_outline(
-                    _assign_missing_outline_analyses(last_proposal, ordered_analysis_ids),
+                    _repair_outline_proposal(
+                        last_proposal,
+                        report_type=envelope.report_type,
+                        ordered_analysis_ids=ordered_analysis_ids,
+                        fallback=True,
+                    ),
                     analyses=detailed_plan.analyses,
                 )
             except ValueError:
@@ -1522,61 +1528,70 @@ def _repair_outline_proposal(
     proposal: ReportOutlineProposal,
     *,
     report_type: str,
-    analysis_ids: set[str],
+    ordered_analysis_ids: tuple[str, ...],
+    fallback: bool = False,
 ) -> ReportOutlineProposal:
-    """确定性修复提纲中可由已确认事实唯一决定的字段，省去模型往返（软告警）。
+    """确定性修复提纲中可由已确认事实唯一决定的部分，省去模型往返（软告警）。
 
-    reportType 已由确认请求冻结，直接覆盖；章节引用的未注册 analysisId 剔除，
-    剔空的章节整体移除。遗漏的 analysisId 归属哪一章是语义选择，仍交给模型纠错。
+    - reportType 已由确认请求冻结，直接覆盖；
+    - 恰有一个未注册 analysisId 且恰有一个遗漏的已注册 analysisId 时原位替换，
+      保留模型给出的章节归属；
+    - 没有遗漏时，未注册 analysisId 只是多余引用，剔除（剔空的章节移除）；
+    - 其余歧义交给模型纠错。fallback=True 时（模型已获得纠错机会或预算耗尽）剔除
+      剩余未注册 analysisId，并把遗漏项按分析计划顺序归入末章。
     """
 
-    repairs: list[str] = []
+    registered = set(ordered_analysis_ids)
     payload = proposal.model_dump(mode="json", by_alias=True)
+    repairs: list[str] = []
     if payload["reportType"] != report_type:
         payload["reportType"] = report_type
         repairs.append("report_type")
-    sections = []
-    for section in payload["sections"]:
-        known = [item for item in section["analysisIds"] if item in analysis_ids]
-        if len(known) != len(section["analysisIds"]):
-            repairs.append("unknown_analysis_id")
-        if known:
-            sections.append({**section, "analysisIds": known})
-    if not repairs or not sections:
+    referenced = {item for section in payload["sections"] for item in section["analysisIds"]}
+    unknown = [
+        item
+        for section in payload["sections"]
+        for item in section["analysisIds"]
+        if item not in registered
+    ]
+    missing = [item for item in ordered_analysis_ids if item not in referenced]
+    if len(unknown) == 1 and len(missing) == 1:
+        substitution = {unknown[0]: missing[0]}
+        payload["sections"] = [
+            {
+                **section,
+                "analysisIds": [substitution.get(item, item) for item in section["analysisIds"]],
+            }
+            for section in payload["sections"]
+        ]
+        repairs.append("unknown_analysis_id_substituted")
+        unknown, missing = [], []
+    if unknown and (fallback or not missing):
+        sections = [
+            {
+                **section,
+                "analysisIds": [item for item in section["analysisIds"] if item in registered],
+            }
+            for section in payload["sections"]
+        ]
+        payload["sections"] = [section for section in sections if section["analysisIds"]]
+        repairs.append("unknown_analysis_id_dropped")
+    if missing and fallback and payload["sections"]:
+        last = payload["sections"][-1]
+        payload["sections"][-1] = {**last, "analysisIds": [*last["analysisIds"], *missing]}
+        repairs.append("missing_analysis_assigned")
+    if not repairs or not payload["sections"]:
         return proposal
-    payload["sections"] = sections
     try:
         repaired = ReportOutlineProposal.model_validate(payload)
     except ValidationError:
         return proposal
-    loguru_logger.bind(repair_types=sorted(set(repairs))).warning(
-        "report_outline_proposal_repaired"
-    )
-    return repaired
-
-
-def _assign_missing_outline_analyses(
-    proposal: ReportOutlineProposal,
-    ordered_analysis_ids: tuple[str, ...],
-) -> ReportOutlineProposal:
-    """把提纲遗漏的已注册 analysisId 按分析计划顺序归入末章（软告警兜底）。"""
-
-    referenced = {item for section in proposal.sections for item in section.analysis_ids}
-    missing = [item for item in ordered_analysis_ids if item not in referenced]
-    if not missing:
-        return proposal
-    payload = proposal.model_dump(mode="json", by_alias=True)
-    last = payload["sections"][-1]
-    payload["sections"][-1] = {**last, "analysisIds": [*last["analysisIds"], *missing]}
-    try:
-        assigned = ReportOutlineProposal.model_validate(payload)
-    except ValidationError:
-        return proposal
     loguru_logger.bind(
-        missing_analysis_ids=missing,
-        section_title=last["title"],
-    ).warning("report_outline_missing_analyses_assigned")
-    return assigned
+        repair_types=repairs,
+        unknown_analysis_ids=unknown,
+        missing_analysis_ids=missing if fallback else [],
+    ).warning("report_outline_proposal_repaired")
+    return repaired
 
 
 _PLANNER_MODEL_EXHAUSTED_CODES = frozenset(
@@ -2266,10 +2281,10 @@ def _repair_data_understanding_tables(
     if not isinstance(raw_output, dict) or not isinstance(raw_output.get("tables"), list):
         return raw_output
     canonical: dict[str, list[tuple[str, str]]] = {}
-    for reference in _table_references(snapshots):
-        canonical.setdefault(reference.table.lower(), []).append(
-            (reference.source_id, reference.table)
-        )
+    for reference in dict.fromkeys(
+        (item.source_id, item.table) for item in _table_references(snapshots)
+    ):
+        canonical.setdefault(reference[1].lower(), []).append(reference)
     available = {
         (source_id, table.lower()) for matches in canonical.values() for source_id, table in matches
     }

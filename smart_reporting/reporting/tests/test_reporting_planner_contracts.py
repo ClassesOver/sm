@@ -4449,51 +4449,93 @@ async def test_sql_planner_budget_exhaustion_falls_back_to_compiler(monkeypatch)
     assert output.content == {"queries": [{"queryId": "q1"}]}
 
 
-def test_outline_proposal_repair_overwrites_report_type_and_drops_unknown_analyses() -> None:
-    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
-
-    proposal = ReportOutlineProposal.model_validate(
+def _outline_proposal(*sections: tuple[str, list[str]], report_type: str = "comprehensive"):
+    return ReportOutlineProposal.model_validate(
         {
-            "reportType": "topic",
+            "reportType": report_type,
             "title": "年度运营分析",
             "sections": [
-                {"title": "收入", "analysisIds": ["analysis_001", "analysis_999"]},
-                {"title": "幻觉章节", "analysisIds": ["analysis_404"]},
-                {"title": "成本", "analysisIds": ["analysis_002"]},
+                {"title": title, "analysisIds": analysis_ids} for title, analysis_ids in sections
             ],
         }
     )
 
-    repaired = reporting_planning._repair_outline_proposal(
+
+def _repair_outline(proposal, *, fallback: bool = False):
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    return reporting_planning._repair_outline_proposal(
         proposal,
         report_type="comprehensive",
-        analysis_ids={"analysis_001", "analysis_002"},
+        ordered_analysis_ids=("analysis_001", "analysis_002", "analysis_003"),
+        fallback=fallback,
+    )
+
+
+def test_outline_repair_substitutes_single_unknown_for_single_missing_in_place() -> None:
+    repaired = _repair_outline(
+        _outline_proposal(
+            ("收入", ["analysis_001"]),
+            ("成本", ["analysis_099"]),
+            ("效率", ["analysis_003"]),
+            report_type="topic",
+        )
     )
 
     assert repaired.report_type == "comprehensive"
     assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
         ("收入", ("analysis_001",)),
         ("成本", ("analysis_002",)),
+        ("效率", ("analysis_003",)),
     ]
 
 
-def test_outline_proposal_repair_keeps_valid_proposal_identity() -> None:
-    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
-
-    proposal = ReportOutlineProposal.model_validate(
-        {
-            "reportType": "comprehensive",
-            "title": "年度运营分析",
-            "sections": [{"title": "收入", "analysisIds": ["analysis_001"]}],
-        }
-    )
-
-    assert (
-        reporting_planning._repair_outline_proposal(
-            proposal, report_type="comprehensive", analysis_ids={"analysis_001"}
+def test_outline_repair_drops_unknown_only_when_nothing_is_missing() -> None:
+    repaired = _repair_outline(
+        _outline_proposal(
+            ("收入", ["analysis_001", "analysis_999"]),
+            ("幻觉章节", ["analysis_404"]),
+            ("成本", ["analysis_002", "analysis_003"]),
         )
-        is proposal
     )
+
+    assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
+        ("收入", ("analysis_001",)),
+        ("成本", ("analysis_002", "analysis_003")),
+    ]
+
+
+def test_outline_repair_keeps_ambiguous_unknowns_for_model_correction() -> None:
+    proposal = _outline_proposal(
+        ("收入", ["analysis_001"]),
+        ("成本", ["analysis_098"]),
+        ("效率", ["analysis_099"]),
+    )
+
+    assert _repair_outline(proposal) is proposal
+
+
+def test_outline_repair_fallback_drops_unknowns_and_assigns_missing_to_last_section() -> None:
+    repaired = _repair_outline(
+        _outline_proposal(
+            ("收入", ["analysis_001"]),
+            ("成本", ["analysis_098"]),
+            ("效率", ["analysis_099"]),
+        ),
+        fallback=True,
+    )
+
+    assert [(item.title, item.analysis_ids) for item in repaired.sections] == [
+        ("收入", ("analysis_001", "analysis_002", "analysis_003")),
+    ]
+
+
+def test_outline_repair_keeps_valid_proposal_identity() -> None:
+    proposal = _outline_proposal(
+        ("收入", ["analysis_001"]), ("成本", ["analysis_002", "analysis_003"])
+    )
+
+    assert _repair_outline(proposal, fallback=True) is proposal
 
 
 def _understanding_snapshots() -> tuple[reporting_contract.SourceSchemaSnapshot, ...]:

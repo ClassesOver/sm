@@ -14,7 +14,7 @@ from ....task_execution import (
 )
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...contract import interactive_spec_path
-from ...delivery.draft_v1 import ReportDraftBlock, promote_orphan_h4_heading
+from ...delivery.draft_v1 import ReportDraftBlock, promote_orphan_h4_headings
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
     ThinkingFailureKind,
@@ -932,7 +932,10 @@ def _merge_claim_patch(
         if isinstance(claim, Mapping)
     }
     if any(
-        not isinstance(patch, Mapping) or patch.get("claimId") not in index for patch in patches
+        not isinstance(patch, Mapping)
+        or not isinstance(patch.get("claimId"), str)
+        or patch["claimId"] not in index
+        for patch in patches
     ):
         return candidate
     merged = list(previous_claims)
@@ -1417,8 +1420,11 @@ def _promoted_heading_block(
 
     if error.code != "report_draft_heading_parent_missing":
         return None
-    markdown = promote_orphan_h4_heading(candidate.markdown)
-    if markdown == candidate.markdown:
+    markdown = promote_orphan_h4_headings(
+        candidate.markdown,
+        expected_section_title=None if blocks else work_item.title,
+    )
+    if markdown is None:
         return None
     promoted = ReportDraftBlock(
         blockId=candidate.block_id,

@@ -1292,6 +1292,64 @@ def _plan_claim(claim_id: str, **overrides: object) -> dict:
     }
 
 
+def test_section_plan_patch_with_non_string_claim_id_stays_validation_error() -> None:
+    previous = _previous_two_claim_plan()
+    validator = reporting_sections._section_plan_response_validator(
+        _section_work_item(), RenderSectionPlan, previous
+    )
+
+    with pytest.raises(ValidationError):
+        validator(json.dumps({**previous["claims"][1], "claimId": ["claim_002"]}))
+
+
+@pytest.mark.anyio
+async def test_first_block_sibling_orphan_h4_headings_are_promoted_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages: list[str] = []
+    plan = {
+        "kind": "render",
+        "sectionCode": "section_001",
+        "blocks": [{"blockId": "block_001", "objective": "收入", "claimIds": ["claim_001"]}],
+        "claims": [_plan_claim("claim_001")],
+    }
+
+    async def fake_run_stage(_agent, _schema, stage, payload, **_kwargs):
+        stages.append(stage)
+        if stage == "plan":
+            return SectionPlanOutput.model_validate(plan)
+        assert "correction" not in payload
+        return SectionBlockContent(
+            markdown="#### 门诊收入\n\n收入为100元。\n\n#### 住院收入\n\n稳定。"
+        )
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_run_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0],
+                content='{"收入":100}',
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {"reportGoal": "分析2025年收入", "sectionGoal": {"sectionCode": "section_001"}},
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+    )
+
+    assert stages == ["plan", "block-1"]
+    assert result.blocks[0].markdown == ("### 门诊收入\n\n收入为100元。\n\n### 住院收入\n\n稳定。")
+
+
 def test_section_plan_references_repaired_when_unambiguous() -> None:
     work_item = _revenue_work_item()
     decision = RenderSectionPlan.model_validate(

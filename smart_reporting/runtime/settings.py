@@ -313,7 +313,7 @@ class AgentSettings:
     # 代理的读超时必须不小于该值，否则请求会先于服务端被切断。
     report_editor_export_timeout_seconds: int = 1200
     # 报表完成时返回给调用方的 markdown 模板；未设置时使用默认紧凑格式。
-    # 可用变量：{report_title}、{editor_url}、{pdf_url}、{word_url}
+    # 可用变量：{report_title}、{editor_url}、{pdf_url}、{word_url}、{actions}
     report_completion_template: str | None = None
     # 编辑器前端静态目录；镜像把构建产物放在源码 bind mount 之外，避免被宿主目录覆盖。
     report_editor_static_dir: str | None = None
