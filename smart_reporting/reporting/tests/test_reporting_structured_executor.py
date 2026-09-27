@@ -175,6 +175,42 @@ def test_structured_correction_includes_small_candidate_once() -> None:
     assert messages[0].content == "original instruction"
 
 
+def test_structured_correction_flags_fragment_response() -> None:
+    issues = [
+        {"path": f"$.{field}", "type": "missing", "message": "Field required"}
+        for field in ("sectionCode", "blocks", "claims")
+    ] + [
+        {"path": f"$.{field}", "type": "extra_forbidden", "message": "Extra inputs"}
+        for field in ("claimId", "metricCode", "value")
+    ]
+
+    messages = _correction_instruction(
+        "original instruction",
+        correction_number=1,
+        previous_output={"claimId": "claim_012"},
+        issues=issues,
+    )
+
+    correction = json.loads(str(messages[1].content).split("\n")[1])
+    assert correction["structureHint"]["path"] == "$"
+    assert correction["structureHint"]["missingFields"] == ["sectionCode", "blocks", "claims"]
+    assert correction["structureHint"]["unexpectedFields"] == ["claimId", "metricCode", "value"]
+
+
+def test_structured_correction_skips_fragment_hint_for_single_renamed_field() -> None:
+    messages = _correction_instruction(
+        "original instruction",
+        correction_number=1,
+        previous_output={"sectionCod": "section_001"},
+        issues=[
+            {"path": "$.sectionCode", "type": "missing", "message": "Field required"},
+            {"path": "$.sectionCod", "type": "extra_forbidden", "message": "Extra inputs"},
+        ],
+    )
+
+    assert "structureHint" not in str(messages[1].content)
+
+
 def test_structured_correction_omits_oversized_invalid_candidate() -> None:
     candidate = '{"blocks":[{"markdown":"' + ("重复内容" * 20_000)
 

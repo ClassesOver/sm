@@ -987,6 +987,8 @@ class RuntimePlanningMixin:
         previous_output: dict[str, Any] | None = None
         allowed_paths: tuple[str, ...] = ()
         outline: ReportOutline | None = None
+        ordered_analysis_ids = tuple(item.analysis_id for item in detailed_plan.analyses)
+        last_proposal: ReportOutlineProposal | None = None
         call_budget = StructuredOutputCallBudget()
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
@@ -1025,12 +1027,24 @@ class RuntimePlanningMixin:
                     "issues": validation_issues,
                 }
                 continue
+            except ReportingError as error:
+                # 共享预算耗尽或超时：已有结构有效的提纲时交给下方确定性兜底。
+                if error.code not in _PLANNER_MODEL_EXHAUSTED_CODES or last_proposal is None:
+                    raise
+                loguru_logger.bind(error_code=error.code, attempt=attempt).warning(
+                    "report_outline_model_path_exhausted"
+                )
+                break
             assert isinstance(output, ReportOutlineProposal)
             output = _repair_outline_proposal(
                 output,
                 report_type=envelope.report_type,
-                analysis_ids={item.analysis_id for item in detailed_plan.analyses},
+                analysis_ids=set(ordered_analysis_ids),
             )
+            last_proposal = output
+            if attempt >= 2:
+                # 遗漏 analysisId 已给过模型一次纠错机会，仍遗漏时确定性归入末章。
+                output = _assign_missing_outline_analyses(output, ordered_analysis_ids)
             try:
                 outline = freeze_outline(output, analyses=detailed_plan.analyses)
             except ValueError as error:
@@ -1052,6 +1066,14 @@ class RuntimePlanningMixin:
                 }
                 continue
             break
+        if outline is None and last_proposal is not None:
+            try:
+                outline = freeze_outline(
+                    _assign_missing_outline_analyses(last_proposal, ordered_analysis_ids),
+                    analyses=detailed_plan.analyses,
+                )
+            except ValueError:
+                outline = None
         if outline is None:
             raise ReportingError(
                 "report_outline_invalid",
@@ -1419,7 +1441,7 @@ class RuntimePlanningMixin:
             except ReportingError as error:
                 # 共享调用预算耗尽或结构化输出超时时，模型路径已无法产出结果；必须落到
                 # 下方确定性编译兜底，而不是绕过兜底让整条报表失败。
-                if error.code not in _SQL_MODEL_EXHAUSTED_CODES:
+                if error.code not in _PLANNER_MODEL_EXHAUSTED_CODES:
                     raise
                 loguru_logger.bind(error_code=error.code, attempt=attempt).warning(
                     "report_sql_model_path_exhausted"
@@ -1533,7 +1555,31 @@ def _repair_outline_proposal(
     return repaired
 
 
-_SQL_MODEL_EXHAUSTED_CODES = frozenset(
+def _assign_missing_outline_analyses(
+    proposal: ReportOutlineProposal,
+    ordered_analysis_ids: tuple[str, ...],
+) -> ReportOutlineProposal:
+    """把提纲遗漏的已注册 analysisId 按分析计划顺序归入末章（软告警兜底）。"""
+
+    referenced = {item for section in proposal.sections for item in section.analysis_ids}
+    missing = [item for item in ordered_analysis_ids if item not in referenced]
+    if not missing:
+        return proposal
+    payload = proposal.model_dump(mode="json", by_alias=True)
+    last = payload["sections"][-1]
+    payload["sections"][-1] = {**last, "analysisIds": [*last["analysisIds"], *missing]}
+    try:
+        assigned = ReportOutlineProposal.model_validate(payload)
+    except ValidationError:
+        return proposal
+    loguru_logger.bind(
+        missing_analysis_ids=missing,
+        section_title=last["title"],
+    ).warning("report_outline_missing_analyses_assigned")
+    return assigned
+
+
+_PLANNER_MODEL_EXHAUSTED_CODES = frozenset(
     {"report_phase_output_invalid", "report_structured_output_timeout"}
 )
 
@@ -2180,6 +2226,7 @@ def _data_understanding_result(
     else:
         raw_output = output
 
+    raw_output = _repair_data_understanding_tables(raw_output, snapshots)
     plan: DataUnderstandingPlan | None = None
     structural_issues: list[dict[str, Any]] = []
     try:
@@ -2202,6 +2249,61 @@ def _data_understanding_result(
         "issues": issues,
     }
     return None, raw_output, feedback
+
+
+def _repair_data_understanding_tables(
+    raw_output: Any,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> Any:
+    """确定性修复可唯一定位的表引用，省去模型往返（软告警）。
+
+    - table 大小写不同或 sourceId 写错，但 database.table 在全部输入 Schema 中
+      唯一时，改写为规范 sourceId 与 table；
+    - 同一 sourceId/table 被重复选择时保留首次出现的条目。
+    无法唯一定位的引用保持原样，由语义校验回灌模型纠错。
+    """
+
+    if not isinstance(raw_output, dict) or not isinstance(raw_output.get("tables"), list):
+        return raw_output
+    canonical: dict[str, list[tuple[str, str]]] = {}
+    for reference in _table_references(snapshots):
+        canonical.setdefault(reference.table.lower(), []).append(
+            (reference.source_id, reference.table)
+        )
+    available = {
+        (source_id, table.lower()) for matches in canonical.values() for source_id, table in matches
+    }
+    repairs: set[str] = set()
+    selected: set[tuple[str, str]] = set()
+    tables: list[Any] = []
+    for raw_table in raw_output["tables"]:
+        if not isinstance(raw_table, dict):
+            tables.append(raw_table)
+            continue
+        source_id = raw_table.get("sourceId")
+        table = raw_table.get("table")
+        if not isinstance(source_id, str) or not isinstance(table, str):
+            tables.append(raw_table)
+            continue
+        matches = canonical.get(table.lower(), [])
+        if (source_id, table.lower()) in available:
+            matches = [item for item in matches if item[0] == source_id]
+        if len(matches) == 1 and matches[0] != (source_id, table):
+            source_id, table = matches[0]
+            raw_table = {**raw_table, "sourceId": source_id, "table": table}
+            repairs.add("table_reference")
+        key = (source_id, table.lower())
+        if key in available and key in selected:
+            repairs.add("duplicate_table")
+            continue
+        selected.add(key)
+        tables.append(raw_table)
+    if not repairs:
+        return raw_output
+    loguru_logger.bind(repair_types=sorted(repairs)).warning(
+        "report_data_understanding_tables_repaired"
+    )
+    return {**raw_output, "tables": tables}
 
 
 def _structure_validation_issue(

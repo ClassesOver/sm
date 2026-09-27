@@ -4494,3 +4494,166 @@ def test_outline_proposal_repair_keeps_valid_proposal_identity() -> None:
         )
         is proposal
     )
+
+
+def _understanding_snapshots() -> tuple[reporting_contract.SourceSchemaSnapshot, ...]:
+    def snapshot(source_id: str, table_name: str) -> reporting_contract.SourceSchemaSnapshot:
+        return reporting_contract.SourceSchemaSnapshot(
+            source="metadata_api",
+            revision="revision-1",
+            schemaHash="a" * 64,
+            tables=(
+                reporting_contract.ModelTable(
+                    sourceId=source_id,
+                    database=source_id,
+                    name=table_name,
+                    columns=(
+                        reporting_contract.ModelColumn(
+                            name="data_date", dataType="DATE", nullable=False
+                        ),
+                        reporting_contract.ModelColumn(
+                            name="income", dataType="DECIMAL(18,2)", nullable=True
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    return (snapshot("rj", "income_budget"), snapshot("hr", "staff"))
+
+
+def _understanding_table(source_id: str, table: str) -> dict[str, str]:
+    return {
+        "sourceId": source_id,
+        "table": table,
+        "role": "收入",
+        "periodColumn": "data_date",
+        "periodGranularity": "date",
+    }
+
+
+def test_data_understanding_repairs_unique_table_reference_and_duplicates() -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    plan, _raw, feedback = reporting_planning._data_understanding_result(
+        {
+            "tables": [
+                _understanding_table("hr", "RJ.Income_Budget"),
+                _understanding_table("rj", "rj.income_budget"),
+                _understanding_table("hr", "hr.staff"),
+            ]
+        },
+        _understanding_snapshots(),
+    )
+
+    assert feedback is None
+    assert plan is not None
+    assert [(item.source_id, item.table) for item in plan.tables] == [
+        ("rj", "rj.income_budget"),
+        ("hr", "hr.staff"),
+    ]
+
+
+def test_data_understanding_keeps_unknown_table_for_model_correction() -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    plan, _raw, feedback = reporting_planning._data_understanding_result(
+        {"tables": [_understanding_table("rj", "rj.unknown_table")]},
+        _understanding_snapshots(),
+    )
+
+    assert plan is None
+    assert feedback is not None
+    assert feedback["issues"][0]["path"] == "tables[0].table"
+
+
+def _outline_runtime(monkeypatch, planner):
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    analyses = [
+        SimpleNamespace(
+            analysis_id=analysis_id,
+            management_question=question,
+            model_dump=lambda **_kwargs: {},
+        )
+        for analysis_id, question in (
+            ("analysis_001", "收入如何？"),
+            ("analysis_002", "成本如何？"),
+        )
+    ]
+    monkeypatch.setattr(
+        reporting_planning,
+        "DetailedAnalysisPlan",
+        SimpleNamespace(
+            model_validate=lambda _value: SimpleNamespace(analyses=analyses, warnings=())
+        ),
+    )
+    state: dict[str, Any] = {}
+    envelope = SimpleNamespace(
+        report_type="comprehensive",
+        domains=None,
+        report_goal="分析2025年运营",
+        period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
+    )
+    return state, SimpleNamespace(
+        _state=lambda _context: state,
+        _envelope=lambda _context: envelope,
+        _feedback=lambda _step_input: None,
+        _record_outline_feedback=lambda _state, _feedback: None,
+        _assert_state_safe=lambda _state: None,
+        _run_planner=planner,
+        _outline_agent=object(),
+    )
+
+
+def _outline_missing_cost() -> ReportOutlineProposal:
+    return ReportOutlineProposal.model_validate(
+        {
+            "reportType": "comprehensive",
+            "title": "年度运营分析",
+            "sections": [{"title": "收入", "analysisIds": ["analysis_001"]}],
+        }
+    )
+
+
+@pytest.mark.anyio
+async def test_outline_assigns_missing_analyses_after_one_correction(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    calls: list[dict[str, Any]] = []
+
+    async def planner(_agent, payload, *_args, **_kwargs):
+        calls.append(payload)
+        return _outline_missing_cost()
+
+    _state, runtime = _outline_runtime(monkeypatch, planner)
+
+    output = await reporting_planning.RuntimePlanningMixin.generate_outline(
+        runtime, SimpleNamespace(), RunContext(run_id="run-1", session_id="session-1")
+    )
+
+    assert len(calls) == 2
+    assert "correction" in calls[1]
+    assert output.content.sections[-1].analysis_ids == ("analysis_001", "analysis_002")
+
+
+@pytest.mark.anyio
+async def test_outline_budget_exhaustion_uses_last_valid_proposal(monkeypatch) -> None:
+    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
+
+    calls: list[int] = []
+
+    async def planner(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _outline_missing_cost()
+        raise ReportingError("report_phase_output_invalid", "结构化 Agent 业务调用已达到上限。")
+
+    _state, runtime = _outline_runtime(monkeypatch, planner)
+
+    output = await reporting_planning.RuntimePlanningMixin.generate_outline(
+        runtime, SimpleNamespace(), RunContext(run_id="run-1", session_id="session-1")
+    )
+
+    assert len(calls) == 2
+    assert output.content.sections[-1].analysis_ids == ("analysis_001", "analysis_002")
