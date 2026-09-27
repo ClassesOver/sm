@@ -951,3 +951,11 @@ def test_assemble_single_unmatched_chart_keeps_block_text_verbatim() -> None:
 
     assert "第一段。\n\n\n第二段。[[citation:citation_001]]\n\n![" in rendered.markdown
     assert all(item["code"] != "chart_placed_within_block" for item in rendered.auto_fixes)
+
+
+def test_assemble_keeps_leading_quantities_that_are_not_heading_numbers() -> None:
+    rendered = _render("### 2025 年门诊收入\n\n正文\n\n#### 30 天回款率", "### 3. 成本结构")
+
+    assert "### 1.1 2025 年门诊收入" in rendered.markdown
+    assert "#### 1.1.1 30 天回款率" in rendered.markdown
+    assert "### 1.2 成本结构" in rendered.markdown

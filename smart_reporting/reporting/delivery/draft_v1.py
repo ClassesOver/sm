@@ -17,7 +17,9 @@ _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
 )
 _ATX_HEADING = re.compile(r"^(?P<prefix>#{1,6}[ \t]+)(?P<title>.*?)(?P<closing>[ \t]+#+)?[ \t]*$")
-_MANUAL_HEADING_NUMBER = re.compile(r"^\d+(?:\.\d+)*(?:[.、．])?[ \t]+")
+# 模型手写的层级编号（1.2 / 3. / 3、）会与服务端编号重复，需剥离；但不带分隔符的
+# 纯整数是正文内容（"2025 年收入"、"30 天回款率"），不能当作编号删掉。
+_MANUAL_HEADING_NUMBER = re.compile(r"^(?:\d+(?:\.\d+)+[.、．]?|\d+[.、．])[ \t]+")
 _MODEL_PROTOCOL_MARKER = re.compile(
     r"(?<!\\)\[\[/?(?:citation|section|analysis|table):[^\]\r\n]*\]\]"
 )
