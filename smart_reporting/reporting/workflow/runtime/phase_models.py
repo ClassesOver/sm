@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
@@ -26,7 +27,31 @@ from ...models import ReportingError
 from ..checkpoint import FileIdentity, SectionClaimSubmission
 
 MAX_SECTION_BLOCK_MARKDOWN_CHARS = 8_000
-MAX_SECTION_CHART_COUNT = 3
+_DEFAULT_SECTION_CHART_COUNT = 3
+
+
+def _section_chart_count_from_environment() -> int:
+    """每章图表上限允许用环境变量在进程启动时覆盖；非法值软告警并回退默认。"""
+
+    raw = os.environ.get("AGENT_REPORT_MAX_SECTION_CHART_COUNT", "").strip()
+    if not raw:
+        return _DEFAULT_SECTION_CHART_COUNT
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= 100:
+        logger.warning(
+            "AGENT_REPORT_MAX_SECTION_CHART_COUNT={} 无效，每章图表上限回退默认值 {}",
+            raw,
+            _DEFAULT_SECTION_CHART_COUNT,
+        )
+        return _DEFAULT_SECTION_CHART_COUNT
+    return value
+
+
+# 在模块导入时解析：charts 字段的 max_length 与指令文案都绑定该常量。
+MAX_SECTION_CHART_COUNT = _section_chart_count_from_environment()
 _CJK_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _SUBORDINATE_HEADING_RE = re.compile(r"^(?P<indent> {0,3})#{5,6}(?P<spacing>[ \t]+)")
 _RUNON_HEADING_BREAK_RE = re.compile(r"[。！？；：]")

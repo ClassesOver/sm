@@ -44,6 +44,7 @@ from smart_reporting.reporting.workflow.runtime.models import (
     DataUnderstandingPlan,
 )
 from smart_reporting.reporting.workflow.runtime.phase_models import (
+    MAX_SECTION_CHART_COUNT,
     SectionBlockContent,
     SectionPlanOutput,
     VisualizationPlanDraft,
@@ -378,7 +379,7 @@ def test_visualization_generator_explains_renderer_selection_for_each_mode() -> 
     assert "dataBindings" in instructions
     assert "dataDescriptors" in instructions
     assert "不得自行生成 factPath、dataPath 或 fields" in instructions
-    assert "每章最多生成 3 张图" in instructions
+    assert f"每章最多生成 {MAX_SECTION_CHART_COUNT} 张图" in instructions
     assert "标签不重叠" in instructions
     assert "禁止无标记混用" in instructions
     assert "不能仅凭相关变化命名为确定的因果驱动" in instructions

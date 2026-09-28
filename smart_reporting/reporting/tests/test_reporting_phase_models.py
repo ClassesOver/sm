@@ -477,3 +477,22 @@ def test_section_block_content_keeps_malformed_protocol_marker_strict() -> None:
 def test_file_identity_keeps_existing_safe_path_contract() -> None:
     identity = FileIdentity(path="report/evidence.json", size=1, sha256="a" * 64)
     assert PurePosixPath(identity.path).is_absolute() is False
+
+
+def test_section_chart_count_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    from smart_reporting.reporting.workflow.runtime.phase_models import (
+        _section_chart_count_from_environment,
+    )
+
+    monkeypatch.setenv("AGENT_REPORT_MAX_SECTION_CHART_COUNT", "4")
+    assert _section_chart_count_from_environment() == 4
+    monkeypatch.setenv("AGENT_REPORT_MAX_SECTION_CHART_COUNT", "")
+    assert _section_chart_count_from_environment() == 3
+    monkeypatch.setenv("AGENT_REPORT_MAX_SECTION_CHART_COUNT", "abc")
+    assert _section_chart_count_from_environment() == 3
+    monkeypatch.setenv("AGENT_REPORT_MAX_SECTION_CHART_COUNT", "0")
+    assert _section_chart_count_from_environment() == 3
+    monkeypatch.setenv("AGENT_REPORT_MAX_SECTION_CHART_COUNT", "101")
+    assert _section_chart_count_from_environment() == 3
+    monkeypatch.delenv("AGENT_REPORT_MAX_SECTION_CHART_COUNT")
+    assert _section_chart_count_from_environment() == 3
