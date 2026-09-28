@@ -9,6 +9,9 @@ def requires_workspace_capability(path: str, *, has_thread: bool, has_capability
     normalized = str(path or "").rstrip("/") or "/"
     if normalized.startswith("/reports/v1/download/"):
         return False
+    # Process 由 AgentOS 原生认证保护，不消费 Odoo 的工作区身份。
+    if normalized.startswith("/extensions/dingyi/process/v1/"):
+        return False
     protected_resource = normalized.startswith(("/workspace", "/quality-warnings"))
     # 通用 AgentOS Console 只提供原生 user_id/session_id，不能生成 Odoo capability。
     # 两个扩展头均缺失时允许普通 run；访问受保护资源或任一扩展头已经出现时，

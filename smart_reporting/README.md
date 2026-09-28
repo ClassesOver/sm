@@ -28,6 +28,11 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 `odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
 `user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
 
+中台进度接口 `/extensions/dingyi/process/v1/*` 沿用 AgentOS 原生认证，不需要
+Odoo Workspace capability，也不新增必填配置。Process 查询限定到
+`smart-reporting` owner，用户的会话访问权限由中台代理校验。
+未配置 AgentOS 认证时，进度接口也沿用服务默认的开放访问模式。
+
 ## Reporting MCP
 
 AgentOS 在同一服务内以 Streamable HTTP 暴露 `/mcp`，并关闭 Agno 内置通用工具，只提供

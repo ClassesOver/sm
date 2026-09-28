@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from dingyi_agno.process import ProcessJournal, ProcessPublisher, create_process_router
 from dingyi_agno.process.core import now
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Mount
@@ -78,20 +78,13 @@ class DingyiProcessAdapter:
         return self._router
 
     @staticmethod
-    async def _authorize(request: Any, resource: dict[str, Any] | None) -> None:
-        """只接受中间件已验签的 Odoo capability，并把访问限定在其 thread 内。
+    async def _authorize(request: Any, resource: dict[str, Any] | None) -> str:
+        """沿用外层 AgentOS 认证，将中台进度查询限定到报表服务。
 
-        过程 operation 的 sessionId 即报告 thread；未携带 capability 的请求不能按
-        猜测或泄露的会话/operation id 读取报告标题、步骤摘要和事件流。
+        中台使用服务级 Bearer，并在代理层校验用户的会话访问权限。
+        Process SDK 根据返回的 owner 过滤列表并校验快照及事件流归属。
         """
-
-        capability = getattr(getattr(request, "state", None), "capability", None)
-        thread = getattr(capability, "thread", None)
-        if not isinstance(thread, str) or not thread:
-            raise HTTPException(status_code=401)
-        if resource is not None and resource.get("sessionId") not in (None, thread):
-            raise HTTPException(status_code=404)
-        return None
+        return OWNER
 
     async def _snapshot(self, operation_id: str) -> dict[str, Any] | None:
         try:

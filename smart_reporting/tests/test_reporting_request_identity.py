@@ -169,6 +169,15 @@ def test_all_report_download_formats_do_not_require_workspace_capability(path: s
     assert requires_workspace_capability(path, has_thread=False, has_capability=False) is False
 
 
+@pytest.mark.parametrize("has_thread,has_capability", [(False, False), (True, False), (False, True), (True, True)])
+def test_process_uses_agentos_auth_instead_of_workspace_capability(has_thread, has_capability):
+    assert requires_workspace_capability(
+        "/extensions/dingyi/process/v1/capabilities",
+        has_thread=has_thread,
+        has_capability=has_capability,
+    ) is False
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("headers", "status_code", "error"),

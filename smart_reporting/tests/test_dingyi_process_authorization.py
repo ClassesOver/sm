@@ -1,85 +1,65 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-from fastapi import FastAPI, Request
-from httpx import ASGITransport, AsyncClient
+from agno.agent import Agent
+from agno.os import AgentOS
+from agno.os.settings import AgnoAPISettings
+from dingyi_agno.process import ProcessJournal, ProcessPublisher
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 
-from smart_reporting.integrations.dingyi_process import DingyiProcessAdapter
+from smart_reporting.integrations.dingyi_process import DingyiProcessAdapter, mount_process_routes
 
-_OPERATION = {
-    "operationId": "op-1",
-    "sessionId": "thread-a",
-    "runId": "run-1",
-    "title": "生成报告",
-    "execution": "foreground",
-    "status": "running",
-    "component": {"type": "agent", "id": "smart-reporting"},
-    "updatedAt": "2026-09-26T00:00:00.000Z",
-}
+PREFIX = "/extensions/dingyi/process/v1"
 
 
-class _Journal:
-    replay_retention_seconds = 60
-
-    def snapshot(self, operation_id: str):
-        if operation_id != "op-1":
-            raise KeyError(operation_id)
-        return {
-            "protocol": "dingyi.process.v1",
-            "sequence": 1,
-            "operation": _OPERATION,
-            "activities": [],
-        }
-
-    def list_operations(self, session_id, *, owner, run_id, limit, cursor):
-        items = [_OPERATION] if session_id == "thread-a" else []
-        return {"items": items, "nextCursor": None}
-
-    def owner(self, operation_id: str):
-        return "smart-reporting"
-
-
-def _application(thread: str | None) -> FastAPI:
-    adapter = DingyiProcessAdapter(engine=None)
-    adapter._journal = _Journal()  # type: ignore[assignment]
-    application = FastAPI()
-
-    @application.middleware("http")
-    async def verified_capability(request: Request, call_next):
-        # 生产中间件在携带 X-Workspace-Capability 时写入验签结果。
-        if thread is not None:
-            request.state.capability = SimpleNamespace(thread=thread)
-        return await call_next(request)
-
-    application.include_router(adapter.router)
-    return application
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.delenv("JWT_VERIFICATION_KEY", raising=False)
+    monkeypatch.delenv("JWT_JWKS_FILE", raising=False)
+    engine = create_engine(f"sqlite:///{tmp_path / 'process.db'}")
+    journal = ProcessJournal(engine=engine)
+    for owner, operation_id in (("smart-reporting", "report-op"), ("other-service", "other-op")):
+        ProcessPublisher(
+            journal, owner=owner, session_id="thread-a", run_id="run-1",
+            component={"type": "agent", "id": "smart-reporting"},
+            title="生成报告", operation_id=operation_id, execution="foreground",
+        ).start()
+    base = FastAPI()
+    mount_process_routes(base, DingyiProcessAdapter(engine))
+    agent_os = AgentOS(
+        agents=[Agent(id="smart-reporting")], base_app=base,
+        on_route_conflict="preserve_base_app", telemetry=False,
+        settings=AgnoAPISettings(os_security_key="console-test-key"),
+    )
+    try:
+        with TestClient(agent_os.get_app()) as test_client:
+            yield test_client
+    finally:
+        engine.dispose()
 
 
-async def _get(application: FastAPI, path: str):
-    async with AsyncClient(
-        transport=ASGITransport(app=application), base_url="http://test"
-    ) as client:
-        return await client.get(f"/extensions/dingyi/process/v1{path}")
+@pytest.mark.parametrize("path", ["/capabilities", "/sessions/thread-a/operations", "/operations/report-op"])
+def test_process_accepts_agentos_bearer_without_workspace_capability(client, path):
+    response = client.get(PREFIX + path, headers={"Authorization": "Bearer console-test-key"})
+
+    assert response.status_code == 200
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    "path", ["/sessions/thread-a/operations", "/operations/op-1", "/capabilities"]
-)
-async def test_process_extension_rejects_requests_without_verified_capability(path: str):
-    response = await _get(_application(None), path)
+@pytest.mark.parametrize("authorization", [None, "Bearer incorrect"])
+@pytest.mark.parametrize("path", ["/capabilities", "/sessions/thread-a/operations", "/operations/report-op", "/operations/report-op/events"])
+def test_process_rejects_missing_or_invalid_agentos_bearer(client, path, authorization):
+    headers = {"Authorization": authorization} if authorization else {}
 
-    assert response.status_code == 401
+    assert client.get(PREFIX + path, headers=headers).status_code == 401
 
 
-@pytest.mark.anyio
-async def test_process_extension_scopes_access_to_capability_thread():
-    own = _application("thread-a")
-    other = _application("thread-b")
+def test_process_limits_service_bearer_to_reporting_owner(client):
+    headers = {"Authorization": "Bearer console-test-key"}
+    response = client.get(PREFIX + "/sessions/thread-a/operations", headers=headers)
 
-    assert (await _get(own, "/sessions/thread-a/operations")).status_code == 200
-    assert (await _get(own, "/operations/op-1")).json()["operation"]["operationId"] == "op-1"
-    assert (await _get(other, "/sessions/thread-a/operations")).status_code == 404
-    assert (await _get(other, "/operations/op-1")).status_code == 404
+    assert response.status_code == 200
+    assert [item["operationId"] for item in response.json()["items"]] == ["report-op"]
+    assert client.get(PREFIX + "/operations/other-op", headers=headers).status_code == 404
+    assert client.get(PREFIX + "/sessions/thread-b/operations", headers=headers).json()["items"] == []
