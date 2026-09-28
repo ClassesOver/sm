@@ -10,6 +10,7 @@ from agno.os.config import MCPServerConfig
 from agno.workflow import Workflow
 from fastapi import FastAPI
 from fastmcp.server.auth import AuthProvider
+from loguru import logger
 
 from ..async_utils import complete_cleanup
 from ..quality_warnings.service import QualityWarningService
@@ -40,6 +41,11 @@ def create_agentos_app(
 ) -> tuple[AgentOS, FastAPI]:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
+        if context.database is not None:
+            # 在接收请求前完成 Agno 原生建表；新库不能把初始化留给并发报表步骤。
+            # 结构不兼容或建表失败时直接终止启动，避免报告执行后才发现历史未保存。
+            await context.database.async_db._create_all_tables()
+            logger.info("agent_database_initialized")
         tasks = [asyncio.create_task(context.workspace_service.run_quarantine_cleanup_loop())]
         reconcile = getattr(context.workspace_service, "run_provider_reconcile_loop", None)
         if callable(reconcile):

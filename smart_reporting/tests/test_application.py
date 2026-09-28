@@ -1,7 +1,9 @@
 import asyncio
 import json
+import os
 from io import BytesIO
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, UploadFile
@@ -9,6 +11,7 @@ from loguru import logger as loguru_logger
 from starlette.requests import Request
 
 from smart_reporting.runtime.application import ApplicationContext, create_agentos_app
+from smart_reporting.runtime.database import SerializedAsyncPostgresDb
 from smart_reporting.runtime.settings import AgentSettings
 
 
@@ -127,6 +130,109 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
     create_agentos_app(context, FastAPI())
 
     assert captured["db"] is database.async_db
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("initialization_fails", [False, True])
+async def test_application_initializes_database_before_serving(monkeypatch, initialization_fails):
+    captured = {}
+    initialized = False
+    workspace = FakeWorkspace("database-startup")
+
+    class FakeDatabase:
+        async def _create_all_tables(self):
+            nonlocal initialized
+            assert not workspace.cleanup_started.is_set()
+            if initialization_fails:
+                raise RuntimeError("database initialization failed")
+            initialized = True
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            captured.update(values)
+
+        def get_app(self):
+            return captured["base_app"]
+
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
+    context = ApplicationContext(
+        AgentSettings.from_environment({}, load_env_file=False),
+        workspace,
+        FakeAgent(),
+        FakeWorkflow(),
+        database=SimpleNamespace(async_db=FakeDatabase()),
+    )
+    create_agentos_app(context, FastAPI())
+
+    if initialization_fails:
+        with pytest.raises(RuntimeError, match="database initialization failed"):
+            async with captured["lifespan"](FastAPI()):
+                pass
+        assert not workspace.cleanup_started.is_set()
+    else:
+        async with captured["lifespan"](FastAPI()):
+            assert initialized
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_application_new_database_persists_sessions_and_runs(monkeypatch):
+    from agno.db.base import SessionType
+    from agno.run.agent import RunOutput
+    from agno.session import AgentSession
+    from sqlalchemy import text
+
+    url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 启动集成测试。")
+    schema = f"test_agno_startup_{uuid4().hex}"
+    database = SerializedAsyncPostgresDb(db_url=url, db_schema=schema)
+    captured = {}
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            captured.update(values)
+
+        def get_app(self):
+            return captured["base_app"]
+
+    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
+    context = ApplicationContext(
+        AgentSettings.from_environment({}, load_env_file=False),
+        FakeWorkspace("new-database"),
+        FakeAgent(),
+        FakeWorkflow(),
+        database=SimpleNamespace(async_db=database),
+    )
+    create_agentos_app(context, FastAPI())
+    try:
+        async with captured["lifespan"](FastAPI()):
+            assert await database.table_exists(database.session_table_name)
+            assert await database.table_exists(database.runs_table_name)
+            session = AgentSession(
+                session_id="startup-session",
+                agent_id="startup-agent",
+                created_at=1,
+                updated_at=1,
+            )
+            assert await database.upsert_session(session) is not None
+            await database.upsert_run(
+                RunOutput(
+                    run_id="startup-run",
+                    agent_id=session.agent_id,
+                    session_id=session.session_id,
+                    content="新库持久化验证",
+                ),
+                session_id=session.session_id,
+                run_index=0,
+            )
+            stored = await database.get_session(session.session_id, SessionType.AGENT)
+            assert stored is not None
+            assert stored.runs[0].content == "新库持久化验证"
+    finally:
+        async with database.db_engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await database.close()
 
 
 @pytest.mark.anyio
