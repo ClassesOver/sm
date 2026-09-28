@@ -699,6 +699,36 @@ async def test_schema_correction_upgrades_data_understanding_thinking_budget() -
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("blocks, expected", [(2, 4096), (3, 6144), (6, 8192)])
+async def test_whole_section_schema_correction_preserves_dynamic_request_budget(blocks, expected):
+    executor = ReportingStructuredOutputExecutor(_json_object_agent(), idle_timeout_seconds=5)
+    responses = iter([{}, {"value": 7}])
+    observed_budgets = []
+    model = ReportingPhaseOpenAIChat(id="test-model", api_key="test", max_tokens=32768)
+
+    async def execute_mode(*args, **kwargs):
+        request_model = model._phase_request_model([])
+        observed_budgets.append(request_model.extra_body["thinking_budget"])
+        assert request_model.max_tokens == 32768
+        return executor.agent, Mock(content=next(responses))
+
+    executor._execute_mode = execute_mode
+    result = await executor.execute(
+        "section instruction",
+        routing_context=None,
+        session_id="section-budget",
+        user_id="user-1",
+        thinking_request=ThinkingRequest(
+            operation="section_generation",
+            section_block_count=blocks,
+        ),
+    )
+    assert observed_budgets == [expected, expected]
+    assert result.content.value == 7
+    assert model.extra_body is None
+
+
+@pytest.mark.anyio
 async def test_schema_transport_fallback_keeps_initial_thinking_budget() -> None:
     executor = ReportingStructuredOutputExecutor(_schema_agent(), idle_timeout_seconds=5)
     responses = iter(

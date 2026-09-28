@@ -91,6 +91,7 @@ from .phase_models import (
     RenderSectionDecision,
     RenderSectionPlan,
     SectionBlockContent,
+    SectionContent,
     SectionDecision,
     SectionEvidenceBundle,
     SectionPlanOutput,
@@ -720,7 +721,13 @@ def _section_stage_agent(
     else:
         instructions = [
             "只返回满足 output_schema 的 JSON 对象，不得把整个响应写成 Markdown 或代码围栏。",
-            "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。",
+            (
+                "一次生成 sectionPlan 中全部 block 的完整简体中文 Markdown 正文，"
+                "返回 blocks 数组，每项仅含 blockId 和 markdown。blockId 必须与规划一一对应，"
+                "不得遗漏、重复或新增；按规划顺序组织全文，统筹标题层级，避免重复。"
+                if stage == "content"
+                else "只在 JSON 的 markdown 字段中撰写当前 block 的完整简体中文 Markdown 正文，不得生成其他 block。"
+            ),
             "不得输出 H1/H2、图片语法、内部 ID、协议标记或无证据数字。",
             (
                 "可使用 H3/H4、段落、列表和有报告意义的 Markdown 管道表；"
@@ -809,7 +816,9 @@ async def _run_section_stage(
     return result.content
 
 
-def _section_stage_thinking_request(request: ThinkingRequest, stage: str) -> ThinkingRequest:
+def _section_stage_thinking_request(
+    request: ThinkingRequest, stage: str, *, block_count: int = 1
+) -> ThinkingRequest:
     """规划独立推理；正文只在自己的结构纠错中升级。"""
 
     is_plan = stage == "plan"
@@ -821,6 +830,7 @@ def _section_stage_thinking_request(request: ThinkingRequest, stage: str) -> Thi
         configured_budget_cap=request.configured_budget_cap,
         thinking_enabled=request.thinking_enabled,
         reasoning_effort=request.reasoning_effort,
+        section_block_count=block_count if stage == "content" else 1,
     )
 
 
@@ -1133,8 +1143,9 @@ async def _generate_section_in_blocks(
     run_context: RunContext,
     thinking_request: ThinkingRequest,
     recovery: Mapping[str, Any] | None = None,
+    whole_section: bool = False,
 ) -> SectionDecision:
-    """规划后串行生成正文块，限制单次模型输出的故障半径。"""
+    """复用章节规划，按开关整章生成或沿用原有逐块生成。"""
 
     plan_payload = {
         **instruction_payload,
@@ -1259,6 +1270,18 @@ async def _generate_section_in_blocks(
         ).warning("report_section_plan_correction_requested")
     else:
         raise AssertionError("章节规划纠错循环未终止。")
+
+    if whole_section:
+        return await _generate_whole_section_content(
+            agent,
+            instruction_payload,
+            evidence,
+            work_item,
+            decision,
+            scope=scope,
+            run_context=run_context,
+            thinking_request=thinking_request,
+        )
 
     claims_by_id = {item.claim_id: item for item in decision.claims}
     files_by_path = {item.identity.path: item for item in evidence.files}
@@ -1407,6 +1430,99 @@ async def _generate_section_in_blocks(
         sectionCode=decision.section_code,
         blocks=tuple(blocks),
         claims=decision.claims,
+    )
+
+
+async def _generate_whole_section_content(
+    agent: Any,
+    instruction_payload: Mapping[str, Any],
+    evidence: SectionEvidenceBundle,
+    work_item: SectionWorkItem,
+    plan: RenderSectionPlan,
+    *,
+    scope: TaskExecutionScope,
+    run_context: RunContext,
+    thinking_request: ThinkingRequest,
+) -> RenderSectionDecision:
+    """一次生成整章正文；引用与顺序始终由已校验规划决定。"""
+
+    payload = {
+        "phase": "section",
+        "generationStage": "content",
+        "reportGoal": instruction_payload.get("reportGoal", ""),
+        "sectionGoal": instruction_payload.get("sectionGoal", {}),
+        "sectionPlan": plan.model_dump(mode="json", by_alias=True),
+        "facts": [item.model_dump(mode="json", by_alias=True) for item in work_item.evidence],
+        "metricDefinitions": [
+            item.model_dump(mode="json", by_alias=True) for item in work_item.metric_definitions
+        ],
+        "managementQuestions": [
+            item.model_dump(mode="json", by_alias=True)
+            for item in work_item.management_question_catalog
+        ],
+        "citations": [item.model_dump(mode="json", by_alias=True) for item in work_item.citations],
+        "charts": [item.model_dump(mode="json", by_alias=True) for item in work_item.charts],
+        "markdownRequirements": list(work_item.markdown_requirements),
+        "requiredAction": (
+            "一次返回规划中所有 block 的 blockId 和完整 markdown，围绕各自 objective 与 claims"
+            "组织整章正文。各 block 仅解读其 claim 绑定的图表；引用由服务端绑定，不要输出引用字段。"
+            "每个数字必须来自冻结事实；数据质量问题优先说明，业务归因必须有证据或声明不确定性。"
+        ),
+    }
+    payload["evidence"] = _project_section_evidence_files(
+        agent,
+        tuple({item.identity.path: item for item in evidence.files}.values()),
+        fact_summaries=tuple(dict.fromkeys(evidence.fact_summaries)),
+        relevance_values=tuple(payload.values()),
+        base_payload=payload,
+        run_context=run_context,
+    )
+    content = await _run_section_stage(
+        agent,
+        SectionContent,
+        "content",
+        payload,
+        scope=scope,
+        run_context=run_context,
+        thinking_request=_section_stage_thinking_request(
+            thinking_request, "content", block_count=len(plan.blocks)
+        ),
+        section_code=work_item.section_code,
+    )
+    if not isinstance(content, SectionContent):
+        raise ReportingError("report_phase_output_invalid", "整章正文 Agent 未返回声明的结果。")
+    content_by_id = {item.block_id: item for item in content.blocks}
+    expected_ids = {item.block_id for item in plan.blocks}
+    if len(content_by_id) != len(content.blocks) or set(content_by_id) != expected_ids:
+        raise ReportingError(
+            "report_section_content_blocks_invalid",
+            "整章正文 blockId 必须与规划一一对应，不得遗漏、重复或新增。",
+            details={
+                "expectedBlockIds": [item.block_id for item in plan.blocks],
+                "actualBlockIds": [item.block_id for item in content.blocks],
+            },
+        )
+    claims_by_id = {item.claim_id: item for item in plan.claims}
+    blocks: list[ReportDraftBlock] = []
+    for block_plan in plan.blocks:
+        claims = tuple(claims_by_id[item] for item in block_plan.claim_ids)
+        block = ReportDraftBlock(
+            blockId=block_plan.block_id,
+            markdown=content_by_id[block_plan.block_id].markdown,
+            claimIds=block_plan.claim_ids,
+            citationIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.citation_ids)),
+            chartIds=tuple(dict.fromkeys(ref for claim in claims for ref in claim.chart_ids)),
+        )
+        try:
+            validate_report_draft_blocks((*blocks, block), expected_section_title=work_item.title)
+        except ReportingError as error:
+            promoted = _promoted_heading_block(error, block, blocks, work_item)
+            if promoted is None:
+                raise
+            block = promoted
+        blocks.append(block)
+    return RenderSectionDecision(
+        sectionCode=plan.section_code, blocks=tuple(blocks), claims=plan.claims
     )
 
 
@@ -1938,6 +2054,7 @@ class RuntimeSectionsMixin:
                             instruction_payload,
                             evidence,
                             work_item,
+                            whole_section=self.section_whole_generation,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(
@@ -1976,6 +2093,7 @@ class RuntimeSectionsMixin:
                             instruction_payload,
                             validated_evidence,
                             work_item,
+                            whole_section=self.section_whole_generation,
                             scope=invocation.scope,
                             run_context=task_context,
                             thinking_request=ThinkingRequest(

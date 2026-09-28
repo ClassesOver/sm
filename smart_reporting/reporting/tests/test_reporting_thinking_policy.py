@@ -28,6 +28,50 @@ def test_thinking_policy_api_is_available() -> None:
     assert hasattr(model_routing, "log_thinking_selection")
 
 
+@pytest.mark.parametrize(
+    "blocks, cap, expected",
+    [
+        (1, 8192, 2048),
+        (2, 8192, 4096),
+        (3, 8192, 6144),
+        (4, 8192, 8192),
+        (12, 8192, 8192),
+        (6, 16384, 12288),
+        (3, 1024, 1024),
+    ],
+)
+@pytest.mark.parametrize("attempt", [0, 1, 2])
+def test_section_thinking_budget_scales_with_blocks(blocks, cap, expected, attempt):
+    decision = model_policy.select_reporting_thinking(
+        model_policy.ThinkingRequest(
+            operation="section_generation",
+            section_block_count=blocks,
+            configured_budget_cap=cap,
+            attempt=attempt,
+            failure_kind="schema_failure" if attempt else None,
+        )
+    )
+    assert decision.thinking_budget == expected
+
+
+def test_section_block_budget_respects_disabled_thinking():
+    decision = model_policy.select_reporting_thinking(
+        model_policy.ThinkingRequest(
+            operation="section_generation",
+            section_block_count=6,
+            thinking_enabled=False,
+        )
+    )
+    assert decision.thinking_budget == 0
+    assert decision.enabled is False
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.5])
+def test_section_block_count_must_be_positive_integer(count):
+    with pytest.raises(ValueError, match="section_block_count"):
+        model_policy.ThinkingRequest(operation="section_generation", section_block_count=count)
+
+
 ThinkingRequest = getattr(model_policy, "ThinkingRequest", None)
 ThinkingDecision = getattr(model_policy, "ThinkingDecision", None)
 bind_reporting_thinking = getattr(model_policy, "bind_reporting_thinking", None)

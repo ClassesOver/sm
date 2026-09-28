@@ -514,6 +514,7 @@ class _ReportWorkflowRuntimeBase:
         analysis_concurrency: int = 1,
         section_concurrency: int = 1,
         reporting_execution_mode: str = "sequential",
+        section_whole_generation: bool = True,
         visualization_section_deadline_seconds: int = VISUALIZATION_SECTION_DEADLINE_SECONDS,
         visualization_total_deadline_seconds: int = VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     ):
@@ -579,6 +580,7 @@ class _ReportWorkflowRuntimeBase:
         self.visualization_section_deadline_seconds = visualization_section_deadline_seconds
         self.visualization_total_deadline_seconds = visualization_total_deadline_seconds
         self.reporting_execution_mode = reporting_execution_mode
+        self.section_whole_generation = section_whole_generation
         self._durable_command_lock = asyncio.Lock()
         self._checkpoint_persist_lock = asyncio.Lock()
         self.datasets = ReportDatasetStore(workspace_service)

@@ -300,6 +300,7 @@ class AgentSettings:
     report_analysis_concurrency: int
     report_section_concurrency: int
     reporting_execution_mode: str
+    report_section_whole_generation: bool = True
     # 单个可视化章节的墙钟截止（秒）：超时后不再开启新的修复或 fresh attempt，
     # 直接零图降级，保证最难主题也能在报告总时限内交付。
     report_visualization_section_deadline_seconds: int = 900
@@ -484,6 +485,9 @@ class AgentSettings:
             report_output_token_reserve=report_output_token_reserve,
             report_analysis_concurrency=report_analysis_concurrency,
             report_section_concurrency=report_section_concurrency,
+            report_section_whole_generation=_flag(
+                values.get("AGENT_REPORT_SECTION_WHOLE_GENERATION"), default=True
+            ),
             reporting_execution_mode=reporting_execution_mode,
             report_editor_export_timeout_seconds=_positive_int(
                 values,

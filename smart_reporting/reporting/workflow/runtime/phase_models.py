@@ -492,6 +492,14 @@ class SectionBlockContent(StrictModel):
         return markdown
 
 
+class SectionContentBlock(SectionBlockContent):
+    block_id: str = Field(alias="blockId", min_length=1, max_length=128)
+
+
+class SectionContent(StrictModel):
+    blocks: tuple[SectionContentBlock, ...] = Field(min_length=1, max_length=12)
+
+
 class RenderSectionDecision(StrictModel):
     kind: Literal["render"] = "render"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
@@ -534,6 +542,8 @@ __all__ = [
     "RenderSectionPlan",
     "SectionBlockContent",
     "SectionBlockPlan",
+    "SectionContent",
+    "SectionContentBlock",
     "SectionDecision",
     "SectionDecisionAdapter",
     "SectionDecisionOutput",

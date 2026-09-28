@@ -64,6 +64,7 @@ from smart_reporting.reporting.workflow.runtime.phase_models import (
     RenderSectionDecision,
     RenderSectionPlan,
     SectionBlockContent,
+    SectionContent,
     SectionEvidenceBundle,
     SectionEvidenceFile,
     SectionPlanOutput,
@@ -1303,6 +1304,134 @@ def test_section_plan_patch_with_non_string_claim_id_stays_validation_error() ->
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("whole_section", [False, True])
+@pytest.mark.parametrize("recovery", [None, {"code": "report_phase_output_invalid"}])
+async def test_section_generation_switch_preserves_blocks_and_references(
+    monkeypatch, whole_section, recovery
+):
+    stages = []
+    plan = {
+        "sectionCode": "section_001",
+        "blocks": [
+            {"blockId": f"block_{index}", "objective": "收入", "claimIds": [f"claim_{index}"]}
+            for index in (1, 2)
+        ],
+        "claims": [_plan_claim(f"claim_{index}") for index in (1, 2)],
+    }
+
+    async def fake_stage(agent, schema, stage, payload, **kwargs):
+        stages.append(stage)
+        decision = select_reporting_thinking(kwargs["thinking_request"])
+        assert decision.thinking_budget == (4096 if stage == "content" else 2048)
+        if stage == "plan":
+            return SectionPlanOutput.model_validate({"kind": "render", **plan})
+        if whole_section:
+            assert stage == "content"
+            assert payload["sectionPlan"]["blocks"] == plan["blocks"]
+            assert len(payload["evidence"]["files"]) == 1
+            return schema.model_validate(
+                {
+                    "blocks": [
+                        {"blockId": f"block_{index}", "markdown": "收入为100元。"}
+                        for index in (2, 1)
+                    ]
+                }
+            )
+        return SectionBlockContent(markdown="收入为100元。")
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    evidence = SectionEvidenceBundle(
+        sectionCode="section_001",
+        files=(
+            SectionEvidenceFile(
+                identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'
+            ),
+        ),
+        factSummaries=("收入为100元",),
+    )
+    result = await reporting_sections._generate_section_in_blocks(
+        object(),
+        {"reportGoal": "分析收入", "sectionGoal": {}},
+        evidence,
+        work_item,
+        scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+        run_context=_context(),
+        thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        whole_section=whole_section,
+        recovery=recovery,
+    )
+    assert stages == (["plan", "content"] if whole_section else ["plan", "block-1", "block-2"])
+    assert [block.block_id for block in result.blocks] == ["block_1", "block_2"]
+    assert [block.claim_ids for block in result.blocks] == [("claim_1",), ("claim_2",)]
+    assert all(block.citation_ids == ("citation_001",) for block in result.blocks)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "block_ids",
+    [
+        ["block_1"],
+        ["block_1", "block_1"],
+        ["block_1", "block_2", "block_3"],
+    ],
+)
+async def test_whole_section_rejects_missing_duplicate_or_extra_blocks(monkeypatch, block_ids):
+    async def fake_stage(*args, **kwargs):
+        return SectionContent.model_validate(
+            {
+                "blocks": [
+                    {"blockId": block_id, "markdown": "收入为100元。"} for block_id in block_ids
+                ]
+            }
+        )
+
+    monkeypatch.setattr(reporting_sections, "_run_section_stage", fake_stage)
+    work_item = _revenue_work_item()
+    plan = RenderSectionPlan.model_validate(
+        {
+            "sectionCode": "section_001",
+            "blocks": [
+                {"blockId": f"block_{index}", "objective": "收入", "claimIds": ["claim_1"]}
+                for index in (1, 2)
+            ],
+            "claims": [_plan_claim("claim_1")],
+        }
+    )
+    with pytest.raises(ReportingError) as captured:
+        await reporting_sections._generate_whole_section_content(
+            object(),
+            {},
+            SectionEvidenceBundle(
+                sectionCode="section_001",
+                files=(
+                    SectionEvidenceFile(
+                        identity=work_item.evidence[0].evidence_files[0], content='{"收入":100}'
+                    ),
+                ),
+                factSummaries=("收入为100元",),
+            ),
+            work_item,
+            plan,
+            scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
+            run_context=_context(),
+            thinking_request=ThinkingRequest(operation="section_generation", complexity="standard"),
+        )
+    assert captured.value.code == "report_section_content_blocks_invalid"
+
+
+def test_whole_section_stage_requests_all_blocks():
+    stage = reporting_sections._section_stage_agent(
+        Agent(model=ReportingPhaseOpenAIChat(id="test", api_key="test")),
+        SectionContent,
+        "content",
+    )
+    instructions = "\n".join(stage.instructions)
+    assert "一次生成 sectionPlan 中全部 block" in instructions
+    assert "不得生成其他 block" not in instructions
+
+
+@pytest.mark.anyio
 async def test_first_block_sibling_orphan_h4_headings_are_promoted_together(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1904,8 +2033,10 @@ async def test_degraded_section_generation_only_accepts_render_plan(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("whole_section", [False, True])
 async def test_section_recovery_uses_one_bounded_thinking_upgrade(
     monkeypatch: pytest.MonkeyPatch,
+    whole_section: bool,
 ) -> None:
     work_item = _section_work_item()
     evidence = SectionEvidenceBundle(
@@ -1947,6 +2078,7 @@ async def test_section_recovery_uses_one_bounded_thinking_upgrade(
         scope=TaskExecutionScope("task-1", "user-1", "thread-1", "sandbox-1", "section"),
         run_context=_context(),
         recovery={"code": "report_phase_output_invalid"},
+        whole_section=whole_section,
         thinking_request=ThinkingRequest(
             operation="section_generation",
             complexity="standard",

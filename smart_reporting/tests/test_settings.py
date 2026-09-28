@@ -68,6 +68,7 @@ def test_settings_defaults():
     assert current.report_output_token_reserve == 393216
     assert current.report_analysis_concurrency == 1
     assert current.report_section_concurrency == 1
+    assert current.report_section_whole_generation is True
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
@@ -128,6 +129,12 @@ def test_agent_feature_flags_can_be_disabled():
 def test_report_section_concurrency_is_bounded(value):
     with pytest.raises(ValueError, match="AGENT_REPORT_SECTION_CONCURRENCY"):
         settings(AGENT_REPORT_SECTION_CONCURRENCY=value)
+
+
+@pytest.mark.parametrize("value, expected", [("true", True), ("false", False)])
+def test_report_section_whole_generation_flag(value, expected):
+    current = settings(AGENT_REPORT_SECTION_WHOLE_GENERATION=value)
+    assert current.report_section_whole_generation is expected
 
 
 @pytest.mark.parametrize("value", ["0", "5", "invalid"])

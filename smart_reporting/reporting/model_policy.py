@@ -132,6 +132,7 @@ class ThinkingRequest:
     configured_budget_cap: int = 8192
     thinking_enabled: bool = True
     reasoning_effort: ReportingReasoningEffort | None = None
+    section_block_count: int = 1
 
     def __post_init__(self) -> None:
         if self.operation not in _INITIAL_THINKING_BUDGETS:
@@ -140,6 +141,12 @@ class ThinkingRequest:
             raise ValueError("reasoning_effort 必须是 low、high 或 max")
         if self.complexity not in _COMPLEXITY_BUDGETS:
             raise ValueError("complexity 无效")
+        if (
+            isinstance(self.section_block_count, bool)
+            or not isinstance(self.section_block_count, int)
+            or self.section_block_count < 1
+        ):
+            raise ValueError("section_block_count 必须是正整数")
         if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
             raise ValueError("attempt 必须是非负整数")
         if (
@@ -222,6 +229,13 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
         reason = "retry_limit_reached"
     elif request.attempt == 1:
         reason = "retry_same_budget"
+
+    # 整章正文按规划块数分配思考预算；结构纠错不能降回单块额度。
+    # 默认块数为 1，保持逐块生成和其他操作的既有策略。
+    if request.operation == "section_generation" and request.section_block_count > 1:
+        budget = max(budget, initial_budget * request.section_block_count)
+        if request.attempt == 0:
+            reason = "section_block_count"
 
     if not request.thinking_enabled:
         return ThinkingDecision(
