@@ -120,6 +120,24 @@ def test_reporting_compose_mounts_writable_tiktoken_cache() -> None:
     }
 
 
+def test_reporting_compose_persists_host_workspace():
+    """工作区文件必须随容器重建持久化，否则编辑 revision 打开 500、重复导出死锁。"""
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    service = compose["services"]["reporting-os"]
+
+    assert service["environment"]["REPORTING_HOST_WORKSPACE_ROOT"] == (
+        "/var/lib/reporting-workspaces"
+    )
+    assert (
+        "${AGENT_REPORT_WORKSPACE_DIR:-./data/reporting-workspaces}:/var/lib/reporting-workspaces"
+        in service["volumes"]
+    )
+
+
 def test_report_editor_static_lives_outside_source_bind_mount() -> None:
     """源码只读 bind mount 会遮蔽源码树内的前端产物；命名卷只首播种，升级后仍是旧前端。"""
 

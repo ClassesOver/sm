@@ -1236,6 +1236,9 @@ async def test_editor_export_from_older_revision_link_reports_stale_revision(
     registry.resolve(scope)
     markdown = "# 旧版修订\n"
     await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+    # 最新 revision 内容确实不同：必须提示改用最新修订，而不是继续导出。
+    newer_markdown = "# 新版修订\n"
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-3/report.md", newer_markdown)
 
     def revision_context(revision: int) -> ReportEditorContext:
         return ReportEditorContext(
@@ -1391,6 +1394,209 @@ async def test_editor_export_rebases_when_latest_revision_content_unchanged(
 
     assert result["revision"] == 4
     assert rendered == ["reports/revision-4/report.pdf"]
+
+
+@pytest.mark.anyio
+async def test_editor_export_continues_when_latest_revision_markdown_missing(
+    tmp_path: Path,
+) -> None:
+    """最新 revision 的工作区文件缺失（如历史部署未持久化工作区目录）时，
+    导出不再死锁地报 report_editor_revision_stale，而是以当前修订为基准继续导出。"""
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    markdown = "# 恢复导出\n"
+    markdown_sha = hashlib.sha256(markdown.encode()).hexdigest()
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+
+    def revision_context(revision: int) -> ReportEditorContext:
+        return ReportEditorContext(
+            reportId="report-1",
+            revision=revision,
+            jobId=f"job-{revision}",
+            workflowRunId="report-1",
+            markdownPath=f"reports/revision-{revision}/report.md",
+            job={
+                "jobId": f"job-{revision}",
+                "render": {"pdf": {"path": f"reports/revision-{revision}/report.pdf"}},
+            },
+            scope=scope.as_state(),
+        )
+
+    # revision 2 的上下文仍在状态中，但工作区文件已丢失。
+    state = SimpleNamespace(
+        state_version=2,
+        payload={
+            "reportEditorContexts": {
+                str(revision): revision_context(revision).model_dump(mode="json", by_alias=True)
+                for revision in (1, 2)
+            }
+        },
+    )
+
+    rendered: list[str] = []
+
+    class ReportTools:
+        async def _render_report_pair(
+            self, job_id, markdown_path, output_path, *, artifact_manifest, run_context
+        ):
+            rendered.append(output_path)
+            await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")
+            word_path = str(Path(output_path).with_suffix(".docx"))
+            await workspace.awrite_bytes(scope.workspace_key, word_path, b"new-word")
+            stored = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
+            stored["render"] = {
+                **stored["render"],
+                "markdown": {
+                    "path": markdown_path,
+                    "size": len(markdown.encode()),
+                    "sha256": markdown_sha,
+                },
+            }
+            return {"status": "validated", "validation": {"ok": True}}
+
+    class StateRepository:
+        async def get(self, _run_id: str):
+            return state
+
+        async def apply(self, _run_id: str, command, *, expected_version: int):
+            applied = ReportEditorContext.model_validate(command.payload["context"])
+            state.payload.setdefault("reportEditorContexts", {})[str(applied.revision)] = (
+                command.payload["context"]
+            )
+
+    class Persistence:
+        async def persist(self, **values):
+            return None
+
+    class DownloadGrants:
+        async def issue(self, **values):
+            return "download-raw", ReportDownloadGrant(
+                grant_hash="d" * 64,
+                scope=values["scope"],
+                report_id=values["report_id"],
+                revision=values["revision"],
+                pdf_path=values["pdf_path"],
+                pdf_size=values["pdf_size"],
+                pdf_sha256=values["pdf_sha256"],
+                word_path=values["word_path"],
+                word_size=values["word_size"],
+                word_sha256=values["word_sha256"],
+                expires_at=datetime(2026, 10, 15, tzinfo=UTC),
+            )
+
+    class EditorGrants:
+        async def issue(self, _context):
+            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+
+    service = ReportEditorService(
+        state_repository=StateRepository(),
+        workspace_registry=registry,
+        workspace=workspace,
+        report_tools=ReportTools(),
+        artifact_persistence=Persistence(),
+        download_grants=DownloadGrants(),
+        editor_grants=EditorGrants(),
+        public_base_url="https://reports.example.com",
+    )
+
+    result = await service.export_revision(
+        revision_context(1),
+        expected_sha256=markdown_sha,
+    )
+
+    assert result["revision"] == 2
+    assert rendered == ["reports/revision-2/report.pdf"]
+    next_context = ReportEditorContext.model_validate(state.payload["reportEditorContexts"]["2"])
+    assert next_context.markdown_path == "reports/revision-2/report.md"
+    assert (
+        await workspace.aread_text(scope.workspace_key, "reports/revision-2/report.md") == markdown
+    )
+
+
+@pytest.mark.anyio
+async def test_editor_read_document_reports_missing_revision_markdown(tmp_path: Path) -> None:
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    context = ReportEditorContext(
+        reportId="report-1",
+        revision=2,
+        jobId="job-1",
+        workflowRunId="report-1",
+        markdownPath="报表/智能分析/report-1/revision-2/report-revision-1.md",
+        job={"jobId": "job-1", "render": {}},
+        scope=scope.as_state(),
+    )
+    state = SimpleNamespace(
+        payload={"reportEditorContexts": {"2": context.model_dump(mode="json", by_alias=True)}}
+    )
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),
+        workspace_registry=registry,
+        workspace=workspace,
+        report_tools=None,
+        artifact_persistence=None,
+        download_grants=None,
+        editor_grants=None,
+        public_base_url=None,
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await service.read_document(context)
+
+    assert raised.value.code == "report_editor_revision_missing"
+    assert "第 2 版" in raised.value.message
+
+
+@pytest.mark.anyio
+async def test_editor_list_history_skips_revision_with_missing_markdown(tmp_path: Path) -> None:
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    markdown = "# 历史版本\n"
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+
+    def revision_context(revision: int) -> ReportEditorContext:
+        return ReportEditorContext(
+            reportId="report-1",
+            revision=revision,
+            jobId=f"job-{revision}",
+            workflowRunId="report-1",
+            markdownPath=f"reports/revision-{revision}/report.md",
+            job={
+                "jobId": f"job-{revision}",
+                "render": {"pdf": {"path": f"reports/revision-{revision}/report.pdf"}},
+            },
+            scope=scope.as_state(),
+        )
+
+    state = SimpleNamespace(
+        payload={
+            "reportEditorContexts": {
+                str(revision): revision_context(revision).model_dump(mode="json", by_alias=True)
+                for revision in (1, 2)
+            }
+        }
+    )
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),
+        workspace_registry=registry,
+        workspace=workspace,
+        report_tools=None,
+        artifact_persistence=None,
+        download_grants=None,
+        editor_grants=None,
+        public_base_url=None,
+    )
+
+    history = await service.list_history(revision_context(1), include_markdown=True)
+
+    assert [item["revision"] for item in history] == [1]
+    assert history[0]["markdown"] == markdown
 
 
 @pytest.mark.anyio

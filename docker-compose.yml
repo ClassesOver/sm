@@ -45,6 +45,9 @@ services:
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
       AGENT_REPORT_PUBLIC_BASE_URL: ${AGENT_REPORT_PUBLIC_BASE_URL:-}
       REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
+      # 工作区必须随容器重建持久化：编辑上下文/下载授权在 Postgres 中存活，
+      # 若 Markdown 工作区文件丢失，打开编辑 revision 会 500、重复导出会死锁。
+      REPORTING_HOST_WORKSPACE_ROOT: /var/lib/reporting-workspaces
     volumes:
       - type: bind
         source: ./smart_reporting
@@ -55,6 +58,7 @@ services:
       - type: bind
         source: ${AGENT_TIKTOKEN_CACHE_DIR:-./data/tiktoken-cache}
         target: /opt/tiktoken-cache
+      - ${AGENT_REPORT_WORKSPACE_DIR:-./data/reporting-workspaces}:/var/lib/reporting-workspaces
       - type: bind
         source: ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}
         target: /run/agentos/reporting

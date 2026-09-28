@@ -30,7 +30,7 @@ from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
-from ..workspace import WorkspacePathConflict
+from ..workspace import WorkspaceError, WorkspacePathConflict
 
 # 签发链接默认长期有效（10 年，等价永久；存储列不允许 NULL，用远端日期表达）。
 EDITOR_GRANT_TTL = timedelta(days=3650)
@@ -268,7 +268,18 @@ class ReportEditorService:
         for candidate in candidates[offset : offset + limit]:
             item = self._history_metadata(candidate)
             if include_markdown:
-                _path, markdown, sha256 = await self._read_revision_markdown(candidate)
+                try:
+                    _path, markdown, sha256 = await self._read_revision_markdown(candidate)
+                except ReportingError as error:
+                    # 单个历史修订的工作区文件缺失不应拖垮整个历史列表。
+                    logger.warning(
+                        "report_editor_history_revision_unreadable report_id={} revision={} "
+                        "code={}",
+                        candidate.report_id,
+                        candidate.revision,
+                        error.code,
+                    )
+                    continue
                 item["markdown"] = markdown
                 item["sha256"] = sha256
             history.append(item)
@@ -641,6 +652,9 @@ class ReportEditorService:
         # revision；若最新 revision 的 Markdown 与当前草稿一致（用户未再改动），
         # 自动以最新 revision 为基准再次导出，实现重复导出的幂等。只有内容确实
         # 落后于更新版本时才拒绝，必须明确提示改用最新修订继续编辑。
+        # 最新 revision 的工作区文件缺失（如历史部署未持久化工作区目录）时无法比对
+        # 内容，允许以当前修订为基准继续导出，否则编辑链接会变成打不开、也无法
+        # 再导出的死锁。
         candidates = await self._candidate_revisions(context)
         latest_revision = max((candidate.revision for candidate in candidates), default=context.revision)
         if latest_revision > context.revision:
@@ -649,9 +663,15 @@ class ReportEditorService:
                 _, _, latest_sha256 = await self._read_revision_markdown(latest)
             except Exception:
                 latest_sha256 = None
-            if latest_sha256 is not None and secrets.compare_digest(
-                latest_sha256, document.sha256
-            ):
+            if latest_sha256 is None:
+                logger.warning(
+                    "report_editor_latest_revision_unreadable report_id={} missing_revision={} "
+                    "base_revision={}",
+                    context.report_id,
+                    latest_revision,
+                    context.revision,
+                )
+            elif secrets.compare_digest(latest_sha256, document.sha256):
                 # 后续渲染/登记都按 context.job_id 从 run_context 取 job 状态，
                 # 重定基后必须同步换成最新 revision 的 job，否则索引错位。
                 context = latest
@@ -929,7 +949,15 @@ class ReportEditorService:
             if await self.workspace.apath_exists(candidate.scope["threadId"], draft_path)
             else candidate.markdown_path
         )
-        markdown = await self.workspace.aread_text(candidate.scope["threadId"], path)
+        try:
+            markdown = await self.workspace.aread_text(candidate.scope["threadId"], path)
+        except WorkspaceError as error:
+            # 工作区文件丢失（例如历史部署未持久化工作区目录）时给出可读的 404，
+            # 避免 WorkspaceError 冒泡成 500。
+            raise ReportingError(
+                "report_editor_revision_missing",
+                f"第 {candidate.revision} 版报告内容已不存在，请改用最新版本的编辑链接。",
+            ) from error
         return path, markdown, hashlib.sha256(markdown.encode()).hexdigest()
 
     @staticmethod
