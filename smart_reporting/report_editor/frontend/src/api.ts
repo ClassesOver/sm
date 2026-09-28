@@ -83,13 +83,14 @@ export class ReportEditorClient {
     settings: Record<string, boolean> = {},
     note = '',
   ): Promise<ExportResult> {
-    const requestId = globalThis.crypto.randomUUID()
+    // 普通 HTTP 页面可能没有 randomUUID；未传请求 ID 时由后端生成。
+    const requestId = globalThis.crypto?.randomUUID?.()
     // 渲染与验收可能持续数分钟：服务端立即返回后台任务标识，这里轮询到终态，
     // 避免同步请求被网关读超时切断。
     const started = await this.request<ExportJobState>('/api/export', {
       method: 'POST',
       body: JSON.stringify({ expectedSha256, settings, ...(note ? { note } : {}) }),
-      headers: { 'X-Request-ID': requestId },
+      headers: requestId ? { 'X-Request-ID': requestId } : {},
     })
     const statusPath = `/api/export/${encodeURIComponent(started.exportId)}`
     let transientFailures = 0
