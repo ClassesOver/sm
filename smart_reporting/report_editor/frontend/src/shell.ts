@@ -6,6 +6,7 @@ export interface EditorShell {
   outlineToggle: HTMLButtonElement
   search: HTMLButtonElement
   history: HTMLButtonElement
+  share: HTMLButtonElement
   more: HTMLButtonElement
   shortcuts: HTMLButtonElement
   focus: HTMLButtonElement
@@ -43,6 +44,7 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
         <div id="report-secondary-actions" class="secondary-actions toolbar-group toolbar-group-edit-view" aria-label="编辑与视图">
           <button type="button" data-action="search" aria-label="搜索和替换" title="搜索和替换"><i data-lucide="search" aria-hidden="true"></i><span>搜索</span></button>
           <button type="button" data-action="history" aria-label="版本历史" title="版本历史"><i data-lucide="history" aria-hidden="true"></i><span>历史</span></button>
+          <button type="button" data-action="share" aria-label="分享编辑链接" title="分享编辑链接"><i data-lucide="share-2" aria-hidden="true"></i><span>分享</span></button>
           <button type="button" data-action="focus" aria-label="进入专注模式" aria-pressed="false" title="专注模式"><i data-lucide="focus" aria-hidden="true"></i><span>专注</span></button>
         </div>
         <button type="button" data-action="more" aria-label="更多操作"
@@ -102,6 +104,7 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
     outlineToggle: required<HTMLButtonElement>('[data-action="outline"]'),
     search: required<HTMLButtonElement>('[data-action="search"]'),
     history: required<HTMLButtonElement>('[data-action="history"]'),
+    share: required<HTMLButtonElement>('[data-action="share"]'),
     more: required<HTMLButtonElement>('[data-action="more"]'),
     shortcuts: required<HTMLButtonElement>('[data-action="shortcuts"]'),
     focus: required<HTMLButtonElement>('[data-action="focus"]'),

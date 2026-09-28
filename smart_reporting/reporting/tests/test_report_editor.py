@@ -235,6 +235,54 @@ async def test_editor_grant_is_reusable_but_rejects_tampering_and_expiry() -> No
 
 
 @pytest.mark.anyio
+async def test_editor_share_link_requires_session_and_csrf_and_expires_after_thirty_days() -> None:
+    repository = InMemoryReportEditorRepository()
+    grants = ReportEditorGrantService(repository, secret="s" * 32)
+    original, _ = await grants.issue(_context())
+
+    class Editor:
+        public_base_url = "https://reports.example.com"
+
+        async def context_for_session(self, _session):
+            return _context()
+
+    app = FastAPI()
+    app.include_router(
+        create_report_editor_router(
+            grants, editor=Editor(), cookie_secure=False,
+            allowed_origin="https://reports.example.com",
+        )
+    )
+    path = "/reports/v1/editor/report-1/1/api/share"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="https://reports.example.com"
+    ) as client:
+        assert (await client.post(path)).status_code == 403
+        await client.get(f"/reports/v1/editor/open/{original}", follow_redirects=False)
+        csrf = grants.csrf_token(client.cookies["report_editor_session"])
+        assert (await client.post(path, headers={"Origin": "https://other.example", "X-CSRF-Token": csrf})).status_code == 403
+        response = await client.post(
+            path, headers={"Origin": "https://reports.example.com", "X-CSRF-Token": csrf}
+        )
+        assert (await client.post(
+            "/reports/v1/editor/other-report/1/api/share",
+            headers={"Origin": "https://reports.example.com", "X-CSRF-Token": csrf},
+        )).status_code == 403
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["openUrl"].startswith("https://reports.example.com/reports/v1/editor/open/")
+    assert result["openUrl"].split("/")[-1] != original
+    expires = datetime.fromisoformat(result["expiresAt"])
+    assert timedelta(days=29, hours=23) < expires - datetime.now(UTC) <= timedelta(days=30)
+    shared = result["openUrl"].split("/")[-1]
+    _, session = await grants.exchange(shared)
+    assert session.report_id == "report-1" and session.revision == 1
+    with pytest.raises(ReportingError, match="过期"):
+        await grants.exchange(shared, now=expires + timedelta(seconds=1))
+
+
+@pytest.mark.anyio
 async def test_editor_recovers_host_workspace_and_saves_draft_with_cas(tmp_path: Path) -> None:
     scope = _scope()
     registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
@@ -286,6 +334,8 @@ async def test_editor_open_exchanges_grant_for_http_only_cookie_without_token_ur
 
     assert response.status_code == 303
     assert response.headers["location"] == "/reports/v1/editor/report-1/1"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cache-control"] == "no-store"
     assert raw not in response.headers["location"]
     session_cookie, legacy_cookie = response.headers.get_list("set-cookie")
     assert "report_editor_session=" in session_cookie

@@ -30,6 +30,7 @@ import {
   PanelLeft,
   Save,
   Search,
+  Share2,
   Settings2,
   X,
 } from 'lucide'
@@ -67,6 +68,7 @@ import { errorLabel } from './error-labels'
 import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight'
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
+import { createSharePanel } from './share'
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('report editor root is missing')
@@ -100,6 +102,8 @@ shell.shortcuts.addEventListener('click', async () => {
 const preferences = createEditorPreferenceController(root, basePath)
 createFocusModeController(root, shell.focus, shell.focusExit)
 const exportPanel = createExportPanel()
+const sharePanel = createSharePanel(root, () => client.share())
+shell.share.addEventListener('click', () => sharePanel.open())
 // 导出阻塞遮罩（blockUI/unblockUI）：渲染与验收可持续数分钟，期间全屏禁止编辑，
 // 避免用户在导出进行中改内容导致 revision 错乱。
 const blockOverlay = document.createElement('div')
@@ -156,6 +160,7 @@ createIcons({
     PanelLeft,
     Save,
     Search,
+    Share2,
     Settings2,
     X,
   },

@@ -34,6 +34,7 @@ from ..workspace import WorkspaceError, WorkspacePathConflict
 
 # 签发链接默认长期有效（10 年，等价永久；存储列不允许 NULL，用远端日期表达）。
 EDITOR_GRANT_TTL = timedelta(days=3650)
+EDITOR_SHARE_TTL = timedelta(days=30)
 EDITOR_SESSION_TTL = timedelta(hours=8)
 
 
@@ -131,10 +132,11 @@ class ReportEditorGrantService:
         self.session_ttl = session_ttl
 
     async def issue(
-        self, context: ReportEditorContext, *, now: datetime | None = None
+        self, context: ReportEditorContext, *, now: datetime | None = None,
+        ttl: timedelta | None = None,
     ) -> tuple[str, datetime]:
         issued_at = _utc(now or datetime.now(UTC))
-        expires_at = issued_at + self.grant_ttl
+        expires_at = issued_at + (ttl if ttl is not None else self.grant_ttl)
         jti = secrets.token_urlsafe(24)
         payload = {
             "contextSha256": context.digest(),

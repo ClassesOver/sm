@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
-from .service import ReportEditorGrantService
+from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
 
 EDITOR_SESSION_COOKIE = "report_editor_session"
 _LEGACY_SESSION_COOKIE_PATH = "/reports/v1/editor"
@@ -104,6 +104,8 @@ def create_report_editor_router(
             ) from None
         editor_path = f"/reports/v1/editor/{session.report_id}/{session.revision}"
         response = RedirectResponse(editor_path, status_code=303)
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
         # 编辑链接通常从聊天或邮件等其他站点点开；Strict cookie 在跨站发起的重定向链上
         # 不会随后续页面请求发送，首次打开会失败。Lax 仅放行顶层 GET 导航，写操作仍由
         # Origin + CSRF 令牌保护。cookie 按报告 revision 限定路径，多个报告/修订可在不同
@@ -276,6 +278,27 @@ def create_report_editor_router(
                 "markdown": document.markdown,
                 "sha256": document.sha256,
             }
+
+        @router.post(
+            "/reports/v1/editor/{report_id}/{revision}/api/share",
+            include_in_schema=False,
+        )
+        async def share_report_editor(
+            report_id: str, revision: int, request: Request
+        ) -> JSONResponse:
+            context = await _write_context(
+                grants, editor, request, report_id=report_id, revision=revision,
+                allowed_origin=allowed_origin,
+            )
+            raw_grant, expires_at = await grants.issue(context, ttl=EDITOR_SHARE_TTL)
+            base_url = (editor.public_base_url or str(request.base_url)).rstrip("/")
+            return JSONResponse(
+                {
+                    "openUrl": f"{base_url}/reports/v1/editor/open/{raw_grant}",
+                    "expiresAt": expires_at.isoformat(),
+                },
+                headers={"Cache-Control": "no-store"},
+            )
 
         @router.post(
             "/reports/v1/editor/{report_id}/{revision}/api/export",

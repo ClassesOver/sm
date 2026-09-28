@@ -58,8 +58,9 @@ clientRequestId 即使跨进程或重启也不能改写请求。当前后台 tas
 同一 AgentOS PostgreSQL 数据库只能运行一个 Reporting 服务实例，且 `AGENT_OS_WORKERS` 必须为 1。
 
 AgentOS 中的 Reporting 正常发布时只将 PDF 和 Word 持久化到 PostgreSQL，并签发默认 30 天有效的
-公开 bearer 下载授权。发布结果同时返回 `editor.openUrl`：短期一次性编辑 grant 首次打开后交换为
-HttpOnly、SameSite=Strict 的编辑会话 Cookie，并重定向到不含 token 的报告 Page。所有 URL 都基于
+公开 bearer 下载授权。发布结果同时返回 `editor.openUrl`：可重复打开的编辑 grant 兑换为
+HttpOnly、SameSite=Lax 的编辑会话 Cookie，并重定向到不含 token 的报告 Page。编辑页可另行签发
+绑定当前修订版、有效期 30 天的分享编辑链接。所有 URL 都基于
 `AGENT_REPORT_PUBLIC_BASE_URL` 生成。过期授权会被删除，无有效授权引用的产物在 24 小时安全窗口后
 分批回收。Reporting CLI 不启动 HTTP 服务，只返回 PDF/Word 的 Workspace 相对路径、大小和 SHA-256。
 

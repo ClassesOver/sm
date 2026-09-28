@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { ReportEditorClient } from './api'
 
 describe('ReportEditorClient', () => {
+  it('issues an edit share link with the current session and CSRF token', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ markdown: '# 报告', sha256: 'a'.repeat(64), csrfToken: 'csrf' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ openUrl: 'https://reports.test/open/share', expiresAt: '2026-10-05T00:00:00Z' })))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    await client.load()
+
+    await expect(client.share()).resolves.toMatchObject({ openUrl: 'https://reports.test/open/share' })
+    expect(fetcher.mock.calls[1][0]).toBe('/reports/v1/editor/report-1/1/api/share')
+    expect(fetcher.mock.calls[1][1]).toMatchObject({
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': 'csrf' },
+    })
+  })
+
   it('exports both artifacts without a cross-origin request header', async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({

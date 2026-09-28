@@ -28,6 +28,7 @@ describe('createEditorShell', () => {
     expect(shell.save.getAttribute('aria-label')).toBe('保存')
     expect(shell.search.getAttribute('aria-label')).toBe('搜索和替换')
     expect(shell.history.getAttribute('aria-label')).toBe('版本历史')
+    expect(shell.share.getAttribute('aria-label')).toBe('分享编辑链接')
     expect(root.querySelector('[data-action="templates"]')).toBeNull()
     expect(root.querySelector('.toolbar-group-navigation')).not.toBeNull()
     expect(root.querySelector('.toolbar-group-output')).not.toBeNull()
@@ -81,6 +82,7 @@ describe('createEditorShell', () => {
       'panel-left',
       'search',
       'history',
+      'share-2',
       'focus',
       'more-horizontal',
       'save',

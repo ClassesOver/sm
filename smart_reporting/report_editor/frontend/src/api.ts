@@ -18,6 +18,8 @@ export interface ExportResult {
   editor?: { openUrl: string }
 }
 
+export interface ShareResult { openUrl: string; expiresAt: string }
+
 interface ExportJobState {
   exportId: string
   status: 'running' | 'succeeded' | 'failed'
@@ -68,6 +70,10 @@ export class ReportEditorClient {
       method: 'PUT',
       body: JSON.stringify({ markdown, expectedSha256 }),
     })
+  }
+
+  async share(): Promise<ShareResult> {
+    return this.request<ShareResult>('/api/share', { method: 'POST' })
   }
 
   async historyPage(limit = 20, offset = 0): Promise<ReportHistoryPage> {
