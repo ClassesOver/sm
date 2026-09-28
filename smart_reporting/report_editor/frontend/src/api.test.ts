@@ -3,26 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { ReportEditorClient } from './api'
 
 describe('ReportEditorClient', () => {
-  it('exports both artifacts without randomUUID on an HTTP page', async () => {
-    vi.stubGlobal('crypto', {})
-    try {
-      const fetcher = vi.fn<typeof fetch>()
-        .mockResolvedValueOnce(new Response(JSON.stringify({
-          exportId: 'server-export', status: 'running', requestId: 'server-export',
-        }), { status: 202 }))
-        .mockResolvedValueOnce(new Response(JSON.stringify({
-          exportId: 'server-export', status: 'succeeded', requestId: 'server-export',
-          result: { revision: 2, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' } },
-        }), { status: 200 }))
-      const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher, 0)
+  it('exports both artifacts without a cross-origin request header', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        exportId: 'server-export', status: 'running', requestId: 'server-export',
+      }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        exportId: 'server-export', status: 'succeeded', requestId: 'server-export',
+        result: { revision: 2, pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' } },
+      }), { status: 200 }))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher, 0)
 
-      await expect(client.export('a'.repeat(64))).resolves.toMatchObject({
-        requestId: 'server-export', pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' },
-      })
-      expect(fetcher.mock.calls[0][1]?.headers).not.toHaveProperty('X-Request-ID')
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    await expect(client.export('a'.repeat(64))).resolves.toMatchObject({
+      requestId: 'server-export', pdf: { downloadUrl: '/pdf' }, word: { downloadUrl: '/word' },
+    })
+    expect(fetcher.mock.calls[0][1]?.headers).not.toHaveProperty('X-Request-ID')
   })
 
   it('returns history pagination metadata', async () => {
