@@ -2810,6 +2810,7 @@ button {
     grid-template-columns: minmax(0, 1fr) auto;
     min-height: 56px;
     padding: 7px 12px;
+    background: #fff;
   }
 
   #report-editor .milkdown-top-bar {
@@ -2846,7 +2847,8 @@ button {
     bottom: 0;
     left: 0;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    /* 前两列是带文字标签的目录/更多，按内容自适应；后四列图标按钮均分剩余宽度 */
+    grid-template-columns: repeat(2, minmax(0, auto)) repeat(4, minmax(40px, 1fr));
     gap: 6px;
     padding: 8px max(12px, env(safe-area-inset-right))
       max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
@@ -2857,12 +2859,29 @@ button {
     overflow: visible;
   }
 
+  /* 包装层在网格里透明化，让每个主操作各占一格；否则 save/pdf/word
+     会被塞进同一格并溢出，与设置/快捷键按钮重叠。
+     注意只处理导航与输出两组，不能波及 secondary-actions 弹层 */
+  .app-bar > .report-actions .toolbar-group-navigation,
+  .app-bar > .report-actions .toolbar-group-output { display: contents; }
+
+  .app-bar > .report-actions .toolbar-settings { margin-left: 0; }
+
+  /* 主操作保持 6 个一行：手机无键盘场景收起快捷键帮助 */
+  .app-bar > .report-actions [data-action="shortcuts"] { display: none; }
+
   .report-actions button {
     width: 100%;
+    min-width: 0;
     height: 48px;
     border: 1px solid #c7d7e5;
     border-radius: 9px;
   }
+
+  .report-actions button.is-primary { min-width: 0; }
+
+  /* 与桌面一致的特异性，覆盖 is-subtle 的透明边框，保持 6 个主操作视觉统一 */
+  .report-actions button.is-subtle { border-color: #c7d7e5; }
 
   .report-actions [data-action="more"] {
     display: block;
