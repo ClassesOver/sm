@@ -1060,6 +1060,24 @@ async def test_schema_fallback_log_contains_stable_failure_fields() -> None:
 
 
 @pytest.mark.anyio
+async def test_structured_executor_default_has_no_total_deadline() -> None:
+    import anyio
+
+    executor = ReportingStructuredOutputExecutor(_schema_agent())
+
+    async def execute_mode(*_args, **_kwargs):
+        # 长生成和纠错共享同一执行过程，默认不能被总时限主动取消。
+        assert anyio.current_effective_deadline() == float("inf")
+        return executor.agent, Mock(content={"value": 7})
+
+    executor._execute_mode = AsyncMock(side_effect=execute_mode)
+    result = await executor.execute(
+        "instruction", routing_context=None, session_id="session", user_id="user",
+    )
+    assert result.content.value == 7
+
+
+@pytest.mark.anyio
 async def test_structured_executor_timeout_raises_stable_reporting_error() -> None:
     import anyio
 

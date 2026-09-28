@@ -190,3 +190,87 @@ def test_controller_resume_and_cancel_update_persisted_process(tmp_path, outcome
         assert operation["runId"] == "external-run"
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_chat_stop_cancels_workflow_and_persisted_progress(tmp_path, resume):
+    from agno.db.sqlite import SqliteDb
+    from agno.exceptions import RunCancelledException
+    from agno.run.cancel import acancel_run, acleanup_run, aregister_run
+    from agno.workflow.types import HumanReview
+
+    from smart_reporting.reporting.contract import ReportingWorkflowInput
+    from smart_reporting.reporting.tests.test_reporting_workflow_controller import (
+        _context,
+        _ThreadOwnership,
+    )
+    from smart_reporting.reporting.workflow.controller import ReportWorkflowController
+
+    async def exercise():
+        adapter = DingyiProcessAdapter(create_engine(f"sqlite:///{tmp_path / 'stop-process.db'}"))
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+        later_steps = []
+
+        async def review(step_input, run_context):
+            return StepOutput(content={"title": "报告", "sections": []})
+
+        async def blocking(step_input, run_context):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+            return StepOutput(content="unexpected")
+
+        async def later(step_input, run_context):
+            later_steps.append("executed")
+            return StepOutput(content="published")
+
+        steps = []
+        if resume:
+            steps.append(Step(
+                name="审核报告提纲", executor=review,
+                human_review=HumanReview(requires_output_review=True),
+            ))
+        steps.extend([
+            Step(name="run-coding-analysis", executor=_timed_step_executor(blocking, step_id="run-coding-analysis")),
+            Step(name="finalize-publication", executor=later),
+        ])
+        workflow = ManagedReportingWorkflow(
+            id="enterprise-reporting-workflow-v1", lifecycle=Lifecycle(),
+            db=SqliteDb(db_file=str(tmp_path / "stop-workflow.db")), steps=steps,
+        )
+        ownership = _ThreadOwnership()
+        controller = ReportWorkflowController(
+            lambda: workflow, thread_ownership=ownership,
+            terminal_cleanup=AsyncMock(), process_lifecycle=adapter,
+        )
+        context = _context()
+        payload = ReportingWorkflowInput(prompt="生成报表")
+        if resume:
+            await controller.start(payload, context)
+            # 审批由新的聊天回合发起，取消应监听本轮 ID，而非最初的 operation ID。
+            context.run_id = "review-chat-run"
+        await aregister_run(context.run_id)
+        task = asyncio.create_task(controller.approve(context) if resume else controller.start(payload, context))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            await acancel_run(context.run_id)
+            with pytest.raises(RunCancelledException):
+                await asyncio.wait_for(asyncio.shield(task), timeout=2)
+            assert stopped.is_set()
+            assert later_steps == []
+            snapshot = await adapter._snapshot("external-run")
+            assert snapshot["operation"]["status"] == "cancelled"
+            assert snapshot["operation"]["endedAt"]
+            assert snapshot["activities"][-1]["status"] == "cancelled"
+            assert snapshot["activities"][-1]["endedAt"]
+            assert ownership.owners == {}
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await acleanup_run(context.run_id)
+
+    asyncio.run(exercise())

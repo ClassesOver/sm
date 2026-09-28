@@ -9,13 +9,16 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+from agno.exceptions import RunCancelledException
 from agno.run import RunContext
 from agno.run.base import RunStatus
+from agno.run.cancel import araise_if_cancelled
 from agno.tools import Toolkit, tool
 from agno.workflow import OnReject
 from loguru import logger
 from pydantic import BaseModel
 
+from ...async_utils import complete_cleanup
 from ..contract import (
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
     ReportingWorkflowInput,
@@ -1141,7 +1144,7 @@ class ReportWorkflowController:
             else "foreground",
         )
         try:
-            output = await workflow.arun(
+            output = await self._await_chat_workflow(workflow.arun(
                 payload,
                 run_id=workflow_run_id,
                 session_id=workflow_session_id,
@@ -1156,7 +1159,7 @@ class ReportWorkflowController:
                 ),
                 metadata=self._workflow_metadata(run_context, scope),
                 stream=False,
-            )
+            ), run_context)
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
         except BaseException as run_error:
             await self._finalize_run_error(
@@ -1170,6 +1173,25 @@ class ReportWorkflowController:
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
         await self._finalize_control(control, scope, state=state)
         return self._result(control, output)
+
+    async def _await_chat_workflow(
+        self, operation: Awaitable[Any], run_context: RunContext | None
+    ) -> Any:
+        """把当前聊天的 Agno 取消标记传给正在等待的前台 Workflow。"""
+        if self._workflow_entrypoint(run_context) == "mcp" or not run_context or not run_context.run_id:
+            return await operation
+        task = asyncio.ensure_future(operation)
+        try:
+            while True:
+                await araise_if_cancelled(run_context.run_id)
+                done, _ = await asyncio.wait({task}, timeout=0.1)
+                if done:
+                    return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+            # 等待执行真正结束后，调用方才写入终态并释放工作区所有权。
+            await complete_cleanup(asyncio.gather(task, return_exceptions=True))
 
     async def _process_notify(self, method: str, **kwargs: Any) -> None:
         port = self._process_lifecycle
@@ -1377,14 +1399,14 @@ class ReportWorkflowController:
                 session_id=scope["thread_id"], status="running", summary=None,
             )
             try:
-                output = await workflow.acontinue_run(
+                output = await self._await_chat_workflow(workflow.acontinue_run(
                     run_response=output,
                     step_requirements=list(getattr(output, "step_requirements", None) or []),
                     dependencies=self._workflow_dependencies(
                         scope, entrypoint=self._workflow_entrypoint(run_context)
                     ),
                     stream=False,
-                )
+                ), run_context)
                 updated = self._control_from_output(
                     output,
                     scope,
@@ -1534,7 +1556,9 @@ class ReportWorkflowController:
         state: dict[str, Any],
     ) -> None:
         terminal_status: ReportWorkflowStatus = (
-            "cancelled" if isinstance(run_error, asyncio.CancelledError) else "failed"
+            "cancelled"
+            if isinstance(run_error, (asyncio.CancelledError, RunCancelledException))
+            else "failed"
         )
         await self._process_notify(
             "update_operation", operation_id=scope["external_run_id"],

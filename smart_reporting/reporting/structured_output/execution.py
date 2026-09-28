@@ -91,7 +91,7 @@ class ReportingStructuredOutputExecutor:
         self,
         agent: Agent,
         *,
-        idle_timeout_seconds: float = 900,
+        idle_timeout_seconds: float | None = None,
         capability_resolver: VerifiedModelCapabilityResolver | None = None,
         wire_schema_resolver: StructuredOutputWireSchemaResolver | None = None,
     ) -> None:

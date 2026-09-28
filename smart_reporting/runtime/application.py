@@ -18,6 +18,7 @@ from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
 from ..reporting.code_mode import ReportingCodeModeRuntime
 from ..workspace import WorkspaceService
 from .database import AgentDatabase
+from .reporting_runs import enable_reporting_background_streams
 from .settings import AgentSettings
 
 
@@ -95,4 +96,6 @@ def create_agentos_app(
         mcp_server=context.mcp_config or False,
         mcp_auth=context.mcp_auth,
     )
-    return agent_os, agent_os.get_app()
+    application = agent_os.get_app()
+    enable_reporting_background_streams(application, context.report_agent.id)
+    return agent_os, application
