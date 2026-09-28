@@ -25,7 +25,7 @@ def test_completed_report_content_presents_delivery_actions_compactly() -> None:
         "## 报表已生成\n\n"
         "### 年度运营分析报告\n\n"
         "报告已完成发布。\n\n"
-        "[**编辑报告**](https://reports.example/editor/report) · "
+        "[编辑报告](https://reports.example/editor/report) · "
         "[下载 PDF](https://reports.example/report.pdf) · "
         "[下载 Word](https://reports.example/report.docx)"
     )
@@ -55,7 +55,7 @@ def test_completed_report_content_uses_custom_template() -> None:
 
     assert content == (
         "# 年度运营分析报告\n\n"
-        "[**编辑报告**](https://reports.example/editor/report) · "
+        "[编辑报告](https://reports.example/editor/report) · "
         "[下载 PDF](https://reports.example/report.pdf) · "
         "[下载 Word](https://reports.example/report.docx)\n\n"
         "---\n生成完毕"
@@ -72,7 +72,7 @@ def test_completed_report_content_falls_back_on_bad_template() -> None:
         "## 报表已生成\n\n"
         "### 年度运营分析报告\n\n"
         "报告已完成发布。\n\n"
-        "[**编辑报告**](https://reports.example/editor/report) · "
+        "[编辑报告](https://reports.example/editor/report) · "
         "[下载 PDF](https://reports.example/report.pdf) · "
         "[下载 Word](https://reports.example/report.docx)"
     )

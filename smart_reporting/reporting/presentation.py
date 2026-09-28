@@ -15,7 +15,7 @@ _DEFAULT_COMPLETION_TEMPLATE = """## 报表已生成
 """
 
 _DEFAULT_ACTION_TEMPLATES = {
-    "editor": "[**编辑报告**]({url})",
+    "editor": "[编辑报告]({url})",
     "pdf": "[下载 PDF]({url})",
     "word": "[下载 Word]({url})",
 }
