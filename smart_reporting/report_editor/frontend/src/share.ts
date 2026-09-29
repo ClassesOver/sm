@@ -13,15 +13,17 @@ export function createSharePanel(root: HTMLElement, issue: () => Promise<ShareRe
     labelledBy: 'share-title',
     content: `<h2 id="share-title">分享编辑链接</h2>
       <p class="share-warning" role="note">获得链接的人可以编辑此修订版。请只发送给信任的人，链接 30 天后自动失效。</p>
-      <button type="button" class="ui-button ui-button--primary" data-share="create">生成并复制链接</button>
       <div class="share-link" hidden>
         <div class="share-link-row">
           <input data-share="url" aria-label="分享编辑链接" readonly>
-          <button type="button" class="ui-button ui-button--secondary" data-share="copy">复制链接</button>
+          <button type="button" class="ui-button" data-share="copy">复制链接</button>
         </div>
-        <span class="share-link-meta" data-share="expires"></span>
-        <p class="share-renew-note" data-share="renew-note" hidden>旧链接仍有效，直到各自到期。</p>
+        <div class="share-link-footer">
+          <span class="share-link-meta" data-share="expires"></span>
+          <span class="share-renew-note" data-share="renew-note" hidden>旧链接仍有效，直到各自到期。</span>
+        </div>
       </div>
+      <button type="button" class="ui-button ui-button--primary share-create" data-share="create">生成并复制链接</button>
       <p class="share-status" data-share="status" role="status" aria-live="polite"></p>`,
   })
   const create = modal.overlay.querySelector<HTMLButtonElement>('[data-share="create"]')!
