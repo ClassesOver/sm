@@ -223,17 +223,25 @@ function exportArtifactLabel(
 
 export function createExportPanel() {
   const modal = createModal({ root: document.body, overlayClass: 'export-panel', cardClass: 'export-panel-card', closeClass: 'export-panel-close', closeLabel: '关闭导出结果', labelledBy: 'export-title', content: `
-      <div class="export-success-mark" aria-hidden="true">✓</div>
-      <h2 id="export-title">导出完成</h2>
-      <p class="export-revision"></p>
-      <p class="export-note">已生成新的报告版本，旧版本不会被覆盖。</p>
-      <div class="export-links">
-        <div class="export-format-row"><a data-format="pdf" target="_blank" rel="noreferrer">下载 PDF</a><span data-artifact-meta="pdf"></span><button type="button" data-copy="pdf">复制链接</button></div>
-        <div class="export-format-row"><a data-format="word" target="_blank" rel="noreferrer">下载 Word</a><span data-artifact-meta="word"></span><button type="button" data-copy="word">复制链接</button></div>
-        <a data-format="editor">继续编辑新版本</a>
+      <div class="panel-header">
+        <span class="panel-header-icon panel-header-icon--success" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></svg>
+        </span>
+        <div>
+          <h2 id="export-title">导出完成</h2>
+          <p class="export-revision"></p>
+        </div>
       </div>
-      <p class="export-request-id"></p>
-      <p class="export-copy-status" aria-live="polite"></p>
+      <p class="export-note">已生成新的报告版本，旧版本不会被覆盖。</p>
+      <div class="panel-body">
+        <div class="export-links">
+          <div class="export-format-row"><a data-format="pdf" target="_blank" rel="noreferrer">下载 PDF</a><span data-artifact-meta="pdf"></span><button type="button" data-copy="pdf">复制链接</button></div>
+          <div class="export-format-row"><a data-format="word" target="_blank" rel="noreferrer">下载 Word</a><span data-artifact-meta="word"></span><button type="button" data-copy="word">复制链接</button></div>
+          <a data-format="editor">继续编辑新版本</a>
+        </div>
+        <p class="export-request-id"></p>
+        <p class="export-copy-status" aria-live="polite"></p>
+      </div>
   ` })
   const dialog = modal.overlay
   const close = modal.closeButton!

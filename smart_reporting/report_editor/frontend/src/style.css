@@ -748,27 +748,29 @@ button {
 .modal-close:active { transform: scale(0.92); }
 .modal-close:focus-visible { outline: 3px solid rgb(86 180 233 / 28%); outline-offset: 2px; }
 
-.share-header {
+.panel-header {
   display: flex;
   gap: 12px;
   align-items: flex-start;
   padding-right: 36px;
 }
-.share-header-icon {
+.panel-header-icon {
   display: grid;
   flex: 0 0 42px;
   width: 42px;
   height: 42px;
   place-items: center;
   border-radius: 12px;
-  background: linear-gradient(135deg, #1270bd 0%, #0b4f8a 100%);
-  box-shadow: 0 4px 12px rgb(11 79 138 / 32%);
   color: #fff;
 }
-.share-header h2 { margin: 0; color: #1b2a41; font-size: 18px; line-height: 1.35; }
-.share-subtitle { margin: 3px 0 0; color: #7a8a99; font-size: 12.5px; }
+.panel-header-icon--share { background: linear-gradient(135deg, #1270bd 0%, #0b4f8a 100%); box-shadow: 0 4px 12px rgb(11 79 138 / 32%); }
+.panel-header-icon--success { background: linear-gradient(135deg, #35a273 0%, #206b4b 100%); box-shadow: 0 4px 12px rgb(32 107 75 / 30%); }
+.panel-header-icon--info { background: linear-gradient(135deg, #12a5c8 0%, #0b7285 100%); box-shadow: 0 4px 12px rgb(11 114 133 / 30%); }
+.panel-header-icon--violet { background: linear-gradient(135deg, #7588d8 0%, #4b5bb5 100%); box-shadow: 0 4px 12px rgb(75 91 181 / 30%); }
+.panel-header h2 { margin: 0; color: #1b2a41; font-size: 18px; line-height: 1.35; }
+.panel-subtitle { margin: 3px 0 0; color: #7a8a99; font-size: 12.5px; }
 
-.share-body {
+.panel-body {
   margin-top: 16px;
   padding: 16px;
   border: 1px solid #e4edf4;
@@ -977,10 +979,8 @@ button {
   box-shadow: 0 20px 60px rgb(27 42 65 / 20%);
 }
 
-.shortcuts-card h2 {
-  margin: 0 0 18px;
-  color: #0b4f8a;
-  font-size: 20px;
+.shortcuts-card .panel-header {
+  margin-bottom: 14px;
 }
 
 .shortcuts-card dl {
@@ -1035,8 +1035,8 @@ button {
   box-shadow: 0 20px 60px rgb(27 42 65 / 20%);
 }
 
-.history-header {
-  padding-right: 38px;
+.history-card .panel-header {
+  margin-bottom: 4px;
 }
 
 .history-close {
@@ -1048,18 +1048,6 @@ button {
   color: #697b8e;
   font-size: 24px;
   cursor: pointer;
-}
-
-.history-card h2 {
-  margin: 0;
-  color: #0b4f8a;
-  font-size: 20px;
-}
-
-.history-note {
-  margin: 6px 0 0;
-  color: #697b8e;
-  font-size: 12px;
 }
 
 .history-browser {
@@ -2426,7 +2414,6 @@ button {
   border-radius: 14px;
   background: #fff;
   box-shadow: 0 24px 64px rgb(27 42 65 / 18%);
-  text-align: center;
 }
 
 .export-panel-close {
@@ -2443,33 +2430,15 @@ button {
   font-size: 22px;
 }
 
-.export-success-mark {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  margin: 0 auto 14px;
-  place-items: center;
-  border-radius: 50%;
-  background: #e8f5f0;
-  color: #2e9f6b;
-  font-size: 24px;
-  font-weight: 700;
-}
-
-.export-panel-card h2 {
-  margin: 0;
-  color: #0b4f8a;
-  font-size: 20px;
-}
-
 .export-revision {
-  margin: 8px 0 0;
-  color: #1b2a41;
-  font-weight: 650;
+  margin: 3px 0 0;
+  color: #5b6b7a;
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .export-note {
-  margin: 8px 0 20px;
+  margin: 12px 0 0;
   color: #697b8e;
   font-size: 13px;
 }

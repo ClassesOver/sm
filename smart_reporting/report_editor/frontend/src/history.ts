@@ -155,10 +155,15 @@ export function createHistoryController(
     closeLabel: '关闭版本历史',
     labelledBy: 'history-title',
     variant: 'wide',
-    content: `<header class="history-header">
-      <h2 id="history-title">版本历史</h2>
-      <p class="history-note">查看已发布版本和本次编辑会话的保存快照。</p>
-    </header>
+    content: `<div class="panel-header">
+        <span class="panel-header-icon panel-header-icon--info" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+        </span>
+        <div>
+          <h2 id="history-title">版本历史</h2>
+          <p class="panel-subtitle">查看已发布版本和本次编辑会话的保存快照。</p>
+        </div>
+      </div>
     <div class="history-browser">
       <section class="history-index" aria-label="版本列表">
         <div class="history-filters">

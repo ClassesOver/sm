@@ -11,16 +11,16 @@ export function createSharePanel(root: HTMLElement, issue: () => Promise<ShareRe
     root,
     closeLabel: '关闭分享',
     labelledBy: 'share-title',
-    content: `<div class="share-header">
-        <span class="share-header-icon" aria-hidden="true">
+    content: `<div class="panel-header">
+        <span class="panel-header-icon panel-header-icon--share" aria-hidden="true">
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.82 3.98"/></svg>
         </span>
         <div>
           <h2 id="share-title">分享编辑链接</h2>
-          <p class="share-subtitle">获得链接的人可以编辑此修订版 · 链接 30 天后自动失效</p>
+          <p class="panel-subtitle">获得链接的人可以编辑此修订版 · 链接 30 天后自动失效</p>
         </div>
       </div>
-      <div class="share-body">
+      <div class="panel-body">
         <div class="share-link" hidden>
           <div class="share-link-row">
             <input data-share="url" aria-label="分享编辑链接" readonly>
