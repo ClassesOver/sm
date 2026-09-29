@@ -11,20 +11,29 @@ export function createSharePanel(root: HTMLElement, issue: () => Promise<ShareRe
     root,
     closeLabel: '关闭分享',
     labelledBy: 'share-title',
-    content: `<h2 id="share-title">分享编辑链接</h2>
-      <p class="share-warning" role="note">获得链接的人可以编辑此修订版。请只发送给信任的人，链接 30 天后自动失效。</p>
-      <div class="share-link" hidden>
-        <div class="share-link-row">
-          <input data-share="url" aria-label="分享编辑链接" readonly>
-          <button type="button" class="ui-button" data-share="copy">复制链接</button>
-        </div>
-        <div class="share-link-footer">
-          <span class="share-link-meta" data-share="expires"></span>
-          <span class="share-renew-note" data-share="renew-note" hidden>旧链接仍有效，直到各自到期。</span>
+    content: `<div class="share-header">
+        <span class="share-header-icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.82 3.98"/></svg>
+        </span>
+        <div>
+          <h2 id="share-title">分享编辑链接</h2>
+          <p class="share-subtitle">获得链接的人可以编辑此修订版 · 链接 30 天后自动失效</p>
         </div>
       </div>
-      <button type="button" class="ui-button ui-button--primary share-create" data-share="create">生成并复制链接</button>
-      <p class="share-status" data-share="status" role="status" aria-live="polite"></p>`,
+      <div class="share-body">
+        <div class="share-link" hidden>
+          <div class="share-link-row">
+            <input data-share="url" aria-label="分享编辑链接" readonly>
+            <button type="button" class="ui-button" data-share="copy">复制链接</button>
+          </div>
+          <div class="share-link-footer">
+            <span class="share-link-meta" data-share="expires"></span>
+            <span class="share-renew-note" data-share="renew-note" hidden>旧链接仍有效，直到各自到期。</span>
+          </div>
+        </div>
+        <button type="button" class="ui-button ui-button--primary share-create" data-share="create">生成并复制链接</button>
+        <p class="share-status" data-share="status" role="status" aria-live="polite"></p>
+      </div>`,
   })
   const create = modal.overlay.querySelector<HTMLButtonElement>('[data-share="create"]')!
   const copy = modal.overlay.querySelector<HTMLButtonElement>('[data-share="copy"]')!

@@ -748,35 +748,35 @@ button {
 .modal-close:active { transform: scale(0.92); }
 .modal-close:focus-visible { outline: 3px solid rgb(86 180 233 / 28%); outline-offset: 2px; }
 
-#share-title { margin: 0; color: #0b4f8a; font-size: 20px; }
-
-.share-warning {
+.share-header {
   display: flex;
-  gap: 10px;
-  margin: 14px 0 0;
-  padding: 10px 12px;
-  border: 1px solid #f0e2b6;
-  border-radius: 8px;
-  background: #fffaf0;
-  color: #7a5d1a;
-  font-size: 13px;
-  line-height: 1.55;
+  gap: 12px;
+  align-items: flex-start;
+  padding-right: 36px;
 }
-.share-warning::before {
-  content: '⚠';
+.share-header-icon {
   display: grid;
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  margin-top: 1px;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
   place-items: center;
-  border: 1.2px solid #d9b64a;
-  border-radius: 50%;
-  color: #a37e12;
-  font-size: 11px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #1270bd 0%, #0b4f8a 100%);
+  box-shadow: 0 4px 12px rgb(11 79 138 / 32%);
+  color: #fff;
+}
+.share-header h2 { margin: 0; color: #1b2a41; font-size: 18px; line-height: 1.35; }
+.share-subtitle { margin: 3px 0 0; color: #7a8a99; font-size: 12.5px; }
+
+.share-body {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #e4edf4;
+  border-radius: 12px;
+  background: #f6fafc;
 }
 
-.share-link { display: grid; gap: 8px; margin-top: 16px; }
+.share-link { display: grid; gap: 8px; }
 .share-link[hidden] { display: none; }
 .share-link-row { display: flex; align-items: stretch; }
 .share-link-row input {
@@ -786,7 +786,7 @@ button {
   border: 1px solid #b8cfdf;
   border-right: 0;
   border-radius: 7px 0 0 7px;
-  background: #f8fafc;
+  background: #fff;
   color: #1b2a41;
   font: inherit;
   font-size: 13.5px;
@@ -806,7 +806,7 @@ button {
 .share-link-meta { color: #5b6b7a; font-size: 12px; }
 .share-renew-note { margin: 0; color: #97a6b3; font-size: 12px; }
 
-.share-create { width: 100%; margin-top: 16px; justify-content: center; }
+.share-create { width: 100%; justify-content: center; }
 .share-create:disabled { border-color: #9db4c8; background: #9db4c8; cursor: default; }
 .share-link:not([hidden]) + .share-create {
   display: flex;
@@ -832,6 +832,7 @@ button {
   color: #697b8e;
   font-size: 12px;
 }
+.share-status:empty { min-height: 0; margin-top: 0; }
 .share-status[data-state="success"] { color: #2e7d5b; }
 .share-status[data-state="success"]::before { content: '✓'; font-weight: 700; }
 .share-status[data-state="error"] { color: #9b2c26; }
