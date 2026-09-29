@@ -1,3 +1,4 @@
+import { copyText } from './clipboard'
 import { createModal } from './modal'
 import { formatRevisionLabel } from './localization'
 import { readStorage, writeStorage } from './storage'
@@ -242,7 +243,7 @@ export function createExportPanel() {
       const link = dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)
       const status = dialog.querySelector<HTMLElement>('.export-copy-status')!
       try {
-        await navigator.clipboard.writeText(link?.getAttribute('href') ?? '')
+        await copyText(link?.getAttribute('href') ?? '')
         status.textContent = `${format === 'pdf' ? 'PDF' : 'Word'} 链接已复制`
       } catch {
         status.textContent = '复制失败，请直接打开下载链接'

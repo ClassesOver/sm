@@ -301,7 +301,7 @@ describe('report editor enhancements', () => {
 
     panel.dialog.querySelector<HTMLButtonElement>('[data-copy="pdf"]')!.click()
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('/pdf'))
-    expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('PDF 链接已复制')
+    await vi.waitFor(() => expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('PDF 链接已复制'))
   })
 
   it('clears copy feedback when showing a new export result', async () => {
