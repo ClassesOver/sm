@@ -52,7 +52,7 @@ describe('edit share panel', () => {
     panel.dialog.querySelector<HTMLButtonElement>('[data-share="create"]')!.click()
     await vi.waitFor(() => expect(issue).toHaveBeenCalledOnce())
     await vi.waitFor(() => expect(panel.dialog.querySelector<HTMLInputElement>('[data-share="url"]')?.value).toContain('shared-token'))
-    expect(panel.dialog.querySelector<HTMLElement>('[data-share="status"]')?.textContent).toContain('手动复制')
+    await vi.waitFor(() => expect(panel.dialog.querySelector<HTMLElement>('[data-share="status"]')?.textContent).toContain('手动复制'))
     expect(panel.dialog.querySelector<HTMLElement>('[data-share="renew-note"]')?.textContent).toContain('旧链接仍有效')
     panel.dialog.querySelector<HTMLButtonElement>('[data-share="copy"]')!.click()
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
