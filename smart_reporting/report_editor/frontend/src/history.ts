@@ -175,6 +175,7 @@ export function createHistoryController(
       </section>
       <section class="history-preview" aria-label="版本差异" aria-live="polite">
         <div class="history-preview-empty">
+          <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/></svg>
           <strong>选择对比版本</strong>
           <span>从左侧选择版本，再用上方选项任意调整比较范围。</span>
         </div>

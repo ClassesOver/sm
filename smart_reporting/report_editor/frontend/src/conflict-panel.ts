@@ -14,7 +14,20 @@ export function createConflictPanel(root: HTMLElement, actions: {
     role: 'alertdialog',
     labelledBy: 'conflict-title',
     variant: 'warning',
-    content: `<h2 id="conflict-title">保存冲突</h2><p>服务器版本已变化，请选择如何处理。</p><div class="conflict-diff"></div><label>合并后的 Markdown<textarea data-conflict="merge" rows="8"></textarea></label><div class="conflict-actions"><button type="button" class="ui-button ui-button--primary" data-conflict="local">保留本地</button><button type="button" class="ui-button ui-button--secondary" data-conflict="remote">采用远端</button><button type="button" class="ui-button ui-button--secondary" data-conflict="merge-retry">合并后重试</button></div>`,
+    content: `<div class="panel-header">
+        <span class="panel-header-icon panel-header-icon--warning" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        </span>
+        <div>
+          <h2 id="conflict-title">保存冲突</h2>
+          <p class="panel-subtitle">服务器版本已变化，请选择如何处理。</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="conflict-diff"></div>
+        <label class="conflict-merge">合并后的 Markdown<textarea data-conflict="merge" rows="8"></textarea></label>
+      </div>
+      <div class="conflict-actions"><button type="button" class="ui-button ui-button--primary" data-conflict="local">保留本地</button><button type="button" class="ui-button ui-button--secondary" data-conflict="remote">采用远端</button><button type="button" class="ui-button ui-button--secondary" data-conflict="merge-retry">合并后重试</button></div>`,
   })
   const panel = modal.overlay
   let opener: HTMLElement | null = null
