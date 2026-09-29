@@ -889,7 +889,7 @@ button {
 .ui-button:hover { border-color: #007ea7; background: #edf5fc; box-shadow: 0 2px 6px rgb(11 79 138 / 10%); }
 .ui-button:active { transform: translateY(1px); box-shadow: none; }
 .ui-button:focus-visible { outline: 3px solid rgb(86 180 233 / 28%); outline-offset: 2px; }
-.ui-button:disabled { border-color: #d5e0e8; background: #f1f5f8; color: #9db0bf; cursor: default; box-shadow: none; transform: none; }
+.ui-button:disabled { border-color: #d5e0e8; background: #f1f5f8; color: #8299ab; cursor: default; box-shadow: none; transform: none; }
 .ui-button--primary {
   border-color: transparent;
   background: linear-gradient(135deg, #1064ad 0%, #0b4f8a 100%);
@@ -903,7 +903,7 @@ button {
   transform: translateY(-1px);
 }
 .ui-button--primary:active { transform: translateY(0); box-shadow: 0 1px 4px rgb(11 79 138 / 24%); }
-.ui-button--primary:disabled { border-color: transparent; background: #9db4c8; box-shadow: none; transform: none; }
+.ui-button--primary:disabled { border-color: transparent; background: #9db4c8; color: #fff; box-shadow: none; transform: none; }
 .ui-button--quiet { border-color: transparent; background: transparent; color: #697b8e; }
 .ui-button--quiet:hover { border-color: #d8e2e9; background: #f1f4f6; color: #1b2a41; box-shadow: none; transform: none; }
 .ui-button--icon { width: 32px; min-height: 32px; padding: 0; }
