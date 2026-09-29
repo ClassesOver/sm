@@ -624,9 +624,10 @@ button {
 .editor-onboarding-steps li + li { border-top: 1px solid #e7eef3; }
 .editor-onboarding-step-num { display: grid; flex: 0 0 24px; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: linear-gradient(135deg, #7588d8 0%, #4b5bb5 100%); box-shadow: 0 2px 6px rgb(75 91 181 / 30%); color: #fff; font-size: 12px; font-weight: 700; }
 .editor-onboarding-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-.editor-onboarding-actions button { padding: 8px 14px; border-radius: 8px; cursor: pointer; font: inherit; }
-.editor-onboarding-actions [data-onboarding="dismiss"] { border: 1px solid #0b4f8a; background: #0b4f8a; color: #fff; }
-.editor-onboarding-actions [data-onboarding="dismiss"]:hover { border-color: #007ea7; background: #007ea7; }
+.editor-onboarding-actions button { padding: 8px 16px; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 500; transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease, color 0.15s ease; }
+.editor-onboarding-actions [data-onboarding="dismiss"] { border: 1px solid transparent; background: linear-gradient(135deg, #1064ad 0%, #0b4f8a 100%); box-shadow: 0 2px 8px rgb(11 79 138 / 24%); color: #fff; }
+.editor-onboarding-actions [data-onboarding="dismiss"]:hover { border-color: transparent; background: linear-gradient(135deg, #0f77c2 0%, #0d5fa3 100%); box-shadow: 0 4px 12px rgb(11 79 138 / 30%); transform: translateY(-1px); }
+.editor-onboarding-actions [data-onboarding="dismiss"]:active { transform: translateY(0); box-shadow: 0 1px 4px rgb(11 79 138 / 24%); }
 .editor-onboarding-actions [data-onboarding="hide"] { border: 1px solid transparent; background: transparent; color: #697b8e; }
 .editor-onboarding-actions [data-onboarding="hide"]:hover { background: #f1f4f6; color: #1b2a41; }
 
@@ -816,13 +817,13 @@ button {
 .share-link-row input:focus { border-color: #007ea7; outline: 3px solid rgb(86 180 233 / 24%); outline-offset: -1px; }
 .share-link-row button {
   flex: 0 0 auto;
-  border-color: #0b4f8a;
+  border-color: transparent;
   border-radius: 0 7px 7px 0;
-  background: #0b4f8a;
+  background: linear-gradient(135deg, #1064ad 0%, #0b4f8a 100%);
   color: #fff;
 }
-.share-link-row button:hover { border-color: #007ea7; background: #007ea7; }
-.share-link-row button:disabled { border-color: #9db4c8; background: #9db4c8; cursor: default; }
+.share-link-row button:hover { border-color: transparent; background: linear-gradient(135deg, #0f77c2 0%, #0d5fa3 100%); }
+.share-link-row button:disabled { border-color: transparent; background: #9db4c8; cursor: default; }
 .share-link-footer { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .share-link-meta { color: #5b6b7a; font-size: 12px; }
 .share-renew-note { margin: 0; color: #97a6b3; font-size: 12px; }
@@ -870,25 +871,41 @@ button {
 
 .ui-button {
   display: inline-flex;
-  min-height: 34px;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 7px 12px;
+  padding: 8px 16px;
   border: 1px solid #c7d7e5;
-  border-radius: 7px;
+  border-radius: 8px;
   background: #fff;
   color: #0b4f8a;
   cursor: pointer;
   font: inherit;
+  font-weight: 500;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease, color 0.15s ease;
 }
 
-.ui-button:hover { border-color: #007ea7; background: #edf5fc; }
+.ui-button:hover { border-color: #007ea7; background: #edf5fc; box-shadow: 0 2px 6px rgb(11 79 138 / 10%); }
+.ui-button:active { transform: translateY(1px); box-shadow: none; }
 .ui-button:focus-visible { outline: 3px solid rgb(86 180 233 / 28%); outline-offset: 2px; }
-.ui-button--primary { border-color: #0b4f8a; background: #0b4f8a; color: #fff; }
-.ui-button--primary:hover { border-color: #007ea7; background: #007ea7; }
+.ui-button:disabled { border-color: #d5e0e8; background: #f1f5f8; color: #9db0bf; cursor: default; box-shadow: none; transform: none; }
+.ui-button--primary {
+  border-color: transparent;
+  background: linear-gradient(135deg, #1064ad 0%, #0b4f8a 100%);
+  box-shadow: 0 2px 8px rgb(11 79 138 / 24%);
+  color: #fff;
+}
+.ui-button--primary:hover {
+  border-color: transparent;
+  background: linear-gradient(135deg, #0f77c2 0%, #0d5fa3 100%);
+  box-shadow: 0 4px 12px rgb(11 79 138 / 30%);
+  transform: translateY(-1px);
+}
+.ui-button--primary:active { transform: translateY(0); box-shadow: 0 1px 4px rgb(11 79 138 / 24%); }
+.ui-button--primary:disabled { border-color: transparent; background: #9db4c8; box-shadow: none; transform: none; }
 .ui-button--quiet { border-color: transparent; background: transparent; color: #697b8e; }
-.ui-button--quiet:hover { border-color: #d8e2e9; background: #f1f4f6; color: #1b2a41; }
+.ui-button--quiet:hover { border-color: #d8e2e9; background: #f1f4f6; color: #1b2a41; box-shadow: none; transform: none; }
 .ui-button--icon { width: 32px; min-height: 32px; padding: 0; }
 
 .history-diff-summary,
@@ -1124,7 +1141,7 @@ button {
 .history-item:hover::before { border-color: #007ea7; }
 .history-item[aria-pressed="true"]::before { border-color: #007ea7; background: #007ea7; }
 .history-list { border-left: 1px solid #d4e0e9; padding-left: 12px; }
-.history-load-more { align-self: center; margin: 12px auto 0; padding: 6px 14px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #0b4f8a; cursor: pointer; font-size: 13px; }
+.history-load-more { align-self: center; margin: 12px auto 0; padding: 6px 14px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #0b4f8a; cursor: pointer; font-size: 13px; transition: border-color 0.15s ease, background 0.15s ease; }
 .history-load-more:hover { border-color: #cfe0ec; background: #e6f0f8; }
 .history-load-more[hidden] { display: none; }
 .history-filters { display: flex; gap: 8px; margin: 12px 0; }
@@ -2512,10 +2529,12 @@ button {
   padding: 10px 14px;
   border: 1px solid #c7d7e5;
   border-radius: 8px;
+  background: #fff;
   color: #0b4f8a;
   cursor: pointer;
   font-size: 14px;
   text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
 .export-links a.is-primary {
@@ -2543,6 +2562,7 @@ button {
   border-color: #007ea7;
   background: #edf5fc;
   color: #0b4f8a;
+  box-shadow: 0 2px 6px rgb(11 79 138 / 10%);
 }
 
 .export-links a.is-primary:hover {
