@@ -20,7 +20,7 @@ export function showEditorOnboarding(root: HTMLElement, key: string) {
           <p class="panel-subtitle">快速开始</p>
         </div>
       </div>
-      <ol class="editor-onboarding-steps"><li>点击正文直接编辑 Markdown</li><li>用左侧目录跳转章节</li><li>保存后即可导出 PDF / Word</li></ol>
+      <ol class="editor-onboarding-steps"><li><span class="editor-onboarding-step-num">1</span>点击正文直接编辑 Markdown</li><li><span class="editor-onboarding-step-num">2</span>用左侧目录跳转章节</li><li><span class="editor-onboarding-step-num">3</span>保存后即可导出 PDF / Word</li></ol>
       <div class="editor-onboarding-actions"><button type="button" data-onboarding="dismiss">知道了</button><button type="button" data-onboarding="hide">以后不再提示</button></div>`,
   })
   const panel = modal.overlay
