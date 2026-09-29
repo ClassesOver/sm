@@ -643,11 +643,16 @@ button {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgb(27 42 65 / 28%);
-  backdrop-filter: blur(2px);
+  background: rgb(19 32 51 / 45%);
+  backdrop-filter: blur(6px);
+  animation: modal-overlay-in 0.18s ease-out;
 }
 
 .modal-overlay[hidden] { display: none; }
+
+@keyframes modal-overlay-in {
+  from { opacity: 0; }
+}
 
 /* 导出阻塞遮罩：渲染与验收可持续数分钟，期间禁止一切编辑操作 */
 .export-block-overlay {
@@ -701,10 +706,20 @@ button {
   max-height: 86vh;
   overflow: auto;
   padding: 26px;
-  border: 1px solid #ccd8e0;
-  border-radius: 8px;
+  border: 1px solid #dfe8ef;
+  border-radius: 14px;
   background: #fff;
-  box-shadow: 0 18px 48px rgb(27 42 65 / 18%);
+  box-shadow: 0 24px 64px rgb(15 28 46 / 26%), 0 2px 8px rgb(15 28 46 / 8%);
+  animation: modal-card-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+@keyframes modal-card-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-overlay,
+  .modal-card { animation: none; }
 }
 
 .modal-card--wide { width: min(1280px, 100%); }
@@ -721,14 +736,16 @@ button {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  background: #f1f5f8;
   color: #697b8e;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
 }
 
-.modal-close:hover { border-color: #d8e2e9; background: #f1f4f6; color: #1b2a41; }
+.modal-close:hover { background: #e2eaf1; color: #1b2a41; }
+.modal-close:active { transform: scale(0.92); }
 .modal-close:focus-visible { outline: 3px solid rgb(86 180 233 / 28%); outline-offset: 2px; }
 
 #share-title { margin: 0; color: #0b4f8a; font-size: 20px; }
