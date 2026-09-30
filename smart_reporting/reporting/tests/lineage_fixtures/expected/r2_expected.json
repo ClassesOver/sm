@@ -1,0 +1,30 @@
+{
+  "scenario": "R2：2025-09 仅 A 院区（范围限定；本期和基期同受范围限制）",
+  "unit": "元",
+  "period": "2025-09",
+  "baseline_period": "2025-08",
+  "scope": { "branch": "A院区" },
+  "revenue_total": 1200.0,
+  "visits_total": 10,
+  "revenue_per_visit": 120.0,
+  "baseline_revenue_total": 1000.0,
+  "baseline_visits_total": 10,
+  "baseline_revenue_per_visit": 100.0,
+  "mom_change": 200.0,
+  "mom_rate_pct": 20.0,
+  "chain": {
+    "revenue_total": "A院区 2025-09 唯一行 = 1200",
+    "visits_total": "A院区 2025-09 唯一行 = 10",
+    "revenue_per_visit": "1200 / 10 = 120",
+    "mom_change": "1200 - 1000 = 200",
+    "mom_rate_pct": "(1200 - 1000) / 1000 * 100 = 20"
+  },
+  "input_rows": {
+    "current": [["2025-09", "A院区", 1200, 10]],
+    "baseline": [["2025-08", "A院区", 1000, 10]],
+    "excluded": [
+      ["2025-09", "B院区", 2400, 20],
+      ["2025-08", "B院区", 2000, 20]
+    ]
+  }
+}

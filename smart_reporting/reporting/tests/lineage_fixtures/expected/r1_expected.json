@@ -1,0 +1,29 @@
+{
+  "scenario": "R1：2025-09 全部院区（正常路径）",
+  "unit": "元（测试约定，不与万元混用）",
+  "period": "2025-09",
+  "baseline_period": "2025-08",
+  "scope": { "branch": null },
+  "revenue_total": 3600.0,
+  "visits_total": 30,
+  "revenue_per_visit": 120.0,
+  "mom_change": 600.0,
+  "mom_rate_pct": 20.0,
+  "chain": {
+    "revenue_total": "1200 + 2400 = 3600",
+    "visits_total": "10 + 20 = 30",
+    "revenue_per_visit": "3600 / 30 = 120",
+    "mom_change": "3600 - 3000 = 600",
+    "mom_rate_pct": "(3600 - 3000) / 3000 * 100 = 20"
+  },
+  "input_rows": {
+    "current": [
+      ["2025-09", "A院区", 1200, 10],
+      ["2025-09", "B院区", 2400, 20]
+    ],
+    "baseline": [
+      ["2025-08", "A院区", 1000, 10],
+      ["2025-08", "B院区", 2000, 20]
+    ]
+  }
+}

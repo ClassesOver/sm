@@ -176,6 +176,15 @@ class AnalysisEvidence(StrictModel):
         default=(), alias="profileReadReceiptIds", max_length=500
     )
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
+    # B4：服务端构造的补充分析计算记录（ComputationRecordV1 by-alias dict）；
+    # 模型不参与构造（计划 3.4）。旧 evidence 无此字段兼容。
+    computation_record: dict[str, Any] | None = Field(
+        default=None, alias="computationRecord"
+    )
+    # 计算记录引用的脚本文件身份（record 内只存 resourceId，索引登记需完整身份）。
+    computation_script_file: FileIdentity | None = Field(
+        default=None, alias="computationScriptFile"
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -292,6 +301,24 @@ class AnalysisChart(StrictModel):
     visual_inspection_receipt: ChartVisualInspectionReceipt | None = Field(
         default=None, alias="visualInspectionReceipt"
     )
+    # B3 起：实际作图数据（chart-input/v1 物化文件）的冻结身份；图片必须由
+    # 这些文件的数据生成。旧图无此字段 = 来源不足，读取层如实降级。
+    plot_data_files: tuple[FileIdentity, ...] = Field(
+        default=(), alias="plotDataFiles", max_length=50
+    )
+    plot_data_kind: Literal["chart_input", "fallback_facts"] | None = Field(
+        default=None, alias="plotDataKind"
+    )
+
+    @field_validator("plot_data_files")
+    @classmethod
+    def validate_plot_data_files(cls, value: tuple[FileIdentity, ...]) -> tuple[FileIdentity, ...]:
+        paths = [item.path for item in value]
+        if len(paths) != len(set(paths)):
+            raise ValueError("plotDataFiles 路径不能重复")
+        if any(not item.path.endswith(".json") for item in value):
+            raise ValueError("作图数据文件必须是 JSON")
+        return value
 
     @field_validator("citation_ids")
     @classmethod
@@ -498,6 +525,9 @@ class SectionClaim(StrictModel):
     entity_grain: str | None = Field(
         default=None, alias="entityGrain", min_length=1, max_length=128
     )
+    # B2 起：claim 绑定的确定性 factId（bundle 内内容寻址）；服务端校验存在性
+    # 后写入，模型只能从提供的候选中选择，不能自由签发。
+    fact_ids: tuple[str, ...] = Field(default=(), alias="factIds", max_length=100)
 
     @model_validator(mode="after")
     def validate_entity_ratio(self) -> SectionClaim:
@@ -507,6 +537,8 @@ class SectionClaim(StrictModel):
             self.aggregation_grain is None or self.entity_grain is None
         ):
             raise ValueError("实体级比例必须同时声明 aggregationGrain 与 entityGrain")
+        if len(self.fact_ids) != len(set(self.fact_ids)):
+            raise ValueError("claim 的 factIds 不能重复")
         return self
 
 
@@ -541,6 +573,9 @@ class SectionClaimSubmission(StrictModel):
     entity_grain: str | None = Field(
         default=None, alias="entityGrain", min_length=1, max_length=128
     )
+    # 模型可提交的 fact 引用候选；只允许选择服务端提供的事实（计划 3.4），
+    # 冻结时由服务端对 bundle 核对存在性，未提供候选时为空。
+    fact_ids: tuple[str, ...] = Field(default=(), alias="factIds", max_length=100)
 
     @field_validator("comparison", mode="before")
     @classmethod
@@ -559,6 +594,8 @@ class SectionClaimSubmission(StrictModel):
             raise ValueError("章节 claim citationIds 不能重复")
         if len(self.chart_ids) != len(set(self.chart_ids)):
             raise ValueError("章节 claim chartIds 不能重复")
+        if len(self.fact_ids) != len(set(self.fact_ids)):
+            raise ValueError("章节 claim factIds 不能重复")
         if not self.chart_ids and self.comparison_type != "none" and self.comparison_period is None:
             raise ValueError("无图表的比较 claim 必须声明 comparisonPeriod")
         return self

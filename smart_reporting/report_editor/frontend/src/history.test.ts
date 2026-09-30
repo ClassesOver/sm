@@ -130,6 +130,40 @@ describe('createHistoryController', () => {
     vi.unstubAllGlobals()
   })
 
+  it('passes the selected published revision and waits for its atomic restore', async () => {
+    let finish!: () => void
+    const restore = vi.fn(() => new Promise<void>((resolve) => { finish = resolve }))
+    vi.stubGlobal('confirm', () => true)
+    const controller = createHistoryController(document.body, restore)
+    controller.replace([{ label: 'Revision 1', markdown: '# old', revision: 1 }])
+    controller.open()
+    document.querySelector<HTMLButtonElement>('.history-item')!.click()
+    const button = document.querySelector<HTMLButtonElement>('.history-restore')!
+    button.click()
+    button.click()
+    expect(restore).toHaveBeenCalledExactlyOnceWith('# old', 1)
+    expect(button.disabled).toBe(true)
+    expect(controller.dialog.hidden).toBe(false)
+    finish()
+    await vi.waitFor(() => expect(controller.dialog.hidden).toBe(true))
+    expect(button.disabled).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the history panel open when restoring fails', async () => {
+    const restore = vi.fn().mockRejectedValue(new Error('conflict'))
+    vi.stubGlobal('confirm', () => true)
+    const controller = createHistoryController(document.body, restore)
+    controller.replace([{ label: 'Revision 1', markdown: '# old', revision: 1 }])
+    controller.open()
+    document.querySelector<HTMLButtonElement>('.history-item')!.click()
+    document.querySelector<HTMLButtonElement>('.history-restore')!.click()
+    await vi.waitFor(() => expect(document.querySelector<HTMLElement>('.history-restore-error')!.hidden).toBe(false))
+    expect(controller.dialog.hidden).toBe(false)
+    expect(document.querySelector<HTMLButtonElement>('.history-restore')!.disabled).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
   it('loads selected and previous revisions for a useful diff', async () => {
     const loadRevision = vi.fn(async (revision: number) => (revision === 1 ? '# 旧\n' : '# 新\n'))
     const controller = createHistoryController(document.body, undefined, loadRevision)

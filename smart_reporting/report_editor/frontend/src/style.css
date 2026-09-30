@@ -240,6 +240,7 @@ button {
     box-shadow 150ms ease,
     color 150ms ease;
 }
+.report-actions button[hidden] { display: none; }
 
 .report-actions button svg {
   width: 16px;
@@ -2454,6 +2455,7 @@ button {
 .export-settings-card .panel-body { margin-top: 0; }
 .export-settings-body { display: grid; gap: 10px; }
 .export-settings-body > label:not(.export-note-field) { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid #e0e9f0; border-radius: 8px; background: #fff; color: #30435a; font-size: 13.5px; cursor: pointer; }
+.export-settings-body > label[hidden] { display: none; }
 .export-settings-body > label:not(.export-note-field):hover { border-color: #b8cfdf; }
 .export-settings-body input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: #0b4f8a; cursor: pointer; }
 .export-settings-card .export-note-field { display: grid; gap: 7px; margin-top: 4px; }
@@ -2931,7 +2933,16 @@ button {
 
 .report-section-marker,
 .report-citation-marker,
-.report-analysis-marker {
+.report-analysis-marker,
+.report-claim-marker,
+.report-table-marker,
+.report-table-close-marker {
+  display: none;
+}
+
+/* table 协议块独占段落：隐藏标记后把空段落一并收起，避免结束标记被渲染为表格行。 */
+#report-editor .ProseMirror p:has(> .report-table-marker:only-child),
+#report-editor .ProseMirror p:has(> .report-table-close-marker:only-child) {
   display: none;
 }
 
@@ -3456,3 +3467,171 @@ button {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * 数据追溯面板（B5）：tab 导航、清单条目、预览表格与状态区
+ * ------------------------------------------------------------------------- */
+
+.trace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.trace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid rgb(148 163 184 / 35%);
+  padding-bottom: 8px;
+}
+
+.trace-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 5px 12px;
+  opacity: 0.75;
+}
+
+.trace-tab:hover { opacity: 1; }
+
+.trace-tab.is-active {
+  background: rgb(18 112 189 / 12%);
+  border-color: rgb(18 112 189 / 45%);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.trace-status {
+  color: rgb(71 85 105);
+  font-size: 13px;
+  margin: 0;
+  min-height: 18px;
+}
+
+.source-validation-status[data-state='stale'] { color: #a24823; }
+.source-validation-status[data-state='checking'] { color: #326c91; }
+.source-validation-status[data-state='unknown'] { color: #687889; }
+
+.trace-status[data-state='error'] { color: rgb(190 42 48); }
+.trace-status[data-state='loading'] { color: rgb(11 79 138); }
+
+.trace-list,
+.trace-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(56vh, 520px);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.trace-item {
+  align-items: center;
+  border: 1px solid rgb(148 163 184 / 30%);
+  border-radius: 10px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.trace-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.trace-item-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.trace-item-meta {
+  color: rgb(100 116 139);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.trace-item-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.trace-table-wrap {
+  border: 1px solid rgb(148 163 184 / 30%);
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 320px;
+}
+
+.trace-table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  width: 100%;
+}
+
+.trace-table th,
+.trace-table td {
+  border-bottom: 1px solid rgb(148 163 184 / 22%);
+  padding: 5px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.trace-table th {
+  background: rgb(148 163 184 / 12%);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.trace-fact,
+.trace-computation,
+.trace-chart-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trace-fact p,
+.trace-computation p,
+.trace-chart-info p {
+  margin: 0;
+}
+
+.trace-fact-formula {
+  background: rgb(148 163 184 / 12%);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  overflow-wrap: anywhere;
+}
+
+.trace-fact-inputs,
+.trace-fact-warnings,
+.trace-computation-outputs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.trace-limitation {
+  color: rgb(154 108 14);
+  font-size: 12.5px;
+}
+
+.trace-back { align-self: flex-start; }
+.trace-more { align-self: flex-start; }
+.trace-link { padding: 1px 8px; font-size: 12px; }

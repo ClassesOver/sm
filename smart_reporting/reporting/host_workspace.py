@@ -310,6 +310,46 @@ class HostReportingWorkspace:
 
         await anyio.to_thread.run_sync(delete)
 
+    async def adelete_registered_file(
+        self, _thread_id: str, path: str, *, size: int, sha256: str
+    ) -> bool:
+        """仅删除身份相符的普通文件；逐级 O_NOFOLLOW，不递归删除目录。"""
+        relative = self.paths.normalize(path)
+
+        def delete() -> bool:
+            parts = Path(relative).parts
+            directory = os.open(self.identity.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                for part in parts[:-1]:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    os.close(directory)
+                    directory = child
+                try:
+                    descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                except FileNotFoundError:
+                    return False
+                try:
+                    info = os.fstat(descriptor)
+                    if not stat.S_ISREG(info.st_mode) or info.st_size != size:
+                        raise WorkspaceError("待回收来源文件身份已变化。")
+                    digest = hashlib.sha256()
+                    while chunk := os.read(descriptor, 1024 * 1024):
+                        digest.update(chunk)
+                    current = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+                    if digest.hexdigest() != sha256 or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                        raise WorkspaceError("待回收来源文件身份已变化。")
+                    os.unlink(parts[-1], dir_fd=directory)
+                    return True
+                finally:
+                    os.close(descriptor)
+            except FileNotFoundError:
+                return False
+            finally:
+                os.close(directory)
+
+        async with self._path_write_lock(relative):
+            return await anyio.to_thread.run_sync(delete)
+
     async def arun_command(
         self,
         _thread_id: str,
@@ -660,6 +700,9 @@ class ReportingWorkspaceRouter:
 
     async def awrite_bytes(self, thread_id: str, path: str, content: bytes, **kwargs: Any):
         return await self.workspace(thread_id).awrite_bytes(thread_id, path, content, **kwargs)
+
+    async def adelete_registered_file(self, thread_id: str, path: str, *, size: int, sha256: str) -> bool:
+        return await self.workspace(thread_id).adelete_registered_file(thread_id, path, size=size, sha256=sha256)
 
     async def awrite_text(self, thread_id: str, path: str, content: str, **kwargs: Any):
         return await self.workspace(thread_id).awrite_text(thread_id, path, content, **kwargs)

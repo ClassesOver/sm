@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -11,7 +12,9 @@ from sqlglot import exp
 
 from ....report_editor.service import ReportEditorContext
 from ....workspace import WorkspacePathConflict
+from ...delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
 from ...structured_output import StructuredOutputCallBudget
+from ...trace.contracts_v1 import RevisionTraceIndexV1, derive_resource_id
 from .base import (
     _PLANNER_DISPLAY_NAMES,
     DOMAIN_CODES,
@@ -326,6 +329,60 @@ class RuntimePlanningMixin:
         if report_public_base_url is None:
             raise RuntimeError("HTTP 报表发布缺少公开下载基址")
         content = self._publication_content(output)
+        source_manifest = None
+        source_index = None
+        manifest_identity = None
+        if content.get("artifactManifest") is not None:
+            manifest_identity = ArtifactFile.model_validate(content["artifactManifest"])
+            manifest_bytes = await self.workspace_service.read_limited_regular_file(
+                thread_id, manifest_identity.path, max_bytes=manifest_identity.size
+            )
+            if (
+                len(manifest_bytes) != manifest_identity.size
+                or sha256(manifest_bytes).hexdigest() != manifest_identity.sha256
+            ):
+                raise ReportingError(
+                    "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
+                )
+            source_manifest = ReportArtifactManifest.model_validate_json(manifest_bytes)
+            if (
+                source_manifest.report_id != content["reportId"]
+                or source_manifest.markdown.path != content["markdownPath"]
+                or source_manifest.revision not in {content["revision"], content["revision"] - 1}
+            ):
+                raise ReportingError(
+                    "report_artifact_manifest_invalid", "报告产物清单与发布身份不一致。"
+                )
+            if source_manifest.trace_index is not None:
+                index_file = source_manifest.trace_index
+                index_bytes = await self.workspace_service.read_limited_regular_file(
+                    thread_id, index_file.path, max_bytes=index_file.size
+                )
+                if (
+                    len(index_bytes) != index_file.size
+                    or sha256(index_bytes).hexdigest() != index_file.sha256
+                ):
+                    raise ReportingError(
+                        "report_trace_index_changed", "已验收追溯索引发生变化。"
+                    )
+                source_index = RevisionTraceIndexV1.model_validate_json(index_bytes)
+                index_markdown = next(
+                    file for file in source_index.files
+                    if file.resource_id == source_index.markdown_file_resource_id
+                )
+                if (
+                    source_index.report_id != source_manifest.report_id
+                    or source_index.revision != source_manifest.revision
+                    or source_index.workflow_run_id != workflow_run_id
+                    or source_index.markdown_file_resource_id
+                    != derive_resource_id(source_manifest.markdown.path)
+                    or index_markdown.path != source_manifest.markdown.path
+                    or index_markdown.size != source_manifest.markdown.size
+                    or index_markdown.sha256 != source_manifest.markdown.sha256
+                ):
+                    raise ReportingError(
+                        "report_trace_index_invalid", "报告追溯索引与发布身份不一致。"
+                    )
         source_markdown = PurePosixPath(content["markdownPath"])
         revision_directory = f"revision-{content['revision']}"
         revision_markdown = (
@@ -405,6 +462,45 @@ class RuntimePlanningMixin:
                 return obj
 
             editor_job = _remap_paths(editor_job)
+        if source_manifest is not None and manifest_identity is not None:
+            from ....report_editor.trace_revisions import snapshot_revision_lineage
+
+            target_manifest_path = str(revision_markdown.parent / PurePosixPath(manifest_identity.path).name)
+            source_root = source_markdown.parent
+            target_root = revision_markdown.parent
+            source_paths = [chart.path for chart in source_manifest.charts]
+            source_paths.extend(
+                chart.interactive_spec.path for chart in source_manifest.charts
+                if chart.interactive_spec is not None
+            )
+            if source_index is not None:
+                source_paths.extend(str(item.path) for item in source_index.files)
+            for source_path in source_paths:
+                if source_path == str(source_markdown):
+                    path_map[source_path] = str(revision_markdown)
+                    continue
+                try:
+                    relative = PurePosixPath(source_path).relative_to(source_root)
+                except ValueError:
+                    relative = PurePosixPath("trace-resources") / source_path
+                path_map.setdefault(source_path, str(target_root / relative))
+            _relocated_manifest, relocated_identity = await snapshot_revision_lineage(
+                self.workspace_service,
+                thread_id,
+                manifest=source_manifest,
+                index=source_index,
+                markdown_file=ArtifactFile(
+                    path=str(revision_markdown),
+                    mediaType="text/markdown",
+                    size=source_manifest.markdown.size,
+                    sha256=source_manifest.markdown.sha256,
+                ),
+                target_revision=int(content["revision"]),
+                path_map=path_map,
+                manifest_path=target_manifest_path,
+            )
+            content["artifactManifestPath"] = relocated_identity.path
+            content["artifactManifest"] = relocated_identity.model_dump(mode="json", by_alias=True)
         content["editorJob"] = editor_job
         durable = await self.state_repository.get(workflow_run_id)
         stored_scope = (
@@ -465,6 +561,7 @@ class RuntimePlanningMixin:
             jobId=content["jobId"],
             workflowRunId=workflow_run_id,
             markdownPath=str(revision_markdown),
+            artifactManifest=content.get("artifactManifest"),
             job=content["editorJob"],
             scope=scope.as_state(),
         )
@@ -1372,6 +1469,19 @@ class RuntimePlanningMixin:
                     separators=(",", ":"),
                 ),
             )
+        bundle = bundle.model_copy(
+            update={
+                "requirements": _with_drilldown_projection(
+                    bundle.requirements,
+                    self._profile(run_context),
+                    measure_semantics=tuple(
+                        semantic
+                        for snapshot in self._snapshots(run_context)
+                        for semantic in snapshot.measure_semantics
+                    ),
+                )
+            }
+        )
         state[REPORT_ANALYSIS_PLAN_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
         ]
@@ -2910,6 +3020,90 @@ def _row_preserving_requirement_ids(
         if len(requirement.tables) == 1
         and requirement.tables[0].table.rsplit(".", 1)[-1].lower() in governed_tables
     )
+
+
+def _with_drilldown_projection(
+    requirements: tuple[QueryRequirement, ...],
+    profile: EffectiveReportingProfile,
+    *,
+    measure_semantics: tuple[MeasureSemantic, ...] | None = None,
+) -> tuple[QueryRequirement, ...]:
+    """把所有相关指标共同声明为可加的冻结快照维度加入物化粒度。
+
+    只处理单表 requirement；字段必须来自当前已绑定 Profile，且必须同时在
+    该 requirement 的每个 measure ``additiveAcross`` 中。超过既有 30 列契约
+    时保持原计划，后续 B7 能力生成器会如实判定不可用。
+    """
+
+    effective_semantics = (
+        getattr(profile, "measure_semantics", ())
+        if measure_semantics is None
+        else measure_semantics
+    )
+    profile_dimensions = getattr(profile, "dimensions", ())
+    if not effective_semantics or not profile_dimensions:
+        return requirements
+    semantics = {item.field_ref.casefold(): item for item in effective_semantics}
+    projected: list[QueryRequirement] = []
+    for requirement in requirements:
+        if len(requirement.tables) != 1:
+            projected.append(requirement)
+            continue
+        table = requirement.tables[0]
+        table_name = table.table.casefold()
+        semantic_items = []
+        for measure in table.measure_columns:
+            matches = [
+                item
+                for ref, item in semantics.items()
+                if ref.startswith(f"{requirement.source_id.casefold()}.")
+                and ref.endswith(f".{measure.casefold()}")
+                and (
+                    ref.rsplit(".", 1)[0].endswith(f".{table_name}")
+                    or ref.rsplit(".", 1)[0].split(".", 1)[-1] == table_name
+                )
+            ]
+            if len(matches) != 1:
+                semantic_items = []
+                break
+            semantic_items.append(matches[0])
+        if not semantic_items:
+            projected.append(requirement)
+            continue
+        common_additive = set(semantic_items[0].additive_across)
+        for semantic in semantic_items[1:]:
+            common_additive.intersection_update(semantic.additive_across)
+        additions: list[str] = []
+        for dimension in profile_dimensions:
+            candidates = [
+                ref.rsplit(".", 1)[-1]
+                for ref in dimension.field_refs
+                if ref.casefold().startswith(f"{requirement.source_id.casefold()}.")
+                and (
+                    ref.rsplit(".", 1)[0].casefold().endswith(f".{table_name}")
+                    or ref.rsplit(".", 1)[0].casefold().split(".", 1)[-1]
+                    == table_name
+                )
+                and ref.rsplit(".", 1)[-1].casefold() in common_additive
+            ]
+            if len(candidates) == 1:
+                additions.append(candidates[0].casefold())
+        projected_dimensions = tuple(
+            dict.fromkeys((*requirement.dimension_columns, *additions))
+        )
+        grain = tuple(dict.fromkeys((*requirement.grain_columns, *additions)))
+        if len(projected_dimensions) > 30 or len(grain) > 30:
+            projected.append(requirement)
+            continue
+        projected.append(
+            requirement.model_copy(
+                update={
+                    "dimension_columns": projected_dimensions,
+                    "grain_columns": grain,
+                }
+            )
+        )
+    return tuple(projected)
 
 
 def _validate_reporting_profile_schema(

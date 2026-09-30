@@ -3,17 +3,26 @@ import { describe, expect, it } from 'vitest'
 import { findProtocolMarkers, protocolMarkersUnchanged, restoreProtocolMarkers } from './protocol'
 
 describe('report protocol markers', () => {
-  it('finds section, citation, and analysis markers without transforming markdown', () => {
+  it('finds section, citation, analysis, claim and table markers without transforming markdown', () => {
     const markdown = [
       '[[section:summary]]',
       '## 经营摘要[[analysis:analysis_001]]',
       '收入同比增长。[[citation:revenue_001]]',
+      '收入 3600 万元。[[claim:claim_001]]',
+      '[[table:tbl_001]]',
+      '| 指标 | 值 |',
+      '| --- | ---: |',
+      '| 收入 | 3600 |',
+      '[[/table:tbl_001]]',
     ].join('\n')
 
     expect(findProtocolMarkers(markdown)).toEqual([
       expect.objectContaining({ kind: 'section', raw: '[[section:summary]]' }),
       expect.objectContaining({ kind: 'analysis', raw: '[[analysis:analysis_001]]' }),
       expect.objectContaining({ kind: 'citation', raw: '[[citation:revenue_001]]' }),
+      expect.objectContaining({ kind: 'claim', raw: '[[claim:claim_001]]' }),
+      expect.objectContaining({ kind: 'table', raw: '[[table:tbl_001]]' }),
+      expect.objectContaining({ kind: 'table-close', raw: '[[/table:tbl_001]]' }),
     ])
     expect(protocolMarkersUnchanged(markdown, markdown)).toBe(true)
   })
@@ -28,6 +37,11 @@ describe('report protocol markers', () => {
     expect(
       protocolMarkersUnchanged(original, '[[citation:x]]\n正文 [[section:a]]'),
     ).toBe(false)
+
+    const withTable = '[[table:t1]]\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n[[/table:t1]]'
+    expect(protocolMarkersUnchanged(withTable, '| a | b |\n| --- | --- |\n| 1 | 2 |')).toBe(false)
+    expect(protocolMarkersUnchanged(withTable, withTable.replace('[[table:t1]]', ''))).toBe(false)
+    expect(protocolMarkersUnchanged(withTable, withTable.replace('[[/table:t1]]', ''))).toBe(false)
   })
 
   it('restores serializer-escaped protocol markers', () => {
@@ -35,6 +49,10 @@ describe('report protocol markers', () => {
       '\\[\\[section:section\\_001]]',
       '## 成本分析\\[\\[analysis:analysis\\_001]]',
       '正文\\[\\[citation:citation\\_001]]',
+      '\\[\\[claim:claim\\_001]]',
+      '\\[\\[table:tbl\\_001]]',
+      '\\[\\[/table:tbl\\_001]]',
+      '\\[\\[/claim:claim\\_001]]',
       '普通转义 \\[\\[not a marker]] 保持原样',
     ].join('\n')
 
@@ -43,6 +61,10 @@ describe('report protocol markers', () => {
         '[[section:section_001]]',
         '## 成本分析[[analysis:analysis_001]]',
         '正文[[citation:citation_001]]',
+        '[[claim:claim_001]]',
+        '[[table:tbl_001]]',
+        '[[/table:tbl_001]]',
+        '\\[\\[/claim:claim\\_001]]',
         '普通转义 \\[\\[not a marker]] 保持原样',
       ].join('\n'),
     )
@@ -56,7 +78,7 @@ describe('Milkdown serialization of protocol markers', () => {
     const { getMarkdown } = await import('@milkdown/kit/utils')
     const root = document.createElement('div')
     document.body.append(root)
-    const source = '# 报告\n\n[[section:finance_1]]\n\n## 1. 概览\n\n正文[[citation:c_1]]。\n'
+    const source = '# 报告\n\n[[section:finance_1]]\n\n## 1. 概览\n\n正文[[citation:c_1]]。\n\n[[table:tbl_1]]\n\n表格内容\n\n[[/table:tbl_1]]\n'
     const editor = await Editor.make()
       .config((ctx) => {
         ctx.set(rootCtx, root)

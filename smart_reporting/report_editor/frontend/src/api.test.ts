@@ -18,6 +18,27 @@ describe('ReportEditorClient', () => {
     })
   })
 
+  it('restores a published history revision through the current editor CAS endpoint', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({
+        path: 'reports/revision-1/report.md', markdown: '# 旧版', sha256: 'b'.repeat(64),
+        sourceRevision: 1, csrfToken: 'csrf',
+      })),
+    )
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/2', fetcher)
+    await client.load()
+    await expect(client.restoreHistory(1, 'a'.repeat(64))).resolves.toMatchObject({ sourceRevision: 1 })
+    expect(fetcher).toHaveBeenCalledWith(
+      '/reports/v1/editor/report-1/2/api/history/1/restore',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ expectedSha256: 'a'.repeat(64) }),
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf' }),
+      }),
+    )
+  })
+
   it('exports both artifacts without a cross-origin request header', async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({

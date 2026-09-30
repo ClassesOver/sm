@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from string import Formatter
 from typing import Any
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 from loguru import logger
@@ -25,7 +26,7 @@ from .validation import MAX_DOCX_BYTES, ReportFailure
 DOCX_RENDER_TIMEOUT_SECONDS = 540
 DOCX_VALIDATION_TIMEOUT_SECONDS = 540
 _DOCX_FORBIDDEN_PARTS = ("word/vbaProject.bin", "word/embeddings/", "word/activeX/")
-_WORD_PAGE_FIELDS = {"page": "PAGE", "pages": "SECTIONPAGES"}
+_WORD_PAGE_FIELDS = {"page": "PAGE"}
 
 
 def _usable_width(section: Any) -> int:
@@ -285,8 +286,24 @@ def _postprocess_docx(
         signature_style._element.get_or_add_rPr().get_or_add_rFonts().set(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
+    if "Report Source Appendix" not in document.styles:
+        source_style = document.styles.add_style(
+            "Report Source Appendix", WD_STYLE_TYPE.PARAGRAPH
+        )
+        source_style.font.name = "Noto Sans CJK SC"
+        source_style.font.size = Pt(16)
+        source_style.font.bold = True
+        source_style.font.color.rgb = theme_colors["primary"]
+        source_style._element.get_or_add_rPr().get_or_add_rFonts().set(
+            qn("w:eastAsia"), "Noto Sans CJK SC"
+        )
 
     paragraphs = document.paragraphs
+    for source_appendix_title in (
+        item for item in paragraphs if item.text.strip() in ("实际引用附录", "数据来源附录")
+    ):
+        source_appendix_title.style = document.styles["Report Source Appendix"]
+        source_appendix_title.paragraph_format.page_break_before = True
 
     def marker_index(name: str) -> int:
         return next(
@@ -412,7 +429,7 @@ def _postprocess_docx(
             story._element.remove(extra._element)
         return paragraph
 
-    def add_template(paragraph: Any, left: str, right: str) -> None:
+    def add_template(paragraph: Any, left: str, right: str, *, end_bookmark: str) -> None:
         usable_width = _usable_width(sections[-1])
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
 
@@ -426,6 +443,8 @@ def _postprocess_docx(
                     paragraph.add_run(context["organizationName"])
                 elif field_name in _WORD_PAGE_FIELDS:
                     field_run(paragraph, _WORD_PAGE_FIELDS[field_name])
+                elif field_name == "pages":
+                    field_run(paragraph, f"PAGEREF {end_bookmark} \\* Arabic")
 
         append(left)
         paragraph.add_run("\t")
@@ -459,6 +478,17 @@ def _postprocess_docx(
     for index, section in enumerate(sections):
         if include_cover and index == 0:
             continue
+        # SECTIONPAGES 在 LibreOffice 不会可靠刷新；分节页码从 1 起，
+        # 因此该节末尾书签的页码就是总页数，且仍可随 Word 重新排版更新。
+        end_bookmark = f"report_section_end_{index}"
+        end_paragraph = markers["toc_end"] if include_toc and index == int(include_cover) else paragraphs[-1]
+        start = OxmlElement("w:bookmarkStart")
+        start.set(qn("w:id"), str(2000 + index))
+        start.set(qn("w:name"), end_bookmark)
+        end = OxmlElement("w:bookmarkEnd")
+        end.set(qn("w:id"), str(2000 + index))
+        end_paragraph._p.append(start)
+        end_paragraph._p.append(end)
         section.header.is_linked_to_previous = False
         section.footer.is_linked_to_previous = False
         header_paragraph = clear_story(section.header)
@@ -467,11 +497,13 @@ def _postprocess_docx(
             header_paragraph,
             layout["headerLeft"],
             layout["headerRight"],
+            end_bookmark=end_bookmark,
         )
         add_template(
             footer_paragraph,
             layout["footerLeft"],
             layout["footerRight"],
+            end_bookmark=end_bookmark,
         )
         add_watermark(section.header, context["watermarkText"], index)
 
@@ -552,6 +584,7 @@ def _validate_docx_structure(
 ) -> dict[str, Any]:
     if not path.is_file() or not 1 <= path.stat().st_size <= MAX_DOCX_BYTES:
         raise ReportFailure("Word 文件不存在或超过 200 MiB")
+    external_relationship_count = 0
     try:
         with zipfile.ZipFile(path) as package:
             names = set(package.namelist())
@@ -563,8 +596,22 @@ def _validate_docx_structure(
                 raise ReportFailure("Word 包含宏、OLE 或 ActiveX 内容")
             for relationship_name in (name for name in names if name.endswith(".rels")):
                 relationships = ElementTree.fromstring(package.read(relationship_name))
-                if any(item.attrib.get("TargetMode") == "External" for item in relationships):
-                    raise ReportFailure("Word 包含外部关系")
+                for item in relationships:
+                    # 附录在线定位（citation / B8 数据来源）需要真实超链接；
+                    # 文档由服务端模板生成且 URL 经过 subject 绑定校验，这里
+                    # 只放行无凭据的 http(s) 外链，其余外部关系仍然拒绝。
+                    if item.attrib.get("TargetMode") != "External":
+                        continue
+                    target = item.attrib.get("Target", "")
+                    parsed = urlsplit(target)
+                    if (
+                        parsed.scheme not in {"http", "https"}
+                        or not parsed.netloc
+                        or parsed.username
+                        or parsed.password
+                    ):
+                        raise ReportFailure("Word 包含外部关系")
+                    external_relationship_count += 1
             required = {"word/document.xml", "word/settings.xml", "[Content_Types].xml"}
             if not required.issubset(names):
                 raise ReportFailure("Word OOXML 结构不完整")
@@ -590,7 +637,7 @@ def _validate_docx_structure(
         "sectionCount": len(section_properties),
         "tocEntryCount": toc_entry_count,
         "embeddedImageCount": len(image_names),
-        "externalRelationshipCount": 0,
+        "externalRelationshipCount": external_relationship_count,
     }
 
 

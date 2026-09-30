@@ -199,6 +199,36 @@ class ReportDraft(StrictModel):
         return self
 
 
+class ReportServerTable(StrictModel):
+    """服务端在装配阶段注入的结构化表格（B2）。
+
+    只能由 finalize 装配器生成并渲染：markdown 必须是恰好一个成对的
+    ``[[table:id]]`` 协议块，不得携带任何其他协议标记或图片语法。模型
+    提交路径继续被 ``validate_report_body_markdown`` 拒绝。
+    """
+
+    section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
+    markdown: str = Field(min_length=1, max_length=64_000)
+
+    @model_validator(mode="after")
+    def validate_server_table(self) -> ReportServerTable:
+        opens = re.findall(r"\[\[table:([^\]\r\n]+)\]\]", self.markdown)
+        closes = re.findall(r"\[\[/table:([^\]\r\n]+)\]\]", self.markdown)
+        if (
+            len(opens) != 1
+            or opens != closes
+            or len(self.markdown.splitlines()) < 3
+        ):
+            raise ValueError("服务端表格必须是单个成对的 table 协议块")
+        stripped = re.sub(r"\[\[/?table:[^\]\r\n]*\]\]", "", self.markdown)
+        for marker in ("[[citation:", "[[section:", "[[analysis:"):
+            if marker in stripped:
+                raise ValueError(f"服务端表格不得包含协议标记: {marker}")
+        if "![" in stripped:
+            raise ValueError("服务端表格不得包含图片语法")
+        return self
+
+
 class RenderedReportDraft(StrictModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -220,6 +250,7 @@ _RESERVED_BODY_MARKERS = (
     "[[citation:",
     "[[section:",
     "[[analysis:",
+    "[[claim:",
     "[[table:",
     "[[/table:",
     "<!-- repair-warning:",
@@ -338,9 +369,13 @@ def _marker_lines(
     text: str,
     citation_ids: tuple[str, ...],
     analysis_ids: tuple[str, ...],
+    claim_ids: tuple[str, ...] = (),
 ) -> str:
     markers = "".join(f"[[citation:{citation_id}]]" for citation_id in citation_ids)
     markers += "".join(f"[[analysis:{analysis_id}]]" for analysis_id in analysis_ids)
+    # B6：claim 标记与 citation 同为服务端注入；编辑器按标记定位正文数值的
+    # 来源 subject（保存后 stale 判定依赖此锚点）。
+    markers += "".join(f"[[claim:{claim_id}]]" for claim_id in claim_ids)
     if markers and _FENCE_LINE.match(text.rstrip("\n").rsplit("\n", 1)[-1]):
         # 闭合围栏后不能跟其他文字：追加在同一行会让围栏失去闭合，后续整篇报告
         # 都被吞进代码块。标记改为独立段落。
@@ -703,6 +738,7 @@ def assemble_report_markdown(
     citation_ids: tuple[str, ...],
     charts: tuple[ReportChartInput, ...] = (),
     require_table: bool = False,
+    server_tables: tuple[ReportServerTable, ...] = (),
 ) -> RenderedReportDraft:
     section_registry = {item.code: item for item in sections}
     if len(section_registry) != len(sections):
@@ -726,6 +762,25 @@ def assemble_report_markdown(
     if len(chart_registry) != len(charts):
         raise ReportingError(
             "report_draft_registry_invalid", "Workflow 图表注册表包含重复 chartId。"
+        )
+    server_tables_by_section: dict[str, list[str]] = {}
+    seen_table_ids: set[str] = set()
+    for table in server_tables:
+        if table.section_code not in section_registry:
+            raise ReportingError(
+                "report_draft_registry_invalid",
+                f"服务端表格引用了未注册章节: {table.section_code}",
+            )
+        table_id = re.search(r"\[\[table:([^\]\r\n]+)\]\]", table.markdown)
+        assert table_id is not None  # ReportServerTable 校验保证存在开标记
+        if table_id.group(1) in seen_table_ids:
+            raise ReportingError(
+                "report_draft_registry_invalid",
+                f"服务端表格 tableId 重复: {table_id.group(1)}",
+            )
+        seen_table_ids.add(table_id.group(1))
+        server_tables_by_section.setdefault(table.section_code, []).append(
+            table.markdown
         )
     report_path = PurePosixPath(markdown_path)
     if report_path.is_absolute() or ".." in report_path.parts or "\\" in markdown_path:
@@ -859,7 +914,7 @@ def assemble_report_markdown(
             unknown_charts = set(block.chart_ids) - set(chart_registry)
             if unknown_charts:
                 raise ReportingError("report_draft_chart_unknown", "草稿引用了未注册图表。")
-            block_text = _marker_lines(block_markdown, block.citation_ids, ())
+            block_text = _marker_lines(block_markdown, block.citation_ids, (), block.claim_ids)
             for chart_id in block.chart_ids:
                 chart, _file_name = normalized_charts[chart_id]
                 if chart_plans[chart_id].reference != (section_index, block_index):
@@ -947,6 +1002,12 @@ def assemble_report_markdown(
                         },
                     }
                 )
+        # B2：服务端结构化表格在该章节全部模型 blocks 渲染完成后追加；
+        # 表格文本是服务端生成物，不经过模型正文协议校验（契约已限制
+        # 只能是单个成对 table 协议块）。
+        markdown_parts.extend(
+            server_tables_by_section.get(section.section_code, ())
+        )
 
     if require_table and not any(
         "|" in block.markdown for section in draft.sections for block in section.blocks

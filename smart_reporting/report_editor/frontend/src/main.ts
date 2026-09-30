@@ -51,7 +51,7 @@ import { protocolMarkerPlugin } from './protocol-plugin'
 import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
-import { createEditorShell } from './shell'
+import { applyLineageFeatureVisibility, createEditorShell } from './shell'
 import { createOutlineController, displayOutlineText, namedOutlineItems, type OutlineItem } from './outline'
 import { documentMetrics } from './metrics'
 import { headingStructureStatus } from './structure'
@@ -69,6 +69,9 @@ import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
 import { createSharePanel } from './share'
+import { createTracePanel } from './trace-panel'
+import { createSourceValidationController, sourceValidationIssueCount } from './source-validation'
+import { linkedSubjectFromSearch } from './linked-subject'
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('report editor root is missing')
@@ -147,6 +150,12 @@ const revisionLabel = root.querySelector<HTMLElement>('.revision-label')
 const metricsLabel = root.querySelector<HTMLElement>('.doc-metrics')
 const structureLabel = root.querySelector<HTMLElement>('.structure-status')
 const imageQualityLabel = root.querySelector<HTMLElement>('.image-quality-status')
+const sourceStatusLabel = document.createElement('span')
+sourceStatusLabel.className = 'source-validation-status'
+sourceStatusLabel.setAttribute('role', 'status')
+sourceStatusLabel.setAttribute('aria-live', 'polite')
+sourceStatusLabel.hidden = true
+structureLabel?.after(sourceStatusLabel)
 if (revisionLabel) revisionLabel.textContent = formatRevisionLabel(revision)
 createIcons({
   icons: {
@@ -171,6 +180,44 @@ base.href = `${basePath}/asset/`
 document.head.prepend(base)
 
 const client = new ReportEditorClient(basePath)
+let lineagePanelEnabled = true
+const sourceValidation = createSourceValidationController(
+  client,
+  () => getEditorMarkdown(),
+  (result) => {
+    if (!lineagePanelEnabled) return
+    if (!result) {
+      sourceStatusLabel.textContent = '来源暂无法校验'
+      sourceStatusLabel.dataset.state = 'unknown'
+    } else {
+      // 表格与 claim 同为软语义：排序不失效，改值/插删行计入待复核；
+      // 复制出的新格（与冻结值重复）同样提示复核，不自动赋予绑定。
+      const issues = sourceValidationIssueCount(result)
+      if (issues) {
+        sourceStatusLabel.textContent = `来源待复核 ${issues} 处`
+        sourceStatusLabel.dataset.state = 'stale'
+      } else {
+        const hasBindings = result.subjects.length > 0 || (result.tableSummary?.valid ?? 0) > 0 ||
+          (result.charts?.some((chart) => chart.status === 'valid') ?? false)
+        sourceStatusLabel.textContent = hasBindings ? '来源对应当前内容' : '当前内容无精确来源绑定'
+        sourceStatusLabel.dataset.state = hasBindings ? 'valid' : 'unknown'
+      }
+    }
+    sourceStatusLabel.hidden = false
+  },
+  () => {
+    if (!lineagePanelEnabled) return
+    sourceStatusLabel.textContent = '来源校验中'
+    sourceStatusLabel.dataset.state = 'checking'
+    sourceStatusLabel.hidden = false
+  },
+)
+const scheduleSourceValidation = () => {
+  if (lineagePanelEnabled) sourceValidation.schedule()
+}
+// B5：数据来源面板——数据快照/事实/图表作图数据/计算记录四个视图。
+const tracePanel = createTracePanel(root, client)
+shell.sources.addEventListener('click', () => tracePanel.open())
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
 let conflictPanel: ReturnType<typeof createConflictPanel> | null = null
@@ -244,6 +291,15 @@ function errorStatusLabel(error: unknown): string {
 
 try {
   const documentState = await client.load()
+  lineagePanelEnabled = documentState.lineageFeatures?.panel ?? true
+  applyLineageFeatureVisibility(shell, documentState.lineageFeatures)
+  tracePanel.setDownloadEnabled(documentState.lineageFeatures?.download ?? true)
+  tracePanel.setDrilldownEnabled(documentState.lineageFeatures?.drilldown ?? true)
+  exportSettingsPanel.setSourcesEnabled(documentState.lineageFeatures?.exportSources ?? true)
+  if (!lineagePanelEnabled) {
+    sourceValidation.cancel()
+    sourceStatusLabel.hidden = true
+  }
   const saveInBackground = () => runInBackground(saveNow())
   void telemetry.record({
     event: 'document_loaded',
@@ -261,7 +317,8 @@ try {
     useRemote: () => void recoverFromConflict(),
     mergeAndRetry: (markdown) => {
       acceptRemoteBase()
-      crepe.editor.action(replaceAll(markdown))
+      // 合并结果可能引入当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+      crepe.editor.action(replaceAll(markdown, true))
       saveInBackground()
     },
   })
@@ -300,6 +357,7 @@ try {
         updateOutline(crepe.editor.action(outline()))
       })
       currentMarkdown = markdown
+      scheduleSourceValidation()
       saveState?.edit(markdown)
       if (markdown === lastSavedMarkdown) {
         draftController?.clear()
@@ -353,9 +411,39 @@ try {
   shell.search.addEventListener('click', () => searchController.open())
   const historyController = createHistoryController(
     root,
-    (markdown) => {
-      crepe.editor.action(replaceAll(markdown))
-      status('历史版本已恢复为草稿', 'dirty')
+    async (markdown, historyRevision) => {
+      if (historyRevision === undefined) {
+        // 会话快照可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+        crepe.editor.action(replaceAll(markdown, true))
+        status('会话快照已恢复为草稿', 'dirty')
+        return
+      }
+      setActionsDisabled(true)
+      blockUI('正在恢复历史版本及来源')
+      try {
+        await saveNow()
+        sourceValidation.cancel()
+        const restored = await client.restoreHistory(historyRevision, sha256)
+        sha256 = restored.sha256
+        lastSavedMarkdown = restored.markdown
+        currentMarkdown = restored.markdown
+        saveState?.reset(restored.markdown)
+        draftController?.clear()
+        tracePanel.close()
+        // 历史版本可能包含当前正文没有的协议标记；flush 重建 EditorState，避免
+        // protocolMarkerPlugin 的 filterTransaction 把整笔替换拦截掉。
+        crepe.editor.action(replaceAll(restored.markdown, true))
+        window.clearTimeout(saveTimer)
+        scheduleSourceValidation()
+        status(`已恢复第 ${restored.sourceRevision ?? historyRevision} 版及来源`)
+      } catch (error) {
+        scheduleSourceValidation()
+        status(errorStatusLabel(error), 'error')
+        throw error
+      } finally {
+        unblockUI()
+        setActionsDisabled(false)
+      }
     },
     async (historyRevision) => (await client.historyRevision(historyRevision)).markdown,
     createPersistedHistoryLoader((limit, offset) => client.historyPage(limit, offset)),
@@ -364,7 +452,8 @@ try {
   draftController = createLocalDraftController(
     root,
     `smart-reporting-editor:${basePath}`,
-    (markdown) => crepe.editor.action(replaceAll(markdown)),
+    // 本地草稿可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+    (markdown) => crepe.editor.action(replaceAll(markdown, true)),
   )
   draftController.offer(documentState.markdown)
   initialFormalHeadings = formalHeadings(documentState.markdown)
@@ -372,6 +461,9 @@ try {
   historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
+  scheduleSourceValidation()
+  const linkedSubject = linkedSubjectFromSearch(window.location.search)
+  if (lineagePanelEnabled && linkedSubject) void tracePanel.openSubject(linkedSubject)
   status(savedLabel())
   const saveScroll = () => preferences.saveScroll(window.scrollY)
   window.addEventListener('scroll', saveScroll, { passive: true })
@@ -473,7 +565,8 @@ try {
     try {
       const latest = await client.load()
       pendingConflict = null
-      crepe.editor.action(replaceAll(latest.markdown))
+      // 远端版本可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+      crepe.editor.action(replaceAll(latest.markdown, true))
       sha256 = latest.sha256
       lastSavedMarkdown = latest.markdown
       currentMarkdown = latest.markdown
@@ -503,6 +596,7 @@ try {
         toc: true,
         headerFooter: true,
         pageNumbers: true,
+        sources: true,
         note: '',
       }
       const result = await client.export(sha256, settings, note)

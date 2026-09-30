@@ -1878,6 +1878,28 @@ def _edit_failure_anchor_details(
     return repair
 
 
+def _execution_environment_snapshot() -> dict[str, str]:
+    """执行环境摘要（B4 未决#8）：Python 版本、关键依赖、平台。
+
+    逐项容错：包未安装或元数据不可读时跳过，不中断执行回执签发。
+    """
+
+    import platform
+    import sys
+    from importlib import metadata
+
+    snapshot = {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(terse=True),
+    }
+    for package in ("polars", "pandas", "numpy", "scipy", "statsmodels", "scikit-learn"):
+        try:
+            snapshot[package] = metadata.version(package)
+        except Exception:  # noqa: BLE001 - 缺包不阻断
+            continue
+    return snapshot
+
+
 class ReportingCodeModeToolkit(Toolkit):
     """把固定 task binding 暴露为执行与只读代码理解工具。"""
 
@@ -3760,6 +3782,7 @@ class ReportingCodeModeToolkit(Toolkit):
             runId=uuid4().hex,
             sourceFile=source_after,
             outputFiles=outputs,
+            environment=_execution_environment_snapshot(),
         )
         self.binding.execution_receipt = receipt
         output_by_path = {item.path: item for item in outputs}

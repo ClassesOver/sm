@@ -57,6 +57,9 @@ class ExecutionReceipt(StrictModel):
     run_id: str = Field(alias="runId", min_length=1, max_length=128)
     source_file: FileIdentity = Field(alias="sourceFile")
     output_files: tuple[FileIdentity, ...] = Field(alias="outputFiles", max_length=100)
+    # B4（未决#8）：执行环境摘要（Python 版本、关键依赖、平台）；旧回执无此
+    # 字段 → reproducibility=limited，不得声称可复算。
+    environment: Mapping[str, str] | None = None
 
 
 OutputValidationStatus = Literal[

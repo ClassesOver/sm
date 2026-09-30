@@ -109,6 +109,97 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _prepare_analysis_summary_request,
     _reporting_detailed_analysis_plan,
 )
+
+
+def test_b7_projection_adds_only_common_profile_additive_dimensions() -> None:
+    from smart_reporting.reporting.profile.models import (
+        ReportingProfileDocument,
+        ReportingProfileRegistry,
+    )
+    from smart_reporting.reporting.profile.registry import resolve_reporting_profile
+    from smart_reporting.reporting.workflow.query_pipeline import QueryRequirement
+
+    document = ReportingProfileDocument.model_validate(
+        {
+            "version": "1",
+            "profileId": "b7-profile",
+            "revision": "1",
+            "dimensions": [
+                {
+                    "code": "department",
+                    "kind": "organization",
+                    "fieldRefs": ["s.db.fact.department"],
+                },
+                {
+                    "code": "month",
+                    "kind": "period",
+                    "fieldRefs": ["s.db.fact.month"],
+                },
+            ],
+            "metrics": [
+                {
+                    "code": "revenue",
+                    "kind": "amount",
+                    "aggregation": "sum",
+                    "fieldRef": "s.db.fact.revenue",
+                },
+                {
+                    "code": "visits",
+                    "kind": "count",
+                    "aggregation": "sum",
+                    "fieldRef": "s.db.fact.visits",
+                },
+            ],
+            "measureSemantics": [
+                {
+                    "fieldRef": "s.db.fact.revenue",
+                    "aggregation": "sum",
+                    "additiveAcross": ["department", "month"],
+                },
+                {
+                    "fieldRef": "s.db.fact.visits",
+                    "aggregation": "sum",
+                    "additiveAcross": ["department"],
+                },
+            ],
+        }
+    )
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={"b7-profile": document}, config_paths=()),
+        "b7-profile",
+    )
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "req-1",
+            "sourceId": "s",
+            "tables": [
+                {
+                    "table": "db.fact",
+                    "periodColumn": "month",
+                    "periodGranularity": "month",
+                    "measureColumns": ["revenue", "visits"],
+                }
+            ],
+            "dimensionColumns": ["month"],
+            "grainColumns": ["month"],
+        }
+    )
+
+    # 生产流程的人工确认语义冻结在 SourceSchemaSnapshot，而不是回写静态
+    # EffectiveProfile；投影必须显式使用最终快照语义。
+    projected = reporting_runtime._with_drilldown_projection(
+        (
+            requirement,
+            requirement.model_copy(update={"requirement_id": "req-2"}),
+        ),
+        profile.model_copy(update={"measure_semantics": ()}),
+        measure_semantics=profile.measure_semantics,
+    )
+
+    assert projected[0].dimension_columns == ("month", "department")
+    assert projected[0].grain_columns == ("month", "department")
+    assert projected[1].dimension_columns == ("month", "department")
+    assert projected[1].grain_columns == ("month", "department")
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import (
     AnalysisEvidenceDecision,
     AnalysisSummaryDraft,

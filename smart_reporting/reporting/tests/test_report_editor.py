@@ -135,7 +135,7 @@ async def test_sql_editor_repository_prunes_expired_sessions_on_insert() -> None
 def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> None:
     context = _context()
     legacy_payload = context.model_dump(mode="json", by_alias=True)
-    for field in ("source", "createdAt", "note"):
+    for field in ("source", "createdAt", "note", "artifactManifest"):
         legacy_payload.pop(field)
     legacy_digest = hashlib.sha256(
         json.dumps(
@@ -319,6 +319,46 @@ async def test_editor_recovers_host_workspace_and_saves_draft_with_cas(tmp_path:
 
 
 @pytest.mark.anyio
+async def test_concurrent_save_draft_serializes_and_reports_conflict(tmp_path: Path) -> None:
+    """双窗口 CAS：同一 revision 并发保存应串行执行，后拿到锁的调用因基准 SHA 变化而冲突。"""
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    markdown = "# 基准\n"
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
+    state = SimpleNamespace(
+        payload={"reportEditorContexts": {"1": _context().model_dump(mode="json", by_alias=True)}}
+    )
+    service = ReportEditorService(
+        state_repository=SimpleNamespace(get=AsyncMock(return_value=state)),
+        workspace_registry=registry,
+        workspace=workspace,
+    )
+    document = await service.read_document(_context())
+    expected_sha256 = document.sha256
+
+    async def save(new_markdown: str) -> tuple[str, ReportingError | None]:
+        try:
+            saved = await service.save_draft(
+                _context(), markdown=new_markdown, expected_sha256=expected_sha256
+            )
+            return saved.sha256, None
+        except ReportingError as error:
+            return "", error
+
+    results = await asyncio.gather(save("# 窗口 A\n"), save("# 窗口 B\n"))
+    successes = [sha for sha, error in results if error is None]
+    conflicts = [error for sha, error in results if error is not None]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert conflicts[0].code == "report_editor_conflict"
+    # 只有一份草稿被写入。
+    draft = await workspace.aread_text(scope.workspace_key, "reports/revision-1/draft/report.md")
+    assert draft in ("# 窗口 A\n", "# 窗口 B\n")
+
+
+@pytest.mark.anyio
 async def test_editor_open_exchanges_grant_for_http_only_cookie_without_token_url() -> None:
     now = datetime.now(UTC)
     repository = InMemoryReportEditorRepository()
@@ -399,6 +439,14 @@ async def test_editor_document_api_binds_cookie_to_report_revision() -> None:
                 sha256="a" * 64,
             )
 
+        def lineage_features(self):
+            return {
+                "panel": False,
+                "download": True,
+                "drilldown": False,
+                "exportSources": True,
+            }
+
     app = FastAPI()
     app.include_router(create_report_editor_router(grants, editor=Editor(), cookie_secure=False))
     async with AsyncClient(
@@ -415,6 +463,12 @@ async def test_editor_document_api_binds_cookie_to_report_revision() -> None:
         "sha256": "a" * 64,
         "csrfToken": loaded.json()["csrfToken"],
         "visualTheme": REPORT_VISUAL_THEME,
+        "lineageFeatures": {
+            "panel": False,
+            "download": True,
+            "drilldown": False,
+            "exportSources": True,
+        },
     }
     assert len(loaded.json()["csrfToken"]) >= 32
     assert mismatched.status_code == 404
@@ -652,6 +706,7 @@ async def test_editor_lists_persisted_report_revision_history(tmp_path: Path) ->
         "revision": 1,
         "markdown": "# 第一版\n",
         "sha256": hashlib.sha256("# 第一版\n".encode()).hexdigest(),
+        "sources": {"available": False, "reason": "source_index_missing", "datasets": []},
     }
 
 
@@ -1074,7 +1129,7 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
         ):
             assert actual_job_id == job_id
             # 渲染基于导出开始时已校验内容的同目录快照，不受导出期间的自动保存影响。
-            assert markdown_path.startswith("reports/revision-1/draft/.export-")
+            assert markdown_path.startswith("reports/revision-1/.export-")
             snapshot = (await workspace.afile_bytes(scope.workspace_key, markdown_path))[0]
             assert snapshot.decode() == draft_markdown
             rendered_paths.append(markdown_path)
@@ -1207,6 +1262,139 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     }
     assert (await service.read_asset(next_context, "chart-001.png"))[0] == image
     assert (await service.read_asset(next_context, "chart-001.plotly.json"))[0] == spec
+
+
+@pytest.mark.anyio
+async def test_repeated_export_creates_sequential_revisions(tmp_path: Path) -> None:
+    """重复导出：从 revision 1 导出到 2，再从 2 导出到 3，旧版本内容保持不变。"""
+    scope = _scope()
+    registry = ReportingWorkspaceRegistry(tmp_path, secret="s" * 32)
+    workspace = ReportingWorkspaceRouter(registry)
+    registry.resolve(scope)
+    job_id = str(uuid4())
+    source_markdown = "# 原报告\n"
+    draft_v2 = "# 修订版 2\n"
+    draft_v3 = "# 修订版 3\n"
+    source_sha = hashlib.sha256(source_markdown.encode()).hexdigest()
+    draft_v2_sha = hashlib.sha256(draft_v2.encode()).hexdigest()
+    draft_v3_sha = hashlib.sha256(draft_v3.encode()).hexdigest()
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", source_markdown)
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-1/draft/report.md", draft_v2)
+    job = {
+        "jobId": job_id,
+        "_threadBinding": hashlib.sha256(scope.workspace_key.encode()).hexdigest(),
+        "sources": [{"path": "reports/revision-1/report.md", "size": len(source_markdown.encode()), "sha256": source_sha}],
+        "render": {
+            "markdown": {"path": "reports/revision-1/report.md", "size": len(source_markdown.encode()), "sha256": source_sha},
+            "pdf": {"path": "reports/revision-1/report.pdf", "size": 7, "sha256": hashlib.sha256(b"old-pdf").hexdigest()},
+            "word": {"path": "reports/revision-1/report.docx", "size": 8, "sha256": hashlib.sha256(b"old-word").hexdigest()},
+            "images": [],
+        },
+        "validation": {"ok": True},
+    }
+    context = ReportEditorContext(
+        reportId="report-1",
+        revision=1,
+        jobId=job_id,
+        workflowRunId="report-1",
+        markdownPath="reports/revision-1/report.md",
+        job=job,
+        scope=scope.as_state(),
+    )
+    durable = SimpleNamespace(
+        state_version=4,
+        payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}},
+    )
+
+    class StateRepository:
+        async def get(self, _run_id: str):
+            return durable
+
+        async def apply(self, _run_id: str, command, *, expected_version: int):
+            assert expected_version == durable.state_version
+            payload = durable.payload.copy()
+            payload["reportEditorContexts"] = {
+                **payload.get("reportEditorContexts", {}),
+                str(command.payload["context"]["revision"]): command.payload["context"],
+            }
+            durable.state_version += 1
+            durable.payload = payload
+
+    render_counts: dict[int, int] = {}
+
+    class ReportTools:
+        async def _render_report_pair(
+            self,
+            actual_job_id: str,
+            markdown_path: str,
+            output_path: str,
+            *,
+            artifact_manifest,
+            run_context: RunContext,
+        ):
+            assert actual_job_id == job_id
+            revision = int(output_path.split("/")[1].split("-")[1])
+            render_counts[revision] = render_counts.get(revision, 0) + 1
+            snapshot = (await workspace.afile_bytes(scope.workspace_key, markdown_path))[0]
+            expected = {2: draft_v2, 3: draft_v3}[revision]
+            assert snapshot.decode() == expected
+            await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")
+            word_path = str(Path(output_path).with_suffix(".docx"))
+            await workspace.awrite_bytes(scope.workspace_key, word_path, b"new-word")
+            stored = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
+            stored["render"] = {
+                **stored["render"],
+                "markdown": {"path": markdown_path, "size": len(snapshot), "sha256": hashlib.sha256(snapshot).hexdigest()},
+                "pdf": {"path": output_path, "size": 7, "sha256": hashlib.sha256(b"new-pdf").hexdigest()},
+                "word": {"path": word_path, "size": 8, "sha256": hashlib.sha256(b"new-word").hexdigest()},
+            }
+            return {"status": "validated", "validation": {"ok": True}}
+
+    class Persistence:
+        async def persist(self, **_values): return None
+
+    class DownloadGrants:
+        async def issue(self, **values):
+            return "download-raw", ReportDownloadGrant(
+                grant_hash="d" * 64,
+                scope=values["scope"],
+                report_id=values["report_id"],
+                revision=values["revision"],
+                pdf_path=values["pdf_path"],
+                pdf_size=values["pdf_size"],
+                pdf_sha256=values["pdf_sha256"],
+                word_path=values["word_path"],
+                word_size=values["word_size"],
+                word_sha256=values["word_sha256"],
+                expires_at=datetime(2026, 10, 15, tzinfo=UTC),
+            )
+
+    class EditorGrants:
+        async def issue(self, issued_context):
+            assert issued_context.report_id == "report-1"
+            return "editor-raw", datetime(2026, 10, 15, tzinfo=UTC)
+
+    service = ReportEditorService(
+        state_repository=StateRepository(),
+        workspace_registry=registry,
+        workspace=workspace,
+        report_tools=ReportTools(),
+        artifact_persistence=Persistence(),
+        download_grants=DownloadGrants(),
+        editor_grants=EditorGrants(),
+        public_base_url="https://reports.example.com",
+    )
+
+    result2 = await service.export_revision(context, expected_sha256=draft_v2_sha)
+    assert result2["revision"] == 2
+    context2 = ReportEditorContext.model_validate(durable.payload["reportEditorContexts"]["2"])
+    await workspace.awrite_text(scope.workspace_key, "reports/revision-2/draft/report.md", draft_v3)
+    result3 = await service.export_revision(context2, expected_sha256=draft_v3_sha)
+    assert result3["revision"] == 3
+    assert render_counts == {2: 1, 3: 1}
+    assert await workspace.aread_text(scope.workspace_key, "reports/revision-1/report.md") == source_markdown
+    assert await workspace.aread_text(scope.workspace_key, "reports/revision-2/report.md") == draft_v2
+    assert await workspace.aread_text(scope.workspace_key, "reports/revision-3/report.md") == draft_v3
 
 
 @pytest.mark.anyio

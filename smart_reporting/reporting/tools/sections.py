@@ -260,6 +260,7 @@ class RuntimeSectionsMixin:
                     conclusionType=conclusion_type,
                     aggregationGrain=submission.aggregation_grain,
                     entityGrain=submission.entity_grain,
+                    factIds=tuple(submission.fact_ids),
                 )
             except ValidationError as error:
                 warnings.append(

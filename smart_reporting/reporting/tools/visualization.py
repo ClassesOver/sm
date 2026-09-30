@@ -108,6 +108,16 @@ class RuntimeVisualizationMixin:
             )
         return await workspace.inspect_plotly_file(thread_id, path)
 
+    async def _ahash_file(self, *, thread_id: str, path: str) -> dict[str, Any]:
+        workspace = self.runtime.workspace
+        if not hasattr(workspace, "ahash_file"):
+            raise ReportingError(
+                "report_workspace_capability_missing",
+                "Reporting 工作区适配缺少文件哈希能力。",
+                details={"capability": "ahash_file"},
+            )
+        return await workspace.ahash_file(thread_id, path)
+
     async def _inspect_chart(
         self,
         *,
@@ -171,8 +181,14 @@ class RuntimeVisualizationMixin:
         charts: list[dict[str, Any]],
         run_context: RunContext | None = None,
         visual_receipts: tuple[dict[str, Any], ...] = (),
+        plot_data_files: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
-        """提交当前章节图表草案（允许零图）并结束可视化 Task。"""
+        """提交当前章节图表草案（允许零图）并结束可视化 Task。
+
+        ``plot_data_files``：每图的实际作图数据文件（chart-input/v1）身份；
+        服务端逐文件重新哈希核对后冻结进 durable，形成图片↔作图数据
+        证据链（计划 4.4：同一份数据生成图片并登记）。
+        """
 
         try:
             scope = await self.runtime.scope(run_context)
@@ -281,7 +297,10 @@ class RuntimeVisualizationMixin:
                 if isinstance(visualization_sections, dict)
                 else None
             )
-            if isinstance(existing, dict) and existing.get("charts") != serialized_charts:
+            if isinstance(existing, dict) and (
+                existing.get("charts") != serialized_charts
+                or existing.get("plotDataFiles", []) != list(verified_plot_data)
+            ):
                 raise ReportingError(
                     "report_visualization_section_conflict",
                     "当前章节已提交不同的图表事实。",
@@ -289,6 +308,49 @@ class RuntimeVisualizationMixin:
             inspected: list[dict[str, Any]] = []
             files: list[dict[str, Any]] = []
             interactive_files: list[dict[str, Any]] = []
+            verified_plot_data: list[dict[str, Any]] = []
+            chart_ids = {registration.chart_id for registration in parsed}
+            # B3：作图数据文件必须落在当前 visualization Task 的 chart-input
+            # 签发目录内，防止用任意工作区路径伪造作图数据身份。
+            # 延迟导入：tools 包初始化早期引用 runtime 会形成循环。
+            from ..workflow.runtime.chart_inputs import chart_input_root_for
+
+            plot_data_root = chart_input_root_for(output_root)
+            for plot_entry in plot_data_files:
+                chart_id = plot_entry.get("chartId") if isinstance(plot_entry, dict) else None
+                raw_files = plot_entry.get("files") if isinstance(plot_entry, dict) else None
+                if chart_id not in chart_ids or not isinstance(raw_files, list) or not raw_files:
+                    raise ReportingError(
+                        "report_visualization_section_invalid",
+                        "作图数据身份的 chartId 无效或文件清单为空。",
+                    )
+                verified: list[dict[str, Any]] = []
+                for raw_file in raw_files:
+                    if not isinstance(raw_file, dict):
+                        raise ReportingError(
+                            "report_visualization_section_invalid",
+                            "作图数据文件身份无效。",
+                        )
+                    plot_path = str(raw_file.get("path", ""))
+                    if not plot_path.startswith(f"{plot_data_root}/"):
+                        raise ReportingError(
+                            "report_visualization_section_invalid",
+                            "作图数据文件不在当前 Task 的 chart-input 签发目录。",
+                            details={"chartId": chart_id, "path": plot_path},
+                        )
+                    current = await self._ahash_file(thread_id=scope.thread_id, path=plot_path)
+                    if (
+                        current.get("missing")
+                        or current.get("size") != raw_file.get("size")
+                        or current.get("sha256") != raw_file.get("sha256")
+                    ):
+                        raise ReportingError(
+                            "report_visualization_section_invalid",
+                            "作图数据文件与提交身份不一致。",
+                            details={"chartId": chart_id, "path": plot_path},
+                        )
+                    verified.append(dict(raw_file))
+                verified_plot_data.append({"chartId": chart_id, "files": verified})
             for registration in parsed:
                 source_path = self._require_chart_output_path(registration.source_path, output_root)
                 # 同一次检查得到文件身份与尺寸类质量告警（分辨率、有效 DPI、宽高比），
@@ -377,6 +439,8 @@ class RuntimeVisualizationMixin:
                 }
                 if interactive_files:
                     submission_payload["interactiveFiles"] = interactive_files
+                if verified_plot_data:
+                    submission_payload["plotDataFiles"] = verified_plot_data
                 digest = _stable_digest(submission_payload)
                 durable_result = await self._apply_durable_command(
                     scope,

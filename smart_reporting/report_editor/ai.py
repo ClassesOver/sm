@@ -13,7 +13,7 @@ from .service import ReportEditorContext
 MAX_AI_SELECTION_CHARS = 12_000
 ReportEditorAIAction = Literal["polish", "shorten", "expand", "professional"]
 
-_PROTOCOL_MARKER = re.compile(r"\[\[(?:section|citation|analysis):[A-Za-z0-9_.:-]{1,128}\]\]")
+_PROTOCOL_MARKER = re.compile(r"\[\[(?:section|citation|analysis|claim|/?table):[A-Za-z0-9_.:-]{1,128}\]\]")
 # 编辑器以 Markdown 序列化选区，协议标记会被转义为 \[\[section:x\_1]]。
 _ESCAPED_PROTOCOL_MARKER = re.compile(r"\\\[\\\[((?:\\.|[^\]]){1,256})\]\]")
 
@@ -62,7 +62,7 @@ class ReportEditorAIService:
         prompt = (
             f"改写要求：{instruction}\n"
             "只返回改写后的 Markdown，不输出解释、前言或代码围栏。"
-            "不得编造数据，不得加入 section/citation 协议标记。\n\n"
+            "不得编造数据，不得加入 section/citation/analysis/claim/table 协议标记。\n\n"
             "<selected_markdown>\n"
             f"{normalized}\n"
             "</selected_markdown>"

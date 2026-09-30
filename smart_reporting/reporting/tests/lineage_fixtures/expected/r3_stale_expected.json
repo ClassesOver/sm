@@ -1,0 +1,13 @@
+{
+  "scenario": "R3：R1 报告人工把收入改为 3800（编辑一致性）",
+  "unit": "元",
+  "base_scenario": "R1",
+  "edited_claim_value": 3800.0,
+  "frozen_fact_value": 3600.0,
+  "expected_binding_status": "stale",
+  "rules": {
+    "binding_status": "当前正文内容指纹与生成时 subject 指纹不一致 => stale",
+    "no_rebinding": "保存/恢复/导出不得把旧来源当作新值 3800 的证明",
+    "fact_integrity": "frozen fact 文件本身不变，仍可查看生成时依据"
+  }
+}

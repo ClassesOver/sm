@@ -19,13 +19,16 @@ from .draft_v1 import HeadingNumber
 
 _ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
 _TABLE_BLOCK = re.compile(
-    r"^\[\[table:([^\]\r\n]+)\]\]\n(.*?)\n\[\[/table:\1\]\]$",
+    # 兼容旧格式（结束标记紧贴表格）与 B6 新格式（结束标记前有空行）。
+    r"^\[\[table:([^\]\r\n]+)\]\]\n(.*?)\n\n?\[\[/table:\1\]\]$",
     re.MULTILINE | re.DOTALL,
 )
 
 
 class ArtifactFile(StrictModel):
     path: str = Field(min_length=1, max_length=512)
+    # mediaType 自 B1 起新增 json/csv：仅用于追溯 sidecar（traceIndex 等），
+    # 渲染/图表产物仍走原有六类。
     media_type: Literal[
         "text/markdown",
         "image/png",
@@ -33,6 +36,8 @@ class ArtifactFile(StrictModel):
         "application/vnd.plotly.v1+json",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/json",
+        "text/csv",
     ] = Field(alias="mediaType")
     size: int = Field(ge=1, le=200 * 1024 * 1024)
     sha256: str = Field(pattern=SHA256_PATTERN)
@@ -103,6 +108,9 @@ class ReportArtifactManifest(StrictModel):
     section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
     heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
+    # B1 起：revision 追溯索引 sidecar（application/json）。旧清单无此字段，
+    # 表示该 revision 无来源索引，编辑器正常降级为"无可用来源"。
+    trace_index: ArtifactFile | None = Field(default=None, alias="traceIndex")
 
     @model_validator(mode="after")
     def validate_manifest(self) -> ReportArtifactManifest:
@@ -115,7 +123,12 @@ class ReportArtifactManifest(StrictModel):
             self.markdown.path,
             *(item.path for item in self.charts),
             *(item.interactive_spec.path for item in self.charts if item.interactive_spec),
+            *( [self.trace_index.path] if self.trace_index is not None else [] ),
         ]
+        if self.trace_index is not None and (
+            self.trace_index.media_type != "application/json"
+        ):
+            raise ValueError("追溯索引必须是 JSON 产物")
         if len(chart_ids) != len(set(chart_ids)):
             raise ValueError("chartId 不能重复")
         if len(table_ids) != len(set(table_ids)):
@@ -203,6 +216,7 @@ def build_authoritative_manifest(
     section_numbers: tuple[str, ...],
     heading_numbers: tuple[HeadingNumber, ...],
     source_warnings: tuple[SourceWarning, ...] = (),
+    trace_index: ArtifactFile | None = None,
 ) -> ReportArtifactManifest:
     artifacts: dict[str, dict[str, Any]] = {
         path: item
@@ -294,6 +308,7 @@ def build_authoritative_manifest(
         sectionNumbers=section_numbers,
         headingNumbers=heading_numbers,
         sourceWarnings=source_warnings,
+        traceIndex=trace_index,
     )
 
 

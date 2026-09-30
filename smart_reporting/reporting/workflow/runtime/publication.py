@@ -2,6 +2,8 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from urllib.parse import quote, urlencode
+
 from loguru import logger
 
 from ....quality_warnings import (
@@ -10,13 +12,23 @@ from ....quality_warnings import (
     TenantScope,
     WarningAdapter,
 )
+from ...trace.contracts_v1 import RevisionTraceIndexV1
+from ...trace.drilldown_builder import build_drilldown_metrics
+from ...trace.fact_service import resolve_fact
+from ...trace.index_builder import (
+    build_csv_trace_index,
+    encode_trace_index,
+    trace_index_path_for,
+)
 from ..checkpoint import AnalysisEvidenceManifest, SectionArtifact, SectionCitation
 from .base import (
+    REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_ARTIFACTS_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
     REPORT_DATASET_LINEAGE_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
+    REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     AnalysisItem,
     Any,
@@ -26,6 +38,7 @@ from .base import (
     DetailedAnalysisPlan,
     DocxArtifactManifest,
     DurableReportingPhase,
+    FileIdentity,
     HeadingNumber,
     Mapping,
     MetricDefinition,
@@ -197,6 +210,7 @@ class RuntimePublicationMixin:
         observed_facts = _reporting_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
+        source_links = await self._source_links_by_dataset(draft, run_context)
         await self.report_tools.bind_citation_presentations(
             str(result["jobId"]),
             _citation_presentations(
@@ -205,6 +219,7 @@ class RuntimePublicationMixin:
                 analyses=analyses,
                 snapshots=self._snapshots(run_context),
                 observed_facts=observed_facts,
+                source_links_by_dataset=source_links,
             ),
             run_context=context,
         )
@@ -215,6 +230,7 @@ class RuntimePublicationMixin:
             artifact_manifest=draft.model_dump(mode="json", by_alias=True),
             run_context=context,
         )
+
         word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
         try:
             if not isinstance(rendered_result, dict):
@@ -379,6 +395,85 @@ class RuntimePublicationMixin:
                 )
             )
             raise
+
+    async def _source_links_by_dataset(
+        self,
+        manifest: ReportArtifactManifest,
+        run_context: RunContext,
+    ) -> dict[str, list[dict[str, str]]]:
+        """从冻结 trace index 生成 report/revision/subject 在线定位链接。"""
+
+        identity = manifest.trace_index
+        base_url = self.report_public_base_url
+        if identity is None or not isinstance(base_url, str) or not base_url:
+            return {}
+        thread_id = self._scope(run_context)["threadId"]
+        raw_index = await self.workspace_service.read_limited_regular_file(
+            thread_id, identity.path, max_bytes=4 * 1024 * 1024
+        )
+        if (
+            len(raw_index) != identity.size
+            or hashlib.sha256(raw_index).hexdigest() != identity.sha256
+        ):
+            raise ReportingError(
+                "snapshot_integrity_failed", "来源附录引用的追溯索引身份不一致。"
+            )
+        try:
+            index = RevisionTraceIndexV1.model_validate_json(raw_index)
+        except ValueError as error:
+            raise ReportingError(
+                "snapshot_integrity_failed", "来源附录引用的追溯索引无法解析。"
+            ) from error
+        files = {item.resource_id: item for item in index.files}
+        contents: dict[str, bytes] = {}
+        links: dict[str, list[dict[str, str]]] = {}
+        kind_labels = {
+            "text_claim": "正文结论",
+            "table_cell": "表格单元格",
+            "chart": "图表",
+            "chart_caption": "图表说明",
+        }
+        for subject in index.subject_bindings:
+            dataset_ids: set[str] = set()
+            for fact_ref in subject.fact_refs:
+                file = files.get(fact_ref.file_resource_id)
+                if file is None:
+                    continue
+                raw = contents.get(file.resource_id)
+                if raw is None:
+                    raw = await self.workspace_service.read_limited_regular_file(
+                        thread_id, file.path, max_bytes=16 * 1024 * 1024
+                    )
+                    if (
+                        len(raw) != file.size
+                        or hashlib.sha256(raw).hexdigest() != file.sha256
+                    ):
+                        raise ReportingError(
+                            "snapshot_integrity_failed",
+                            "来源附录引用的事实文件身份不一致。",
+                        )
+                    contents[file.resource_id] = raw
+                try:
+                    resolved = resolve_fact(raw, fact_ref, with_inputs=False)
+                except ReportingError:
+                    continue
+                dataset_id = resolved["entry"].get("datasetId")
+                if isinstance(dataset_id, str):
+                    dataset_ids.add(dataset_id)
+            if not dataset_ids:
+                continue
+            path = f"/reports/v1/editor/{quote(index.report_id, safe='')}/{index.revision}"
+            link = {
+                "subjectId": subject.subject_id,
+                "label": kind_labels[subject.subject_kind],
+                "url": (
+                    f"{base_url.rstrip('/')}{path}?"
+                    f"{urlencode({'subject': subject.subject_id})}"
+                ),
+            }
+            for dataset_id in sorted(dataset_ids):
+                links.setdefault(dataset_id, []).append(link)
+        return links
 
     async def _dataset_publication_gate(
         self, run_context: RunContext, result: Mapping[str, Any]
@@ -572,6 +667,11 @@ class RuntimePublicationMixin:
                     )
                 )
             section_artifacts = tuple(parsed_section_artifacts)
+            claim_fact_issues, claim_fact_warnings = await self._verify_claim_fact_bindings(
+                thread_id, checkpoint, section_artifacts
+            )
+            issues.extend(claim_fact_issues)
+            warnings.extend(claim_fact_warnings)
             semantic_gate = evaluate_publication_semantics(
                 evidence_manifest=checkpoint.evidence_manifest,
                 section_artifacts=section_artifacts,
@@ -669,6 +769,29 @@ class RuntimePublicationMixin:
                 "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
             ) from error
         gate = await self._dataset_publication_gate(run_context, result)
+        manifest_identity = None
+        if result.get("artifactManifest") is not None:
+            manifest_identity = ArtifactFile.model_validate(result["artifactManifest"])
+            content_bytes = await self.workspace_service.read_limited_regular_file(
+                self._scope(run_context)["threadId"],
+                manifest_identity.path,
+                max_bytes=manifest_identity.size,
+            )
+            if (
+                len(content_bytes) != manifest_identity.size
+                or hashlib.sha256(content_bytes).hexdigest() != manifest_identity.sha256
+                or ReportArtifactManifest.model_validate_json(content_bytes) != manifest
+                or manifest.markdown.path != result["markdownPath"]
+                or manifest.report_id != str(run_context.run_id)
+                or manifest.revision != result.get("revision")
+            ):
+                raise ReportingError(
+                    "report_artifact_manifest_changed", "已验收报告产物清单发生变化。"
+                )
+        elif result.get("artifactManifestPath") is not None:
+            raise ReportingError(
+                "report_artifact_manifest_invalid", "报告产物清单缺少已验收身份。"
+            )
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
@@ -687,6 +810,15 @@ class RuntimePublicationMixin:
                 "reportTitle": _frozen_outline(state).title,
                 "revision": int(result.get("revision", 0)) + 1,
                 "markdownPath": result["markdownPath"],
+                **(
+                    {
+                        "artifactManifestPath": manifest_identity.path,
+                        "artifactManifest": manifest_identity.model_dump(
+                            mode="json", by_alias=True
+                        ),
+                    }
+                    if manifest_identity is not None else {}
+                ),
                 "pdfPath": result["pdfPath"],
                 "pdfSize": result["pdfSize"],
                 "pdfSha256": result["pdfSha256"],
@@ -699,11 +831,105 @@ class RuntimePublicationMixin:
             }
         )
 
+    async def _verify_claim_fact_bindings(
+        self,
+        thread_id: str,
+        checkpoint: ReportingCheckpoint,
+        section_artifacts: tuple[SectionArtifact, ...],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """核对 claim.factIds：引用必须存在于冻结 bundle，数值须在容差内。
+
+        factId 未知属于错误有效绑定，硬失败关闭发布；数值不匹配按语义业务
+        校验规则软告警（claim 可能是四舍五入展示值），不阻断发布。
+        """
+
+        issues: list[dict[str, Any]] = []
+        warnings_out: list[dict[str, Any]] = []
+        bundles_with_claims = any(
+            claim.fact_ids for artifact in section_artifacts for claim in artifact.claims
+        )
+        if not bundles_with_claims:
+            return issues, warnings_out
+        fact_ids: dict[str, dict[str, Any]] = {}
+        for analysis_id, identity in checkpoint.deterministic_fact_files.items():
+            try:
+                raw = await self._read_identity_bytes(thread_id, identity, max_bytes=16 * 1024 * 1024)
+                document = json.loads(raw)
+            except Exception:
+                issues.append(
+                    {
+                        "code": "report_claim_fact_file_unreadable",
+                        "message": "发布门禁无法读取冻结事实文件。",
+                        "details": {"analysisId": analysis_id},
+                    }
+                )
+                continue
+            for array_name in ("metrics", "derivedMetrics", "comparisons", "reconciliations"):
+                for entry in document.get(array_name, ()) or ():
+                    fact_id = entry.get("factId") if isinstance(entry, dict) else None
+                    if isinstance(fact_id, str):
+                        fact_ids[fact_id] = entry
+        for artifact in section_artifacts:
+            for claim in artifact.claims:
+                for fact_id in claim.fact_ids:
+                    entry = fact_ids.get(fact_id)
+                    if entry is None:
+                        issues.append(
+                            {
+                                "code": "report_claim_fact_unknown",
+                                "message": "章节 claim 引用了冻结事实中不存在的事实 ID。",
+                                "details": {
+                                    "sectionCode": artifact.section_code,
+                                    "claimId": claim.claim_id,
+                                    "factId": fact_id,
+                                },
+                            }
+                        )
+                        continue
+                    expected = next(
+                        (
+                            entry[key]
+                            for key in ("total", "percentage", "value", "change", "difference")
+                            if entry.get(key) is not None
+                        ),
+                        None,
+                    )
+                    try:
+                        actual = float(claim.value)
+                    except (TypeError, ValueError):
+                        continue
+                    if expected is None or not isinstance(expected, (int, float)):
+                        continue
+                    tolerance = max(0.01, abs(float(expected)) * 1e-9)
+                    if abs(actual - float(expected)) > tolerance:
+                        warnings_out.append(
+                            {
+                                "code": "report_claim_fact_value_mismatch",
+                                "message": "章节 claim 数值与冻结事实在容差外不一致。",
+                                "details": {
+                                    "sectionCode": artifact.section_code,
+                                    "claimId": claim.claim_id,
+                                    "factId": fact_id,
+                                    "claimValue": actual,
+                                    "factValue": expected,
+                                },
+                            }
+                        )
+        return issues, warnings_out
+
     async def _build_and_write_artifact_manifest(
         self,
         manifest_path: str,
         *,
         accepted_artifacts: list[dict[str, Any]],
+        handles: tuple[DatasetHandle, ...] = (),
+        fact_files: Mapping[str, ArtifactFile] | None = None,
+        server_table_traces: tuple = (),
+        chart_trace_files: tuple[FileIdentity, ...] = (),
+        chart_traces: tuple = (),
+        computation_files: tuple[FileIdentity, ...] = (),
+        computations: tuple = (),
+        subject_bindings: tuple = (),
         interactive_charts: Mapping[str, str] | None = None,
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
@@ -772,6 +998,29 @@ class RuntimePublicationMixin:
                     "report_artifact_file_changed",
                     "报告 Markdown 在正式验收后发生变化。",
                 )
+            trace_index_file = None
+            if getattr(self, "trace_registration_enabled", True):
+                trace_index_file = await self._write_trace_index(
+                    manifest_relative,
+                    handles=handles,
+                    lineage=lineage,
+                    markdown_artifact=ArtifactFile(
+                        path=markdown_path,
+                        mediaType="text/markdown",
+                        size=accepted["size"],
+                        sha256=accepted["sha256"],
+                    ),
+                    fact_files=fact_files,
+                    server_table_traces=server_table_traces,
+                    chart_trace_files=chart_trace_files,
+                    chart_traces=chart_traces,
+                    computation_files=computation_files,
+                    computations=computations,
+                    subject_bindings=subject_bindings,
+                    markdown=markdown_bytes.decode("utf-8"),
+                    revision=revision,
+                    run_context=run_context,
+                )
             manifest = build_authoritative_manifest(
                 report_id=str(run_context.run_id),
                 revision=revision,
@@ -788,6 +1037,7 @@ class RuntimePublicationMixin:
                 section_numbers=section_numbers,
                 heading_numbers=heading_numbers,
                 source_warnings=source_warnings,
+                trace_index=trace_index_file,
             )
             content = json.dumps(
                 manifest.model_dump(mode="json", by_alias=True),
@@ -815,6 +1065,161 @@ class RuntimePublicationMixin:
                 "report_artifact_manifest_invalid", "服务端无法生成报告产物清单。"
             ) from error
         return manifest
+
+    async def _write_trace_index(
+        self,
+        manifest_relative: str,
+        *,
+        handles: tuple[DatasetHandle, ...],
+        lineage: tuple[DatasetLineage, ...],
+        markdown_artifact: ArtifactFile,
+        revision: int,
+        run_context: RunContext,
+        fact_files: Mapping[str, ArtifactFile] | None = None,
+        server_table_traces: tuple = (),
+        chart_trace_files: tuple[FileIdentity, ...] = (),
+        chart_traces: tuple = (),
+        computation_files: tuple[FileIdentity, ...] = (),
+        computations: tuple = (),
+        subject_bindings: tuple = (),
+        markdown: str | None = None,
+    ) -> ArtifactFile:
+        """构建并写入 revision 追溯索引，返回供权威清单登记的产物身份。
+
+        句柄缺失或与血缘不一致时失败关闭，不生成半份索引；索引内容为
+        canonical JSON，写入后回读校验（与清单同一模式）。
+        """
+
+        scope = self._scope(run_context)
+        run_id = str(run_context.run_id or scope["externalRunId"])
+        drilldown_metrics = await self._build_drilldown_metrics(
+            fact_files=fact_files or {}, run_context=run_context
+        )
+        index = build_csv_trace_index(
+            handles=handles,
+            lineage=lineage,
+            report_id=run_id,
+            revision=revision,
+            workflow_run_id=run_id,
+            markdown_file=markdown_artifact,
+            profile_hash=self._profile(run_context).effective_profile_hash,
+            fact_files=fact_files,
+            server_table_traces=server_table_traces,
+            chart_trace_files=chart_trace_files,
+            chart_traces=chart_traces,
+            computation_files=computation_files,
+            computations=computations,
+            subject_bindings=subject_bindings,
+            drilldown_metrics=drilldown_metrics,
+        )
+        if markdown is not None:
+            from ...trace.chart_subjects import freeze_chart_presentations
+
+            encoded_markdown = markdown.encode("utf-8")
+            if len(encoded_markdown) != markdown_artifact.size or hashlib.sha256(encoded_markdown).hexdigest() != markdown_artifact.sha256:
+                raise ReportingError("report_trace_index_invalid", "图注基线与已验收正文身份不一致。")
+            index = freeze_chart_presentations(index, markdown)
+        content = encode_trace_index(index)
+        index_path = trace_index_path_for(manifest_relative)
+        self.workspace_service.validate_content(content)
+        await self.workspace_service.awrite_bytes(
+            scope["threadId"], index_path, content, overwrite=True
+        )
+        stored = await self.workspace_service.read_limited_regular_file(
+            scope["threadId"], index_path, max_bytes=len(content)
+        )
+        if stored != content:
+            raise ReportingError(
+                "report_trace_index_changed", "追溯索引写入后发生变化。"
+            )
+        logger.info(
+            "revision 追溯索引已写入: revision={} datasets={} path={}",
+            revision,
+            len(handles),
+            index_path,
+        )
+        return ArtifactFile(
+            path=index_path,
+            mediaType="application/json",
+            size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+    async def _build_drilldown_metrics(
+        self,
+        *,
+        fact_files: Mapping[str, ArtifactFile],
+        run_context: RunContext,
+    ) -> tuple:
+        """从已冻结 facts/Profile/快照列签发 B7 能力；歧义项保持不可用。"""
+
+        state = self._state(run_context)
+        raw_contexts = state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+        dataset_columns: dict[str, tuple[str, ...]] = {}
+        if isinstance(raw_contexts, (list, tuple)):
+            for context in raw_contexts:
+                if not isinstance(context, Mapping):
+                    continue
+                dataset_id = context.get("datasetId")
+                fields = context.get("fields")
+                if (
+                    isinstance(dataset_id, str)
+                    and isinstance(fields, (list, tuple))
+                    and all(isinstance(field, str) for field in fields)
+                ):
+                    dataset_columns[dataset_id] = tuple(fields)
+        bundles: list[Mapping[str, Any]] = []
+        thread_id = self._scope(run_context)["threadId"]
+        for analysis_id, identity in fact_files.items():
+            try:
+                raw = await self.workspace_service.read_limited_regular_file(
+                    thread_id, identity.path, max_bytes=16 * 1024 * 1024
+                )
+                document = json.loads(raw)
+            except (OSError, ValueError, UnicodeDecodeError) as error:
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"下钻声明无法读取冻结事实文件: {analysis_id}",
+                ) from error
+            if (
+                len(raw) != identity.size
+                or hashlib.sha256(raw).hexdigest() != identity.sha256
+                or not isinstance(document, Mapping)
+            ):
+                raise ReportingError(
+                    "snapshot_integrity_failed",
+                    f"下钻声明引用的事实文件与登记身份不一致: {analysis_id}",
+                )
+            bundles.append(document)
+        profile = self._profile(run_context)
+        snapshots = self._snapshots(run_context)
+        row_preserving_requirements = set(
+            state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+        )
+        row_preserving_dataset_ids = tuple(
+            str(item.get("datasetId"))
+            for item in self._workflow_result(state).get("datasets", ())
+            if isinstance(item, Mapping)
+            and isinstance(item.get("provenance"), Mapping)
+            and item["provenance"].get("requirementId") in row_preserving_requirements
+        )
+        return build_drilldown_metrics(
+            bundles=bundles,
+            dataset_columns=dataset_columns,
+            profile_dimensions=tuple(
+                item.model_dump(mode="json", by_alias=True)
+                for item in profile.dimensions
+            ),
+            profile_metrics=tuple(
+                item.model_dump(mode="json", by_alias=True) for item in profile.metrics
+            ),
+            measure_semantics=tuple(
+                item.model_dump(mode="json", by_alias=True)
+                for snapshot in snapshots
+                for item in snapshot.measure_semantics
+            ),
+            row_preserving_dataset_ids=row_preserving_dataset_ids,
+        )
 
 
 def _analysis_quality_warnings(
@@ -1003,6 +1408,7 @@ def _citation_presentations(
     analyses: tuple[AnalysisItem, ...],
     snapshots: tuple[SourceSchemaSnapshot, ...],
     observed_facts: list[dict[str, Any]],
+    source_links_by_dataset: Mapping[str, list[dict[str, str]]] | None = None,
 ) -> list[dict[str, Any]]:
     requirements_by_id = {item.requirement_id: item for item in requirements}
     table_descriptions: dict[tuple[str, str], str] = {}
@@ -1014,7 +1420,11 @@ def _citation_presentations(
                 table_descriptions[(table.source_id, qualified)] = label
                 table_descriptions[(table.source_id, table.name.lower())] = label
     presentations: list[dict[str, Any]] = []
+    lineage_by_key = {
+        (item.dataset_id, item.requirement_id): item for item in lineage
+    }
     for index, citation in enumerate(authoritative_citations(lineage), start=1):
+        binding = lineage_by_key[(citation.dataset_id, citation.requirement_id)]
         requirement = requirements_by_id.get(citation.requirement_id)
         metadata_labels = []
         if requirement is not None:
@@ -1063,6 +1473,15 @@ def _citation_presentations(
                 "citationId": citation.citation_id,
                 "label": label,
                 "coverageItems": coverage_items,
+                "status": "valid",
+                "method": (
+                    "StarRocks 查询冻结快照"
+                    if binding.source_type == "starrocks_materialized"
+                    else "CSV 文件冻结快照"
+                ),
+                "scope": "、".join(binding.period_roles),
+                "summary": f"{binding.row_count} 行，快照 {binding.sha256[:12]}",
+                "links": list((source_links_by_dataset or {}).get(citation.dataset_id, ())),
             }
         )
     return presentations

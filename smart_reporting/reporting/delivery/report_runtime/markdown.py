@@ -42,12 +42,16 @@ _SPACED_VALUE_STRONG_MARKER = re.compile(
 )
 _FENCED_CODE_START = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})")
 _INLINE_CODE_SPAN = re.compile(r"(?P<delimiter>`+).*?(?P=delimiter)")
+_IMAGE_PARAGRAPH_PATTERN = (
+    r"(?P<image><p>\s*<img\b[^>]*?/?>"
+    r"(?:[ \t]*\[来源 [0-9]{3}\])*\s*</p>)"
+)
 _IMAGE_WITH_CAPTION = re.compile(
-    r"(?P<image><p>\s*<img\b[^>]*?/?>\s*</p>)\s*"
+    _IMAGE_PARAGRAPH_PATTERN + r"\s*"
     r"(?P<caption><p>\s*<em>图表：.*?</em>\s*</p>)",
     re.DOTALL,
 )
-_IMAGE_PARAGRAPH = re.compile(r"(?P<image><p>\s*<img\b[^>]*?/?>\s*</p>)")
+_IMAGE_PARAGRAPH = re.compile(_IMAGE_PARAGRAPH_PATTERN)
 
 
 def _figure_image_html(image_paragraph: str) -> str:
@@ -320,6 +324,8 @@ def _semantic_documents(
     toc_page_numbers: Mapping[str, int] | None = None,
     include_cover: bool = True,
     include_toc: bool = True,
+    citation_presentations: list[dict[str, Any]] | None = None,
+    trace_sources: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     theme = REPORT_VISUAL_THEME
     body = _prepare_figure_layout(body)
@@ -347,8 +353,12 @@ def _semantic_documents(
     toc_section = f'<section class="report-toc"><h1>目录</h1>{toc}</section>' if include_toc else ""
     # 无封面导出时报告标题随正文起始，避免成品中完全缺失标题。
     body_title = "" if include_cover else f'<h1 class="report-title">{title}</h1>'
+    source_appendix = _source_appendix_html(citation_presentations or []) + (
+        _trace_source_appendix_html(trace_sources) if trace_sources else ""
+    )
     shared = (
         f'{cover}{toc_section}<main class="report-body">{body_title}{body}'
+        f"{source_appendix}"
         f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>'
         "</footer></main>"
     )
@@ -390,6 +400,7 @@ def _semantic_documents(
         f"{theme['grid']}"
         ";transform:translateY(-1.5mm)}.toc-page{min-width:3ch;text-align:right}"
         ".report-body{page:body}"
+        ".report-body img{max-width:100%;height:auto}"
         ".report-title{color:"
         f"{theme['primary']}"
         ";font-size:22pt;margin:0 0 8mm}"
@@ -433,6 +444,18 @@ def _semantic_documents(
         "}"
         ".report-signature{margin-top:18mm;text-align:right;break-inside:avoid}"
         ".report-signature p{margin:0 0 2mm}"
+        ".report-source-appendix{break-before:page;page-break-before:always}"
+        ".report-source-title{color:"
+        f"{theme['primary']}"
+        ";font-size:16pt;font-weight:700;margin:0 0 8mm}"
+        ".report-source-entry{break-inside:avoid;margin:0 0 5mm}"
+        ".report-source-entry dt{font-weight:700;color:"
+        f"{theme['primary']}"
+        ";margin-bottom:1mm}"
+        ".report-source-entry dd{margin:0 0 1mm 5mm;color:"
+        f"{theme['ink']}"
+        "}.report-source-status-stale,.report-source-status-unbound,"
+        ".report-source-status-missing{color:#9A3412;font-weight:700}"
     )
     pdf_document = (
         f"<html lang='zh-CN'><head><meta charset='utf-8'><title>{title}</title>"
@@ -449,14 +472,174 @@ def _semantic_documents(
         f"{'<h1>目录</h1>' if include_toc else ''}<p>{_WORD_MARKERS['toc_field_start']}</p>"
         f"{toc if include_toc else ''}<p>{_WORD_MARKERS['toc_field_end']}</p>"
     )
+    # Pandoc 将 figure 转为窄布局表，Word 图片按页宽缩放后仍会被单元格裁切。
+    # Word 使用既有段落/图片分页，保留同一图注与来源文本，不创建布局表。
+    word_body = (
+        body.replace('<figure class="report-figure">', '<div class="report-figure">')
+        .replace('</figure>', '</div>')
+        .replace('<figcaption class="report-figure-caption">', '<p class="report-figure-caption">')
+        .replace('</figcaption>', '</p>')
+    )
     word_document = (
         "<meta charset='utf-8'><body>"
         f"{word_cover}<p>{_WORD_MARKERS['cover_end']}</p>"
         f"{word_toc}<p>{_WORD_MARKERS['toc_end']}</p>"
-        f"<p>{_WORD_MARKERS['body_start']}</p>{'' if include_cover else f'<h1>{title}</h1>'}{body}"
-        f"<p>{organization}</p><p>{generated_date}</p></body>"
+        f"<p>{_WORD_MARKERS['body_start']}</p>{'' if include_cover else f'<h1>{title}</h1>'}{word_body}"
+        f"{source_appendix}<p>{organization}</p><p>{generated_date}</p></body>"
     )
     return pdf_document, word_document
+
+
+def _source_appendix_html(presentations: list[dict[str, Any]]) -> str:
+    if not presentations:
+        return ""
+    status_labels = {
+        "valid": "有效",
+        "stale": "待复核",
+        "unbound": "未绑定",
+        "missing": "来源缺失",
+    }
+    entries: list[str] = []
+    for item in presentations:
+        coverage = []
+        for covered in item["coverageItems"]:
+            periods = "、".join(covered["periods"]) if covered["periods"] else "未登记"
+            coverage.append(f"{covered['label']}（{periods}）")
+        status = item["status"]
+        online_links = [
+            f'<a href="{html.escape(link["url"], quote=True)}">'
+            f'{html.escape(link["label"])} {index}</a>'
+            for index, link in enumerate(item.get("links", ()), start=1)
+        ]
+        online = "、".join(online_links) or "未提供在线定位"
+        summary = (
+            f"<dd>摘要：{html.escape(item['summary'])}</dd>"
+            if item.get("summary")
+            else ""
+        )
+        entries.append(
+            '<dl class="report-source-entry">'
+            f'<dt>{html.escape(item["alias"])} {html.escape(item["label"])}</dt>'
+            f'<dd class="report-source-status-{status}">状态：{status_labels[status]}</dd>'
+            f'<dd>范围：{html.escape(item["scope"])}</dd>'
+            f'<dd>期间：{html.escape("、".join(coverage) if coverage else "未登记")}</dd>'
+            f'<dd>方法：{html.escape(item["method"])}</dd>'
+            f"{summary}<dd>在线定位：{online}</dd></dl>"
+        )
+    return (
+        '<section class="report-source-appendix">'
+        '<p class="report-source-title">实际引用附录</p>'
+        '<p>以下编号由服务端按正文首次出现顺序生成，相同来源复用同一编号。</p>'
+        f'{"".join(entries)}</section>'
+    )
+
+
+def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
+    """数据来源附录（B8）：正文事实、表格与静态图共用一个编号序列。
+
+    摘要字段全部来自冻结追溯索引与草稿校验结果；失效状态显式标注，
+    不以"有效来源"样式掩盖。链接指向 report/revision/subject，不带会话。
+    """
+    if not trace_sources:
+        return ""
+    entries = trace_sources.get("entries") or []
+    if not entries:
+        return ""
+    datasets = trace_sources.get("datasets") or {}
+    status_labels = {
+        "valid": "有效",
+        "stale": "待复核",
+        "unbound": "未绑定",
+        "missing": "来源缺失",
+    }
+    kind_labels = {"claim": "正文事实", "table": "结构化表格", "chart": "静态图表"}
+    period_role_labels = {"current": "本期", "yoy": "同比基期", "mom": "环比基期"}
+
+    def dataset_field(dataset_ids: list[str], key: str) -> list[str]:
+        values: list[str] = []
+        for dataset_id in dataset_ids:
+            info = datasets.get(dataset_id)
+            if not isinstance(info, dict):
+                continue
+            value = info.get(key)
+            if isinstance(value, str) and value and value not in values:
+                values.append(value)
+        return values
+
+    def dataset_period_labels(dataset_ids: list[str]) -> list[str]:
+        labels: list[str] = []
+        for dataset_id in dataset_ids:
+            info = datasets.get(dataset_id)
+            if not isinstance(info, dict):
+                continue
+            for role in info.get("periodRoles") or ():
+                label = period_role_labels.get(role, role)
+                if label not in labels:
+                    labels.append(label)
+        return labels
+
+    html_entries: list[str] = []
+    for entry in entries:
+        kind = entry.get("kind", "claim")
+        dataset_ids = entry.get("datasetIds") or []
+        rows: list[str] = [
+            f'<dd class="report-source-status-{entry["status"]}">'
+            f'状态：{status_labels[entry["status"]]}</dd>'
+        ]
+        if kind == "claim":
+            value = entry.get("factValue")
+            unit = entry.get("unit")
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            value_text = "未登记" if value is None else f"{value} {unit or ''}".strip()
+            rows.append(f"<dd>事实值：{html.escape(str(value_text))}</dd>")
+            periods = "、".join(entry.get("periods") or ()) or None
+        else:
+            periods = "、".join(dataset_period_labels(dataset_ids)) or None
+        rows.append(f"<dd>期间：{html.escape(periods or '未登记')}</dd>")
+        if kind == "claim":
+            scope = entry.get("scope") or {}
+            scope_text = "、".join(f"{key}={item}" for key, item in scope.items()) or None
+        else:
+            scope_text = "、".join(dataset_field(dataset_ids, "businessLabel")) or None
+        rows.append(f"<dd>范围：{html.escape(scope_text or '未登记')}</dd>")
+        methods: list[str] = []
+        if kind == "claim":
+            formula = entry.get("formula")
+            if isinstance(formula, str) and formula:
+                methods.append(formula)
+        else:
+            methods.extend(entry.get("methods") or ())
+            if kind == "chart":
+                methods.extend(f"转换：{note}" for note in (entry.get("transformNotes") or ()))
+        rows.append(f"<dd>方法：{html.escape('；'.join(methods) or '未登记')}</dd>")
+        files = dataset_field(dataset_ids, "filename")
+        rows.append(f"<dd>源文件：{html.escape('、'.join(files) or '未登记')}</dd>")
+        online_links = [
+            f'<a href="{html.escape(link["url"], quote=True)}">来源对象 {index}</a>'
+            for index, link in enumerate(entry.get("links") or (), start=1)
+        ]
+        online = "、".join(online_links) or "未提供在线定位"
+        omitted = entry.get("omittedCounts") or {}
+        omitted_labels = {"datasetIds": "源文件", "methods": "方法", "transformNotes": "转换说明", "links": "在线定位"}
+        omitted_text = "；".join(
+            f"{label}省略 {omitted[field]} 项"
+            for field, label in omitted_labels.items() if field in omitted
+        )
+        if omitted_text:
+            rows.append(f"<dd>摘要省略：{omitted_text}。完整登记见在线数据来源。</dd>")
+        html_entries.append(
+            '<dl class="report-source-entry">'
+            f'<dt>{html.escape(entry["alias"])} {kind_labels.get(kind, kind)}</dt>'
+            f'{"".join(rows)}<dd>在线定位：{online}</dd></dl>'
+        )
+    return (
+        '<section class="report-source-appendix report-trace-source-appendix">'
+        '<p class="report-source-title">数据来源附录</p>'
+        '<p>以下编号由服务端按正文首次出现顺序生成，相同来源复用同一编号；'
+        "失效说明为软语义提示，不隐藏任何待复核或未绑定来源。</p>"
+        f'{"".join(html_entries)}</section>'
+    )
 
 
 __all__ = [
@@ -471,5 +654,7 @@ __all__ = [
     "_normalize_report_markdown_segments",
     "_normalize_strong_spacing_line",
     "_semantic_documents",
+    "_source_appendix_html",
+    "_trace_source_appendix_html",
     "normalize_report_markdown_strong_spacing",
 ]
