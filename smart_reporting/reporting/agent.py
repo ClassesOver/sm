@@ -2532,14 +2532,21 @@ def _report_model(
     # Agent 的初始模型对应 standard 档位；复杂度和修复升级由独立 Router 决定，
     # 不在共享 Agent 实例上动态修改 model_id，避免并发任务互相覆盖。
     standard_profile = profiles["standard"]
+    extra_body = openai_compatible_extra_body(
+        enable_thinking=enable_thinking,
+        use_vllm_reasoning=settings.model_vllm_reasoning,
+    )
+    if settings.model_litellm_proxy:
+        extra_body = dict(extra_body or {})
+        extra_body["allowed_openai_params"] = [
+            "reasoning_effort",
+            "thinking_token_budget",
+        ]
     model_options = dict(
         timeout=(settings.model_timeout_seconds if timeout_seconds is None else timeout_seconds),
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
-        extra_body=openai_compatible_extra_body(
-            enable_thinking=enable_thinking,
-            use_vllm_reasoning=settings.model_vllm_reasoning,
-        ),
+        extra_body=extra_body,
         temperature=1.0,
         top_p=1.0,
         collect_metrics_on_completion=(

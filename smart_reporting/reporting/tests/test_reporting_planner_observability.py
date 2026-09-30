@@ -13,7 +13,8 @@ from smart_reporting.reporting.workflow.orchestration import (
 )
 
 
-def test_planner_request_recorder_persists_provider_usage_and_params() -> None:
+@pytest.mark.parametrize("budget_key", ["thinking_budget", "thinking_token_budget"])
+def test_planner_request_recorder_persists_provider_usage_and_params(budget_key) -> None:
     recorder = PlannerRequestRecorder("report-analysis-planner", "qwen3.8-flash")
     recorder.begin()
     recorder.attach_request_params(
@@ -21,7 +22,7 @@ def test_planner_request_recorder_persists_provider_usage_and_params() -> None:
             "reasoning_effort": "high",
             "reasoning_summary": "auto",
             "max_tokens": 8192,
-            "extra_body": {"enable_thinking": True, "thinking_budget": 4096},
+            "extra_body": {"enable_thinking": True, budget_key: 4096},
             "messages": ["must not persist"],
         }
     )
@@ -45,7 +46,7 @@ def test_planner_request_recorder_persists_provider_usage_and_params() -> None:
         "reasoning_effort": "high",
         "reasoning_summary": "auto",
         "max_tokens": 8192,
-        "extra_body_keys": ["enable_thinking", "thinking_budget"],
+        "extra_body_keys": ["enable_thinking", budget_key],
         "enable_thinking": True,
         "thinking_budget": 4096,
     }

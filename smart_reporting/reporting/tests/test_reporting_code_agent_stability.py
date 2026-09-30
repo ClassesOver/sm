@@ -1083,8 +1083,26 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
             {"enable_thinking": True},
         ),
         (
+            "https://maas.qianwenaiapi.com/compatible-mode/v1",
+            {"enable_thinking": True, "thinking_budget": 4096},
+            None,
+        ),
+        (
             "http://localhost:8000/v1",
             {"chat_template_kwargs": {}, "thinking_budget": 4096},
+            {"chat_template_kwargs": {"enable_thinking": True}},
+        ),
+        (
+            "http://localhost:8000/v1",
+            {"chat_template_kwargs": {}, "thinking_token_budget": 4096},
+            {"chat_template_kwargs": {"enable_thinking": True}},
+        ),
+        (
+            "http://localhost:8000/v1",
+            {
+                "chat_template_kwargs": {},
+                "allowed_openai_params": ["reasoning_effort", "thinking_token_budget"],
+            },
             {"chat_template_kwargs": {"enable_thinking": True}},
         ),
         (

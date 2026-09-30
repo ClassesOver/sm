@@ -46,6 +46,7 @@ def test_settings_defaults():
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.model_vllm_reasoning is False
+    assert current.model_litellm_proxy is False
     assert current.model_fast_id == "qwen3.6-35b-a3b"
     assert current.model_standard_id == "deepseek-v4-flash-0731"
     assert current.model_strong_id == "deepseek-v4-flash-0731"
@@ -151,6 +152,28 @@ def test_vllm_reasoning_flag_is_preserved():
     current = settings(AGENT_MODEL_VLLM_REASONING="true")
 
     assert current.model_vllm_reasoning is True
+
+
+def test_litellm_proxy_flag_is_preserved():
+    current = settings(AGENT_MODEL_LITELLM_PROXY="true")
+
+    assert current.model_litellm_proxy is True
+
+
+def test_litellm_vllm_model_allows_standard_reasoning_params():
+    model = _report_model(
+        settings(
+            AGENT_MODEL_LITELLM_PROXY="true",
+            AGENT_MODEL_VLLM_REASONING="true",
+        ),
+        enable_thinking=True,
+    )
+
+    assert model.extra_body == {
+        "enable_thinking": True,
+        "chat_template_kwargs": {},
+        "allowed_openai_params": ["reasoning_effort", "thinking_token_budget"],
+    }
 
 
 def test_model_tier_ids_come_from_environment():

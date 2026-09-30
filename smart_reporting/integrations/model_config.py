@@ -17,9 +17,12 @@ def is_dashscope_endpoint(endpoint: str | None) -> bool:
     if not endpoint:
         return False
     hostname = (urlparse(endpoint).hostname or "").casefold()
-    return hostname.endswith(".maas.aliyuncs.com") or hostname in {
+    return hostname.endswith(".maas.aliyuncs.com") or hostname.endswith(
+        ".maas.qianwenaiapi.com"
+    ) or hostname in {
         "dashscope.aliyuncs.com",
         "dashscope-intl.aliyuncs.com",
+        "maas.qianwenaiapi.com",
     }
 
 
@@ -120,15 +123,17 @@ def reasoning_transport_fields(
         # enable_thinking=false 时仍保留顶层 effort，不能在共享层擅自清除。
         return body, reasoning_effort
 
-    # vLLM 的 DeepSeek V4 recipe 要求 thinking 配置进入 chat template。
-    # 空字典由环境能力开关在模型装配时放入，作为 transport 标记；未带标记的
-    # OpenAI-compatible 服务继续使用 Agno 顶层 reasoning_effort，避免云端漂移。
+    # chat_template_kwargs 由 vLLM 能力开关放入，作为 transport 标记。
+    # 新版 vLLM 原生接收 reasoning_effort，并自动注入 enable_thinking；模板字段只
+    # 保留显式开关，内部 thinking_budget 则投影为 vLLM 的 thinking_token_budget。
     template_kwargs = dict(raw_template_kwargs)
     template_kwargs["enable_thinking"] = enabled
     template_kwargs["thinking"] = enabled
-    if enabled and reasoning_effort is not None:
-        template_kwargs["reasoning_effort"] = reasoning_effort
-    else:
-        template_kwargs.pop("reasoning_effort", None)
+    template_kwargs.pop("reasoning_effort", None)
     body["chat_template_kwargs"] = template_kwargs
-    return body, None
+    thinking_budget = body.pop("thinking_budget", None)
+    if enabled and isinstance(thinking_budget, int) and not isinstance(thinking_budget, bool):
+        body["thinking_token_budget"] = thinking_budget
+    else:
+        body.pop("thinking_token_budget", None)
+    return body, reasoning_effort

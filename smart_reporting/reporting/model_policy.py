@@ -418,12 +418,10 @@ def reporting_thinking_profile_from_model(
     if extra_body.get("enable_thinking") is not True:
         return ReportingThinkingProfile.off(temperature=temperature)
     template_kwargs = extra_body.get("chat_template_kwargs")
-    raw_effort = (
-        template_kwargs.get("reasoning_effort")
-        if isinstance(template_kwargs, dict)
-        else model.reasoning_effort
-    )
-    budget = extra_body.get("thinking_budget")
+    raw_effort = model.reasoning_effort
+    if isinstance(template_kwargs, dict):
+        raw_effort = template_kwargs.get("reasoning_effort") or raw_effort
+    budget = extra_body.get("thinking_budget") or extra_body.get("thinking_token_budget")
     if raw_effort == "low":
         effort: ReportingReasoningEffort = "low"
     elif raw_effort == "high":
