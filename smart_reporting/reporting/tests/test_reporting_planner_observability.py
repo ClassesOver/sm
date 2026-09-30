@@ -53,6 +53,22 @@ def test_planner_request_recorder_persists_provider_usage_and_params(budget_key)
     assert "messages" not in request["requestParams"]
 
 
+def test_planner_request_recorder_reads_litellm_nested_vllm_budget() -> None:
+    recorder = PlannerRequestRecorder("report-analysis-planner", "deepseek-v4-flash-0731")
+    recorder.begin()
+    recorder.attach_request_params(
+        {
+            "reasoning_effort": "high",
+            "extra_body": {
+                "allowed_openai_params": ["reasoning_effort"],
+                "extra_body": {"thinking_token_budget": 2048},
+            },
+        }
+    )
+
+    assert recorder.requests[0]["requestParams"]["thinking_budget"] == 2048
+
+
 def test_planner_request_recorder_keeps_started_request_without_response() -> None:
     recorder = PlannerRequestRecorder("report-data-understanding-planner", "model")
     recorder.begin()

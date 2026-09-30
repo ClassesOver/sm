@@ -132,6 +132,10 @@ class PlannerRequestRecorder:
                 value = extra_body.get(key)
                 if key == "thinking_budget" and value is None:
                     value = extra_body.get("thinking_token_budget")
+                if key == "thinking_budget" and value is None:
+                    proxy_extra_body = extra_body.get("extra_body")
+                    if isinstance(proxy_extra_body, Mapping):
+                        value = proxy_extra_body.get("thinking_token_budget")
                 if isinstance(value, (str, int, float, bool, type(None))):
                     snapshot[key] = value
         self.requests[-1]["requestParams"] = snapshot
