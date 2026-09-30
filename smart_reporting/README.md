@@ -157,8 +157,9 @@ Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在�
 | --- | --- |
 | `OPENAI_API_KEY` | 模型 API 密钥 |
 | `OPENAI_BASE_URL` | OpenAI-compatible API 地址 |
-| `AGENT_MODEL_VLLM_REASONING` | 经 vLLM 提供模型时设为 `true`，使用标准 reasoning 参数；仅 Chat 把预算投影为 `thinking_token_budget`，原生 Responses 不传预算 |
-| `AGENT_MODEL_LITELLM_PROXY` | vLLM Chat 前置 LiteLLM Proxy 时设为 `true`：仅 allowlist 原生 `reasoning_effort`，`thinking_token_budget` 经 LiteLLM 二层 `extra_body` 透传；原生 Responses 仍只发送标准 `reasoning.effort` |
+| `AGENT_MODEL_VLLM_REASONING` | 经 vLLM 提供模型时设为 `true`，使用标准 reasoning 参数 |
+| `AGENT_MODEL_VLLM_THINKING_BUDGET` | vLLM 已配置 `--reasoning-config` 时设为 `true`，Chat 才发送 `thinking_token_budget`；默认 `false`，原生 Responses 始终不传预算 |
+| `AGENT_MODEL_LITELLM_PROXY` | vLLM Chat 前置 LiteLLM Proxy 时设为 `true`：allowlist 原生 `reasoning_effort`；启用硬预算后，`thinking_token_budget` 经 LiteLLM 二层 `extra_body` 透传 |
 | `AGENT_MODEL_FAST` | Reporting fast 档模型，默认 `qwen3.6-35b-a3b` |
 | `AGENT_MODEL_STANDARD` | Reporting standard 档模型，默认 `deepseek-v4-flash-0731` |
 | `AGENT_MODEL_STRONG` | Reporting strong 档模型，默认 `deepseek-v4-flash-0731` |

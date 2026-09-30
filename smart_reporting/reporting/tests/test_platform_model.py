@@ -22,6 +22,7 @@ from smart_reporting.runtime.settings import AgentSettings
 def test_native_responses_thinking_switch_matches_observation(platform, enabled):
     environ = {
         "AGENT_MODEL_VLLM_REASONING": "true",
+        "AGENT_MODEL_VLLM_THINKING_BUDGET": "true",
         "AGENT_MODEL_LITELLM_PROXY": "true",
         "OPENAI_BASE_URL": "http://proxy.test/v1",
         "OPENAI_API_KEY": "test",
