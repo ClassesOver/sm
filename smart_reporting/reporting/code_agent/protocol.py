@@ -105,14 +105,27 @@ def _responses_thinking_extra_body(
     """按 Responses provider 的公开契约投影思考开关。"""
 
     body = dict(extra_body or {})
+    # 原生 Responses 只使用标准 reasoning.effort；vLLM 当前仅在 Chat
+    # Completions 接收 thinking_token_budget，LiteLLM 的动态参数白名单也只用于
+    # Chat 透传，不能带入不桥接的 Responses 请求。
     body.pop("thinking_budget", None)
+    body.pop("thinking_token_budget", None)
+    body.pop("allowed_openai_params", None)
     template_kwargs = body.get("chat_template_kwargs")
     if isinstance(template_kwargs, Mapping):
+        body.pop("enable_thinking", None)
+        template_kwargs = dict(template_kwargs)
+        template_kwargs.pop("thinking", None)
+        template_kwargs.pop("reasoning_effort", None)
         body["chat_template_kwargs"] = {
             **template_kwargs,
             "enable_thinking": enabled,
         }
-    elif is_dashscope_endpoint(endpoint):
+    elif is_dashscope_endpoint(endpoint) and urlsplit(str(endpoint or "")).path.rstrip(
+        "/"
+    ).endswith("/api/v2"):
+        # 已完成真实闭环探针的旧 Token Plan Responses 端点仍使用厂商扩展开关；
+        # 新版 /compatible-mode/v1/responses 按官方参数页只发送 reasoning.effort。
         body["enable_thinking"] = enabled
     else:
         body.pop("enable_thinking", None)

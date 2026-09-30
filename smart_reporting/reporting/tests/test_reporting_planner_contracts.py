@@ -3458,14 +3458,13 @@ def test_runtime_planners_project_request_decision_to_vllm_chat_template() -> No
         request_model = runtime._analysis_agent.model._phase_request_model([])
     request_params = request_model.get_request_params()
 
-    assert "reasoning_effort" not in request_params
+    assert request_params["reasoning_effort"] == "high"
     assert request_params["extra_body"] == {
         "enable_thinking": True,
-        "thinking_budget": 2048,
+        "thinking_token_budget": 2048,
         "chat_template_kwargs": {
             "enable_thinking": True,
             "thinking": True,
-            "reasoning_effort": "high",
         },
     }
 
@@ -3498,11 +3497,18 @@ def test_shared_phase_model_accepts_low_reasoning_effort() -> None:
     )
 
 
-def test_dashscope_qwen_request_does_not_send_two_thinking_controls() -> None:
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "https://maas.qianwenaiapi.com/compatible-mode/v1",
+    ],
+)
+def test_dashscope_qwen_request_does_not_send_two_thinking_controls(base_url) -> None:
     model = ReportingPhaseOpenAIChat(
         id="qwen3.8-flash",
         api_key="test",
-        base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        base_url=base_url,
     )
     apply_reporting_thinking_profile(
         model,

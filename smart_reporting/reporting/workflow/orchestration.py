@@ -130,6 +130,8 @@ class PlannerRequestRecorder:
             snapshot["extra_body_keys"] = sorted(str(key) for key in extra_body)
             for key in ("enable_thinking", "thinking_budget"):
                 value = extra_body.get(key)
+                if key == "thinking_budget" and value is None:
+                    value = extra_body.get("thinking_token_budget")
                 if isinstance(value, (str, int, float, bool, type(None))):
                     snapshot[key] = value
         self.requests[-1]["requestParams"] = snapshot
