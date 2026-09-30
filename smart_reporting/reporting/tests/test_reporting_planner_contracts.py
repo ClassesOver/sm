@@ -3469,6 +3469,38 @@ def test_runtime_planners_project_request_decision_to_vllm_chat_template() -> No
     }
 
 
+def test_litellm_vllm_nests_extension_budget_for_upstream_openai_sdk() -> None:
+    model = ReportingPhaseOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test",
+        base_url="http://litellm.example/v1",
+        extra_body={
+            "enable_thinking": True,
+            "chat_template_kwargs": {},
+            "allowed_openai_params": ["reasoning_effort"],
+            "extra_body": {},
+        },
+    )
+    apply_reporting_thinking_profile(
+        model,
+        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=2048),
+    )
+
+    request_params = model.get_request_params()
+
+    assert request_params["reasoning_effort"] == "high"
+    assert request_params["extra_body"] == {
+        "enable_thinking": True,
+        "chat_template_kwargs": {"enable_thinking": True, "thinking": True},
+        "allowed_openai_params": ["reasoning_effort"],
+        "extra_body": {"thinking_token_budget": 2048},
+    }
+    assert reporting_thinking_profile_from_model(model) == ReportingThinkingProfile.on(
+        reasoning_effort="high",
+        thinking_budget=2048,
+    )
+
+
 def test_qwen_max_reasoning_uses_supported_xhigh_transport() -> None:
     model = ReportingPhaseOpenAIChat(id="qwen3.6-flash", api_key="test")
 

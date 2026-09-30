@@ -1101,7 +1101,8 @@ async def test_code_thinking_decision_reaches_responses_wire(model_id, budget, e
             "http://localhost:8000/v1",
             {
                 "chat_template_kwargs": {},
-                "allowed_openai_params": ["reasoning_effort", "thinking_token_budget"],
+                "allowed_openai_params": ["reasoning_effort"],
+                "extra_body": {"thinking_token_budget": 4096},
             },
             {"chat_template_kwargs": {"enable_thinking": True}},
         ),

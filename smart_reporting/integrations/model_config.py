@@ -132,8 +132,19 @@ def reasoning_transport_fields(
     template_kwargs.pop("reasoning_effort", None)
     body["chat_template_kwargs"] = template_kwargs
     thinking_budget = body.pop("thinking_budget", None)
+    proxy_extra_body = body.get("extra_body")
     if enabled and isinstance(thinking_budget, int) and not isinstance(thinking_budget, bool):
-        body["thinking_token_budget"] = thinking_budget
+        if isinstance(proxy_extra_body, dict):
+            proxy_extra_body = dict(proxy_extra_body)
+            proxy_extra_body["thinking_token_budget"] = thinking_budget
+            body["extra_body"] = proxy_extra_body
+            body.pop("thinking_token_budget", None)
+        else:
+            body["thinking_token_budget"] = thinking_budget
     else:
         body.pop("thinking_token_budget", None)
+        if isinstance(proxy_extra_body, dict):
+            proxy_extra_body = dict(proxy_extra_body)
+            proxy_extra_body.pop("thinking_token_budget", None)
+            body["extra_body"] = proxy_extra_body
     return body, reasoning_effort

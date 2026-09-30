@@ -172,7 +172,8 @@ def test_litellm_vllm_model_allows_standard_reasoning_params():
     assert model.extra_body == {
         "enable_thinking": True,
         "chat_template_kwargs": {},
-        "allowed_openai_params": ["reasoning_effort", "thinking_token_budget"],
+        "allowed_openai_params": ["reasoning_effort"],
+        "extra_body": {},
     }
 
 
