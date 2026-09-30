@@ -46,6 +46,7 @@ def test_settings_defaults():
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.model_vllm_reasoning is False
+    assert current.model_vllm_thinking_budget is False
     assert current.model_litellm_proxy is False
     assert current.model_fast_id == "qwen3.6-35b-a3b"
     assert current.model_standard_id == "deepseek-v4-flash-0731"
@@ -154,6 +155,12 @@ def test_vllm_reasoning_flag_is_preserved():
     assert current.model_vllm_reasoning is True
 
 
+def test_vllm_thinking_budget_flag_is_preserved():
+    current = settings(AGENT_MODEL_VLLM_THINKING_BUDGET="true")
+
+    assert current.model_vllm_thinking_budget is True
+
+
 def test_litellm_proxy_flag_is_preserved():
     current = settings(AGENT_MODEL_LITELLM_PROXY="true")
 
@@ -165,6 +172,7 @@ def test_litellm_vllm_model_allows_standard_reasoning_params():
         settings(
             AGENT_MODEL_LITELLM_PROXY="true",
             AGENT_MODEL_VLLM_REASONING="true",
+            AGENT_MODEL_VLLM_THINKING_BUDGET="true",
         ),
         enable_thinking=True,
     )

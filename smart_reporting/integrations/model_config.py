@@ -74,13 +74,19 @@ def normalize_openai_chat_reasoning(
 ) -> dict[str, Any]:
     """把内部统一 thinking 配置投影为端点公开的 Chat API 参数。"""
 
-    if not is_ark_endpoint(endpoint):
-        return params
     normalized = dict(params)
     raw_extra_body = normalized.get("extra_body")
     if not isinstance(raw_extra_body, dict):
         return normalized
     extra_body = dict(raw_extra_body)
+    if isinstance(extra_body.get("chat_template_kwargs"), dict):
+        # 未开启 vLLM 硬预算能力时，thinking_budget 只保留在模型副本中供内部策略
+        # 复用，不进入请求；开启时已在 reasoning_transport_fields 中完成协议投影。
+        extra_body.pop("thinking_budget", None)
+        normalized["extra_body"] = extra_body
+        return normalized
+    if not is_ark_endpoint(endpoint):
+        return normalized
     enabled = extra_body.pop("enable_thinking", None)
     # Ark 使用顶层 reasoning_effort 控制思考长度，不接受 DashScope 的预算字段。
     extra_body.pop("thinking_budget", None)
@@ -115,6 +121,7 @@ def reasoning_transport_fields(
     extra_body: dict[str, Any],
     enabled: bool,
     reasoning_effort: str | None,
+    use_thinking_budget: bool,
 ) -> tuple[dict[str, Any], str | None]:
     body = dict(extra_body)
     raw_template_kwargs = body.get("chat_template_kwargs")
@@ -125,15 +132,22 @@ def reasoning_transport_fields(
 
     # chat_template_kwargs 由 vLLM 能力开关放入，作为 transport 标记。
     # 新版 vLLM 原生接收 reasoning_effort，并自动注入 enable_thinking；模板字段只
-    # 保留显式开关，内部 thinking_budget 则投影为 vLLM 的 thinking_token_budget。
+    # 保留显式开关；仅当部署声明 reasoning_config 能力时，才把内部预算投影为
+    # vLLM 的 thinking_token_budget，避免未配置服务端硬预算时整次请求失败。
     template_kwargs = dict(raw_template_kwargs)
     template_kwargs["enable_thinking"] = enabled
     template_kwargs["thinking"] = enabled
     template_kwargs.pop("reasoning_effort", None)
     body["chat_template_kwargs"] = template_kwargs
-    thinking_budget = body.pop("thinking_budget", None)
+    thinking_budget = body.get("thinking_budget")
     proxy_extra_body = body.get("extra_body")
-    if enabled and isinstance(thinking_budget, int) and not isinstance(thinking_budget, bool):
+    if (
+        use_thinking_budget
+        and enabled
+        and isinstance(thinking_budget, int)
+        and not isinstance(thinking_budget, bool)
+    ):
+        body.pop("thinking_budget", None)
         if isinstance(proxy_extra_body, dict):
             proxy_extra_body = dict(proxy_extra_body)
             proxy_extra_body["thinking_token_budget"] = thinking_budget

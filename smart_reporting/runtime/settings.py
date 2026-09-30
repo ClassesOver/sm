@@ -253,6 +253,7 @@ class AgentSettings:
     model_strong_id: str
     model_timeout_seconds: int
     model_vllm_reasoning: bool
+    model_vllm_thinking_budget: bool
     model_litellm_proxy: bool
     openai_base_url: str
     openai_api_key: str | None
@@ -412,6 +413,9 @@ class AgentSettings:
                 maximum=3600,
             ),
             model_vllm_reasoning=model_vllm_reasoning,
+            model_vllm_thinking_budget=_flag(
+                values.get("AGENT_MODEL_VLLM_THINKING_BUDGET")
+            ),
             model_litellm_proxy=_flag(values.get("AGENT_MODEL_LITELLM_PROXY")),
             openai_base_url=values.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
             openai_api_key=values.get("OPENAI_API_KEY"),
