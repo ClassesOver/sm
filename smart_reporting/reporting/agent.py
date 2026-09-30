@@ -83,6 +83,7 @@ from .code_agent.protocol import (
 from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .instructions import build_report_agent_instructions
 from .model_policy import (
+    REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR,
     ReportingReasoningEffort,
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,
@@ -2541,7 +2542,8 @@ def _report_model(
         # LiteLLM 只能把 OpenAI SDK 原生参数加入 allowlist。vLLM 的扩展参数必须
         # 经二层 extra_body 透传，否则会被当作 AsyncCompletions.create 的关键字。
         extra_body["allowed_openai_params"] = ["reasoning_effort"]
-        extra_body["extra_body"] = {}
+        if settings.model_vllm_reasoning and settings.model_vllm_thinking_budget:
+            extra_body["extra_body"] = {}
     model_options = dict(
         timeout=(settings.model_timeout_seconds if timeout_seconds is None else timeout_seconds),
         max_retries=0,
@@ -2578,6 +2580,11 @@ def _report_model(
             "standard": settings.model_standard_structured_mode,
             "strong": settings.model_strong_structured_mode,
         },
+    )
+    setattr(
+        model,
+        REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR,
+        settings.model_vllm_reasoning and settings.model_vllm_thinking_budget,
     )
     return model
 

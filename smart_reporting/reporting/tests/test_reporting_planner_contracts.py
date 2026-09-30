@@ -60,6 +60,7 @@ from smart_reporting.reporting.instructions import (
     REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS,
 )
 from smart_reporting.reporting.model_policy import (
+    REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR,
     ReportingThinkingProfile,
     ThinkingPolicyConfig,
     ThinkingRequest,
@@ -3461,12 +3462,30 @@ def test_runtime_planners_project_request_decision_to_vllm_chat_template() -> No
     assert request_params["reasoning_effort"] == "high"
     assert request_params["extra_body"] == {
         "enable_thinking": True,
-        "thinking_token_budget": 2048,
         "chat_template_kwargs": {
             "enable_thinking": True,
             "thinking": True,
         },
     }
+
+
+def test_vllm_hard_budget_flag_projects_top_level_budget() -> None:
+    model = ReportingPhaseOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test",
+        base_url="http://self-hosted.example/v1",
+        extra_body={"enable_thinking": True, "chat_template_kwargs": {}},
+    )
+    setattr(model, REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR, True)
+    apply_reporting_thinking_profile(
+        model,
+        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=2048),
+    )
+
+    request_params = model.get_request_params()
+
+    assert request_params["extra_body"]["thinking_token_budget"] == 2048
+    assert "thinking_budget" not in request_params["extra_body"]
 
 
 def test_litellm_vllm_nests_extension_budget_for_upstream_openai_sdk() -> None:
@@ -3481,6 +3500,7 @@ def test_litellm_vllm_nests_extension_budget_for_upstream_openai_sdk() -> None:
             "extra_body": {},
         },
     )
+    setattr(model, REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR, True)
     apply_reporting_thinking_profile(
         model,
         ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=2048),

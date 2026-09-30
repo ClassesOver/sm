@@ -14,6 +14,7 @@ from ..integrations.model_config import reasoning_transport_fields
 from ..model_routing import TaskComplexity, log_thinking_selection
 
 ReportingReasoningEffort = Literal["low", "high", "max"]
+REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR = "_reporting_vllm_thinking_budget"
 ThinkingOperation = Literal[
     "request_normalization",
     "domain_resolution",
@@ -403,6 +404,9 @@ def apply_reporting_thinking_profile[ModelT: OpenAIChat | OpenAIResponses](
         extra_body=extra_body,
         enabled=profile.enabled,
         reasoning_effort=transport_effort,
+        use_thinking_budget=bool(
+            getattr(model, REPORTING_VLLM_THINKING_BUDGET_MODEL_ATTR, False)
+        ),
     )
     model.temperature = profile.temperature
     return model
