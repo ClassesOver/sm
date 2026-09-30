@@ -105,12 +105,15 @@ def _responses_thinking_extra_body(
     """按 Responses provider 的公开契约投影思考开关。"""
 
     body = dict(extra_body or {})
+    uses_litellm_proxy = "allowed_openai_params" in body
     # 原生 Responses 只使用标准 reasoning.effort；vLLM 当前仅在 Chat
     # Completions 接收 thinking_token_budget，LiteLLM 的动态参数白名单也只用于
     # Chat 透传，不能带入不桥接的 Responses 请求。
     body.pop("thinking_budget", None)
     body.pop("thinking_token_budget", None)
     body.pop("allowed_openai_params", None)
+    if uses_litellm_proxy:
+        body.pop("extra_body", None)
     template_kwargs = body.get("chat_template_kwargs")
     if isinstance(template_kwargs, Mapping):
         body.pop("enable_thinking", None)

@@ -422,6 +422,9 @@ def reporting_thinking_profile_from_model(
     if isinstance(template_kwargs, dict):
         raw_effort = template_kwargs.get("reasoning_effort") or raw_effort
     budget = extra_body.get("thinking_budget") or extra_body.get("thinking_token_budget")
+    proxy_extra_body = extra_body.get("extra_body")
+    if budget is None and isinstance(proxy_extra_body, dict):
+        budget = proxy_extra_body.get("thinking_token_budget")
     if raw_effort == "low":
         effort: ReportingReasoningEffort = "low"
     elif raw_effort == "high":
