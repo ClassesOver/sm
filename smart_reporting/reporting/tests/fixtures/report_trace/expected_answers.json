@@ -1,0 +1,127 @@
+{
+  "version": "1",
+  "source": "手算独立答案；不得用被测生成器回填。单位为测试约定的元/人次。",
+  "inputs": {
+    "current_2026_09.csv": {
+      "periodRoles": [
+        "current"
+      ],
+      "rows": [
+        {
+          "month": "2026-09",
+          "campus": "A",
+          "income": 1200,
+          "visits": 10
+        },
+        {
+          "month": "2026-09",
+          "campus": "B",
+          "income": 2400,
+          "visits": 20
+        }
+      ]
+    },
+    "mom_2026_08.csv": {
+      "periodRoles": [
+        "mom"
+      ],
+      "rows": [
+        {
+          "month": "2026-08",
+          "campus": "A",
+          "income": 1000,
+          "visits": 10
+        },
+        {
+          "month": "2026-08",
+          "campus": "B",
+          "income": 2000,
+          "visits": 20
+        }
+      ]
+    }
+  },
+  "scenarios": {
+    "R1": {
+      "description": "9 月全部院区",
+      "scope": {},
+      "current": {
+        "income": 3600,
+        "visits": 30,
+        "incomePerVisit": 120
+      },
+      "mom": {
+        "income": 3000,
+        "visits": 30,
+        "incomePerVisit": 100
+      },
+      "momComparison": {
+        "income": {
+          "change": 600,
+          "changeRatePercent": 20.0
+        },
+        "visits": {
+          "change": 0,
+          "changeRatePercent": 0.0
+        }
+      },
+      "derivation": [
+        "current.income = 1200 + 2400 = 3600",
+        "current.visits = 10 + 20 = 30",
+        "current.incomePerVisit = 3600 / 30 = 120",
+        "mom.income = 1000 + 2000 = 3000",
+        "mom.incomePerVisit = 3000 / 30 = 100",
+        "momComparison.income.changeRate = (3600 - 3000) / |3000| × 100% = 20%"
+      ]
+    },
+    "R2": {
+      "description": "9 月仅 A 院区；本期与基期都受同一范围限制",
+      "scope": {
+        "campus": "A"
+      },
+      "current": {
+        "income": 1200,
+        "visits": 10,
+        "incomePerVisit": 120
+      },
+      "mom": {
+        "income": 1000,
+        "visits": 10,
+        "incomePerVisit": 100
+      },
+      "momComparison": {
+        "income": {
+          "change": 200,
+          "changeRatePercent": 20.0
+        },
+        "visits": {
+          "change": 0,
+          "changeRatePercent": 0.0
+        }
+      },
+      "derivation": [
+        "current.income = 1200（仅 A）",
+        "mom.income = 1000（仅 A）",
+        "momComparison.income.changeRate = (1200 - 1000) / |1000| × 100% = 20%"
+      ]
+    },
+    "R3": {
+      "description": "由 R1 人工把正文收入改为 3800",
+      "baseScenario": "R1",
+      "editedSubject": {
+        "metric": "income",
+        "role": "current",
+        "displayedValue": 3800
+      },
+      "expected": {
+        "generatedFactValue": 3600,
+        "contentBinding": "stale",
+        "fileAvailability": "available"
+      },
+      "derivation": [
+        "生成 fact 仍为 3600，来源文件未变化，故文件可用性保持 available",
+        "正文值 3800 ≠ 生成值 3600，内容绑定为 stale；不得把旧 fact 当作 3800 的证明"
+      ]
+    }
+  }
+}
