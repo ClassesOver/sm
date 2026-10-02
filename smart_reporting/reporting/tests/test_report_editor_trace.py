@@ -1529,6 +1529,7 @@ async def test_validate_marks_deleted_chart_unbound_and_keeps_present_chart(
         {
             "chartId": "chart_001",
             "imagePath": "reports/revision-1/chart-001.png",
+            "locationSource": "chart-001.png",
             "status": "valid",
         }
     ]

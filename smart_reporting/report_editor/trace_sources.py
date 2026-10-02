@@ -666,6 +666,7 @@ class ReportEditorTraceService:
                 fact_value,
                 expected_unit=expected_unit,
                 expected_periods=expected_periods,
+                expected_scope=_entry_scope(entry),
             )
             status = detail["status"]
             summary[status] += 1
@@ -677,6 +678,10 @@ class ReportEditorTraceService:
                     "status": status,
                     "factValue": fact_value,
                     "warnings": detail["warnings"],
+                    "draftValue": detail.get("draftValue"),
+                    "draftUnit": detail.get("draftUnit"),
+                    "draftPeriods": detail.get("draftPeriods"),
+                    "comparable": detail.get("comparable", False),
                     # B8 导出来源附录的冻结摘要字段：单位、期间、公式、范围与
                     # 数据集身份都取自事实登记，不从草稿反推。
                     "unit": expected_unit,
@@ -740,11 +745,16 @@ class ReportEditorTraceService:
             status = "unbound" if len(fingerprints) != 1 else (
                 "valid" if fingerprints[0] == trace.presentation_sha256 else "stale"
             )
+            location_source = None
+            if image is not None and len(fingerprints) == 1:
+                allowed_paths = {image.path, PurePosixPath(image.path).name} if unique_name else {image.path}
+                location_source = next(path for path in presentations if path in allowed_paths)
             charts.append(
                 {
                     "chartId": trace.chart_id,
                     "imagePath": image.path if image is not None else None,
                     "status": status,
+                    "locationSource": location_source,
                 }
             )
         return charts
@@ -819,6 +829,7 @@ class ReportEditorTraceService:
         }
         for trace in index.tables:
             counts = {"valid": 0, "stale": 0, "unbound": 0}
+            locations: list[dict[str, Any]] = []
             inserted_rows = 0
             copied_cells: list[dict[str, Any]] = []
             origin_body = committed_blocks.get(trace.table_id)
@@ -834,6 +845,13 @@ class ReportEditorTraceService:
                 else:
                     label_to_key = {}
                 draft_header, draft_rows = _rows(draft_body)
+                # 定位比软校验更保守：重复标签/列名不能选择首个匹配冒充唯一身份。
+                unique_block = all(
+                    sum(match.group(1) == trace.table_id for match in table_block_pattern.finditer(markdown)) == 1
+                    for markdown in (committed, draft_markdown)
+                )
+                origin_labels = [row[0] for row in origin_rows if row]
+                draft_labels = [row[0] for row in draft_rows if row]
                 column_index = {
                     name: position + 1 for position, name in enumerate(draft_header)
                 }
@@ -867,6 +885,15 @@ class ReportEditorTraceService:
                     if column is None or column >= len(row):
                         counts["stale"] += 1
                         continue
+                    if (unique_block and origin_labels.count(row[0]) == 1
+                            and draft_labels.count(row[0]) == 1
+                            and draft_header.count(cell.column_key) == 1
+                            and len(row) == len(draft_header) + 1):
+                        locations.append({
+                            "rowKey": cell.row_key, "columnKey": cell.column_key,
+                            "rowIndex": draft_rows.index(row), "columnIndex": column,
+                            "rowLabel": row[0], "text": row[column],
+                        })
                     fact_value: Any = None
                     for frozen_cell, frozen_value in frozen_values:
                         if frozen_cell is cell:
@@ -920,6 +947,7 @@ class ReportEditorTraceService:
                     "cells": counts,
                     "copiedCells": copied_cells,
                     "insertedRows": inserted_rows,
+                    "locations": locations,
                 }
             )
         return results, summary

@@ -674,8 +674,9 @@ def create_report_editor_router(
                 _editor_http_error(error, request_id=request_id)
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
-        @router.get(
+        @router.api_route(
             "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/download",
+            methods=["GET", "HEAD"],
             include_in_schema=False,
         )
         async def download_report_dataset(

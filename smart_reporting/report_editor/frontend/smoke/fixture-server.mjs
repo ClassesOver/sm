@@ -6,7 +6,36 @@ import { extname, join, normalize } from 'node:path'
 const port = Number(process.env.REPORT_EDITOR_FIXTURE_PORT ?? 4173)
 const root = new URL('../../static/', import.meta.url).pathname
 const editorPath = '/reports/v1/editor/fixture-report/1'
-let markdown = '# 医院整体运营情况分析报告\n\n## 核心结论\n\n用于浏览器布局回归。\n'
+let markdown = '# 医院整体运营情况分析报告\n\n## 核心结论\n\n华东营收为 12,450 万元。[[citation:sub-fixture-001]]\n'
+const traceSources = {
+  available: true,
+  datasets: [{
+    datasetId: 'dataset-fixture-001', sourceType: 'url_csv', requirementId: 'fixture-attachment',
+    filename: '收入明细.csv', businessLabel: '季度收入快照', rowCount: 4, size: 125,
+    materializedAt: '2026-09-29T08:00:00Z', periodRoles: ['current'], queryWindowId: 'current',
+  }],
+  subjects: [{
+    subjectId: 'sub-fixture-001', subjectKind: 'text_claim', locator: { sectionId: 'section-fixture' },
+    factRefs: [{ analysisId: 'analysis-fixture-001', factId: 'fact-fixture-001' }], computationId: 'comp-fixture-001',
+  }],
+  drilldown: { enabled: false, metrics: [], subjects: [] },
+}
+const traceComputation = {
+  computationId: 'comp-fixture-001', method: '渠道收入汇总', parameters: { column: 'revenue' },
+  executionId: 'exec-fixture-001', environment: { python: '3.12' }, verification: 'verified',
+  reproducibility: 'reproducible', limitations: [], inputDatasetIds: ['dataset-fixture-001'],
+  outputFactRefs: [{ analysisId: 'analysis-fixture-001', factKey: 'fact-fixture-001', factKind: 'metric', jsonPointer: '/metrics/revenue' }],
+  scriptFile: null, chain: { computationId: 'comp-fixture-001', method: '渠道收入汇总' },
+}
+const traceFact = {
+  analysisId: 'analysis-fixture-001', factId: 'fact-fixture-001', factKind: 'metric', displayValue: 12450,
+  entry: { unit: '万元', formula: 'sum(revenue)' }, inputFactRefs: [], warnings: [],
+}
+const tracePreview = {
+  datasetId: 'dataset-fixture-001', columns: ['region', 'channel', 'revenue', 'period'],
+  rows: [['华东', '线上', '4230', '2026 Q3'], ['华东', '线下', '8220', '2026 Q3'], ['华北', '线上', '3100', '2026 Q3'], ['华北', '线下', '5400', '2026 Q3']],
+  rowCountTotal: 4, offset: 0, limit: 50, nextCursor: null, truncatedCells: 0, truncatedByBudget: false, cellTruncationNote: null,
+}
 const history = [
   { revision: 1, markdown: '# 医院整体运营情况分析报告\n\n## 核心结论\n\n初始版本。\n', source: 'published', createdAt: '2026-09-20T08:30:00+08:00', note: '初始发布' },
   { revision: 2, markdown: '# 医院整体运营情况分析报告\n\n## 核心结论\n\n补充运营数据。\n', source: 'manual', createdAt: '2026-09-21T09:15:00+08:00', note: '运营数据复核' },
@@ -50,6 +79,60 @@ const server = http.createServer(async (request, response) => {
       sha256: digest(),
       csrfToken: 'fixture-csrf',
     })
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/sources`) {
+    json(response, traceSources)
+    return
+  }
+  if (request.method === 'POST' && url.pathname === `${editorPath}/api/sources/validate`) {
+    const payload = await requestJson(request)
+    const draftSha256 = createHash('sha256').update(String(payload.markdown)).digest('hex')
+    if (payload.draftSha256 !== draftSha256) {
+      response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ detail: { code: 'request_invalid' } }))
+      return
+    }
+    const changed = String(payload.markdown).includes('12,780')
+    json(response, {
+      draftSha256,
+      subjects: [{ subjectId: 'sub-fixture-001', claimId: 'claim-fixture-001', sectionId: 'section-fixture', status: changed ? 'stale' : 'valid', factValue: 12450, unit: '万元' }],
+      summary: { valid: changed ? 0 : 1, stale: changed ? 1 : 0, unbound: 0 },
+    })
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/computations`) {
+    json(response, { available: true, computations: [{ computationId: traceComputation.computationId, method: traceComputation.method, verification: traceComputation.verification, reproducibility: traceComputation.reproducibility, inputDatasetCount: 1, outputFactCount: 1 }] })
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/computations/${traceComputation.computationId}`) {
+    json(response, traceComputation)
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/charts`) {
+    json(response, { available: false, charts: [] })
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/facts/${traceFact.analysisId}/${traceFact.factId}`) {
+    json(response, traceFact)
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/datasets/${tracePreview.datasetId}/preview`) {
+    const offset = url.searchParams.get('cursor') === 'fixture-page-2' ? 2 : 0
+    json(response, {
+      ...tracePreview, offset, rows: tracePreview.rows.slice(offset, offset + 2),
+      nextCursor: offset === 0 ? 'fixture-page-2' : null,
+    })
+    return
+  }
+  if (request.method === 'HEAD' && url.pathname === `${editorPath}/api/datasets/${tracePreview.datasetId}/download`) {
+    response.writeHead(200, { 'Content-Length': '125', 'Content-Type': 'text/csv' })
+    response.end()
+    return
+  }
+  if (request.method === 'GET' && url.pathname === `${editorPath}/api/datasets/${tracePreview.datasetId}/download`) {
+    response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8' })
+    response.end('region,channel,revenue,period\n华东,线上,4230,2026 Q3\n华东,线下,8220,2026 Q3\n华北,线上,3100,2026 Q3\n华北,线下,5400,2026 Q3\n')
     return
   }
   if (request.method === 'PUT' && url.pathname === `${editorPath}/api/document`) {

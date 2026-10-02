@@ -35,6 +35,23 @@ async def test_chart_duplicate_registered_filenames_do_not_bind_both_charts(tmp_
 
 
 @pytest.mark.anyio
+async def test_chart_location_source_requires_unique_registered_image(tmp_path: Path) -> None:
+    editor, _grants, _workspace = await _make_editor(tmp_path, with_chart_trace=True)
+    await editor.read_document(_context())
+    index = await editor.trace.load_index(_context())
+    for draft, source in (
+        (ORIGINAL, "chart-001.png"),
+        (ORIGINAL.replace("chart-001.png", "./chart-001.png"), "chart-001.png"),
+        (ORIGINAL.replace("收入趋势", "成本趋势"), "chart-001.png"),
+        (ORIGINAL.replace("chart-001.png", "reports/revision-1/chart-001.png"), "reports/revision-1/chart-001.png"),
+        (ORIGINAL + "\n\n" + ORIGINAL, None),
+        (ORIGINAL.replace("chart-001.png", "other/chart-001.png"), None),
+        ("已删除图表", None),
+    ):
+        assert editor.trace._evaluate_charts(index, draft)[0]["locationSource"] == source
+
+
+@pytest.mark.anyio
 async def test_initial_publication_freezes_chart_presentation_before_editing(tmp_path: Path) -> None:
     from smart_reporting.reporting.workflow.runtime.publication import RuntimePublicationMixin
 

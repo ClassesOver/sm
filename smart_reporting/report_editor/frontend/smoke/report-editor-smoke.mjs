@@ -116,6 +116,27 @@ try {
       throw new Error(`${result.width}px 工具栏控件不足：${JSON.stringify(result)}`)
     }
     console.log(JSON.stringify(result))
+    if (viewport.width === 1280) {
+      await page.locator('[data-action="sources"]').click()
+      await page.locator('.evidence-shell:not([hidden])').waitFor({ state: 'visible' })
+      await page.locator('.evidence-directory-item').first().waitFor({ state: 'visible', timeout: 10_000 })
+      const datasetItem = page.locator('.evidence-directory-item', { hasText: '收入明细.csv' })
+      await datasetItem.click()
+      await page.locator('.evidence-tab-stage', { hasText: '快照' }).waitFor({ state: 'visible' })
+      const computationItem = page.locator('.evidence-directory-item', { hasText: '渠道收入汇总' })
+      await computationItem.click()
+      await page.locator('.evidence-tab-stage', { hasText: '计算' }).waitFor({ state: 'visible' })
+      const graph = page.locator('.evidence-graph[data-graph-host]')
+      await graph.waitFor({ state: 'visible' })
+      const nodes = graph.locator('.evidence-node')
+      if (await nodes.count() < 2) throw new Error('证据关系图节点不足')
+      await nodes.nth(1).click()
+      await graph.locator('.evidence-preview').waitFor({ state: 'visible' })
+      if (!(await graph.locator('.evidence-preview').textContent()).includes('预览：')) {
+        throw new Error('图节点预览条未显示')
+      }
+      console.log(JSON.stringify({ evidenceBrowser: 'passed', nodes: await nodes.count() }))
+    }
     await page.close()
   }
   if (allowMutation) {

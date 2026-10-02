@@ -197,15 +197,43 @@ export interface TraceChartSource {
 
 export interface TraceValidation {
   draftSha256: string
-  subjects: { subjectId: string; claimId: string; sectionId: string | null; status: 'valid' | 'stale' | 'unbound'; factValue: unknown; warnings?: string[] }[]
+  subjects: {
+    subjectId: string
+    claimId: string
+    sectionId: string | null
+    status: 'valid' | 'stale' | 'unbound'
+    /** 当前修订登记值；正文提取值仅在 comparable=true 且字段齐全时提供。 */
+    factValue: unknown
+    draftValue?: number
+    draftUnit?: string | null
+    draftPeriods?: string[]
+    comparable?: boolean
+    warnings?: string[]
+    unit?: string | null
+    periods?: unknown
+    formula?: string | null
+    scope?: unknown
+    datasetIds?: string[]
+  }[]
   summary: { valid: number; stale: number; unbound: number }
   tables?: {
     tableId: string
+    locations?: TraceTableCellLocation[]
     cells: { valid: number; stale: number; unbound: number }
     copiedCells?: { rowLabel: string; columnKey: string | null; text: string; matches: { rowKey: string; columnKey: string; factKey: string | null }[] }[]
   }[]
   tableSummary?: { valid: number; stale: number; unbound: number; insertedRows: number; copiedCells: number }
-  charts?: { chartId: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound' }[]
+  charts?: { chartId: string; imagePath: string | null; status: 'valid' | 'stale' | 'unbound'; locationSource?: string | null }[]
+}
+
+export interface TraceTableCellLocation {
+  rowKey: string
+  columnKey: string
+  /** 当前草稿的数据行序号（不含表头），列序号包含首列行标签。 */
+  rowIndex: number
+  columnIndex: number
+  rowLabel: string
+  text: string
 }
 
 export interface TraceComputationInfo {
@@ -231,6 +259,8 @@ export interface TraceComputationDetail {
   reproducibility: string
   limitations: string[]
   inputDatasetIds: string[]
+  inputFactRefs?: TraceFactRefLite[]
+  preprocessing?: unknown
   outputFactRefs: { analysisId: string; factKey: string | null; factKind: string; jsonPointer: string }[]
   scriptFile: { size: number; sha256: string } | null
   chain: { computationId: string; method: string; inputs?: unknown[] } & Record<string, unknown>

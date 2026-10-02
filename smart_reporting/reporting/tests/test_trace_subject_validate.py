@@ -21,6 +21,7 @@ from smart_reporting.reporting.trace.subject_builder import (
     build_claim_subject_bindings,
     claim_status,
     evaluate_subject_status,
+    extract_comparable_value,
     value_text_variants,
 )
 
@@ -99,6 +100,66 @@ def test_claim_changed_units_do_not_share_substring_identity() -> None:
     assert "单位" in result["warnings"][0]
 
 
+def test_extract_comparable_value_requires_unique_value_unit_period_and_scope() -> None:
+    result = extract_comparable_value(
+        "2025-09华东收入3,780万元",
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+        expected_scope={},
+    )
+    assert result == {"value": 3780, "unit": "万元", "periods": ["2025-09"]}
+
+    scoped = extract_comparable_value(
+        "2025-09华东收入3,780万元",
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+        expected_scope={"region": "华东"},
+    )
+    assert scoped == result
+
+    assert extract_comparable_value(
+        "收入3,780万元",
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+        expected_scope={},
+    ) is None
+    assert extract_comparable_value(
+        "2025-09华东收入3,780万元，2025-08收入3,500万元",
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+        expected_scope={},
+    ) is None
+    assert extract_comparable_value(
+        "2025-09收入3,780万元",
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+        expected_scope={"region": "华东"},
+    ) is None
+
+
+def test_claim_status_exposes_only_a_conservative_comparable_draft_value() -> None:
+    result = claim_status(
+        "2025-09华东收入3,780万元[[claim:claim-1]]",
+        "claim-1",
+        3600,
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+    )
+    assert result["status"] == "stale"
+    assert result["comparable"] is True
+    assert result["draftValue"] == 3780
+
+    ambiguous = claim_status(
+        "2025-09收入3,780万元，2025-08收入3,500万元[[claim:claim-1]]",
+        "claim-1",
+        3600,
+        expected_unit="万元",
+        expected_periods=("2025-09",),
+    )
+    assert ambiguous["status"] == "stale"
+    assert "draftValue" not in ambiguous
+
+
 def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
     fact_id = "fact-" + "a" * 16
     fact_path = "报表/智能分析/run-1/facts/revision-1/analysis_001.json"
@@ -138,6 +199,7 @@ def test_build_claim_subject_bindings_maps_facts_and_skips_unknown() -> None:
 
 async def _make_editor_with_subject(
     tmp_path: Path,
+    *, report_id: str = "report-1",
 ) -> tuple:
     from smart_reporting.report_editor import (
         InMemoryReportEditorRepository,
@@ -163,12 +225,12 @@ async def _make_editor_with_subject(
         company_id="company-1",
         user_id="user-1",
         thread_id="caller-thread",
-        run_id="report-1",
+        run_id=report_id,
     )
     from smart_reporting.reporting.workflow.scope import ReportingWorkflowScope
 
     scope = ReportingWorkflowScope(
-        run_id="report-1",
+        run_id=report_id,
         external_run_id="external-1",
         session_id="workflow-session",
         caller_thread_id="caller-thread",
@@ -189,9 +251,9 @@ async def _make_editor_with_subject(
     markdown = f"# 报告\n\n{table_block}\n"
     await workspace.awrite_text(scope.workspace_key, "reports/revision-1/report.md", markdown)
     csv_bytes = b"period,revenue\n2025-09,3600\n"
-    csv_path = "报表/数据集/report-1/dataset-url-abc0001.csv"
+    csv_path = f"报表/数据集/{report_id}/dataset-url-abc0001.csv"
     await workspace.awrite_bytes(scope.workspace_key, csv_path, csv_bytes)
-    fact_path = "报表/智能分析/report-1/facts/revision-1/analysis_001.json"
+    fact_path = f"报表/智能分析/{report_id}/facts/revision-1/analysis_001.json"
     bundle_bytes = json.dumps(
         {
             "version": "1",
@@ -287,9 +349,9 @@ async def _make_editor_with_subject(
     index = build_csv_trace_index(
         handles=(handle,),
         lineage=(lineage,),
-        report_id="report-1",
+        report_id=report_id,
         revision=1,
-        workflow_run_id="report-1",
+        workflow_run_id=report_id,
         markdown_file=ArtifactFile(
             path="reports/revision-1/report.md",
             mediaType="text/markdown",
@@ -318,10 +380,10 @@ async def _make_editor_with_subject(
     registry.release(scope.workspace_key)
     context = ReportEditorContext(
         artifactManifest=manifest_identity,
-        reportId="report-1",
+        reportId=report_id,
         revision=1,
         jobId="job-1",
-        workflowRunId="report-1",
+        workflowRunId=report_id,
         markdownPath="reports/revision-1/report.md",
         job={"jobId": "job-1", "status": "validated"},
         scope=scope.as_state(),
@@ -397,6 +459,24 @@ async def test_validate_returns_unit_and_period_warnings(tmp_path: Path) -> None
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_validate_returns_conservative_comparable_draft_value(tmp_path: Path) -> None:
+    editor, grants, context = await _make_editor_with_subject(tmp_path)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    markdown = "2025-09收入3780万元[[claim:claim-1]]"
+    result = await editor.trace_validate(
+        context, session, markdown, hashlib.sha256(markdown.encode()).hexdigest()
+    )
+    subject = result["subjects"][0]
+    assert subject["status"] == "stale"
+    assert subject["comparable"] is True
+    assert subject["draftValue"] == 3780
+    assert subject["draftUnit"] == "万元"
+    assert subject["draftPeriods"] == ["2025-09"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_validate_rejects_modified_fact_file(tmp_path: Path) -> None:
     editor, grants, context = await _make_editor_with_subject(tmp_path)
     raw, _ = await grants.issue(context)
@@ -457,6 +537,12 @@ async def test_validate_tables_keep_binding_when_rows_are_sorted(tmp_path: Path)
         "insertedRows": 0,
         "datasetIds": ["dataset-url-abc0001"],
         "methods": ["sum(revenue)"],
+        "locations": [
+            {"rowKey": "row:cur", "columnKey": "income_total", "rowIndex": 1,
+             "columnIndex": 1, "rowLabel": "本期", "text": "3,600"},
+            {"rowKey": "row:prev", "columnKey": "income_total", "rowIndex": 0,
+             "columnIndex": 1, "rowLabel": "上期", "text": "3,600"},
+        ],
     }
 
 
@@ -485,6 +571,35 @@ async def test_validate_tables_flag_edited_value_but_keep_other_cells(tmp_path: 
     assert result["tableSummary"] == {
         "valid": 1, "stale": 1, "unbound": 0, "insertedRows": 0, "copiedCells": 0,
     }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_table_locations_follow_current_rows_without_guessing_duplicates(tmp_path: Path) -> None:
+    sorted_table = _table_markdown([["上期", "9,999"], ["本期", "3,600"]])
+    result = await _validate_tables(tmp_path / "sorted", f"# 报告\n\n{sorted_table}\n")
+    assert result["tables"][0]["locations"] == [
+        {"rowKey": "row:cur", "columnKey": "income_total", "rowIndex": 1,
+         "columnIndex": 1, "rowLabel": "本期", "text": "3,600"},
+        {"rowKey": "row:prev", "columnKey": "income_total", "rowIndex": 0,
+         "columnIndex": 1, "rowLabel": "上期", "text": "9,999"},
+    ]
+    duplicated = _table_markdown([["本期", "3,600"], ["本期", "3,600"], ["上期", "3,600"]])
+    result = await _validate_tables(tmp_path / "duplicate", f"# 报告\n\n{duplicated}\n")
+    assert [item["rowKey"] for item in result["tables"][0]["locations"]] == ["row:prev"]
+    result = await _validate_tables(tmp_path / "blocks", f"# 报告\n\n{sorted_table}\n\n{sorted_table}\n")
+    assert result["tables"][0]["locations"] == []
+    removed = _table_markdown([["本期", "3,600"]])
+    result = await _validate_tables(tmp_path / "removed-location", f"# 报告\n\n{removed}\n")
+    assert [item["rowKey"] for item in result["tables"][0]["locations"]] == ["row:cur"]
+    renamed_column = sorted_table.replace("income_total", "renamed")
+    result = await _validate_tables(tmp_path / "renamed-column-location", renamed_column)
+    assert result["tables"][0]["locations"] == []
+    duplicate_column = sorted_table.replace("| income_total |", "| income_total | income_total |")
+    result = await _validate_tables(tmp_path / "duplicate-column-location", duplicate_column)
+    assert result["tables"][0]["locations"] == []
+    result = await _validate_tables(tmp_path / "missing-table-location", "# 报告\n")
+    assert result["tables"][0]["locations"] == []
 
 
 @pytest.mark.anyio

@@ -11,15 +11,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.1.1",
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "diff": "^8.0.4",
     "diff2html": "^3.4.56",
     "lucide": "^1.46.0",
+    "pathfinding": "^0.4.18",
     "plotly.js-dist-min": "^3.3.1"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
+    "@types/pathfinding": "^0.1.0",
     "@types/plotly.js": "^3.0.7",
     "jsdom": "^27.4.0",
     "playwright": "^1.55.0",

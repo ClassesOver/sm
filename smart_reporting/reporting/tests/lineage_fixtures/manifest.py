@@ -14,7 +14,7 @@ from smart_reporting.reporting.delivery.draft_v1 import HeadingNumber
 from smart_reporting.reporting.trace.contracts_v1 import RevisionTraceIndexV1, canonical_json_bytes
 
 
-async def register_trace_manifest(workspace, thread_id: str, index: RevisionTraceIndexV1) -> ArtifactFile:
+async def register_trace_manifest(workspace, thread_id: str, index: RevisionTraceIndexV1, *, overwrite: bool = False) -> ArtifactFile:
     files = {item.resource_id: item for item in index.files}
     markdown = files[index.markdown_file_resource_id]
     index_path = PurePosixPath(markdown.path).with_name("trace-index-v1.json").as_posix()
@@ -38,5 +38,5 @@ async def register_trace_manifest(workspace, thread_id: str, index: RevisionTrac
     )
     content = canonical_json_bytes(manifest.model_dump(mode="json", by_alias=True))
     manifest_path = PurePosixPath(markdown.path).with_name("report.manifest.json").as_posix()
-    await workspace.awrite_bytes(thread_id, manifest_path, content)
+    await workspace.awrite_bytes(thread_id, manifest_path, content, overwrite=overwrite)
     return ArtifactFile(path=manifest_path, mediaType="application/json", size=len(content), sha256=hashlib.sha256(content).hexdigest())

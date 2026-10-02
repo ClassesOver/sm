@@ -137,6 +137,10 @@ _PERIOD_TOKEN = re.compile(
     r"|本月|上月|本季度|上季度|本年|上年|去年同期|环比|同比"
 )
 _UNIT_TOKENS = ("亿元", "万元", "千元", "%", "‰", "万人次", "人次", "万人", "床", "张", "次", "人", "元")
+_NUMBER_UNIT_RE = re.compile(
+    r"(?<![\d.,+\-])(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?))\s*"
+    r"(?P<unit>亿元|万元|千元|%|‰|万人次|人次|万人|床|张|次|人|元)(?![\w])"
+)
 
 
 def _period_key(token: str) -> tuple[int, ...] | None:
@@ -187,6 +191,48 @@ def unit_period_warnings(
     return warnings
 
 
+def extract_comparable_value(
+    statement: str,
+    *,
+    expected_unit: str | None,
+    expected_periods: tuple[str, ...],
+    expected_scope: Mapping[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Extract a draft value only when the local claim text is unambiguous.
+
+    This deliberately requires an explicit matching period and all registered
+    scope values. It is a soft comparison aid, not a replacement for source
+    validation; ambiguous prose returns ``None``.
+    """
+
+    if not expected_unit or not expected_periods:
+        return None
+    if expected_scope and any(not value or value not in statement for value in expected_scope.values()):
+        return None
+    expected_keys = {
+        key for period in expected_periods
+        if (key := _period_key(str(period))) is not None
+    }
+    written_periods = [
+        token for token in _PERIOD_TOKEN.findall(statement)
+        if _period_key(token) is not None
+    ]
+    if not written_periods or any(_period_key(token) not in expected_keys for token in written_periods):
+        return None
+    candidates = [match for match in _NUMBER_UNIT_RE.finditer(statement) if match.group("unit") == expected_unit]
+    if len(candidates) != 1:
+        return None
+    try:
+        value = float(candidates[0].group("number").replace(",", ""))
+    except ValueError:
+        return None
+    return {
+        "value": int(value) if value.is_integer() else value,
+        "unit": expected_unit,
+        "periods": written_periods,
+    }
+
+
 def claim_status(
     markdown: str,
     claim_id: str,
@@ -195,6 +241,7 @@ def claim_status(
     window_chars: int = 200,
     expected_unit: str | None = None,
     expected_periods: tuple[str, ...] = (),
+    expected_scope: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """标记被删除或重复 → unbound；唯一标记所在段落的有界窗口内找不到
     完整事实值形态 → stale。排除协议标记文字和数字子串；此处仍属于
@@ -215,9 +262,9 @@ def claim_status(
     start = max(0, position - window_chars, block_start + 2 if block_start >= 0 else 0)
     end = min(len(markdown), position + window_chars, block_end if block_end >= 0 else len(markdown))
     window = re.sub(r"\[\[[^\]\r\n]+\]\]", "", markdown[start:end])
-    if value_matches(window, fact_value):
-        statements = re.split(r"[。！？;；\n]", window)
-        matched_statements = [statement for statement in statements if value_matches(statement, fact_value)]
+    statements = re.split(r"[。！？;；\n]", window)
+    matched_statements = [statement for statement in statements if value_matches(statement, fact_value)]
+    if matched_statements:
         warning_window = "\n".join(matched_statements)
         return {
             "status": "valid",
@@ -228,7 +275,22 @@ def claim_status(
                 fact_value=fact_value,
             ),
         }
-    return {"status": "stale", "warnings": []}
+    comparable = None
+    comparable_statements = [statement for statement in statements if _NUMBER_UNIT_RE.search(statement)]
+    if len(comparable_statements) == 1:
+        comparable = extract_comparable_value(
+            comparable_statements[0],
+            expected_unit=expected_unit,
+            expected_periods=expected_periods,
+            expected_scope=expected_scope,
+        )
+    result: dict[str, Any] = {"status": "stale", "warnings": []}
+    if comparable is not None:
+        result["draftValue"] = comparable["value"]
+        result["draftUnit"] = comparable["unit"]
+        result["draftPeriods"] = comparable["periods"]
+        result["comparable"] = True
+    return result
 
 
 __all__ = [
