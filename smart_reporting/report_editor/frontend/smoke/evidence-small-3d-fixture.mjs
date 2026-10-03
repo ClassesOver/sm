@@ -5,8 +5,9 @@ import { chromium } from 'playwright'
 
 const output = new URL('../../../../output/', import.meta.url)
 const state = process.env.REPORT_EDITOR_SMALL_STATE ?? 'none'
-assert.ok(['none', 'preview', 'pair', 'preview-relations', 'hub-preview', 'hub-relations'].includes(state))
+assert.ok(['none', 'preview', 'pair', 'preview-relations', 'hub-preview', 'hub-relations', 'hub-star-relations'].includes(state))
 const hub = state.startsWith('hub-')
+const indirectBranch = hub && state !== 'hub-star-relations'
 const suffix = `${state === 'none' ? '' : `-${state}`}${process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''}`
 await mkdir(output, { recursive: true })
 const browser = await chromium.launch({ headless: true })
@@ -57,8 +58,8 @@ try {
       return route.fulfill({ json: {
         analysisId: 'analysis-fixture-001', factId, factKind: 'metric', displayValue: 12450,
         entry: { unit: '万元' }, warnings: [],
-        inputFactRefs: (factId === 'fact-fixture-001' ? hub ? inputs.slice(0, -1) : inputs
-          : hub && factId === inputs[0] ? [inputs.at(-1)] : [])
+        inputFactRefs: (factId === 'fact-fixture-001' ? indirectBranch ? inputs.slice(0, -1) : inputs
+          : indirectBranch && factId === inputs[0] ? [inputs.at(-1)] : [])
           .map(factId => ({ analysisId: 'analysis-fixture-001', factId })),
       } })
     })
@@ -73,7 +74,7 @@ try {
     const leafId = `fact:analysis-fixture-001/${inputs[0]}`
     const tailId = `fact:analysis-fixture-001/${inputs.at(-1)}`
     const previewId = hub ? rootId : leafId
-    const direct = state === 'preview-relations' || state === 'hub-relations'
+    const direct = state === 'preview-relations' || state === 'hub-relations' || state === 'hub-star-relations'
     const scoped = state === 'pair' || state === 'preview-relations'
     const expectedIds = (scoped ? [rootId, leafId] : [rootId,
       'subject:sub-fixture-001', 'computation:comp-fixture-001',
@@ -82,14 +83,14 @@ try {
     const expectedLinks = [
       [rootId, 'subject:sub-fixture-001'], ['computation:comp-fixture-001', rootId],
       ['computation:comp-fixture-001', 'subject:sub-fixture-001'],
-      ...(hub ? inputs.slice(0, -1) : inputs).map(name => [`fact:analysis-fixture-001/${name}`, rootId]),
-      ...(hub ? [[tailId, leafId]] : []),
+      ...(indirectBranch ? inputs.slice(0, -1) : inputs).map(name => [`fact:analysis-fixture-001/${name}`, rootId]),
+      ...(indirectBranch ? [[tailId, leafId]] : []),
     ].filter(([from, to]) => expectedIds.includes(from) && expectedIds.includes(to)
       && (!direct || from === previewId || to === previewId)).sort()
     await canvas.waitFor()
     const title = await page.locator('.evidence-object-title').textContent()
     const back = await page.locator('[data-evidence="back"]').isEnabled()
-    if (hub) {
+    if (indirectBranch) {
       assert.equal(await picker.locator('option').count(), count, '间接端点尚未加载')
       await picker.selectOption(leafId)
       await page.locator('.evidence-branch-load').click()
@@ -144,7 +145,7 @@ try {
         assert.deepEqual(overlap.links, expectedLinks, '实际可见登记边身份及方向与当前范围一致')
         const current = overlap.bounds.find(label => label.id === rootId)
         assert.ok(current.text.includes('当前页'), '实际名称保留当前页状态')
-        assert.match(current.text, new RegExp(`已加载\\s*${count - (hub ? 2 : 1)}\\s*条关系`), '缩小范围仍显示已加载关系数')
+        assert.match(current.text, new RegExp(`已加载\\s*${count - (indirectBranch ? 2 : 1)}\\s*条关系`), '缩小范围仍显示已加载关系数')
         assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
         if (state !== 'none') {
           if (!hub) assert.ok(overlap.bounds.find(label => label.id === previewId).text.includes('预览'), '实际名称保留预览状态')
@@ -216,6 +217,18 @@ try {
             await writeFile(new URL(`${base}-geometry.json`, output), `${JSON.stringify({ before: beforeGeometry, after: afterGeometry }, null, 2)}\n`)
           }
           assert.equal(before.equals(after), true, '模式往返恢复3D相机、名称与范围像素')
+          if (direct) {
+            await trace.selectOption('')
+            await page.evaluate(() => window.graphLabelBounds.clear())
+            await page.waitForFunction(expected => window.graphLabelBounds.size === expected, count)
+            await page.waitForTimeout(150)
+            assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-scope'), 'all', '取消范围恢复全图')
+            assert.equal(await page.evaluate(() => window.graphVisibleLinks.length), count, '取消范围恢复间接及非中心登记边')
+            assert.equal(await picker.inputValue(), rootId, '取消范围不改变中心对象预览')
+            await trace.selectOption('preview-relations')
+            await page.waitForTimeout(150)
+            assert.equal(before.equals(await canvas.screenshot()), true, '范围取消后重新选择恢复3D名称与范围像素')
+          }
         }
       }
     }

@@ -587,7 +587,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
         return { x: Math.round(point.x) - 14, y: Math.round(point.y) - 14, width: 28, height: 28, fixed: true }
       })
-      const layoutKey = JSON.stringify([viewport.clientWidth, viewport.clientHeight, items.map(item => item.node.id), rectangles, obstacles])
+      const layoutKey = JSON.stringify([viewport.clientWidth, viewport.clientHeight, previewOnly, items.map(item => item.node.id), rectangles, obstacles])
       if (layoutKey === cachedLabelLayoutKey) rectangles = cachedLabelRectangles
       else {
         const strategy = layoutGreedy().bounds({ x: 4, y: 4,
@@ -598,13 +598,18 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const perimeter = rectangles.map(rectangle => ({ ...rectangle,
           x: rectangle.x < viewport.clientWidth / 2 ? 4 : viewport.clientWidth - rectangle.width - 4,
           y: rectangle.y - rectangle.height / 2 }))
+        const seeds = [rectangles, outward, perimeter]
+        // 直接关系减少可见节点时补充上下边缘起点；仅过滤边时沿用全图排布。
+        if (previewOnly && nodes.length < allNodes.length) seeds.push(rectangles.map(rectangle => ({ ...rectangle,
+          x: rectangle.x - rectangle.width / 2,
+          y: rectangle.y < viewport.clientHeight / 2 ? 4 : viewport.clientHeight - rectangle.height - 4 })))
         // 14px图标增加每边1px取整余量；名称与自身图标的正常锚点相交不计遮挡。
         const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 8,
           y: Math.round(item.point.y) - 8, width: 16, height: 16 }))
         let bestTotal = Infinity
         let bestPadding = Infinity
         // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
-        for (const seed of [rectangles, outward, perimeter]) {
+        for (const seed of seeds) {
           let candidate = seed
           for (let round = 0; round < 16; round++) {
             const mirrorX = round < 12 ? round % 2 === 1 : round % 2 === 0
