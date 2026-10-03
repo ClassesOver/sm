@@ -940,3 +940,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 3D 共享关系线长名称回放：`REPORT_EDITOR_LONG_LABELS=1` 下同一39节点/55条边 fixture、三种视口和追踪/列表/导航流程通过，代表截图 `output/report-editor-v6-complex-3d-1280-long-curved-long.png`、`output/report-editor-v6-complex-3d-390-long-curved-long.png` 已检查。长名称信息仍保持可进入和摘要全名；密集全图可读性、真机和读屏仍未通过。
 
 2026-10-04 3D 类型信息回放：默认 3D fixture 覆盖 fact、computation、subject，并在分支追加后覆盖 dataset；默认视图、2D/3D 往返、预览/追踪、重试、导航、鼠标输入和动态效果偏好均通过，图例同步 dataset 类型，无脚本错误。该证据覆盖四类节点，不替代包含 chart 的五类型/状态视觉矩阵，也不证明复杂图整体可读性或真机/读屏验收。
+
+2026-10-04 图表类型关系图回放：chart fixture 的来源分页、恢复及关系图通过；3D/2D 共用 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份，两条有方向输入边保持，分页 offsets 为 `[0,20,20,20,0]`。该结果补齐 chart 类型关系身份证据，不等于完整五类型/状态视觉矩阵或复杂图整体可读性通过。
