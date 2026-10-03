@@ -343,6 +343,20 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
+    const labels = new Map<string, { sprite: InstanceType<typeof SpriteText>; scale: GraphPoint3d }>()
+    const sizeLabel = (id: string, label: { sprite: InstanceType<typeof SpriteText>; scale: GraphPoint3d }) => {
+      const { sprite, scale } = label
+      const attenuate = !pinnedId
+      if (sprite.material.sizeAttenuation !== attenuate) {
+        sprite.material.sizeAttenuation = attenuate
+        sprite.material.depthTest = attenuate
+        sprite.material.needsUpdate = true
+      }
+      // SpriteMaterial 原生支持固定屏幕尺寸；追踪两端文字保持12 CSS px。
+      const factor = pinnedId ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
+      sprite.scale.set(scale.x * factor, scale.y * factor, scale.z * factor)
+      sprite.position.y = pinnedId && id === pinnedId ? -8 : 8
+    }
     const cancelPreview = () => {
       if (pendingPreview !== null) window.clearTimeout(pendingPreview)
       pendingPreview = null
@@ -366,9 +380,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         label.borderRadius = 1
         label.padding = [1, 2]
         label.position.y = 8
+        const id = evidenceRefId(node.ref)
+        const sized = { sprite: label, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z } }
+        labels.set(id, sized)
+        sizeLabel(id, sized)
         return label
       })
       .nodeThreeObjectExtend(true)
+      .nodeResolution(24)
       .nodeColor(nodeColor)
       .linkColor(linkColor)
       .linkWidth(linkWidth)
@@ -381,6 +400,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       })
       .linkOpacity(0.8)
       .linkDirectionalArrowLength(4)
+      .linkDirectionalArrowResolution(12)
       .linkDirectionalArrowRelPos(1)
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         const id = evidenceRefId(node.ref)
@@ -430,6 +450,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const resize = new ResizeObserver(() => {
       if (viewport.clientWidth && viewport.clientHeight) {
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
+        for (const [id, label] of labels) sizeLabel(id, label)
       }
     })
     resize.observe(viewport)
@@ -554,6 +575,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
       instance.nodeVisibility((node: { id: string }) => !pinnedId || node.id === pinnedId || node.id === selectedId)
         .linkVisibility((link: { id: string }) => !pinnedId || highlightedLink(link))
+      for (const [id, label] of labels) sizeLabel(id, label)
       const count = linkData.filter(highlightedLink).length
       traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : ''}`
       fit3d.textContent = pinnedId ? '适应追踪关系' : '适应 3D'
