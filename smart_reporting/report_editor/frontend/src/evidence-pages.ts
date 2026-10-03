@@ -372,6 +372,13 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .nodeColor(nodeColor)
       .linkColor(linkColor)
       .linkWidth(linkWidth)
+      .linkCurvature((link: { id: string }) => {
+        const edge = graph.edges.get(link.id)!
+        if (sameEvidenceRef(edge.from, edge.to)) return 0.6
+        const reverse = [...graph.edges.values()].some(other =>
+          sameEvidenceRef(edge.from, other.to) && sameEvidenceRef(edge.to, other.from))
+        return reverse ? 0.16 : 0
+      })
       .linkOpacity(0.8)
       .linkDirectionalArrowLength(4)
       .linkDirectionalArrowRelPos(1)
@@ -406,7 +413,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         hoveredId = !selectedId || id === selectedId || (id !== null && neighbours.has(id)) ? id : null
         refreshTrace()
       })
-    instance.graphData({ nodes: restoredNodes, links: linkData })
+    // 使用组件现有力布局为名称留出空间；预热新增节点，避免立即预览时缓存拥挤的初始坐标。
+    instance.d3Force('link').distance(70)
+    instance.d3Force('charge').strength(-100)
+    instance.warmupTicks(100).graphData({ nodes: restoredNodes, links: linkData })
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const cameraDuration = () => reducedMotion.matches ? 0 : 180
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
@@ -448,8 +458,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     removal.observe(document.body, { childList: true, subtree: true })
     ctx.signal.addEventListener('abort', dispose, { once: true })
     const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
-    fit3d.addEventListener('click', () => instance.zoomToFit(cameraDuration(), 32,
-      pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined))
+    fit3d.disabled = true
+    fit3d.addEventListener('click', () => requestAnimationFrame(() => {
+      if (ctx.isStale() || !viewport.isConnected) return
+      instance.zoomToFit(cameraDuration(), 32,
+        pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined)
+    }))
     controls.append(fit3d)
     const zoom3d = (factor: number) => {
       const position = instance.cameraPosition()
@@ -480,7 +494,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         z: node.z + (position.z - target.z) * 80 / distance,
       }, { x: node.x, y: node.y, z: node.z }, cameraDuration())
     })
-    for (const button of [zoomOut, zoomIn, reset, locate]) button.disabled = false
+    // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
+    const ready = () => {
+      for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
+      instance.onEngineTick(() => {}).onEngineStop(() => {})
+    }
+    instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
     legend.className = 'evidence-graph-legend'
     legend.textContent = `${relations.loadedNote} · 3D 默认视图`
@@ -533,8 +552,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     legend.append(' · ', traceStatus)
     refreshTrace = () => {
       instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
+      instance.nodeVisibility((node: { id: string }) => !pinnedId || node.id === pinnedId || node.id === selectedId)
+        .linkVisibility((link: { id: string }) => !pinnedId || highlightedLink(link))
       const count = linkData.filter(highlightedLink).length
-      traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系`
+      traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : ''}`
       fit3d.textContent = pinnedId ? '适应追踪关系' : '适应 3D'
     }
     tracePicker.addEventListener('change', () => {
