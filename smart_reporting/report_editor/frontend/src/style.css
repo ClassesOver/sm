@@ -4330,9 +4330,9 @@ button {
   opacity: 0.58;
 }
 
-.evidence-graph-edge.is-muted { opacity: 0.2; }
+.evidence-graph-edge.is-muted { opacity: 0.12; }
 .evidence-graph-edge.is-preview { opacity: 1; stroke: #007ea7; stroke-width: 2.5; }
-.evidence-graph.is-tracing .evidence-graph-edge:not(.is-traced) { opacity: 0.12; }
+.evidence-graph.is-tracing .evidence-graph-edge:not(.is-traced) { opacity: 0.08; }
 .evidence-graph-edge.is-traced { opacity: 1; stroke: #007ea7; stroke-width: 3; }
 
 .evidence-node {
