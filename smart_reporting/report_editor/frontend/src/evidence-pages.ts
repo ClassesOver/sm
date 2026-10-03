@@ -78,6 +78,10 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
   subject: '引用',
 }
 
+const KIND_COLORS: Record<EvidenceObjectKind, string> = {
+  fact: '#4b78b8', computation: '#8b62b5', dataset: '#268c7d', chart: '#b47a29', subject: '#687c90',
+}
+
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',
   report_editor_session_expired: '编辑会话已过期，请从报告列表重新打开此报告',
@@ -311,7 +315,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = { fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText }
     const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
-      const svg = createElement(icons[kind], { width: 24, height: 24, color: '#23445b' })
+      const svg = createElement(icons[kind], { width: 24, height: 24, color: KIND_COLORS[kind] })
       const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
       for (const [key, value] of Object.entries({ width: '24', height: '24', rx: '5', fill: '#ffffff', stroke: '#c7dce8', 'stroke-width': '1' })) background.setAttribute(key, value)
       svg.prepend(background)
@@ -375,7 +379,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const to = evidenceRefId(edge.to)
         return from === traced && to === id || to === traced && from === id
       })
-      return traced && id !== traced && !connected ? '#dce6ed' : '#80a2bd'
+      return traced && id !== traced && !connected ? '#dce6ed' : KIND_COLORS[node.ref.kind]
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
@@ -650,8 +654,25 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
     legend.className = 'evidence-graph-legend'
-    legend.textContent = `${relations.loadedNote} · 3D 默认视图`
-    if (allNodes.length > 15) legend.append(' · 名称可切换；悬停可查看全名')
+    legend.title = `${relations.loadedNote}；当前页深蓝，预览青色；名称可切换，悬停可查看全名`
+    const scope = document.createElement('span')
+    scope.textContent = `已加载 ${allNodes.length} 个节点 · 局部关系`
+    legend.append(scope)
+    for (const kind of [...new Set(allNodes.map(node => node.kind))]) {
+      const item = document.createElement('span')
+      item.className = 'evidence-3d-kind-key'
+      item.dataset.kind = kind
+      const key = document.createElement('i')
+      key.className = 'key'
+      key.style.backgroundColor = KIND_COLORS[kind]
+      key.style.borderColor = KIND_COLORS[kind]
+      key.setAttribute('aria-hidden', 'true')
+      item.append(key, KIND_LABELS[kind])
+      legend.append(item)
+    }
+    const states = document.createElement('span')
+    states.textContent = '当前页深蓝 · 预览青色'
+    legend.append(states)
     host.append(legend)
     const nodePicker = document.createElement('select')
     nodePicker.className = 'evidence-trace-picker evidence-3d-node-picker'

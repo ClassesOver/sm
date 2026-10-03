@@ -4439,6 +4439,7 @@ button {
 }
 
 .evidence-graph-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.evidence-3d-kind-key { white-space: nowrap; }
 .evidence-graph-legend .key {
   width: 10px;
   height: 10px;

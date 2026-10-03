@@ -27,6 +27,7 @@ try {
   await page.getByRole('button', { name: '展开', exact: true }).click()
   const canvas = page.locator('.evidence-graph-3d canvas')
   await canvas.waitFor()
+  assert.deepEqual((await page.locator('.evidence-3d-kind-key').evaluateAll(nodes => nodes.map(node => node.dataset.kind))).sort(), ['computation', 'fact', 'subject'], '图例只列已加载类型')
   const output = new URL('../../../../output/', import.meta.url)
   await mkdir(output, { recursive: true })
   for (const width of [1280, 390]) {
@@ -106,6 +107,7 @@ try {
   await page.getByRole('button', { name: '已加载登记关系', exact: true }).waitFor()
   assert.equal(attempts, 2)
   assert.equal(await picker.locator('option').count(), 5, '四个累计节点与占位选项')
+  assert.equal(await page.locator('.evidence-3d-kind-key[data-kind="dataset"]').count(), 1, '追加快照后同步类型图例')
   assert.equal(await tracePicker.locator('option').count(), 5, '计算的三个已加载关系端点、全部及直接关系选项')
   assert.equal(await tracePicker.locator('option[value="preview-relations"]').count(), 1)
   await tracePicker.selectOption('subject:sub-fixture-001')
