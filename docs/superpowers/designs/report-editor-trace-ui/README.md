@@ -906,3 +906,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 详情入口与定位契约定向单测：`linked-subject.test.ts`、`evidence-location.test.ts`、`clipboard.test.ts` 共 25 项通过；覆盖入口身份、正文定位与复制反馈，不替代真实设备或全部浏览器组合。
 
 2026-10-04 证据面板与导航状态定向单测：`trace-panel.test.ts`、`evidence-browser.test.ts`、`evidence-state.test.ts` 共 58 项通过；覆盖错误映射、浏览器任务状态、导航栈和现场恢复，不替代真实设备或读屏验收。
+
+2026-10-04 Firefox 高扇出交叉回放：301 节点/300 边场景通过显式 2D 坐标、末端节点访问、预览/返回与窄屏定位检查；不扩大为 Firefox 全部矩阵或复杂图整体可读性通过。
