@@ -980,6 +980,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     // 临时追踪放在最上层，退出后恢复预览的绘制顺序。
     for (const path of traced) svg.append(path)
     const tracedIds = new Set(traced.flatMap(path => [path.dataset.from, path.dataset.to]))
+    traceStatus.textContent = previewOnly
+      ? `预览 ${traced.length} 条登记关系 · 仅显示预览直接关系`
+      : pinnedId
+        ? `追踪 ${traced.length} 条登记关系 · 仅显示追踪关系`
+        : ''
     for (const { id, button } of nodeElements) {
       button.classList.toggle('is-trace-related', tracedIds.has(id))
       const staysProminent = button.classList.contains('is-current') || button.classList.contains('is-selected')
@@ -1080,6 +1085,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   const traceHint = document.createElement('span')
   traceHint.textContent = '悬停或聚焦节点追踪关系'
   legend.append(traceHint)
+  const traceStatus = document.createElement('span')
+  traceStatus.className = 'evidence-2d-trace-status'
+  traceStatus.setAttribute('role', 'status')
+  legend.append(traceStatus)
   host.append(legend)
 
   const updateScale = (delta: number) => {

@@ -68,6 +68,7 @@ try {
   assert.equal(await tracePicker2d.locator('option[value="preview-relations"]').count(), 1, '2D追踪选择器提供预览直接关系')
   await tracePicker2d.selectOption('preview-relations')
   assert.ok(await page.locator('.evidence-graph-edge.is-traced').count() > 0, '2D预览直接关系进入追踪高亮')
+  await page.locator('.evidence-2d-trace-status', { hasText: '预览 1 条登记关系 · 仅显示预览直接关系' }).waitFor()
   const fit2d = page.getByRole('button', { name: '适应预览', exact: true })
   await fit2d.click()
   assert.equal(await fit2d.getAttribute('aria-label'), '适应预览', '2D预览关系使用专用适应视图')
