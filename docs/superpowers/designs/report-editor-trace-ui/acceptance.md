@@ -1,5 +1,20 @@
 # v6 工程验收清单
 
+## 最新候选四状态检查点（2026-10-03，未通过）
+
+本次核对已有日志与几何报告，没有重复运行完整测试。产品与fixture候选改动尚未提交；构建/资源预算通过，不能据此覆盖以下浏览器失败或推翻历史记录的限定范围。
+
+| 状态 | 当前浏览器结果 | 范围与反证 |
+| --- | --- | --- |
+| 未预览 `none` | 未通过；记录24/27场景 | 15节点390×844角度2：当前事实名称与计算名称重叠，并覆盖计算图标 |
+| 普通预览 `preview` | 未通过；记录24/27场景 | 全部5/9/15节点仍绘制；15节点390×844角度2：输入12名称覆盖输入9图标 |
+| 固定端点 `pair` | 指定27场景通过 | 该样例仅绘制当前事实与选中输入两个端点，名称/其他节点图标碰撞均为0 |
+| 预览直接关系 `preview-relations` | 指定27场景通过 | 选中输入仅有当前事实一个邻居，因此实际也是两个端点；不能推广为多邻居或全图通过 |
+
+报告分别为 `output/report-editor-v6-small-3d-visible-score-geometry.json`、`output/report-editor-v6-small-3d-preview-visible-score-geometry.json`、`output/report-editor-v6-small-3d-pair-visible-score-geometry.json`、`output/report-editor-v6-small-3d-preview-relations-visible-score-geometry.json`；失败也保存投影与截图。候选fixture使用 `REPORT_EDITOR_SMALL_STATE=none|preview|pair|preview-relations` 和 `REPORT_EDITOR_SCREENSHOT_SUFFIX=-visible-score`，在前端目录运行 `node smoke/evidence-small-3d-fixture.mjs`。保持名称/图标零碰撞断言，不放宽失败标准；身份、主对象、探索历史、预览身份、已加载关系数等检查不替代可读性检查。
+
+离线108组投影对照通过仅是候选筛选证据，真实浏览器四状态矩阵未全部通过。下一步修复上述两处反证，再完成受影响矩阵、鼠标与模拟触控验证和代表截图审查。复杂图、更多类型/状态、2D通道与真实后端继续未完成；iPhone/Android真机、Safari/VoiceOver、NVDA/Orca仍暂缓，不标通过。
+
 名称留白最终鼠标回放：最终构建通过默认3D、模式切换、预览/追踪/分支重试、导航、节点单/双击、后台打开/任务复用、旋转/滚轮及减少动态效果，errors=[]；仅指定三/四节点fixture操作证据，不把它作为15节点预览状态的零碰撞证据。
 
 小图名称留白最新补充（2026-10-03）：布局总留白8→6px、Sprite内缩4→3px，复用原d3fc策略与计分；固定图标区域28px、三种起点和16轮保持，不改变节点/相机/12px字体/名称信息。既有27组真实投影的原生策略离线对照复现旧0对名称/1处图标覆盖，6px候选为0/0；原生固定区域/处理顺序试验没有改善，不提交诊断或这些试验。最终Chromium实际Sprite投影的5/9/15节点×1280/390/844视口×三角度27场景全部名称重叠0、不同节点图标覆盖0；fixture新增两类空碰撞断言，既有全部名称数量、完整名称入口、信息层高于连线、四边像素、身份与页面溢出检查通过。报告 `output/report-editor-v6-small-3d-label-clearance-geometry.json` 记录261个名称投影；15节点390px角度0、844px角度2和9节点390px角度2代表截图已检查。构建/预算与模拟触控的旋转/捏合/转单指/轻触/导航/适应恢复/节点起点捏合回放通过，errors=[]；不重复完整测试。原1处缺口在这些未预览样例中消除，不扩大为预览/固定端点状态、全部类型/任意角度、复杂图或真实后端通过；整体可读性仍未全部验收，真机/读屏暂缓。
