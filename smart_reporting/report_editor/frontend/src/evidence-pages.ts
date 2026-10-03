@@ -347,24 +347,41 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const labels = new Map<string, Label3d>()
     const sizeLabel = (id: string, label: Label3d) => {
       const { sprite, scale } = label
-      const text = pinnedId ? label.traceText : label.text
+      const current = id === evidenceRefId(ctx.page.ref)
+      const focused = Boolean(pinnedId) || current || id === selectedId || id === viewport.dataset.hovered
+      const text = focused ? label.traceText : label.text
       if (sprite.text !== text) {
         sprite.text = text
         scale.x = sprite.scale.x
         scale.y = sprite.scale.y
         scale.z = sprite.scale.z
       }
-      const attenuate = !pinnedId
+      const attenuate = !focused
       if (sprite.material.sizeAttenuation !== attenuate) {
         sprite.material.sizeAttenuation = attenuate
         sprite.material.depthTest = attenuate
         sprite.material.needsUpdate = true
       }
-      // SpriteMaterial 原生支持固定屏幕尺寸；追踪两端文字保持12 CSS px。
-      const factor = pinnedId ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
+      // SpriteMaterial 原生支持固定屏幕尺寸；关注对象/追踪端点文字保持12 CSS px。
+      const factor = focused ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
       sprite.scale.set(scale.x * factor, scale.y * factor, scale.z * factor)
-      sprite.position.y = pinnedId && id === pinnedId ? -8 : 8
-      sprite.renderOrder = pinnedId ? 1 : 0
+      let below = pinnedId ? id === pinnedId : id === selectedId && !current
+      const partnerId = pinnedId ? id === pinnedId ? selectedId : pinnedId : current ? selectedId : id === selectedId ? evidenceRefId(ctx.page.ref) : null
+      if (focused && partnerId && partnerId !== id) {
+        const nodes = instance.graphData().nodes
+        const node = nodes.find((item: { id: string }) => item.id === id)
+        const partner = nodes.find((item: { id: string }) => item.id === partnerId)
+        if (node && partner && [node.x, node.y, node.z, partner.x, partner.y, partner.z].every(Number.isFinite)) {
+          instance.camera().updateMatrixWorld()
+          const nodeY = instance.graph2ScreenCoords(node.x, node.y, node.z).y
+          const partnerY = instance.graph2ScreenCoords(partner.x, partner.y, partner.z).y
+          if (Math.abs(nodeY - partnerY) > 1) below = nodeY > partnerY
+        }
+      }
+      // 使用Sprite原生锚点向两端屏幕外侧展开，旋转时不靠世界Y偏移定位文字。
+      sprite.position.y = focused ? 0 : 8
+      sprite.center.set(0.5, focused ? below ? 1.25 : -0.25 : 0.5)
+      sprite.renderOrder = focused ? 1 : 0
     }
     const cancelPreview = () => {
       if (pendingPreview !== null) window.clearTimeout(pendingPreview)
@@ -458,6 +475,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
     applyMotionPreference()
     reducedMotion.addEventListener('change', applyMotionPreference)
+    const placeLabels = () => {
+      for (const [id, label] of labels) sizeLabel(id, label)
+    }
+    instance.controls().addEventListener('change', placeLabels)
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
       instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
@@ -476,6 +497,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       disposed = true
       cancelPreview()
       reducedMotion.removeEventListener('change', applyMotionPreference)
+      instance.controls().removeEventListener('change', placeLabels)
       const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
       graph3dViews.set(ctx.page, {
         position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
@@ -496,9 +518,21 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     ctx.signal.addEventListener('abort', dispose, { once: true })
     const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
     fit3d.disabled = true
+    // 固定字号标签不随相机距离缩小；把其屏幕范围计入组件原生适应动作的留白。
+    const fitPadding = () => {
+      const height = viewport.clientHeight
+      const pixelScale = height / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
+      let padding = 32
+      for (const [id, { sprite }] of labels) {
+        if (sprite.material.sizeAttenuation || pinnedId && id !== pinnedId && id !== selectedId) continue
+        padding = Math.max(padding, sprite.scale.y * pixelScale * 1.25 + 8,
+          sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
+      }
+      return Math.min(padding, Math.max(0, height / 2 - 8))
+    }
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
       if (ctx.isStale() || !viewport.isConnected) return
-      instance.zoomToFit(cameraDuration(), 32,
+      instance.zoomToFit(cameraDuration(), fitPadding(),
         pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined)
     }))
     controls.append(fit3d)
@@ -517,7 +551,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.camera().up.set(0, 1, 0)
       instance.cameraPosition({ x: 0, y: 0, z: 150 }, { x: 0, y: 0, z: 0 }, 0)
       instance.controls().update()
-      instance.zoomToFit(cameraDuration(), 32)
+      instance.zoomToFit(cameraDuration(), fitPadding())
     })
     locate.addEventListener('click', () => {
       const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))

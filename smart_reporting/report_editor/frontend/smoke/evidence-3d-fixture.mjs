@@ -160,6 +160,7 @@ try {
   assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
   let hit = await findCanvasNode('computation:comp-fixture-001')
   await page.locator('.evidence-3d-trace-status', { hasText: '追踪 3 条登记关系' }).waitFor()
+  await canvas.screenshot({ path: new URL('report-editor-v6-3d-hover-label.png', output).pathname })
   await page.mouse.click(hit.x, hit.y)
   await page.locator('.evidence-preview-summary').waitFor()
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001', '画布单击预览')
