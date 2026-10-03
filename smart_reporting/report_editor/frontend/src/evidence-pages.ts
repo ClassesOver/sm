@@ -516,7 +516,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const slot = group.indexOf(link.id)
         return (slot - (group.length - 1) / 2) * 0.07
       })
-      .linkOpacity(0.8)
+      .linkOpacity((link: { id: string }) => highlightedLink(link) ? 0.95 : selectedId || tracedId() ? 0.28 : 0.62)
       .linkDirectionalArrowLength(6)
       .linkDirectionalArrowResolution(12)
       .linkDirectionalArrowRelPos(1)
