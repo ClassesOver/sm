@@ -860,3 +860,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 定向单测与键盘复验（2026-10-04）：`evidence-label-layout`、`evidence-graph`、`evidence-relations` 共 24 项通过；正式键盘 fixture 在 Chromium、Firefox 通过手动页签、Home/End/Delete、图节点 Space/Enter/Esc、焦点恢复与返回编辑器。Linux WebKit 本次因主机缺少 `libwoff2dec.so.1.0.2` 未启动，不新增该引擎证据。
 
 证据页核心定向单测（2026-10-04）：`evidence-pages`、`evidence-state`、`evidence-browser` 共 99 项通过；未运行完整测试套件。
+
+后端来源契约定向测试（2026-10-04）：`test_report_editor_trace.py`、`test_trace_subject_validate.py`、`test_trace_contracts.py` 共 95 项通过；仅有依赖 `imghdr` 弃用警告，无失败。该结果验证来源身份/软告警契约，不替代真实生产报告端到端验收。
