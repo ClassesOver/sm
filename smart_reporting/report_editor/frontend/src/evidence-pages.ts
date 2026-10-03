@@ -621,9 +621,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         seeds.push(rectangles.map(rectangle => ({ ...rectangle,
           x: rectangle.x - rectangle.width / 2,
           y: rectangle.y < viewport.clientHeight / 2 ? 4 : viewport.clientHeight - rectangle.height - 4 })))
-        // 14px图标增加每边1px取整余量；名称与自身图标的正常锚点相交不计遮挡。
-        const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 8,
-          y: Math.round(item.point.y) - 8, width: 16, height: 16 }))
+        // 28px固定图标区域与布局障碍保持一致；名称与自身图标的正常锚点相交不计遮挡。
+        const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 14,
+          y: Math.round(item.point.y) - 14, width: 28, height: 28 }))
         let bestTotal = Infinity
         let bestPadding = Infinity
         // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
