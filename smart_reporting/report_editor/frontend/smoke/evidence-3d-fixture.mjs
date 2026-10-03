@@ -142,6 +142,22 @@ try {
     }
     assert.fail(`真实画布未命中 ${id}`)
   }
+  const box = await canvas.boundingBox()
+  await page.mouse.move(box.x + 10, box.y + 10)
+  const beforeRotate = await canvas.screenshot()
+  await page.mouse.down()
+  await page.mouse.move(box.x + 90, box.y + 65, { steps: 12 })
+  await page.mouse.up()
+  await page.waitForTimeout(650)
+  const afterRotate = await canvas.screenshot({ path: new URL('report-editor-v6-3d-rotated.png', output).pathname })
+  assert.equal(beforeRotate.equals(afterRotate), false, '空白拖动改变3D视角')
+  await page.mouse.wheel(0, -240)
+  await page.waitForTimeout(650)
+  const afterWheel = await canvas.screenshot({ path: new URL('report-editor-v6-3d-wheel.png', output).pathname })
+  assert.equal(afterRotate.equals(afterWheel), false, '滚轮缩放改变3D视图')
+  assert.equal(await page.locator('.evidence-object-title').textContent(), title)
+  assert.equal(await page.locator('.evidence-preview-summary').count(), 0)
+  assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
   let hit = await findCanvasNode('computation:comp-fixture-001')
   await page.locator('.evidence-3d-trace-status', { hasText: '追踪 3 条登记关系' }).waitFor()
   await page.mouse.click(hit.x, hit.y)
@@ -158,8 +174,22 @@ try {
   await page.locator('[data-evidence="back"]').click()
   await page.locator('.evidence-object-title', { hasText: title }).waitFor()
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
+  for (const reducedMotion of ['reduce', 'no-preference']) {
+    await page.emulateMedia({ reducedMotion })
+    assert.equal(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), reducedMotion === 'reduce')
+    for (const name of ['定位当前对象', '放大关系图', '缩小关系图', '重置视图', '适应 3D']) {
+      await page.getByRole('button', { name, exact: true }).click()
+      await page.waitForTimeout(reducedMotion === 'reduce' ? 40 : 240)
+      const settled = await canvas.screenshot()
+      await page.waitForTimeout(300)
+      assert.equal(settled.equals(await canvas.screenshot()), true, `${reducedMotion} ${name} 无后续相机动画`)
+      assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
+      assert.equal(await page.locator('.evidence-object-title').textContent(), title)
+      assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
+    }
+  }
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ default3d: 'passed', containerSize: 'passed', modeSwitch: 'passed', preview: 'passed', relationTrace: 'passed', branchRetry: 'passed', navigation: 'passed', canvasClick: 'passed', canvasDoubleClick: 'passed', errors }))
+  console.log(JSON.stringify({ default3d: 'passed', containerSize: 'passed', modeSwitch: 'passed', preview: 'passed', relationTrace: 'passed', branchRetry: 'passed', navigation: 'passed', canvasClick: 'passed', canvasDoubleClick: 'passed', rotateAndWheel: 'passed', motionPreference: 'passed', errors }))
 } finally {
   await browser.close()
 }

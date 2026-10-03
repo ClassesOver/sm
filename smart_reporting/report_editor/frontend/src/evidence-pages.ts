@@ -407,6 +407,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         refreshTrace()
       })
     instance.graphData({ nodes: restoredNodes, links: linkData })
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const cameraDuration = () => reducedMotion.matches ? 0 : 180
+    const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
+    applyMotionPreference()
+    reducedMotion.addEventListener('change', applyMotionPreference)
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
       instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
@@ -423,6 +428,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (disposed) return
       disposed = true
       cancelPreview()
+      reducedMotion.removeEventListener('change', applyMotionPreference)
       const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
       graph3dViews.set(ctx.page, {
         position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
@@ -442,7 +448,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     removal.observe(document.body, { childList: true, subtree: true })
     ctx.signal.addEventListener('abort', dispose, { once: true })
     const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
-    fit3d.addEventListener('click', () => instance.zoomToFit(500, 32,
+    fit3d.addEventListener('click', () => instance.zoomToFit(cameraDuration(), 32,
       pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined))
     controls.append(fit3d)
     const zoom3d = (factor: number) => {
@@ -452,7 +458,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         x: target.x + (position.x - target.x) * factor,
         y: target.y + (position.y - target.y) * factor,
         z: target.z + (position.z - target.z) * factor,
-      }, target, 300)
+      }, target, cameraDuration())
     }
     zoomOut.addEventListener('click', () => zoom3d(1.25))
     zoomIn.addEventListener('click', () => zoom3d(0.8))
@@ -460,7 +466,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.camera().up.set(0, 1, 0)
       instance.cameraPosition({ x: 0, y: 0, z: 150 }, { x: 0, y: 0, z: 0 }, 0)
       instance.controls().update()
-      instance.zoomToFit(500, 32)
+      instance.zoomToFit(cameraDuration(), 32)
     })
     locate.addEventListener('click', () => {
       const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))
@@ -472,7 +478,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         x: node.x + (position.x - target.x) * 80 / distance,
         y: node.y + (position.y - target.y) * 80 / distance,
         z: node.z + (position.z - target.z) * 80 / distance,
-      }, { x: node.x, y: node.y, z: node.z }, 500)
+      }, { x: node.x, y: node.y, z: node.z }, cameraDuration())
     })
     for (const button of [zoomOut, zoomIn, reset, locate]) button.disabled = false
     const legend = document.createElement('div')
