@@ -370,6 +370,8 @@ async def test_shared_fact_dependencies_expand_in_batches_with_real_backend(
                 await page.locator('button[data-action="sources"]').click()
                 await page.locator(".evidence-directory-item").filter(has_text="正文引用").click()
                 await page.get_by_role("button", name="展开", exact=True).click()
+                # 批次坐标与节点数量断言针对 2D DOM；默认关系图仍为 3D。
+                await page.get_by_role("button", name="切换到 2D 关系图", exact=True).click()
                 await expect(page.locator(".evidence-node")).to_have_count(3)
                 positions = "nodes => Object.fromEntries(nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]]))"
                 original = await page.locator(".evidence-node").evaluate_all(positions)
