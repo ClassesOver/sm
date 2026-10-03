@@ -281,6 +281,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     } catch { return false }
   })()
   if (canRender3d) {
+    for (const button of [zoomOut, zoomIn, fit, reset, locate]) button.hidden = true
     const viewport = document.createElement('div')
     viewport.className = 'evidence-graph-3d'
     viewport.setAttribute('role', 'img')

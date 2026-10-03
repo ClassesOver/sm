@@ -103,6 +103,10 @@ export interface EvidenceStore {
 }
 
 export function createEvidenceState(store: EvidenceStore = { tasks: [], active: REPORT_TAB }) {
+  // 兼容旧版持久化页面：未记录模式的历史页按新的默认 3D 处理。
+  for (const task of store.tasks) {
+    for (const page of task.history) page.graphMode ??= '3d'
+  }
   const closedTasks: EvidenceTask[] = []
   let counter = store.tasks.reduce((max, task) => {
     const match = /^task-(\d+)$/.exec(task.key)
