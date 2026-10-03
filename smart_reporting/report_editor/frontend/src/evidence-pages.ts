@@ -451,7 +451,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .nodeThreeObject((node: { ref: EvidenceObjectRef }) => {
         const current = sameEvidenceRef(node.ref, ctx.page.ref)
         const selected = evidenceRefId(node.ref) === selectedId
-        const name = node.ref.label.length > 28 ? `${node.ref.label.slice(0, 27)}…` : node.ref.label
+        // 小图普通标签保持紧凑；悬停提示与关注态标签仍提供完整名称。
+        const name = node.ref.label.length > 6 ? `${node.ref.label.slice(0, 2)}…${node.ref.label.slice(-3)}` : node.ref.label
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
         const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
         label.fontWeight = '600'
@@ -599,8 +600,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           x: rectangle.x < viewport.clientWidth / 2 ? 4 : viewport.clientWidth - rectangle.width - 4,
           y: rectangle.y - rectangle.height / 2 }))
         const seeds = [rectangles, outward, perimeter]
-        // 直接关系减少可见节点时补充上下边缘起点；仅过滤边时沿用全图排布。
-        if (previewOnly && nodes.length < allNodes.length) seeds.push(rectangles.map(rectangle => ({ ...rectangle,
+        // 上下边缘起点为密集小图提供额外的成熟 Greedy 候选，保留全部名称。
+        seeds.push(rectangles.map(rectangle => ({ ...rectangle,
           x: rectangle.x - rectangle.width / 2,
           y: rectangle.y < viewport.clientHeight / 2 ? 4 : viewport.clientHeight - rectangle.height - 4 })))
         // 14px图标增加每边1px取整余量；名称与自身图标的正常锚点相交不计遮挡。
