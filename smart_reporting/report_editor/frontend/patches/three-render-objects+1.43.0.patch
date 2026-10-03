@@ -1,7 +1,22 @@
 diff --git a/node_modules/three-render-objects/dist/three-render-objects.mjs b/node_modules/three-render-objects/dist/three-render-objects.mjs
 --- a/node_modules/three-render-objects/dist/three-render-objects.mjs
 +++ b/node_modules/three-render-objects/dist/three-render-objects.mjs
-@@ -439,10 +439,12 @@
+@@ -303,10 +303,11 @@
+         const bboxCenter = new three.Vector3((bbox.x[0] + bbox.x[1]) / 2, (bbox.y[0] + bbox.y[1]) / 2, (bbox.z[0] + bbox.z[1]) / 2);
+         const center = preserveLookDirection ? camForward.clone().multiplyScalar(camPos.distanceTo(bboxCenter)).add(camPos) : bboxCenter;
+-        const distance = Math.max(0, ...[new three.Vector3(bbox.x[0], bbox.y[0], bbox.z[0]), new three.Vector3(bbox.x[0], bbox.y[0], bbox.z[1]), new three.Vector3(bbox.x[0], bbox.y[1], bbox.z[0]), new three.Vector3(bbox.x[0], bbox.y[1], bbox.z[1]), new three.Vector3(bbox.x[1], bbox.y[0], bbox.z[0]), new three.Vector3(bbox.x[1], bbox.y[0], bbox.z[1]), new three.Vector3(bbox.x[1], bbox.y[1], bbox.z[0]), new three.Vector3(bbox.x[1], bbox.y[1], bbox.z[1])].map(corner => {
++        const corners = bbox.corners ? bbox.corners.map(({ x, y, z }) => new three.Vector3(x, y, z)) : [new three.Vector3(bbox.x[0], bbox.y[0], bbox.z[0]), new three.Vector3(bbox.x[0], bbox.y[0], bbox.z[1]), new three.Vector3(bbox.x[0], bbox.y[1], bbox.z[0]), new three.Vector3(bbox.x[0], bbox.y[1], bbox.z[1]), new three.Vector3(bbox.x[1], bbox.y[0], bbox.z[0]), new three.Vector3(bbox.x[1], bbox.y[0], bbox.z[1]), new three.Vector3(bbox.x[1], bbox.y[1], bbox.z[0]), new three.Vector3(bbox.x[1], bbox.y[1], bbox.z[1])];
++        const distance = corners.reduce((distance, corner) => {
+           const localPos = corner.clone().sub(center);
+-          return Math.max(Math.abs(localPos.dot(camUp)) / Math.tan(vFovHalf), Math.abs(localPos.dot(camRight)) / Math.tan(hFovHalf)) - localPos.dot(camForward);
+-        }));
++          return Math.max(distance, Math.max(Math.abs(localPos.dot(camUp)) / Math.tan(vFovHalf), Math.abs(localPos.dot(camRight)) / Math.tan(hFovHalf)) - localPos.dot(camForward));
++        }, 0);
+         const dir = camForward.clone().negate();
+         const newCameraPos = {
+           x: center.x + dir.x * distance,
+           y: center.y + dir.y * distance,
+@@ -439,10 +440,12 @@
          state.isPointerDragging = false;
          if (!state.clickAfterDrag) return; // don't trigger onClick after pointer drag (camera motion via controls)
        }

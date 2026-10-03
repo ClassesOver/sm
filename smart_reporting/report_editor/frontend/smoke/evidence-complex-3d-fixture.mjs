@@ -162,6 +162,7 @@ try {
     await page.waitForTimeout(650)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
     assert.equal(await canvas.evaluate(node => node.getBoundingClientRect().height > 100), true)
+    assert.equal(await fitsCanvas(), true, `${width}px全图适应后名称与图形不触及画布四边`)
     if (width === 390) {
       const buttons = await page.locator('.evidence-graph-controls > button').evaluateAll(nodes => nodes
         .filter(node => !node.hidden).map(node => { const { top, width, height } = node.getBoundingClientRect(); return { top, width, height } }))
