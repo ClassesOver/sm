@@ -162,6 +162,13 @@ try {
     await page.waitForTimeout(650)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
     assert.equal(await canvas.evaluate(node => node.getBoundingClientRect().height > 100), true)
+    if (width === 390) {
+      const buttons = await page.locator('.evidence-graph-controls > button').evaluateAll(nodes => nodes
+        .filter(node => !node.hidden).map(node => { const { top, width, height } = node.getBoundingClientRect(); return { top, width, height } }))
+      assert.equal(new Set(buttons.map(button => Math.round(button.top))).size, 1, '竖屏图操作按钮保持一行')
+      assert.equal(buttons.every(button => button.width >= 40 && button.height >= 40), true, '图操作保留40px触控目标')
+      assert.equal(await canvas.evaluate(node => node.getBoundingClientRect().height >= 270), true, '长名称预览时竖屏画布保留至少270px')
+    }
     await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-complex-3d-${width}${suffix}.png`, output).pathname })
     const labelBounds = await canvas.boundingBox()
     if (width !== 1280) {

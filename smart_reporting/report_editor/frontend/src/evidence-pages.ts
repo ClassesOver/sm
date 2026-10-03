@@ -22,7 +22,7 @@ import {
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
-import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, Tags, X, ZoomIn, ZoomOut } from 'lucide'
+import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
@@ -247,7 +247,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   controls.className = 'evidence-graph-controls'
   controls.setAttribute('role', 'toolbar')
   controls.setAttribute('aria-label', '关系图工具')
-  const modeToggle = makeButton(ctx.page.graphMode === '3d' ? '切换 2D' : '切换 3D', 'ui-button evidence-graph-mode-toggle')
+  const modeToggle = makeButton(ctx.page.graphMode === '3d' ? '2D' : '3D', 'evidence-icon-button evidence-graph-mode-toggle')
   modeToggle.setAttribute('aria-label', ctx.page.graphMode === '3d' ? '切换到 2D 关系图' : '切换到 3D 关系图')
   modeToggle.title = ctx.page.graphMode === '3d' ? '当前为 3D，切换到 2D' : '当前为 2D，切换到 3D'
   modeToggle.addEventListener('click', () => {
@@ -258,7 +258,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   const zoomOut = makeButton('', 'evidence-icon-button')
   const zoomIn = makeButton('', 'evidence-icon-button')
   const fit = makeButton('', 'evidence-icon-button')
-  const reset = makeButton('重置视图', 'ui-button evidence-view-reset')
+  const reset = makeButton('', 'evidence-icon-button evidence-view-reset')
+  reset.append(createElement(RotateCcw, { width: 16, height: 16, 'aria-hidden': 'true' }))
+  reset.setAttribute('aria-label', '重置视图')
+  reset.title = '重置视图'
   const locate = makeButton('', 'evidence-icon-button')
   locate.setAttribute('aria-label', '定位当前对象')
   locate.title = '定位当前对象'
@@ -289,8 +292,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     } catch { return false }
   })()
   if (canRender3d) {
-    fit.hidden = true
-    for (const button of [zoomOut, zoomIn, reset, locate]) button.disabled = true
+    for (const button of [fit, zoomOut, zoomIn, reset, locate]) button.disabled = true
     const viewport = document.createElement('div')
     viewport.className = 'evidence-graph-3d'
     viewport.setAttribute('role', 'img')
@@ -535,7 +537,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     })
     removal.observe(document.body, { childList: true, subtree: true })
     ctx.signal.addEventListener('abort', dispose, { once: true })
-    const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
+    const fit3d = fit
+    fit3d.classList.add('evidence-3d-fit')
     fit3d.disabled = true
     // 固定字号标签不随相机距离缩小；把其屏幕范围计入组件原生适应动作的留白。
     const fitPadding = () => {
@@ -554,7 +557,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       instance.zoomToFit(cameraDuration(), fitPadding(),
         (node: { id: string }) => nodeVisible(node.id))
     }))
-    controls.append(fit3d)
     if (allNodes.length > 15) {
       const labelsToggle = makeButton('', 'evidence-icon-button evidence-3d-labels-toggle')
       labelsToggle.append(createElement(Tags, { width: 16, height: 16, 'aria-hidden': 'true' }))
@@ -678,8 +680,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const count = linkData.filter(highlightedLink).length
       traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}`
       viewport.dataset.scope = pinnedId ? 'pair' : previewOnly ? 'preview' : 'all'
-      fit3d.textContent = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应 3D'
-      fit3d.title = previewOnly ? '适应预览对象的直接关系' : fit3d.textContent
+      const fitLabel = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应 3D'
+      fit3d.setAttribute('aria-label', fitLabel)
+      fit3d.title = previewOnly ? '适应预览对象的直接关系' : fitLabel
     }
     tracePicker.addEventListener('change', () => {
       previewOnly = tracePicker.value === 'preview-relations'

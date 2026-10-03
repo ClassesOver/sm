@@ -4306,7 +4306,7 @@ button {
   .evidence-trace-picker { flex-basis: 100%; max-width: 100%; }
 }
 
-.evidence-view-reset { margin-left: 4px; font-size: 12px; }
+.evidence-graph-mode-toggle { font-size: 12px; font-weight: 600; }
 
 .evidence-graph-map {
   position: relative;

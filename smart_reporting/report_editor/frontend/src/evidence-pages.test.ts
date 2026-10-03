@@ -550,7 +550,8 @@ describe('事实页', () => {
     await renderEvidencePage(container, ctx)
     expect(page.graphMode).toBe('3d')
     const toggle = container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!
-    expect(toggle.textContent).toBe('切换 2D')
+    expect(toggle.getAttribute('aria-label')).toBe('切换到 2D 关系图')
+    expect(toggle.title).toBe('当前为 3D，切换到 2D')
     toggle.click()
     expect(page.graphMode).toBe('2d')
     expect(page.selected?.key).toBe('fact-input')
