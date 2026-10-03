@@ -24,6 +24,11 @@ import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceO
 import { markdownSha256 } from './source-validation'
 import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, X, ZoomIn, ZoomOut } from 'lucide'
 
+type GraphPoint3d = { x: number; y: number; z: number }
+// 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
+const graph3dViews = new WeakMap<EvidencePage, { position: GraphPoint3d; target: GraphPoint3d; up: GraphPoint3d; focusPicker: boolean }>()
+const graph3dPositions = new WeakMap<EvidenceGraph, Map<string, GraphPoint3d>>()
+
 /**
  * 证据浏览器对象页渲染契约（证据浏览器 v6）。
  *
@@ -294,6 +299,13 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     void Promise.all([import('3d-force-graph'), import('three-spritetext')]).then(([{ default: ForceGraph3D }, { default: SpriteText }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
+    const rememberedView = graph3dViews.get(ctx.page)
+    const rememberedPositions = graph3dPositions.get(graph)
+    const restoredNodes = nodeData.map(node => {
+      const position = rememberedPositions?.get(node.id)
+      // 已加载节点固定在原坐标；新增分支仍交给组件布局。
+      return position ? { ...node, ...position, fx: position.x, fy: position.y, fz: position.z } : node
+    })
     let lastNodeClick: { id: string; at: number } | null = null
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
@@ -336,7 +348,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         ctx.openBackground(node.ref, false)
       })
       .onNodeHover((node: { ref: EvidenceObjectRef } | null) => { viewport.dataset.hovered = node ? evidenceRefId(node.ref) : '' })
-    instance.graphData({ nodes: nodeData, links: linkData })
+    instance.graphData({ nodes: restoredNodes, links: linkData })
+    if (rememberedView) {
+      instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
+      instance.camera().up.set(rememberedView.up.x, rememberedView.up.y, rememberedView.up.z)
+      instance.controls().update()
+    }
     const resize = new ResizeObserver(() => {
       if (viewport.clientWidth && viewport.clientHeight) {
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
@@ -347,6 +364,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const dispose = () => {
       if (disposed) return
       disposed = true
+      const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
+      graph3dViews.set(ctx.page, {
+        position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),
+        focusPicker: host.contains(document.activeElement) && Boolean(document.activeElement?.closest('.evidence-3d-node-picker, .evidence-preview')),
+      })
+      graph3dPositions.set(graph, new Map(instance.graphData().nodes
+        .filter((node: GraphPoint3d) => [node.x, node.y, node.z].every(Number.isFinite))
+        .map((node: GraphPoint3d & { id: string }) => [node.id, point(node)])))
       resize.disconnect()
       removal.disconnect()
       ctx.signal.removeEventListener('abort', dispose)
@@ -381,8 +406,19 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     nodePicker.addEventListener('change', () => {
       ctx.setPreview(allNodes.find(node => evidenceRefId(node) === nodePicker.value) ?? null)
     })
+    nodePicker.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && ctx.page.selected) {
+        event.preventDefault()
+        ctx.navigate(ctx.page.selected)
+      } else if (event.key === 'Escape' && ctx.page.selected) {
+        event.preventDefault()
+        event.stopPropagation()
+        ctx.setPreview(null)
+      }
+    })
     controls.append(nodePicker)
     renderGraphPreview(host, ctx, expand)
+    if (rememberedView?.focusPicker) nodePicker.focus({ preventScroll: true })
     }).catch(() => {
       if (ctx.isStale() || !viewport.isConnected) return
       viewport.remove()

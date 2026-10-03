@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+3D 回放还检查节点选择与关闭后的选择器焦点、Escape 关闭预览和 Enter 导航；相机恢复的对照画布截图为 `output/report-editor-v6-3d-camera-{before,preview}.png`。截图提供指定三节点的视觉证据，不是全部图和全部动画时刻的坐标断言。
+
 默认 3D 挂载与容器尺寸回放：构建后启动 `node smoke/fixture-server.mjs`，运行 `node smoke/evidence-3d-fixture.mjs`。使用真实 Chromium WebGL，核对 1280px/390px 画布与容器尺寸、无整页横向溢出、2D/3D 往返及无脚本异常；通过原生节点选择器核对预览不改历史、390px 操作按钮完整可见、分支加载失败/重试、关闭、进入与后退恢复。截图为 `output/report-editor-v6-3d-{1280,390}.png` 与 `output/report-editor-v6-3d-preview-390.png`。此用例不覆盖画布鼠标命中、完整键盘与焦点恢复、追踪、实例资源释放或复杂图可读性，不能用 2D fixture 的结果替代这些 3D 验收项。
 
 详情回放也验证空快照与筛选零匹配使用不同提示；点击“清除筛选”恢复本页行、隐藏空态，并把焦点返回搜索框。空态在表格之外，不计入复制行。
