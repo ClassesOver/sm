@@ -36,6 +36,31 @@ describe('task graph context', () => {
     expect(crossingHeights(addedPath)).toHaveLength(1)
     expect(crossingHeights(addedPath)).not.toEqual(crossingHeights(existingPath))
   })
+
+  it('spreads direct fan-in relations across stable boundary ports', () => {
+    const graph = createEvidenceGraph()
+    const sources = Array.from({ length: 3 }, (_, i) => ({ ...dataset, key: `direct-${i}` }))
+    const target = { ...fact, key: 'direct-target' }
+    graph.nodes.set(evidenceRefId(target), target)
+    graph.positions.set(evidenceRefId(target), { x: 600, y: 240, width: 170, height: 76 })
+    for (const [i, source] of sources.entries()) {
+      graph.nodes.set(evidenceRefId(source), source)
+      graph.positions.set(evidenceRefId(source), { x: 120, y: 120 + i * 120, width: 170, height: 76 })
+    }
+    graph.width = 720
+    graph.height = 600
+    mergeEvidenceGraph(graph, {
+      center: target,
+      nodes: sources,
+      edges: sources.map(from => ({ from, to: target, label: '输入' })),
+      loadedNote: '局部关系',
+    })
+    const paths = sources.map(source => graph.paths.get(JSON.stringify([
+      evidenceRefId(source), evidenceRefId(target), '输入',
+    ]))!)
+    expect(new Set(paths.map(path => `${path[0].x},${path[0].y}`)).size).toBe(3)
+    expect(new Set(paths.map(path => `${path.at(-1)!.x},${path.at(-1)!.y}`)).size).toBe(3)
+  })
   it.each(['vertical', 'horizontal', 'horizontal-tight'] as const)('uses safe boundary ports for an obstructed %s edge', direction => {
     const graph = createEvidenceGraph()
     const vertical = direction === 'vertical'

@@ -136,6 +136,27 @@ function routeObstructedEdges(graph: EvidenceGraph): void {
   }
 }
 
+/** 在节点边界上为同一端点的直接关系分配稳定端口，减少共享输入汇聚时的视觉重叠。 */
+function directEdgePort(
+  node: NodePosition,
+  other: NodePosition,
+  slot: number,
+  count: number,
+): Point {
+  const directions = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]
+  const score = (direction: Point) => direction.x * (other.x - node.x) / node.width +
+    direction.y * (other.y - node.y) / node.height
+  directions.sort((a, b) => score(b) - score(a))
+  const direction = directions[0]
+  const halfSide = (direction.x ? node.height : node.width) / 2
+  const spacing = count > 1 ? Math.min(8, Math.max(0, (halfSide * 2 - 16) / (count - 1))) : 0
+  const offset = (slot - (count - 1) / 2) * spacing
+  return {
+    x: node.x + direction.x * node.width / 2 + (direction.y ? offset : 0),
+    y: node.y + direction.y * node.height / 2 + (direction.x ? offset : 0),
+  }
+}
+
 /** 已有节点不参与重排；Dagre 只布局新增批次，追加到已加载画面的下方。 */
 export function mergeEvidenceGraph(graph: EvidenceGraph, relations: EvidenceRelations): void {
   const added = new Set<string>()
@@ -188,6 +209,15 @@ export function mergeEvidenceGraph(graph: EvidenceGraph, relations: EvidenceRela
     }
   }
   // 跨批次的边连接已固定的矩形边界；节点位置与业务边方向不变。
+  const incident = new Map<string, string[]>()
+  for (const [id, edge] of graph.edges) {
+    for (const endpoint of [evidenceRefId(edge.from), evidenceRefId(edge.to)]) {
+      const ids = incident.get(endpoint) ?? []
+      ids.push(id)
+      incident.set(endpoint, ids)
+    }
+  }
+  for (const ids of incident.values()) ids.sort()
   for (const [id, edge] of graph.edges) {
     if (graph.paths.has(id)) continue
     const from = graph.positions.get(evidenceRefId(edge.from))!
@@ -201,13 +231,15 @@ export function mergeEvidenceGraph(graph: EvidenceGraph, relations: EvidenceRela
         { x: from.x, y: from.y + from.height / 2 },
       ])
     } else {
-      const dx = to.x - from.x
-      const dy = to.y - from.y
-      const start = Math.min(from.width / 2 / Math.abs(dx), from.height / 2 / Math.abs(dy))
-      const end = Math.min(to.width / 2 / Math.abs(dx), to.height / 2 / Math.abs(dy))
+      const fromIds = incident.get(evidenceRefId(edge.from)) ?? [id]
+      const toIds = incident.get(evidenceRefId(edge.to)) ?? [id]
+      const start = directEdgePort(from, to,
+        fromIds.indexOf(id), fromIds.length)
+      const end = directEdgePort(to, from,
+        toIds.indexOf(id), toIds.length)
       graph.paths.set(id, [
-        { x: from.x + dx * start, y: from.y + dy * start },
-        { x: to.x - dx * end, y: to.y - dy * end },
+        start,
+        end,
       ])
     }
   }
