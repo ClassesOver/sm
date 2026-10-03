@@ -242,6 +242,11 @@ try {
     assert.equal(overviewGeometry.at(-1).fixedNames.length, 1, '无预览概览仍显示当前页名称')
     assert.match(overviewGeometry.at(-1).fixedNames[0].text, /当前页.*已加载\s*16\s*条关系/, '收紧卡片仍保留当前页状态与关系数')
     assert.equal(overviewGeometry.at(-1).fixedNames.every(name => name.height <= 32), true, '大图两行重点名称卡片不超过32px')
+    if (width === 390 || width === 844) {
+      assert.equal(Math.round(overviewGeometry.at(-1).padding), 32, '窄屏无预览概览使用32px适应留白')
+    } else {
+      assert.ok(overviewGeometry.at(-1).padding > 32, '桌面概览保留动态标签留白')
+    }
     if (width === 844) {
       const { projection, canvas: size } = overviewGeometry.at(-1)
       assert.ok(projection.height >= size.height * 0.4, '指定横屏样例节点概览占画布高度至少40%')
