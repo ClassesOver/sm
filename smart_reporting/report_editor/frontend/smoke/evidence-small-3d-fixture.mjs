@@ -1,16 +1,18 @@
 // 5/9/15节点的全图可读性检查；截图需人工审查，无页面溢出不代表标签没有重叠。
 import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { chromium } from 'playwright'
+import { chromium, firefox } from 'playwright'
 
 const output = new URL('../../../../output/', import.meta.url)
 const state = process.env.REPORT_EDITOR_SMALL_STATE ?? 'none'
 assert.ok(['none', 'preview', 'pair', 'preview-relations', 'hub-preview', 'hub-relations', 'hub-star-relations'].includes(state))
+const engine = process.env.REPORT_EDITOR_BROWSER ?? 'chromium'
+assert.ok(['chromium', 'firefox'].includes(engine), `Unsupported browser: ${engine}`)
 const hub = state.startsWith('hub-')
 const indirectBranch = hub && state !== 'hub-star-relations'
 const suffix = `${state === 'none' ? '' : `-${state}`}${process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''}`
 await mkdir(output, { recursive: true })
-const browser = await chromium.launch({ headless: true })
+const browser = await ({ chromium, firefox })[engine].launch({ headless: true })
 const collisions = []
 const geometry = []
 try {

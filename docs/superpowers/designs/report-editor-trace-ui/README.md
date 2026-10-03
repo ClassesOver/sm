@@ -1001,6 +1001,8 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 
 2026-10-04 图表类型视觉证据补齐：chart fixture 新增并检查 3D/2D 截图 `output/report-editor-v6-chart-3d.png`、`output/report-editor-v6-chart-2d.png`；图表节点、dataset/computation 输入节点、方向箭头和类型图例均可见，分页/恢复断言保持通过。该截图仅覆盖三节点 chart 场景，不代表五类型复杂图整体可读性。
 
+2026-10-04 小图 Firefox 矩阵尝试：`evidence-small-3d-fixture.mjs` 新增 `REPORT_EDITOR_BROWSER=firefox` 选择；Firefox 的 `none`、`preview`、`pair`、`preview-relations` 状态各覆盖 5/9/15 节点、三视口、三角度，名称/跨节点图标覆盖均为 0。进入 hub 状态时，正式“模式往返恢复 3D 相机、名称与范围像素”断言失败，故不标记 Firefox 七状态全矩阵通过；Chromium 189 场景证据保持有效。
+
 2026-10-04 Firefox 3D 正式 fixture 复核：关系线减噪后的正式 `evidence-3d-fixture.mjs` 在 Firefox 通过默认 3D、容器尺寸、2D/3D 切换、预览、关系追踪、分支重试、导航、画布点击/双击、后台打开复用、旋转/滚轮和动态效果偏好，页面无脚本错误。
 
 2026-10-04 关系图核心定向单测复核：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过，确认 2D/3D 共用的节点身份、关系方向、追踪范围和列表契约未受近期视觉调整影响；未运行完整前端测试套件。
