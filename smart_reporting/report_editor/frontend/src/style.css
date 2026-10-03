@@ -4555,6 +4555,12 @@ button {
     border-radius: 0;
     background: #fff;
   }
+  .evidence-relations.is-graph-view .evidence-relations-head {
+    min-height: 40px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .evidence-relations.is-graph-view .evidence-relations-head h2 { display: none; }
   .evidence-relations.is-graph-view .evidence-relations-note,
   .evidence-relations.is-graph-view .evidence-relations-toggle { display: none; }
   .evidence-relations.is-graph-view .evidence-mobile-graph-return { margin-left: auto; }
