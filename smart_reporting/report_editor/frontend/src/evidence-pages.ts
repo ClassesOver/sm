@@ -580,22 +580,23 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         ({ x: Math.round(item.point.x), y: Math.round(item.point.y), width: item.width + 8, height: item.height + 8 }))
       const obstacles = nodes.map((node: GraphPoint3d) => {
         const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
-        return { x: Math.round(point.x) - 12, y: Math.round(point.y) - 12, width: 24, height: 24, fixed: true }
+        return { x: Math.round(point.x) - 14, y: Math.round(point.y) - 14, width: 28, height: 28, fixed: true }
       })
       const layoutKey = JSON.stringify([viewport.clientWidth, viewport.clientHeight, items.map(item => item.node.id), rectangles, obstacles])
       if (layoutKey === cachedLabelLayoutKey) rectangles = cachedLabelRectangles
       else {
         const strategy = layoutGreedy().bounds({ x: 4, y: 4,
           width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })
-        // 后续轮次从上轮结果继续优化；交替镜像给组件提供两个方向的移动空间。
-        for (let round = 0; round < 12; round++) {
-          const mirrored = round % 2 === 1
+        // 先沿用双轴镜像，再补单轴镜像，让原生候选也能向另外两个方向继续避让。
+        for (let round = 0; round < 16; round++) {
+          const mirrorX = round < 12 ? round % 2 === 1 : round % 2 === 0
+          const mirrorY = round % 2 === 1
           const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
-            x: viewport.clientWidth - rectangle.x - rectangle.width,
-            y: viewport.clientHeight - rectangle.y - rectangle.height })
-          // 固定图标区域参与原生评分，但不参与移动；只应用名称的位置。
+            x: mirrorX ? viewport.clientWidth - rectangle.x - rectangle.width : rectangle.x,
+            y: mirrorY ? viewport.clientHeight - rectangle.y - rectangle.height : rectangle.y })
+          // 28px固定图标区域参与原生评分但不参与移动；只应用名称的位置。
           const input = [...rectangles, ...obstacles]
-          rectangles = strategy(mirrored ? input.map(mirror) : input).slice(0, items.length).map(rectangle => mirrored ? mirror(rectangle) : rectangle)
+          rectangles = strategy(input.map(mirror)).slice(0, items.length).map(mirror)
         }
         cachedLabelLayoutKey = layoutKey
         cachedLabelRectangles = rectangles
