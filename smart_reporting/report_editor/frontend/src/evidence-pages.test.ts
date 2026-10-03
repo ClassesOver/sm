@@ -675,6 +675,26 @@ describe('事实页', () => {
     expect(updated.querySelectorAll('.evidence-graph-edge.is-preview')).toHaveLength(1)
   })
 
+  it.each(['fact:analysis_001/fact-input', 'preview-relations'])('restores 2D trace scope %s only for the same preview', async value => {
+    const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
+    page.selected = FACT_REF
+    await renderEvidencePage(container, ctx)
+    const picker = container.querySelector<HTMLSelectElement>('.evidence-trace-picker')!
+    picker.value = value
+    picker.dispatchEvent(new Event('change'))
+    const visibleIds = () => [...container.querySelectorAll<HTMLElement>('.evidence-node')]
+      .filter(node => node.style.display !== 'none').map(node => node.dataset.evidenceNode)
+    const before = visibleIds()
+    expect(page.graph3dTrace).toEqual({ previewId: `fact:${FACT_REF.analysisId}/${FACT_REF.key}`, value })
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector<HTMLSelectElement>('.evidence-trace-picker')!.value).toBe(value)
+    expect(visibleIds()).toEqual(before)
+    page.selected = { kind: 'fact', key: 'fact-input', analysisId: 'analysis_001', label: 'fact-input' }
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector<HTMLSelectElement>('.evidence-trace-picker')!.value).toBe('')
+    expect(visibleIds()).toHaveLength(container.querySelectorAll('.evidence-node').length)
+  })
+
   it('previews graph nodes without navigation and keeps the current page distinct', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
     await renderEvidencePage(container, ctx)

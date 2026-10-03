@@ -959,10 +959,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
 
   let hoveredId: string | null = null
   let focusedId: string | null = null
-  let pinnedId: string | null = null
-  let previewOnly = false
+  const rememberedTrace = ctx.page.graph3dTrace?.previewId === selectedId ? ctx.page.graph3dTrace.value : ''
+  let pinnedId: string | null = relatedIds.has(rememberedTrace) && rememberedTrace !== selectedId ? rememberedTrace : null
+  let previewOnly = Boolean(selectedId && relatedIds.size && rememberedTrace === 'preview-relations')
+  tracePicker.value = previewOnly ? 'preview-relations' : pinnedId ?? ''
   const nodeElements: Array<{ id: string; button: HTMLButtonElement }> = []
   const traceRelations = () => {
+    const fitLabel = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应关系图'
+    fit.setAttribute('aria-label', fitLabel)
+    fit.title = fitLabel
     const nodeId = pinnedId ?? hoveredId ?? focusedId
     const pairOnly = nodeId !== selectedId && nodeId !== null && relatedIds.has(nodeId)
     const relevant = selectedId === null || nodeId === selectedId || pairOnly
@@ -998,9 +1003,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   tracePicker.addEventListener('change', () => {
     previewOnly = tracePicker.value === 'preview-relations'
     pinnedId = previewOnly ? null : tracePicker.value || null
-    const fitLabel = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应关系图'
-    fit.setAttribute('aria-label', fitLabel)
-    fit.title = fitLabel
+    if (selectedId) ctx.updatePage({ graph3dTrace: { previewId: selectedId, value: tracePicker.value } })
     traceRelations()
   })
 
@@ -1094,6 +1097,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   traceStatus.setAttribute('role', 'status')
   legend.append(traceStatus)
   host.append(legend)
+  traceRelations()
 
   const updateScale = (delta: number) => {
     const scale = Math.min(2, Math.max(0.01, Number((ctx.page.graphScale + delta).toFixed(2))))

@@ -79,6 +79,23 @@ try {
   await tracePicker2d.selectOption('subject:sub-fixture-001')
   assert.equal(await page.locator('.evidence-node:visible').count(), 2, '固定追踪端点只显示对应节点对')
   assert.equal(await page.locator('.evidence-graph-edge:visible').count(), 1, '固定端点只显示对应登记边')
+  for (const [value, scope, fitName] of [
+    ['preview-relations', 'preview', '适应预览'],
+    ['subject:sub-fixture-001', 'pair', '适应追踪关系'],
+  ]) {
+    await tracePicker2d.selectOption(value)
+    const visibleIds = await page.locator('.evidence-node:visible').evaluateAll(nodes => nodes.map(node => node.dataset.evidenceNode).sort())
+    await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
+    await canvas.waitFor()
+    assert.equal(await page.getByRole('combobox', { name: '追踪预览关系端点' }).inputValue(), value, '3D恢复2D选择的追踪端点或直接关系范围')
+    await page.locator(`.evidence-graph-3d[data-scope="${scope}"]`).waitFor()
+    await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
+    await page.locator('.evidence-node').first().waitFor()
+    assert.equal(await tracePicker2d.inputValue(), value, '返回2D保留追踪选择')
+    assert.deepEqual(await page.locator('.evidence-node:visible').evaluateAll(nodes => nodes.map(node => node.dataset.evidenceNode).sort()), visibleIds, '模式往返保留相同可见节点身份')
+    assert.equal(await page.locator('.evidence-graph-edge:visible').count(), 1, '模式往返保留登记边范围')
+    await page.getByRole('button', { name: fitName, exact: true }).waitFor()
+  }
   await tracePicker2d.selectOption('')
   assert.equal(await page.locator('.evidence-2d-trace-status').textContent(), '', '2D退出追踪后清空状态')
   assert.equal(await page.locator('.evidence-node:visible').count(), nodeCount2d, '退出范围恢复全部节点')
