@@ -25,6 +25,17 @@ const dataset = (key: string, label = key): EvidenceObjectRef => ({
 })
 
 describe('evidence state', () => {
+  it('defaults new pages to 3D and preserves the mode when navigating', () => {
+    const state = createEvidenceState()
+    state.openTask(fact('fact-a'))
+    expect(state.currentPage()?.graphMode).toBe('3d')
+    state.updatePage({ graphMode: '2d' })
+    state.navigate(computation('comp-1'))
+    expect(state.currentPage()?.graphMode).toBe('3d')
+    state.back()
+    expect(state.currentPage()?.graphMode).toBe('2d')
+  })
+
   it('opens a task in the foreground and dedupes by object identity', () => {
     const state = createEvidenceState()
     const task = state.openTask(fact('fact-a', '华东营收'))

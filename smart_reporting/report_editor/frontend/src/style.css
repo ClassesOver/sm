@@ -4234,6 +4234,16 @@ button {
 
 .evidence-graph-scroll { max-height: 480px; overflow: auto; overscroll-behavior: contain; }
 
+.evidence-graph-3d {
+  position: relative;
+  min-height: 420px;
+  height: min(58vh, 560px);
+  overflow: hidden;
+  background: #f7fbfd;
+}
+
+.evidence-graph-3d canvas { display: block; width: 100%; height: 100%; }
+
 .evidence-graph-controls {
   display: flex;
   align-items: center;

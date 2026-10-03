@@ -235,13 +235,21 @@ function renderPageError(container: HTMLElement, ctx: EvidencePageContext, error
   finishRender(container, ctx, skeleton.title)
 }
 
-function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relations: EvidenceRelations, expand: (ref: EvidenceObjectRef) => void): void {
+function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relations: EvidenceRelations, expand: (ref: EvidenceObjectRef) => void, rerender: () => void): void {
   host.innerHTML = ''
   host.dataset.graphHost = ''
   const controls = document.createElement('div')
   controls.className = 'evidence-graph-controls'
   controls.setAttribute('role', 'toolbar')
   controls.setAttribute('aria-label', '关系图工具')
+  const modeToggle = makeButton(ctx.page.graphMode === '3d' ? '切换 2D' : '切换 3D', 'ui-button evidence-graph-mode-toggle')
+  modeToggle.setAttribute('aria-label', ctx.page.graphMode === '3d' ? '切换到 2D 关系图' : '切换到 3D 关系图')
+  modeToggle.title = ctx.page.graphMode === '3d' ? '当前为 3D，切换到 2D' : '当前为 2D，切换到 3D'
+  modeToggle.addEventListener('click', () => {
+    ctx.updatePage({ graphMode: ctx.page.graphMode === '3d' ? '2d' : '3d' })
+    rerender()
+  })
+  controls.append(modeToggle)
   const zoomOut = makeButton('', 'evidence-icon-button')
   const zoomIn = makeButton('', 'evidence-icon-button')
   const fit = makeButton('', 'evidence-icon-button')
@@ -263,6 +271,70 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   host.append(controls)
   const allNodes = [relations.center, ...relations.nodes.filter((node) => !sameEvidenceRef(node, relations.center))]
   const graph = ctx.graph!
+
+  // 3D 只在真实浏览器 WebGL 环境启用；无 WebGL（例如单测 DOM）继续使用同一套 2D 关系图。
+  const canRender3d = ctx.page.graphMode === '3d' && (() => {
+    if (typeof WebGLRenderingContext === 'undefined') return false
+    try {
+      const canvas = document.createElement('canvas')
+      return Boolean(canvas.getContext('webgl'))
+    } catch { return false }
+  })()
+  if (canRender3d) {
+    const viewport = document.createElement('div')
+    viewport.className = 'evidence-graph-3d'
+    viewport.setAttribute('role', 'img')
+    viewport.setAttribute('aria-label', '3D 关系图；关系线仅作视觉提示，请使用关系列表中的文字入口')
+    host.append(viewport)
+    const nodeData = allNodes.map(node => ({ id: evidenceRefId(node), ref: node, label: node.label }))
+    const linkData = [...graph.edges].map(([id, edge]) => ({
+      id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
+    }))
+    const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
+    void import('3d-force-graph').then(({ default: ForceGraph3D }) => {
+    let lastNodeClick: { id: string; at: number } | null = null
+    const instance: any = new (ForceGraph3D as any)(viewport)
+      .backgroundColor('#f7fbfd')
+      .showNavInfo(false)
+      .nodeLabel((node: { ref: EvidenceObjectRef }) => `${KIND_LABELS[node.ref.kind]}：${node.ref.label}`)
+      .nodeColor((node: { ref: EvidenceObjectRef }) => evidenceRefId(node.ref) === selectedId ? '#007ea7' :
+        sameEvidenceRef(node.ref, ctx.page.ref) ? '#1f6f8b' : '#80a2bd')
+      .linkColor(() => selectedId ? '#b8cbd5' : '#80a2bd')
+      .linkOpacity(0.8)
+      .linkDirectionalArrowLength(4)
+      .linkDirectionalArrowRelPos(1)
+      .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
+        const id = evidenceRefId(node.ref)
+        const now = Date.now()
+        if (lastNodeClick?.id === id && now - lastNodeClick.at < 350) ctx.navigate(node.ref)
+        else if (event.ctrlKey || event.metaKey) ctx.openBackground(node.ref, event.shiftKey)
+        else ctx.setPreview(node.ref)
+        lastNodeClick = { id, at: now }
+      })
+      .onNodeRightClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
+        event.preventDefault()
+        ctx.openBackground(node.ref, false)
+      })
+      .onNodeHover((node: { ref: EvidenceObjectRef } | null) => { viewport.dataset.hovered = node ? evidenceRefId(node.ref) : '' })
+    instance.graphData({ nodes: nodeData, links: linkData })
+    const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
+    fit3d.addEventListener('click', () => instance.zoomToFit(500, 32))
+    controls.append(fit3d)
+    const legend = document.createElement('div')
+    legend.className = 'evidence-graph-legend'
+    legend.textContent = `${relations.loadedNote} · 3D 默认视图`
+    host.append(legend)
+    const preview = document.createElement('div')
+    preview.className = 'evidence-preview'
+    preview.textContent = ctx.page.selected ? `预览：${ctx.page.selected.label} · 仅查看摘要` : '选择节点查看摘要；双击节点进入对象。'
+    host.append(preview)
+    }).catch(() => {
+      viewport.remove()
+      ctx.updatePage({ graphMode: '2d' })
+      rerender()
+    })
+    return
+  }
   const mapHeight = graph.height
   const mapWidth = graph.width
   const scroll = document.createElement('div')
@@ -756,7 +828,10 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rela
     }
     redraw()
   }
-  renderEvidenceGraph(graph, ctx, loaded, ref => void expand(ref))
+  renderEvidenceGraph(graph, ctx, loaded, ref => void expand(ref), () => {
+    slot.replaceChildren()
+    renderRelationSection(slot, ctx, relations)
+  })
   body.append(graph, list)
   section.append(head, body)
   slot.append(section)

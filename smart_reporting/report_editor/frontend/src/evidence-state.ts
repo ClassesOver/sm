@@ -33,6 +33,8 @@ export interface EvidencePage {
   collapsed: boolean
   showList: boolean
   graphView: boolean
+  /** 关系图渲染模式；新页面默认使用成熟 3D 组件，2D 为兼容回退。 */
+  graphMode: '2d' | '3d'
   filter: string
   datasetCursors: (string | null)[]
   datasetPageIndex: number
@@ -81,6 +83,7 @@ function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[]): EvidencePa
     collapsed: defaultCollapsed(ref.kind),
     showList: false,
     graphView: false,
+    graphMode: '3d',
     filter: '',
     datasetCursors: [null],
     datasetPageIndex: 0,
@@ -206,6 +209,7 @@ export function createEvidenceState(store: EvidenceStore = { tasks: [], active: 
     )
     const next = remembered ? {
       ...remembered, ref, path,
+      graphMode: remembered.graphMode ?? '3d',
       graphScroll: { ...remembered.graphScroll }, graphPan: { ...remembered.graphPan },
       datasetCursors: [...remembered.datasetCursors], columnWidths: { ...remembered.columnWidths },
     } : makePage(ref, path)
