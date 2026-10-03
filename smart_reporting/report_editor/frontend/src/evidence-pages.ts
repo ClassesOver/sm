@@ -1223,9 +1223,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const left = Math.min(...points.map(point => point.x))
       const top = Math.min(...points.map(point => point.y))
       const width = Math.max(...points.map(point => point.x)) - left
-      const height = Math.max(...points.map(point => point.y)) - top
-      const availableHeight = scroll.clientHeight > 0 ? Math.max(1, scroll.clientHeight - 32) : Infinity
-      scale = Math.min(1, availableWidth / Math.max(1, width), availableHeight / Math.max(1, height))
+      // 全图允许纵向滚动，优先填满桌面横向空间；预览/追踪分支仍按视口高宽共同适应。
+      scale = Math.min(2, availableWidth / Math.max(1, width))
       pan = { x: 16 - left * scale, y: 16 - top * scale }
     }
     ctx.updatePage({ graphScale: scale, graphPan: pan, graphScroll: { left: 0, top: 0 } })
