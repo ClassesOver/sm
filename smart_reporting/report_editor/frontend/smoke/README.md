@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+3D鼠标fixture现先通过真实球体中键创建后台任务，再Control、Meta和右键重复打开同一对象，断言任务去重、原标题/预览/历史保持，统一清空悬停后画布逐像素一致；Control+Shift前台激活既有任务后切回原任务保留预览。修饰键用page.keyboard.down/up包围mouse.click，禁止把不支持的mouse.click modifiers参数当作实际按键证据。中键依赖同一ESM组件补丁的原生拾取转发，应用只处理后台任务与auxclick默认行为，不自研拾取器。此回放不覆盖macOS原生⌘、中键拖动或所有鼠标组合；后台重复打开证据不能推广为任意任务身份去重矩阵。
+
 复杂3D名称开关回放：超过15节点默认重点名称，小图默认全部；工具栏名称图标切换全部/重点，aria-pressed为true表示全部。普通/长名称fixture核对实际画面变化、40个选择器选项及预览不变，在每种视口清空鼠标悬停后要求开关往返画布逐像素一致；进入后退必须保留all非默认偏好。截图 `output/report-editor-v6-complex-3d-all-names-<宽度>[-long].png` 与 `output/report-editor-v6-complex-3d-focus-restored-<宽度>[-long].png`，原概览截图现为重点名称默认效果。组件Sprite可见性和Three拾取图层共同排除隐藏名称，业务节点/边不删减。该回放不证明真实大规模性能、密集投影节点可区分或全部名字同时可读；仍需人工核对横屏按钮布局及文字遮挡。
 
 复杂3D普通与长名称fixture现增加每种视口三个空白拖动旋转角度，随后主动适应追踪关系，并用四边内缩2px像素检查标签/图形没有触边；截图 `output/report-editor-v6-complex-3d-trace-angle-<1..3>-<宽度>[-long].png`。取消追踪后的概览也检查边界并实际缩小/放大，截图 `output/report-editor-v6-complex-3d-overview-zoom-<宽度>[-long].png`。当前页/预览/悬停对象复用SpriteText固定12px、多行和屏幕外侧锚点，适应/重置的原生zoomToFit留白纳入标签屏幕尺寸；全名仍在原生选择器/摘要/提示中。小图鼠标fixture新增真实悬停截图 `output/report-editor-v6-3d-hover-label.png`。代表性截图需人工检查标签相互遮挡；边界通过不证明整体概览、三个以上关注对象或所有角度可读性通过。

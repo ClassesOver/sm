@@ -1,7 +1,7 @@
 diff --git a/node_modules/three-render-objects/dist/three-render-objects.mjs b/node_modules/three-render-objects/dist/three-render-objects.mjs
 --- a/node_modules/three-render-objects/dist/three-render-objects.mjs
 +++ b/node_modules/three-render-objects/dist/three-render-objects.mjs
-@@ -439,6 +439,8 @@
+@@ -439,10 +439,12 @@
          state.isPointerDragging = false;
          if (!state.clickAfterDrag) return; // don't trigger onClick after pointer drag (camera motion via controls)
        }
@@ -9,4 +9,10 @@ diff --git a/node_modules/three-render-objects/dist/three-render-objects.mjs b/n
 +      state.lastRaycasterCheck = 0;
        requestAnimationFrame(() => {
          // trigger click events asynchronously, to allow hoverObj to be set (on frame)
-         if (ev.button === 0) {
+-        if (ev.button === 0) {
+-          // left-click
++        if (ev.button === 0 || ev.button === 1) {
++          // Pass middle clicks through the same native object picker.
+           state.onClick(state.hoverObj || null, ev, state.intersection); // trigger background clicks with null
+         }
+         if (ev.button === 2 && state.onRightClick) {

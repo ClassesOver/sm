@@ -5,6 +5,10 @@
 从而把节点点击发给旧的空白命中。补丁在非拖动的 pointerup 后清除拾取节流时间，
 让下一渲染帧在点击回调前刷新命中；拖动抑制逻辑和组件相机控制保持原样。
 
+同一补丁将中键pointerup转发至已有onClick，复用原生节点拾取；组件原版只转发左键/右键，
+导致图节点不满足中键后台开任务的设计要求。应用根据event.button=1选择既有后台任务操作，
+不通过模拟左键、解析标签或自建拾取器实现。中键拖动仍被组件clickAfterDrag=false抑制。
+
 `npm install` / `npm ci` 的 postinstall 使用成熟工具 patch-package 应用补丁，失败时终止。
 升级组件时重新验证；上游修复后删除补丁及不再需要的 patch-package。
 此补丁只修改当前实际消费的 ESM 入口，不声称修复组件的其他发布格式。
@@ -12,3 +16,5 @@
 回归：启动 fixture 服务后执行 `node smoke/evidence-3d-touch-fixture.mjs`。
 脚本清空鼠标悬停，再用 Playwright 快速触摸点击实际球体；不得用延长按住时间掩盖问题。
 现有 `node smoke/evidence-3d-fixture.mjs` 覆盖鼠标点击、双击、旋转/滚轮和相机操作。
+其中先使用真实画布中键创建后台任务，再用Control、Meta及右键重复打开检查复用；
+Control+Shift检查前台激活，后台操作清空悬停后比较画布保持一致。

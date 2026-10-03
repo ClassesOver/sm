@@ -175,6 +175,40 @@ try {
   await page.locator('[data-evidence="back"]').click()
   await page.locator('.evidence-object-title', { hasText: title }).waitFor()
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
+  // 实际画布中键必须创建后台任务；先验证中键，防止后续Ctrl创建任务掩盖缺口。
+  hit = await findCanvasNode('computation:comp-fixture-001')
+  const taskCount = await page.locator('.evidence-tab-name').count()
+  const backgroundBounds = await canvas.boundingBox()
+  const clearBackgroundHover = async () => {
+    await page.mouse.move(backgroundBounds.x + 5, backgroundBounds.y + 5)
+    await page.waitForTimeout(100)
+  }
+  await clearBackgroundHover()
+  const backgroundCanvas = await canvas.screenshot()
+  const modifiedClick = async (point, options) => {
+    const { modifiers = [], ...mouseOptions } = options
+    for (const key of modifiers) await page.keyboard.down(key)
+    try { await page.mouse.click(point.x, point.y, mouseOptions) }
+    finally { for (const key of modifiers.reverse()) await page.keyboard.up(key) }
+  }
+  for (const options of [{ button: 'middle' }, { modifiers: ['Control'] }, { modifiers: ['Meta'] }, { button: 'right' }]) {
+    hit = await findCanvasNode('computation:comp-fixture-001')
+    await modifiedClick(hit, options)
+    await page.waitForFunction(count => document.querySelectorAll('.evidence-tab-name').length === count, taskCount + 1)
+    await page.waitForTimeout(400)
+    assert.equal(await page.locator('.evidence-object-title').textContent(), title, '后台打开不抢当前对象')
+    assert.equal(await picker.inputValue(), 'computation:comp-fixture-001', '后台打开不改预览')
+    assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false, '后台打开不改当前历史')
+    await clearBackgroundHover()
+    assert.equal(backgroundCanvas.equals(await canvas.screenshot()), true, '后台打开不改相机和节点现场')
+  }
+  hit = await findCanvasNode('computation:comp-fixture-001')
+  await modifiedClick(hit, { modifiers: ['Control', 'Shift'] })
+  await page.locator('.evidence-object-title', { hasText: 'comp-fixture-001' }).waitFor()
+  assert.equal(await page.locator('.evidence-tab-name').count(), taskCount + 1, '前台打开复用已有任务')
+  await page.locator('.evidence-tab', { hasText: '正文引用' }).click()
+  await page.locator('.evidence-object-title', { hasText: title }).waitFor()
+  assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
   for (const reducedMotion of ['reduce', 'no-preference']) {
     await page.emulateMedia({ reducedMotion })
     assert.equal(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), reducedMotion === 'reduce')
@@ -190,7 +224,7 @@ try {
     }
   }
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ default3d: 'passed', containerSize: 'passed', modeSwitch: 'passed', preview: 'passed', relationTrace: 'passed', branchRetry: 'passed', navigation: 'passed', canvasClick: 'passed', canvasDoubleClick: 'passed', rotateAndWheel: 'passed', motionPreference: 'passed', errors }))
+  console.log(JSON.stringify({ default3d: 'passed', containerSize: 'passed', modeSwitch: 'passed', preview: 'passed', relationTrace: 'passed', branchRetry: 'passed', navigation: 'passed', canvasClick: 'passed', canvasDoubleClick: 'passed', backgroundMouse: 'passed', foregroundReuse: 'passed', rotateAndWheel: 'passed', motionPreference: 'passed', errors }))
 } finally {
   await browser.close()
 }

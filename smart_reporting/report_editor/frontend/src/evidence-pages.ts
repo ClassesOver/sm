@@ -292,6 +292,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     viewport.className = 'evidence-graph-3d'
     viewport.setAttribute('role', 'img')
     viewport.setAttribute('aria-label', '3D 关系图；关系线仅作视觉提示，请使用关系列表中的文字入口')
+    viewport.addEventListener('auxclick', event => {
+      if (event.button === 1) event.preventDefault()
+    })
     host.append(viewport)
     const nodeData = allNodes.map(node => ({ id: evidenceRefId(node), ref: node, label: node.label }))
     const linkData = [...graph.edges].map(([id, edge]) => ({
@@ -443,9 +446,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const id = evidenceRefId(node.ref)
         const now = Date.now()
         cancelPreview()
-        if (event.ctrlKey || event.metaKey) {
+        if (event.button === 1 || event.ctrlKey || event.metaKey) {
+          event.preventDefault()
           lastNodeClick = null
-          ctx.openBackground(node.ref, event.shiftKey)
+          ctx.openBackground(node.ref, event.button !== 1 && event.shiftKey)
         } else if (lastNodeClick?.id === id && now - lastNodeClick.at < 350) {
           lastNodeClick = null
           ctx.navigate(node.ref)
