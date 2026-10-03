@@ -309,6 +309,16 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const linkData = [...graph.edges].map(([id, edge]) => ({
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
     }))
+    // 共享端点的多条登记关系使用组件原生弧线轻微分开，避免全图概览在汇聚处糊成一束。
+    const linkGroups = new Map<string, string[]>()
+    for (const link of linkData) {
+      for (const endpoint of [link.source, link.target]) {
+        const ids = linkGroups.get(endpoint) ?? []
+        ids.push(link.id)
+        linkGroups.set(endpoint, ids)
+      }
+    }
+    for (const ids of linkGroups.values()) ids.sort()
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
     void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutGreedy, totalCollisionArea }]) => {
@@ -497,7 +507,14 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         if (sameEvidenceRef(edge.from, edge.to)) return 0.6
         const reverse = [...graph.edges.values()].some(other =>
           sameEvidenceRef(edge.from, other.to) && sameEvidenceRef(edge.to, other.from))
-        return reverse ? 0.16 : 0
+        if (reverse) return 0.16
+        const endpointGroups = [evidenceRefId(edge.from), evidenceRefId(edge.to)]
+          .map(endpoint => linkGroups.get(endpoint) ?? [])
+          .filter(group => group.length > 1)
+        if (!endpointGroups.length) return 0
+        const group = endpointGroups.sort((a, b) => b.length - a.length)[0]
+        const slot = group.indexOf(link.id)
+        return (slot - (group.length - 1) / 2) * 0.07
       })
       .linkOpacity(0.8)
       .linkDirectionalArrowLength(6)
