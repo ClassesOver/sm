@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+默认 3D 挂载与容器尺寸回放：构建后启动 `node smoke/fixture-server.mjs`，运行 `node smoke/evidence-3d-fixture.mjs`。使用真实 Chromium WebGL，核对 1280px/390px 画布与容器尺寸、无整页横向溢出、2D/3D 往返及无脚本异常；截图为 `output/report-editor-v6-3d-{1280,390}.png`。此用例不覆盖节点预览、键盘、追踪、实例资源释放或复杂图可读性，不能用 2D fixture 的结果替代这些 3D 验收项。
+
 详情回放也验证空快照与筛选零匹配使用不同提示；点击“清除筛选”恢复本页行、隐藏空态，并把焦点返回搜索框。空态在表格之外，不计入复制行。
 
 详情视觉与操作区回放：构建后运行 `node smoke/evidence-detail-style-fixture.mjs`，支持 `REPORT_EDITOR_URL` 指向隔离fixture服务。以固定响应覆盖1280px/390px的事实软告警、长计算参数、快照、零匹配、分页失败/恢复、下载拒绝、元数据与分页均为0行的固定快照、加载与详情失败。检查整页/工作区无横向溢出、失败保留当前表格并可重试、反馈具有status语义、白色内容底、表格贴合列宽、窄屏操作按钮尺寸、无脚本错误；截图为 `output/report-editor-v6-detail-<场景>-<宽度>.png`。不使用正式报告，不替代真实业务登记、授权或真机证据。

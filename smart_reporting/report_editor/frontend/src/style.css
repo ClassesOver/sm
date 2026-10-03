@@ -4512,6 +4512,7 @@ button {
   .evidence-relations.is-graph-view .evidence-relations-body { flex: 1; min-height: 0; }
   .evidence-relations.is-graph-view .evidence-graph { display: flex; flex-direction: column; height: 100%; }
   .evidence-relations.is-graph-view .evidence-graph-scroll { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+  .evidence-relations.is-graph-view .evidence-graph-3d { flex: 1; min-height: 0; height: auto; }
   .evidence-relations.is-graph-view .evidence-graph-controls,
   .evidence-relations.is-graph-view .evidence-graph-legend,
   .evidence-relations.is-graph-view .evidence-preview { flex-shrink: 0; }
@@ -4564,6 +4565,7 @@ button {
   }
   .evidence-relations.is-graph-view .evidence-graph-controls { grid-column: 1 / -1; }
   .evidence-relations.is-graph-view .evidence-graph-scroll { min-height: 0; max-height: none; overflow: auto; }
+  .evidence-relations.is-graph-view .evidence-graph-3d { min-height: 0; height: 100%; }
   .evidence-relations.is-graph-view .evidence-graph-legend { grid-column: 1; height: auto; min-height: 32px; flex-wrap: wrap; }
   .evidence-relations.is-graph-view .evidence-preview {
     grid-column: 2;

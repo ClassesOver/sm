@@ -293,6 +293,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     void import('3d-force-graph').then(({ default: ForceGraph3D }) => {
+    if (ctx.isStale() || !viewport.isConnected) return
     let lastNodeClick: { id: string; at: number } | null = null
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
@@ -318,6 +319,26 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       })
       .onNodeHover((node: { ref: EvidenceObjectRef } | null) => { viewport.dataset.hovered = node ? evidenceRefId(node.ref) : '' })
     instance.graphData({ nodes: nodeData, links: linkData })
+    const resize = new ResizeObserver(() => {
+      if (viewport.clientWidth && viewport.clientHeight) {
+        instance.width(viewport.clientWidth).height(viewport.clientHeight)
+      }
+    })
+    resize.observe(viewport)
+    let disposed = false
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      resize.disconnect()
+      removal.disconnect()
+      ctx.signal.removeEventListener('abort', dispose)
+      instance._destructor()
+    }
+    const removal = new MutationObserver(() => {
+      if (!viewport.isConnected) dispose()
+    })
+    removal.observe(document.body, { childList: true, subtree: true })
+    ctx.signal.addEventListener('abort', dispose, { once: true })
     const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
     fit3d.addEventListener('click', () => instance.zoomToFit(500, 32))
     controls.append(fit3d)
