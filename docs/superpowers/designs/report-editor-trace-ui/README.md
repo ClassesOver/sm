@@ -912,3 +912,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 小图几何报告版本边界复核：当前 `preview-compact2`（2026-10-04 00:56）和 `preview-final-scope` 报告均为 27/27 场景名称/图标覆盖 0；较早 `ordered`、`visible-score` 候选报告只保留历史碰撞数据，不与当前结果混用。
 
 2026-10-04 真实图表来源分页/恢复场景补跑：`test_real_chart_sources_page_recover_and_restore_browser_state` 在 Chromium 下通过，属于 28 个浏览器集成场景汇总。
+
+2026-10-04 Firefox 图表来源分页交叉回放：同一场景在 Firefox 下通过，分页边界与返回现场恢复一致；不扩大为 Firefox 全部集成矩阵。
