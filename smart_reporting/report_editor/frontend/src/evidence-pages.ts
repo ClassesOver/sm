@@ -445,7 +445,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const name = node.ref.label.length > 28 ? `${node.ref.label.slice(0, 27)}…` : node.ref.label
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
         const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
-        label.material.map!.colorSpace = SRGBColorSpace
+        label.fontWeight = '600'
+        // 半透明文字底图不写深度，避免前景标签的透明区域遮住其他名称。
+        label.material.depthWrite = false
+        label.material.toneMapped = false
         label.backgroundColor = current ? '#e4f3fa' : '#ffffff'
         label.borderColor = selected ? '#007ea7' : '#c7dce8'
         label.borderWidth = selected ? 0.12 : 0.06
@@ -454,6 +457,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         label.position.y = 8
         const id = evidenceRefId(node.ref)
         const icon = new Sprite(new SpriteMaterial({ map: textures.get(node.ref.kind), sizeAttenuation: false, depthTest: false }))
+        icon.material.depthWrite = false
+        icon.material.toneMapped = false
         icon.renderOrder = 2
         // 图标仅作节点信息，拾取继续交给组件球体和名称。
         icon.raycast = () => {}

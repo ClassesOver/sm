@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+3D名称使用600字重及Three原生depthWrite=false/toneMapped=false后，普通/长名称复杂回放继续核对两行/省略、全图与旋转追踪边界、名称/列表严格像素恢复。代表旧截图为 `output/report-editor-v6-complex-3d-label-before-390-long.png`（竖屏追踪）与 `output/report-editor-v6-complex-3d-label-before-1280-long.png`（桌面概览），当前对应trace-390-long和1280-long截图。字体效果需人工比较，不以边界检查证明所有名称可读或透明遮挡根因；three-spritetext本身已设置文字纹理sRGB，应用不重复赋值。
+
 复杂3Dfixture新增全图适应后四边内缩2px背景检查，与原追踪及直接关系边界检查并行保留。组件适应补丁使用各几何盒的角点，仍沿用原相机公式；代表长名称39/55旋转回放的节点投影高约197/63/32px→327/90/52px（1280/390/844页面视口），两次坐标略有差异，临时投影日志已移除，不把代表场景比例变成所有视角契约。最终概览截图仍为 `output/report-editor-v6-complex-3d-<宽度>[-long].png`；本次对照的旧长名称截图保留为 `output/report-editor-v6-complex-3d-fit-before-<宽度>-long.png`。需要人工检查全图密集投影与节点小字，边界通过不代表整体可读性通过。
 
 3D小图fixture新增原生CanvasRenderingContext2D.fillText记录（保留原方法），检查已加载关系信息实际绘入SpriteText纹理。类型图标复用Lucide与Three原生Sprite，关注名称截图应核对图标、两行信息及登记边数；图标不参与拾取，现有鼠标/触控回放核对原命中行为。生命周期回放仍验证上下文及隐藏绘制，不测量纹理内存峰值。全部五类型/状态及任意角度的视觉矩阵尚未完成，不据代表截图标记整体概览通过。
