@@ -5,7 +5,8 @@ import { chromium } from 'playwright'
 
 const output = new URL('../../../../output/', import.meta.url)
 const state = process.env.REPORT_EDITOR_SMALL_STATE ?? 'none'
-assert.ok(['none', 'preview', 'pair', 'preview-relations'].includes(state))
+assert.ok(['none', 'preview', 'pair', 'preview-relations', 'hub-preview', 'hub-relations'].includes(state))
+const hub = state.startsWith('hub-')
 const suffix = `${state === 'none' ? '' : `-${state}`}${process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''}`
 await mkdir(output, { recursive: true })
 const browser = await chromium.launch({ headless: true })
@@ -32,6 +33,7 @@ try {
           if (this.text && id && canvas && this.visible && this.parent.parent.visible) {
             const size = canvas.getBoundingClientRect();
             const camera = raycaster.camera;
+            window.graphCamera = { position: camera.position.toArray(), quaternion: camera.quaternion.toArray(), up: camera.up.toArray(), aspect: camera.aspect };
             const world = this.position.clone().setFromMatrixPosition(this.matrixWorld);
             const depth = -world.clone().applyMatrix4(camera.matrixWorldInverse).z;
             const point = world.project(camera);
@@ -40,6 +42,7 @@ try {
             const width = scale.x * factor, height = scale.y * factor;
             const x = (point.x + 1) * size.width / 2, y = (1 - point.y) * size.height / 2;
             const links = this.parent.parent.parent.children.filter(object => object.__graphObjType === 'link');
+            window.graphVisibleLinks = links.filter(object => object.visible).map(object => [object.__data.source.id, object.__data.target.id]);
             const icon = this.parent.children.find(object => object !== this && object.isSprite);
             window.graphLabelBounds.set(id, { id, text: this.text, x: x - this.center.x * width, y: y - (1 - this.center.y) * height, width, height, nodeX: x, nodeY: y,
               textOrder: this.renderOrder, iconOrder: icon?.renderOrder, linkOrder: links.length ? Math.max(...links.map(object => object.renderOrder)) : null });
@@ -54,8 +57,9 @@ try {
       return route.fulfill({ json: {
         analysisId: 'analysis-fixture-001', factId, factKind: 'metric', displayValue: 12450,
         entry: { unit: '万元' }, warnings: [],
-        inputFactRefs: factId === 'fact-fixture-001'
-          ? inputs.map(factId => ({ analysisId: 'analysis-fixture-001', factId })) : [],
+        inputFactRefs: (factId === 'fact-fixture-001' ? hub ? inputs.slice(0, -1) : inputs
+          : hub && factId === inputs[0] ? [inputs.at(-1)] : [])
+          .map(factId => ({ analysisId: 'analysis-fixture-001', factId })),
       } })
     })
     await page.goto(process.env.REPORT_EDITOR_URL ?? 'http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })
@@ -67,21 +71,38 @@ try {
     const trace = page.getByRole('combobox', { name: '追踪预览关系端点' })
     const rootId = 'fact:analysis-fixture-001/fact-fixture-001'
     const leafId = `fact:analysis-fixture-001/${inputs[0]}`
+    const tailId = `fact:analysis-fixture-001/${inputs.at(-1)}`
+    const previewId = hub ? rootId : leafId
+    const direct = state === 'preview-relations' || state === 'hub-relations'
     const scoped = state === 'pair' || state === 'preview-relations'
     const expectedIds = (scoped ? [rootId, leafId] : [rootId,
       'subject:sub-fixture-001', 'computation:comp-fixture-001',
-      ...inputs.map(name => `fact:analysis-fixture-001/${name}`)]).sort()
+      ...inputs.map(name => `fact:analysis-fixture-001/${name}`)])
+      .filter(id => state !== 'hub-relations' || id !== tailId).sort()
+    const expectedLinks = [
+      [rootId, 'subject:sub-fixture-001'], ['computation:comp-fixture-001', rootId],
+      ['computation:comp-fixture-001', 'subject:sub-fixture-001'],
+      ...(hub ? inputs.slice(0, -1) : inputs).map(name => [`fact:analysis-fixture-001/${name}`, rootId]),
+      ...(hub ? [[tailId, leafId]] : []),
+    ].filter(([from, to]) => expectedIds.includes(from) && expectedIds.includes(to)
+      && (!direct || from === previewId || to === previewId)).sort()
     await canvas.waitFor()
     const title = await page.locator('.evidence-object-title').textContent()
     const back = await page.locator('[data-evidence="back"]').isEnabled()
+    if (hub) {
+      assert.equal(await picker.locator('option').count(), count, '间接端点尚未加载')
+      await picker.selectOption(leafId)
+      await page.locator('.evidence-branch-load').click()
+      await page.getByRole('button', { name: '已加载登记关系', exact: true }).waitFor()
+    }
     assert.equal(await page.getByRole('combobox', { name: '选择 3D 节点预览' }).locator('option').count(), count + 1)
     assert.equal(await page.getByRole('combobox', { name: '选择 3D 节点预览' }).evaluate((select, names) =>
       names.every(name => [...select.options].some(option => option.textContent.endsWith(name))), inputs), true,
     '紧凑画布名称不截断节点选择器中的完整业务名称')
     if (state !== 'none') {
-      await picker.selectOption(leafId)
+      await picker.selectOption(previewId)
       await page.locator('.evidence-preview-summary').waitFor({ state: 'visible' })
-      if (scoped) {
+      if (scoped || direct) {
         await trace.selectOption(state === 'pair' ? rootId : 'preview-relations')
         await page.locator(`.evidence-graph-3d[data-scope="${state === 'pair' ? 'pair' : 'preview'}"]`).waitFor()
       }
@@ -97,7 +118,7 @@ try {
           await page.mouse.move(bounds.x + 65, bounds.y + 35, { steps: 8 })
           await page.mouse.up()
         }
-        await page.getByRole('button', { name: state === 'pair' ? '适应追踪关系' : state === 'preview-relations' ? '适应预览' : '适应 3D', exact: true }).click()
+        await page.getByRole('button', { name: state === 'pair' ? '适应追踪关系' : direct ? '适应预览' : '适应 3D', exact: true }).click()
         await page.waitForTimeout(650)
         const bounds = await canvas.boundingBox()
         await page.evaluate(() => window.graphLabelBounds.clear())
@@ -109,24 +130,25 @@ try {
           const labels = [...window.graphLabelBounds.values()]
           const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
             Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
-          return { labels: labels.length, bounds: labels,
+          return { labels: labels.length, bounds: labels, links: window.graphVisibleLinks.sort(),
             informationAboveLinks: labels.every(label => label.linkOrder !== null && label.textOrder > label.linkOrder && label.iconOrder > label.textOrder),
             names: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a, b) > 1).map(b => [a.id, b.id])),
             icons: labels.flatMap(a => labels.filter(b => a.id !== b.id && area(a, { x: b.nodeX - 7, y: b.nodeY - 7, width: 14, height: 14 }) > 1).map(b => [a.id, b.id])) }
         })
         assert.equal(await picker.locator('option').count(), count + 1, '范围切换不丢失已加载节点身份')
-        assert.equal(await picker.inputValue(), state === 'none' ? '' : leafId, '相机动作不改变预览身份')
-        assert.equal(await trace.inputValue(), state === 'pair' ? rootId : state === 'preview-relations' ? 'preview-relations' : '', '相机动作不改变追踪范围')
+        assert.equal(await picker.inputValue(), state === 'none' ? '' : previewId, '相机动作不改变预览身份')
+        assert.equal(await trace.inputValue(), state === 'pair' ? rootId : direct ? 'preview-relations' : '', '相机动作不改变追踪范围')
         assert.equal(await page.locator('.evidence-object-title').textContent(), title, '预览和相机动作不导航主对象')
         assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), back, '预览不写入探索历史')
         assert.deepEqual(overlap.bounds.map(label => label.id).sort(), expectedIds, '实际绘制名称身份与当前范围一致')
+        assert.deepEqual(overlap.links, expectedLinks, '实际可见登记边身份及方向与当前范围一致')
         const current = overlap.bounds.find(label => label.id === rootId)
         assert.ok(current.text.includes('当前页'), '实际名称保留当前页状态')
-        assert.match(current.text, new RegExp(`已加载\\s*${count - 1}\\s*条关系`), '缩小范围仍显示已加载关系数')
+        assert.match(current.text, new RegExp(`已加载\\s*${count - (hub ? 2 : 1)}\\s*条关系`), '缩小范围仍显示已加载关系数')
         assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
         if (state !== 'none') {
-          assert.ok(overlap.bounds.find(label => label.id === leafId).text.includes('预览'), '实际名称保留预览状态')
-          assert.equal(await page.locator('.evidence-preview-summary strong').textContent(), `预览：${inputs[0]}`, '摘要保留完整业务名称')
+          if (!hub) assert.ok(overlap.bounds.find(label => label.id === previewId).text.includes('预览'), '实际名称保留预览状态')
+          assert.equal(await page.locator('.evidence-preview-summary strong').textContent(), `预览：${hub ? 'fact-fixture-001' : inputs[0]}`, '摘要保留完整业务名称')
         }
         collisions.push({ state, count, width, angle, names: overlap.names.length, icons: overlap.icons.length })
         geometry.push({ state, count, width, angle, canvasWidth: bounds.width, canvasHeight: bounds.height, ...overlap })
@@ -157,6 +179,44 @@ try {
         }, (await canvas.screenshot()).toString('base64'))
         assert.equal(clipped, false, `${count}节点/${width}px/角度${angle}名称与图形不触及画布四边`)
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+        if (hub && angle === 2) {
+          // 旋转阻尼尚未归零时不能把后续微小运动归为模式恢复缺陷。
+          await page.waitForTimeout(1500)
+          const before = await canvas.screenshot()
+          const beforeGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
+          await page.waitForTimeout(150)
+          const stable = await canvas.screenshot()
+          if (!before.equals(stable)) {
+            const base = `report-editor-v6-small-3d-${count}-${width}${suffix}-baseline`
+            await writeFile(new URL(`${base}-before.png`, output), before)
+            await writeFile(new URL(`${base}-after.png`, output), stable)
+            const afterGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
+            await writeFile(new URL(`${base}-geometry.json`, output), `${JSON.stringify({ before: beforeGeometry, after: afterGeometry }, null, 2)}\n`)
+          }
+          assert.equal(before.equals(stable), true, '恢复操作前3D基线已逐像素静止')
+          await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
+          const ids = await page.locator('.evidence-node').evaluateAll(nodes => nodes.filter(node => node.style.display !== 'none').map(node => node.dataset.evidenceNode).sort())
+          const pairs = await page.locator('.evidence-graph-edge').evaluateAll(edges => edges.filter(edge => edge.style.display !== 'none').map(edge => [edge.dataset.from, edge.dataset.to]).sort())
+          assert.deepEqual(ids, expectedIds, '2D恢复同一多邻居范围的可见身份')
+          assert.deepEqual(pairs, expectedLinks, '2D保留同一登记边身份及方向')
+          await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
+          await canvas.waitFor()
+          await page.waitForTimeout(650)
+          const restored = await canvas.boundingBox()
+          await page.mouse.move(restored.x + 2, restored.y + 2)
+          await page.waitForTimeout(150)
+          assert.equal(await picker.inputValue(), rootId, '模式往返保留中心对象预览')
+          assert.equal(await trace.inputValue(), direct ? 'preview-relations' : '', '模式往返保留多邻居范围')
+          const after = await canvas.screenshot()
+          if (!before.equals(after)) {
+            const base = `report-editor-v6-small-3d-${count}-${width}${suffix}-restore`
+            await writeFile(new URL(`${base}-before.png`, output), before)
+            await writeFile(new URL(`${base}-after.png`, output), after)
+            const afterGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
+            await writeFile(new URL(`${base}-geometry.json`, output), `${JSON.stringify({ before: beforeGeometry, after: afterGeometry }, null, 2)}\n`)
+          }
+          assert.equal(before.equals(after), true, '模式往返恢复3D相机、名称与范围像素')
+        }
       }
     }
     assert.deepEqual(errors, [])
