@@ -10,7 +10,7 @@ const first = layer('first')
 const shared = layer('shared')
 const branch = layer('branch')
 const longLabels = process.env.REPORT_EDITOR_LONG_LABELS === '1'
-const suffix = longLabels ? '-long' : ''
+const suffix = `${longLabels ? '-long' : ''}${process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''}`
 const labelCycles = Number(process.env.REPORT_EDITOR_LABEL_CYCLES ?? 1)
 assert.ok(Number.isInteger(labelCycles) && labelCycles >= 1 && labelCycles <= 10)
 if (longLabels) {
@@ -171,6 +171,21 @@ try {
       assert.equal(await canvas.evaluate(node => node.getBoundingClientRect().height >= 270), true, '长名称预览时竖屏画布保留至少270px')
     }
     await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-complex-3d-${width}${suffix}.png`, output).pathname })
+    // 同时审查没有预览淡化的全图，避免只用局部高亮画面评价登记关系线。
+    await picker.focus()
+    await picker.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('.evidence-preview-summary'))
+    await canvas.waitFor()
+    assert.equal(await picker.inputValue(), '')
+    assert.equal(await picker.locator('option').count(), 40, '退出预览不丢失复杂图节点身份')
+    assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-scope'), 'all')
+    await page.getByRole('button', { name: '适应 3D', exact: true }).click()
+    await page.waitForTimeout(650)
+    assert.equal(await fitsCanvas(), true, `${width}px无预览全图的关系与名称不触边`)
+    await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-complex-3d-unselected-${width}${suffix}.png`, output).pathname })
+    await picker.selectOption(`fact:${analysisId}/${first[0]}`)
+    await page.getByRole('button', { name: '适应 3D', exact: true }).click()
+    await page.waitForTimeout(650)
     const labelBounds = await canvas.boundingBox()
     if (width !== 1280) {
       await page.mouse.move(labelBounds.x + 5, labelBounds.y + 5)

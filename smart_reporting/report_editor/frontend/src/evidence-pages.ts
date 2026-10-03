@@ -300,7 +300,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const viewport = document.createElement('div')
     viewport.className = 'evidence-graph-3d'
     viewport.setAttribute('role', 'img')
-    viewport.setAttribute('aria-label', '3D 关系图；关系线仅作视觉提示，请使用关系列表中的文字入口')
+    viewport.setAttribute('aria-label', `3D 关系图；实线箭头表示登记关系${allNodes.length <= 15 ? '，虚线仅连接节点与名称' : ''}；请使用关系列表中的文字入口`)
     viewport.addEventListener('auxclick', event => {
       if (event.button === 1) event.preventDefault()
     })
@@ -370,8 +370,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
       return selectedId !== null && (from === selectedId || to === selectedId)
     }
-    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#dce6ed' : '#80a2bd'
-    const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : 0.3
+    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#dce6ed' : '#6387a3'
+    const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : selectedId || tracedId() ? 0.3 : 0.6
     const nodeColor = (node: { ref: EvidenceObjectRef }) => {
       const id = evidenceRefId(node.ref)
       if (id === selectedId) return '#007ea7'
@@ -431,7 +431,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       // 使用Sprite原生锚点向两端屏幕外侧展开，旋转时不靠世界Y偏移定位文字。
       sprite.position.y = fixedSize ? 0 : 8
       sprite.center.set(0.5, fixedSize ? below ? 1.25 : -0.25 : 0.5)
-      sprite.renderOrder = focused ? 1 : 0
+      // 组件连线renderOrder为10，信息层需在其后绘制，避免线条划穿文字。
+      sprite.renderOrder = focused ? 12 : 11
     }
     const cancelPreview = () => {
       if (pendingPreview !== null) window.clearTimeout(pendingPreview)
@@ -467,7 +468,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const icon = new Sprite(new SpriteMaterial({ map: textures.get(node.ref.kind), sizeAttenuation: false, depthTest: false }))
         icon.material.depthWrite = false
         icon.material.toneMapped = false
-        icon.renderOrder = 2
+        icon.renderOrder = 13
         // 图标仅作节点信息，拾取继续交给组件球体和名称。
         icon.raycast = () => {}
         const group = new Group()
@@ -498,7 +499,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         return reverse ? 0.16 : 0
       })
       .linkOpacity(0.8)
-      .linkDirectionalArrowLength(4)
+      .linkDirectionalArrowLength(6)
       .linkDirectionalArrowResolution(12)
       .linkDirectionalArrowRelPos(1)
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
@@ -769,7 +770,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
     legend.className = 'evidence-graph-legend'
-    legend.title = `${relations.loadedNote}；当前页深蓝，预览青色；名称可切换，悬停可查看全名`
+    legend.title = `${relations.loadedNote}；当前页深蓝，预览青色；名称可切换，悬停可查看全名；实线箭头表示登记关系${allNodes.length <= 15 ? '，虚线仅连接节点与名称' : ''}`
     const scope = document.createElement('span')
     scope.textContent = `已加载 ${allNodes.length} 个节点 · 局部关系`
     legend.append(scope)

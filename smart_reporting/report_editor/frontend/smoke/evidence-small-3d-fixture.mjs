@@ -37,7 +37,10 @@ try {
             const factor = size.height / (2 * Math.tan(camera.fov * Math.PI / 360)) / (this.material.sizeAttenuation ? depth : 1);
             const width = scale.x * factor, height = scale.y * factor;
             const x = (point.x + 1) * size.width / 2, y = (1 - point.y) * size.height / 2;
-            window.graphLabelBounds.set(id, { id, x: x - this.center.x * width, y: y - (1 - this.center.y) * height, width, height, nodeX: x, nodeY: y });
+            const links = this.parent.parent.parent.children.filter(object => object.__graphObjType === 'link');
+            const icon = this.parent.children.find(object => object !== this && object.isSprite);
+            window.graphLabelBounds.set(id, { id, x: x - this.center.x * width, y: y - (1 - this.center.y) * height, width, height, nodeX: x, nodeY: y,
+              textOrder: this.renderOrder, iconOrder: icon?.renderOrder, linkOrder: links.length ? Math.max(...links.map(object => object.renderOrder)) : null });
           }
           return result;
         };
@@ -85,10 +88,12 @@ try {
           const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
             Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
           return { labels: labels.length, bounds: labels,
+            informationAboveLinks: labels.every(label => label.linkOrder !== null && label.textOrder > label.linkOrder && label.iconOrder > label.textOrder),
             names: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a, b) > 1).map(b => [a.id, b.id])),
             icons: labels.flatMap(a => labels.filter(b => a.id !== b.id && area(a, { x: b.nodeX - 7, y: b.nodeY - 7, width: 14, height: 14 }) > 1).map(b => [a.id, b.id])) }
         })
         assert.equal(overlap.labels, count, '全部节点名称保留并参与原生投影检查')
+        assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
         collisions.push({ count, width, angle, names: overlap.names.length, icons: overlap.icons.length })
         geometry.push({ count, width, angle, canvasWidth: bounds.width, canvasHeight: bounds.height, ...overlap })
         await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-small-3d-${count}-${width}-angle-${angle}${suffix}.png`, output).pathname })
