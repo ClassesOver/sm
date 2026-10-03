@@ -544,6 +544,22 @@ describe('事实页', () => {
     expect(list.querySelectorAll('.evidence-relation-row').length).toBeGreaterThan(0)
   })
 
+  it('defaults to 3D, switches to 2D, and preserves preview state', async () => {
+    const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
+    page.selected = { ...FACT_REF, key: 'fact-input', label: '输入事实' }
+    await renderEvidencePage(container, ctx)
+    expect(page.graphMode).toBe('3d')
+    const toggle = container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!
+    expect(toggle.textContent).toBe('切换 2D')
+    toggle.click()
+    expect(page.graphMode).toBe('2d')
+    expect(page.selected?.key).toBe('fact-input')
+    expect(container.querySelector('.evidence-node')).not.toBeNull()
+    container.querySelector<HTMLButtonElement>('.evidence-graph-mode-toggle')!.click()
+    expect(page.graphMode).toBe('3d')
+    expect(page.selected?.key).toBe('fact-input')
+  })
+
   it('opens a dedicated graph view from a collapsed detail and restores the detail on return', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
     page.collapsed = true
