@@ -638,10 +638,12 @@ describe('事实页', () => {
     expect(graph.querySelectorAll('.evidence-graph-edge.is-preview')).toHaveLength(3)
     const picker = graph.querySelector<HTMLSelectElement>('.evidence-trace-picker')!
     expect(picker.disabled).toBe(false)
-    expect(picker.options).toHaveLength(4)
+    expect(picker.options).toHaveLength(5)
     picker.value = 'fact:analysis_001/fact-input'
     picker.dispatchEvent(new Event('change'))
     expect(graph.querySelectorAll('.is-traced')).toHaveLength(1)
+    expect(input.style.display).toBe('')
+    expect(computation.style.display).toBe('none')
     computation.dispatchEvent(new Event('pointerenter'))
     expect(graph.querySelector('.is-traced')?.getAttribute('data-from')).toBe('fact:analysis_001/fact-input')
     computation.dispatchEvent(new Event('pointerleave'))
@@ -659,6 +661,7 @@ describe('事实页', () => {
     picker.value = ''
     picker.dispatchEvent(new Event('change'))
     expect(graph.querySelector('.is-traced')).toBeNull()
+    expect(computation.style.display).toBe('')
     expect(graph.querySelector('[aria-label="适应关系图"]')).not.toBeNull()
     expect(geometry()).toEqual(positions)
     expect(page.selected).toEqual(FACT_REF)

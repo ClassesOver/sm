@@ -973,6 +973,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         (!pairOnly || path.dataset.from === selectedId || path.dataset.to === selectedId))
     host.classList.toggle('is-tracing', traced.length > 0)
     for (const path of edgeElements) {
+      path.style.display = (previewOnly || pinnedId) && !traced.includes(path) ? 'none' : ''
       path.classList.toggle('is-traced', traced.includes(path))
       path.setAttribute('marker-end', `url(#evidence-graph-arrow${path.classList.contains('is-preview') || traced.includes(path) ? '-selected' : ''})`)
       svg.append(path)
@@ -986,6 +987,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         ? `追踪 ${traced.length} 条登记关系 · 仅显示追踪关系`
         : ''
     for (const { id, button } of nodeElements) {
+      const inScope = pinnedId ? id === pinnedId || id === selectedId
+        : !previewOnly || id === selectedId || relatedIds.has(id)
+      button.style.display = inScope ? '' : 'none'
       button.classList.toggle('is-trace-related', tracedIds.has(id))
       const staysProminent = button.classList.contains('is-current') || button.classList.contains('is-selected')
       button.classList.toggle('is-trace-dim', traced.length > 0 && !tracedIds.has(id) && !staysProminent)
