@@ -900,3 +900,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 Firefox 交叉回放：分支完整性失败/恢复场景在 Firefox 下通过 1 项；不扩大为 Firefox 全部集成矩阵。
 
 2026-10-04 Linux WebKit 交叉回放尝试：因 Playwright MiniBrowser 缺少主机库 `libevent-2.1.so.7` 未启动；不计为产品失败或通过，已有可启动 WebKit 3D fixture 证据保持有效。
+
+2026-10-04 关系图受影响定向检查：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 21 项通过；生产构建与资源预算检查通过，未运行完整前端测试套件。
