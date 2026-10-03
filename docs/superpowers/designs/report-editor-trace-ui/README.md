@@ -924,3 +924,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 Firefox 跨报告任务隔离回放：相同键在两个报告中的任务、历史与现场隔离场景通过 1 项；不扩大为 Firefox 全部集成矩阵。
 
 2026-10-04 Firefox 在线事实授权回放：冻结事实打开与会话过期不重试场景通过 1 项；不扩大为 Firefox 全部集成矩阵。
+
+2026-10-04 Firefox 快照权限与完整性回放：owner、share、preview integrity、download integrity 四种场景均通过；不扩大为 Firefox 全部集成矩阵。
