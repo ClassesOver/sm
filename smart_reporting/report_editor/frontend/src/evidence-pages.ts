@@ -452,7 +452,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const current = sameEvidenceRef(node.ref, ctx.page.ref)
         const selected = evidenceRefId(node.ref) === selectedId
         // 小图普通标签保持紧凑；悬停提示与关注态标签仍提供完整名称。
-        const name = node.ref.label.length > 6 ? `${node.ref.label.slice(0, 2)}…${node.ref.label.slice(-3)}` : node.ref.label
+        const name = node.ref.label.length > 4 ? `${node.ref.label.slice(0, 1)}…${node.ref.label.slice(-2)}` : node.ref.label
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
         const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
         label.fontWeight = '600'
