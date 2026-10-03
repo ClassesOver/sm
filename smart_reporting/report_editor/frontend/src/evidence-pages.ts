@@ -392,31 +392,47 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const { sprite, scale } = label
       const current = id === evidenceRefId(ctx.page.ref)
       const focused = Boolean(pinnedId) || current || id === selectedId || id === viewport.dataset.hovered
+      const fixedSize = focused || allNodes.length <= 15
       sprite.visible = allLabels || focused
       // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
       sprite.layers.set(sprite.visible ? 0 : 1)
       label.icon.visible = sprite.visible
       const iconSize = 14 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight)
       label.icon.scale.set(iconSize, iconSize, 1)
-      const text = focused ? label.traceText : label.text
+      const text = fixedSize ? label.traceText : label.text
       if (sprite.text !== text) {
         sprite.text = text
         scale.x = sprite.scale.x
         scale.y = sprite.scale.y
         scale.z = sprite.scale.z
       }
-      const attenuate = !focused
+      const attenuate = !fixedSize
       if (sprite.material.sizeAttenuation !== attenuate) {
         sprite.material.sizeAttenuation = attenuate
         sprite.material.depthTest = attenuate
         sprite.material.needsUpdate = true
       }
-      // SpriteMaterial 原生支持固定屏幕尺寸；关注对象/追踪端点文字保持12 CSS px。
-      const factor = focused ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
+      // SpriteMaterial 原生支持固定屏幕尺寸；小图与关注对象文字保持12 CSS px。
+      const factor = fixedSize ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
       sprite.scale.set(scale.x * factor, scale.y * factor, scale.z * factor)
       let below = pinnedId ? id === pinnedId : id === selectedId && !current
-      const partnerId = pinnedId ? id === pinnedId ? selectedId : pinnedId : current ? selectedId : id === selectedId ? evidenceRefId(ctx.page.ref) : null
-      if (focused && partnerId && partnerId !== id) {
+      let partnerId = pinnedId ? id === pinnedId ? selectedId : pinnedId : current ? selectedId : id === selectedId ? evidenceRefId(ctx.page.ref) : null
+      if (!partnerId && allNodes.length <= 15) {
+        const nodes = instance.graphData().nodes
+        const node = nodes.find((item: { id: string }) => item.id === id)
+        if (node && [node.x, node.y, node.z].every(Number.isFinite)) {
+          instance.camera().updateMatrixWorld()
+          const origin = instance.graph2ScreenCoords(node.x, node.y, node.z)
+          let distance = Infinity
+          for (const other of nodes) {
+            if (other.id === id || !nodeVisible(other.id) || ![other.x, other.y, other.z].every(Number.isFinite)) continue
+            const point = instance.graph2ScreenCoords(other.x, other.y, other.z)
+            const candidate = Math.hypot(point.x - origin.x, point.y - origin.y)
+            if (candidate < distance) { distance = candidate; partnerId = other.id }
+          }
+        }
+      }
+      if (fixedSize && partnerId && partnerId !== id) {
         const nodes = instance.graphData().nodes
         const node = nodes.find((item: { id: string }) => item.id === id)
         const partner = nodes.find((item: { id: string }) => item.id === partnerId)
@@ -428,8 +444,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         }
       }
       // 使用Sprite原生锚点向两端屏幕外侧展开，旋转时不靠世界Y偏移定位文字。
-      sprite.position.y = focused ? 0 : 8
-      sprite.center.set(0.5, focused ? below ? 1.25 : -0.25 : 0.5)
+      sprite.position.y = fixedSize ? 0 : 8
+      sprite.center.set(0.5, fixedSize ? below ? 1.25 : -0.25 : 0.5)
       sprite.renderOrder = focused ? 1 : 0
     }
     const cancelPreview = () => {
@@ -666,9 +682,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
     const ready = () => {
       layoutReady = true
+      placeLabels()
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
       fitInitialView()
-      instance.onEngineTick(() => {}).onEngineStop(() => {})
+      instance.onEngineTick(placeLabels).onEngineStop(placeLabels)
     }
     instance.onEngineTick(ready).onEngineStop(ready)
     const legend = document.createElement('div')
