@@ -794,6 +794,8 @@ async def test_high_fanout_graph_keeps_positions_and_last_node_accessible(
                 await page.locator(".evidence-directory-item").filter(has_text="正文引用").first.click()
                 started = time.monotonic()
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
+                # 该规模回放断言 2D 卡片坐标；产品默认模式仍为 3D。
+                await page.get_by_role("button", name="切换到 2D 关系图", exact=True).click()
                 await expect(page.locator(".evidence-node")).to_have_count(301, timeout=15000)
                 load_seconds = time.monotonic() - started
                 await expect(page.locator(".evidence-relations-note")).to_contain_text("已加载 301 个节点 · 局部关系")
