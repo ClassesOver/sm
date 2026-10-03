@@ -641,3 +641,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 关系图受影响定向检查：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 21 项通过；生产构建与资源预算检查通过，未运行完整前端测试套件。
 
 2026-10-04 详情入口与定位契约定向单测：`linked-subject.test.ts`、`evidence-location.test.ts`、`clipboard.test.ts` 共 25 项通过；覆盖入口身份、正文定位与复制反馈，不替代真实设备或全部浏览器组合。
+
+2026-10-04 证据面板与导航状态定向单测：`trace-panel.test.ts`、`evidence-browser.test.ts`、`evidence-state.test.ts` 共 58 项通过；覆盖错误映射、浏览器任务状态、导航栈和现场恢复，不替代真实设备或读屏验收。
