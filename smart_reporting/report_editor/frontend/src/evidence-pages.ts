@@ -545,9 +545,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     if (allNodes.length <= 15) {
       for (const node of restoredNodes) {
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-        line.setAttribute('stroke', '#a5b8c6')
-        line.setAttribute('stroke-width', '0.7')
-        line.setAttribute('stroke-dasharray', '2 3')
+        line.setAttribute('stroke', '#b8cbd5')
+        line.setAttribute('stroke-width', '0.55')
+        line.setAttribute('stroke-dasharray', '2 4')
         labelGuides.append(line)
         guides.set(node.id, line)
       }
