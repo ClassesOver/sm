@@ -1,7 +1,14 @@
 diff --git a/node_modules/three-forcegraph/dist/three-forcegraph.mjs b/node_modules/three-forcegraph/dist/three-forcegraph.mjs
 --- a/node_modules/three-forcegraph/dist/three-forcegraph.mjs
 +++ b/node_modules/three-forcegraph/dist/three-forcegraph.mjs
-@@ -778,7 +778,9 @@
+@@ -766,5 +766,6 @@
+       // recursively collect all nested geometries bboxes
+       const bboxes = function getBboxes(obj) {
++        if (!obj.visible) return [];
+         const bboxes = [];
+         if (obj.geometry) {
+           obj.geometry.computeBoundingBox();
+@@ -778,7 +779,9 @@
        if (!bboxes.length) return null;
  
        // extract global x,y,z min/max

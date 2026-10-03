@@ -688,7 +688,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const pixelScale = height / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
       let padding = 32
       for (const [id, { sprite }] of labels) {
-        if (sprite.material.sizeAttenuation || !nodeVisible(id)) continue
+        if (!sprite.visible || sprite.material.sizeAttenuation || !nodeVisible(id)) continue
         padding = Math.max(padding, sprite.scale.y * pixelScale * 1.25 + 8,
           sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
       }

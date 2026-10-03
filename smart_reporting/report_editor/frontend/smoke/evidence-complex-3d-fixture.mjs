@@ -27,7 +27,27 @@ const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors = []
+  const overviewGeometry = []
   page.on('pageerror', error => errors.push(error.message))
+  // 保留组件原生相机动作，记录实际适应输入与节点投影，避免仅凭四边未裁切判断概览。
+  await page.route('**/assets/3d-force-graph-*.js', async route => {
+    const response = await route.fetch()
+    const source = await response.text()
+    const patched = source.replace(/export\{(\w+) as default\};/, (_, constructor) => `
+      function GraphProbe(...args) {
+        const graph = new ${constructor}(...args);
+        window.currentGraph3d = graph;
+        const fit = graph.zoomToFit;
+        graph.zoomToFit = function(...args) {
+          window.graphFitPadding = args[1];
+          return fit.apply(this, args);
+        };
+        return graph;
+      }
+      export { GraphProbe as default };`)
+    assert.notEqual(patched, source, '找到组件默认导出以读取原生相机')
+    await route.fulfill({ response, body: patched })
+  })
   await page.route('**/api/facts/**', route => {
     const factId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1))
     return route.fulfill({ json: {
@@ -182,6 +202,30 @@ try {
     await page.getByRole('button', { name: '适应 3D', exact: true }).click()
     await page.waitForTimeout(650)
     assert.equal(await fitsCanvas(), true, `${width}px无预览全图的关系与名称不触边`)
+    overviewGeometry.push(await page.evaluate(() => {
+      const graph = window.currentGraph3d
+      const points = graph.graphData().nodes.map(node => graph.graph2ScreenCoords(node.x, node.y, node.z))
+      const extent = axis => Math.max(...points.map(point => point[axis])) - Math.min(...points.map(point => point[axis]))
+      const hidden = []
+      graph.scene().traverse(object => { if (!object.visible && object.geometry) hidden.push(object) })
+      const bbox = graph.getGraphBbox()
+      const scales = hidden.map(object => object.scale.clone())
+      let hiddenBoundsStable
+      try {
+        hidden.forEach(object => object.scale.multiplyScalar(10))
+        graph.scene().updateMatrixWorld(true)
+        hiddenBoundsStable = JSON.stringify(graph.getGraphBbox()) === JSON.stringify(bbox)
+      } finally {
+        hidden.forEach((object, index) => object.scale.copy(scales[index]))
+        graph.scene().updateMatrixWorld(true)
+      }
+      return { width: innerWidth, canvas: { width: graph.width(), height: graph.height() },
+        padding: window.graphFitPadding, projection: { width: extent('x'), height: extent('y') },
+        hiddenBoundsStable, hiddenGeometries: hidden.length,
+        bbox: { x: bbox.x, y: bbox.y, z: bbox.z },
+      }
+    }))
+    assert.equal(overviewGeometry.at(-1).hiddenBoundsStable, true, '隐藏名称尺寸不改变全图适应范围')
     await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-complex-3d-unselected-${width}${suffix}.png`, output).pathname })
     await picker.selectOption(`fact:${analysisId}/${first[0]}`)
     await page.getByRole('button', { name: '适应 3D', exact: true }).click()
@@ -325,7 +369,7 @@ try {
   await picker.selectOption(`fact:${analysisId}/${first[1]}`)
   assert.equal(await trace.inputValue(), '', '更换预览不沿用旧对象追踪')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, labelCycles, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
+  console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, labelCycles, overviewGeometry, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
 } finally {
   await browser.close()
 }
