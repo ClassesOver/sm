@@ -553,6 +553,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       }
       viewport.append(labelGuides)
     }
+    let cachedLabelLayoutKey = ''
+    let cachedLabelRectangles: Array<{ x: number; y: number; width: number; height: number }> = []
     const placeLabels = () => {
       for (const [id, label] of labels) sizeLabel(id, label)
       for (const guide of guides.values()) guide.style.display = 'none'
@@ -564,42 +566,43 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         nodeVisible(node.id) && [node.x, node.y, node.z].every(Number.isFinite))
       const priority = (id: string) => id === selectedId || id === evidenceRefId(ctx.page.ref) || id === pinnedId ? 0 : 1
       nodes.sort((a: { id: string }, b: { id: string }) => priority(a.id) - priority(b.id) || a.id.localeCompare(b.id))
-      const items = nodes.filter((node: { id: string }) => labels.get(node.id)?.sprite.visible)
+      const items: Array<{ node: GraphPoint3d & { id: string }; sprite: InstanceType<typeof SpriteText>;
+        point: { x: number; y: number }; width: number; height: number }> = nodes.filter((node: { id: string }) => labels.get(node.id)?.sprite.visible)
         .map((node: GraphPoint3d & { id: string }) => {
           const sprite = labels.get(node.id)!.sprite
           return { node, sprite, point: instance.graph2ScreenCoords(node.x, node.y, node.z),
             width: sprite.scale.x * pixels, height: sprite.scale.y * pixels }
         })
+      items.sort((a, b) => priority(a.node.id) - priority(b.node.id) || Math.round(b.point.y) - Math.round(a.point.y) || a.node.id.localeCompare(b.node.id))
       // 使用d3fc成熟布局策略；不采用隐藏重叠标签策略，保留全部可见名称。
-      const strategy = layoutGreedy().bounds({ x: 4, y: 4,
-        width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })
       let rectangles = items.map((item: { point: { x: number; y: number }; width: number; height: number }) =>
         // 相机阻尼末尾的亚像素浮点差异不应反复改变等价的标签放置方向。
         ({ x: Math.round(item.point.x), y: Math.round(item.point.y), width: item.width + 8, height: item.height + 8 }))
       const obstacles = nodes.map((node: GraphPoint3d) => {
         const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
-        return { x: Math.round(point.x) - 8, y: Math.round(point.y) - 8, width: 16, height: 16 }
+        return { x: Math.round(point.x) - 12, y: Math.round(point.y) - 12, width: 24, height: 24, fixed: true }
       })
-      // 后续轮次从上轮结果继续优化；交替镜像给组件提供两个方向的移动空间。
-      for (let round = 0; round < 4; round++) {
-        const mirrored = round % 2 === 1
-        const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
-          x: viewport.clientWidth - rectangle.x - rectangle.width,
-          y: viewport.clientHeight - rectangle.y - rectangle.height })
-        // 球体/图标参与碰撞评分；只应用前面的标签位置，节点本身保持不动。
-        const input = [...rectangles, ...obstacles]
-        rectangles = strategy(mirrored ? input.map(mirror) : input).slice(0, items.length).map(rectangle => {
-          const result = mirrored ? mirror(rectangle) : rectangle
-          return { ...result,
-            x: Math.max(4, Math.min(viewport.clientWidth - result.width - 4, result.x)),
-            y: Math.max(4, Math.min(viewport.clientHeight - result.height - 4, result.y)) }
-        })
+      const layoutKey = JSON.stringify([viewport.clientWidth, viewport.clientHeight, items.map(item => item.node.id), rectangles, obstacles])
+      if (layoutKey === cachedLabelLayoutKey) rectangles = cachedLabelRectangles
+      else {
+        const strategy = layoutGreedy().bounds({ x: 4, y: 4,
+          width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })
+        // 后续轮次从上轮结果继续优化；交替镜像给组件提供两个方向的移动空间。
+        for (let round = 0; round < 12; round++) {
+          const mirrored = round % 2 === 1
+          const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
+            x: viewport.clientWidth - rectangle.x - rectangle.width,
+            y: viewport.clientHeight - rectangle.y - rectangle.height })
+          // 固定图标区域参与原生评分，但不参与移动；只应用名称的位置。
+          const input = [...rectangles, ...obstacles]
+          rectangles = strategy(mirrored ? input.map(mirror) : input).slice(0, items.length).map(rectangle => mirrored ? mirror(rectangle) : rectangle)
+        }
+        cachedLabelLayoutKey = layoutKey
+        cachedLabelRectangles = rectangles
       }
-      items.forEach(({ node, sprite, point, width, height }: {
-        node: { id: string }; sprite: InstanceType<typeof SpriteText>; point: { x: number; y: number }; width: number; height: number
-      }, index: number) => {
+      items.forEach(({ node, sprite, point, width, height }, index: number) => {
         const rectangle = rectangles[index]
-        // d3fc的bounds是评分惩罚，仍可能选择越界位置；适配层确保文字不裁切。
+        // 标签本身仍保留画布边缘留白。
         const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 4))
         const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 4))
         const bounds = { left, top, right: left + width, bottom: top + height }
