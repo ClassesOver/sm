@@ -1211,6 +1211,22 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const height = Math.max(...points.map(point => point.y)) - top
       scale = Math.min(1, availableWidth / Math.max(1, width), Math.max(1, scroll.clientHeight - 32) / Math.max(1, height))
       pan = { x: 16 - left * scale, y: 16 - top * scale }
+    } else {
+      const points = allNodes.flatMap(node => {
+        const position = graph.positions.get(evidenceRefId(node))!
+        return [
+          { x: position.x - position.width / 2, y: position.y - position.height / 2 },
+          { x: position.x + position.width / 2, y: position.y + position.height / 2 },
+        ]
+      })
+      for (const path of graph.paths.values()) points.push(...path)
+      const left = Math.min(...points.map(point => point.x))
+      const top = Math.min(...points.map(point => point.y))
+      const width = Math.max(...points.map(point => point.x)) - left
+      const height = Math.max(...points.map(point => point.y)) - top
+      const availableHeight = scroll.clientHeight > 0 ? Math.max(1, scroll.clientHeight - 32) : Infinity
+      scale = Math.min(1, availableWidth / Math.max(1, width), availableHeight / Math.max(1, height))
+      pan = { x: 16 - left * scale, y: 16 - top * scale }
     }
     ctx.updatePage({ graphScale: scale, graphPan: pan, graphScroll: { left: 0, top: 0 } })
     applyTransform()

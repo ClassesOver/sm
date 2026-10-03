@@ -722,9 +722,15 @@ describe('事实页', () => {
     const graphScroll = graph.querySelector<HTMLElement>('.evidence-graph-scroll')!
     Object.defineProperties(graphScroll, { clientWidth: { value: 300 } })
     graph.querySelector<HTMLButtonElement>('[aria-label="适应关系图"]')!.click()
-    const mapWidth = parseFloat(graph.querySelector<HTMLElement>('.evidence-graph-map')!.style.width)
-    expect(page.graphScale).toBeCloseTo(Math.min(1, (300 - 32) / mapWidth), 5)
-    expect(page.graphPan).toEqual({ x: 0, y: 0 })
+    const boxes = [...graph.querySelectorAll<HTMLElement>('.evidence-node')].map(node => ({
+      left: parseFloat(node.style.left), top: parseFloat(node.style.top), width: 170, height: 76,
+    }))
+    const left = Math.min(...boxes.map(box => box.left))
+    const top = Math.min(...boxes.map(box => box.top))
+    const right = Math.max(...boxes.map(box => box.left + box.width))
+    const expectedScale = Math.min(1, (300 - 32) / (right - left))
+    expect(page.graphScale).toBeCloseTo(expectedScale, 5)
+    expect(page.graphPan).toEqual({ x: 16 - left * expectedScale, y: 16 - top * expectedScale })
     expect(page.graphScroll).toEqual({ left: 0, top: 0 })
     graph.querySelector<HTMLButtonElement>('.evidence-view-reset')!.click()
     expect(page.graphScale).toBe(1)
