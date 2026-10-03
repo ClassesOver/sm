@@ -7,6 +7,7 @@ const limits = {
   entry: 180 * KIB,
   milkdown: 700 * KIB,
   forceGraph3d: 1600 * KIB,
+  three: 650 * KIB,
   plotly: 5 * 1024 * KIB,
   other: 250 * KIB,
 }
@@ -16,6 +17,7 @@ function limitFor(file) {
   if (name.startsWith('milkdown-')) return limits.milkdown
   if (name.startsWith('plotly.min-')) return limits.plotly
   if (name.startsWith('3d-force-graph-')) return limits.forceGraph3d
+  if (name.startsWith('three.module-')) return limits.three
   if (name.startsWith('index-')) return limits.entry
   return limits.other
 }

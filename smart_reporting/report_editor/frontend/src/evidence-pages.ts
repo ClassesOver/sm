@@ -292,13 +292,31 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
-    void import('3d-force-graph').then(({ default: ForceGraph3D }) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext')]).then(([{ default: ForceGraph3D }, { default: SpriteText }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     let lastNodeClick: { id: string; at: number } | null = null
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
       .showNavInfo(false)
-      .nodeLabel((node: { ref: EvidenceObjectRef }) => `${KIND_LABELS[node.ref.kind]}：${node.ref.label}`)
+      .nodeLabel((node: { ref: EvidenceObjectRef }) => {
+        const label = document.createElement('span')
+        label.textContent = `${KIND_LABELS[node.ref.kind]}：${node.ref.label}`
+        return label
+      })
+      .nodeThreeObject((node: { ref: EvidenceObjectRef }) => {
+        const current = sameEvidenceRef(node.ref, ctx.page.ref)
+        const selected = evidenceRefId(node.ref) === selectedId
+        const name = node.ref.label.length > 28 ? `${node.ref.label.slice(0, 27)}…` : node.ref.label
+        const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${current ? ' · 当前页' : selected ? ' · 预览' : ''}`, 3, '#23445b')
+        label.backgroundColor = current ? '#e4f3fa' : '#ffffff'
+        label.borderColor = selected ? '#007ea7' : '#c7dce8'
+        label.borderWidth = selected ? 0.12 : 0.06
+        label.borderRadius = 1
+        label.padding = [1, 2]
+        label.position.y = 8
+        return label
+      })
+      .nodeThreeObjectExtend(true)
       .nodeColor((node: { ref: EvidenceObjectRef }) => evidenceRefId(node.ref) === selectedId ? '#007ea7' :
         sameEvidenceRef(node.ref, ctx.page.ref) ? '#1f6f8b' : '#80a2bd')
       .linkColor(() => selectedId ? '#b8cbd5' : '#80a2bd')

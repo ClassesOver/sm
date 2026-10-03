@@ -19,7 +19,8 @@
     "diff2html": "^3.4.56",
     "lucide": "^1.46.0",
     "pathfinding": "^0.4.18",
-    "plotly.js-dist-min": "^3.3.1"
+    "plotly.js-dist-min": "^3.3.1",
+    "three-spritetext": "^1.10.0"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
