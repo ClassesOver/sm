@@ -4,7 +4,9 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
 
 const output = new URL('../../../../output/', import.meta.url)
-const suffix = process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''
+const state = process.env.REPORT_EDITOR_SMALL_STATE ?? 'none'
+assert.ok(['none', 'preview', 'pair', 'preview-relations'].includes(state))
+const suffix = `${state === 'none' ? '' : `-${state}`}${process.env.REPORT_EDITOR_SCREENSHOT_SUFFIX ?? ''}`
 await mkdir(output, { recursive: true })
 const browser = await chromium.launch({ headless: true })
 const collisions = []
@@ -27,7 +29,7 @@ try {
           const result = nativeSpriteRaycast.call(this, raycaster, intersects);
           const id = this.parent?.parent?.__data?.id;
           const canvas = document.querySelector('.evidence-graph-3d canvas');
-          if (this.text && id && canvas && this.visible) {
+          if (this.text && id && canvas && this.visible && this.parent.parent.visible) {
             const size = canvas.getBoundingClientRect();
             const camera = raycaster.camera;
             const world = this.position.clone().setFromMatrixPosition(this.matrixWorld);
@@ -39,7 +41,7 @@ try {
             const x = (point.x + 1) * size.width / 2, y = (1 - point.y) * size.height / 2;
             const links = this.parent.parent.parent.children.filter(object => object.__graphObjType === 'link');
             const icon = this.parent.children.find(object => object !== this && object.isSprite);
-            window.graphLabelBounds.set(id, { id, x: x - this.center.x * width, y: y - (1 - this.center.y) * height, width, height, nodeX: x, nodeY: y,
+            window.graphLabelBounds.set(id, { id, text: this.text, x: x - this.center.x * width, y: y - (1 - this.center.y) * height, width, height, nodeX: x, nodeY: y,
               textOrder: this.renderOrder, iconOrder: icon?.renderOrder, linkOrder: links.length ? Math.max(...links.map(object => object.renderOrder)) : null });
           }
           return result;
@@ -61,11 +63,29 @@ try {
     await page.locator('.evidence-directory-item', { hasText: '正文引用' }).click()
     await page.locator('.evidence-subject-links button', { hasText: '事实' }).click()
     const canvas = page.locator('.evidence-graph-3d canvas')
+    const picker = page.getByRole('combobox', { name: '选择 3D 节点预览' })
+    const trace = page.getByRole('combobox', { name: '追踪预览关系端点' })
+    const rootId = 'fact:analysis-fixture-001/fact-fixture-001'
+    const leafId = `fact:analysis-fixture-001/${inputs[0]}`
+    const scoped = state === 'pair' || state === 'preview-relations'
+    const expectedIds = (scoped ? [rootId, leafId] : [rootId,
+      'subject:sub-fixture-001', 'computation:comp-fixture-001',
+      ...inputs.map(name => `fact:analysis-fixture-001/${name}`)]).sort()
     await canvas.waitFor()
+    const title = await page.locator('.evidence-object-title').textContent()
+    const back = await page.locator('[data-evidence="back"]').isEnabled()
     assert.equal(await page.getByRole('combobox', { name: '选择 3D 节点预览' }).locator('option').count(), count + 1)
     assert.equal(await page.getByRole('combobox', { name: '选择 3D 节点预览' }).evaluate((select, names) =>
       names.every(name => [...select.options].some(option => option.textContent.endsWith(name))), inputs), true,
     '紧凑画布名称不截断节点选择器中的完整业务名称')
+    if (state !== 'none') {
+      await picker.selectOption(leafId)
+      await page.locator('.evidence-preview-summary').waitFor({ state: 'visible' })
+      if (scoped) {
+        await trace.selectOption(state === 'pair' ? rootId : 'preview-relations')
+        await page.locator(`.evidence-graph-3d[data-scope="${state === 'pair' ? 'pair' : 'preview'}"]`).waitFor()
+      }
+    }
     for (const [width, height] of [[1280, 900], [390, 844], [844, 390]]) {
       await page.setViewportSize({ width, height })
       if (width === 390) await page.getByRole('button', { name: '查看关系图', exact: true }).click()
@@ -77,10 +97,12 @@ try {
           await page.mouse.move(bounds.x + 65, bounds.y + 35, { steps: 8 })
           await page.mouse.up()
         }
-        await page.getByRole('button', { name: '适应 3D', exact: true }).click()
+        await page.getByRole('button', { name: state === 'pair' ? '适应追踪关系' : state === 'preview-relations' ? '适应预览' : '适应 3D', exact: true }).click()
         await page.waitForTimeout(650)
         const bounds = await canvas.boundingBox()
+        await page.evaluate(() => window.graphLabelBounds.clear())
         await page.mouse.move(bounds.x + 2, bounds.y + 2)
+        await page.waitForFunction(expected => window.graphLabelBounds.size === expected, expectedIds.length)
         await page.waitForTimeout(150)
         assert.equal((await page.locator('.evidence-graph-3d').getAttribute('data-hovered')) ?? '', '', '全图截图清除临时悬停追踪')
         const overlap = await page.evaluate(() => {
@@ -92,13 +114,27 @@ try {
             names: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a, b) > 1).map(b => [a.id, b.id])),
             icons: labels.flatMap(a => labels.filter(b => a.id !== b.id && area(a, { x: b.nodeX - 7, y: b.nodeY - 7, width: 14, height: 14 }) > 1).map(b => [a.id, b.id])) }
         })
-        assert.equal(overlap.labels, count, '全部节点名称保留并参与原生投影检查')
+        assert.equal(await picker.locator('option').count(), count + 1, '范围切换不丢失已加载节点身份')
+        assert.equal(await picker.inputValue(), state === 'none' ? '' : leafId, '相机动作不改变预览身份')
+        assert.equal(await trace.inputValue(), state === 'pair' ? rootId : state === 'preview-relations' ? 'preview-relations' : '', '相机动作不改变追踪范围')
+        assert.equal(await page.locator('.evidence-object-title').textContent(), title, '预览和相机动作不导航主对象')
+        assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), back, '预览不写入探索历史')
+        assert.deepEqual(overlap.bounds.map(label => label.id).sort(), expectedIds, '实际绘制名称身份与当前范围一致')
+        const current = overlap.bounds.find(label => label.id === rootId)
+        assert.ok(current.text.includes('当前页'), '实际名称保留当前页状态')
+        assert.match(current.text, new RegExp(`已加载\\s*${count - 1}\\s*条关系`), '缩小范围仍显示已加载关系数')
         assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
+        if (state !== 'none') {
+          assert.ok(overlap.bounds.find(label => label.id === leafId).text.includes('预览'), '实际名称保留预览状态')
+          assert.equal(await page.locator('.evidence-preview-summary strong').textContent(), `预览：${inputs[0]}`, '摘要保留完整业务名称')
+        }
+        collisions.push({ state, count, width, angle, names: overlap.names.length, icons: overlap.icons.length })
+        geometry.push({ state, count, width, angle, canvasWidth: bounds.width, canvasHeight: bounds.height, ...overlap })
+        await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-small-3d-${count}-${width}-angle-${angle}${suffix}.png`, output).pathname })
+        // 失败也保留实际投影与截图，以便定位遮挡，不以应用布局输入代替渲染证据。
+        await writeFile(new URL(`report-editor-v6-small-3d${suffix}-geometry.json`, output), `${JSON.stringify(geometry, null, 2)}\n`)
         assert.deepEqual(overlap.names, [], `${count}节点/${width}px/角度${angle}名称不重叠`)
         assert.deepEqual(overlap.icons, [], `${count}节点/${width}px/角度${angle}名称不覆盖其他节点图标`)
-        collisions.push({ count, width, angle, names: overlap.names.length, icons: overlap.icons.length })
-        geometry.push({ count, width, angle, canvasWidth: bounds.width, canvasHeight: bounds.height, ...overlap })
-        await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-small-3d-${count}-${width}-angle-${angle}${suffix}.png`, output).pathname })
         const clipped = await page.evaluate(async png => {
           const image = new Image()
           image.src = `data:image/png;base64,${png}`
@@ -126,7 +162,7 @@ try {
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log(JSON.stringify({ nodes: [5, 9, 15], viewports: [1280, 390, 844], angles: 3, collisions, readability: 'manual review required' }))
+  console.log(JSON.stringify({ state, nodes: [5, 9, 15], viewports: [1280, 390, 844], angles: 3, collisions, readability: 'manual review required' }))
   await writeFile(new URL(`report-editor-v6-small-3d${suffix}-geometry.json`, output), `${JSON.stringify(geometry, null, 2)}\n`)
 } finally {
   await browser.close()

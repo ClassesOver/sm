@@ -598,7 +598,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const perimeter = rectangles.map(rectangle => ({ ...rectangle,
           x: rectangle.x < viewport.clientWidth / 2 ? 4 : viewport.clientWidth - rectangle.width - 4,
           y: rectangle.y - rectangle.height / 2 }))
+        // 14px图标增加每边1px取整余量；名称与自身图标的正常锚点相交不计遮挡。
+        const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 8,
+          y: Math.round(item.point.y) - 8, width: 16, height: 16 }))
         let bestTotal = Infinity
+        let bestPadding = Infinity
         // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
         for (const seed of [rectangles, outward, perimeter]) {
           let candidate = seed
@@ -609,12 +613,21 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
               x: mirrorX ? viewport.clientWidth - rectangle.x - rectangle.width : rectangle.x,
               y: mirrorY ? viewport.clientHeight - rectangle.y - rectangle.height : rectangle.y })
             // 28px固定图标区域参与原生评分但不参与移动；只应用名称的位置。
-            const input = [...candidate, ...obstacles]
-            candidate = strategy(input.map(mirror)).slice(0, items.length).map(mirror)
-            const total = totalCollisionArea([...candidate, ...obstacles])
-            if (total < bestTotal) {
+            // 末四轮反向处理同优先级名称，避免单一顺序困在局部重叠中。
+            const order = items.map((_, index) => index).sort((a, b) =>
+              priority(items[a].node.id) - priority(items[b].node.id) || (round >= 12 ? b - a : a - b))
+            const input = [...order.map(index => candidate[index]), ...obstacles]
+            const placed = strategy(input.map(mirror)).slice(0, items.length).map(mirror)
+            candidate = items.map((_, index) => placed[order.indexOf(index)])
+            const padding = totalCollisionArea([...candidate, ...obstacles])
+            const drawn = candidate.map(rectangle => ({ ...rectangle,
+              x: rectangle.x + 3, y: rectangle.y + 3, width: rectangle.width - 6, height: rectangle.height - 6 }))
+            const total = totalCollisionArea([...drawn, ...iconBounds]) - totalCollisionArea(iconBounds)
+              - drawn.reduce((sum, rectangle, index) => sum + totalCollisionArea([rectangle, iconBounds[index]]), 0)
+            if (total < bestTotal || total === bestTotal && padding < bestPadding) {
               rectangles = candidate
               bestTotal = total
+              bestPadding = padding
             }
           }
         }
