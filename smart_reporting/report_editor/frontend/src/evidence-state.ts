@@ -37,6 +37,8 @@ export interface EvidencePage {
   graphMode: '2d' | '3d'
   /** 3D 名称显示偏好；未选择时密集图只显示关注名称。 */
   graphLabels?: 'all' | 'focus'
+  /** 当前预览对象的3D关系范围/端点，按身份恢复历史现场。 */
+  graph3dTrace?: { previewId: string; value: string }
   filter: string
   datasetCursors: (string | null)[]
   datasetPageIndex: number

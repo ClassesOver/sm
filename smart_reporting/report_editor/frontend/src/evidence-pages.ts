@@ -323,8 +323,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     neighbours.delete(selectedId ?? '')
     let hoveredId: string | null = null
-    let pinnedId: string | null = null
-    let previewOnly = false
+    const rememberedTrace = ctx.page.graph3dTrace?.previewId === selectedId ? ctx.page.graph3dTrace.value : ''
+    let pinnedId: string | null = neighbours.has(rememberedTrace) ? rememberedTrace : null
+    let previewOnly = Boolean(selectedId && neighbours.size && rememberedTrace === 'preview-relations')
     const nodeVisible = (id: string) => pinnedId ? id === pinnedId || id === selectedId
       : !previewOnly || id === selectedId || neighbours.has(id)
     let refreshTrace = () => {}
@@ -660,6 +661,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       option.textContent = `追踪：${KIND_LABELS[node.kind]} · ${node.label}`
       tracePicker.append(option)
     }
+    tracePicker.value = previewOnly ? 'preview-relations' : pinnedId ?? ''
     const traceStatus = document.createElement('span')
     traceStatus.className = 'evidence-3d-trace-status'
     traceStatus.setAttribute('role', 'status')
@@ -682,6 +684,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     tracePicker.addEventListener('change', () => {
       previewOnly = tracePicker.value === 'preview-relations'
       pinnedId = previewOnly ? null : tracePicker.value || null
+      if (selectedId) ctx.updatePage({ graph3dTrace: { previewId: selectedId, value: tracePicker.value } })
       refreshTrace()
     })
     controls.append(tracePicker)

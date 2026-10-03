@@ -264,6 +264,23 @@ try {
   assert.equal(await picker.inputValue(), `fact:${analysisId}/${first[0]}`)
   assert.equal(await picker.locator('option').count(), 40, '后退恢复复杂图和预览')
   assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-labels'), 'all', '后退保留非默认名称偏好')
+  for (const value of ['preview-relations', `fact:${analysisId}/${shared[0]}`]) {
+    await trace.selectOption(value)
+    await picker.focus()
+    await picker.press('Enter')
+    await page.locator('.evidence-object-title', { hasText: first[0] }).waitFor()
+    await canvas.waitFor()
+    assert.equal(await trace.inputValue(), '', '新对象页面不继承其他预览的端点')
+    await page.locator('[data-evidence="back"]').click()
+    await page.locator('.evidence-object-title', { hasText: title }).waitFor()
+    assert.equal(await trace.inputValue(), value, '后退恢复直接关系或固定端点')
+    await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
+    await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
+    await canvas.waitFor()
+    assert.equal(await trace.inputValue(), value, '模式往返恢复3D追踪选择')
+  }
+  await picker.selectOption(`fact:${analysisId}/${first[1]}`)
+  assert.equal(await trace.inputValue(), '', '更换预览不沿用旧对象追踪')
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, labelCycles, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
 } finally {
