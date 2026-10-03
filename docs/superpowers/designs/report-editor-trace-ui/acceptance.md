@@ -16,6 +16,8 @@ Firefox 复杂图交叉回放（2026-10-04）：`REPORT_EDITOR_BROWSER=firefox` 
 
 Linux WebKit 复杂图尝试（2026-10-04）：`REPORT_EDITOR_BROWSER=webkit` 未启动，Playwright MiniBrowser 缺少主机库 `libwoff2dec.so.1.0.2`。该环境缺口不计为产品失败或通过；Safari/iOS 真机仍未验收。
 
+Firefox 长名称复杂图回放（2026-10-04）：`REPORT_EDITOR_BROWSER=firefox REPORT_EDITOR_LONG_LABELS=1` 下39节点/55条边在1280×900、390×844、844×390通过窄屏适应、长名称边界、批次加载、追踪、列表往返、导航和无脚本错误检查；不扩大为密集图整体可读性、真机或读屏通过。
+
 ## 当前阶段边界（2026-10-04）
 
 默认关系图为 3D，保留 2D 切换；两种模式共用节点身份、登记关系、导航与历史恢复。当前定向回放已覆盖指定类型、图表关系、键盘、鼠标/Chromium 模拟触控、Firefox 核心与复杂图流程；39 节点/55 条边复杂图的身份、列表往返、追踪、边界和导航检查通过。密集全图的人工可读性仍未通过，不能把自动几何断言、局部截图或模拟设备结果扩大为整体验收。390px 竖屏全图适应仍列为下一阶段调查项；iPhone/Android 真机、Safari/VoiceOver、NVDA/Orca 暂不标记通过，等待真实设备证据。
