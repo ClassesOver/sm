@@ -593,3 +593,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 3D 生命周期与输入回归：生命周期 6 轮/44 上下文、首次可见初始化与重建恢复、Chromium 模拟触控旋转/捏合/续旋/点按/导航/适应恢复均通过，无脚本错误；真机与读屏仍待验收。
 
 2026-10-04 基础 3D 跨引擎回归：Chromium、Firefox、Linux WebKit 均通过默认 3D、2D 切换、预览/追踪/分支重试、导航、鼠标交互、相机及减少动态效果；三引擎无脚本错误，不将 Linux WebKit 扩大为 Safari/iOS 或读屏验收。
+
+2026-10-04 定向单测与键盘复验：`evidence-label-layout`、`evidence-graph`、`evidence-relations` 共 24 项通过；Chromium/Firefox 键盘流程通过。Linux WebKit 因主机缺少 `libwoff2dec.so.1.0.2` 未启动，保留环境缺口。

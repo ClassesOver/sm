@@ -856,3 +856,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 3D 生命周期与输入回归（2026-10-04）：生命周期 fixture 6 轮、44 个上下文通过隐藏绘制、预览、模式切换、导航、关闭和错误检查；首次可见 fixture 通过隐藏挂载、初始适应、用户缩放及重建恢复；触控 fixture 通过单指旋转、双指捏合、松指续旋、轻触预览、导航、适应恢复和节点起点捏合，均无脚本错误。上述为 Chromium 模拟证据，不替代真实设备验收。
 
 基础 3D 跨引擎回归（2026-10-04）：Chromium、Firefox、Linux WebKit 均通过默认 3D、2D 切换、预览、追踪、分支重试、导航、鼠标点击/双击/后台打开与复用、旋转/滚轮及减少动态效果，三引擎均无脚本错误。Linux WebKit 证据不替代 Safari/iOS 真机或读屏验收。
+
+定向单测与键盘复验（2026-10-04）：`evidence-label-layout`、`evidence-graph`、`evidence-relations` 共 24 项通过；正式键盘 fixture 在 Chromium、Firefox 通过手动页签、Home/End/Delete、图节点 Space/Enter/Esc、焦点恢复与返回编辑器。Linux WebKit 本次因主机缺少 `libwoff2dec.so.1.0.2` 未启动，不新增该引擎证据。
