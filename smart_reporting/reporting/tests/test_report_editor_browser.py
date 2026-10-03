@@ -692,6 +692,8 @@ async def test_real_branch_integrity_failure_preserves_graph_and_recovers(
                 assert exchange.status == 200
                 await page.goto(f"{base_url}/reports/v1/editor/{context.report_id}/1?subject={subject.subject_id}")
                 await page.get_by_role("button", name="展开", exact=True).click()
+                # 关系图默认 3D；该回放检查 2D DOM 节点坐标与恢复契约，显式切换模式。
+                await page.get_by_role("button", name="切换到 2D 关系图", exact=True).click()
                 await expect(page.locator(".evidence-node")).to_have_count(2)
                 positions = "nodes => Object.fromEntries(nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]]))"
                 original = await page.locator(".evidence-node").evaluate_all(positions)
