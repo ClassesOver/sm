@@ -862,3 +862,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 证据页核心定向单测（2026-10-04）：`evidence-pages`、`evidence-state`、`evidence-browser` 共 99 项通过；未运行完整测试套件。
 
 后端来源契约定向测试（2026-10-04）：`test_report_editor_trace.py`、`test_trace_subject_validate.py`、`test_trace_contracts.py` 共 95 项通过；仅有依赖 `imghdr` 弃用警告，无失败。该结果验证来源身份/软告警契约，不替代真实生产报告端到端验收。
+
+来源导出链路定向测试（2026-10-04）：`test_report_editor_lineage_export.py`、`test_report_editor_source_appendix.py`、`test_trace_dataset_service.py` 共 29 项通过；仅有 `imghdr` 弃用警告。该结果覆盖来源附录、导出和数据集服务契约，不替代真实生产报告端到端验收。

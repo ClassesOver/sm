@@ -599,3 +599,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 证据页核心定向单测：`evidence-pages`、`evidence-state`、`evidence-browser` 共 99 项通过，未重复完整测试套件。
 
 2026-10-04 后端来源契约定向测试：`test_report_editor_trace.py`、`test_trace_subject_validate.py`、`test_trace_contracts.py` 共 95 项通过，仅有 `imghdr` 弃用警告；不替代真实生产报告端到端验收。
+
+2026-10-04 来源导出链路定向测试：`test_report_editor_lineage_export.py`、`test_report_editor_source_appendix.py`、`test_trace_dataset_service.py` 共 29 项通过，仅有 `imghdr` 弃用警告；不替代真实生产报告端到端验收。
