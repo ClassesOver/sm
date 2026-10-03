@@ -83,7 +83,7 @@ try {
             Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
           return { labels: labels.length, bounds: labels,
             names: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a, b) > 1).map(b => [a.id, b.id])),
-            icons: labels.flatMap(a => labels.filter(b => area(a, { x: b.nodeX - 7, y: b.nodeY - 7, width: 14, height: 14 }) > 1).map(b => [a.id, b.id])) }
+            icons: labels.flatMap(a => labels.filter(b => a.id !== b.id && area(a, { x: b.nodeX - 7, y: b.nodeY - 7, width: 14, height: 14 }) > 1).map(b => [a.id, b.id])) }
         })
         assert.equal(overlap.labels, count, '全部节点名称保留并参与原生投影检查')
         collisions.push({ count, width, angle, names: overlap.names.length, icons: overlap.icons.length })
