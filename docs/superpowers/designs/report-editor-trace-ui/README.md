@@ -938,3 +938,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 3D 共享关系线改进回放：复用 `3d-force-graph` 原生 `linkCurvature`，按共享端点和稳定关系键给多条直接关系施加小幅正负弧度，减少全图概览中汇聚线重叠；自引用与反向边曲率契约保持不变。复杂图 fixture 实际回放覆盖39节点/55条边、1280×900/390×844/844×390三视口，身份、列表往返、追踪、边界、导航和无脚本错误均通过；代表截图 `output/report-editor-v6-complex-3d-{1280,390,844}-curved.png` 已检查。共享线分离有所改善，但密集全图仍需人工可读性审查，不能标记整体可读性通过；真机和读屏仍未通过。
 
 2026-10-04 3D 共享关系线长名称回放：`REPORT_EDITOR_LONG_LABELS=1` 下同一39节点/55条边 fixture、三种视口和追踪/列表/导航流程通过，代表截图 `output/report-editor-v6-complex-3d-1280-long-curved-long.png`、`output/report-editor-v6-complex-3d-390-long-curved-long.png` 已检查。长名称信息仍保持可进入和摘要全名；密集全图可读性、真机和读屏仍未通过。
+
+2026-10-04 3D 类型信息回放：默认 3D fixture 覆盖 fact、computation、subject，并在分支追加后覆盖 dataset；默认视图、2D/3D 往返、预览/追踪、重试、导航、鼠标输入和动态效果偏好均通过，图例同步 dataset 类型，无脚本错误。该证据覆盖四类节点，不替代包含 chart 的五类型/状态视觉矩阵，也不证明复杂图整体可读性或真机/读屏验收。
