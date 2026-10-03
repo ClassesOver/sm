@@ -373,6 +373,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
       .showNavInfo(false)
+      // 关系浏览只改变视角，节点位置由布局/缓存维护，避免节点起点捏合误拖动。
+      .enableNodeDrag(false)
       .nodeLabel((node: { ref: EvidenceObjectRef }) => {
         const label = document.createElement('span')
         label.textContent = `${KIND_LABELS[node.ref.kind]}：${node.ref.label}`

@@ -28,6 +28,19 @@ try {
   const session = await page.context().newCDPSession(page)
   const touch = (id, x, y) => ({ id, x, y })
   const send = (type, touchPoints) => session.send('Input.dispatchTouchEvent', { type, touchPoints })
+  const findComputation = async () => {
+    const bounds = await canvas.boundingBox()
+    for (let cy = bounds.height - 6; cy > 0; cy -= 12) {
+      for (let cx = bounds.width - 6; cx > 0; cx -= 12) {
+        await page.mouse.move(bounds.x + cx, bounds.y + cy)
+        await page.waitForTimeout(25)
+        if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === 'computation:comp-fixture-001') {
+          return { x: bounds.x + cx, y: bounds.y + cy }
+        }
+      }
+    }
+    assert.fail('触控旋转/缩放后仍可命中计算节点')
+  }
   const output = new URL('../../../../output/', import.meta.url)
   await mkdir(output, { recursive: true })
   let before = await canvas.screenshot()
@@ -66,18 +79,7 @@ try {
   assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
   assert.deepEqual(await page.evaluate(() => ({ x: scrollX, y: scrollY })), scroll)
   // 在旋转、捏合后的实际视图中寻找球体，然后清除鼠标悬停再触摸点选。
-  let hit = null
-  for (let cy = box.height - 6; cy > 0 && !hit; cy -= 12) {
-    for (let cx = box.width - 6; cx > 0; cx -= 12) {
-      await page.mouse.move(box.x + cx, box.y + cy)
-      await page.waitForTimeout(25)
-      if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === 'computation:comp-fixture-001') {
-        hit = { x: box.x + cx, y: box.y + cy }
-        break
-      }
-    }
-  }
-  assert.ok(hit, '触控旋转/缩放后仍可命中计算节点')
+  const hit = await findComputation()
   await page.mouse.move(x, y)
   await page.waitForTimeout(50)
   await page.touchscreen.tap(hit.x, hit.y)
@@ -110,8 +112,43 @@ try {
   assert.equal(await page.locator('.evidence-object-title').textContent(), title)
   assert.equal(await page.locator('.evidence-preview-summary').count(), 0)
   assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
+  // 相同重置/适应视角前后逐像素比较，区分相机运动与误拖动节点。
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const normalizeCamera = async () => {
+    await page.getByRole('button', { name: '重置视图', exact: true }).tap()
+    await page.getByRole('button', { name: '适应 3D', exact: true }).tap()
+    await page.mouse.move(recoveryX, recoveryY)
+    await page.waitForTimeout(250)
+    return canvas.screenshot()
+  }
+  const nodeBefore = await normalizeCamera()
+  await canvas.screenshot({ path: new URL('report-editor-v6-3d-touch-node-before.png', output).pathname })
+  const nodeHit = await findComputation()
+  await page.mouse.move(recoveryX, recoveryY)
+  await page.waitForTimeout(60)
+  await send('touchStart', [touch(1, nodeHit.x, nodeHit.y)])
+  await send('touchStart', [touch(1, nodeHit.x, nodeHit.y), touch(2, nodeHit.x - 50, nodeHit.y)])
+  for (let step = 1; step <= 8; step++) {
+    await send('touchMove', [touch(1, nodeHit.x, nodeHit.y), touch(2, nodeHit.x - 50 - step * 3, nodeHit.y)])
+    await page.waitForTimeout(25)
+  }
+  const nodePinched = await canvas.screenshot({ path: new URL('report-editor-v6-3d-touch-node-pinch.png', output).pathname })
+  assert.equal(nodeBefore.equals(nodePinched), false, '节点起点双指操作改变视图')
+  await send('touchEnd', [touch(1, nodeHit.x, nodeHit.y)])
+  for (let step = 1; step <= 4; step++) {
+    await send('touchMove', [touch(1, nodeHit.x - step * 3, nodeHit.y + step * 3)])
+    await page.waitForTimeout(25)
+  }
+  await send('touchEnd', [])
+  await page.mouse.move(recoveryX, recoveryY)
+  await page.waitForTimeout(400)
+  assert.equal(nodePinched.equals(await canvas.screenshot()), false, '节点起点双指结束后单指继续旋转')
+  assert.equal(await page.locator('.evidence-preview-summary').count(), 0, '节点起点手势不误预览')
+  const nodeAfter = await normalizeCamera()
+  await canvas.screenshot({ path: new URL('report-editor-v6-3d-touch-node-restored.png', output).pathname })
+  assert.equal(nodeBefore.equals(nodeAfter), true, '节点起点捏合仅改变相机，不移动节点')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ touchRotate: 'passed', touchPinch: 'passed', resumedRotate: 'passed', touchTap: 'passed', navigation: 'passed', fitRecovery: 'passed', errors }))
+  console.log(JSON.stringify({ touchRotate: 'passed', touchPinch: 'passed', resumedRotate: 'passed', touchTap: 'passed', navigation: 'passed', fitRecovery: 'passed', nodePinch: 'passed', errors }))
 } finally {
   await browser.close()
 }

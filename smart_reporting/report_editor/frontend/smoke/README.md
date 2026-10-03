@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+同一3D触控fixture还从真实计算球体开始加入第二指，执行50→74px捏合、松开第二指后继续旋转。相同重置/适应视角前后要求截图完全一致，捕捉组件默认节点拖拽造成的位置改变；产品已禁用节点拖拽，保留组件相机控制。截图为 `output/report-editor-v6-3d-touch-node-{before,pinch,restored}.png`，需对照检查。最终四节点场景通过，不替代复杂图手势、触摸双击或真机验收。下方早期“不覆盖节点起点捏合”描述由本条指定场景补充，其他范围不扩展。
+
 3D模拟触控运行 `node smoke/evidence-3d-touch-fixture.mjs`，同样使用构建后的fixture服务。390×844 Chromium hasTouch/isMobile，真实CDP触摸输入验证空白旋转、适度双指缩放、松开一指后继续旋转；手势前要求画面稳定，手势不能误预览、导航或滚动窗口。鼠标扫描确定真实球体位置后清除悬停，再快速touchscreen.tap验证预览/进入/后退；大幅缩放后用“适应3D”恢复视野。截图为 `output/report-editor-v6-3d-touch-{rotate,pinch,preview,recovered}.png`。快速轻触回归依赖 [组件拾取时序补丁](../patches/README.md)，原50ms悬停节流会吞掉尚无悬停的轻触。模拟输入不替代iPhone/Android真机，不覆盖节点起点捏合或触摸双击；截图需人工检查，不能凭画面变化证明所有手势或复杂图可读性通过。
 
 3D 相机工具回放检查定位、放大、缩小和重置后预览/标题/历史不变，定位画布截图为 `output/report-editor-v6-3d-locate.png`；截图检查范围为当前节点居中，不代表邻居与长标签全部落入视口。
