@@ -82,6 +82,16 @@ try {
   await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   assert.equal(await page.locator('.evidence-node').count(), 39)
   assert.equal(await page.locator('.evidence-graph-edge').count(), 55)
+  const expectedPairs = await page.locator('.evidence-graph-map').evaluate(map => {
+    const names = new Map([...map.querySelectorAll('.evidence-node')].map(node =>
+      [node.dataset.evidenceNode, node.querySelector('.evidence-node-title').title]))
+    const current = map.querySelector('.evidence-node.is-current').dataset.evidenceNode
+    return [...map.querySelectorAll('.evidence-graph-edge')].map(edge => {
+      const { from, to } = edge.dataset
+      const endpoints = from === current ? [to] : to === current ? [from] : [from, to]
+      return JSON.stringify(endpoints.map(id => names.get(id)))
+    }).sort()
+  })
   await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
   await canvas.waitFor()
   assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-labels'), 'focus')
@@ -91,6 +101,20 @@ try {
   assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-labels'), 'focus')
   const output = new URL('../../../../output/', import.meta.url)
   await mkdir(output, { recursive: true })
+  await page.getByRole('button', { name: '适应 3D', exact: true }).click()
+  await page.waitForTimeout(250)
+  const beforeList = await canvas.screenshot()
+  await page.getByRole('button', { name: '切换到关系列表', exact: true }).click()
+  await page.getByRole('region', { name: '关系列表', exact: true }).waitFor()
+  const listedPairs = await page.locator('.evidence-relation-pair').evaluateAll(pairs => pairs.map(pair =>
+    JSON.stringify([...pair.querySelectorAll('.evidence-relation-label')].map(label => label.textContent))).sort())
+  assert.equal(listedPairs.length, 55)
+  assert.deepEqual(listedPairs, expectedPairs, '3D累计图与文字列表逐条有序端点一致')
+  await page.getByRole('button', { name: '切换到关系图', exact: true }).click()
+  await canvas.waitFor()
+  assert.equal(await picker.inputValue(), `fact:${analysisId}/${branch[0]}`)
+  await page.waitForTimeout(150)
+  assert.equal(beforeList.equals(await canvas.screenshot()), true, '3D/列表往返保留相机和节点画面')
   for (const [width, height] of [[1280, 900], [390, 844], [844, 390]]) {
     await page.setViewportSize({ width, height })
     if (width === 390) await page.getByRole('button', { name: '查看关系图', exact: true }).click()
@@ -142,7 +166,9 @@ try {
       await page.waitForTimeout(100)
     }
     await clearHover()
-    const focusedCanvas = await canvas.screenshot()
+    const focusedCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-before-${width}${suffix}.png`, output).pathname })
+    await page.waitForTimeout(150)
+    assert.equal(focusedCanvas.equals(await canvas.screenshot()), true, `${width}px名称开关前相机与画面已稳定`)
     await page.getByRole('button', { name: '显示全部节点名称', exact: true }).click()
     await clearHover()
     const allNamesCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-all-names-${width}${suffix}.png`, output).pathname })
@@ -152,7 +178,7 @@ try {
     await page.getByRole('button', { name: '只显示重点节点名称', exact: true }).click()
     await clearHover()
     const restoredCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-restored-${width}${suffix}.png`, output).pathname })
-    assert.equal(focusedCanvas.equals(restoredCanvas), true, '名称开关往返保持相机和图形')
+    assert.equal(focusedCanvas.equals(restoredCanvas), true, `${width}px名称开关往返保持相机和图形`)
     assert.equal(await fitsCanvas(), true, `${width}px概览关注对象名称与图形不触及画布四边`)
     await page.getByRole('button', { name: '缩小关系图', exact: true }).click()
     await page.waitForTimeout(250)
@@ -176,7 +202,7 @@ try {
   assert.equal(await picker.locator('option').count(), 40, '后退恢复复杂图和预览')
   assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-labels'), 'all', '后退保留非默认名称偏好')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
+  console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
 } finally {
   await browser.close()
 }

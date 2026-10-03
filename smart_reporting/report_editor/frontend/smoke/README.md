@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+生命周期fixture同时统计原生drawArrays/drawElements调用（保留原方法），在文字列表和关系收起后采样150ms两次要求绘制数不增，返回图/展开后要求绘制恢复；组件原生pauseAnimation/resumeAnimation负责暂停，不销毁仍可恢复的隐藏现场。复杂3D普通/长名称fixture新增55条文字关系有序端点多重集与2D累计图一致、3D/列表往返后预览/画布像素一致；角色选择器在返回图后检查，不能读取默认排除的隐藏角色。名称开关新增150ms基线稳定断言，before画布保存为 `output/report-editor-v6-complex-3d-focus-before-<宽度>[-long].png`。曾有并发长名称回放一次开关像素差异，单独重跑未复现，原因尚不确定；不要据一次通过推广为所有时序完成。
+
 3D生命周期运行 `node smoke/evidence-3d-lifecycle-fixture.mjs`，使用同一构建后fixture服务。Chromium在初始化时记录getContext的真实返回值并主动保留引用，验证6轮预览开关、2D/3D往返及进入/后退/任务关闭后：仅可见画布保留活跃上下文，能力探针和移除画布均context.isContextLost()，2D/关闭后为0；同时检查预览恢复、页面标题、脚本错误和上下文过多告警。应用复用WEBGL_lose_context与Three forceContextLoss，不自建销毁系统。44个累计上下文是本次回放的创建次数，不是同时活跃数或产品预算。此检查不测自然GC/系统内存/GPU性能，也不证明未支持原生扩展的设备释放行为；不要据人为保留引用的旧版失败宣称自然运行内存泄漏。
 
 3D鼠标fixture现先通过真实球体中键创建后台任务，再Control、Meta和右键重复打开同一对象，断言任务去重、原标题/预览/历史保持，统一清空悬停后画布逐像素一致；Control+Shift前台激活既有任务后切回原任务保留预览。修饰键用page.keyboard.down/up包围mouse.click，禁止把不支持的mouse.click modifiers参数当作实际按键证据。中键依赖同一ESM组件补丁的原生拾取转发，应用只处理后台任务与auxclick默认行为，不自研拾取器。此回放不覆盖macOS原生⌘、中键拖动或所有鼠标组合；后台重复打开证据不能推广为任意任务身份去重矩阵。

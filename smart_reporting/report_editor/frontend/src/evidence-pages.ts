@@ -499,7 +499,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (viewport.clientWidth && viewport.clientHeight) {
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
         for (const [id, label] of labels) sizeLabel(id, label)
-      }
+        instance.resumeAnimation()
+      } else instance.pauseAnimation()
     })
     resize.observe(viewport)
     let disposed = false
