@@ -635,3 +635,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 浏览器集成清单汇总：`test_report_editor_browser.py` 的 28 个集成场景（含参数化变体）已通过分组逐项回放覆盖；2D 坐标断言显式切换 2D，默认 3D 由独立 fixture/跨引擎回放验证，不替代真机、读屏或生产部署验收。
 
 2026-10-04 Firefox 交叉回放：分支完整性失败/恢复场景在 Firefox 下通过 1 项；不扩大为 Firefox 全部集成矩阵。
+
+2026-10-04 Linux WebKit 交叉回放尝试：因 Playwright MiniBrowser 缺少主机库 `libevent-2.1.so.7` 未启动；不计为产品失败或通过，已有可启动 WebKit 3D fixture 证据保持有效。
