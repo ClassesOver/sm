@@ -576,6 +576,13 @@ describe('事实页', () => {
     expect(page.collapsed).toBe(true)
     expect(section.classList.contains('is-graph-view')).toBe(true)
     expect(document.activeElement).toBe(back)
+    const view = section.querySelector<HTMLButtonElement>('.evidence-view-toggle')!
+    view.click()
+    expect(page.graphView).toBe(true)
+    expect(section.querySelector<HTMLElement>('.evidence-graph')!.hidden).toBe(true)
+    expect(section.querySelector<HTMLElement>('.evidence-relation-list')!.hidden).toBe(false)
+    view.click()
+    expect(section.querySelector<HTMLElement>('.evidence-graph')!.hidden).toBe(false)
     // 节点预览重新渲染也保留图视图。
     const rerendered = document.createElement('div')
     await renderEvidencePage(rerendered, ctx)

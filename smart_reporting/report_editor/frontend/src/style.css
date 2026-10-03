@@ -3902,6 +3902,8 @@ button {
 .evidence-relations-head .evidence-view-toggle,
 .evidence-relations-head .evidence-relations-toggle { border-color: transparent; background: transparent; }
 .evidence-relation-list { padding: 4px 0 10px; }
+.evidence-relations.is-graph-view .evidence-relation-list { height: 100%; overflow: auto; padding: 12px; box-sizing: border-box; }
+.evidence-relations.is-graph-view .evidence-graph[hidden] { display: none; }
 .evidence-relation-group { margin: 12px 0 4px; padding: 0 12px; color: #697b8e; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
 .evidence-relation-pair { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; margin: 0; padding: 8px 12px; border-bottom: 1px solid #edf1f4; }
 .evidence-relation-pair:last-child { border-bottom: 0; }
@@ -4506,7 +4508,6 @@ button {
     background: #fff;
   }
   .evidence-relations.is-graph-view .evidence-relations-note,
-  .evidence-relations.is-graph-view .evidence-view-toggle,
   .evidence-relations.is-graph-view .evidence-relations-toggle,
   .evidence-relations.is-graph-view .evidence-mobile-graph-open { display: none; }
   .evidence-relations.is-graph-view .evidence-mobile-graph-return { margin-left: auto; }
@@ -4554,7 +4555,6 @@ button {
     background: #fff;
   }
   .evidence-relations.is-graph-view .evidence-relations-note,
-  .evidence-relations.is-graph-view .evidence-view-toggle,
   .evidence-relations.is-graph-view .evidence-relations-toggle { display: none; }
   .evidence-relations.is-graph-view .evidence-mobile-graph-return { margin-left: auto; }
   .evidence-relations.is-graph-view .evidence-relations-body { flex: 1; min-height: 0; }

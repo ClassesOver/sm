@@ -1210,8 +1210,8 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rela
     toggle.setAttribute('aria-expanded', String(!collapsed))
     section.classList.toggle('is-graph-view', ctx.page.graphView)
     body.hidden = collapsed && !ctx.page.graphView
-    graph.hidden = ctx.page.showList && !ctx.page.graphView
-    list.hidden = !ctx.page.showList || ctx.page.graphView
+    graph.hidden = ctx.page.showList
+    list.hidden = !ctx.page.showList
     if (!body.hidden && !graph.hidden) {
       const viewport = graph.querySelector<HTMLElement>('.evidence-graph-scroll')
       if (viewport) {
@@ -1223,7 +1223,7 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rela
     viewToggle.setAttribute('aria-label', ctx.page.showList ? '切换到关系图' : '切换到关系列表')
   }
   openGraph.addEventListener('click', () => {
-    ctx.updatePage({ graphView: true })
+    ctx.updatePage({ graphView: true, showList: false })
     sync()
     returnDetail.focus()
   })
