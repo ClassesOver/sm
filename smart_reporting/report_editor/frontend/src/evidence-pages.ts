@@ -476,7 +476,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const sized = {
           sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
           name: node.ref.label.length > 10 ? `${node.ref.label.slice(0, 5)}…${node.ref.label.slice(-4)}` : node.ref.label,
-          text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`, traceText: `${KIND_LABELS[node.ref.kind]}${status} · ${nodeInfo(node.ref)}\n${traceName}`,
+          text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`,
+          traceText: allNodes.length <= 15
+            ? `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}\n${nodeInfo(node.ref)}`
+            : `${KIND_LABELS[node.ref.kind]}${status} · ${nodeInfo(node.ref)}\n${traceName}`,
         }
         labels.set(id, sized)
         sizeLabel(id, sized)
