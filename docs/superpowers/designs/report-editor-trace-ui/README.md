@@ -944,3 +944,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 图表类型关系图回放：chart fixture 的来源分页、恢复及关系图通过；3D/2D 共用 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份，两条有方向输入边保持，分页 offsets 为 `[0,20,20,20,0]`。该结果补齐 chart 类型关系身份证据，不等于完整五类型/状态视觉矩阵或复杂图整体可读性通过。
 
 2026-10-04 键盘交互回放：正式 Chromium fixture 的手动页签、Home/End/Delete、3D 图节点 Space/Enter/Esc、预览焦点恢复及返回编辑器焦点均通过；无脚本错误。该结果补齐键盘路径证据，不替代屏幕阅读器、真机或复杂图整体可读性验收。
+
+2026-10-04 3D 鼠标/触控交互回放：鼠标 fixture 的默认 3D、类型图例、预览/追踪、重试、旋转、滚轮、修饰键和动态效果偏好通过；触控 fixture 的单指旋转、双指捏合、松指续旋、轻触预览、导航、适应恢复和节点起点捏合均通过，无脚本错误。均为 Chromium 模拟输入，不替代 iPhone/Android 真机、Safari 触控或软键盘验收。
