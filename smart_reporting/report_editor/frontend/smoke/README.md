@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+复杂3Dfixture检查端点选择器的“只看预览对象的直接关系”：first-0的15条登记直接关系（含自引用）、40个累计节点选择项保留，过滤实际改变画面，返回全图PNG完全一致；再主动“适应预览”检查三视口边界，切至单对端点再恢复全图，保持标题/预览/历史。截图 `output/report-editor-v6-complex-3d-preview-relations-<宽度>[-long].png`。使用组件原生可见性与zoomToFit，不删业务节点、不自动移动相机。旋转后恢复全图适应的观察窗口现650ms，再检查基线150ms稳定，像素断言仍严格；曾在250ms观察时基线失败，不能将后续通过解释为所有偶发差异根因已定。局部过滤不替代整体复杂图可读性验收。
+
 名称开关差异诊断可运行 `REPORT_EDITOR_LABEL_CYCLES=3 node smoke/evidence-complex-3d-fixture.mjs`，长名称再加REPORT_EDITOR_LONG_LABELS=1。默认1轮，参数必须为1至10的整数。每种视口按指定轮数切换，前后文件追加 `-cycle-<轮次>`；基线150ms稳定、悬停身份及原PNG严格一致必须通过。PNG比较失败后解码RGBA输出变化像素数、最大色差和范围，尺寸变化另报；不通过重试或容差掩盖差异。普通/超长并行三视口×3轮共18轮通过，原一次差异未复现，根因未知；已有证据足够后不例行重复该诊断，出现新症状再使用。
 
 生命周期fixture同时统计原生drawArrays/drawElements调用（保留原方法），在文字列表和关系收起后采样150ms两次要求绘制数不增，返回图/展开后要求绘制恢复；组件原生pauseAnimation/resumeAnimation负责暂停，不销毁仍可恢复的隐藏现场。复杂3D普通/长名称fixture新增55条文字关系有序端点多重集与2D累计图一致、3D/列表往返后预览/画布像素一致；角色选择器在返回图后检查，不能读取默认排除的隐藏角色。名称开关新增150ms基线稳定断言，before画布保存为 `output/report-editor-v6-complex-3d-focus-before-<宽度>[-long].png`。曾有并发长名称回放一次开关像素差异，单独重跑未复现，原因尚不确定；不要据一次通过推广为所有时序完成。

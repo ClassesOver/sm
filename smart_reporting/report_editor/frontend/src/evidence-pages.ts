@@ -324,6 +324,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     neighbours.delete(selectedId ?? '')
     let hoveredId: string | null = null
     let pinnedId: string | null = null
+    let previewOnly = false
+    const nodeVisible = (id: string) => pinnedId ? id === pinnedId || id === selectedId
+      : !previewOnly || id === selectedId || neighbours.has(id)
     let refreshTrace = () => {}
     const tracedId = () => pinnedId ?? hoveredId
     const highlightedLink = (link: { id: string }) => {
@@ -539,7 +542,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const pixelScale = height / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
       let padding = 32
       for (const [id, { sprite }] of labels) {
-        if (sprite.material.sizeAttenuation || pinnedId && id !== pinnedId && id !== selectedId) continue
+        if (sprite.material.sizeAttenuation || !nodeVisible(id)) continue
         padding = Math.max(padding, sprite.scale.y * pixelScale * 1.25 + 8,
           sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
       }
@@ -548,7 +551,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
       if (ctx.isStale() || !viewport.isConnected) return
       instance.zoomToFit(cameraDuration(), fitPadding(),
-        pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined)
+        (node: { id: string }) => nodeVisible(node.id))
     }))
     controls.append(fit3d)
     if (allNodes.length > 15) {
@@ -645,6 +648,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     allEdges.value = ''
     allEdges.textContent = selectedId ? '追踪：全部预览关系' : '追踪：先预览节点'
     tracePicker.append(allEdges)
+    if (selectedId && neighbours.size) {
+      const previewEdges = document.createElement('option')
+      previewEdges.value = 'preview-relations'
+      previewEdges.textContent = '只看预览对象的直接关系'
+      tracePicker.append(previewEdges)
+    }
     for (const node of allNodes.filter(node => neighbours.has(evidenceRefId(node)) && evidenceRefId(node) !== selectedId)) {
       const option = document.createElement('option')
       option.value = evidenceRefId(node)
@@ -657,15 +666,22 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     legend.append(' · ', traceStatus)
     refreshTrace = () => {
       instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
-      instance.nodeVisibility((node: { id: string }) => !pinnedId || node.id === pinnedId || node.id === selectedId)
-        .linkVisibility((link: { id: string }) => !pinnedId || highlightedLink(link))
+      instance.nodeVisibility((node: { id: string }) => nodeVisible(node.id))
+        .linkVisibility((link: { id: string }) => {
+          if (pinnedId) return highlightedLink(link)
+          const edge = graph.edges.get(link.id)!
+          return !previewOnly || evidenceRefId(edge.from) === selectedId || evidenceRefId(edge.to) === selectedId
+        })
       for (const [id, label] of labels) sizeLabel(id, label)
       const count = linkData.filter(highlightedLink).length
-      traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : ''}`
-      fit3d.textContent = pinnedId ? '适应追踪关系' : '适应 3D'
+      traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}`
+      viewport.dataset.scope = pinnedId ? 'pair' : previewOnly ? 'preview' : 'all'
+      fit3d.textContent = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应 3D'
+      fit3d.title = previewOnly ? '适应预览对象的直接关系' : fit3d.textContent
     }
     tracePicker.addEventListener('change', () => {
-      pinnedId = tracePicker.value || null
+      previewOnly = tracePicker.value === 'preview-relations'
+      pinnedId = previewOnly ? null : tracePicker.value || null
       refreshTrace()
     })
     controls.append(tracePicker)
