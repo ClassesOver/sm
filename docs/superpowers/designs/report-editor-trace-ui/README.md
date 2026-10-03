@@ -998,3 +998,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 图表关系回归复核：当前源码运行 Chromium `evidence-chart-fixture.mjs` 通过，保留 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份及两条有方向输入边；3D/2D 切换、来源分页失败重试、后退与刷新恢复通过，offset 序列为 `[0,20,20,20,0]`。该证据不扩大为复杂图整体可读性或真机/读屏验收。
 
 2026-10-04 图表关系 Firefox 交叉回放：同一 `evidence-chart-fixture.mjs` 在 Firefox 通过，三类身份、两条有方向输入边、3D/2D 切换、分页失败重试、后退刷新恢复及 offsets `[0,20,20,20,0]` 保持一致。Linux WebKit 尝试因 MiniBrowser 缺少主机库 `libwoff2dec.so.1.0.2` 未启动，不计为通过或产品失败。
+
+2026-10-04 Firefox 3D 正式 fixture 复核：关系线减噪后的正式 `evidence-3d-fixture.mjs` 在 Firefox 通过默认 3D、容器尺寸、2D/3D 切换、预览、关系追踪、分支重试、导航、画布点击/双击、后台打开复用、旋转/滚轮和动态效果偏好，页面无脚本错误。
