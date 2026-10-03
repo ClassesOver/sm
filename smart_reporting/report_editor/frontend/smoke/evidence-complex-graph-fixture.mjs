@@ -34,6 +34,8 @@ try {
   await page.locator('.evidence-subject-links button', { hasText: '事实' }).click()
   const positions = () => page.locator('.evidence-node').evaluateAll(nodes => Object.fromEntries(
     nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]])))
+  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).waitFor()
+  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   await page.waitForFunction(() => document.querySelectorAll('.evidence-node').length === 15)
   let previous = await positions()
   const title = await page.locator('.evidence-object-title').textContent()

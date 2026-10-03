@@ -62,6 +62,7 @@ try {
   await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).click()
   await page.getByRole('button', { name: '展开', exact: true }).click()
+  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   const positions = () => page.locator('.evidence-node').evaluateAll(nodes => Object.fromEntries(
     nodes.map(node => [node.dataset.evidenceNode, [node.style.left, node.style.top]])))
   const original = await positions()

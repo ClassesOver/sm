@@ -845,9 +845,11 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rela
     graph.hidden = ctx.page.showList && !ctx.page.graphView
     list.hidden = !ctx.page.showList || ctx.page.graphView
     if (!body.hidden && !graph.hidden) {
-      const viewport = graph.querySelector<HTMLElement>('.evidence-graph-scroll')!
-      viewport.scrollLeft = ctx.page.graphScroll.left
-      viewport.scrollTop = ctx.page.graphScroll.top
+      const viewport = graph.querySelector<HTMLElement>('.evidence-graph-scroll')
+      if (viewport) {
+        viewport.scrollLeft = ctx.page.graphScroll.left
+        viewport.scrollTop = ctx.page.graphScroll.top
+      }
     }
     viewToggle.textContent = ctx.page.showList ? '关系图' : '关系列表'
     viewToggle.setAttribute('aria-label', ctx.page.showList ? '切换到关系图' : '切换到关系列表')

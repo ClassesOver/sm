@@ -50,7 +50,17 @@ try {
   assert.equal(await title.textContent(), subjectTitle)
   await page.locator('.evidence-relations-toggle').focus()
   await page.keyboard.press('Enter')
+  const mode2d = page.getByRole('button', { name: '切换到 2D 关系图', exact: true })
+  if (await mode2d.count()) await mode2d.click()
   const node = page.locator('.evidence-node').filter({ hasText: '事实 ·' })
+  if (!await node.isVisible()) {
+    const openGraph = page.getByRole('button', { name: '查看关系图', exact: true })
+    if (await openGraph.count()) await openGraph.click()
+    const graphView = page.getByRole('button', { name: '切换到关系图', exact: true })
+    if (await graphView.count()) await graphView.click()
+    const viewToggle = page.locator('.evidence-view-toggle')
+    if (await viewToggle.count() && await viewToggle.textContent() === '关系图') await viewToggle.click()
+  }
   await node.waitFor()
   const positions = () => page.locator('.evidence-node').evaluateAll(nodes => nodes.map(node => [node.dataset.evidenceNode, node.style.left, node.style.top]))
   const initial = await positions()

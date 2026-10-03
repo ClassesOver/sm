@@ -128,6 +128,9 @@ try {
       await page.locator('.evidence-tab-stage', { hasText: '计算' }).waitFor({ state: 'visible' })
       const graph = page.locator('.evidence-graph[data-graph-host]')
       await graph.waitFor({ state: 'visible' })
+      if (await graph.getByRole('button', { name: '切换到 2D 关系图', exact: true }).count()) {
+        await graph.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
+      }
       const nodes = graph.locator('.evidence-node')
       if (await nodes.count() < 2) throw new Error('证据关系图节点不足')
       await nodes.nth(1).click()

@@ -75,7 +75,7 @@ function defaultCollapsed(kind: EvidenceObjectKind): boolean {
   return kind !== 'fact' && kind !== 'computation'
 }
 
-function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[]): EvidencePage {
+function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[], graphMode: '2d' | '3d' = '3d'): EvidencePage {
   return {
     ref,
     path,
@@ -83,7 +83,7 @@ function makePage(ref: EvidenceObjectRef, path: EvidenceObjectRef[]): EvidencePa
     collapsed: defaultCollapsed(ref.kind),
     showList: false,
     graphView: false,
-    graphMode: '3d',
+    graphMode,
     filter: '',
     datasetCursors: [null],
     datasetPageIndex: 0,
@@ -216,7 +216,7 @@ export function createEvidenceState(store: EvidenceStore = { tasks: [], active: 
       graphMode: remembered.graphMode ?? '3d',
       graphScroll: { ...remembered.graphScroll }, graphPan: { ...remembered.graphPan },
       datasetCursors: [...remembered.datasetCursors], columnWidths: { ...remembered.columnWidths },
-    } : makePage(ref, path)
+    } : makePage(ref, path, page.graphMode ?? '3d')
     task.history = [...task.history.slice(0, task.index + 1), next]
     task.index = task.history.length - 1
     return task.history[task.index]

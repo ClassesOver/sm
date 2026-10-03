@@ -14,6 +14,7 @@ try {
   await page.locator('.evidence-directory-toggle').tap()
   await page.locator('.evidence-directory-item', { hasText: '正文引用' }).tap()
   await page.getByRole('button', { name: '查看关系图', exact: true }).tap()
+  await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).tap()
   const map = page.locator('.evidence-graph-map')
   const viewport = await page.locator('.evidence-graph-scroll').boundingBox()
   const x = viewport.x + 25

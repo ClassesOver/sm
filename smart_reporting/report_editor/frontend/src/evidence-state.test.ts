@@ -25,13 +25,13 @@ const dataset = (key: string, label = key): EvidenceObjectRef => ({
 })
 
 describe('evidence state', () => {
-  it('defaults new pages to 3D and preserves the mode when navigating', () => {
+  it('defaults new pages to 3D and carries the mode through navigation', () => {
     const state = createEvidenceState()
     state.openTask(fact('fact-a'))
     expect(state.currentPage()?.graphMode).toBe('3d')
     state.updatePage({ graphMode: '2d' })
     state.navigate(computation('comp-1'))
-    expect(state.currentPage()?.graphMode).toBe('3d')
+    expect(state.currentPage()?.graphMode).toBe('2d')
     state.back()
     expect(state.currentPage()?.graphMode).toBe('2d')
   })
