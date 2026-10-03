@@ -730,11 +730,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         padding = Math.max(padding, sprite.scale.y * pixelScale * 1.25 + 8,
           sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
       }
-      // 仅收紧窄屏无预览全图；预览/追踪保留固定名称的边界余量，避免端点标签触边。
-      const compactOverview = !selectedId && !previewOnly && !pinnedId && (
-        window.innerWidth < 480 && window.innerHeight > window.innerWidth
-        || window.innerWidth >= 650 && window.innerHeight <= 500
-      )
+      // 仅收紧窄屏概览；竖屏预览和固定追踪保留固定名称的边界余量，避免端点标签触边。
+      const compactPortraitOverview = !selectedId && !previewOnly && !pinnedId
+        && window.innerWidth < 480 && window.innerHeight > window.innerWidth
+      const compactLandscapeOverview = !previewOnly && !pinnedId
+        && window.innerWidth >= 650 && window.innerWidth <= 900 && window.innerHeight <= 500
+      const compactOverview = compactPortraitOverview || compactLandscapeOverview
       return Math.min(padding, compactOverview ? 32 : Math.max(0, height / 2 - 8))
     }
     fitInitialView = () => {
