@@ -167,6 +167,8 @@
 
 图表页面独立回归复跑：图表来源分页 fixture 通过首批、下一页、重复下一页边界和返回首批检查（offsets `[0,20,20,20,0]`）；关系图 fixture 仍明确声明图表 API unavailable，不将独立图表分页结果冒充关系图五类型覆盖。
 
+图表关系图回归：独立 fixture 展开 3D 后图例包含 chart/dataset/computation，切换 2D 保留图表节点及两条有方向输入边；节点身份为 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001`，真实 Chromium 回放通过。
+
 同一回归还验证 2D “适应预览”按钮：预览直接关系模式下按当前对象及其直接端点/路径计算视图边界，按钮保持专用 `aria-label`，真实 fixture 通过。
 
 2D 状态反馈回归：预览直接关系模式显示 `预览 1 条登记关系 · 仅显示预览直接关系` 状态文本，真实 fixture 通过；无新增脚本错误。
