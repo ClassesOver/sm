@@ -54,6 +54,17 @@ try {
   await canvas.screenshot({ path: new URL('report-editor-v6-3d-camera-preview.png', output).pathname })
   assert.equal(await page.locator('.evidence-object-title').textContent(), title)
   assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
+  for (const name of ['定位当前对象', '放大关系图', '缩小关系图', '重置视图']) {
+    await page.getByRole('button', { name, exact: true }).click()
+    await page.waitForTimeout(550)
+    if (name === '定位当前对象') {
+      await canvas.screenshot({ path: new URL('report-editor-v6-3d-locate.png', output).pathname })
+    }
+    assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
+    assert.equal(await page.locator('.evidence-object-title').textContent(), title)
+    assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
+  }
+  await page.waitForTimeout(650)
   assert.equal(await page.locator('.evidence-preview').evaluate(preview => {
     const bounds = preview.getBoundingClientRect()
     return [...preview.querySelectorAll('button')].every(button => {

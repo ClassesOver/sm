@@ -286,7 +286,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     } catch { return false }
   })()
   if (canRender3d) {
-    for (const button of [zoomOut, zoomIn, fit, reset, locate]) button.hidden = true
+    fit.hidden = true
+    for (const button of [zoomOut, zoomIn, reset, locate]) button.disabled = true
     const viewport = document.createElement('div')
     viewport.className = 'evidence-graph-3d'
     viewport.setAttribute('role', 'img')
@@ -385,6 +386,36 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
     fit3d.addEventListener('click', () => instance.zoomToFit(500, 32))
     controls.append(fit3d)
+    const zoom3d = (factor: number) => {
+      const position = instance.cameraPosition()
+      const target = instance.controls().target
+      instance.cameraPosition({
+        x: target.x + (position.x - target.x) * factor,
+        y: target.y + (position.y - target.y) * factor,
+        z: target.z + (position.z - target.z) * factor,
+      }, target, 300)
+    }
+    zoomOut.addEventListener('click', () => zoom3d(1.25))
+    zoomIn.addEventListener('click', () => zoom3d(0.8))
+    reset.addEventListener('click', () => {
+      instance.camera().up.set(0, 1, 0)
+      instance.cameraPosition({ x: 0, y: 0, z: 150 }, { x: 0, y: 0, z: 0 }, 0)
+      instance.controls().update()
+      instance.zoomToFit(500, 32)
+    })
+    locate.addEventListener('click', () => {
+      const node = instance.graphData().nodes.find((item: { id: string }) => item.id === evidenceRefId(ctx.page.ref))
+      if (!node || ![node.x, node.y, node.z].every(Number.isFinite)) return
+      const position = instance.cameraPosition()
+      const target = instance.controls().target
+      const distance = Math.hypot(position.x - target.x, position.y - target.y, position.z - target.z) || 1
+      instance.cameraPosition({
+        x: node.x + (position.x - target.x) * 80 / distance,
+        y: node.y + (position.y - target.y) * 80 / distance,
+        z: node.z + (position.z - target.z) * 80 / distance,
+      }, { x: node.x, y: node.y, z: node.z }, 500)
+    })
+    for (const button of [zoomOut, zoomIn, reset, locate]) button.disabled = false
     const legend = document.createElement('div')
     legend.className = 'evidence-graph-legend'
     legend.textContent = `${relations.loadedNote} · 3D 默认视图`
