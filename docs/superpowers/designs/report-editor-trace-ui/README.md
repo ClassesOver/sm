@@ -866,3 +866,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 来源导出链路定向测试（2026-10-04）：`test_report_editor_lineage_export.py`、`test_report_editor_source_appendix.py`、`test_trace_dataset_service.py` 共 29 项通过；仅有 `imghdr` 弃用警告。该结果覆盖来源附录、导出和数据集服务契约，不替代真实生产报告端到端验收。
 
 多类型来源服务定向测试（2026-10-04）：fact、computation、drilldown、chart subjects、chart transform 五个测试文件共 50 项通过；仅有 `imghdr` 弃用警告。该结果覆盖图表和多类型节点服务契约，不替代真实生产报告端到端验收。
+
+表格来源定向测试（2026-10-04）：`test_trace_table_builder.py`、`test_trace_server_tables.py`、`test_report_data_sources.py` 共 24 项通过；仅有 `imghdr` 弃用警告。该结果覆盖表格来源构建、服务端表格接口和数据源契约。

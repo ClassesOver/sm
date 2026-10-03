@@ -603,3 +603,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 来源导出链路定向测试：`test_report_editor_lineage_export.py`、`test_report_editor_source_appendix.py`、`test_trace_dataset_service.py` 共 29 项通过，仅有 `imghdr` 弃用警告；不替代真实生产报告端到端验收。
 
 2026-10-04 多类型来源服务定向测试：fact、computation、drilldown、chart subjects、chart transform 五个测试文件共 50 项通过，仅有 `imghdr` 弃用警告；不替代真实生产报告端到端验收。
+
+2026-10-04 表格来源定向测试：`test_trace_table_builder.py`、`test_trace_server_tables.py`、`test_report_data_sources.py` 共 24 项通过，仅有 `imghdr` 弃用警告；不替代真实生产报告端到端验收。
