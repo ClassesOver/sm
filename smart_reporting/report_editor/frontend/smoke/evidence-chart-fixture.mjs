@@ -1,8 +1,10 @@
 // 固定图表 fixture：当前页、分页失败、后退和刷新恢复。
 import assert from 'node:assert/strict'
-import { chromium } from 'playwright'
+import { chromium, firefox, webkit } from 'playwright'
 
-const browser = await chromium.launch({ headless: true })
+const engine = process.env.REPORT_EDITOR_BROWSER ?? 'chromium'
+assert.ok(['chromium', 'firefox', 'webkit'].includes(engine), `Unsupported browser: ${engine}`)
+const browser = await ({ chromium, firefox, webkit })[engine].launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors = []

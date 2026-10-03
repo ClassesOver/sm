@@ -195,6 +195,7 @@ REPORT_EDITOR_BROWSER=webkit .venv/bin/python -m pytest -q -s -m integration sma
 
 ```bash
 node smoke/evidence-chart-fixture.mjs
+# 跨引擎：REPORT_EDITOR_BROWSER=firefox|webkit
 ```
 
 脚本通过浏览器路由提供两份不同长度的固定作图数据，验证当前页替换、失败重试、进入计算后后退恢复、刷新按偏移量重新加载和上一页。只使用固定数据，不覆盖真实图表文件完整性校验。

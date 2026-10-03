@@ -20,6 +20,8 @@ Firefox 长名称复杂图回放（2026-10-04）：`REPORT_EDITOR_BROWSER=firefo
 
 Firefox 核心3D回放（2026-10-04）：核心 fixture 支持引擎选择后，Firefox 默认3D、容器尺寸、2D/3D往返、预览/追踪、分支失败重试、导航、画布单/双击、后台打开/前台复用、旋转/滚轮、动态效果偏好和无脚本错误全部通过；不扩大为 Firefox 全部流程、WebKit 或真机/读屏验收。
 
+Firefox 图表关系回放（2026-10-04）：图表 fixture 支持引擎选择后，Firefox 来源分页/失败恢复、3D/2D往返、`chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份及两条有方向输入边通过；offsets 为 `[0,20,20,20,0]`，无脚本错误。
+
 > 2026-10-01 · 基于 v5 的细化设计与可点击原型
 >
 > 保留白底企业蓝主题、任务页签、探索面包屑与 graph。设计原型与正式实现的进度分别记录；报表主题未修改。
