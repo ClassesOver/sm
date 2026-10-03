@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+3D生命周期运行 `node smoke/evidence-3d-lifecycle-fixture.mjs`，使用同一构建后fixture服务。Chromium在初始化时记录getContext的真实返回值并主动保留引用，验证6轮预览开关、2D/3D往返及进入/后退/任务关闭后：仅可见画布保留活跃上下文，能力探针和移除画布均context.isContextLost()，2D/关闭后为0；同时检查预览恢复、页面标题、脚本错误和上下文过多告警。应用复用WEBGL_lose_context与Three forceContextLoss，不自建销毁系统。44个累计上下文是本次回放的创建次数，不是同时活跃数或产品预算。此检查不测自然GC/系统内存/GPU性能，也不证明未支持原生扩展的设备释放行为；不要据人为保留引用的旧版失败宣称自然运行内存泄漏。
+
 3D鼠标fixture现先通过真实球体中键创建后台任务，再Control、Meta和右键重复打开同一对象，断言任务去重、原标题/预览/历史保持，统一清空悬停后画布逐像素一致；Control+Shift前台激活既有任务后切回原任务保留预览。修饰键用page.keyboard.down/up包围mouse.click，禁止把不支持的mouse.click modifiers参数当作实际按键证据。中键依赖同一ESM组件补丁的原生拾取转发，应用只处理后台任务与auxclick默认行为，不自研拾取器。此回放不覆盖macOS原生⌘、中键拖动或所有鼠标组合；后台重复打开证据不能推广为任意任务身份去重矩阵。
 
 复杂3D名称开关回放：超过15节点默认重点名称，小图默认全部；工具栏名称图标切换全部/重点，aria-pressed为true表示全部。普通/长名称fixture核对实际画面变化、40个选择器选项及预览不变，在每种视口清空鼠标悬停后要求开关往返画布逐像素一致；进入后退必须保留all非默认偏好。截图 `output/report-editor-v6-complex-3d-all-names-<宽度>[-long].png` 与 `output/report-editor-v6-complex-3d-focus-restored-<宽度>[-long].png`，原概览截图现为重点名称默认效果。组件Sprite可见性和Three拾取图层共同排除隐藏名称，业务节点/边不删减。该回放不证明真实大规模性能、密集投影节点可区分或全部名字同时可读；仍需人工核对横屏按钮布局及文字遮挡。

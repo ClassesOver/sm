@@ -282,7 +282,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     if (typeof WebGLRenderingContext === 'undefined') return false
     try {
       const canvas = document.createElement('canvas')
-      return Boolean(canvas.getContext('webgl'))
+      const context = canvas.getContext('webgl')
+      // 能力探针不参与渲染，检查后主动释放其临时上下文。
+      context?.getExtension('WEBGL_lose_context')?.loseContext()
+      return Boolean(context)
     } catch { return false }
   })()
   if (canRender3d) {
@@ -517,7 +520,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       resize.disconnect()
       removal.disconnect()
       ctx.signal.removeEventListener('abort', dispose)
+      const renderer = instance.renderer()
       instance._destructor()
+      // 组件已dispose GPU对象；Three原生接口同步释放移除画布的上下文。
+      renderer.forceContextLoss()
     }
     const removal = new MutationObserver(() => {
       if (!viewport.isConnected) dispose()
