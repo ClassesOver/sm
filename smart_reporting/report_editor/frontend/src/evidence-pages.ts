@@ -462,7 +462,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         label.borderColor = selected ? '#007ea7' : '#c7dce8'
         label.borderWidth = selected ? 0.12 : 0.06
         label.borderRadius = 1
-        label.padding = allNodes.length <= 15 ? [1, 0.5] : [1, 2]
+        label.padding = [1, 0.5]
         label.position.y = 8
         const id = evidenceRefId(node.ref)
         const icon = new Sprite(new SpriteMaterial({ map: textures.get(node.ref.kind), sizeAttenuation: false, depthTest: false }))
@@ -787,7 +787,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       legend.append(item)
     }
     const states = document.createElement('span')
-    states.textContent = '当前页深蓝 · 预览青色'
+    states.textContent = selectedId ? '当前页深蓝 · 预览青色' : '当前页深蓝'
     legend.append(states)
     host.append(legend)
     const nodePicker = document.createElement('select')
@@ -842,7 +842,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const traceStatus = document.createElement('span')
     traceStatus.className = 'evidence-3d-trace-status'
     traceStatus.setAttribute('role', 'status')
-    legend.append(' · ', traceStatus)
+    legend.append(traceStatus)
     refreshTrace = () => {
       instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
       instance.nodeVisibility((node: { id: string }) => nodeVisible(node.id))
@@ -853,7 +853,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         })
       placeLabels()
       const count = linkData.filter(highlightedLink).length
-      traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}`
+      traceStatus.textContent = selectedId || tracedId()
+        ? `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}` : ''
       viewport.dataset.scope = pinnedId ? 'pair' : previewOnly ? 'preview' : 'all'
       const fitLabel = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应 3D'
       fit3d.setAttribute('aria-label', fitLabel)

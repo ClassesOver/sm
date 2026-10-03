@@ -4579,6 +4579,8 @@ button {
     border-left: 1px solid #d8e3ed;
   }
   .evidence-relations.is-graph-view .evidence-preview-actions > button { min-height: 40px; }
+  .evidence-relations.is-graph-view .evidence-graph:not(:has(.evidence-preview-summary)) { grid-template-columns: minmax(0, 1fr); }
+  .evidence-relations.is-graph-view .evidence-preview:not(:has(.evidence-preview-summary)) { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

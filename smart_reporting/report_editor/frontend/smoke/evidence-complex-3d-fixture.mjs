@@ -199,6 +199,11 @@ try {
     assert.equal(await picker.inputValue(), '')
     assert.equal(await picker.locator('option').count(), 40, '退出预览不丢失复杂图节点身份')
     assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-scope'), 'all')
+    assert.equal(await page.locator('.evidence-3d-trace-status').textContent(), '', '未预览或追踪时不显示空状态')
+    if (width === 844) {
+      assert.equal(await page.locator('.evidence-preview').isVisible(), false, '横屏无预览时收起提示栏')
+      assert.ok((await canvas.boundingBox()).width >= width - 4, '横屏无预览画布使用全宽')
+    }
     await page.getByRole('button', { name: '适应 3D', exact: true }).click()
     await page.waitForTimeout(650)
     assert.equal(await fitsCanvas(), true, `${width}px无预览全图的关系与名称不触边`)
@@ -209,6 +214,13 @@ try {
       const hidden = []
       graph.scene().traverse(object => { if (!object.visible && object.geometry) hidden.push(object) })
       const bbox = graph.getGraphBbox()
+      const fixedNames = []
+      const pixels = graph.height() / (2 * Math.tan(graph.camera().fov * Math.PI / 360))
+      graph.scene().traverse(object => {
+        if (object.visible && object.isSprite && typeof object.text === 'string' && !object.material.sizeAttenuation) {
+          fixedNames.push({ text: object.text, height: object.scale.y * pixels })
+        }
+      })
       const scales = hidden.map(object => object.scale.clone())
       let hiddenBoundsStable
       try {
@@ -222,12 +234,36 @@ try {
       return { width: innerWidth, canvas: { width: graph.width(), height: graph.height() },
         padding: window.graphFitPadding, projection: { width: extent('x'), height: extent('y') },
         hiddenBoundsStable, hiddenGeometries: hidden.length,
+        fixedNames,
         bbox: { x: bbox.x, y: bbox.y, z: bbox.z },
       }
     }))
     assert.equal(overviewGeometry.at(-1).hiddenBoundsStable, true, '隐藏名称尺寸不改变全图适应范围')
+    assert.equal(overviewGeometry.at(-1).fixedNames.length, 1, '无预览概览仍显示当前页名称')
+    assert.match(overviewGeometry.at(-1).fixedNames[0].text, /当前页.*已加载\s*16\s*条关系/, '收紧卡片仍保留当前页状态与关系数')
+    assert.equal(overviewGeometry.at(-1).fixedNames.every(name => name.height <= 32), true, '大图两行重点名称卡片不超过32px')
+    if (width === 844) {
+      const { projection, canvas: size } = overviewGeometry.at(-1)
+      assert.ok(projection.height >= size.height * 0.4, '指定横屏样例节点概览占画布高度至少40%')
+    }
     await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-complex-3d-unselected-${width}${suffix}.png`, output).pathname })
+    if (width === 844) {
+      await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
+      assert.equal(await page.locator('.evidence-node').count(), 39)
+      assert.equal(await page.locator('.evidence-graph-edge').count(), 55)
+      assert.equal(await page.locator('.evidence-preview').isVisible(), false, '横屏2D无预览也收起提示栏')
+      assert.ok((await page.locator('.evidence-graph-scroll').boundingBox()).width >= width - 4, '横屏2D概览使用全宽')
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+      await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
+      await canvas.waitFor()
+      assert.equal(await picker.locator('option').count(), 40, '无预览模式往返保留全部身份')
+    }
     await picker.selectOption(`fact:${analysisId}/${first[0]}`)
+    if (width === 844) {
+      await page.locator('.evidence-preview-summary').waitFor({ state: 'visible' })
+      assert.ok((await canvas.boundingBox()).width < width - 250, '横屏预览栏仍与画布并排')
+      assert.equal(await page.getByRole('button', { name: '返回详情', exact: true }).isVisible(), true)
+    }
     await page.getByRole('button', { name: '适应 3D', exact: true }).click()
     await page.waitForTimeout(650)
     const labelBounds = await canvas.boundingBox()
