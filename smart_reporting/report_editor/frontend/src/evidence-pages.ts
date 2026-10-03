@@ -346,11 +346,27 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     legend.className = 'evidence-graph-legend'
     legend.textContent = `${relations.loadedNote} · 3D 默认视图`
     host.append(legend)
-    const preview = document.createElement('div')
-    preview.className = 'evidence-preview'
-    preview.textContent = ctx.page.selected ? `预览：${ctx.page.selected.label} · 仅查看摘要` : '选择节点查看摘要；双击节点进入对象。'
-    host.append(preview)
+    const nodePicker = document.createElement('select')
+    nodePicker.className = 'evidence-trace-picker evidence-3d-node-picker'
+    nodePicker.setAttribute('aria-label', '选择 3D 节点预览')
+    const placeholder = document.createElement('option')
+    placeholder.value = ''
+    placeholder.textContent = '选择节点预览'
+    nodePicker.append(placeholder)
+    for (const node of allNodes) {
+      const option = document.createElement('option')
+      option.value = evidenceRefId(node)
+      option.textContent = `${KIND_LABELS[node.kind]} · ${node.label}`
+      nodePicker.append(option)
+    }
+    nodePicker.value = selectedId ?? ''
+    nodePicker.addEventListener('change', () => {
+      ctx.setPreview(allNodes.find(node => evidenceRefId(node) === nodePicker.value) ?? null)
+    })
+    controls.append(nodePicker)
+    renderGraphPreview(host, ctx, expand)
     }).catch(() => {
+      if (ctx.isStale() || !viewport.isConnected) return
       viewport.remove()
       ctx.updatePage({ graphMode: '2d' })
       rerender()
@@ -704,6 +720,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     updateScale(event.deltaY < 0 ? 0.1 : -0.1)
   }, { passive: false })
 
+  renderGraphPreview(host, ctx, expand)
+}
+
+/** 两种图模式使用相同的预览与分支操作，不改变导航契约。 */
+function renderGraphPreview(host: HTMLElement, ctx: EvidencePageContext, expand: (ref: EvidenceObjectRef) => void): void {
   const preview = document.createElement('div')
   preview.className = 'evidence-preview'
   if (ctx.page.selected) {
@@ -731,7 +752,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     close.append(createElement(X, { width: 15, height: 15, 'aria-hidden': 'true' }))
     close.addEventListener('click', () => ctx.setPreview(null))
     const selected = ctx.page.selected
-    const branch = graph.branches.get(evidenceRefId(selected))
+    const branch = ctx.graph!.branches.get(evidenceRefId(selected))
     const load = makeButton(branch?.status === 'loading' ? '关系加载中…'
       : branch?.status === 'loaded' ? '已加载登记关系'
       : branch?.status === 'error' ? '重试加载关系' : '加载更多上游 / 下游', 'ui-button evidence-branch-load')
