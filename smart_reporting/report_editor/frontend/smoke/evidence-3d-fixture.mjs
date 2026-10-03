@@ -6,6 +6,14 @@ const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors = []
+  await page.addInitScript(() => {
+    window.graphLabelText = []
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+    CanvasRenderingContext2D.prototype.fillText = function (...args) {
+      window.graphLabelText.push(args[0])
+      return fillText.apply(this, args)
+    }
+  })
   let attempts = 0
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/api/computations/*?*', async route => {
@@ -37,6 +45,7 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
     await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-3d-${width}.png`, output).pathname })
   }
+  assert.equal(await page.evaluate(() => window.graphLabelText.some(text => text.includes('已加载 1 条关系'))), true, '3D名称画布包含已加载关系信息')
   await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   await page.locator('.evidence-node').first().waitFor()
   assert.equal(await canvas.count(), 0)

@@ -307,8 +307,31 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
-    void Promise.all([import('3d-force-graph'), import('three-spritetext')]).then(([{ default: ForceGraph3D }, { default: SpriteText }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
+    const icons = { fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText }
+    const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
+      const svg = createElement(icons[kind], { width: 24, height: 24, color: '#23445b' })
+      const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      for (const [key, value] of Object.entries({ width: '24', height: '24', rx: '5', fill: '#ffffff', stroke: '#c7dce8', 'stroke-width': '1' })) background.setAttribute(key, value)
+      svg.prepend(background)
+      const texture = await new TextureLoader().loadAsync(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`)
+      texture.colorSpace = SRGBColorSpace
+      return [kind, texture] as const
+    })))
+    if (ctx.isStale() || !viewport.isConnected) {
+      for (const texture of textures.values()) texture.dispose()
+      return
+    }
+    const relationCounts = new Map<string, number>()
+    for (const edge of graph.edges.values()) {
+      for (const id of new Set([evidenceRefId(edge.from), evidenceRefId(edge.to)])) relationCounts.set(id, (relationCounts.get(id) ?? 0) + 1)
+    }
+    const nodeInfo = (ref: EvidenceObjectRef) => {
+      const id = evidenceRefId(ref)
+      const branch = graph.branches.get(id)
+      return branch?.status === 'loading' ? '关系加载中…' : branch?.status === 'error' ? '关系加载失败' : `已加载 ${relationCounts.get(id) ?? 0} 条关系`
+    }
     const rememberedView = graph3dViews.get(ctx.page)
     const rememberedPositions = graph3dPositions.get(graph)
     const restoredNodes = nodeData.map(node => {
@@ -356,7 +379,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
-    type Label3d = { sprite: InstanceType<typeof SpriteText>; scale: GraphPoint3d; text: string; traceText: string }
+    type Label3d = { sprite: InstanceType<typeof SpriteText>; icon: InstanceType<typeof Sprite>; scale: GraphPoint3d; text: string; traceText: string }
     const labels = new Map<string, Label3d>()
     const sizeLabel = (id: string, label: Label3d) => {
       const { sprite, scale } = label
@@ -365,6 +388,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       sprite.visible = allLabels || focused
       // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
       sprite.layers.set(sprite.visible ? 0 : 1)
+      label.icon.visible = sprite.visible
+      const iconSize = 14 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight)
+      label.icon.scale.set(iconSize, iconSize, 1)
       const text = focused ? label.traceText : label.text
       if (sprite.text !== text) {
         sprite.text = text
@@ -410,7 +436,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .enableNodeDrag(false)
       .nodeLabel((node: { ref: EvidenceObjectRef }) => {
         const label = document.createElement('span')
-        label.textContent = `${KIND_LABELS[node.ref.kind]}：${node.ref.label}`
+        label.textContent = `${KIND_LABELS[node.ref.kind]}：${node.ref.label} · ${nodeInfo(node.ref)}`
         return label
       })
       .nodeThreeObject((node: { ref: EvidenceObjectRef }) => {
@@ -419,6 +445,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const name = node.ref.label.length > 28 ? `${node.ref.label.slice(0, 27)}…` : node.ref.label
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
         const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
+        label.material.map!.colorSpace = SRGBColorSpace
         label.backgroundColor = current ? '#e4f3fa' : '#ffffff'
         label.borderColor = selected ? '#007ea7' : '#c7dce8'
         label.borderWidth = selected ? 0.12 : 0.06
@@ -426,14 +453,20 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         label.padding = [1, 2]
         label.position.y = 8
         const id = evidenceRefId(node.ref)
+        const icon = new Sprite(new SpriteMaterial({ map: textures.get(node.ref.kind), sizeAttenuation: false, depthTest: false }))
+        icon.renderOrder = 2
+        // 图标仅作节点信息，拾取继续交给组件球体和名称。
+        icon.raycast = () => {}
+        const group = new Group()
+        group.add(label, icon)
         const traceName = node.ref.label.length > 14 ? `${node.ref.label.slice(0, 13)}…` : node.ref.label
         const sized = {
-          sprite: label, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
-          text: label.text, traceText: `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}`,
+          sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
+          text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`, traceText: `${KIND_LABELS[node.ref.kind]}${status} · ${nodeInfo(node.ref)}\n${traceName}`,
         }
         labels.set(id, sized)
         sizeLabel(id, sized)
-        return label
+        return group
       })
       .nodeThreeObjectExtend(true)
       .nodeResolution(24)
