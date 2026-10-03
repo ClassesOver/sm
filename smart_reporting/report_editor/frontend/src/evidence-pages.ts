@@ -646,13 +646,15 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 3))
         const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 3))
         const bounds = { left, top, right: left + width, bottom: top + height }
-        sprite.center.set((point.x - bounds.left) / width, 1 - (point.y - bounds.top) / height)
+        // 与布局输入保持同一 CSS 像素量化，避免相机恢复的微小浮点差异造成标签闪动。
+        const anchor = { x: Math.round(point.x), y: Math.round(point.y) }
+        sprite.center.set((anchor.x - bounds.left) / width, 1 - (anchor.y - bounds.top) / height)
         // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。
         const guide = guides.get(node.id)!
         guide.style.display = ''
-        for (const [key, value] of Object.entries({ x1: point.x, y1: point.y,
-          x2: Math.max(bounds.left, Math.min(bounds.right, point.x)),
-          y2: Math.max(bounds.top, Math.min(bounds.bottom, point.y)) })) guide.setAttribute(key, String(value))
+        for (const [key, value] of Object.entries({ x1: anchor.x, y1: anchor.y,
+          x2: Math.max(bounds.left, Math.min(bounds.right, anchor.x)),
+          y2: Math.max(bounds.top, Math.min(bounds.bottom, anchor.y)) })) guide.setAttribute(key, String(value))
       })
     }
     instance.controls().addEventListener('change', placeLabels)
