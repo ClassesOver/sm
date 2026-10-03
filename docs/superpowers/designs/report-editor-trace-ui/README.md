@@ -996,3 +996,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 复杂图长名称减噪复核：重新构建当前源码后，`REPORT_EDITOR_LONG_LABELS=1` 的 39 节点/55 条边 fixture 在三视口完成批次加载、列表身份、相机恢复、追踪边界、导航和无脚本错误检查；关系线减噪未破坏完整名称选择器与摘要入口。截图后缀为 `-pale-long2`；复杂图整体可读性仍保留人工验收状态。
 
 2026-10-04 图表关系回归复核：当前源码运行 Chromium `evidence-chart-fixture.mjs` 通过，保留 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份及两条有方向输入边；3D/2D 切换、来源分页失败重试、后退与刷新恢复通过，offset 序列为 `[0,20,20,20,0]`。该证据不扩大为复杂图整体可读性或真机/读屏验收。
+
+2026-10-04 图表关系 Firefox 交叉回放：同一 `evidence-chart-fixture.mjs` 在 Firefox 通过，三类身份、两条有方向输入边、3D/2D 切换、分页失败重试、后退刷新恢复及 offsets `[0,20,20,20,0]` 保持一致。Linux WebKit 尝试因 MiniBrowser 缺少主机库 `libwoff2dec.so.1.0.2` 未启动，不计为通过或产品失败。
