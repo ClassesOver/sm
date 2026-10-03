@@ -380,7 +380,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
       return selectedId !== null && (from === selectedId || to === selectedId)
     }
-    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#dce6ed' : '#6387a3'
+    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#edf3f6' : '#6387a3'
     const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : selectedId || tracedId() ? 0.3 : 0.6
     const nodeColor = (node: { ref: EvidenceObjectRef }) => {
       const id = evidenceRefId(node.ref)
