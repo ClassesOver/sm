@@ -94,7 +94,7 @@ try {
   assert.equal(await page.locator('.evidence-graph-edge.is-muted').count(), 52)
   await page.mouse.move(0, 0)
   assert.equal(await page.locator('.evidence-graph-edge.is-preview').first().evaluate(edge => getComputedStyle(edge).opacity), '1')
-  assert.equal(await page.locator('.evidence-graph-edge.is-muted').first().evaluate(edge => getComputedStyle(edge).opacity), '0.2')
+  assert.equal(await page.locator('.evidence-graph-edge.is-muted').first().evaluate(edge => getComputedStyle(edge).opacity), '0.12')
   assert.deepEqual(await page.locator('.evidence-node.is-related').evaluateAll(nodes =>
     nodes.map(node => node.dataset.evidenceNode).sort()), [
     `fact:${analysisId}/${root}`, `fact:${analysisId}/${first[1]}`,
@@ -111,7 +111,7 @@ try {
   assert.equal(await page.locator('.evidence-graph-edge.is-traced').getAttribute('data-from'), `fact:${analysisId}/${root}`)
   assert.equal(await page.locator('.evidence-graph-edge.is-traced').getAttribute('data-to'), previewKey)
   assert.equal(await page.locator('.evidence-graph-edge:not(.is-traced)').evaluateAll(edges =>
-    edges.every(edge => getComputedStyle(edge).opacity === '0.12')), true)
+    edges.every(edge => getComputedStyle(edge).opacity === '0.08')), true)
   assert.equal(await page.locator('.evidence-node.is-trace-related').count(), 2)
   assert.ok(await page.locator('.evidence-node.is-trace-dim').count() > 0)
   assert.equal(await page.locator('.evidence-node.is-current').evaluate(node => node.classList.contains('is-trace-dim')), false)
