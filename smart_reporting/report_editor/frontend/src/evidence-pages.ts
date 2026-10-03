@@ -402,7 +402,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const { sprite, scale } = label
       const current = id === evidenceRefId(ctx.page.ref)
       const focused = Boolean(pinnedId) || current || id === selectedId || allNodes.length > 15 && id === viewport.dataset.hovered
-      const fixedSize = focused || allNodes.length <= 15
+      const fixedSize = allLabels || focused || allNodes.length <= 15
       sprite.visible = allLabels || focused
       // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
       sprite.layers.set(sprite.visible ? 0 : 1)
@@ -565,24 +565,23 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     labelGuides.setAttribute('aria-hidden', 'true')
     labelGuides.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
     const guides = new Map<string, SVGLineElement>()
-    if (allNodes.length <= 15) {
-      for (const node of restoredNodes) {
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-        line.setAttribute('stroke', '#b8cbd5')
-        line.setAttribute('stroke-width', '0.55')
-        line.setAttribute('stroke-dasharray', '2 4')
-        labelGuides.append(line)
-        guides.set(node.id, line)
-      }
-      viewport.append(labelGuides)
+    for (const node of restoredNodes) {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+      line.setAttribute('stroke', '#b8cbd5')
+      line.setAttribute('stroke-width', '0.55')
+      line.setAttribute('stroke-dasharray', '2 4')
+      line.style.display = 'none'
+      labelGuides.append(line)
+      guides.set(node.id, line)
     }
+    viewport.append(labelGuides)
     let cachedLabelLayoutKey = ''
     let cachedLabelRectangles: Array<{ x: number; y: number; width: number; height: number }> = []
     const placeLabels = () => {
       for (const [id, label] of labels) sizeLabel(id, label)
       for (const guide of guides.values()) guide.style.display = 'none'
       // 仅小图做屏幕标签排布；复用Sprite锚点，不改组件节点坐标或相机。
-      if (allNodes.length > 15 || !viewport.clientHeight) return
+      if ((!allLabels && allNodes.length > 15) || !viewport.clientHeight) return
       instance.camera().updateMatrixWorld()
       const pixels = viewport.clientHeight / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
       const nodes = instance.graphData().nodes.filter((node: { id: string; x: number; y: number; z: number }) =>
@@ -679,7 +678,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const anchor = { x: Math.round(point.x), y: Math.round(point.y) }
         sprite.center.set((anchor.x - bounds.left) / width, 1 - (anchor.y - bounds.top) / height)
         // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。
-        const guide = guides.get(node.id)!
+        const guide = guides.get(node.id)
+        if (!guide) return
         guide.style.display = ''
         for (const [key, value] of Object.entries({ x1: anchor.x, y1: anchor.y,
           x2: Math.max(bounds.left, Math.min(bounds.right, anchor.x)),
