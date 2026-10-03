@@ -72,6 +72,8 @@ try {
   const fit2d = page.getByRole('button', { name: '适应预览', exact: true })
   await fit2d.click()
   assert.equal(await fit2d.getAttribute('aria-label'), '适应预览', '2D预览关系使用专用适应视图')
+  await tracePicker2d.selectOption('')
+  assert.equal(await page.locator('.evidence-2d-trace-status').textContent(), '', '2D退出追踪后清空状态')
   await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
   await canvas.waitFor()
   await canvas.screenshot({ path: new URL('report-editor-v6-3d-camera-preview.png', output).pathname })
