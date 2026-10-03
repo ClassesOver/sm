@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+首次打开3D运行 `node smoke/evidence-3d-initial-fixture.mjs`。1280/390px新页面先在收起区域挂载再打开，初始不点击相机工具；保存 `output/report-editor-v6-3d-initial-<宽度>.png`，读取PNG检查上下边界及固定三节点图形高度占用至少45%/20%。该门槛是样例回归，不代表任意图可读性标准。然后预览/关闭缓存节点、手动适应/放大，核对列表往返和预览重建画布逐像素保持用户视角。初始力布局继续收敛，不要求首次截图与较晚手动适应完全相同；不能放宽已缓存现场的严格像素断言。移动目录通过实际目录展开按钮进入，不使用隐藏DOM强制点击。
+
 3D鼠标fixture追加类型图例断言：初始加载事实/计算/引用三个类型，计算分支成功追加快照后应有dataset图例。类型色不替代当前页/预览色或追踪淡化，节点名称及Lucide形状继续保留。最终四类型浏览器概览截图 `output/report-editor-v6-3d-type-colors.png` 已检查；图表及五类型全部状态视觉矩阵尚未完成。类型图例不证明整体复杂图可读性或色觉/读屏验收通过。
 
 3D名称使用600字重及Three原生depthWrite=false/toneMapped=false后，普通/长名称复杂回放继续核对两行/省略、全图与旋转追踪边界、名称/列表严格像素恢复。代表旧截图为 `output/report-editor-v6-complex-3d-label-before-390-long.png`（竖屏追踪）与 `output/report-editor-v6-complex-3d-label-before-1280-long.png`（桌面概览），当前对应trace-390-long和1280-long截图。字体效果需人工比较，不以边界检查证明所有名称可读或透明遮挡根因；three-spritetext本身已设置文字纹理sRGB，应用不重复赋值。

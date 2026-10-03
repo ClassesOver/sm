@@ -337,6 +337,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       return branch?.status === 'loading' ? '关系加载中…' : branch?.status === 'error' ? '关系加载失败' : `已加载 ${relationCounts.get(id) ?? 0} 条关系`
     }
     const rememberedView = graph3dViews.get(ctx.page)
+    let initialFitPending = !rememberedView
+    let layoutReady = false
+    let fitInitialView = () => {}
     const rememberedPositions = graph3dPositions.get(graph)
     const restoredNodes = nodeData.map(node => {
       const position = rememberedPositions?.get(node.id)
@@ -548,6 +551,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
         for (const [id, label] of labels) sizeLabel(id, label)
         instance.resumeAnimation()
+        fitInitialView()
       } else instance.pauseAnimation()
     })
     resize.observe(viewport)
@@ -593,6 +597,19 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
       }
       return Math.min(padding, Math.max(0, height / 2 - 8))
+    }
+    fitInitialView = () => {
+      if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
+      initialFitPending = false
+      requestAnimationFrame(() => {
+        if (ctx.isStale() || !viewport.isConnected) return
+        if (!viewport.clientWidth || !viewport.clientHeight) {
+          initialFitPending = true
+          return
+        }
+        // 仅初始化无历史视角的新页面，用户操作与后退恢复不自动改相机。
+        instance.zoomToFit(0, fitPadding(), (node: { id: string }) => nodeVisible(node.id))
+      })
     }
     fit3d.addEventListener('click', () => requestAnimationFrame(() => {
       if (ctx.isStale() || !viewport.isConnected) return
@@ -648,7 +665,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     })
     // canvas 出现早于图对象就绪；过早适应会取得空包围盒而无声失效。
     const ready = () => {
+      layoutReady = true
       for (const button of [fit3d, zoomOut, zoomIn, reset, locate]) button.disabled = false
+      fitInitialView()
       instance.onEngineTick(() => {}).onEngineStop(() => {})
     }
     instance.onEngineTick(ready).onEngineStop(ready)
