@@ -621,10 +621,17 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         seeds.push(rectangles.map(rectangle => ({ ...rectangle,
           x: rectangle.x - rectangle.width / 2,
           y: rectangle.y < viewport.clientHeight / 2 ? 4 : viewport.clientHeight - rectangle.height - 4 })))
+        // 小屏边界候选可能把优先标签吸到同一侧；补充有限的四向偏移，仍由 Greedy 负责最终避障。
+        for (const offset of [24, 48]) {
+          for (const [dx, dy] of [[offset, 0], [-offset, 0], [0, offset], [0, -offset]]) {
+            seeds.push(rectangles.map(rectangle => ({ ...rectangle, x: rectangle.x + dx, y: rectangle.y + dy })))
+          }
+        }
         // 28px固定图标区域与布局障碍保持一致；名称与自身图标的正常锚点相交不计遮挡。
         const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 14,
           y: Math.round(item.point.y) - 14, width: 28, height: 28 }))
-        let bestTotal = Infinity
+        let bestNameCollision = Infinity
+        let bestIconCollision = Infinity
         let bestPadding = Infinity
         // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
         for (const seed of seeds) {
@@ -645,11 +652,16 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
             const padding = totalCollisionArea([...candidate, ...obstacles])
             const drawn = candidate.map(rectangle => ({ ...rectangle,
               x: rectangle.x + 3, y: rectangle.y + 3, width: rectangle.width - 6, height: rectangle.height - 6 }))
-            const total = totalCollisionArea([...drawn, ...iconBounds]) - totalCollisionArea(iconBounds)
+            const nameCollision = totalCollisionArea(drawn)
+            const iconCollision = totalCollisionArea([...drawn, ...iconBounds])
+              - nameCollision - totalCollisionArea(iconBounds)
               - drawn.reduce((sum, rectangle, index) => sum + totalCollisionArea([rectangle, iconBounds[index]]), 0)
-            if (total < bestTotal || total === bestTotal && padding < bestPadding) {
+            if (nameCollision < bestNameCollision
+              || nameCollision === bestNameCollision && iconCollision < bestIconCollision
+              || nameCollision === bestNameCollision && iconCollision === bestIconCollision && padding < bestPadding) {
               rectangles = candidate
-              bestTotal = total
+              bestNameCollision = nameCollision
+              bestIconCollision = iconCollision
               bestPadding = padding
             }
           }
