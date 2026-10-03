@@ -94,6 +94,8 @@ try {
         })
         assert.equal(overlap.labels, count, '全部节点名称保留并参与原生投影检查')
         assert.equal(overlap.informationAboveLinks, true, '实际名称与类型图标绘制在组件登记关系线上方')
+        assert.deepEqual(overlap.names, [], `${count}节点/${width}px/角度${angle}名称不重叠`)
+        assert.deepEqual(overlap.icons, [], `${count}节点/${width}px/角度${angle}名称不覆盖其他节点图标`)
         collisions.push({ count, width, angle, names: overlap.names.length, icons: overlap.icons.length })
         geometry.push({ count, width, angle, canvasWidth: bounds.width, canvasHeight: bounds.height, ...overlap })
         await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-small-3d-${count}-${width}-angle-${angle}${suffix}.png`, output).pathname })

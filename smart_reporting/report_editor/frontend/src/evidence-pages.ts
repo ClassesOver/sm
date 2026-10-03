@@ -582,7 +582,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       // 使用d3fc成熟布局策略；不采用隐藏重叠标签策略，保留全部可见名称。
       let rectangles = items.map((item: { point: { x: number; y: number }; width: number; height: number }) =>
         // 相机阻尼末尾的亚像素浮点差异不应反复改变等价的标签放置方向。
-        ({ x: Math.round(item.point.x), y: Math.round(item.point.y), width: item.width + 8, height: item.height + 8 }))
+        ({ x: Math.round(item.point.x), y: Math.round(item.point.y), width: item.width + 6, height: item.height + 6 }))
       const obstacles = nodes.map((node: GraphPoint3d) => {
         const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
         return { x: Math.round(point.x) - 14, y: Math.round(point.y) - 14, width: 28, height: 28, fixed: true }
@@ -624,8 +624,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       items.forEach(({ node, sprite, point, width, height }, index: number) => {
         const rectangle = rectangles[index]
         // 标签本身仍保留画布边缘留白。
-        const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 4))
-        const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 4))
+        const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 3))
+        const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 3))
         const bounds = { left, top, right: left + width, bottom: top + height }
         sprite.center.set((point.x - bounds.left) / width, 1 - (point.y - bounds.top) / height)
         // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。
