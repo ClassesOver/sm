@@ -1,0 +1,12 @@
+diff --git a/node_modules/three-render-objects/dist/three-render-objects.mjs b/node_modules/three-render-objects/dist/three-render-objects.mjs
+--- a/node_modules/three-render-objects/dist/three-render-objects.mjs
++++ b/node_modules/three-render-objects/dist/three-render-objects.mjs
+@@ -439,6 +439,8 @@
+         state.isPointerDragging = false;
+         if (!state.clickAfterDrag) return; // don't trigger onClick after pointer drag (camera motion via controls)
+       }
++      // A quick tap can finish within the hover throttle interval; refresh before dispatching it.
++      state.lastRaycasterCheck = 0;
+       requestAnimationFrame(() => {
+         // trigger click events asynchronously, to allow hoverObj to be set (on frame)
+         if (ev.button === 0) {
