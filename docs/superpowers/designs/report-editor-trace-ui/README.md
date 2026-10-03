@@ -14,6 +14,8 @@
 
 Firefox 复杂图交叉回放（2026-10-04）：fixture 支持 `REPORT_EDITOR_BROWSER=firefox` 后，Firefox 三视口39节点/55条边的padding、投影边界、批次、追踪、列表往返、导航和无脚本错误均通过；自动结果仍标记 `readability: manual review required`，不替代人工密集图审查或真机/读屏验收。
 
+Linux WebKit 复杂图尝试（2026-10-04）：选择 `REPORT_EDITOR_BROWSER=webkit` 时 MiniBrowser 因主机缺少 `libwoff2dec.so.1.0.2` 未启动；该环境缺口不计为产品失败或通过，Safari/iOS 真机仍保持待验收。
+
 > 2026-10-01 · 基于 v5 的细化设计与可点击原型
 >
 > 保留白底企业蓝主题、任务页签、探索面包屑与 graph。设计原型与正式实现的进度分别记录；报表主题未修改。
