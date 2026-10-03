@@ -922,6 +922,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   allRelations.value = ''
   allRelations.textContent = selectedId === null ? '追踪：先预览节点' : '追踪：全部预览关系'
   tracePicker.append(allRelations)
+  if (selectedId !== null && relatedIds.size) {
+    const previewEdges = document.createElement('option')
+    previewEdges.value = 'preview-relations'
+    previewEdges.textContent = '只看预览对象的直接关系'
+    tracePicker.append(previewEdges)
+  }
   for (const node of allNodes.filter(node => relatedIds.has(evidenceRefId(node)) && evidenceRefId(node) !== selectedId)) {
     const option = document.createElement('option')
     option.value = evidenceRefId(node)
@@ -940,6 +946,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const edge = graph.edges.get(id)!
     const highlighted = selectedEdge(id)
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.dataset.edgeId = id
     path.dataset.from = evidenceRefId(edge.from)
     path.dataset.to = evidenceRefId(edge.to)
     path.setAttribute('d', points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' '))
@@ -953,14 +960,17 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   let hoveredId: string | null = null
   let focusedId: string | null = null
   let pinnedId: string | null = null
+  let previewOnly = false
   const nodeElements: Array<{ id: string; button: HTMLButtonElement }> = []
   const traceRelations = () => {
     const nodeId = pinnedId ?? hoveredId ?? focusedId
     const pairOnly = nodeId !== selectedId && nodeId !== null && relatedIds.has(nodeId)
     const relevant = selectedId === null || nodeId === selectedId || pairOnly
-    const traced = edgeElements.filter(path => relevant && nodeId !== null &&
-      (path.dataset.from === nodeId || path.dataset.to === nodeId) &&
-      (!pairOnly || path.dataset.from === selectedId || path.dataset.to === selectedId))
+    const traced = previewOnly
+      ? edgeElements.filter(path => selectedEdge(path.dataset.edgeId ?? ''))
+      : edgeElements.filter(path => relevant && nodeId !== null &&
+        (path.dataset.from === nodeId || path.dataset.to === nodeId) &&
+        (!pairOnly || path.dataset.from === selectedId || path.dataset.to === selectedId))
     host.classList.toggle('is-tracing', traced.length > 0)
     for (const path of edgeElements) {
       path.classList.toggle('is-traced', traced.includes(path))
@@ -977,8 +987,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
   }
   tracePicker.addEventListener('change', () => {
-    pinnedId = tracePicker.value || null
-    const fitLabel = pinnedId ? '适应追踪关系' : '适应关系图'
+    previewOnly = tracePicker.value === 'preview-relations'
+    pinnedId = previewOnly ? null : tracePicker.value || null
+    const fitLabel = pinnedId ? '适应追踪关系' : previewOnly ? '适应预览' : '适应关系图'
     fit.setAttribute('aria-label', fitLabel)
     fit.title = fitLabel
     traceRelations()
