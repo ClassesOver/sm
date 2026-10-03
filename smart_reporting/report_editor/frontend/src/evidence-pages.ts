@@ -730,7 +730,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         padding = Math.max(padding, sprite.scale.y * pixelScale * 1.25 + 8,
           sprite.scale.x * pixelScale / 2 * height / Math.max(1, viewport.clientWidth) + 8)
       }
-      return Math.min(padding, Math.max(0, height / 2 - 8))
+      // 竖屏窄画布的固定名称宽度会被换算成过大的世界留白，导致全图只占画布很小一块；保留边界余量但收紧适应留白。
+      const compactPortrait = window.innerWidth < 480 && window.innerHeight > window.innerWidth
+      return Math.min(padding, compactPortrait ? 56 : Math.max(0, height / 2 - 8))
     }
     fitInitialView = () => {
       if (!initialFitPending || !layoutReady || !viewport.clientWidth || !viewport.clientHeight) return
