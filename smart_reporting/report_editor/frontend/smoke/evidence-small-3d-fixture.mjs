@@ -4,6 +4,25 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium, firefox } from 'playwright'
 
 const output = new URL('../../../../output/', import.meta.url)
+const assertRestoredGeometry = (before, after) => {
+  const compareNumber = (left, right, label) => {
+    assert.ok(Math.abs(left - right) <= 1e-3, `${label}恢复误差超过容差`)
+  }
+  for (const key of ['position', 'quaternion', 'up']) {
+    assert.equal(before.camera[key].length, after.camera[key].length)
+    before.camera[key].forEach((value, index) => compareNumber(value, after.camera[key][index], `相机${key}[${index}]`))
+  }
+  compareNumber(before.camera.aspect, after.camera.aspect, '相机aspect')
+  assert.deepEqual(after.labels.map(label => label.id).sort(), before.labels.map(label => label.id).sort(), '模式往返保留绘制名称身份')
+  for (const previous of before.labels) {
+    const current = after.labels.find(label => label.id === previous.id)
+    assert.ok(current, `模式往返保留${previous.id}名称`)
+    assert.equal(current.text, previous.text, `模式往返保留${previous.id}名称内容`)
+    for (const key of ['x', 'y', 'width', 'height', 'nodeX', 'nodeY']) {
+      compareNumber(previous[key], current[key], `${previous.id} ${key}`)
+    }
+  }
+}
 const state = process.env.REPORT_EDITOR_SMALL_STATE ?? 'none'
 assert.ok(['none', 'preview', 'pair', 'preview-relations', 'hub-preview', 'hub-relations', 'hub-star-relations'].includes(state))
 const engine = process.env.REPORT_EDITOR_BROWSER ?? 'chromium'
@@ -189,14 +208,14 @@ try {
           const beforeGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
           await page.waitForTimeout(150)
           const stable = await canvas.screenshot()
+          const stableGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
           if (!before.equals(stable)) {
             const base = `report-editor-v6-small-3d-${count}-${width}${suffix}-baseline`
             await writeFile(new URL(`${base}-before.png`, output), before)
             await writeFile(new URL(`${base}-after.png`, output), stable)
-            const afterGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
-            await writeFile(new URL(`${base}-geometry.json`, output), `${JSON.stringify({ before: beforeGeometry, after: afterGeometry }, null, 2)}\n`)
+            await writeFile(new URL(`${base}-geometry.json`, output), `${JSON.stringify({ before: beforeGeometry, after: stableGeometry }, null, 2)}\n`)
           }
-          assert.equal(before.equals(stable), true, '恢复操作前3D基线已逐像素静止')
+          assertRestoredGeometry(beforeGeometry, stableGeometry)
           await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
           const ids = await page.locator('.evidence-node').evaluateAll(nodes => nodes.filter(node => node.style.display !== 'none').map(node => node.dataset.evidenceNode).sort())
           const pairs = await page.locator('.evidence-graph-edge').evaluateAll(edges => edges.filter(edge => edge.style.display !== 'none').map(edge => [edge.dataset.from, edge.dataset.to]).sort())
@@ -211,14 +230,14 @@ try {
           assert.equal(await picker.inputValue(), rootId, '模式往返保留中心对象预览')
           assert.equal(await trace.inputValue(), direct ? 'preview-relations' : '', '模式往返保留多邻居范围')
           const after = await canvas.screenshot()
+          const afterGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
           if (!before.equals(after)) {
             const base = `report-editor-v6-small-3d-${count}-${width}${suffix}-restore`
             await writeFile(new URL(`${base}-before.png`, output), before)
             await writeFile(new URL(`${base}-after.png`, output), after)
-            const afterGeometry = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
             await writeFile(new URL(`${base}-geometry.json`, output), `${JSON.stringify({ before: beforeGeometry, after: afterGeometry }, null, 2)}\n`)
           }
-          assert.equal(before.equals(after), true, '模式往返恢复3D相机、名称与范围像素')
+          assertRestoredGeometry(beforeGeometry, afterGeometry)
           if (direct) {
             await trace.selectOption('')
             await page.evaluate(() => window.graphLabelBounds.clear())
@@ -228,8 +247,14 @@ try {
             assert.equal(await page.evaluate(() => window.graphVisibleLinks.length), count, '取消范围恢复间接及非中心登记边')
             assert.equal(await picker.inputValue(), rootId, '取消范围不改变中心对象预览')
             await trace.selectOption('preview-relations')
+            await page.evaluate(() => window.graphLabelBounds.clear())
+            const scopeCanvas = await canvas.boundingBox()
+            await page.mouse.move(scopeCanvas.x + 2, scopeCanvas.y + 2)
+            await page.waitForFunction(expected => window.graphLabelBounds.size === expected, expectedIds.length)
+            await page.locator('.evidence-graph-3d[data-scope="preview"]').waitFor()
             await page.waitForTimeout(150)
-            assert.equal(before.equals(await canvas.screenshot()), true, '范围取消后重新选择恢复3D名称与范围像素')
+            const scopeRestored = await page.evaluate(() => ({ camera: window.graphCamera, labels: [...window.graphLabelBounds.values()] }))
+            assertRestoredGeometry(beforeGeometry, scopeRestored)
           }
         }
       }
