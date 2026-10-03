@@ -665,3 +665,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 Firefox 快照权限与完整性回放：owner、share、preview integrity、download integrity 四种场景均通过；不扩大为 Firefox 全部集成矩阵。
 
 2026-10-04 Firefox 缓存与血缘开关回放：缓存证据当前草稿重校验、血缘显示开关保持编辑器可用两项通过；不扩大为 Firefox 全部集成矩阵。
+
+2026-10-04 Firefox 编辑器版本链路回放：双窗口冲突、重复导出连续 revision、导出失败恢复三项通过；不扩大为 Firefox 全部集成矩阵。
