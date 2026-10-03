@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+名称开关差异诊断可运行 `REPORT_EDITOR_LABEL_CYCLES=3 node smoke/evidence-complex-3d-fixture.mjs`，长名称再加REPORT_EDITOR_LONG_LABELS=1。默认1轮，参数必须为1至10的整数。每种视口按指定轮数切换，前后文件追加 `-cycle-<轮次>`；基线150ms稳定、悬停身份及原PNG严格一致必须通过。PNG比较失败后解码RGBA输出变化像素数、最大色差和范围，尺寸变化另报；不通过重试或容差掩盖差异。普通/超长并行三视口×3轮共18轮通过，原一次差异未复现，根因未知；已有证据足够后不例行重复该诊断，出现新症状再使用。
+
 生命周期fixture同时统计原生drawArrays/drawElements调用（保留原方法），在文字列表和关系收起后采样150ms两次要求绘制数不增，返回图/展开后要求绘制恢复；组件原生pauseAnimation/resumeAnimation负责暂停，不销毁仍可恢复的隐藏现场。复杂3D普通/长名称fixture新增55条文字关系有序端点多重集与2D累计图一致、3D/列表往返后预览/画布像素一致；角色选择器在返回图后检查，不能读取默认排除的隐藏角色。名称开关新增150ms基线稳定断言，before画布保存为 `output/report-editor-v6-complex-3d-focus-before-<宽度>[-long].png`。曾有并发长名称回放一次开关像素差异，单独重跑未复现，原因尚不确定；不要据一次通过推广为所有时序完成。
 
 3D生命周期运行 `node smoke/evidence-3d-lifecycle-fixture.mjs`，使用同一构建后fixture服务。Chromium在初始化时记录getContext的真实返回值并主动保留引用，验证6轮预览开关、2D/3D往返及进入/后退/任务关闭后：仅可见画布保留活跃上下文，能力探针和移除画布均context.isContextLost()，2D/关闭后为0；同时检查预览恢复、页面标题、脚本错误和上下文过多告警。应用复用WEBGL_lose_context与Three forceContextLoss，不自建销毁系统。44个累计上下文是本次回放的创建次数，不是同时活跃数或产品预算。此检查不测自然GC/系统内存/GPU性能，也不证明未支持原生扩展的设备释放行为；不要据人为保留引用的旧版失败宣称自然运行内存泄漏。

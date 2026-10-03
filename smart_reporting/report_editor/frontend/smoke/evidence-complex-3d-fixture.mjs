@@ -11,6 +11,8 @@ const shared = layer('shared')
 const branch = layer('branch')
 const longLabels = process.env.REPORT_EDITOR_LONG_LABELS === '1'
 const suffix = longLabels ? '-long' : ''
+const labelCycles = Number(process.env.REPORT_EDITOR_LABEL_CYCLES ?? 1)
+assert.ok(Number.isInteger(labelCycles) && labelCycles >= 1 && labelCycles <= 10)
 if (longLabels) {
   first[0] = '跨院区收入与成本口径调整后月度汇总计算结果'.repeat(3)
   shared[0] = '医疗服务收入明细与患者来源渠道关联输入快照'.repeat(3)
@@ -165,20 +167,56 @@ try {
       await page.mouse.move(labelBounds.x + 5, labelBounds.y + 5)
       await page.waitForTimeout(100)
     }
-    await clearHover()
-    const focusedCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-before-${width}${suffix}.png`, output).pathname })
-    await page.waitForTimeout(150)
-    assert.equal(focusedCanvas.equals(await canvas.screenshot()), true, `${width}px名称开关前相机与画面已稳定`)
-    await page.getByRole('button', { name: '显示全部节点名称', exact: true }).click()
-    await clearHover()
-    const allNamesCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-all-names-${width}${suffix}.png`, output).pathname })
-    assert.equal(focusedCanvas.equals(allNamesCanvas), false, '名称开关实际改变画布')
-    assert.equal(await picker.locator('option').count(), 40, '名称开关不隐藏业务节点')
-    assert.equal(await picker.inputValue(), `fact:${analysisId}/${first[0]}`)
-    await page.getByRole('button', { name: '只显示重点节点名称', exact: true }).click()
-    await clearHover()
-    const restoredCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-restored-${width}${suffix}.png`, output).pathname })
-    assert.equal(focusedCanvas.equals(restoredCanvas), true, `${width}px名称开关往返保持相机和图形`)
+    for (let cycle = 1; cycle <= labelCycles; cycle++) {
+      const cycleSuffix = labelCycles > 1 ? `-cycle-${cycle}` : ''
+      await clearHover()
+      const beforeHover = await page.locator('.evidence-graph-3d').getAttribute('data-hovered')
+      const focusedCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-before-${width}${suffix}${cycleSuffix}.png`, output).pathname })
+      await page.waitForTimeout(150)
+      assert.equal(focusedCanvas.equals(await canvas.screenshot()), true, `${width}px名称开关前相机与画面已稳定`)
+      await page.getByRole('button', { name: '显示全部节点名称', exact: true }).click()
+      await clearHover()
+      const allNamesCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-all-names-${width}${suffix}.png`, output).pathname })
+      assert.equal(focusedCanvas.equals(allNamesCanvas), false, '名称开关实际改变画布')
+      assert.equal(await picker.locator('option').count(), 40, '名称开关不隐藏业务节点')
+      assert.equal(await picker.inputValue(), `fact:${analysisId}/${first[0]}`)
+      await page.getByRole('button', { name: '只显示重点节点名称', exact: true }).click()
+      await clearHover()
+      const restoredCanvas = await canvas.screenshot({ path: new URL(`report-editor-v6-complex-3d-focus-restored-${width}${suffix}${cycleSuffix}.png`, output).pathname })
+      const afterHover = await page.locator('.evidence-graph-3d').getAttribute('data-hovered')
+      assert.equal(afterHover, beforeHover, `${width}px第${cycle}轮悬停状态一致`)
+      if (!focusedCanvas.equals(restoredCanvas)) {
+        const difference = await page.evaluate(async images => {
+          const data = await Promise.all(images.map(async png => {
+            const image = new Image()
+            image.src = `data:image/png;base64,${png}`
+            await image.decode()
+            const canvas = document.createElement('canvas')
+            canvas.width = image.width
+            canvas.height = image.height
+            const context = canvas.getContext('2d')
+            context.drawImage(image, 0, 0)
+            return context.getImageData(0, 0, canvas.width, canvas.height)
+          }))
+          if (data[0].width !== data[1].width || data[0].height !== data[1].height) return { dimensions: data.map(item => [item.width, item.height]) }
+          const bounds = [data[0].width, data[0].height, -1, -1]
+          let pixels = 0
+          let maxDelta = 0
+          for (let offset = 0; offset < data[0].data.length; offset += 4) {
+            const delta = Math.max(...[0, 1, 2, 3].map(channel => Math.abs(data[0].data[offset + channel] - data[1].data[offset + channel])))
+            if (!delta) continue
+            pixels++
+            maxDelta = Math.max(maxDelta, delta)
+            const x = offset / 4 % data[0].width
+            const y = Math.floor(offset / 4 / data[0].width)
+            bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.min(bounds[1], y)
+            bounds[2] = Math.max(bounds[2], x); bounds[3] = Math.max(bounds[3], y)
+          }
+          return { pixels, maxDelta, bounds }
+        }, [focusedCanvas.toString('base64'), restoredCanvas.toString('base64')])
+        assert.fail(`${width}px第${cycle}轮名称开关画布差异：${JSON.stringify(difference)}`)
+      }
+    }
     assert.equal(await fitsCanvas(), true, `${width}px概览关注对象名称与图形不触及画布四边`)
     await page.getByRole('button', { name: '缩小关系图', exact: true }).click()
     await page.waitForTimeout(250)
@@ -202,7 +240,7 @@ try {
   assert.equal(await picker.locator('option').count(), 40, '后退恢复复杂图和预览')
   assert.equal(await page.locator('.evidence-graph-3d').getAttribute('data-labels'), 'all', '后退保留非默认名称偏好')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
+  console.log(JSON.stringify({ nodes: 39, edges: 55, longLabels, labelCycles, listIdentity: 'passed', listCamera: 'passed', traceBounds: 'passed', sharedIdentity: 'passed', batches: 'passed', tracing: 'passed', viewports: 'passed', navigation: 'passed', readability: 'manual review required', errors }))
 } finally {
   await browser.close()
 }
