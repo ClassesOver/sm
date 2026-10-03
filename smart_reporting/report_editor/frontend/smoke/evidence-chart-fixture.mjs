@@ -47,6 +47,7 @@ try {
   assert.equal(await page.locator('.evidence-3d-kind-key[data-kind="chart"]').count(), 1, '图表关系图保留图表类型')
   assert.equal(await page.locator('.evidence-3d-kind-key[data-kind="dataset"]').count(), 1, '图表关系图保留数据集类型')
   assert.equal(await page.locator('.evidence-3d-kind-key[data-kind="computation"]').count(), 1, '图表关系图保留计算类型')
+  await page.locator('.evidence-relations').screenshot({ path: new URL('../../../../output/report-editor-v6-chart-3d.png', import.meta.url).pathname })
   await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   assert.equal(await page.locator('.evidence-node[data-evidence-node="chart:chart-fixture"]').count(), 1, '2D关系图保留图表节点')
   const inputPairs = await page.locator('.evidence-graph-edge').evaluateAll(edges =>
@@ -55,6 +56,7 @@ try {
     ['computation:comp-fixture-001', 'chart:chart-fixture'],
     ['dataset:dataset-fixture-001', 'chart:chart-fixture'],
   ], '2D图表关系保留两个登记输入及方向')
+  await page.locator('.evidence-relations').screenshot({ path: new URL('../../../../output/report-editor-v6-chart-2d.png', import.meta.url).pathname })
   await page.getByRole('button', { name: '切换到 3D 关系图', exact: true }).click()
   await chartCanvas.waitFor()
   await page.locator('.evidence-more').click()

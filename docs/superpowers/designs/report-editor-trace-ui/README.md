@@ -999,6 +999,8 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 
 2026-10-04 图表关系 Firefox 交叉回放：同一 `evidence-chart-fixture.mjs` 在 Firefox 通过，三类身份、两条有方向输入边、3D/2D 切换、分页失败重试、后退刷新恢复及 offsets `[0,20,20,20,0]` 保持一致。Linux WebKit 尝试因 MiniBrowser 缺少主机库 `libwoff2dec.so.1.0.2` 未启动，不计为通过或产品失败。
 
+2026-10-04 图表类型视觉证据补齐：chart fixture 新增并检查 3D/2D 截图 `output/report-editor-v6-chart-3d.png`、`output/report-editor-v6-chart-2d.png`；图表节点、dataset/computation 输入节点、方向箭头和类型图例均可见，分页/恢复断言保持通过。该截图仅覆盖三节点 chart 场景，不代表五类型复杂图整体可读性。
+
 2026-10-04 Firefox 3D 正式 fixture 复核：关系线减噪后的正式 `evidence-3d-fixture.mjs` 在 Firefox 通过默认 3D、容器尺寸、2D/3D 切换、预览、关系追踪、分支重试、导航、画布点击/双击、后台打开复用、旋转/滚轮和动态效果偏好，页面无脚本错误。
 
 2026-10-04 关系图核心定向单测复核：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过，确认 2D/3D 共用的节点身份、关系方向、追踪范围和列表契约未受近期视觉调整影响；未运行完整前端测试套件。
