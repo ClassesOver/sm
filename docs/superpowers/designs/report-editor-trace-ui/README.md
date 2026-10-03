@@ -858,3 +858,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 基础 3D 跨引擎回归（2026-10-04）：Chromium、Firefox、Linux WebKit 均通过默认 3D、2D 切换、预览、追踪、分支重试、导航、鼠标点击/双击/后台打开与复用、旋转/滚轮及减少动态效果，三引擎均无脚本错误。Linux WebKit 证据不替代 Safari/iOS 真机或读屏验收。
 
 定向单测与键盘复验（2026-10-04）：`evidence-label-layout`、`evidence-graph`、`evidence-relations` 共 24 项通过；正式键盘 fixture 在 Chromium、Firefox 通过手动页签、Home/End/Delete、图节点 Space/Enter/Esc、焦点恢复与返回编辑器。Linux WebKit 本次因主机缺少 `libwoff2dec.so.1.0.2` 未启动，不新增该引擎证据。
+
+证据页核心定向单测（2026-10-04）：`evidence-pages`、`evidence-state`、`evidence-browser` 共 99 项通过；未运行完整测试套件。
