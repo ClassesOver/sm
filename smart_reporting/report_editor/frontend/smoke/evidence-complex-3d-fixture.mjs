@@ -1,7 +1,7 @@
 // 与2D复杂图使用同一关系形态；仅验证固定前端数据，不验证后端权限。
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
-import { chromium } from 'playwright'
+import { chromium, firefox, webkit } from 'playwright'
 
 const analysisId = 'analysis-fixture-001'
 const root = 'fact-fixture-001'
@@ -23,7 +23,9 @@ const inputs = new Map([
   [first[1], [...shared, ...branch]],
   [branch[0], [first[1], root]],
 ])
-const browser = await chromium.launch({ headless: true })
+const engine = process.env.REPORT_EDITOR_BROWSER ?? 'chromium'
+assert.ok(['chromium', 'firefox', 'webkit'].includes(engine), `Unsupported browser: ${engine}`)
+const browser = await ({ chromium, firefox, webkit })[engine].launch({ headless: true })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors = []
