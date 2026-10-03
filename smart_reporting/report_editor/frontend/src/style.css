@@ -4275,6 +4275,7 @@ button {
   border-color: #007ea7;
 }
 .evidence-icon-button:active { background: #dceef6; box-shadow: none; transform: translateY(1px); }
+.evidence-3d-labels-toggle[aria-pressed="true"] { border-color: #007ea7; background: #edf5fc; }
 
 .evidence-trace-picker {
   width: 180px;

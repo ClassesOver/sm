@@ -49,6 +49,8 @@ npm run smoke
 
 ## v6 证据浏览器 fixture 定向回放
 
+复杂3D名称开关回放：超过15节点默认重点名称，小图默认全部；工具栏名称图标切换全部/重点，aria-pressed为true表示全部。普通/长名称fixture核对实际画面变化、40个选择器选项及预览不变，在每种视口清空鼠标悬停后要求开关往返画布逐像素一致；进入后退必须保留all非默认偏好。截图 `output/report-editor-v6-complex-3d-all-names-<宽度>[-long].png` 与 `output/report-editor-v6-complex-3d-focus-restored-<宽度>[-long].png`，原概览截图现为重点名称默认效果。组件Sprite可见性和Three拾取图层共同排除隐藏名称，业务节点/边不删减。该回放不证明真实大规模性能、密集投影节点可区分或全部名字同时可读；仍需人工核对横屏按钮布局及文字遮挡。
+
 复杂3D普通与长名称fixture现增加每种视口三个空白拖动旋转角度，随后主动适应追踪关系，并用四边内缩2px像素检查标签/图形没有触边；截图 `output/report-editor-v6-complex-3d-trace-angle-<1..3>-<宽度>[-long].png`。取消追踪后的概览也检查边界并实际缩小/放大，截图 `output/report-editor-v6-complex-3d-overview-zoom-<宽度>[-long].png`。当前页/预览/悬停对象复用SpriteText固定12px、多行和屏幕外侧锚点，适应/重置的原生zoomToFit留白纳入标签屏幕尺寸；全名仍在原生选择器/摘要/提示中。小图鼠标fixture新增真实悬停截图 `output/report-editor-v6-3d-hover-label.png`。代表性截图需人工检查标签相互遮挡；边界通过不证明整体概览、三个以上关注对象或所有角度可读性通过。
 
 同一3D触控fixture还从真实计算球体开始加入第二指，执行50→74px捏合、松开第二指后继续旋转。相同重置/适应视角前后要求截图完全一致，捕捉组件默认节点拖拽造成的位置改变；产品已禁用节点拖拽，保留组件相机控制。截图为 `output/report-editor-v6-3d-touch-node-{before,pinch,restored}.png`，需对照检查。最终四节点场景通过，不替代复杂图手势、触摸双击或真机验收。下方早期“不覆盖节点起点捏合”描述由本条指定场景补充，其他范围不扩展。

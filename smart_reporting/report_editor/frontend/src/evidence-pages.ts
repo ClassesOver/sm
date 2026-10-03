@@ -22,7 +22,7 @@ import {
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
-import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, X, ZoomIn, ZoomOut } from 'lucide'
+import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, Tags, X, ZoomIn, ZoomOut } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
@@ -298,6 +298,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       id, source: evidenceRefId(edge.from), target: evidenceRefId(edge.to), label: edge.label,
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
+    let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
     void Promise.all([import('3d-force-graph'), import('three-spritetext')]).then(([{ default: ForceGraph3D }, { default: SpriteText }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const rememberedView = graph3dViews.get(ctx.page)
@@ -349,6 +350,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const { sprite, scale } = label
       const current = id === evidenceRefId(ctx.page.ref)
       const focused = Boolean(pinnedId) || current || id === selectedId || id === viewport.dataset.hovered
+      sprite.visible = allLabels || focused
+      // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
+      sprite.layers.set(sprite.visible ? 0 : 1)
       const text = focused ? label.traceText : label.text
       if (sprite.text !== text) {
         sprite.text = text
@@ -536,6 +540,24 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined)
     }))
     controls.append(fit3d)
+    if (allNodes.length > 15) {
+      const labelsToggle = makeButton('', 'evidence-icon-button evidence-3d-labels-toggle')
+      labelsToggle.append(createElement(Tags, { width: 16, height: 16, 'aria-hidden': 'true' }))
+      const updateLabelsToggle = () => {
+        labelsToggle.setAttribute('aria-label', allLabels ? '只显示重点节点名称' : '显示全部节点名称')
+        labelsToggle.setAttribute('aria-pressed', String(allLabels))
+        labelsToggle.title = allLabels ? '只显示当前页、预览和悬停名称' : '显示所有名称；密集处可能重叠'
+        viewport.dataset.labels = allLabels ? 'all' : 'focus'
+      }
+      updateLabelsToggle()
+      labelsToggle.addEventListener('click', () => {
+        allLabels = !allLabels
+        ctx.updatePage({ graphLabels: allLabels ? 'all' : 'focus' })
+        placeLabels()
+        updateLabelsToggle()
+      })
+      controls.append(labelsToggle)
+    }
     const zoom3d = (factor: number) => {
       const position = instance.cameraPosition()
       const target = instance.controls().target
@@ -574,6 +596,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const legend = document.createElement('div')
     legend.className = 'evidence-graph-legend'
     legend.textContent = `${relations.loadedNote} · 3D 默认视图`
+    if (allNodes.length > 15) legend.append(' · 名称可切换；悬停可查看全名')
     host.append(legend)
     const nodePicker = document.createElement('select')
     nodePicker.className = 'evidence-trace-picker evidence-3d-node-picker'

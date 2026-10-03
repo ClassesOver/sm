@@ -35,6 +35,8 @@ export interface EvidencePage {
   graphView: boolean
   /** 关系图渲染模式；新页面默认使用成熟 3D 组件，2D 为兼容回退。 */
   graphMode: '2d' | '3d'
+  /** 3D 名称显示偏好；未选择时密集图只显示关注名称。 */
+  graphLabels?: 'all' | 'focus'
   filter: string
   datasetCursors: (string | null)[]
   datasetPageIndex: number
