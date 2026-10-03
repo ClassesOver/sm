@@ -872,3 +872,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 版本与发布契约定向测试（2026-10-04）：`test_trace_index_builder.py`、`test_trace_revision_inheritance.py`、`test_trace_claim_gate.py`、`test_http_publication_lineage.py` 共 21 项通过；仅有 `imghdr` 弃用警告。该结果覆盖索引、revision 继承、声明门禁和 HTTP 发布契约。
 
 2026-10-04 下钻构建与固定 lineage fixture 定向测试：`test_trace_drilldown_builder.py`、`test_lineage_fixtures.py` 共 15 项通过，仅有 `imghdr` 弃用警告；覆盖下钻记录构建及固定 CSV/期望值 fixture 契约，不替代真实生产报告端到端验收。
+
+2026-10-04 报告真实导出与保留策略定向测试：`test_report_editor_real_export.py`、`test_report_editor_retention.py` 共 21 项通过、1 项按测试选择器跳过，仅有 `imghdr` 弃用警告；覆盖导出与保留契约，不替代生产部署或现场审核。
