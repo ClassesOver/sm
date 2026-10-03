@@ -311,7 +311,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutGreedy }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutGreedy, totalCollisionArea }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = { fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText }
     const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
@@ -474,7 +474,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         group.add(label, icon)
         const traceName = node.ref.label.length > 14 ? `${node.ref.label.slice(0, 9)}…${node.ref.label.slice(-4)}` : node.ref.label
         const sized = {
-          sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z }, name: traceName,
+          sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
+          name: node.ref.label.length > 10 ? `${node.ref.label.slice(0, 5)}…${node.ref.label.slice(-4)}` : node.ref.label,
           text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`, traceText: `${KIND_LABELS[node.ref.kind]}${status} · ${nodeInfo(node.ref)}\n${traceName}`,
         }
         labels.set(id, sized)
@@ -587,16 +588,31 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       else {
         const strategy = layoutGreedy().bounds({ x: 4, y: 4,
           width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })
-        // 先沿用双轴镜像，再补单轴镜像，让原生候选也能向另外两个方向继续避让。
-        for (let round = 0; round < 16; round++) {
-          const mirrorX = round < 12 ? round % 2 === 1 : round % 2 === 0
-          const mirrorY = round % 2 === 1
-          const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
-            x: mirrorX ? viewport.clientWidth - rectangle.x - rectangle.width : rectangle.x,
-            y: mirrorY ? viewport.clientHeight - rectangle.y - rectangle.height : rectangle.y })
-          // 28px固定图标区域参与原生评分但不参与移动；只应用名称的位置。
-          const input = [...rectangles, ...obstacles]
-          rectangles = strategy(input.map(mirror)).slice(0, items.length).map(mirror)
+        const outward = rectangles.map(rectangle => ({ ...rectangle,
+          x: rectangle.x < viewport.clientWidth / 2 ? rectangle.x - rectangle.width - 18 : rectangle.x + 18,
+          y: rectangle.y - rectangle.height / 2 }))
+        const perimeter = rectangles.map(rectangle => ({ ...rectangle,
+          x: rectangle.x < viewport.clientWidth / 2 ? 4 : viewport.clientWidth - rectangle.width - 4,
+          y: rectangle.y - rectangle.height / 2 }))
+        let bestTotal = Infinity
+        // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
+        for (const seed of [rectangles, outward, perimeter]) {
+          let candidate = seed
+          for (let round = 0; round < 16; round++) {
+            const mirrorX = round < 12 ? round % 2 === 1 : round % 2 === 0
+            const mirrorY = round % 2 === 1
+            const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
+              x: mirrorX ? viewport.clientWidth - rectangle.x - rectangle.width : rectangle.x,
+              y: mirrorY ? viewport.clientHeight - rectangle.y - rectangle.height : rectangle.y })
+            // 28px固定图标区域参与原生评分但不参与移动；只应用名称的位置。
+            const input = [...candidate, ...obstacles]
+            candidate = strategy(input.map(mirror)).slice(0, items.length).map(mirror)
+            const total = totalCollisionArea([...candidate, ...obstacles])
+            if (total < bestTotal) {
+              rectangles = candidate
+              bestTotal = total
+            }
+          }
         }
         cachedLabelLayoutKey = layoutKey
         cachedLabelRectangles = rectangles

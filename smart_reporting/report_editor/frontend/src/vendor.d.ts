@@ -16,3 +16,7 @@ declare module '@d3fc/d3fc-label-layout' {
 declare module '@d3fc/d3fc-label-layout/index.js' {
   export { layoutGreedy } from '@d3fc/d3fc-label-layout'
 }
+
+declare module '@d3fc/d3fc-label-layout/src/util/collision.js' {
+  export function totalCollisionArea(rectangles: Array<{ x: number; y: number; width: number; height: number }>): number
+}

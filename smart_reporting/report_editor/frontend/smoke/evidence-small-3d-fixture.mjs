@@ -60,6 +60,9 @@ try {
     const canvas = page.locator('.evidence-graph-3d canvas')
     await canvas.waitFor()
     assert.equal(await page.getByRole('combobox', { name: '选择 3D 节点预览' }).locator('option').count(), count + 1)
+    assert.equal(await page.getByRole('combobox', { name: '选择 3D 节点预览' }).evaluate((select, names) =>
+      names.every(name => [...select.options].some(option => option.textContent.endsWith(name))), inputs), true,
+    '紧凑画布名称不截断节点选择器中的完整业务名称')
     for (const [width, height] of [[1280, 900], [390, 844], [844, 390]]) {
       await page.setViewportSize({ width, height })
       if (width === 390) await page.getByRole('button', { name: '查看关系图', exact: true }).click()
