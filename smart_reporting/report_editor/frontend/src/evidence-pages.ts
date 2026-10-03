@@ -343,9 +343,17 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
-    const labels = new Map<string, { sprite: InstanceType<typeof SpriteText>; scale: GraphPoint3d }>()
-    const sizeLabel = (id: string, label: { sprite: InstanceType<typeof SpriteText>; scale: GraphPoint3d }) => {
+    type Label3d = { sprite: InstanceType<typeof SpriteText>; scale: GraphPoint3d; text: string; traceText: string }
+    const labels = new Map<string, Label3d>()
+    const sizeLabel = (id: string, label: Label3d) => {
       const { sprite, scale } = label
+      const text = pinnedId ? label.traceText : label.text
+      if (sprite.text !== text) {
+        sprite.text = text
+        scale.x = sprite.scale.x
+        scale.y = sprite.scale.y
+        scale.z = sprite.scale.z
+      }
       const attenuate = !pinnedId
       if (sprite.material.sizeAttenuation !== attenuate) {
         sprite.material.sizeAttenuation = attenuate
@@ -356,6 +364,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const factor = pinnedId ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
       sprite.scale.set(scale.x * factor, scale.y * factor, scale.z * factor)
       sprite.position.y = pinnedId && id === pinnedId ? -8 : 8
+      sprite.renderOrder = pinnedId ? 1 : 0
     }
     const cancelPreview = () => {
       if (pendingPreview !== null) window.clearTimeout(pendingPreview)
@@ -373,7 +382,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const current = sameEvidenceRef(node.ref, ctx.page.ref)
         const selected = evidenceRefId(node.ref) === selectedId
         const name = node.ref.label.length > 28 ? `${node.ref.label.slice(0, 27)}…` : node.ref.label
-        const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${current ? ' · 当前页' : selected ? ' · 预览' : ''}`, 3, '#23445b')
+        const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
+        const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
         label.backgroundColor = current ? '#e4f3fa' : '#ffffff'
         label.borderColor = selected ? '#007ea7' : '#c7dce8'
         label.borderWidth = selected ? 0.12 : 0.06
@@ -381,7 +391,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         label.padding = [1, 2]
         label.position.y = 8
         const id = evidenceRefId(node.ref)
-        const sized = { sprite: label, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z } }
+        const traceName = node.ref.label.length > 14 ? `${node.ref.label.slice(0, 13)}…` : node.ref.label
+        const sized = {
+          sprite: label, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
+          text: label.text, traceText: `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}`,
+        }
         labels.set(id, sized)
         sizeLabel(id, sized)
         return label
