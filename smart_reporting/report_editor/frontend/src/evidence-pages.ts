@@ -307,6 +307,40 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       // 已加载节点固定在原坐标；新增分支仍交给组件布局。
       return position ? { ...node, ...position, fx: position.x, fy: position.y, fz: position.z } : node
     })
+    const neighbours = new Set<string>()
+    for (const edge of graph.edges.values()) {
+      const from = evidenceRefId(edge.from)
+      const to = evidenceRefId(edge.to)
+      if (from === selectedId) neighbours.add(to)
+      if (to === selectedId) neighbours.add(from)
+    }
+    neighbours.delete(selectedId ?? '')
+    let hoveredId: string | null = null
+    let pinnedId: string | null = null
+    let refreshTrace = () => {}
+    const tracedId = () => pinnedId ?? hoveredId
+    const highlightedLink = (link: { id: string }) => {
+      const edge = graph.edges.get(link.id)!
+      const from = evidenceRefId(edge.from)
+      const to = evidenceRefId(edge.to)
+      const nodeId = tracedId()
+      if (nodeId) return (from === nodeId || to === nodeId) && (!selectedId || from === selectedId || to === selectedId)
+      return selectedId !== null && (from === selectedId || to === selectedId)
+    }
+    const linkColor = (link: { id: string }) => highlightedLink(link) ? '#007ea7' : selectedId || tracedId() ? '#dce6ed' : '#80a2bd'
+    const linkWidth = (link: { id: string }) => highlightedLink(link) ? 1.5 : 0.3
+    const nodeColor = (node: { ref: EvidenceObjectRef }) => {
+      const id = evidenceRefId(node.ref)
+      if (id === selectedId) return '#007ea7'
+      if (sameEvidenceRef(node.ref, ctx.page.ref)) return '#1f6f8b'
+      const traced = tracedId()
+      const connected = !selectedId && [...graph.edges.values()].some(edge => {
+        const from = evidenceRefId(edge.from)
+        const to = evidenceRefId(edge.to)
+        return from === traced && to === id || to === traced && from === id
+      })
+      return traced && id !== traced && !connected ? '#dce6ed' : '#80a2bd'
+    }
     let lastNodeClick: { id: string; at: number } | null = null
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
@@ -330,9 +364,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         return label
       })
       .nodeThreeObjectExtend(true)
-      .nodeColor((node: { ref: EvidenceObjectRef }) => evidenceRefId(node.ref) === selectedId ? '#007ea7' :
-        sameEvidenceRef(node.ref, ctx.page.ref) ? '#1f6f8b' : '#80a2bd')
-      .linkColor(() => selectedId ? '#b8cbd5' : '#80a2bd')
+      .nodeColor(nodeColor)
+      .linkColor(linkColor)
+      .linkWidth(linkWidth)
       .linkOpacity(0.8)
       .linkDirectionalArrowLength(4)
       .linkDirectionalArrowRelPos(1)
@@ -348,7 +382,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         event.preventDefault()
         ctx.openBackground(node.ref, false)
       })
-      .onNodeHover((node: { ref: EvidenceObjectRef } | null) => { viewport.dataset.hovered = node ? evidenceRefId(node.ref) : '' })
+      .onNodeHover((node: { ref: EvidenceObjectRef } | null) => {
+        const id = node ? evidenceRefId(node.ref) : null
+        hoveredId = !selectedId || id === selectedId || (id !== null && neighbours.has(id)) ? id : null
+        refreshTrace()
+      })
     instance.graphData({ nodes: restoredNodes, links: linkData })
     if (rememberedView) {
       instance.cameraPosition(rememberedView.position, rememberedView.target, 0)
@@ -384,7 +422,8 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     removal.observe(document.body, { childList: true, subtree: true })
     ctx.signal.addEventListener('abort', dispose, { once: true })
     const fit3d = makeButton('适应 3D', 'ui-button evidence-3d-fit')
-    fit3d.addEventListener('click', () => instance.zoomToFit(500, 32))
+    fit3d.addEventListener('click', () => instance.zoomToFit(500, 32,
+      pinnedId && selectedId ? (node: { id: string }) => node.id === pinnedId || node.id === selectedId : undefined))
     controls.append(fit3d)
     const zoom3d = (factor: number) => {
       const position = instance.cameraPosition()
@@ -448,6 +487,36 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       }
     })
     controls.append(nodePicker)
+    const tracePicker = document.createElement('select')
+    tracePicker.className = 'evidence-trace-picker evidence-3d-trace-picker'
+    tracePicker.setAttribute('aria-label', '追踪预览关系端点')
+    tracePicker.disabled = !selectedId || !neighbours.size
+    const allEdges = document.createElement('option')
+    allEdges.value = ''
+    allEdges.textContent = selectedId ? '追踪：全部预览关系' : '追踪：先预览节点'
+    tracePicker.append(allEdges)
+    for (const node of allNodes.filter(node => neighbours.has(evidenceRefId(node)) && evidenceRefId(node) !== selectedId)) {
+      const option = document.createElement('option')
+      option.value = evidenceRefId(node)
+      option.textContent = `追踪：${KIND_LABELS[node.kind]} · ${node.label}`
+      tracePicker.append(option)
+    }
+    const traceStatus = document.createElement('span')
+    traceStatus.className = 'evidence-3d-trace-status'
+    traceStatus.setAttribute('role', 'status')
+    legend.append(' · ', traceStatus)
+    refreshTrace = () => {
+      instance.linkColor(linkColor).linkWidth(linkWidth).nodeColor(nodeColor)
+      const count = linkData.filter(highlightedLink).length
+      traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系`
+      fit3d.textContent = pinnedId ? '适应追踪关系' : '适应 3D'
+    }
+    tracePicker.addEventListener('change', () => {
+      pinnedId = tracePicker.value || null
+      refreshTrace()
+    })
+    controls.append(tracePicker)
+    refreshTrace()
     renderGraphPreview(host, ctx, expand)
     if (rememberedView?.focusPicker) nodePicker.focus({ preventScroll: true })
     }).catch(() => {
