@@ -342,6 +342,11 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       return traced && id !== traced && !connected ? '#dce6ed' : '#80a2bd'
     }
     let lastNodeClick: { id: string; at: number } | null = null
+    let pendingPreview: number | null = null
+    const cancelPreview = () => {
+      if (pendingPreview !== null) window.clearTimeout(pendingPreview)
+      pendingPreview = null
+    }
     const instance: any = new (ForceGraph3D as any)(viewport)
       .backgroundColor('#f7fbfd')
       .showNavInfo(false)
@@ -373,17 +378,31 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       .onNodeClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         const id = evidenceRefId(node.ref)
         const now = Date.now()
-        if (lastNodeClick?.id === id && now - lastNodeClick.at < 350) ctx.navigate(node.ref)
-        else if (event.ctrlKey || event.metaKey) ctx.openBackground(node.ref, event.shiftKey)
-        else ctx.setPreview(node.ref)
-        lastNodeClick = { id, at: now }
+        cancelPreview()
+        if (event.ctrlKey || event.metaKey) {
+          lastNodeClick = null
+          ctx.openBackground(node.ref, event.shiftKey)
+        } else if (lastNodeClick?.id === id && now - lastNodeClick.at < 350) {
+          lastNodeClick = null
+          ctx.navigate(node.ref)
+        } else {
+          // 预览会重建画布；等待双击窗口，避免第二次点击失去命中对象。
+          lastNodeClick = { id, at: now }
+          pendingPreview = window.setTimeout(() => {
+            pendingPreview = null
+            if (!ctx.isStale() && viewport.isConnected) ctx.setPreview(node.ref)
+          }, 350)
+        }
       })
       .onNodeRightClick((node: { ref: EvidenceObjectRef }, event: MouseEvent) => {
         event.preventDefault()
+        cancelPreview()
+        lastNodeClick = null
         ctx.openBackground(node.ref, false)
       })
       .onNodeHover((node: { ref: EvidenceObjectRef } | null) => {
         const id = node ? evidenceRefId(node.ref) : null
+        viewport.dataset.hovered = id ?? ''
         hoveredId = !selectedId || id === selectedId || (id !== null && neighbours.has(id)) ? id : null
         refreshTrace()
       })
@@ -403,6 +422,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const dispose = () => {
       if (disposed) return
       disposed = true
+      cancelPreview()
       const point = (value: GraphPoint3d): GraphPoint3d => ({ x: value.x, y: value.y, z: value.z })
       graph3dViews.set(ctx.page, {
         position: point(instance.camera().position), target: point(instance.controls().target), up: point(instance.camera().up),

@@ -125,8 +125,41 @@ try {
   await page.locator('.evidence-object-title', { hasText: title }).waitFor()
   await picker.waitFor()
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
+  await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+  await page.getByRole('button', { name: '适应 3D', exact: true }).click()
+  await page.waitForTimeout(650)
+  // 通过真实组件悬停命中寻找球体，不调用回调或直接操作组件实例。
+  const findCanvasNode = async id => {
+    const box = await canvas.boundingBox()
+    for (let y = 6; y < box.height; y += 12) {
+      for (let x = 6; x < box.width; x += 12) {
+        await page.mouse.move(box.x + x, box.y + y)
+        await page.waitForTimeout(25)
+        if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === id) {
+          return { x: box.x + x, y: box.y + y }
+        }
+      }
+    }
+    assert.fail(`真实画布未命中 ${id}`)
+  }
+  let hit = await findCanvasNode('computation:comp-fixture-001')
+  await page.locator('.evidence-3d-trace-status', { hasText: '追踪 3 条登记关系' }).waitFor()
+  await page.mouse.click(hit.x, hit.y)
+  await page.locator('.evidence-preview-summary').waitFor()
+  assert.equal(await picker.inputValue(), 'computation:comp-fixture-001', '画布单击预览')
+  assert.equal(await page.locator('.evidence-object-title').textContent(), title)
+  assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
+  // 等待首次单击窗口结束，再独立验证两次相距100ms的画布点击。
+  await page.waitForTimeout(400)
+  hit = await findCanvasNode('computation:comp-fixture-001')
+  await page.mouse.click(hit.x, hit.y, { clickCount: 2, delay: 100 })
+  await page.locator('.evidence-object-title', { hasText: 'comp-fixture-001' }).waitFor()
+  assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), true, '画布双击进入')
+  await page.locator('[data-evidence="back"]').click()
+  await page.locator('.evidence-object-title', { hasText: title }).waitFor()
+  assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ default3d: 'passed', containerSize: 'passed', modeSwitch: 'passed', preview: 'passed', relationTrace: 'passed', branchRetry: 'passed', navigation: 'passed', errors }))
+  console.log(JSON.stringify({ default3d: 'passed', containerSize: 'passed', modeSwitch: 'passed', preview: 'passed', relationTrace: 'passed', branchRetry: 'passed', navigation: 'passed', canvasClick: 'passed', canvasDoubleClick: 'passed', errors }))
 } finally {
   await browser.close()
 }
