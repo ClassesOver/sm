@@ -35,7 +35,11 @@ try {
         await page.mouse.move(bounds.x + cx, bounds.y + cy)
         await page.waitForTimeout(25)
         if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === 'computation:comp-fixture-001') {
-          return { x: bounds.x + cx, y: bounds.y + cy }
+          // 原生拾取有节流；不能把上一网格点的悬停回执当成当前坐标命中。
+          await page.waitForTimeout(150)
+          if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === 'computation:comp-fixture-001') {
+            return { x: bounds.x + cx, y: bounds.y + cy }
+          }
         }
       }
     }
@@ -78,7 +82,7 @@ try {
   assert.equal(await page.locator('.evidence-object-title').textContent(), title)
   assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
   assert.deepEqual(await page.evaluate(() => ({ x: scrollX, y: scrollY })), scroll)
-  // 在旋转、捏合后的实际视图中寻找球体，然后清除鼠标悬停再触摸点选。
+  // 在旋转、捏合后的实际视图中寻找节点，然后清除鼠标悬停再触摸点选。
   const hit = await findComputation()
   await page.mouse.move(x, y)
   await page.waitForTimeout(50)

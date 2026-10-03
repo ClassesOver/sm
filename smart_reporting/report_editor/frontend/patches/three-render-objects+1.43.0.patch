@@ -16,7 +16,29 @@ diff --git a/node_modules/three-render-objects/dist/three-render-objects.mjs b/n
          const newCameraPos = {
            x: center.x + dir.x * distance,
            y: center.y + dir.y * distance,
-@@ -439,10 +440,12 @@
+@@ -405,1 +406,2 @@
+     state.pointerPos.y = -2;
++    const activePointers = new Set();
+@@ -408,1 +410,5 @@
+       evType === 'pointerdown' && (state.isPointerPressed = true);
++      if (evType === 'pointerdown') {
++        activePointers.add(ev.pointerId);
++        if (activePointers.size > 1) state.isPointerDragging = true;
++      }
+@@ -433,2 +439,12 @@
+     // Handle click events on objs
++    state.container.addEventListener('pointercancel', ev => {
++      activePointers.delete(ev.pointerId);
++      state.isPointerDragging = true;
++      if (!activePointers.size) {
++        state.isPointerPressed = false;
++        state.isPointerDragging = false;
++      }
++    }, { passive: true, capture: true });
+     state.container.addEventListener('pointerup', ev => {
++      activePointers.delete(ev.pointerId);
++      if (activePointers.size) return;
+@@ -439,10 +455,12 @@
          state.isPointerDragging = false;
          if (!state.clickAfterDrag) return; // don't trigger onClick after pointer drag (camera motion via controls)
        }

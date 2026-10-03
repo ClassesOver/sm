@@ -46,7 +46,6 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
     await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-3d-${width}.png`, output).pathname })
   }
-  assert.equal(await page.evaluate(() => window.graphLabelText.some(text => text.includes('已加载 1 条关系'))), true, '3D名称画布包含已加载关系信息')
   await page.getByRole('button', { name: '切换到 2D 关系图', exact: true }).click()
   await page.locator('.evidence-node').first().waitFor()
   assert.equal(await canvas.count(), 0)
@@ -60,6 +59,8 @@ try {
   await picker.focus()
   await picker.selectOption('computation:comp-fixture-001')
   await page.locator('.evidence-preview-summary').waitFor()
+  await page.waitForFunction(() => window.graphLabelText.some(text => text.includes('已加载 1 条关系')))
+  assert.equal(await page.evaluate(() => window.graphLabelText.some(text => text.includes('已加载 1 条关系'))), true, '预览节点名称画布保留已加载关系信息')
   assert.equal(await picker.evaluate(node => node === document.activeElement), true, '选择后恢复节点选择器焦点')
   await canvas.screenshot({ path: new URL('report-editor-v6-3d-camera-preview.png', output).pathname })
   assert.equal(await page.locator('.evidence-object-title').textContent(), title)
@@ -140,7 +141,7 @@ try {
   await page.getByRole('button', { name: '关闭预览', exact: true }).click()
   await page.getByRole('button', { name: '适应 3D', exact: true }).click()
   await page.waitForTimeout(650)
-  // 通过真实组件悬停命中寻找球体，不调用回调或直接操作组件实例。
+  // 通过真实组件悬停命中寻找节点，不调用回调或直接操作组件实例。
   const findCanvasNode = async id => {
     const box = await canvas.boundingBox()
     for (let y = 6; y < box.height; y += 12) {
@@ -148,7 +149,10 @@ try {
         await page.mouse.move(box.x + x, box.y + y)
         await page.waitForTimeout(25)
         if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === id) {
-          return { x: box.x + x, y: box.y + y }
+          await page.waitForTimeout(150)
+          if (await page.locator('.evidence-graph-3d').getAttribute('data-hovered') === id) {
+            return { x: box.x + x, y: box.y + y }
+          }
         }
       }
     }

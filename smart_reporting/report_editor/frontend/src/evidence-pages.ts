@@ -311,7 +311,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }))
     const selectedId = ctx.page.selected ? evidenceRefId(ctx.page.selected) : null
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
-    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader }]) => {
+    void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutGreedy }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
     const icons = { fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText }
     const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
@@ -386,12 +386,12 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     }
     let lastNodeClick: { id: string; at: number } | null = null
     let pendingPreview: number | null = null
-    type Label3d = { sprite: InstanceType<typeof SpriteText>; icon: InstanceType<typeof Sprite>; scale: GraphPoint3d; text: string; traceText: string }
+    type Label3d = { sprite: InstanceType<typeof SpriteText>; icon: InstanceType<typeof Sprite>; scale: GraphPoint3d; text: string; traceText: string; name: string }
     const labels = new Map<string, Label3d>()
     const sizeLabel = (id: string, label: Label3d) => {
       const { sprite, scale } = label
       const current = id === evidenceRefId(ctx.page.ref)
-      const focused = Boolean(pinnedId) || current || id === selectedId || id === viewport.dataset.hovered
+      const focused = Boolean(pinnedId) || current || id === selectedId || allNodes.length > 15 && id === viewport.dataset.hovered
       const fixedSize = focused || allNodes.length <= 15
       sprite.visible = allLabels || focused
       // Three拾取默认仍会检查不可见对象；原生图层同时排除隐藏文字的命中范围。
@@ -399,7 +399,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       label.icon.visible = sprite.visible
       const iconSize = 14 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight)
       label.icon.scale.set(iconSize, iconSize, 1)
-      const text = fixedSize ? label.traceText : label.text
+      const text = fixedSize ? focused ? label.traceText : label.name : label.text
       if (sprite.text !== text) {
         sprite.text = text
         scale.x = sprite.scale.x
@@ -416,22 +416,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       const factor = fixedSize ? 12 * 2 * Math.tan(instance.camera().fov * Math.PI / 360) / Math.max(1, viewport.clientHeight) / 3 : 1
       sprite.scale.set(scale.x * factor, scale.y * factor, scale.z * factor)
       let below = pinnedId ? id === pinnedId : id === selectedId && !current
-      let partnerId = pinnedId ? id === pinnedId ? selectedId : pinnedId : current ? selectedId : id === selectedId ? evidenceRefId(ctx.page.ref) : null
-      if (!partnerId && allNodes.length <= 15) {
-        const nodes = instance.graphData().nodes
-        const node = nodes.find((item: { id: string }) => item.id === id)
-        if (node && [node.x, node.y, node.z].every(Number.isFinite)) {
-          instance.camera().updateMatrixWorld()
-          const origin = instance.graph2ScreenCoords(node.x, node.y, node.z)
-          let distance = Infinity
-          for (const other of nodes) {
-            if (other.id === id || !nodeVisible(other.id) || ![other.x, other.y, other.z].every(Number.isFinite)) continue
-            const point = instance.graph2ScreenCoords(other.x, other.y, other.z)
-            const candidate = Math.hypot(point.x - origin.x, point.y - origin.y)
-            if (candidate < distance) { distance = candidate; partnerId = other.id }
-          }
-        }
-      }
+      const partnerId = pinnedId ? id === pinnedId ? selectedId : pinnedId : current ? selectedId : id === selectedId ? evidenceRefId(ctx.page.ref) : null
       if (fixedSize && partnerId && partnerId !== id) {
         const nodes = instance.graphData().nodes
         const node = nodes.find((item: { id: string }) => item.id === id)
@@ -487,9 +472,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         icon.raycast = () => {}
         const group = new Group()
         group.add(label, icon)
-        const traceName = node.ref.label.length > 14 ? `${node.ref.label.slice(0, 13)}…` : node.ref.label
+        const traceName = node.ref.label.length > 14 ? `${node.ref.label.slice(0, 9)}…${node.ref.label.slice(-4)}` : node.ref.label
         const sized = {
-          sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
+          sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z }, name: traceName,
           text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`, traceText: `${KIND_LABELS[node.ref.kind]}${status} · ${nodeInfo(node.ref)}\n${traceName}`,
         }
         labels.set(id, sized)
@@ -553,8 +538,59 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
     applyMotionPreference()
     reducedMotion.addEventListener('change', applyMotionPreference)
+    const labelGuides = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    labelGuides.setAttribute('aria-hidden', 'true')
+    labelGuides.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
+    const guides = new Map<string, SVGLineElement>()
+    if (allNodes.length <= 15) {
+      for (const node of restoredNodes) {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+        line.setAttribute('stroke', '#a5b8c6')
+        line.setAttribute('stroke-width', '0.7')
+        line.setAttribute('stroke-dasharray', '2 3')
+        labelGuides.append(line)
+        guides.set(node.id, line)
+      }
+      viewport.append(labelGuides)
+    }
     const placeLabels = () => {
       for (const [id, label] of labels) sizeLabel(id, label)
+      for (const guide of guides.values()) guide.style.display = 'none'
+      // 仅小图做屏幕标签排布；复用Sprite锚点，不改组件节点坐标或相机。
+      if (allNodes.length > 15 || !viewport.clientHeight) return
+      instance.camera().updateMatrixWorld()
+      const pixels = viewport.clientHeight / (2 * Math.tan(instance.camera().fov * Math.PI / 360))
+      const nodes = instance.graphData().nodes.filter((node: { id: string; x: number; y: number; z: number }) =>
+        nodeVisible(node.id) && [node.x, node.y, node.z].every(Number.isFinite))
+      const priority = (id: string) => id === selectedId || id === evidenceRefId(ctx.page.ref) || id === pinnedId ? 0 : 1
+      nodes.sort((a: { id: string }, b: { id: string }) => priority(a.id) - priority(b.id) || a.id.localeCompare(b.id))
+      const items = nodes.filter((node: { id: string }) => labels.get(node.id)?.sprite.visible)
+        .map((node: GraphPoint3d & { id: string }) => {
+          const sprite = labels.get(node.id)!.sprite
+          return { node, sprite, point: instance.graph2ScreenCoords(node.x, node.y, node.z),
+            width: sprite.scale.x * pixels, height: sprite.scale.y * pixels }
+        })
+      // 使用d3fc成熟布局策略；不采用隐藏重叠标签策略，保留全部可见名称。
+      const rectangles = layoutGreedy().bounds({ x: 4, y: 4,
+        width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })(
+        items.map((item: { point: { x: number; y: number }; width: number; height: number }) =>
+          ({ x: item.point.x, y: item.point.y, width: item.width + 16, height: item.height + 16 })))
+      items.forEach(({ node, sprite, point, width, height }: {
+        node: { id: string }; sprite: InstanceType<typeof SpriteText>; point: { x: number; y: number }; width: number; height: number
+      }, index: number) => {
+        const rectangle = rectangles[index]
+        // d3fc的bounds是评分惩罚，仍可能选择越界位置；适配层确保文字不裁切。
+        const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 8))
+        const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 8))
+        const bounds = { left, top, right: left + width, bottom: top + height }
+        sprite.center.set((point.x - bounds.left) / width, 1 - (point.y - bounds.top) / height)
+        // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。
+        const guide = guides.get(node.id)!
+        guide.style.display = ''
+        for (const [key, value] of Object.entries({ x1: point.x, y1: point.y,
+          x2: Math.max(bounds.left, Math.min(bounds.right, point.x)),
+          y2: Math.max(bounds.top, Math.min(bounds.bottom, point.y)) })) guide.setAttribute(key, String(value))
+      })
     }
     instance.controls().addEventListener('change', placeLabels)
     if (rememberedView) {
@@ -565,7 +601,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const resize = new ResizeObserver(() => {
       if (viewport.clientWidth && viewport.clientHeight) {
         instance.width(viewport.clientWidth).height(viewport.clientHeight)
-        for (const [id, label] of labels) sizeLabel(id, label)
+        placeLabels()
         instance.resumeAnimation()
         fitInitialView()
       } else instance.pauseAnimation()
@@ -771,7 +807,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
           const edge = graph.edges.get(link.id)!
           return !previewOnly || evidenceRefId(edge.from) === selectedId || evidenceRefId(edge.to) === selectedId
         })
-      for (const [id, label] of labels) sizeLabel(id, label)
+      placeLabels()
       const count = linkData.filter(highlightedLink).length
       traceStatus.textContent = `${tracedId() ? '追踪' : '预览'} ${count} 条登记关系${pinnedId ? ' · 仅显示追踪关系' : previewOnly ? ' · 仅显示预览直接关系' : ''}`
       viewport.dataset.scope = pinnedId ? 'pair' : previewOnly ? 'preview' : 'all'
