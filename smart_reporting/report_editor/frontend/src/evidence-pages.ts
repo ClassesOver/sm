@@ -1093,9 +1093,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     const availableWidth = Math.max(1, scroll.clientWidth - 32)
     let scale = Math.min(1, availableWidth / mapWidth)
     let pan = { x: 0, y: 0 }
-    if (pinnedId && selectedId) {
+    if ((pinnedId || previewOnly) && selectedId) {
       const points: { x: number; y: number }[] = []
-      for (const id of [pinnedId, selectedId]) {
+      const focusIds = previewOnly ? [selectedId, ...relatedIds] : [pinnedId!, selectedId]
+      for (const id of focusIds) {
         const position = graph.positions.get(id)!
         points.push({ x: position.x - position.width / 2, y: position.y - position.height / 2 },
           { x: position.x + position.width / 2, y: position.y + position.height / 2 })
@@ -1103,7 +1104,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
       for (const [id, edge] of graph.edges) {
         const from = evidenceRefId(edge.from)
         const to = evidenceRefId(edge.to)
-        if ((from === pinnedId && to === selectedId) || (from === selectedId && to === pinnedId)) {
+        const include = previewOnly
+          ? from === selectedId || to === selectedId
+          : (from === pinnedId && to === selectedId) || (from === selectedId && to === pinnedId)
+        if (include) {
           points.push(...(graph.paths.get(id) ?? []))
         }
       }
