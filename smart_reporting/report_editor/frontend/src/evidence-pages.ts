@@ -461,7 +461,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         label.borderColor = selected ? '#007ea7' : '#c7dce8'
         label.borderWidth = selected ? 0.12 : 0.06
         label.borderRadius = 1
-        label.padding = [1, 2]
+        label.padding = allNodes.length <= 15 ? [1, 0.5] : [1, 2]
         label.position.y = 8
         const id = evidenceRefId(node.ref)
         const icon = new Sprite(new SpriteMaterial({ map: textures.get(node.ref.kind), sizeAttenuation: false, depthTest: false }))
@@ -571,17 +571,37 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
             width: sprite.scale.x * pixels, height: sprite.scale.y * pixels }
         })
       // 使用d3fc成熟布局策略；不采用隐藏重叠标签策略，保留全部可见名称。
-      const rectangles = layoutGreedy().bounds({ x: 4, y: 4,
-        width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })(
-        items.map((item: { point: { x: number; y: number }; width: number; height: number }) =>
-          ({ x: item.point.x, y: item.point.y, width: item.width + 16, height: item.height + 16 })))
+      const strategy = layoutGreedy().bounds({ x: 4, y: 4,
+        width: viewport.clientWidth - 8, height: viewport.clientHeight - 8 })
+      let rectangles = items.map((item: { point: { x: number; y: number }; width: number; height: number }) =>
+        // 相机阻尼末尾的亚像素浮点差异不应反复改变等价的标签放置方向。
+        ({ x: Math.round(item.point.x), y: Math.round(item.point.y), width: item.width + 8, height: item.height + 8 }))
+      const obstacles = nodes.map((node: GraphPoint3d) => {
+        const point = instance.graph2ScreenCoords(node.x, node.y, node.z)
+        return { x: Math.round(point.x) - 8, y: Math.round(point.y) - 8, width: 16, height: 16 }
+      })
+      // 后续轮次从上轮结果继续优化；交替镜像给组件提供两个方向的移动空间。
+      for (let round = 0; round < 4; round++) {
+        const mirrored = round % 2 === 1
+        const mirror = (rectangle: { x: number; y: number; width: number; height: number }) => ({ ...rectangle,
+          x: viewport.clientWidth - rectangle.x - rectangle.width,
+          y: viewport.clientHeight - rectangle.y - rectangle.height })
+        // 球体/图标参与碰撞评分；只应用前面的标签位置，节点本身保持不动。
+        const input = [...rectangles, ...obstacles]
+        rectangles = strategy(mirrored ? input.map(mirror) : input).slice(0, items.length).map(rectangle => {
+          const result = mirrored ? mirror(rectangle) : rectangle
+          return { ...result,
+            x: Math.max(4, Math.min(viewport.clientWidth - result.width - 4, result.x)),
+            y: Math.max(4, Math.min(viewport.clientHeight - result.height - 4, result.y)) }
+        })
+      }
       items.forEach(({ node, sprite, point, width, height }: {
         node: { id: string }; sprite: InstanceType<typeof SpriteText>; point: { x: number; y: number }; width: number; height: number
       }, index: number) => {
         const rectangle = rectangles[index]
         // d3fc的bounds是评分惩罚，仍可能选择越界位置；适配层确保文字不裁切。
-        const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 8))
-        const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 8))
+        const left = Math.max(4, Math.min(viewport.clientWidth - width - 4, rectangle.x + 4))
+        const top = Math.max(4, Math.min(viewport.clientHeight - height - 4, rectangle.y + 4))
         const bounds = { left, top, right: left + width, bottom: top + height }
         sprite.center.set((point.x - bounds.left) / width, 1 - (point.y - bounds.top) / height)
         // 虚线仅连接标签和球体，区别于组件中的真实登记关系线，不参与拾取。

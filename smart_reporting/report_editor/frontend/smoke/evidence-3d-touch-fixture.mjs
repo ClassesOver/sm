@@ -84,8 +84,13 @@ try {
   assert.deepEqual(await page.evaluate(() => ({ x: scrollX, y: scrollY })), scroll)
   // 在旋转、捏合后的实际视图中寻找节点，然后清除鼠标悬停再触摸点选。
   const hit = await findComputation()
-  await page.mouse.move(x, y)
-  await page.waitForTimeout(50)
+  const hoveredFrame = await canvas.screenshot()
+  await page.waitForTimeout(150)
+  assert.equal(hoveredFrame.equals(await canvas.screenshot()), true, '静止悬停时小图标签不反复跳位')
+  const tapBounds = await canvas.boundingBox()
+  await page.mouse.move(tapBounds.x + 2, tapBounds.y + 2)
+  await page.waitForFunction(() => !document.querySelector('.evidence-graph-3d').dataset.hovered)
+  // 清除扫描时的悬停回执后，实际触摸输入仍须命中节点。
   await page.touchscreen.tap(hit.x, hit.y)
   await page.locator('.evidence-preview-summary').waitFor()
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')

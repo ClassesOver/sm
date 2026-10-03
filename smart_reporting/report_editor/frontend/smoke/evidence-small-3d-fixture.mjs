@@ -42,6 +42,10 @@ try {
         }
         await page.getByRole('button', { name: '适应 3D', exact: true }).click()
         await page.waitForTimeout(650)
+        const bounds = await canvas.boundingBox()
+        await page.mouse.move(bounds.x + 2, bounds.y + 2)
+        await page.waitForTimeout(150)
+        assert.equal((await page.locator('.evidence-graph-3d').getAttribute('data-hovered')) ?? '', '', '全图截图清除临时悬停追踪')
         await page.locator('.evidence-relations').screenshot({ path: new URL(`report-editor-v6-small-3d-${count}-${width}-angle-${angle}${suffix}.png`, output).pathname })
         const clipped = await page.evaluate(async png => {
           const image = new Image()
