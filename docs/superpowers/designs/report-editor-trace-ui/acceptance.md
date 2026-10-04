@@ -499,3 +499,5 @@ Firefox 小图 `hub-star-relations` 交叉回放（2026-10-04）：27 个投影�
 横屏样式后的 Firefox 小图 `preview-relations` 回归（2026-10-04）：27 个直接关系投影场景的名称和图标覆盖均为 0，直接关系范围状态保持；不扩大为多邻居范围、复杂图整体可读性或真机/读屏通过。
 
 关系图核心回归（2026-10-04）：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过，节点身份、关系方向、追踪范围和列表契约保持；未运行完整前端测试套件。
+
+Firefox 小图 `none` 当前实现复核（2026-10-04）：正式 fixture 覆盖 5/9/15 节点、三视口、三旋转角度共 27 个 Sprite 投影场景，名称与跨节点图标覆盖均为 0，模式回放通过；仍保留 `readability: manual review required`，不扩大为复杂图整体可读性、真机或屏幕阅读器通过。
