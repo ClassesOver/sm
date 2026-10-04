@@ -20,6 +20,7 @@ import { outline } from '@milkdown/kit/utils'
 import { replaceAll } from '@milkdown/kit/utils'
 import {
   createIcons,
+  Database,
   FileDown,
   FileText,
   Focus,
@@ -159,6 +160,7 @@ structureLabel?.after(sourceStatusLabel)
 if (revisionLabel) revisionLabel.textContent = formatRevisionLabel(revision)
 createIcons({
   icons: {
+    Database,
     FileDown,
     FileText,
     Focus,

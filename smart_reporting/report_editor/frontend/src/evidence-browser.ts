@@ -9,7 +9,7 @@ import {
   type EvidenceStore,
   type EvidenceTask,
 } from './evidence-state'
-import { renderEvidencePage } from './evidence-pages'
+import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, renderEvidencePage } from './evidence-pages'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, MoreHorizontal, X } from 'lucide'
 
@@ -486,7 +486,14 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         item.type = 'button'
         item.className = 'evidence-directory-item'
         item.classList.toggle('is-current', current !== null && evidenceRefId(current.ref) === evidenceRefId(ref))
-        item.textContent = ref.label
+        const icon = createElement(EVIDENCE_KIND_ICONS[ref.kind], {
+          width: 15, height: 15, 'aria-hidden': 'true', color: EVIDENCE_KIND_COLORS[ref.kind],
+        })
+        icon.classList.add('evidence-directory-icon')
+        const name = document.createElement('span')
+        name.className = 'evidence-directory-label'
+        name.textContent = ref.label
+        item.append(icon, name)
         item.title = `${group.label} · ${ref.label}`
         item.addEventListener('click', () => openTaskFromDirectory(ref))
         directoryItems.append(item)

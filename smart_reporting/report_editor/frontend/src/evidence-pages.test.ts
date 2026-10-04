@@ -385,6 +385,9 @@ describe('事实页', () => {
     expect(container.querySelector('[data-status-row="verification"]')?.textContent).toContain('数值已核对')
     expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('登记值 12450 万元')
     expect(container.querySelector('.evidence-fact-formula')?.textContent).toContain('sum(revenue)')
+    // 登记公式与登记值同处摘要区，不再落在关系区之后。
+    expect(container.querySelector('.evidence-fact-formula')?.closest('.evidence-detail')).toBeNull()
+    expect(container.querySelector('.evidence-fact-formula code')?.textContent).toBe('sum(revenue)')
   })
 
   it('marks verification unchecked when no producing computation is registered', async () => {
@@ -1203,7 +1206,11 @@ describe('计算页', () => {
     const ref: EvidenceObjectRef = { kind: 'computation', key: 'comp-001', label: 'sum' }
     const { container, ctx } = setupPage(fetcher, ref)
     await renderEvidencePage(container, ctx)
-    expect(container.textContent).toContain('方法：sum')
+    expect(container.querySelector('[data-status-row="method"]')?.textContent).toContain('sum')
+    const verification = container.querySelector<HTMLElement>('[data-status-row="verification"] .evidence-status-value')
+    expect(verification?.textContent).toContain('数值已核对')
+    expect(verification?.dataset.tone).toBe('verified')
+    expect(container.querySelector('[data-status-row="execution"]')?.textContent).toContain('python 3.12')
     expect(container.querySelector('.evidence-computation-parameters')?.textContent).toContain('"column": "revenue"')
     expect(container.textContent).toContain('python 3.12')
     expect(container.textContent).toContain('数值已核对')

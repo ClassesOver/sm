@@ -22,7 +22,7 @@ import {
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
-import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
+import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut, type IconNode } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
@@ -81,6 +81,12 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
 const KIND_COLORS: Record<EvidenceObjectKind, string> = {
   fact: '#4b78b8', computation: '#8b62b5', dataset: '#268c7d', chart: '#b47a29', subject: '#687c90',
 }
+
+// 关系图节点、3D 贴图与来源目录共用同一套类型图标，避免各处各写一份映射。
+export const EVIDENCE_KIND_ICONS: Record<EvidenceObjectKind, IconNode> = {
+  fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText,
+}
+export const EVIDENCE_KIND_COLORS: Readonly<Record<EvidenceObjectKind, string>> = KIND_COLORS
 
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',
@@ -323,7 +329,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     let allLabels = ctx.page.graphLabels ? ctx.page.graphLabels === 'all' : allNodes.length <= 15
     void Promise.all([import('3d-force-graph'), import('three-spritetext'), import('./evidence-3d-primitives')]).then(async ([{ default: ForceGraph3D }, { default: SpriteText }, { Group, Sprite, SpriteMaterial, SRGBColorSpace, TextureLoader, layoutGreedy, totalCollisionArea }]) => {
     if (ctx.isStale() || !viewport.isConnected) return
-    const icons = { fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText }
+    const icons = EVIDENCE_KIND_ICONS
     const textures = new Map(await Promise.all([...new Set(allNodes.map(node => node.kind))].map(async kind => {
       const svg = createElement(icons[kind], { width: 24, height: 24, color: KIND_COLORS[kind] })
       const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
@@ -1120,7 +1126,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     title.title = node.label
     const heading = document.createElement('span')
     heading.className = 'evidence-node-heading'
-    const icon = { fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText }[node.kind]
+    const icon = EVIDENCE_KIND_ICONS[node.kind]
     heading.append(createElement(icon, { width: 14, height: 14, 'aria-hidden': 'true' }), title)
     const tag = document.createElement('span')
     tag.className = 'evidence-node-tag'
@@ -1747,6 +1753,19 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   valueLine.className = 'evidence-fact-value'
   valueLine.textContent = `登记值 ${text(detail.displayValue)}${unit ? ` ${unit}` : ''}`
   skeleton.statusArea.append(valueLine)
+  // 登记公式紧跟登记值展示，让“值从哪里来”与值本身在同一视线内。
+  const formula = typeof entry.formula === 'string' && entry.formula ? entry.formula : ''
+  if (formula) {
+    const formulaLine = document.createElement('p')
+    formulaLine.className = 'evidence-fact-formula'
+    const formulaLabel = document.createElement('span')
+    formulaLabel.className = 'evidence-fact-formula-label'
+    formulaLabel.textContent = '登记公式'
+    const formulaCode = document.createElement('code')
+    formulaCode.textContent = formula
+    formulaLine.append(formulaLabel, formulaCode)
+    skeleton.statusArea.append(formulaLine)
+  }
 
   if (!data.validation && ctx.getDraft()) {
     makeStatusRow(skeleton.statusArea, '引用状态', 'citation').textContent = '当前草稿引用状态未确认'
@@ -1802,6 +1821,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   verification.textContent = data.computation
     ? (VERIFICATION_LABELS[data.computation.verification] ?? data.computation.verification)
     : '未核对'
+  verification.dataset.tone = data.computation?.verification ?? 'not_checked'
   const reproducibility = makeStatusRow(skeleton.statusArea, '复算条件', 'reproducibility')
   reproducibility.textContent = data.computation
     ? (REPRODUCIBILITY_LABELS[data.computation.reproducibility] ?? data.computation.reproducibility)
@@ -1809,13 +1829,6 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
 
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
-  const formula = typeof entry.formula === 'string' && entry.formula ? entry.formula : ''
-  if (formula) {
-    const formulaP = document.createElement('p')
-    formulaP.className = 'evidence-fact-formula'
-    formulaP.textContent = `公式：${formula}`
-    skeleton.detailBox.append(formulaP)
-  }
   if (detail.warnings.length) {
     const warnings = document.createElement('ul')
     warnings.className = 'evidence-fact-warnings'
@@ -1879,11 +1892,38 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
   const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 计算记录 ${detail.computationId}`)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
+  // 方法、核对与复算条件与事实页使用同一种状态行，两类页面的信息层级保持一致。
+  makeStatusRow(skeleton.statusArea, '计算方法', 'method').textContent = detail.method
+  const verification = makeStatusRow(skeleton.statusArea, '核对状态', 'verification')
+  verification.textContent = VERIFICATION_LABELS[detail.verification] ?? detail.verification
+  verification.dataset.tone = detail.verification
+  makeStatusRow(skeleton.statusArea, '复算条件', 'reproducibility').textContent =
+    REPRODUCIBILITY_LABELS[detail.reproducibility] ?? detail.reproducibility
+  const env = detail.environment
+    ? Object.entries(detail.environment)
+        .map(([key, value]) => `${key} ${value}`)
+        .join(' · ')
+    : '环境信息缺失（复算条件有限）'
+  makeStatusRow(skeleton.statusArea, '执行记录', 'execution').textContent =
+    `${detail.executionId ?? '—'} · ${env}`
+
   const section = document.createElement('div')
   section.className = 'evidence-computation'
-  const method = document.createElement('p')
-  method.textContent = `方法：${detail.method}`
-  section.append(method)
+  if (detail.limitations.length) {
+    const limitations = document.createElement('div')
+    limitations.className = 'evidence-limitations'
+    const title = document.createElement('p')
+    title.className = 'evidence-limitations-title'
+    title.textContent = '适用局限'
+    limitations.append(title)
+    for (const note of detail.limitations) {
+      const p = document.createElement('p')
+      p.className = 'evidence-limitation'
+      p.textContent = note
+      limitations.append(p)
+    }
+    section.append(limitations)
+  }
   const parameters = document.createElement('pre')
   parameters.className = 'evidence-computation-parameters'
   parameters.tabIndex = 0
@@ -1898,26 +1938,6 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     preprocessing.textContent = `预处理：${JSON.stringify(detail.preprocessing, null, 2)}`
     section.append(preprocessing)
   }
-  const env = detail.environment
-    ? Object.entries(detail.environment)
-        .map(([key, value]) => `${key} ${value}`)
-        .join(' · ')
-    : '环境信息缺失（复算条件有限）'
-  const execution = document.createElement('p')
-  execution.textContent = `执行：${detail.executionId ?? '—'} · ${env}`
-  section.append(execution)
-  const verification = document.createElement('p')
-  verification.className = 'evidence-computation-verification'
-  verification.textContent =
-    `核对状态：${VERIFICATION_LABELS[detail.verification] ?? detail.verification} · ` +
-    `${REPRODUCIBILITY_LABELS[detail.reproducibility] ?? detail.reproducibility}`
-  section.append(verification)
-  for (const note of detail.limitations) {
-    const p = document.createElement('p')
-    p.className = 'evidence-limitation'
-    p.textContent = note
-    section.append(p)
-  }
   const heading = document.createElement('h2')
   heading.textContent = '输出事实'
   section.append(heading)
@@ -1930,7 +1950,13 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
   }
   for (const ref of detail.outputFactRefs.slice(0, 20)) {
     const li = document.createElement('li')
-    li.textContent = `${ref.analysisId} ${ref.jsonPointer}`
+    const outputName = document.createElement('span')
+    outputName.className = 'evidence-output-name'
+    outputName.textContent = ref.factKey ?? ref.analysisId
+    const pointer = document.createElement('code')
+    pointer.className = 'evidence-output-pointer'
+    pointer.textContent = `${ref.analysisId} ${ref.jsonPointer}`
+    li.append(outputName, pointer)
     if (ref.factKey) {
       const jump = makeButton('查看事实', 'ui-button evidence-link')
       bindEvidenceNavigation(jump, {

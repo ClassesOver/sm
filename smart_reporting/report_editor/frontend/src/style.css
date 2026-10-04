@@ -3968,7 +3968,9 @@ button {
 }
 
 .evidence-directory-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 7px 10px;
   border: 0;
@@ -3981,6 +3983,10 @@ button {
 }
 
 .evidence-directory-item:hover { background: #f1f5f8; }
+
+.evidence-directory-icon { flex: none; }
+
+.evidence-directory-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .evidence-directory-item.is-current {
   background: #edf5fc;
@@ -4059,6 +4065,20 @@ button {
 .evidence-subject-links > li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid #e6edf3; }
 .evidence-fact-warnings,
 .evidence-limitation { color: #95600c; }
+/* 登记公式紧随登记值：标签弱化，公式以等宽字体呈现，长公式在行内换行。 */
+.evidence-fact-formula { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0 0 6px; }
+.evidence-fact-formula-label { color: #5b6b7a; font-size: 12px; }
+.evidence-fact-formula code,
+.evidence-output-pointer { padding: 2px 8px; border: 1px solid #e1eaf1; border-radius: 6px; background: #f6f9fc; color: #33485c; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+/* 核对状态使用语义色：只有独立核对通过才用成功色，未核对保持中性，失败用警示色。 */
+.evidence-status-value[data-tone="verified"] { color: #26734d; font-weight: 600; }
+.evidence-status-value[data-tone="failed"] { color: #b42318; font-weight: 600; }
+.evidence-status-value[data-tone="not_checked"],
+.evidence-status-value[data-tone="not_applicable"] { color: #5b6b7a; }
+.evidence-limitations { margin: 0 0 14px; padding: 10px 14px; border: 1px solid #f0dfbf; border-left: 3px solid #c68a24; border-radius: 0 6px 6px 0; background: #fffaf0; }
+.evidence-limitations-title { margin: 0 0 4px; color: #7a4f0a; font-size: 12px; font-weight: 600; }
+.evidence-limitations .evidence-limitation { margin: 0; line-height: 1.6; }
+.evidence-output-name { color: #1b2a41; font-weight: 600; }
 .evidence-filter-row,
 .evidence-pagination,
 .evidence-dataset-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -4133,7 +4153,8 @@ button {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  width: min(100%, 860px);
+  width: 100%;
+  box-sizing: border-box;
   padding: 12px 14px;
   border-left: 3px solid #c68a24;
   border-radius: 0 4px 4px 0;
