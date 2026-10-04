@@ -3931,6 +3931,8 @@ button {
 .evidence-relations.is-graph-view .evidence-mobile-graph-return { display: inline-flex; }
 
 /* 主体：来源目录 + 工作区 */
+.evidence-notice { margin: 0; padding: 8px 16px; border-bottom: 1px solid #f0dfbf; background: #fffaf0; color: #7a4f0a; font-size: 13px; }
+.evidence-notice[hidden] { display: none; }
 .evidence-body { position: relative; display: flex; flex: 1; min-height: 0; }
 
 .evidence-directory {

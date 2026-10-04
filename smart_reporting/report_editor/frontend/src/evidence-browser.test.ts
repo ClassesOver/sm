@@ -308,6 +308,23 @@ describe('evidence browser shell', () => {
     expect(onOpen).toHaveBeenCalledTimes(2)
   })
 
+  it('drops empty histories and clamps corrupted indexes when restoring the session', async () => {
+    sessionStorage.setItem('smart-reporting-evidence-session', JSON.stringify({
+      active: 'task-2',
+      tasks: [
+        { key: 'task-1', root: fact('fact-a'), history: [], index: 0, used: 1 },
+        { key: 'task-2', root: fact('fact-b'), history: [{ ref: fact('fact-b'), path: [fact('fact-b')] }], index: 7, used: 'x' },
+      ],
+    }))
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    expect(browser._state.store.tasks.map((task) => task.key)).toEqual(['task-2'])
+    expect(browser._state.store.tasks[0]!.index).toBe(0)
+    expect(browser._state.currentPage()?.ref.key).toBe('fact-b')
+    expect(shell.querySelectorAll('.evidence-tab:not(.evidence-tab-report)')).toHaveLength(1)
+  })
+
   it('restores task history after a browser instance is recreated', async () => {
     const first = setup()
     first.browser.openObject(fact('fact-a', '华东营收'))
@@ -448,6 +465,19 @@ describe('evidence browser shell', () => {
     expect(shell.querySelector('.evidence-tab-stage')!.textContent).toBe('引用')
     expect(browser._state.currentPage()?.ref.kind).toBe('subject')
     expect(browser._state.currentPage()?.ref.key).toBe('sub-aaaa')
+  })
+
+  it('shows a visible notice when a citation is not in the current revision, cleared on next render', async () => {
+    const { shell, browser } = setup()
+    await browser.openSubject('sub-missing')
+    await flush()
+    const notice = shell.querySelector<HTMLElement>('.evidence-notice')!
+    expect(notice.hidden).toBe(false)
+    expect(notice.textContent).toContain('不在当前修订的来源中')
+    expect(browser._state.currentPage()).toBeNull()
+    await browser.openSubject('sub-aaaa')
+    await flush()
+    expect(notice.hidden).toBe(true)
   })
 
   it('ignores a late source failure after reset without invalidating the new source cache', async () => {

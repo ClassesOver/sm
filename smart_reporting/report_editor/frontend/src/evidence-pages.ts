@@ -90,6 +90,8 @@ const KIND_COLORS = EVIDENCE_KIND_COLORS
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',
   report_editor_session_expired: '编辑会话已过期，请从报告列表重新打开此报告',
+  report_editor_session_invalid: '编辑会话无效，请从报告列表重新打开此报告',
+  report_editor_csrf_invalid: '页面安全校验已失效，请刷新页面后重试',
   dataset_access_denied: '当前会话无权访问该数据',
   fact_binding_unavailable: '事实引用暂不可用，内容可能已变更',
   snapshot_expired: '数据快照已超过保留期',
@@ -191,6 +193,24 @@ function text(value: unknown): string {
   return value === null || value === undefined ? '—' : String(value)
 }
 
+/**
+ * 正文值与登记值的差额：按两者中较多的小数位四舍五入，消除浮点误差
+ * （如 12780.1 - 12450.3 不应显示为 329.79999999999927），并带正负号。
+ */
+export function formatDifference(draft: unknown, registered: unknown): string | null {
+  const a = numeric(draft)
+  const b = numeric(registered)
+  if (a === null || b === null) return null
+  const decimals = (value: unknown) => {
+    const match = /\.(\d+)/.exec(String(value).replaceAll(',', ''))
+    return match ? Math.min(match[1].length, 10) : 0
+  }
+  const places = Math.max(decimals(draft), decimals(registered))
+  const rounded = Number((a - b).toFixed(places))
+  const value = Object.is(rounded, -0) ? 0 : rounded
+  return `${value >= 0 ? '+' : ''}${value}`
+}
+
 function numeric(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value !== 'string' || !value.trim()) return null
@@ -261,7 +281,8 @@ function errorInfo(error: unknown): { message: string; retryable: boolean } {
   if (error instanceof ReportEditorApiError) {
     return {
       message: TRACE_ERROR_LABELS[error.code] ?? '来源加载失败，请稍后重试',
-      retryable: error.status >= 500 || error.status === 0,
+      // 429（资源饱和）与 408（超时）属于“稍后重试”类，与服务器/网络故障一样提供重试。
+      retryable: error.status >= 500 || error.status === 0 || error.status === 429 || error.status === 408,
     }
   }
   return { message: '网络异常，来源加载失败', retryable: true }
@@ -1887,13 +1908,11 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
         warning.className = 'evidence-warning'
         const message = document.createElement('p')
         // factValue、unit、periods 与 scope 均取自登记事实，不是草稿提取值。
-        const draftValue = numeric(entryResult.draftValue)
-        const registeredValue = numeric(detail.displayValue)
-        const difference = draftValue !== null && registeredValue !== null && entryResult.comparable
-          ? draftValue - registeredValue
+        const difference = entryResult.comparable
+          ? formatDifference(entryResult.draftValue, detail.displayValue)
           : null
         message.textContent = entryResult.status === 'stale' && difference !== null
-          ? `正文当前值 ${text(entryResult.draftValue)}${unit ? ` ${unit}` : ''}，登记值 ${text(detail.displayValue)}${unit ? ` ${unit}` : ''}，差异 ${difference >= 0 ? '+' : ''}${text(difference)}。正文引用内容已变更，登记值核对结论不受影响。`
+          ? `正文当前值 ${text(entryResult.draftValue)}${unit ? ` ${unit}` : ''}，登记值 ${text(detail.displayValue)}${unit ? ` ${unit}` : ''}，差异 ${difference}。正文引用内容已变更，登记值核对结论不受影响。`
           : entryResult.status === 'stale'
             ? '正文引用内容已变更，需核对口径。当前正文值、单位与期间的可比性尚未确认，暂不计算差额。登记值核对结论不受影响。'
             : '正文引用命中登记值，但单位或期间存在软告警，需核对口径。登记值核对结论不受影响。'

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { formatDifference, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -1247,6 +1247,36 @@ describe('详情入口统一导航', () => {
     link.click()
     expect(ctx.navigate).toHaveBeenCalledExactlyOnceWith(target)
     container.remove()
+  })
+})
+
+describe('formatDifference', () => {
+  it('rounds away floating-point noise and keeps the sign', () => {
+    expect(formatDifference(12780.1, 12450.3)).toBe('+329.8')
+    expect(formatDifference('12,780', '12,450')).toBe('+330')
+    expect(formatDifference(0.3, 0.1)).toBe('+0.2')
+    expect(formatDifference(100, 100.5)).toBe('-0.5')
+    expect(formatDifference(1, 1)).toBe('+0')
+    expect(formatDifference('abc', 1)).toBeNull()
+  })
+})
+
+describe('错误重试与会话文案', () => {
+  it.each([
+    [429, 'resource_limit_exceeded', true],
+    [408, 'request_timeout', true],
+    [404, 'source_missing', false],
+    [401, 'report_editor_session_invalid', false],
+  ])('status %s / %s retryable=%s', async (status, code, retryable) => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: { code } }), { status })) as unknown as typeof fetch
+    const ref: EvidenceObjectRef = { kind: 'computation', key: 'comp-001', label: 'sum' }
+    const { container, ctx } = setupPage(fetcher, ref)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('.evidence-retry') !== null).toBe(retryable)
+    if (code === 'report_editor_session_invalid') {
+      expect(container.querySelector('.evidence-status')?.textContent).toContain('重新打开此报告')
+    }
   })
 })
 

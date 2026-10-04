@@ -57,11 +57,16 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       if (!raw) return undefined
       const parsed = JSON.parse(raw) as EvidenceStore
       if (!parsed || !Array.isArray(parsed.tasks) || typeof parsed.active !== 'string') return undefined
+      // 空历史或越界的 index 会让 currentPage() 取到 undefined；损坏/旧版数据一律丢弃或收敛到有效范围。
       parsed.tasks = parsed.tasks.filter((task) =>
         task && typeof task.key === 'string' && task.root && Array.isArray(task.history) &&
+        task.history.length > 0 &&
         task.history.every((page) => page && page.ref && Array.isArray(page.path)),
       )
       for (const task of parsed.tasks) {
+        task.index = Number.isInteger(task.index)
+          ? Math.max(0, Math.min(task.index, task.history.length - 1)) : task.history.length - 1
+        task.used = Number.isFinite(task.used) ? task.used : 0
         for (const page of task.history) {
           page.selected ??= null
           page.collapsed ??= false
@@ -137,6 +142,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       </details>
       <span class="evidence-revision"></span>
     </div>
+    <p class="evidence-notice" role="status" hidden></p>
     <div class="evidence-body">
       <aside class="evidence-directory" id="evidence-directory" aria-label="来源目录">
         <div class="evidence-directory-head"></div>
@@ -778,7 +784,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     })
   }
 
+  // 打开失败等需要用户看到的提示；下次渲染（切换页签、导航等）即清除。
+  const notice = shell.querySelector<HTMLElement>('.evidence-notice')!
+  const showNotice = (message: string) => {
+    notice.textContent = message
+    notice.hidden = false
+  }
+
   const renderAll = () => {
+    notice.hidden = true
     navigationIntent += 1
     renderTabs()
     renderNav()
@@ -830,11 +844,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       announce(`已开启核对任务 ${task.root.label}`)
     } catch (error) {
       if (!isOpen || intent !== navigationIntent) return
-      announce(
-        error instanceof ReportEditorApiError && error.code === 'source_missing'
-          ? '来源不存在或不在当前修订中'
-          : '来源定位失败，请稍后重试',
-      )
+      const message = error instanceof ReportEditorApiError && error.code === 'source_missing'
+        ? '该正文引用不在当前修订的来源中，可能已被修改或删除'
+        : '来源定位失败，请稍后重试'
+      announce(message)
+      showNotice(message)
     }
   }
 
