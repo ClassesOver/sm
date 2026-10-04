@@ -1048,4 +1048,6 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 
 2026-10-04 横屏样式后的 Firefox 长名称复杂图回归：`REPORT_EDITOR_LONG_LABELS=1` 下同一 39 节点/55 条边 fixture 在三视口通过批次、列表身份、相机、追踪、边界、导航和隐藏几何稳定检查，无脚本错误；844×390 画布高度保持 212px。长名称信息入口保持可用，但密集图整体可读性仍需人工审查。
 
+2026-10-04 横屏样式后的 Firefox 图表关系回归：chart fixture 通过来源分页失败恢复、3D/2D 往返和图关系检查，保留 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份及两条输入边方向；offsets 为 `[0,20,20,20,0]`，无脚本错误。
+
 2026-10-04 关系图核心回归：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过，2D/3D 共用的节点身份、关系方向、追踪范围和列表契约保持；未运行完整前端测试套件。
