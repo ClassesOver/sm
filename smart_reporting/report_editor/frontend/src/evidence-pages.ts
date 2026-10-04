@@ -2542,7 +2542,15 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
 
   const renderPlots = () => {
     plotBox.innerHTML = ''
-    for (const plot of data!.detail.source.plotData) {
+    const plots = data!.detail.source.plotData
+    if (!plots.length) {
+      const empty = document.createElement('p')
+      empty.className = 'evidence-plot-empty'
+      empty.setAttribute('role', 'status')
+      empty.textContent = '该图表未登记作图数据，可通过来源数据集核对。'
+      plotBox.append(empty)
+    }
+    for (const plot of plots) {
       const heading = document.createElement('h2')
       heading.textContent = plot.role ? `作图数据（${PLOT_ROLE_LABELS[plot.role] ?? plot.role}）` : '作图数据'
       plotBox.append(heading)
@@ -2557,15 +2565,21 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
       plotBox.append(range)
     }
     moreSlot.innerHTML = ''
+    // 总页数按最长的作图表计算；只有一页时不显示分页区。
+    const currentPage = Math.floor(data!.detail.offset / 20) + 1
+    const totalPages = Math.max(currentPage, Math.ceil(Math.max(0, ...plots.map((plot) => plot.rowCount)) / 20))
+    const hasMore = plots.some((plot) => plot.truncated)
+    moreSlot.hidden = totalPages <= 1 && !hasMore
     const pageNumber = document.createElement('span')
-    pageNumber.textContent = `第 ${Math.floor(data!.detail.offset / 20) + 1} 页`
+    pageNumber.className = 'evidence-page-number'
+    pageNumber.textContent = `第 ${currentPage} / ${Math.max(totalPages, currentPage + (hasMore ? 1 : 0))} 页`
     moreSlot.append(pageNumber)
     if (data!.detail.offset > 0) {
       const previous = makeButton('上一页', 'ui-button evidence-previous')
       previous.addEventListener('click', () => void changePage(Math.max(0, data!.detail.offset - 20)))
       moreSlot.append(previous)
     }
-    if (data!.detail.source.plotData.some((plot) => plot.truncated)) {
+    if (hasMore) {
       const next = makeButton('下一页', 'ui-button evidence-more')
       next.addEventListener('click', () => void changePage(data!.detail.offset + 20))
       moreSlot.append(next)

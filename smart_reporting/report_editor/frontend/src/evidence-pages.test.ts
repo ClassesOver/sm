@@ -1450,6 +1450,7 @@ describe('图表页', () => {
     expect(container.querySelector('[data-status-row="datasets"]')?.textContent).toContain('dataset-url-abc0001')
     expect(container.textContent).toContain('按院区聚合')
     expect(container.textContent).toContain('作图数据（主序列）')
+    expect(container.querySelector('.evidence-page-number')?.textContent).toBe('第 1 / 2 页')
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
     more.click()
     await vi.waitFor(() => {
@@ -1458,6 +1459,7 @@ describe('图表页', () => {
     expect(container.querySelector('.evidence-table')?.textContent).not.toContain('华东')
     expect(ctx.page.chartOffset).toBe(20)
     expect(container.textContent).toContain('预览序号 21–21')
+    expect(container.querySelector('.evidence-page-number')?.textContent).toBe('第 2 / 2 页')
     await renderEvidencePage(container, ctx)
     expect(container.textContent).toContain('华北')
     expect(fetcher).toHaveBeenCalledTimes(2)
@@ -1469,6 +1471,24 @@ describe('图表页', () => {
     await vi.waitFor(() => expect(fresh.page.chartOffset).toBe(0))
     expect(fresh.container.textContent).toContain('华东')
     expect(fresh.container.textContent).not.toContain('华北')
+  })
+
+  it('hides single-page pagination and explains charts without plot data', async () => {
+    const base = {
+      available: true, chartId: 'chart_001', datasetIds: [], transformNotes: [],
+      computationId: null, image: { size: 1, sha256: 'a' },
+    }
+    const single = { ...base, plotData: [{ fileResourceId: 'plot-1', columns: ['value'], rowCount: 2,
+      offset: 0, limit: 20, rows: [[1], [2]], truncated: false }] }
+    const first = setupPage(vi.fn<typeof fetch>().mockImplementation(async () => json(single)) as unknown as typeof fetch, CHART_REF)
+    await renderEvidencePage(first.container, first.ctx)
+    expect(first.container.querySelector<HTMLElement>('.evidence-pagination')?.hidden).toBe(true)
+    expect(first.container.querySelector('.evidence-plot-empty')).toBeNull()
+
+    const empty = setupPage(vi.fn<typeof fetch>().mockImplementation(async () => json({ ...base, plotData: [] })) as unknown as typeof fetch, CHART_REF)
+    await renderEvidencePage(empty.container, empty.ctx)
+    expect(empty.container.querySelector('.evidence-plot-empty')?.textContent).toContain('未登记作图数据')
+    expect(empty.container.querySelector<HTMLElement>('.evidence-pagination')?.hidden).toBe(true)
   })
 
   it('keeps current rows and offset on failure and offers retry', async () => {

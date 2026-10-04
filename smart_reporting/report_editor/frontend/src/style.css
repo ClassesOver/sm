@@ -4130,6 +4130,8 @@ button {
 .evidence-pagination,
 .evidence-dataset-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .evidence-filter-row { margin-top: 14px; }
+.evidence-plot-empty { margin: 12px 0 0; padding: 12px 14px; border: 1px dashed #c7d7e5; border-radius: 8px; color: #5b6b7a; font-size: 13px; }
+.evidence-page-number { color: #5b6b7a; font-size: 12px; font-variant-numeric: tabular-nums; }
 .evidence-column-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; padding: 8px 12px; border: 1px solid #dbe6f0; border-radius: 8px; background: #f6f9fc; }
 .evidence-column-label { display: inline-flex; align-items: center; gap: 8px; color: #1b2a41; font-size: 13px; font-weight: 600; }
 .evidence-column-window { min-height: 36px; max-width: min(420px, 100%); padding: 6px 10px; border: 1px solid #c7d7e5; border-radius: 8px; background: #fff; color: #1b2a41; font: inherit; font-weight: 400; }
