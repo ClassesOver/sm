@@ -33,7 +33,7 @@ try {
     const title = await page.locator('.evidence-object-title').textContent()
     const hadHistory = await page.locator('[data-evidence="back"]').isEnabled()
     const targetTitle = scenario === 'input' ? 'fact-input-fixture'
-      : kind === '计算' ? 'comp-fixture-001' : 'fact-fixture-001'
+      : kind === '计算' ? '渠道收入汇总' : 'fact-fixture-001'
     await link.click({ modifiers: ['Control'] })
     assert.equal(await page.locator('.evidence-tab-name').count(), 2)
     assert.equal(await page.locator('.evidence-object-title').textContent(), title)

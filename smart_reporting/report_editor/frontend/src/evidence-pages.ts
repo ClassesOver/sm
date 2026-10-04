@@ -20,6 +20,7 @@ import {
   bindEvidenceNavigation,
   EVIDENCE_KIND_COLORS,
   EVIDENCE_KIND_ICONS,
+  relabelRelations,
   renderRelationList,
   subjectLabel,
   type EvidenceRelations,
@@ -65,6 +66,8 @@ export interface EvidencePageContext {
   locateSubject: (subjectId: string) => void
   /** 当前草稿（引用状态校验用）；不可得时返回 null。 */
   getDraft: () => { markdown: string; sha256: string } | null
+  /** 按对象身份查询来源目录中已登记的显示名；未加载或未登记时返回 undefined。 */
+  labelFor?: (ref: EvidenceObjectRef) => string | undefined
   /** 页面级数据缓存：历史返回时不重复请求。 */
   pageData: <T>() => T | undefined
   setPageData: (data: unknown) => void
@@ -1476,7 +1479,8 @@ async function loadNodeRelations(ref: EvidenceObjectRef, ctx: EvidencePageContex
 }
 
 /** 关系区：图与等价文字列表可切换，收起状态持久在当前历史页面。 */
-function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, relations: EvidenceRelations): void {
+function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawRelations: EvidenceRelations): void {
+  const relations = ctx.labelFor ? relabelRelations(rawRelations, ctx.labelFor) : rawRelations
   ctx.graph ??= createEvidenceGraph()
   mergeEvidenceGraph(ctx.graph, relations)
   ctx.graph.branches.set(evidenceRefId(relations.center), { status: 'loaded' })
@@ -1534,8 +1538,9 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rela
     }
     redraw()
     try {
-      const next = await loadNodeRelations(ref, ctx)
+      const loaded = await loadNodeRelations(ref, ctx)
       if (ctx.isStale()) return
+      const next = ctx.labelFor ? relabelRelations(loaded, ctx.labelFor) : loaded
       mergeEvidenceGraph(ctx.graph!, next)
       ctx.graph!.branches.set(id, { status: 'loaded' })
     } catch (error) {
@@ -2534,11 +2539,11 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   }
   if (detail.computationId) {
     const li = document.createElement('li')
-    const jump = makeButton(`计算 ${detail.computationId}`, 'ui-button evidence-link evidence-related-link')
+    const computationRef: EvidenceObjectRef = { kind: 'computation', key: detail.computationId, label: detail.computationId }
+    const computationLabel = ctx.labelFor?.(computationRef) ?? detail.computationId
+    const jump = makeButton(`计算 ${computationLabel}`, 'ui-button evidence-link evidence-related-link')
     jump.prepend(createElement(EVIDENCE_KIND_ICONS.computation, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.computation }))
-    bindEvidenceNavigation(jump, {
-      kind: 'computation', key: detail.computationId, label: detail.computationId,
-    }, ctx)
+    bindEvidenceNavigation(jump, { ...computationRef, label: computationLabel }, ctx)
     li.append(jump)
     list.append(li)
   }

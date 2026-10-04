@@ -90,7 +90,7 @@ try {
   }
   await picker.selectOption('computation:comp-fixture-001')
   await picker.press('Enter')
-  await page.locator('.evidence-object-title', { hasText: 'comp-fixture-001' }).waitFor()
+  await page.locator('.evidence-object-title', { hasText: '渠道收入汇总' }).waitFor()
   await canvas.waitFor()
   await checkContexts(1)
   await page.locator('[data-evidence="back"]').click()

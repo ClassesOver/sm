@@ -615,7 +615,10 @@ async def test_real_chart_sources_page_recover_and_restore_browser_state(
                 await expect(page.locator(".evidence-plot-range").last).to_have_text("共 2 行 · 当前页无预览记录")
                 await page.get_by_role("button", name="展开", exact=True).click()
                 await page.get_by_role("button", name="切换到关系列表", exact=True).click()
-                await page.locator(".evidence-relation-list button").filter(has_text=index.datasets[0].dataset_id).click()
+                # 关系列表与来源目录使用同一显示名：文件名 → 业务名称 → 数据集 ID。
+                dataset = index.datasets[0]
+                dataset_label = dataset.filename or dataset.business_label or dataset.dataset_id
+                await page.locator(".evidence-relation-list button").filter(has_text=dataset_label).click()
                 await expect(page.locator(".evidence-eyebrow")).to_have_text("快照")
                 await page.locator('[data-evidence="back"]').click()
                 await expect(main_table.locator("tr:has(td)")).to_have_text("P211021")
@@ -994,7 +997,9 @@ async def test_cached_evidence_revalidates_current_draft_without_reloading_regis
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 await page.goto(f"{base_url}/reports/v1/editor/open/{raw}?subject={subject_id}")
                 await page.locator('button[data-action="sources"]').click()
-                await page.locator(".evidence-directory-item").filter(has_text=subject_id[:8]).first.click()
+                # 引用显示名为去掉 sub- 前缀后的 6 位短号（与前端 subjectLabel 一致）。
+                subject_short = subject_id.removeprefix("sub-")[:6]
+                await page.locator(".evidence-directory-item").filter(has_text=f"#{subject_short}").first.click()
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
                 citation = page.locator('[data-status-row="citation"]')
                 await expect(citation).to_contain_text("引用有效")

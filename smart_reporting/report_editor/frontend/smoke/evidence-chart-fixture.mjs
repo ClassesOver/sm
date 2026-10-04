@@ -69,7 +69,7 @@ try {
   await page.getByText('共 2 行 · 当前页无预览记录', { exact: true }).waitFor()
   // 在同任务进入计算，再后退，图表当前页继续复用。
   await page.getByRole('button', { name: '切换到关系列表', exact: true }).click()
-  await page.locator('.evidence-relation-list button', { hasText: 'comp-fixture-001' }).click()
+  await page.locator('.evidence-relation-list button', { hasText: '渠道收入汇总' }).click()
   await page.locator('[data-evidence="back"]').click()
   await mainTable.getByText('图表记录21', { exact: true }).waitFor()
   assert.deepEqual(offsets, [0, 20, 20])

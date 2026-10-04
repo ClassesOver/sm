@@ -8,6 +8,7 @@ import {
   assembleFactRelations,
   assembleSubjectRelations,
   renderRelationList,
+  relabelRelations,
   subjectLabel,
 } from './evidence-relations'
 import type { EvidenceObjectRef } from './evidence-state'
@@ -85,6 +86,26 @@ describe('subjectLabel', () => {
     // 旧实现只保留 4 位有效字符，以下两个引用会显示成同一个名称。
     expect(subjectLabel('sub-a1b2c3000000000')).not.toBe(subjectLabel('sub-a1b2ff000000000'))
     expect(subjectLabel('legacy-id')).toBe('正文引用 #legacy')
+  })
+})
+
+describe('relabelRelations', () => {
+  it('replaces raw ids with registered labels on nodes and edge endpoints only when known', () => {
+    const center: EvidenceObjectRef = { kind: 'chart', key: 'chart-1', label: 'chart-1' }
+    const dataset: EvidenceObjectRef = { kind: 'dataset', key: 'ds-1', label: 'ds-1' }
+    const computation: EvidenceObjectRef = { kind: 'computation', key: 'comp-1', label: 'comp-1' }
+    const relations = {
+      center, nodes: [dataset, computation],
+      edges: [{ from: dataset, to: center, label: '输入' as const }, { from: computation, to: center, label: '输入' as const }],
+      loadedNote: '',
+    }
+    const labels: Record<string, string> = { 'ds-1': '收入明细.csv', 'comp-1': '渠道收入汇总' }
+    const next = relabelRelations(relations as never, (ref) => labels[ref.key])
+    expect(next.nodes.map((node) => node.label)).toEqual(['收入明细.csv', '渠道收入汇总'])
+    expect(next.edges.map((edge) => edge.from.label)).toEqual(['收入明细.csv', '渠道收入汇总'])
+    // 未登记的对象保留原名，不推断。
+    expect(next.center.label).toBe('chart-1')
+    expect(next.edges[0]!.from.key).toBe('ds-1')
   })
 })
 

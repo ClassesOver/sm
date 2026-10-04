@@ -56,7 +56,7 @@ try {
   await mkdir(output, { recursive: true })
   await page.screenshot({ path: new URL('report-editor-v6-mobile-path.png', output).pathname })
   await pathItems.nth(2).click()
-  await page.locator('.evidence-object-title', { hasText: 'comp-fixture-001' }).waitFor()
+  await page.locator('.evidence-object-title', { hasText: '渠道收入汇总' }).waitFor()
   await page.locator('[data-evidence="back"]').click()
   await page.locator('.evidence-object-title', { hasText: '收入明细.csv' }).waitFor()
   assert.equal(await page.locator('.evidence-graph-scroll').evaluate(node => node.scrollLeft), scrollLeft, '后退应恢复该历史页图滚动')

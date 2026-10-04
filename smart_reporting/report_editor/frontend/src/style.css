@@ -3991,6 +3991,8 @@ button {
 
 .evidence-directory-icon { flex: none; }
 
+.evidence-directory-count { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #eef3f7; color: #5b6b7a; font-size: 10.5px; letter-spacing: 0; }
+
 .evidence-directory-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .evidence-directory-item.is-current {

@@ -495,6 +495,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const label = document.createElement('p')
       label.className = 'evidence-directory-group'
       label.textContent = group.label
+      const count = document.createElement('span')
+      count.className = 'evidence-directory-count'
+      count.textContent = String(group.items.length)
+      count.setAttribute('aria-label', `${group.items.length} 项`)
+      label.append(count)
       directoryItems.append(label)
       for (const ref of group.items) {
         const item = document.createElement('button')
@@ -703,6 +708,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       signal,
       isStale: () => signal.aborted,
       revisionLabel: options.revisionLabel,
+      labelFor: (ref: EvidenceObjectRef) => {
+        const id = evidenceRefId(ref)
+        return directoryRefs.find((item) => evidenceRefId(item) === id)?.label
+      },
       downloadEnabled,
       drilldownEnabled,
       loadSources,

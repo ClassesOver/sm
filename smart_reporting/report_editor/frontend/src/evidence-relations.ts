@@ -183,6 +183,26 @@ export function assembleDatasetRelations(ref: EvidenceObjectRef, sources: TraceS
   return finish(relations, '（仅含已登记关系）')
 }
 
+/**
+ * 用已登记的显示名统一关系节点名称：各页面装配关系时只能拿到原始 ID（如计算记录 ID、
+ * 图表页的数据集 ID），而来源目录与页签使用方法名、文件名。查不到登记名时保留原名，不做推断。
+ */
+export function relabelRelations(
+  relations: EvidenceRelations,
+  labelFor: (ref: EvidenceObjectRef) => string | undefined,
+): EvidenceRelations {
+  const relabel = (ref: EvidenceObjectRef): EvidenceObjectRef => {
+    const label = labelFor(ref)
+    return label && label !== ref.label ? { ...ref, label } : ref
+  }
+  return {
+    ...relations,
+    center: relabel(relations.center),
+    nodes: relations.nodes.map(relabel),
+    edges: relations.edges.map((edge) => ({ ...edge, from: relabel(edge.from), to: relabel(edge.to) })),
+  }
+}
+
 /** 图表页：作图数据集与产出侧计算记录。 */
 export function assembleChartRelations(ref: EvidenceObjectRef, source: TraceChartSource): EvidenceRelations {
   const { relations, add } = makeRelations(ref)

@@ -96,7 +96,7 @@ try {
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
   assert.equal(await page.locator('[data-evidence="back"]').isEnabled(), false)
   await page.getByRole('button', { name: '进入', exact: true }).tap()
-  await page.locator('.evidence-object-title', { hasText: 'comp-fixture-001' }).waitFor()
+  await page.locator('.evidence-object-title', { hasText: '渠道收入汇总' }).waitFor()
   await page.locator('[data-evidence="back"]').tap()
   await page.locator('.evidence-object-title', { hasText: title }).waitFor()
   assert.equal(await picker.inputValue(), 'computation:comp-fixture-001')
