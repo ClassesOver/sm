@@ -18,13 +18,15 @@ import {
   assembleFactRelations,
   assembleSubjectRelations,
   bindEvidenceNavigation,
+  EVIDENCE_KIND_COLORS,
+  EVIDENCE_KIND_ICONS,
   renderRelationList,
   subjectLabel,
   type EvidenceRelations,
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
-import { ArrowRight, Calculator, CircleAlert, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut, type IconNode } from 'lucide'
+import { ArrowRight, CircleAlert, createElement, Expand, ExternalLink, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
@@ -80,15 +82,7 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
   subject: '引用',
 }
 
-const KIND_COLORS: Record<EvidenceObjectKind, string> = {
-  fact: '#4b78b8', computation: '#8b62b5', dataset: '#268c7d', chart: '#b47a29', subject: '#687c90',
-}
-
-// 关系图节点、3D 贴图与来源目录共用同一套类型图标，避免各处各写一份映射。
-export const EVIDENCE_KIND_ICONS: Record<EvidenceObjectKind, IconNode> = {
-  fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText,
-}
-export const EVIDENCE_KIND_COLORS: Readonly<Record<EvidenceObjectKind, string>> = KIND_COLORS
+const KIND_COLORS = EVIDENCE_KIND_COLORS
 
 const TRACE_ERROR_LABELS: Record<string, string> = {
   source_missing: '来源不存在或不在当前修订中',

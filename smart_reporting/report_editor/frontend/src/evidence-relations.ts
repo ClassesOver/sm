@@ -6,6 +6,15 @@ import type {
   TraceSubjectInfo,
 } from './api'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef } from './evidence-state'
+import { Calculator, ChartColumn, createElement, Database, FileText, Hash, type IconNode } from 'lucide'
+
+// 关系图节点、3D 贴图、来源目录与关系列表共用同一套类型图标与类型色。
+export const EVIDENCE_KIND_ICONS: Record<EvidenceObjectKind, IconNode> = {
+  fact: Hash, computation: Calculator, dataset: Database, chart: ChartColumn, subject: FileText,
+}
+export const EVIDENCE_KIND_COLORS: Record<EvidenceObjectKind, string> = {
+  fact: '#4b78b8', computation: '#8b62b5', dataset: '#268c7d', chart: '#b47a29', subject: '#687c90',
+}
 
 /**
  * 证据浏览器局部关系装配（证据浏览器 v6，M2）。
@@ -263,6 +272,10 @@ export function renderRelationList(
         const row = document.createElement('button')
         row.type = 'button'
         row.className = 'evidence-relation-row'
+        const icon = createElement(EVIDENCE_KIND_ICONS[other.kind], {
+          width: 14, height: 14, 'aria-hidden': 'true', color: EVIDENCE_KIND_COLORS[other.kind],
+        })
+        icon.classList.add('evidence-relation-icon')
         const kind = document.createElement('span')
         kind.className = 'evidence-relation-kind'
         kind.textContent = KIND_LABELS[other.kind]
@@ -270,7 +283,7 @@ export function renderRelationList(
         name.className = 'evidence-relation-label'
         name.textContent = other.label
         name.title = other.label
-        row.append(kind, name)
+        row.append(icon, kind, name)
         bindEvidenceNavigation(row, other, handlers)
         pair.append(row)
       }

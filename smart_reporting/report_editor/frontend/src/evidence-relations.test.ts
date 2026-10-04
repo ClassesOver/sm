@@ -238,6 +238,8 @@ describe('renderRelationList', () => {
     expect(rows).toHaveLength(3)
     expect(rows[0]!.textContent).toContain('事实')
     expect(rows[0]!.textContent).toContain('fact-input')
+    // 每行带装饰性类型图标，读屏仍读类型文字与名称。
+    expect(rows[0]!.querySelector('.evidence-relation-icon')?.getAttribute('aria-hidden')).toBe('true')
     expect(rows[0]!.querySelector('.evidence-relation-label')?.getAttribute('title')).toBe('fact-input')
     rows[0]!.click()
     expect(navigate).toHaveBeenCalledWith(

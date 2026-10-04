@@ -9,8 +9,8 @@ import {
   type EvidenceStore,
   type EvidenceTask,
 } from './evidence-state'
-import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, renderEvidencePage } from './evidence-pages'
-import { subjectLabel } from './evidence-relations'
+import { renderEvidencePage } from './evidence-pages'
+import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, MoreHorizontal, X } from 'lucide'
 
@@ -145,6 +145,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         <div class="evidence-directory-items"></div>
         <p class="evidence-directory-note">目录与搜索会开启独立核对任务，不覆盖当前任务的导航历史。</p>
       </aside>
+      <div class="evidence-directory-scrim" hidden></div>
       <main class="evidence-workspace" tabindex="-1" aria-label="证据对象"></main>
     </div>
     <div class="evidence-announcer sr-only" aria-live="polite"></div>`
@@ -396,7 +397,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     if (!task) {
       const editing = document.createElement('span')
       editing.className = 'evidence-crumb-current'
-      editing.textContent = '正在编辑'
+      editing.textContent = '未打开核对任务'
       crumbs.append(editing)
       return
     }
@@ -585,13 +586,26 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     renderDirectoryItems()
   })
 
+  // 窄屏目录是覆盖在工作区上的抽屉：遮罩提示层级，点遮罩或在目录内按 Esc 关闭并归还焦点。
+  const directoryScrim = shell.querySelector<HTMLElement>('.evidence-directory-scrim')!
   const setDirectoryOpen = (open: boolean) => {
     directory.classList.toggle('is-open', open)
+    directoryScrim.hidden = !open
     directoryToggle.setAttribute('aria-expanded', String(open))
   }
   directoryToggle.addEventListener('click', () =>
     setDirectoryOpen(!directory.classList.contains('is-open')),
   )
+  directoryScrim.addEventListener('click', () => {
+    setDirectoryOpen(false)
+    directoryToggle.focus({ preventScroll: true })
+  })
+  directory.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !directory.classList.contains('is-open')) return
+    event.stopPropagation()
+    setDirectoryOpen(false)
+    directoryToggle.focus({ preventScroll: true })
+  })
 
   // ------------------------------------------------------------------
   // 工作区：渲染当前任务当前页，页级请求作废与数据缓存

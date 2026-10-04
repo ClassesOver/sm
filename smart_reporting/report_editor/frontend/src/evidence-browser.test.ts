@@ -203,6 +203,34 @@ describe('evidence browser shell', () => {
     }
   })
 
+  it('narrow directory drawer closes from its scrim and Escape, returning focus', async () => {
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    const toggle = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle')!
+    const directory = shell.querySelector<HTMLElement>('.evidence-directory')!
+    const scrim = shell.querySelector<HTMLElement>('.evidence-directory-scrim')!
+    expect(scrim.hidden).toBe(true)
+    toggle.click()
+    expect(directory.classList.contains('is-open')).toBe(true)
+    expect(scrim.hidden).toBe(false)
+    scrim.click()
+    expect(directory.classList.contains('is-open')).toBe(false)
+    expect(scrim.hidden).toBe(true)
+    expect(document.activeElement).toBe(toggle)
+    toggle.click()
+    directory.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(directory.classList.contains('is-open')).toBe(false)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('names the empty start state without implying the user is editing', async () => {
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    expect(shell.querySelector('.evidence-crumbs')?.textContent).toBe('未打开核对任务')
+  })
+
   it('uses roving tabindex for manually activated task tabs', async () => {
     const { shell, browser } = setup()
     browser.openObject(fact('fact-a', '华东营收'))

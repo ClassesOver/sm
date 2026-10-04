@@ -3912,7 +3912,7 @@ button {
 .evidence-relation-group { margin: 12px 0 4px; padding: 0 12px; color: #697b8e; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
 .evidence-relation-pair { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; margin: 0; padding: 8px 12px; border-bottom: 1px solid #edf1f4; }
 .evidence-relation-pair:last-child { border-bottom: 0; }
-.evidence-relation-kind { margin-right: 6px; color: #697b8e; font-size: 11px; }
+.evidence-relation-kind { margin-right: -4px; color: #697b8e; font-size: 11px; }
 .evidence-relation-arrow { color: #9ab4c5; font-size: 12px; user-select: none; }
 .evidence-relation-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-relation-empty {
@@ -4253,9 +4253,12 @@ button {
   text-align: left;
   cursor: pointer;
   font: inherit;
+  font-size: 14px;
   line-height: 1.4;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
+
+.evidence-relation-icon { flex: none; }
 
 .evidence-relation-row:hover { border-color: #c7dce8; background: #f3f9fc; }
 .evidence-relation-row:focus-visible { outline: 2px solid rgb(0 126 167 / 28%); outline-offset: 1px; }
@@ -4280,7 +4283,7 @@ button {
   font-weight: 600;
 }
 
-.evidence-graph-scroll { max-height: 480px; overflow: auto; overscroll-behavior: contain; }
+.evidence-graph-scroll { max-height: 480px; overflow: auto; overscroll-behavior: contain; background: #fbfdff; }
 
 .evidence-graph-3d {
   position: relative;
@@ -4509,6 +4512,23 @@ button {
   }
 
   .evidence-directory.is-open { display: flex; }
+
+  /* 只在抽屉打开时隔离工作区层级，避免 2D 节点等带 z-index 的内容浮在遮罩上；
+     不常驻隔离，以免手机全屏关系图（fixed + z-index）被压到顶栏之下。 */
+  .evidence-body:has(.evidence-directory.is-open) .evidence-workspace { isolation: isolate; }
+
+  .evidence-directory-scrim:not([hidden]) {
+    display: block;
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    background: rgb(15 30 50 / 24%);
+  }
+}
+
+/* 宽屏目录常驻，不需要遮罩。 */
+@media (min-width: 1101px) {
+  .evidence-directory-scrim { display: none; }
 }
 
 @media (max-width: 900px) {
