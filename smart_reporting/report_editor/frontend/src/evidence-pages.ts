@@ -129,6 +129,46 @@ const SUBJECT_KIND_LABELS: Record<string, string> = {
   chart_caption: '图表说明',
 }
 
+// 事实类型取自后端 FactKindV1 枚举；未知值原样显示，不猜测含义。
+const FACT_KIND_LABELS: Record<string, string> = {
+  metric: '指标',
+  comparison: '比较',
+  derived: '派生指标',
+  reconciliation: '对账',
+  correlation: '相关性',
+  supplemental_finding: '补充分析结论',
+}
+
+// 作图数据角色由图表脚本写入，没有固定枚举；只翻译常见值，其余原样显示。
+const PLOT_ROLE_LABELS: Record<string, string> = {
+  main: '主序列',
+  secondary: '次序列',
+  observed: '观测值',
+  forecast: '预测值',
+}
+
+// 占位符视为空值，不阻止整列被识别为数字列。
+const EMPTY_CELL_MARKERS = new Set(['', '—', '–', '-', 'N/A', 'NaN'])
+
+// 数字列：当前页所有非空值均为数字（可含正负号、千分位、小数与百分号）。
+const NUMERIC_CELL = /^[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/
+
+function numericColumns(columnCount: number, rows: (string | null)[][]): boolean[] {
+  return Array.from({ length: columnCount }, (_, index) => {
+    let seen = false
+    for (const row of rows) {
+      // 作图数据等接口可能直接返回 JSON 数字，统一转成文本再判断。
+      const raw: unknown = row[index]
+      if (raw === null || raw === undefined) continue
+      const value = String(raw).trim()
+      if (EMPTY_CELL_MARKERS.has(value)) continue
+      if (!NUMERIC_CELL.test(value)) return false
+      seen = true
+    }
+    return seen
+  })
+}
+
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -1592,11 +1632,13 @@ function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)
     table.style.width = `${widths.reduce((sum, width) => sum + width, 0)}px`
   }
   if (ctx) applyWidths()
+  const numeric = numericColumns(columns.length, rows)
   const header = table.insertRow()
   for (const [index, column] of columns.entries()) {
     const cell = document.createElement('th')
     cell.scope = 'col'
     cell.textContent = column
+    if (numeric[index]) cell.classList.add('is-numeric')
     if (ctx) {
       const handle = makeButton('', 'evidence-column-resize')
       const label = () => handle.setAttribute('aria-label', `调整 ${column} 列宽，当前 ${widths[index]} 像素，左右方向键调整`)
@@ -1632,9 +1674,10 @@ function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)
   }
   for (const row of rows) {
     const tr = table.insertRow()
-    for (const value of row) {
+    for (const [index, value] of row.entries()) {
       const cell = tr.insertCell()
       cell.textContent = text(value)
+      if (numeric[index]) cell.classList.add('is-numeric')
     }
   }
   wrap.append(table)
@@ -1758,7 +1801,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   const { detail } = data
   const entry = detail.entry as Record<string, unknown>
   const unit = typeof entry.unit === 'string' ? entry.unit : ''
-  const skeleton = buildSkeleton(container, ctx, `分析 ${detail.analysisId} · ${detail.factKind} · ${ctx.revisionLabel}`)
+  const skeleton = buildSkeleton(container, ctx, `${FACT_KIND_LABELS[detail.factKind] ?? detail.factKind} · 分析 ${detail.analysisId} · ${ctx.revisionLabel}`)
 
   // 登记值摘要：只展示登记值与登记公式，缺失时不拼造「计算过程」。
   const valueLine = document.createElement('p')
@@ -2300,15 +2343,18 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   )
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
+  // 图表登记信息与其他对象页一致使用状态行；转换说明逐条列出，不合并成一段。
   const info = document.createElement('div')
-  info.className = 'evidence-chart-info'
-  const datasetsLine = document.createElement('p')
-  datasetsLine.textContent = `数据集：${source.datasetIds.length ? source.datasetIds.join('、') : '未登记'}`
-  info.append(datasetsLine)
+  info.className = 'evidence-chart-info evidence-status-area'
+  makeStatusRow(info, '来源数据集', 'datasets').textContent =
+    source.datasetIds.length ? source.datasetIds.join('、') : '未登记'
+  const notes = makeStatusRow(info, '转换说明', 'transform-notes')
+  if (!source.transformNotes.length) notes.textContent = '未登记转换步骤'
   for (const noteText of source.transformNotes) {
     const p = document.createElement('p')
+    p.className = 'evidence-transform-note'
     p.textContent = noteText
-    info.append(p)
+    notes.append(p)
   }
   skeleton.detailBox.append(info)
 
@@ -2316,13 +2362,16 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   skeleton.detailBox.append(plotBox)
 
   const moreSlot = document.createElement('div')
+  moreSlot.className = 'evidence-pagination'
+  moreSlot.setAttribute('role', 'group')
+  moreSlot.setAttribute('aria-label', '作图数据分页')
   skeleton.detailBox.append(moreSlot)
 
   const renderPlots = () => {
     plotBox.innerHTML = ''
     for (const plot of data!.detail.source.plotData) {
       const heading = document.createElement('h2')
-      heading.textContent = plot.role ? `作图数据（${plot.role}）` : '作图数据'
+      heading.textContent = plot.role ? `作图数据（${PLOT_ROLE_LABELS[plot.role] ?? plot.role}）` : '作图数据'
       plotBox.append(heading)
       const wrap = document.createElement('div')
       wrap.className = 'evidence-table-wrap'

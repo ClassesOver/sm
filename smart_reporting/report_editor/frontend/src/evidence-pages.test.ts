@@ -388,6 +388,9 @@ describe('事实页', () => {
     // 登记公式与登记值同处摘要区，不再落在关系区之后。
     expect(container.querySelector('.evidence-fact-formula')?.closest('.evidence-detail')).toBeNull()
     expect(container.querySelector('.evidence-fact-formula code')?.textContent).toBe('sum(revenue)')
+    // 事实类型以中文显示，不暴露后端枚举值。
+    expect(container.querySelector('.evidence-object-note')?.textContent).toContain('指标 · 分析')
+    expect(container.querySelector('.evidence-object-note')?.textContent).not.toContain('metric')
   })
 
   it('marks verification unchecked when no producing computation is registered', async () => {
@@ -952,6 +955,10 @@ describe('快照页', () => {
     expect(container.querySelector('[data-status-row="period-roles"]')?.textContent).toContain('本期')
     expect(container.querySelector('[data-status-row="size"]')?.textContent).toContain('4 行')
     expect(container.querySelector('[data-status-row="business-label"]')).toBeNull()
+    // 数字列右对齐：revenue 全为数字，branch 为文本。
+    const header = [...container.querySelectorAll('.evidence-table th')]
+    expect(header.map((cell) => cell.classList.contains('is-numeric'))).toEqual([false, true])
+    expect(container.querySelector('.evidence-table td.is-numeric')?.textContent).toBe('1000')
 
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
     more.click()
@@ -1286,9 +1293,9 @@ describe('图表页', () => {
     }) as unknown as typeof fetch
     const { container, ctx } = setupPage(fetcher, CHART_REF)
     await renderEvidencePage(container, ctx)
-    expect(container.textContent).toContain('数据集：dataset-url-abc0001')
+    expect(container.querySelector('[data-status-row="datasets"]')?.textContent).toContain('dataset-url-abc0001')
     expect(container.textContent).toContain('按院区聚合')
-    expect(container.textContent).toContain('作图数据（main）')
+    expect(container.textContent).toContain('作图数据（主序列）')
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
     more.click()
     await vi.waitFor(() => {

@@ -4084,6 +4084,9 @@ button {
 .evidence-limitations-title { margin: 0 0 4px; color: #7a4f0a; font-size: 12px; font-weight: 600; }
 .evidence-limitations .evidence-limitation { margin: 0; line-height: 1.6; }
 .evidence-output-name { color: #1b2a41; font-weight: 600; }
+.evidence-chart-info { margin-bottom: 4px; }
+.evidence-transform-note { margin: 0; }
+.evidence-transform-note + .evidence-transform-note { margin-top: 2px; }
 /* 状态行内带操作时（如正文位置 + 定位正文），文字与按钮同行，窄屏自动换行。 */
 /* 快照登记信息较多：宽屏两列排布，减少对数据表的推挤；状态提示仍占满整行。 */
 @media (min-width: 900px) {
@@ -4229,6 +4232,8 @@ button {
 
 .evidence-table tbody tr:last-child td { border-bottom: 0; }
 .evidence-table tbody tr:hover { background: #f3f8fc; }
+/* 数字列右对齐并使用等宽数字，便于纵向比较量级。 */
+.evidence-table .is-numeric { text-align: right; font-variant-numeric: tabular-nums; }
 
 .evidence-more-error { display: block; margin: 8px 0; }
 
