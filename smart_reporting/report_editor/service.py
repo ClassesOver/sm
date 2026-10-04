@@ -1155,6 +1155,17 @@ class ReportEditorService:
         return page.to_payload()
 
     @source_lifecycle
+    async def trace_dataset_columns(
+        self,
+        expected: ReportEditorContext,
+        session: ReportEditorSession,
+        dataset_id: str,
+    ) -> dict[str, Any]:
+        self._require_lineage_feature("panel")
+        context = await self._source_context(expected)
+        return await self.trace.columns(context, session.capabilities, dataset_id)
+
+    @source_lifecycle
     async def trace_dataset_download(
         self,
         expected: ReportEditorContext,

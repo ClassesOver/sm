@@ -264,3 +264,26 @@ def test_preview_keeps_original_cell_text_without_type_inference(tmp_path: Path)
     path.write_text("dept_code,amount,rate\n0012,1200.50,05%\n0300,980.00,12%\n", encoding="utf-8")
     page = service().preview(_file(path), PERMIT_ALL, limit=10)
     assert page.rows == (("0012", "1200.50", "05%"), ("0300", "980.00", "12%"))
+
+
+def test_cursor_continues_when_explicit_columns_equal_full_header() -> None:
+    """显式选择全部列（受控列选择的窗口恰为整表）时续翻不能被判为列选择不匹配。"""
+    svc = service()
+    file = _file(csv_path("hospital_revenue.csv"))
+    header = list(svc.preview(file, PERMIT_ALL, limit=1).columns)
+    page = svc.preview(file, PERMIT_ALL, limit=2, columns=header)
+    assert page.next_cursor
+    page2 = svc.preview(file, PERMIT_ALL, limit=2, columns=header, cursor=page.next_cursor)
+    assert page2.offset == 2
+
+
+def test_visible_columns_hide_blocked_names_without_count() -> None:
+    svc = service()
+    file = _file(csv_path("hospital_revenue.csv"))
+    columns, restricted = svc.visible_columns(file, PERMIT_ALL)
+    assert "revenue" in columns and restricted is False
+    blocked = TracePreviewPermissions(blocked_columns=frozenset({"revenue"}))
+    columns, restricted = svc.visible_columns(file, blocked)
+    assert "revenue" not in columns and restricted is True
+    # 可见列可直接用于受控预览。
+    assert svc.preview(file, blocked, limit=10, columns=columns).columns == tuple(columns)

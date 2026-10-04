@@ -79,6 +79,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
           }
           page.datasetPageIndex = Number.isInteger(page.datasetPageIndex)
             ? Math.max(0, Math.min(page.datasetPageIndex, page.datasetCursors.length - 1)) : 0
+          if (page.datasetColumnWindow !== undefined &&
+              !(Number.isInteger(page.datasetColumnWindow) && page.datasetColumnWindow >= 0)) {
+            delete page.datasetColumnWindow
+          }
           page.chartOffset = Number.isInteger(page.chartOffset) && page.chartOffset >= 0 ? page.chartOffset : 0
           page.columnWidths ??= {}
           page.tableScroll ??= 0

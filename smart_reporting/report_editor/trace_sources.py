@@ -383,6 +383,24 @@ class ReportEditorTraceService:
             revision=int(context.revision),
         )
 
+    async def columns(
+        self,
+        context: Any,
+        session_capabilities: Mapping[str, Any] | None,
+        dataset_id: str,
+    ) -> dict[str, Any]:
+        index = await self.require_index(context)
+        file = await self._resolve_dataset_file(context, index, dataset_id)
+        visible, restricted = self._preview.visible_columns(
+            file, self._permissions(session_capabilities)
+        )
+        return {
+            "datasetId": file.dataset_id,
+            "columns": visible,
+            "restricted": restricted,
+            "maxColumnsPerPage": TRACE_BUDGETS_V1["preview_max_columns"],
+        }
+
     async def download(
         self,
         context: Any,

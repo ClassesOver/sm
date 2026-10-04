@@ -200,7 +200,9 @@ class TraceCsvPreviewService:
                     "r": f"{report_id}#{revision}",
                     "d": file.dataset_id,
                     "h": file.sha256[:16],
-                    "c": list(selected) if selected != header else None,
+                    # 绑定请求原样的列选择：显式选择全部列与不选列是两种请求形状，
+                    # 若按“是否等于表头”折叠，显式全列请求的续翻会被判为列选择不匹配。
+                    "c": list(columns) if columns is not None else None,
                     "l": limit,
                     "o": offset + len(rows),
                     "iat": int(time.time()),
@@ -241,6 +243,20 @@ class TraceCsvPreviewService:
         exp = payload.get("exp", 0)
         if not isinstance(exp, (int, float)) or exp < time.time():
             raise ReportingError("cursor_invalid", "分页游标已过期。")
+
+    def visible_columns(
+        self, file: TraceDatasetFile, permissions: TracePreviewPermissions
+    ) -> tuple[list[str], bool]:
+        """当前会话可预览的列（受控列选择的候选）与是否存在受限列。
+
+        受限列只以“存在受限列”布尔值体现，不回显列名或数量（计划 5.2）。
+        """
+
+        if not file.local_path.is_file():
+            raise ReportingError("source_missing", "数据集快照文件不存在。")
+        header = self._header(file)
+        visible = [name for name in header if name not in permissions.blocked_columns]
+        return visible, len(visible) != len(header)
 
     def _header(self, file: TraceDatasetFile) -> list[str]:
         try:

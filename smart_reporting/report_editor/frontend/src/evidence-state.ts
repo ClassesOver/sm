@@ -42,6 +42,8 @@ export interface EvidencePage {
   filter: string
   datasetCursors: (string | null)[]
   datasetPageIndex: number
+  /** 宽表/受限列快照的受控列窗口序号；未设置表示整表预览。 */
+  datasetColumnWindow?: number
   chartOffset: number
   columnWidths: Record<string, number>
   tableScroll: number

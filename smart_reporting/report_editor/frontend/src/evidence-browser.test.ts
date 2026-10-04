@@ -313,7 +313,7 @@ describe('evidence browser shell', () => {
       active: 'task-2',
       tasks: [
         { key: 'task-1', root: fact('fact-a'), history: [], index: 0, used: 1 },
-        { key: 'task-2', root: fact('fact-b'), history: [{ ref: fact('fact-b'), path: [fact('fact-b')] }], index: 7, used: 'x' },
+        { key: 'task-2', root: fact('fact-b'), history: [{ ref: fact('fact-b'), path: [fact('fact-b')], datasetColumnWindow: -1 }], index: 7, used: 'x' },
       ],
     }))
     const { shell, browser } = setup()
@@ -322,6 +322,8 @@ describe('evidence browser shell', () => {
     expect(browser._state.store.tasks.map((task) => task.key)).toEqual(['task-2'])
     expect(browser._state.store.tasks[0]!.index).toBe(0)
     expect(browser._state.currentPage()?.ref.key).toBe('fact-b')
+    // 非法的受控列窗口序号回到整表预览，而不是请求不存在的窗口。
+    expect(browser._state.currentPage()).not.toHaveProperty('datasetColumnWindow')
     expect(shell.querySelectorAll('.evidence-tab:not(.evidence-tab-report)')).toHaveLength(1)
   })
 

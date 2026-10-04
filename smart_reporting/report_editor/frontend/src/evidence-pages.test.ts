@@ -952,6 +952,82 @@ describe('快照页', () => {
     }) as unknown as typeof fetch
   }
 
+  it('switches wide or restricted snapshots to controlled column windows instead of dead-ending', async () => {
+    const all = Array.from({ length: 61 }, (_, i) => (i === 0 ? 'row_id' : `c${String(i).padStart(3, '0')}`))
+    const previewFor = (columns: string[], offset = 0, nextCursor: string | null = 'cw-2') => ({
+      ...PREVIEW_PAGE_1, columns, rows: [columns.map((name) => `${name}-${offset}`)], offset, nextCursor,
+    })
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = new URL(String(input), 'http://reports.test')
+      if (url.pathname.endsWith('/columns')) {
+        return json({ datasetId: DATASET_REF.key, columns: all, restricted: true, maxColumnsPerPage: 50 })
+      }
+      if (url.pathname.endsWith('/preview')) {
+        const columns = url.searchParams.get('columns')
+        if (!columns) {
+          return new Response(JSON.stringify({ detail: { code: 'resource_limit_exceeded' } }), { status: 422 })
+        }
+        const selected = columns.split(',')
+        return json(previewFor(selected, url.searchParams.get('cursor') ? 1 : 0, url.searchParams.get('cursor') ? null : 'cw-2'))
+      }
+      if (url.pathname.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, DATASET_REF)
+    await renderEvidencePage(container, ctx)
+
+    expect(container.querySelector('.evidence-page-error')).toBeNull()
+    expect(ctx.page.datasetColumnWindow).toBe(0)
+    const headers = () => [...container.querySelectorAll('.evidence-table th')].map((cell) => cell.textContent)
+    expect(headers()).toHaveLength(50)
+    expect(headers()[0]).toBe('row_id')
+    const select = container.querySelector<HTMLSelectElement>('.evidence-column-window')!
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      '第 1–50 列（row_id … c049）',
+      '第 51–61 列（c050 … c060）',
+    ])
+    expect(container.querySelector('.evidence-column-note')?.textContent).toBe(
+      '共 61 列，单页最多显示 50 列 · 部分列受访问限制，未在预览中显示',
+    )
+
+    // 先翻到第二页，再切换列窗口：游标绑定列选择，切换后从第一页重新开始。
+    container.querySelector<HTMLButtonElement>('.evidence-more')!.click()
+    await vi.waitFor(() => expect(ctx.page.datasetPageIndex).toBe(1))
+    select.value = '1'
+    select.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(headers()[0]).toBe('c050'))
+    expect(headers()).toHaveLength(11)
+    expect(ctx.page).toMatchObject({ datasetColumnWindow: 1, datasetPageIndex: 0, datasetCursors: [null] })
+    const urls = (fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]))
+    expect(urls.filter((url) => url.includes('cursor=cw-2')).every((url) => url.includes('columns=row_id'))).toBe(true)
+
+    // 会话恢复：已保存窗口直接按受控列请求，不再先发整表预览。
+    const restored = setupPage(fetcher, DATASET_REF)
+    restored.page.datasetColumnWindow = 1
+    const before = (fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls.length
+    await renderEvidencePage(restored.container, restored.ctx)
+    const restoredUrls = (fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls.slice(before).map((call) => String(call[0]))
+    expect(restoredUrls.filter((url) => url.includes('/preview')).every((url) => url.includes('columns=c050'))).toBe(true)
+    expect(restored.container.querySelector('.evidence-column-window')).not.toBeNull()
+  })
+
+  it('keeps reporting a denial when no column is visible to the session', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/columns')) {
+        return json({ datasetId: DATASET_REF.key, columns: [], restricted: true, maxColumnsPerPage: 50 })
+      }
+      if (url.includes('/preview')) {
+        return new Response(JSON.stringify({ detail: { code: 'dataset_access_denied' } }), { status: 403 })
+      }
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, DATASET_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('.evidence-page-error')?.textContent).toContain('当前会话无权访问该数据')
+    expect(ctx.page.datasetColumnWindow).toBeUndefined()
+  })
+
   it('marks a missing materialization time as unknown instead of inferring it', async () => {
     const payload = structuredClone(SOURCES_PAYLOAD)
     payload.datasets[0].materializedAt = null as unknown as string

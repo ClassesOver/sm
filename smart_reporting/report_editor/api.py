@@ -674,6 +674,24 @@ def create_report_editor_router(
                 _editor_http_error(error, request_id=request_id)
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/columns",
+            include_in_schema=False,
+        )
+        async def read_report_dataset_columns(
+            report_id: str, revision: int, dataset_id: str, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                payload = await editor.trace_dataset_columns(context, session, dataset_id)
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
         @router.api_route(
             "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/download",
             methods=["GET", "HEAD"],

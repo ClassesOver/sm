@@ -4,6 +4,7 @@ import {
   type ReportEditorClient,
   type TraceChartSource,
   type TraceComputationDetail,
+  type TraceDatasetColumns,
   type TraceDatasetInfo,
   type TraceFactDetail,
   type TracePreviewPage,
@@ -2102,6 +2103,29 @@ interface DatasetPageData {
   }
   info: TraceDatasetInfo | null
   relations: EvidenceRelations
+  /** 受控列选择模式下的可见列清单；整表预览时为空。 */
+  columnSet?: TraceDatasetColumns
+}
+
+/** 受控列窗口：按单页列上限切分可见列，窗口序号越界时回到第一窗。 */
+export function datasetColumnWindows(columnSet: TraceDatasetColumns): string[][] {
+  const size = Math.max(1, columnSet.maxColumnsPerPage)
+  const windows: string[][] = []
+  for (let start = 0; start < columnSet.columns.length; start += size) {
+    windows.push(columnSet.columns.slice(start, start + size))
+  }
+  return windows
+}
+
+function windowColumns(columnSet: TraceDatasetColumns, index: number | undefined): string[] {
+  const windows = datasetColumnWindows(columnSet)
+  return windows[index ?? 0] ?? windows[0] ?? []
+}
+
+/** 整表预览因列数超限或含受限列被拒时，转入受控列选择；其余错误原样抛出。 */
+function needsColumnSelection(error: unknown): boolean {
+  return error instanceof ReportEditorApiError &&
+    (error.code === 'resource_limit_exceeded' || error.code === 'dataset_access_denied')
 }
 
 const DATASET_SOURCE_LABELS: Record<string, string> = {
@@ -2124,8 +2148,33 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   if (!data) {
     showLoading(container)
     try {
-      const cursor = ctx.page.datasetCursors[ctx.page.datasetPageIndex]
-      const page = await ctx.client.datasetPreview(ctx.page.ref.key, { limit: 50, ...(cursor ? { cursor } : {}) }, ctx.signal)
+      let columnSet: TraceDatasetColumns | undefined
+      let page: TracePreviewPage | undefined
+      if (ctx.page.datasetColumnWindow === undefined) {
+        const cursor = ctx.page.datasetCursors[ctx.page.datasetPageIndex]
+        try {
+          page = await ctx.client.datasetPreview(ctx.page.ref.key, { limit: 50, ...(cursor ? { cursor } : {}) }, ctx.signal)
+        } catch (error) {
+          if (!needsColumnSelection(error)) throw error
+          if (ctx.isStale()) return
+          columnSet = await ctx.client.datasetColumns(ctx.page.ref.key, ctx.signal)
+          if (ctx.isStale()) return
+          if (!columnSet.columns.length) throw error
+          ctx.updatePage({ datasetColumnWindow: 0, datasetCursors: [null], datasetPageIndex: 0 })
+        }
+      }
+      if (!page) {
+        columnSet ??= await ctx.client.datasetColumns(ctx.page.ref.key, ctx.signal)
+        if (ctx.isStale()) return
+        if (ctx.page.datasetColumnWindow! >= datasetColumnWindows(columnSet).length) {
+          // 恢复的窗口序号已不在当前列清单内（权限或快照变化）：回到第一窗。
+          ctx.updatePage({ datasetColumnWindow: 0, datasetCursors: [null], datasetPageIndex: 0 })
+        }
+        const cursor = ctx.page.datasetCursors[ctx.page.datasetPageIndex]
+        page = await ctx.client.datasetPreview(ctx.page.ref.key, {
+          limit: 50, columns: windowColumns(columnSet, ctx.page.datasetColumnWindow), ...(cursor ? { cursor } : {}),
+        }, ctx.signal)
+      }
       if (ctx.isStale()) return
       const sources = await ctx.loadSources()
       if (ctx.isStale()) return
@@ -2140,6 +2189,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
         },
         info: sources.datasets?.find((item) => item.datasetId === ctx.page.ref.key) ?? null,
         relations: assembleDatasetRelations(ctx.page.ref, sources),
+        ...(columnSet ? { columnSet } : {}),
       }
       ctx.setPageData(data)
     } catch (error) {
@@ -2168,6 +2218,41 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   const scope = document.createElement('p')
   scope.className = 'evidence-dataset-scope'
   skeleton.detailBox.append(scope)
+
+  // 受控列选择：宽表按单页列上限分窗浏览；受限列不显示，只说明存在。
+  const columnSet = data.columnSet
+  let columnSelect: HTMLSelectElement | null = null
+  if (columnSet) {
+    const windows = datasetColumnWindows(columnSet)
+    const columnBar = document.createElement('div')
+    columnBar.className = 'evidence-column-bar'
+    if (windows.length > 1) {
+      const label = document.createElement('label')
+      label.className = 'evidence-column-label'
+      label.textContent = '显示列'
+      columnSelect = document.createElement('select')
+      columnSelect.className = 'evidence-column-window'
+      const size = Math.max(1, columnSet.maxColumnsPerPage)
+      windows.forEach((columns, index) => {
+        const option = document.createElement('option')
+        option.value = String(index)
+        const first = index * size + 1
+        option.textContent = `第 ${first}–${first + columns.length - 1} 列（${columns[0]} … ${columns[columns.length - 1]}）`
+        columnSelect!.append(option)
+      })
+      columnSelect.value = String(Math.min(ctx.page.datasetColumnWindow ?? 0, windows.length - 1))
+      label.append(columnSelect)
+      columnBar.append(label)
+    }
+    const columnNote = document.createElement('span')
+    columnNote.className = 'evidence-column-note'
+    columnNote.textContent = [
+      windows.length > 1 ? `共 ${columnSet.columns.length} 列，单页最多显示 ${columnSet.maxColumnsPerPage} 列` : '',
+      columnSet.restricted ? '部分列受访问限制，未在预览中显示' : '',
+    ].filter(Boolean).join(' · ')
+    columnBar.append(columnNote)
+    skeleton.detailBox.append(columnBar)
+  }
 
   const filterRow = document.createElement('div')
   filterRow.className = 'evidence-filter-row'
@@ -2261,14 +2346,18 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   }
 
   let paging = false
-  const changePage = async (index: number, nextCursor?: string | null) => {
-    if (paging || ctx.isStale()) return
+  const changePage = async (index: number, nextCursor?: string | null): Promise<boolean> => {
+    if (paging || ctx.isStale()) return false
     const cursor = nextCursor ?? ctx.page.datasetCursors[index]
     paging = true
     moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true })
+    if (columnSelect) columnSelect.disabled = true
     try {
-      const page = await ctx.client.datasetPreview(ctx.page.ref.key, { limit: 50, ...(cursor ? { cursor } : {}) }, ctx.signal)
-      if (ctx.isStale()) return
+      const columns = columnSet ? windowColumns(columnSet, ctx.page.datasetColumnWindow) : undefined
+      const page = await ctx.client.datasetPreview(ctx.page.ref.key, {
+        limit: 50, ...(columns ? { columns } : {}), ...(cursor ? { cursor } : {}),
+      }, ctx.signal)
+      if (ctx.isStale()) return false
       data!.detail = {
         columns: page.columns, rows: [...page.rows], rowCountTotal: page.rowCountTotal,
         offset: page.offset, nextCursor: page.nextCursor, truncatedByBudget: page.truncatedByBudget,
@@ -2277,8 +2366,9 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
         ? [...ctx.page.datasetCursors.slice(0, index), nextCursor] : ctx.page.datasetCursors
       ctx.updatePage({ datasetCursors: cursors, datasetPageIndex: index })
       renderBody()
+      return true
     } catch (error) {
-      if (ctx.isStale()) return
+      if (ctx.isStale()) return false
       // 失败不改变游标、当前数据或筛选；保留分页按钮以便重试。
       const failure = document.createElement('span')
       failure.className = 'evidence-more-error'
@@ -2293,10 +2383,29 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
         moreSlot.append(reset)
       }
       moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = false })
+      return false
     } finally {
       paging = false
+      if (columnSelect) columnSelect.disabled = false
     }
   }
+
+  columnSelect?.addEventListener('change', () => {
+    const select = columnSelect!
+    if (paging || ctx.isStale()) return
+    const previous = {
+      datasetColumnWindow: ctx.page.datasetColumnWindow,
+      datasetCursors: ctx.page.datasetCursors,
+      datasetPageIndex: ctx.page.datasetPageIndex,
+    }
+    // 游标绑定列选择：切换列窗口从第一页重新开始；失败则恢复原窗口与分页。
+    ctx.updatePage({ datasetColumnWindow: Number(select.value), datasetCursors: [null], datasetPageIndex: 0, tableScroll: 0 })
+    void changePage(0).then((ok) => {
+      if (ok || ctx.isStale()) return
+      ctx.updatePage(previous)
+      select.value = String(previous.datasetColumnWindow ?? 0)
+    })
+  })
 
   filter.addEventListener('input', () => {
     ctx.updatePage({ filter: filter.value })

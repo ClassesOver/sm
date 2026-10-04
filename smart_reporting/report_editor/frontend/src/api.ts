@@ -142,6 +142,15 @@ export interface TracePreviewPage {
   cellTruncationNote: string | null
 }
 
+export interface TraceDatasetColumns {
+  datasetId: string
+  /** 当前会话可预览的列（受限列不回显）。 */
+  columns: string[]
+  /** 是否存在受限列（不含列名与数量）。 */
+  restricted: boolean
+  maxColumnsPerPage: number
+}
+
 export interface TraceAnalysisInfo {
   analysisId: string
   contentKind: string
@@ -425,6 +434,13 @@ export class ReportEditorClient {
     const query = params.toString()
     return this.request<TracePreviewPage>(
       `/api/datasets/${encodeURIComponent(datasetId)}/preview${query ? `?${query}` : ''}`,
+      { signal },
+    )
+  }
+
+  async datasetColumns(datasetId: string, signal?: AbortSignal): Promise<TraceDatasetColumns> {
+    return this.request<TraceDatasetColumns>(
+      `/api/datasets/${encodeURIComponent(datasetId)}/columns`,
       { signal },
     )
   }

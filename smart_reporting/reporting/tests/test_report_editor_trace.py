@@ -700,6 +700,47 @@ async def test_http_sources_preview_and_download(tmp_path: Path) -> None:
         assert share_download.json()["detail"]["code"] == "dataset_access_denied"
 
 
+@pytest.mark.anyio
+async def test_http_dataset_columns_supports_controlled_column_selection(
+    tmp_path: Path,
+) -> None:
+    """受限列会话：整表预览被拒，但可取得可见列并按受控列选择分页预览。"""
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(_context(), capabilities={"blocked_columns": ["revenue"]})
+    app = FastAPI()
+    app.include_router(
+        create_report_editor_router(grants, editor=editor, cookie_secure=False)
+    )
+    base = "/reports/v1/editor/report-1/1/api/datasets"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://reports.test"
+    ) as client:
+        await client.get(f"/reports/v1/editor/open/{raw}", follow_redirects=False)
+        whole = await client.get(f"{base}/{DATASET_ID}/preview")
+        assert whole.status_code == 403
+        listing = await client.get(f"{base}/{DATASET_ID}/columns")
+        assert listing.status_code == 200
+        body = listing.json()
+        assert body == {
+            "datasetId": DATASET_ID,
+            "columns": ["period", "branch", "visits"],
+            "restricted": True,
+            "maxColumnsPerPage": 50,
+        }
+        columns = ",".join(body["columns"])
+        first = await client.get(
+            f"{base}/{DATASET_ID}/preview", params={"limit": 2, "columns": columns}
+        )
+        assert first.status_code == 200 and first.json()["nextCursor"]
+        second = await client.get(
+            f"{base}/{DATASET_ID}/preview",
+            params={"limit": 2, "columns": columns, "cursor": first.json()["nextCursor"]},
+        )
+        assert second.status_code == 200 and second.json()["offset"] == 2
+        missing = await client.get(f"{base}/dataset-url-none0000/columns")
+        assert missing.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # 派生/脱敏导出（B1-7）
 # ---------------------------------------------------------------------------
