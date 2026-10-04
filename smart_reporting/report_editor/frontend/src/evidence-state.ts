@@ -248,8 +248,34 @@ export function createEvidenceState(store: EvidenceStore = { tasks: [], active: 
     return page
   }
 
+  /**
+   * 用登记显示名同步已打开任务（含最近关闭）的对象名称：会话恢复的旧任务或在目录加载前
+   * 打开的对象可能仍是原始 ID/旧格式名称。只改展示名，不改身份、历史与页面现场。
+   */
+  const relabel = (labelFor: (ref: EvidenceObjectRef) => string | undefined): boolean => {
+    let changed = false
+    const apply = (ref: EvidenceObjectRef | null) => {
+      if (!ref) return
+      const label = labelFor(ref)
+      if (label && label !== ref.label) {
+        ref.label = label
+        changed = true
+      }
+    }
+    for (const task of [...store.tasks, ...closedTasks]) {
+      apply(task.root)
+      for (const page of task.history) {
+        apply(page.ref)
+        apply(page.selected)
+        page.path.forEach(apply)
+      }
+    }
+    return changed
+  }
+
   return {
     store,
+    relabel,
     currentTask,
     currentPage,
     openTask,

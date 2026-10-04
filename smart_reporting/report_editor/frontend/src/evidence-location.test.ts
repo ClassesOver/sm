@@ -12,6 +12,12 @@ describe('evidence chart target', () => {
     root.lastElementChild!.textContent = '普通正文'
     expect(findEvidenceChartImage(root, 'chart.png', base, true)).toBeNull()
   })
+  it('ignores images with unparsable sources instead of aborting the lookup', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<p><img src="http://[broken"></p><div class="milkdown-image-block"><img src="chart.png"></div>'
+    expect(findEvidenceChartImage(root, 'chart.png', base)).toBe(root.lastElementChild)
+    expect(findEvidenceChartImage(root, 'http://[broken', base)).toBeNull()
+  })
   it('matches resolved exact image source and returns its editor block', () => {
     const root = document.createElement('div')
     root.innerHTML = '<div class="milkdown-image-block"><img src="./chart%20real.png"></div><p><img src="other/chart%20real.png"></p>'

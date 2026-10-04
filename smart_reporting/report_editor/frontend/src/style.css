@@ -4129,6 +4129,8 @@ button {
 .evidence-dataset-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .evidence-filter-row { margin-top: 14px; }
 .evidence-filter { flex: 1 1 200px; min-width: 0; max-width: 360px; min-height: 40px; padding: 8px 12px; border: 1px solid #c7d7e5; border-radius: 8px; background: #fff; color: #1b2a41; font: inherit; }
+/* 已提供“清除筛选”按钮，隐藏浏览器自带的搜索清除图标，避免两个清除入口。 */
+.evidence-filter::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
 .evidence-filter:focus-visible { border-color: #007ea7; outline: 2px solid rgb(0 126 167 / 25%); outline-offset: 2px; }
 .evidence-filter-note,
 .evidence-dataset-note,

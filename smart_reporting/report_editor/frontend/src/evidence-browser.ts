@@ -620,6 +620,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       directoryRefs = refs
       renderDirectoryItems()
       renderStartSummary()
+      const labels = new Map(refs.map((ref) => [evidenceRefId(ref), ref.label]))
+      if (state.relabel((ref) => labels.get(evidenceRefId(ref)))) {
+        persist()
+        renderTabs()
+        renderNav()
+        const current = state.currentPage()
+        const title = workspace.querySelector<HTMLElement>('.evidence-object-title')
+        if (current && title && title.textContent !== current.ref.label) title.textContent = current.ref.label
+      }
     } catch {
       if (stale()) return
       directoryItems.innerHTML = ''

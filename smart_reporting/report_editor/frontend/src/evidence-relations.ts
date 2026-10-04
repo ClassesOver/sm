@@ -63,13 +63,8 @@ function subjectRef(subjectId: string): EvidenceObjectRef {
   return { kind: 'subject', key: subjectId, label: subjectLabel(subjectId) }
 }
 
-function factRef(analysisId: string, factId: string | null, label?: string): EvidenceObjectRef {
-  return {
-    kind: 'fact',
-    key: factId ?? analysisId,
-    analysisId,
-    label: label ?? factId ?? analysisId,
-  }
+function factRef(analysisId: string, factId: string, label?: string): EvidenceObjectRef {
+  return { kind: 'fact', key: factId, analysisId, label: label ?? factId }
 }
 
 function pointerTail(jsonPointer: string): string {
@@ -104,6 +99,8 @@ export function assembleFactRelations(
 ): EvidenceRelations {
   const { relations, add } = makeRelations(ref)
   for (const input of detail.inputFactRefs) {
+    // 没有事实标识的登记无法定位，也没有可显示的名称：缺失不造节点与边。
+    if (!input.factId) continue
     const node = factRef(input.analysisId, input.factId)
     add(node)
     relations.edges.push({ from: node, to: ref, label: '输入' })
@@ -145,14 +142,18 @@ export function assembleComputationRelations(
     relations.edges.push({ from: node, to: ref, label: '输入' })
   }
   for (const input of detail.inputFactRefs ?? []) {
+    // 没有事实标识的登记无法定位，也没有可显示的名称：缺失不造节点与边。
+    if (!input.factId) continue
     const node = factRef(input.analysisId, input.factId)
     add(node)
     relations.edges.push({ from: node, to: ref, label: '输入' })
   }
   for (const output of detail.outputFactRefs) {
+    // 无 factKey 的输出仍展示（以指针末段命名），但以“分析 + JSON 指针”作身份，
+    // 避免同一分析里多个无键输出被当成同一对象去重。
     const node = factRef(
       output.analysisId,
-      output.factKey,
+      output.factKey ?? `${output.analysisId}#${output.jsonPointer}`,
       output.factKey ?? pointerTail(output.jsonPointer),
     )
     add(node)
@@ -227,6 +228,7 @@ export function assembleChartRelations(ref: EvidenceObjectRef, source: TraceChar
 export function assembleSubjectRelations(ref: EvidenceObjectRef, subject: TraceSubjectInfo): EvidenceRelations {
   const { relations, add } = makeRelations(ref)
   for (const item of subject.factRefs) {
+    if (!item.factId) continue
     const node = factRef(item.analysisId, item.factId)
     add(node)
     relations.edges.push({ from: node, to: ref, label: '引用' })

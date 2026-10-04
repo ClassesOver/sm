@@ -1797,6 +1797,11 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       renderPageError(container, ctx, new ReportEditorApiError(400, 'request_invalid'))
       return
     }
+    // 计算记录中未登记 factKey 的输出只有“分析#指针”身份，无法请求事实详情；直接说明，不发无效请求。
+    if (ctx.page.ref.key.startsWith(`${ctx.page.ref.analysisId}#`)) {
+      renderPageError(container, ctx, new ReportEditorApiError(404, 'fact_binding_unavailable'))
+      return
+    }
     showLoading(container)
     try {
       const detail = await ctx.client.factDetail(ctx.page.ref.analysisId, ctx.page.ref.key, ctx.signal)

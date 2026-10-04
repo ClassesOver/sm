@@ -36,6 +36,24 @@ describe('evidence state', () => {
     expect(state.currentPage()?.graphMode).toBe('2d')
   })
 
+  it('relabels open and closed tasks by identity without touching history', () => {
+    const state = createEvidenceState()
+    state.openTask(dataset('ds-1'))
+    state.navigate(computation('comp-1'))
+    state.openTask(computation('comp-2'))
+    state.closeTask(state.store.active!)
+    const labels: Record<string, string> = { 'ds-1': '收入明细.csv', 'comp-1': '渠道收入汇总', 'comp-2': '成本汇总' }
+    expect(state.relabel((ref) => labels[ref.key])).toBe(true)
+    const task = state.store.tasks[0]!
+    expect(task.root.label).toBe('收入明细.csv')
+    expect(task.history.map((page) => page.ref.label)).toEqual(['收入明细.csv', '渠道收入汇总'])
+    expect(task.history[1]!.path.map((ref) => ref.label)).toEqual(['收入明细.csv', '渠道收入汇总'])
+    expect(task.index).toBe(1)
+    expect(state.closedTasks[0]!.root.label).toBe('成本汇总')
+    // 再次同步没有变化时返回 false，调用方无需重渲染。
+    expect(state.relabel((ref) => labels[ref.key])).toBe(false)
+  })
+
   it('opens a task in the foreground and dedupes by object identity', () => {
     const state = createEvidenceState()
     const task = state.openTask(fact('fact-a', '华东营收'))

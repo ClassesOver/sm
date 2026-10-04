@@ -4,11 +4,21 @@ import { $prose } from '@milkdown/kit/utils'
 import type { TraceTableCellLocation } from './api'
 import { findProtocolMarkers } from './protocol'
 
+// 正文中的图片地址可能被手工改成非法 URL；单张解析失败只视为不匹配，不能中断整次定位。
+function resolveUrl(value: string, baseUrl: string): string | null {
+  try {
+    return new URL(value, baseUrl).href
+  } catch {
+    return null
+  }
+}
+
 export function findEvidenceChartImage(root: HTMLElement, source: string, baseUrl: string, caption = false): HTMLElement | null {
-  const expected = new URL(source, baseUrl).href
+  const expected = resolveUrl(source, baseUrl)
+  if (expected === null) return null
   const images = [...root.querySelectorAll<HTMLImageElement>('img')].filter(image => {
     const value = image.getAttribute('src')
-    return value !== null && new URL(value, baseUrl).href === expected &&
+    return value !== null && resolveUrl(value, baseUrl) === expected &&
       !image.closest('.drag-preview')
   })
   if (images.length !== 1) return null

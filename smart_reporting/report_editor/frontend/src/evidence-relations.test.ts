@@ -179,6 +179,23 @@ describe('assembleComputationRelations', () => {
     expect(relations.edges.filter((edge) => edge.label === '产出')).toHaveLength(2)
     expect(relations.loadedNote).toBe('已加载 6 个节点 · 局部关系')
   })
+
+  it('keeps keyless outputs distinct and skips inputs without a fact id', () => {
+    const ref: EvidenceObjectRef = { kind: 'computation', key: 'comp-001', label: 'sum' }
+    const relations = assembleComputationRelations(ref, {
+      computationId: 'comp-001', method: 'sum', parameters: {}, executionId: null, environment: null,
+      verification: 'verified', reproducibility: 'reproducible', limitations: [], inputDatasetIds: [],
+      inputFactRefs: [{ analysisId: 'analysis_001', factId: null }],
+      outputFactRefs: [
+        { analysisId: 'analysis_001', factKey: null, factKind: 'metric', jsonPointer: '/metrics/revenue' },
+        { analysisId: 'analysis_001', factKey: null, factKind: 'metric', jsonPointer: '/metrics/cost' },
+      ],
+      scriptFile: null, chain: { computationId: 'comp-001', method: 'sum' },
+    }, SOURCES)
+    // 两个无键输出各自成为节点；缺 factId 的输入不造节点。
+    expect(relations.nodes.map((node) => node.label)).toEqual(['revenue', 'cost'])
+    expect(relations.edges.filter((edge) => edge.label === '输入')).toHaveLength(0)
+  })
 })
 
 describe('assembleDatasetRelations', () => {

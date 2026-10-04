@@ -1250,6 +1250,21 @@ describe('详情入口统一导航', () => {
   })
 })
 
+describe('无事实标识的输出', () => {
+  it('explains the missing fact binding without requesting fact details', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      throw new Error('should not request')
+    }) as unknown as typeof fetch
+    const ref: EvidenceObjectRef = {
+      kind: 'fact', key: 'analysis_001#/metrics/revenue', analysisId: 'analysis_001', label: 'revenue',
+    }
+    const { container, ctx } = setupPage(fetcher, ref)
+    await renderEvidencePage(container, ctx)
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(container.querySelector('.evidence-status')?.textContent).toContain('事实引用暂不可用')
+  })
+})
+
 describe('计算页', () => {
   it('renders method, parameters, verification labels and output facts', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
