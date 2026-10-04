@@ -1071,3 +1071,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 Firefox chart 当前源码复核：chart fixture 通过来源分页失败恢复、3D/2D 往返和关系图身份检查，保留 `chart:chart-fixture`、`computation:comp-fixture-001`、`dataset:dataset-fixture-001` 及两条有方向输入边；分页 offsets 为 `[0,20,20,20,0]`。该证据不扩大为完整五类型/状态视觉矩阵或复杂图整体可读性通过。
 
 2026-10-04 Firefox 核心 3D 当前源码复核：正式 fixture 的默认 3D、容器尺寸、2D/3D 切换、预览、关系追踪、分支重试、导航、画布单击/双击、后台打开与前台复用、旋转/滚轮和减少动态效果均通过，`errors=[]`。不扩大为复杂图整体可读性、真机或读屏验收。
+
+2026-10-04 标签布局契约定向复核：`evidence-label-layout.test.ts` 3 项通过，覆盖 d3fc Greedy 的边界约束、固定障碍和重叠评分；未运行完整前端测试套件，不替代实际 Sprite 投影或复杂图人工可读性审查。
