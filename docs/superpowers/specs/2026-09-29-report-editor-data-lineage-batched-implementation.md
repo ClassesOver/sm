@@ -699,3 +699,5 @@ G9：全部适用功能通过，阻断缺陷清零；没有未解释的错误有
 2026-10-04 当前阶段交叉回归：Firefox `hub-preview`、`hub-relations`、`hub-star-relations` 各完成 5/9/15 节点、三视口、三角度共 27 个投影场景，名称与跨节点图标覆盖均为 0；Firefox 正式 3D fixture 的核心交互也通过。横屏关系图标题栏压缩后的构建、预算、关系图核心 22 项定向测试和 `evidence-pages` 60 项定向测试保持通过。密集复杂图整体可读性、完整类型矩阵及真机/读屏仍未完成或按要求暂缓。
 
 2026-10-04 Firefox 小图 `none` 当前实现复核：正式 fixture 覆盖 5/9/15 节点、三视口、三旋转角度共 27 个 Sprite 投影场景，名称与跨节点图标覆盖均为 0，模式回放断言通过；仍保留 `readability: manual review required`，不扩大为复杂图整体可读性、真机或屏幕阅读器通过。
+
+2026-10-04 关系图核心定向回归复核：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过；2D/3D 共用的节点身份、关系方向、追踪范围和列表契约保持。未运行完整前端测试套件。
