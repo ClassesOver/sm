@@ -4,6 +4,7 @@ import {
   type ReportEditorClient,
   type TraceChartSource,
   type TraceComputationDetail,
+  type TraceDatasetInfo,
   type TraceFactDetail,
   type TracePreviewPage,
   type TraceSources,
@@ -1984,7 +1985,23 @@ interface DatasetPageData {
     nextCursor: string | null
     truncatedByBudget: boolean
   }
+  info: TraceDatasetInfo | null
   relations: EvidenceRelations
+}
+
+const DATASET_SOURCE_LABELS: Record<string, string> = {
+  starrocks_materialized: '查询结果物化',
+  url_csv: '上传文件',
+}
+
+const PERIOD_ROLE_LABELS: Record<string, string> = { current: '本期', yoy: '同比基期', mom: '环比基期' }
+
+function formatMaterializedAt(value: string | null): string {
+  if (!value) return '未知（旧数据未登记物化时间）'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
@@ -2006,6 +2023,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
           nextCursor: page.nextCursor,
           truncatedByBudget: page.truncatedByBudget,
         },
+        info: sources.datasets?.find((item) => item.datasetId === ctx.page.ref.key) ?? null,
         relations: assembleDatasetRelations(ctx.page.ref, sources),
       }
       ctx.setPageData(data)
@@ -2017,6 +2035,19 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   }
   container.innerHTML = ''
   const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  // 登记信息只取自来源索引；缺失字段如实写“未知”，不从文件时间推断。
+  const info = data.info
+  if (info) {
+    skeleton.statusArea.classList.add('evidence-status-area--grid')
+    if (info.businessLabel) makeStatusRow(skeleton.statusArea, '业务名称', 'business-label').textContent = info.businessLabel
+    makeStatusRow(skeleton.statusArea, '来源类型', 'source-type').textContent =
+      DATASET_SOURCE_LABELS[info.sourceType] ?? info.sourceType
+    makeStatusRow(skeleton.statusArea, '期间角色', 'period-roles').textContent =
+      info.periodRoles.map((role) => PERIOD_ROLE_LABELS[role] ?? role).join(' · ') || '—'
+    makeStatusRow(skeleton.statusArea, '快照规模', 'size').textContent =
+      `${info.rowCount.toLocaleString('zh-CN')} 行 · ${formatBytes(info.size)}`
+    makeStatusRow(skeleton.statusArea, '物化时间', 'materialized-at').textContent = formatMaterializedAt(info.materializedAt)
+  }
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
   const scope = document.createElement('p')
@@ -2397,21 +2428,22 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
 
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
-  const identity = document.createElement('div')
-  identity.className = 'evidence-subject-identity'
-  const kind = document.createElement('p')
-  kind.textContent = `引用类型：${SUBJECT_KIND_LABELS[detail.subjectKind] ?? detail.subjectKind}`
-  identity.append(kind)
+  // 引用类型与正文位置使用与其他对象页相同的状态行；定位操作紧挨位置信息。
+  makeStatusRow(skeleton.statusArea, '引用类型', 'kind').textContent =
+    SUBJECT_KIND_LABELS[detail.subjectKind] ?? detail.subjectKind
   const locatorParts: string[] = []
   if (detail.locator.sectionId) locatorParts.push(`章节 ${detail.locator.sectionId}`)
   if (detail.locator.tableId) locatorParts.push(`表格 ${detail.locator.tableId}`)
   if (detail.locator.rowKey) locatorParts.push(`行 ${detail.locator.rowKey}`)
   if (detail.locator.columnKey) locatorParts.push(`列 ${detail.locator.columnKey}`)
   if (detail.locator.chartId) locatorParts.push(`图表 ${detail.locator.chartId}`)
-  const locator = document.createElement('p')
-  locator.textContent = `位置：${locatorParts.length ? locatorParts.join(' · ') : '未登记位置'}`
-  identity.append(locator)
-  skeleton.detailBox.append(identity)
+  const locatorValue = makeStatusRow(skeleton.statusArea, '正文位置', 'locator')
+  locatorValue.classList.add('evidence-status-value--action')
+  const locatorText = document.createElement('span')
+  locatorText.textContent = locatorParts.length ? locatorParts.join(' · ') : '未登记位置'
+  const locate = makeButton('定位正文', 'ui-button evidence-locate')
+  locate.addEventListener('click', () => ctx.locateSubject(detail.subjectId))
+  locatorValue.append(locatorText, locate)
 
   const heading = document.createElement('h2')
   heading.textContent = '关联事实与计算'
@@ -2420,7 +2452,8 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   for (const factRef of detail.factRefs) {
     if (!factRef.factId) continue
     const li = document.createElement('li')
-    const jump = makeButton(`事实 ${factRef.factId}`, 'ui-button evidence-link')
+    const jump = makeButton(`事实 ${factRef.factId}`, 'ui-button evidence-link evidence-related-link')
+    jump.prepend(createElement(EVIDENCE_KIND_ICONS.fact, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.fact }))
     bindEvidenceNavigation(jump, {
       kind: 'fact', key: factRef.factId, analysisId: factRef.analysisId, label: factRef.factId,
     }, ctx)
@@ -2429,7 +2462,8 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   }
   if (detail.computationId) {
     const li = document.createElement('li')
-    const jump = makeButton(`计算 ${detail.computationId}`, 'ui-button evidence-link')
+    const jump = makeButton(`计算 ${detail.computationId}`, 'ui-button evidence-link evidence-related-link')
+    jump.prepend(createElement(EVIDENCE_KIND_ICONS.computation, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.computation }))
     bindEvidenceNavigation(jump, {
       kind: 'computation', key: detail.computationId, label: detail.computationId,
     }, ctx)
@@ -2443,8 +2477,5 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   }
   skeleton.detailBox.append(heading, list)
 
-  const locate = makeButton('定位正文', 'ui-button evidence-locate')
-  locate.addEventListener('click', () => ctx.locateSubject(detail.subjectId))
-  skeleton.detailBox.append(locate)
   finishRender(container, ctx, skeleton.title)
 }

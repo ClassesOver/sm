@@ -926,6 +926,20 @@ describe('快照页', () => {
     }) as unknown as typeof fetch
   }
 
+  it('marks a missing materialization time as unknown instead of inferring it', async () => {
+    const payload = structuredClone(SOURCES_PAYLOAD)
+    payload.datasets[0].materializedAt = null as unknown as string
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/preview')) return json(PREVIEW_PAGE_1)
+      if (url.endsWith('/api/sources')) return json(payload)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, DATASET_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('[data-status-row="materialized-at"]')?.textContent).toContain('未知')
+  })
+
   it('replaces the loaded page, preserves its cursor and can return to the previous page', async () => {
     const fetcher = datasetFetcher()
     const { container, ctx } = setupPage(fetcher, DATASET_REF)
@@ -933,6 +947,11 @@ describe('快照页', () => {
     expect(container.querySelector('.evidence-dataset-scope')?.textContent).toContain('完整快照共 4 行')
     expect(container.querySelector('.evidence-dataset-scope')?.textContent).toContain('预览序号 1–2')
     expect(container.querySelectorAll('.evidence-table tbody tr, .evidence-table tr').length).toBe(3)
+    // 登记信息取自来源索引，以状态行呈现在关系区之前。
+    expect(container.querySelector('[data-status-row="source-type"]')?.textContent).toContain('上传文件')
+    expect(container.querySelector('[data-status-row="period-roles"]')?.textContent).toContain('本期')
+    expect(container.querySelector('[data-status-row="size"]')?.textContent).toContain('4 行')
+    expect(container.querySelector('[data-status-row="business-label"]')).toBeNull()
 
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
     more.click()
@@ -1410,9 +1429,11 @@ describe('引用页', () => {
     })
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="citation"]')?.textContent).toContain('✓ 引用有效')
-    expect(container.textContent).toContain('章节 section_002')
+    expect(container.querySelector('[data-status-row="locator"]')?.textContent).toContain('章节 section_002')
     const locate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === '定位正文')!
+    // 定位操作紧挨正文位置，而不是游离在页面底部。
+    expect(locate.closest('[data-status-row="locator"]')).not.toBeNull()
     locate.click()
     expect(ctx.locateSubject).toHaveBeenCalledWith('sub-cccccccccccccccc')
     const factLink = Array.from(container.querySelectorAll<HTMLButtonElement>('.evidence-subject-links button'))

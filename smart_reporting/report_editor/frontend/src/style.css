@@ -3900,7 +3900,10 @@ button {
 .evidence-relations-head h2 { margin: 0; font-size: 14px; }
 .evidence-relations-head .ui-button { min-height: 32px; padding: 5px 10px; }
 .evidence-relations-head .evidence-view-toggle,
-.evidence-relations-head .evidence-relations-toggle { border-color: transparent; background: transparent; }
+.evidence-relations-head .evidence-relations-toggle { border-color: transparent; background: transparent; color: #0b4f8a; font-size: 13px; box-shadow: none; transform: none; }
+/* 工具条内的视图切换是次要操作：统一小字号与浅色悬停底，不使用浮起投影。 */
+.evidence-relations-head .evidence-view-toggle:hover,
+.evidence-relations-head .evidence-relations-toggle:hover { background: #eef4f9; box-shadow: none; transform: none; }
 .evidence-relation-list { padding: 4px 0 10px; }
 .evidence-relations.is-graph-view .evidence-relation-list { height: 100%; overflow: auto; padding: 12px; box-sizing: border-box; }
 .evidence-relations.is-graph-view .evidence-graph[hidden] { display: none; }
@@ -4079,6 +4082,16 @@ button {
 .evidence-limitations-title { margin: 0 0 4px; color: #7a4f0a; font-size: 12px; font-weight: 600; }
 .evidence-limitations .evidence-limitation { margin: 0; line-height: 1.6; }
 .evidence-output-name { color: #1b2a41; font-weight: 600; }
+/* 状态行内带操作时（如正文位置 + 定位正文），文字与按钮同行，窄屏自动换行。 */
+/* 快照登记信息较多：宽屏两列排布，减少对数据表的推挤；状态提示仍占满整行。 */
+@media (min-width: 900px) {
+  .evidence-status-area--grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
+  .evidence-status-area--grid > :not(.evidence-status-row) { grid-column: 1 / -1; }
+}
+.evidence-status-value--action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.evidence-status-value--action .ui-button { min-height: 30px; padding: 4px 12px; font-size: 12.5px; }
+.evidence-subject-links > li { padding: 4px 0; border-bottom: 0; }
+.evidence-related-link { display: inline-flex; align-items: center; gap: 8px; }
 .evidence-filter-row,
 .evidence-pagination,
 .evidence-dataset-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
