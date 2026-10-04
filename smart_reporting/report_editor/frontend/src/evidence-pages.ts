@@ -1438,10 +1438,10 @@ function renderGraphPreview(host: HTMLElement, ctx: EvidencePageContext, expand:
     const note = document.createElement('span')
     note.textContent = `${KIND_LABELS[ctx.page.selected.kind]} · 仅查看摘要`
     summary.append(label, note)
-    const enter = makeButton('进入', 'ui-button ui-button--primary evidence-preview-enter')
-    enter.append(createElement(ArrowRight, { width: 15, height: 15, 'aria-hidden': 'true' }))
+    // 先定文字再追加图标：之前先加图标后写 textContent，会把图标覆盖掉。
     const current = sameEvidenceRef(ctx.page.selected, ctx.page.ref)
-    enter.textContent = current ? '已在当前页' : '进入'
+    const enter = makeButton(current ? '已在当前页' : '进入', 'ui-button ui-button--primary evidence-preview-enter')
+    if (!current) enter.append(createElement(ArrowRight, { width: 15, height: 15, 'aria-hidden': 'true' }))
     enter.disabled = current
     enter.addEventListener('click', () => ctx.navigate(ctx.page.selected!))
     const open = makeButton('新页签打开', 'ui-button')

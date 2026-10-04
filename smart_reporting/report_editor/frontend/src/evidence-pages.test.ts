@@ -766,7 +766,11 @@ describe('事实页', () => {
     expect(selectedCtx.openBackground).toHaveBeenCalledWith(selectedCtx.page.selected, true)
     previewButtons.find((button) => button.textContent === '关闭预览')!.click()
     expect(selectedCtx.setPreview).toHaveBeenCalledWith(null)
-    selectedGraph.querySelector<HTMLButtonElement>('.evidence-preview-enter')!.click()
+    const enterButton = selectedGraph.querySelector<HTMLButtonElement>('.evidence-preview-enter')!
+    // “进入”与同排按钮一样带图标；文字设置不能覆盖图标。
+    expect(enterButton.textContent).toBe('进入')
+    expect(enterButton.querySelector('svg')).not.toBeNull()
+    enterButton.click()
     expect(selectedCtx.navigate).toHaveBeenCalledWith(selectedCtx.page.selected)
     const selectedNode = selectedGraph.querySelector<HTMLButtonElement>('.evidence-node.is-selected')!
     selectedNode.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
