@@ -1050,4 +1050,6 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 
 2026-10-04 横屏样式后的 Firefox 图表关系回归：chart fixture 通过来源分页失败恢复、3D/2D 往返和图关系检查，保留 `chart:chart-fixture`、`dataset:dataset-fixture-001`、`computation:comp-fixture-001` 三个身份及两条输入边方向；offsets 为 `[0,20,20,20,0]`，无脚本错误。
 
+2026-10-04 横屏样式后的 Firefox 小图 `preview` 回归：5/9/15 节点、三视口和三个旋转角度共 27 个 Sprite 投影场景通过名称重叠与跨节点图标覆盖检查，均为 0；普通预览状态保持可回放。该证据不扩大为全部小图状态、复杂图整体可读性或真机/读屏验收。
+
 2026-10-04 关系图核心回归：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过，2D/3D 共用的节点身份、关系方向、追踪范围和列表契约保持；未运行完整前端测试套件。
