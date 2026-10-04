@@ -319,4 +319,12 @@ describe('ReportEditorClient', () => {
 
     expect((await client.export('a'.repeat(64))).revision).toBe(3)
   })
+
+  it('treats a successful non-JSON response as an upstream failure instead of empty data', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('<html>login</html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
+    )
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    await expect(client.sources()).rejects.toMatchObject({ status: 502, code: 'report_editor_response_invalid' })
+  })
 })

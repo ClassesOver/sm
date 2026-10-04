@@ -557,7 +557,13 @@ export class ReportEditorClient {
       if (error instanceof DOMException && error.name === 'AbortError') throw error
       throw error
     }
-    const payload = (await response.json().catch(() => ({}))) as {
+    const parsed: unknown = await response.json().catch(() => undefined)
+    // 成功状态却不是 JSON 对象（网关/登录页 HTML、截断响应）：按上游异常处理，
+    // 不把空对象当作合法数据交给页面渲染。
+    if (response.ok && (parsed === null || typeof parsed !== 'object')) {
+      throw new ReportEditorApiError(502, 'report_editor_response_invalid')
+    }
+    const payload = (parsed ?? {}) as {
       detail?: { code?: string; requestId?: string }
     }
     if (!response.ok) {

@@ -134,7 +134,7 @@ describe('ReportEditorClient trace APIs', () => {
   })
 
   it('requests fact and chart sources with encoded ids', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
       new Response(JSON.stringify({ available: true })),
     )
     const client = makeClient(fetcher as typeof fetch)
@@ -147,7 +147,7 @@ describe('ReportEditorClient trace APIs', () => {
   })
 
   it('posts only registered drilldown selections', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
       new Response(
         JSON.stringify({
           metricCode: 'income_total',
