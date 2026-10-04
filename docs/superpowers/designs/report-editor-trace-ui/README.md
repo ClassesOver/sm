@@ -1067,3 +1067,5 @@ WebKit 要求前述主机运行库。此结果补齐这两种场景的桌面跨�
 2026-10-04 阶段构建门复核：生产 `npm run build`、资源预算 `npm run check:budget` 与预算契约 `npm run test:budget` 均通过；构建输出继续保留 3D 图、Three、Milkdown 与 Plotly 的既有分包告警，不改变复杂图可读性和外部设备验收结论。
 
 2026-10-04 Firefox 长名称复杂图当前源码复核：`REPORT_EDITOR_LONG_LABELS=1` 下 39 节点/55 条边三视口回放通过导航、追踪、窄屏布局与路径安全检查，节点重叠 0、非端点穿线 0，844×390 滚动区高度 212px；完整名称入口保持可用，密集图整体可读性仍需人工审查。
+
+2026-10-04 Firefox chart 当前源码复核：chart fixture 通过来源分页失败恢复、3D/2D 往返和关系图身份检查，保留 `chart:chart-fixture`、`computation:comp-fixture-001`、`dataset:dataset-fixture-001` 及两条有方向输入边；分页 offsets 为 `[0,20,20,20,0]`。该证据不扩大为完整五类型/状态视觉矩阵或复杂图整体可读性通过。
