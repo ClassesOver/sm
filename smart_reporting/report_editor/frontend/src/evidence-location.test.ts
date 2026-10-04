@@ -1,7 +1,20 @@
 import { Schema } from '@milkdown/kit/prose/model'
 import { EditorState } from '@milkdown/kit/prose/state'
 import { describe, expect, it } from 'vitest'
-import { createEvidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage } from './evidence-location'
+import { createEvidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
+
+describe('protocol marker lookup', () => {
+  it('matches section and citation markers exactly instead of by substring', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<span class="report-section-marker">[[section:income_trend]]</span>' +
+      '<span class="report-section-marker">[[section:income]]</span>' +
+      '<span class="report-citation-marker">[[citation:sub-abc]]</span>'
+    expect(findProtocolMarkerElement(root, '.report-section-marker', 'section', 'income')?.textContent)
+      .toBe('[[section:income]]')
+    expect(findProtocolMarkerElement(root, '.report-citation-marker', 'citation', 'sub-ab')).toBeUndefined()
+    expect(findProtocolMarkerElement(root, '.report-section-marker', 'citation', 'income')).toBeUndefined()
+  })
+})
 
 describe('evidence chart target', () => {
   const base = 'https://example.test/reports/v1/editor/report-1/1/asset/'

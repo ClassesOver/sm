@@ -29,6 +29,14 @@ export function findEvidenceChartImage(root: HTMLElement, source: string, baseUr
     ? next as HTMLElement : null
 }
 
+/** 按协议标记类型与值精确查找正文中的标记元素；子串匹配会让 `income` 命中 `income_trend`。 */
+export function findProtocolMarkerElement(
+  root: HTMLElement, selector: string, kind: 'citation' | 'section', value: string,
+): HTMLElement | undefined {
+  return [...root.querySelectorAll<HTMLElement>(selector)].find((item) =>
+    findProtocolMarkers(item.textContent ?? '').some((marker) => marker.kind === kind && marker.value === value))
+}
+
 export function findEvidenceTableCell(root: HTMLElement, tableId: string, location: TraceTableCellLocation): HTMLElement | null {
   const markers = [...root.querySelectorAll<HTMLElement>('.report-table-marker')].filter(marker =>
     findProtocolMarkers(marker.textContent ?? '').some(value => value.kind === 'table' && value.value === tableId))

@@ -49,7 +49,7 @@ import {
   installEditorShortcuts,
 } from './enhancements'
 import { protocolMarkerPlugin } from './protocol-plugin'
-import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage } from './evidence-location'
+import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
 import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
@@ -238,23 +238,21 @@ const evidenceBrowser = createEvidenceBrowser(root, {
         window.matchMedia('(prefers-reduced-motion: reduce)').matches
       target.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'auto' : 'smooth' })
     }
+    const findMarker = (selector: string, kind: 'citation' | 'section', value: string) =>
+      findProtocolMarkerElement(shell.editor, selector, kind, value)
     const locate = (sectionId?: string | null) => {
-      const citation = [...shell.editor.querySelectorAll<HTMLElement>('.report-citation-marker')]
-        .find((item) => item.textContent?.includes(subjectId))
-      const section = sectionId
-        ? [...shell.editor.querySelectorAll<HTMLElement>('.report-section-marker')]
-            .find((item) => item.textContent?.includes(sectionId))
-        : undefined
+      const citation = findMarker('.report-citation-marker', 'citation', subjectId)
+      const section = sectionId ? findMarker('.report-section-marker', 'section', sectionId) : undefined
       const marker = citation ?? section
       const target = marker?.closest<HTMLElement>('p, li, td, th, h1, h2, h3, h4') ?? marker
       if (!target) {
         shell.editor.focus({ preventScroll: true })
+        status('当前正文中未找到该引用的位置，可能已被修改或删除', 'dirty')
         return
       }
       reveal(target)
     }
-    const marker = [...shell.editor.querySelectorAll<HTMLElement>('.report-citation-marker')]
-      .find((item) => item.textContent?.includes(subjectId))
+    const marker = findMarker('.report-citation-marker', 'citation', subjectId)
     if (marker) {
       locate()
       return
