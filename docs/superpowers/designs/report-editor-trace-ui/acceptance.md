@@ -484,4 +484,6 @@ Firefox 小图 `hub-star-relations` 交叉回放（2026-10-04）：27 个投影�
 
 预算契约复核（2026-10-04）：`npm run test:budget` 通过；与生产资源预算检查、`evidence-pages.test.ts` 60 项定向测试共同构成阶段构建门，未运行完整测试套件。
 
+横屏样式后的 Firefox 3D 回归（2026-10-04）：正式 fixture 的核心模式、预览/追踪、重试、导航、鼠标输入、旋转/滚轮和动态效果偏好全部通过，页面无脚本错误；不扩大为 Firefox 全流程、复杂图整体可读性或真机/读屏通过。
+
 关系图核心回归（2026-10-04）：`evidence-graph.test.ts` 与 `evidence-relations.test.ts` 共 22 项通过，节点身份、关系方向、追踪范围和列表契约保持；未运行完整前端测试套件。
