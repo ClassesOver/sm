@@ -1508,6 +1508,12 @@ async def test_charts_listing_and_source_with_plot_data_preview(
     )
     assert paged["plotData"][0]["rows"] == [["2025-08", 3000.0]]
     assert paged["plotData"][0]["truncated"] is False
+    # 负偏移在切片中会从尾部取行，必须作为非法请求拒绝。
+    with pytest.raises(ReportingError) as negative:
+        await editor.trace_chart_source(
+            _context(), session, "chart_001", preview_limit=1, preview_offset=-1
+        )
+    assert negative.value.code == "request_invalid"
 
 
 @pytest.mark.anyio

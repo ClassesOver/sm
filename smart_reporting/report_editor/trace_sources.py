@@ -13,11 +13,11 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Protocol
 
 import anyio
 
-from ..reporting.delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
+from ..reporting.delivery.artifacts_v1 import ReportArtifactManifest
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import (
     TRACE_BUDGETS_V1,
@@ -41,6 +41,19 @@ _DRILLDOWN_TIMEOUT_SECONDS = 10.0
 _DRILLDOWN_LARGE_FILE_BYTES = 64 * 1024 * 1024
 
 
+class _RegisteredFile(Protocol):
+    """已登记文件身份：清单产物与追溯索引文件引用都满足。"""
+
+    @property
+    def path(self) -> str: ...
+
+    @property
+    def size(self) -> int: ...
+
+    @property
+    def sha256(self) -> str: ...
+
+
 def trace_index_path_for_context(markdown_path: str) -> str:
     parent = PurePosixPath(markdown_path).parent
     return parent.joinpath(TRACE_INDEX_FILENAME).as_posix()
@@ -59,7 +72,7 @@ class ReportEditorTraceService:
     # 索引加载
     # ------------------------------------------------------------------
 
-    async def _read_registered_file(self, context: Any, identity: ArtifactFile, *, max_bytes: int) -> bytes:
+    async def _read_registered_file(self, context: Any, identity: _RegisteredFile, *, max_bytes: int) -> bytes:
         try:
             content = await self._workspace.read_limited_regular_file(
                 context.scope["threadId"], identity.path, max_bytes=max_bytes
@@ -479,18 +492,9 @@ class ReportEditorTraceService:
             raise ReportingError(
                 "snapshot_integrity_failed", "事实文件登记不完整。"
             )
-        thread_id = context.scope["threadId"]
-        current = await self._workspace.ahash_file(thread_id, file_ref.path)
-        if (
-            current.get("missing")
-            or current.get("size") != file_ref.size
-            or current.get("sha256") != file_ref.sha256
-        ):
-            raise ReportingError(
-                "snapshot_integrity_failed", "事实文件与登记身份不一致。"
-            )
-        bundle_bytes = await self._workspace.read_limited_regular_file(
-            thread_id, file_ref.path, max_bytes=16 * 1024 * 1024
+        # 校验与解析必须针对同一份字节：先哈希再另读会留下文件被替换的窗口。
+        bundle_bytes = await self._read_registered_file(
+            context, file_ref, max_bytes=16 * 1024 * 1024
         )
         pointer = self._locate_fact_pointer(bundle_bytes, fact_id)
         fact_ref = FactRefV1(
@@ -1097,26 +1101,19 @@ class ReportEditorTraceService:
             raise ReportingError("source_missing", "图表不在当前修订的来源索引中。")
         files = {item.resource_id: item for item in index.files}
         image_ref = files[trace.image_file_resource_id]
-        thread_id = context.scope["threadId"]
         if not 1 <= preview_limit <= TRACE_BUDGETS_V1["preview_max_rows_per_page"]:
             raise ReportingError(
                 "request_invalid",
                 f"预览行数必须在 1~{TRACE_BUDGETS_V1['preview_max_rows_per_page']} 之间。",
             )
+        # 负偏移在 Python 切片中会从尾部取行，返回与请求不符的预览。
+        if preview_offset < 0:
+            raise ReportingError("request_invalid", "预览起始行不能为负数。")
         plot_tables: list[dict[str, Any]] = []
         for resource_id in trace.plot_data_file_resource_ids:
             file_ref = files[resource_id]
-            current = await self._workspace.ahash_file(thread_id, file_ref.path)
-            if (
-                current.get("missing")
-                or current.get("size") != file_ref.size
-                or current.get("sha256") != file_ref.sha256
-            ):
-                raise ReportingError(
-                    "snapshot_integrity_failed", "作图数据文件与登记身份不一致。"
-                )
-            content = await self._workspace.read_limited_regular_file(
-                thread_id, file_ref.path, max_bytes=8 * 1024 * 1024
+            content = await self._read_registered_file(
+                context, file_ref, max_bytes=8 * 1024 * 1024
             )
             plot_tables.append(
                 self._chart_input_payload(
