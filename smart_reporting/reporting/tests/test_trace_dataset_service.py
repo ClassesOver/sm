@@ -256,3 +256,11 @@ def test_safe_download_filename_sanitizes_but_keeps_cjk() -> None:
     assert "/" not in name
     assert name.endswith(".csv")
     assert "门急诊" in name and "收入" in name
+
+
+def test_preview_keeps_original_cell_text_without_type_inference(tmp_path: Path) -> None:
+    """预览按原文返回：编码前导零、小数尾零不能因类型推断被改写。"""
+    path = tmp_path / "codes.csv"
+    path.write_text("dept_code,amount,rate\n0012,1200.50,05%\n0300,980.00,12%\n", encoding="utf-8")
+    page = service().preview(_file(path), PERMIT_ALL, limit=10)
+    assert page.rows == (("0012", "1200.50", "05%"), ("0300", "980.00", "12%"))

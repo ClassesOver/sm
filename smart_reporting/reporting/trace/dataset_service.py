@@ -282,8 +282,9 @@ class TraceCsvPreviewService:
         self, file: TraceDatasetFile, columns: list[str], offset: int, limit: int
     ) -> tuple[list[tuple[str | None, ...]], int, bool]:
         try:
+            # 按原文读取：类型推断会把 "0012" 变成 12、"1200.50" 变成 1200.5，核对时显示失真。
             frame = (
-                pl.scan_csv(file.local_path)
+                pl.scan_csv(file.local_path, infer_schema=False)
                 .select(columns)
                 .slice(offset, limit)
                 .collect()
