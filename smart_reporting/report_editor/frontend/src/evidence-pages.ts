@@ -1626,7 +1626,29 @@ function makeButton(label: string, className = 'ui-button'): HTMLButtonElement {
   return button
 }
 
-function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)[][], ctx?: EvidencePageContext): void {
+/** 在单元格内高亮本页筛选关键词（大小写不敏感），其余文字保持纯文本节点。 */
+function appendHighlighted(cell: HTMLElement, value: string, keyword: string): void {
+  const lower = value.toLowerCase()
+  const needle = keyword.toLowerCase()
+  let index = lower.indexOf(needle)
+  if (!needle || index < 0) {
+    cell.textContent = value
+    return
+  }
+  let cursor = 0
+  while (index >= 0) {
+    if (index > cursor) cell.append(value.slice(cursor, index))
+    const mark = document.createElement('mark')
+    mark.className = 'evidence-match'
+    mark.textContent = value.slice(index, index + needle.length)
+    cell.append(mark)
+    cursor = index + needle.length
+    index = lower.indexOf(needle, cursor)
+  }
+  if (cursor < value.length) cell.append(value.slice(cursor))
+}
+
+function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)[][], ctx?: EvidencePageContext, highlight = ''): void {
   wrap.innerHTML = ''
   const table = document.createElement('table')
   table.className = 'evidence-table'
@@ -1690,7 +1712,8 @@ function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)
     const tr = table.insertRow()
     for (const [index, value] of row.entries()) {
       const cell = tr.insertCell()
-      cell.textContent = text(value)
+      if (highlight && value !== null && value !== undefined) appendHighlighted(cell, String(value), highlight)
+      else cell.textContent = text(value)
       if (numeric[index]) cell.classList.add('is-numeric')
     }
   }
@@ -2199,7 +2222,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     if (keyword && !rows.length) {
       matchLine.textContent += ' · 未对完整数据集执行搜索'
     }
-    renderTable(wrap, detail.columns, rows, ctx)
+    renderTable(wrap, detail.columns, rows, ctx, keyword)
     moreSlot.innerHTML = ''
     if (ctx.page.datasetPageIndex > 0) {
       const previous = makeButton('上一页', 'ui-button evidence-previous')

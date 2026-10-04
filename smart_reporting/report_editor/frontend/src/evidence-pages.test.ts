@@ -1017,6 +1017,16 @@ describe('快照页', () => {
     expect(page.filter).toBe('华东')
     expect(container.querySelector('.evidence-filter-count')?.textContent).toContain('本页匹配 1 / 2 行')
     expect(container.querySelectorAll('.evidence-table tr').length).toBe(2)
+    // 命中文字高亮，单元格文本保持原值，未命中的单元格不插入标记。
+    const marks = [...container.querySelectorAll('.evidence-table mark.evidence-match')]
+    expect(marks.map((mark) => mark.textContent)).toEqual(['华东'])
+    expect(marks[0]!.closest('td')?.textContent).toBe('华东')
+
+    filter.value = '00'
+    filter.dispatchEvent(new Event('input'))
+    // 同一单元格多处命中逐一标记（1000 → 1 + 00 + 0 不应重叠）。
+    const numeric = [...container.querySelectorAll('.evidence-table td')].find((cell) => cell.textContent === '1000')!
+    expect([...numeric.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['00'])
 
     filter.value = '不存在的院区'
     filter.dispatchEvent(new Event('input'))

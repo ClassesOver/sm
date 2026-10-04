@@ -3991,6 +3991,15 @@ button {
 
 .evidence-directory-icon { flex: none; }
 
+/* 证据浏览器内自定义按钮与链接统一使用品牌色焦点框，替代浏览器默认黑框。 */
+.evidence-directory-item:focus-visible,
+.evidence-crumb:focus-visible,
+.evidence-related-link:focus-visible,
+.evidence-locate:focus-visible {
+  outline: 2px solid #007ea7;
+  outline-offset: 1px;
+}
+
 .evidence-directory-count { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #eef3f7; color: #5b6b7a; font-size: 10.5px; letter-spacing: 0; }
 
 .evidence-directory-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4247,6 +4256,7 @@ button {
 .evidence-table tbody tr:hover { background: #f3f8fc; }
 /* 数字列右对齐并使用等宽数字，便于纵向比较量级。 */
 .evidence-table .is-numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.evidence-match { padding: 0 1px; border-radius: 2px; background: #ffe9a8; color: inherit; }
 
 .evidence-more-error { display: block; margin: 8px 0; }
 
