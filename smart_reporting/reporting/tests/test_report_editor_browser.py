@@ -211,7 +211,7 @@ async def test_online_subject_opens_frozen_fact_and_session_expiry_has_no_retry(
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
                 fact = page.locator(".evidence-fact-value")
                 await fact.wait_for(state="visible", timeout=15000)
-                assert "3600" in (await fact.text_content() or "")
+                assert "3,600" in (await fact.text_content() or "")
                 assert "万元" in (await fact.text_content() or "")
                 await page.screenshot(path=str(tmp_path / "online-subject.png"), full_page=True)
                 for key, session in grants.repository.sessions.items():
@@ -823,7 +823,7 @@ async def test_high_fanout_graph_keeps_positions_and_last_node_accessible(
                 await page.locator(".evidence-preview-enter").click()
                 await expect(page.locator(".evidence-eyebrow")).to_have_text("引用")
                 await page.locator('[data-evidence="back"]').click()
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600")
                 assert await page.locator(".evidence-node").evaluate_all(positions) == original
                 await page.set_viewport_size({"width": 390, "height": 844})
                 await page.get_by_role("button", name="查看关系图", exact=True).click()
@@ -1003,7 +1003,7 @@ async def test_cached_evidence_revalidates_current_draft_without_reloading_regis
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
                 citation = page.locator('[data-status-row="citation"]')
                 await expect(citation).to_contain_text("引用有效")
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 verification = await page.locator('[data-status-row="verification"]').text_content()
                 await page.locator(".evidence-tab-report").click()
                 paragraph = page.locator(".ProseMirror p").filter(has_text="本期收入3600万元")
@@ -1032,7 +1032,7 @@ async def test_cached_evidence_revalidates_current_draft_without_reloading_regis
                 await expect(citation).to_contain_text("内容已变更")
                 await expect(page.locator(".evidence-warning")).to_contain_text("暂不计算差额")
                 await expect(page.locator('[data-status-row="verification"]')).to_have_text(verification)
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 assert len(facts) == 1
                 await page.screenshot(path=str(tmp_path / "real-cached-draft-warning.png"), full_page=True)
                 await page.locator('.evidence-warning').get_by_role("button", name="定位正文").click()
@@ -1089,7 +1089,7 @@ async def test_same_fact_subject_tasks_keep_anchor_identity_with_real_backend(
                 url = f"{base_url}/reports/v1/editor/{context.report_id}/{context.revision}"
                 await page.goto(f"{url}?subject={subjects[0].subject_id}")
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await expect(page.locator('[data-evidence="back"]')).to_be_enabled()
                 first_key = await page.locator('.evidence-tab[aria-selected="true"]').get_attribute("data-evidence-tab")
                 await page.goto(f"{url}?subject={subjects[1].subject_id}")
@@ -1102,7 +1102,7 @@ async def test_same_fact_subject_tasks_keep_anchor_identity_with_real_backend(
                 await expect(page.locator('[data-evidence="back"]')).to_be_disabled()
                 await expect(page.locator('.evidence-tab-stage')).to_have_text(["事实", "引用"])
                 await page.goto(f"{url}?subject={subjects[0].subject_id}")
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await expect(page.locator(".evidence-tab-name")).to_have_count(2)
                 await expect(page.locator('.evidence-tab[aria-selected="true"]')).to_have_attribute("data-evidence-tab", first_key)
                 await expect(page.locator('[data-evidence="back"]')).to_be_enabled()
@@ -1232,7 +1232,7 @@ async def test_same_keys_in_two_reports_keep_browser_history_isolated(
                     assert exchange.status == 200
                 await page.goto(f"{urls[0]}?subject={subject_id}")
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await expect(page.locator('[data-evidence="back"]')).to_be_enabled()
                 first_storage = await page.evaluate("sessionStorage.getItem('smart-reporting-evidence:' + location.pathname)")
                 assert len(json.loads(first_storage)["tasks"][0]["history"]) > 1
@@ -1244,12 +1244,12 @@ async def test_same_keys_in_two_reports_keep_browser_history_isolated(
                 await expect(page.locator(".evidence-tab-stage")).to_have_text("引用")
                 assert await page.evaluate("sessionStorage.getItem('smart-reporting-evidence:/reports/v1/editor/report-1/1')") == first_storage
                 await page.locator(".evidence-subject-links button").filter(has_text="事实").click()
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await page.locator('[data-evidence="back"]').click()
                 await page.locator(".evidence-subject-links").wait_for()
 
                 await page.goto(f"{urls[0]}?subject={subject_id}")
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 await expect(page.locator('[data-evidence="back"]')).to_be_enabled()
                 await expect(page.locator(".evidence-tab-name")).to_have_count(1)
                 await page.goto(f"{urls[1]}?subject={subject_id}")
@@ -1257,7 +1257,7 @@ async def test_same_keys_in_two_reports_keep_browser_history_isolated(
                 await expect(page.locator(".evidence-tab-stage")).to_have_text("引用")
                 await expect(page.locator('[data-evidence="forward"]')).to_be_enabled()
                 await page.locator('[data-evidence="forward"]').click()
-                await expect(page.locator(".evidence-fact-value")).to_contain_text("3600 万元")
+                await expect(page.locator(".evidence-fact-value")).to_contain_text("3,600 万元")
                 keys = await page.evaluate("Object.keys(sessionStorage).filter(key => key.startsWith('smart-reporting-evidence:')).sort()")
                 assert keys == [f"smart-reporting-evidence:/reports/v1/editor/{context.report_id}/1" for context in (first, second)]
                 assert errors == []

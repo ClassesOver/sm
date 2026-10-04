@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { formatDifference, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { formatDifference, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -253,8 +253,8 @@ describe('事实页', () => {
     }), FACT_REF, { getDraft: () => ({ markdown: '2025-09华东收入12780万元', sha256: 'x' }) })
     await renderEvidencePage(container, ctx)
     const warning = container.querySelector('.evidence-warning')!
-    expect(warning.textContent).toContain('正文当前值 12780 万元')
-    expect(warning.textContent).toContain('登记值 12450 万元')
+    expect(warning.textContent).toContain('正文当前值 12,780 万元')
+    expect(warning.textContent).toContain('登记值 12,450 万元')
     expect(warning.textContent).toContain('差异 +330')
     expect(warning.textContent).not.toContain('暂不计算差额')
     expect(container.querySelector('[data-status-row="citation"]')?.textContent).toContain('内容已变更')
@@ -274,7 +274,7 @@ describe('事实页', () => {
       summary: { valid: 0, stale: 1, unbound: 0 },
     }), FACT_REF, { getDraft: () => ({ markdown: '2025-09华东收入12,780万元', sha256: '基准' }) })
     await renderEvidencePage(container, ctx)
-    expect(container.querySelector('.evidence-fact-value')?.textContent).toBe('登记值 12450 万元')
+    expect(container.querySelector('.evidence-fact-value')?.textContent).toBe('登记值 12,450 万元')
     const warning = container.querySelector('.evidence-warning')!
     expect(warning.textContent).toContain('可比性尚未确认，暂不计算差额')
     expect(warning.textContent).not.toContain('330')
@@ -383,7 +383,7 @@ describe('事实页', () => {
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="citation"]')).toBeNull()
     expect(container.querySelector('[data-status-row="verification"]')?.textContent).toContain('数值已核对')
-    expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('登记值 12450 万元')
+    expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('登记值 12,450 万元')
     expect(container.querySelector('.evidence-fact-formula')?.textContent).toContain('sum(revenue)')
     // 登记公式与登记值同处摘要区，不再落在关系区之后。
     expect(container.querySelector('.evidence-fact-formula')?.closest('.evidence-detail')).toBeNull()
@@ -478,7 +478,7 @@ describe('事实页', () => {
     expect([...graph.positions.entries()]).toEqual(before)
     expect(container.querySelector('.evidence-fact-value')).toBeNull()
     container.querySelector<HTMLButtonElement>('.evidence-retry')!.click()
-    await vi.waitFor(() => expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('12450'))
+    await vi.waitFor(() => expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('12,450'))
     for (const [id, position] of before) expect(graph.positions.get(id)).toEqual(position)
   })
 
@@ -501,13 +501,13 @@ describe('事实页', () => {
     expect(retry).not.toBeNull()
     retry!.click()
     await vi.waitFor(() => {
-      expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('12450')
+      expect(container.querySelector('.evidence-fact-value')?.textContent).toContain('12,450')
     })
     // 历史返回：pageData 命中缓存，不再发请求。
     const calls = (failing as ReturnType<typeof vi.fn>).mock.calls.length
     const second = document.createElement('div')
     await renderEvidencePage(second, ctx)
-    expect(second.querySelector('.evidence-fact-value')?.textContent).toContain('12450')
+    expect(second.querySelector('.evidence-fact-value')?.textContent).toContain('12,450')
     expect((failing as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls)
   })
 
@@ -1327,6 +1327,20 @@ describe('详情入口统一导航', () => {
     link.click()
     expect(ctx.navigate).toHaveBeenCalledExactlyOnceWith(target)
     container.remove()
+  })
+})
+
+describe('groupDigits', () => {
+  it('groups integer digits without rounding or touching decimals', () => {
+    expect(groupDigits(12450)).toBe('12,450')
+    expect(groupDigits(-1234567.0891)).toBe('-1,234,567.0891')
+    expect(groupDigits('+330.25')).toBe('+330.25')
+    expect(groupDigits('+3300')).toBe('+3,300')
+    expect(groupDigits(999)).toBe('999')
+    expect(groupDigits(1e21)).toBe('1e+21')
+    expect(groupDigits('12,450')).toBe('12,450')
+    expect(groupDigits('未提供')).toBe('未提供')
+    expect(groupDigits(null)).toBe('—')
   })
 })
 

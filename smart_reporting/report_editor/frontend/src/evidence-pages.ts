@@ -212,6 +212,19 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
   return `${value >= 0 ? '+' : ''}${value}`
 }
 
+/**
+ * 数值千分位分组，便于与正文（如“12,450”）对照；只插入分隔符，不四舍五入、
+ * 不改小数位。非数值、科学计数法与已含分隔符的文本按原样显示。
+ */
+export function groupDigits(value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  const raw = String(value)
+  if (typeof value !== 'number' && typeof value !== 'string') return raw
+  const match = /^([+-]?)(\d+)(\.\d+)?$/.exec(raw)
+  if (!match) return raw
+  return `${match[1]}${match[2].replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${match[3] ?? ''}`
+}
+
 function numeric(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value !== 'string' || !value.trim()) return null
@@ -1870,7 +1883,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   // 登记值摘要：只展示登记值与登记公式，缺失时不拼造「计算过程」。
   const valueLine = document.createElement('p')
   valueLine.className = 'evidence-fact-value'
-  valueLine.textContent = `登记值 ${text(detail.displayValue)}${unit ? ` ${unit}` : ''}`
+  valueLine.textContent = `登记值 ${groupDigits(detail.displayValue)}${unit ? ` ${unit}` : ''}`
   skeleton.statusArea.append(valueLine)
   // 登记公式紧跟登记值展示，让“值从哪里来”与值本身在同一视线内。
   const formula = typeof entry.formula === 'string' && entry.formula ? entry.formula : ''
@@ -1913,7 +1926,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
           ? formatDifference(entryResult.draftValue, detail.displayValue)
           : null
         message.textContent = entryResult.status === 'stale' && difference !== null
-          ? `正文当前值 ${text(entryResult.draftValue)}${unit ? ` ${unit}` : ''}，登记值 ${text(detail.displayValue)}${unit ? ` ${unit}` : ''}，差异 ${difference}。正文引用内容已变更，登记值核对结论不受影响。`
+          ? `正文当前值 ${groupDigits(entryResult.draftValue)}${unit ? ` ${unit}` : ''}，登记值 ${groupDigits(detail.displayValue)}${unit ? ` ${unit}` : ''}，差异 ${groupDigits(difference)}。正文引用内容已变更，登记值核对结论不受影响。`
           : entryResult.status === 'stale'
             ? '正文引用内容已变更，需核对口径。当前正文值、单位与期间的可比性尚未确认，暂不计算差额。登记值核对结论不受影响。'
             : '正文引用命中登记值，但单位或期间存在软告警，需核对口径。登记值核对结论不受影响。'
