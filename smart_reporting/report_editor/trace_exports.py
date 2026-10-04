@@ -89,7 +89,7 @@ def _validate_masked_columns_policy(
     if not isinstance(mask, str) or not (1 <= len(mask) <= 32):
         raise ReportingError("request_invalid", "masked_columns 策略掩码文本无效。")
     try:
-        header = pl.scan_csv(file.local_path).collect_schema().names()
+        header = pl.scan_csv(file.local_path, infer_schema=False).collect_schema().names()
     except (OSError, pl.exceptions.PolarsError) as error:
         raise ReportingError("snapshot_integrity_failed", "CSV 快照无法解析。") from error
     unknown = [item for item in columns if item not in header]
@@ -171,11 +171,10 @@ class TraceDerivedExportService:
         job = self._owned_job(context, export_id)
         if job.status == "expired":
             raise ReportingError("snapshot_expired", "派生导出已超过保留期。")
+        if job.status == "failed":
+            raise ReportingError("report_editor_export_failed", "派生导出已失败，无法下载。")
         if job.status != "completed":
-            raise ReportingError(
-                "drilldown_unavailable" if job.status == "failed" else "request_invalid",
-                "派生导出尚未完成或已失败，无法下载。",
-            )
+            raise ReportingError("report_editor_export_running", "派生导出尚未完成，请稍后重试。")
         workspace = self._workspace.workspace(context.scope["threadId"])
         relative = workspace.paths.normalize(job.workspace_path, allow_root=False)
         host_path = workspace.paths.to_host_path(relative, allow_root=False)
@@ -270,7 +269,8 @@ class TraceDerivedExportService:
     def _generate(
         source: Path, target: Path, target_columns: Sequence[str], mask: str
     ) -> None:
-        frame = pl.scan_csv(source).with_columns(
+        # 按原文读写：类型推断会改写编码前导零、小数尾零等未掩码列。
+        frame = pl.scan_csv(source, infer_schema=False).with_columns(
             [pl.lit(mask).alias(column) for column in target_columns]
         )
         frame.sink_csv(target)

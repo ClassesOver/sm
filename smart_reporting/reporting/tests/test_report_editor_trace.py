@@ -747,6 +747,25 @@ async def test_derived_export_masks_columns_with_independent_identity(
     assert "derived" in filename
 
 
+def test_derived_export_keeps_unmasked_cells_verbatim(tmp_path: Path) -> None:
+    """派生导出只替换掩码列；其余列按原文写出，不因类型推断改写。"""
+    from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
+
+    source = tmp_path / "codes.csv"
+    source.write_text(
+        "dept_code,amount,phone\n0012,1200.50,13800000000\n0300,980.00,13900000000\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "derived.csv"
+    TraceDerivedExportService._generate(source, target, ["phone"], "***")
+    assert target.read_text(encoding="utf-8").splitlines() == [
+        "dept_code,amount,phone",
+        "0012,1200.50,***",
+        "0300,980.00,***",
+    ]
+
+
+
 @pytest.mark.anyio
 async def test_derived_export_rejects_unknown_policy_and_bad_columns(
     tmp_path: Path,
