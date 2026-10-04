@@ -224,6 +224,24 @@ describe('evidence browser shell', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('summarizes registered sources on the start page and opens a task from it', async () => {
+    const { shell, browser } = setup()
+    browser.open()
+    await flush()
+    await flush()
+    const cards = [...shell.querySelectorAll<HTMLElement>('.evidence-start-card')]
+    expect(cards.map((card) => card.dataset.kind)).toEqual(['dataset', 'computation', 'subject'])
+    expect(cards[1]!.querySelector('.evidence-start-count')?.textContent).toBe('1 项')
+    const item = cards[1]!.querySelector<HTMLButtonElement>('.evidence-start-item')!
+    expect(item.textContent).toBe('渠道收入汇总')
+    item.click()
+    await flush()
+    const tabs = [...shell.querySelectorAll('.evidence-tab:not(.evidence-tab-report)')]
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]!.textContent).toContain('渠道收入汇总')
+    expect(shell.querySelector('.evidence-start')).toBeNull()
+  })
+
   it('names the empty start state without implying the user is editing', async () => {
     const { shell, browser } = setup()
     browser.open()

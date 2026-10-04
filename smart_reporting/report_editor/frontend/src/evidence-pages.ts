@@ -163,6 +163,21 @@ function numericColumns(columnCount: number, rows: (string | null)[][]): boolean
   })
 }
 
+/**
+ * 复制为 TSV 时的单元格转义：含制表符、换行或引号的值按表格软件通用规则加引号，
+ * 否则 CSV 快照中引号内换行的单元格会在粘贴后拆成多行、整表错位。
+ */
+export function tsvCell(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value)
+  return /[\t\r\n"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+/** 下载文件名：数据库物化快照的显示名可能是业务名称，补齐 .csv 并去掉路径分隔符。 */
+export function snapshotFileName(label: string): string {
+  const safe = label.replace(/[\\/]/g, '_').trim() || 'snapshot'
+  return /\.csv$/i.test(safe) ? safe : `${safe}.csv`
+}
+
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -2159,8 +2174,11 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
 
   const renderBody = () => {
     const { detail } = data!
+    const range = detail.rows.length
+      ? `预览序号 ${detail.offset + 1}–${detail.offset + detail.rows.length}`
+      : '当前页无记录'
     scope.textContent =
-      `完整快照共 ${detail.rowCountTotal} 行 · 预览序号 ${detail.rows.length ? detail.offset + 1 : 0}–${detail.offset + detail.rows.length} · 第 ${ctx.page.datasetPageIndex + 1} 页` +
+      `完整快照共 ${detail.rowCountTotal} 行 · ${range} · 第 ${ctx.page.datasetPageIndex + 1} 页` +
       (detail.truncatedByBudget ? ' · 已按响应预算截断' : '')
     const rows = visibleRows()
     const keyword = ctx.page.filter.trim()
@@ -2260,7 +2278,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
       if (response.ok) {
         const link = document.createElement('a')
         link.href = ctx.client.datasetDownloadUrl(ctx.page.ref.key)
-        link.download = ctx.page.ref.label
+        link.download = snapshotFileName(ctx.page.ref.label)
         document.body.append(link)
         link.click()
         link.remove()
@@ -2286,8 +2304,8 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   const copyVisible = async () => {
     const rows = visibleRows()
     const lines = [
-      data!.detail.columns.join('\t'),
-      ...rows.map((row) => row.map((value) => value ?? '').join('\t')),
+      data!.detail.columns.map(tsvCell).join('\t'),
+      ...rows.map((row) => row.map(tsvCell).join('\t')),
     ]
     try {
       await navigator.clipboard.writeText(lines.join('\n'))

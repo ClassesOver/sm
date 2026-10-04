@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { renderEvidencePage, type EvidencePageContext } from './evidence-pages'
+import { renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -909,6 +909,25 @@ describe('事实页', () => {
     expect(page.graphPan).toEqual({ x: 50, y: 70 })
     expect(ctx.navigate).not.toHaveBeenCalled()
     expect(ctx.setPreview).not.toHaveBeenCalled()
+  })
+})
+
+describe('快照复制与下载辅助', () => {
+  it('escapes cells that would break tab-separated rows when pasted', () => {
+    expect(tsvCell('华东')).toBe('华东')
+    expect(tsvCell(null)).toBe('')
+    expect(tsvCell(12450)).toBe('12450')
+    // 引号内换行、制表符与双引号必须加引号转义，否则粘贴后一行被拆成多行。
+    expect(tsvCell('第一行\n第二行')).toBe('"第一行\n第二行"')
+    expect(tsvCell('a\tb')).toBe('"a\tb"')
+    expect(tsvCell('说"明"')).toBe('"说""明"""')
+  })
+
+  it('always downloads snapshots with a csv extension and no path separators', () => {
+    expect(snapshotFileName('收入明细.csv')).toBe('收入明细.csv')
+    expect(snapshotFileName('季度收入快照')).toBe('季度收入快照.csv')
+    expect(snapshotFileName('a/b\\c')).toBe('a_b_c.csv')
+    expect(snapshotFileName('  ')).toBe('snapshot.csv')
   })
 })
 

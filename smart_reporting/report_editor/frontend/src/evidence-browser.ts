@@ -516,6 +516,54 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     }
   }
 
+  // 起始页概览：按类型汇总本修订已登记的来源，每类列出前几项作为快捷入口。
+  // 数据只取自已加载的来源目录，不额外请求，也不推断未登记对象。
+  const START_SUMMARY_LIMIT = 3
+  const renderStartSummary = () => {
+    const summary = workspace.querySelector<HTMLElement>('.evidence-start-summary')
+    if (!summary) return
+    summary.replaceChildren()
+    const order: EvidenceObjectKind[] = ['dataset', 'computation', 'chart', 'fact', 'subject']
+    for (const kind of order) {
+      const refs = directoryRefs.filter((ref) => ref.kind === kind)
+      if (!refs.length) continue
+      const card = document.createElement('section')
+      card.className = 'evidence-start-card'
+      card.dataset.kind = kind
+      const head = document.createElement('h2')
+      head.className = 'evidence-start-card-head'
+      head.append(createElement(EVIDENCE_KIND_ICONS[kind], {
+        width: 16, height: 16, 'aria-hidden': 'true', color: EVIDENCE_KIND_COLORS[kind],
+      }))
+      const label = document.createElement('span')
+      label.textContent = EVIDENCE_KIND_LABELS[kind]
+      const count = document.createElement('span')
+      count.className = 'evidence-start-count'
+      count.textContent = `${refs.length} 项`
+      head.append(label, count)
+      const list = document.createElement('ul')
+      for (const ref of refs.slice(0, START_SUMMARY_LIMIT)) {
+        const item = document.createElement('li')
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'evidence-start-item'
+        button.textContent = ref.label
+        button.title = ref.label
+        button.addEventListener('click', () => openTaskFromDirectory(ref))
+        item.append(button)
+        list.append(item)
+      }
+      card.append(head, list)
+      if (refs.length > START_SUMMARY_LIMIT) {
+        const more = document.createElement('p')
+        more.className = 'evidence-start-more'
+        more.textContent = `另有 ${refs.length - START_SUMMARY_LIMIT} 项，可在来源目录中查看`
+        card.append(more)
+      }
+      summary.append(card)
+    }
+  }
+
   const openTaskFromDirectory = (ref: EvidenceObjectRef) => {
     const task = state.openTask(ref, { foreground: true })
     renderAll()
@@ -566,6 +614,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       }
       directoryRefs = refs
       renderDirectoryItems()
+      renderStartSummary()
     } catch {
       if (stale()) return
       directoryItems.innerHTML = ''
@@ -634,7 +683,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       start.innerHTML = '<h1 class="evidence-object-title" tabindex="-1">证据浏览器</h1><p></p>'
       start.querySelector('p')!.textContent =
         '从左侧来源目录选择数据快照、计算记录或正文引用，开启核对任务；正文中的引用入口会保留各自的导航现场。'
+      const summary = document.createElement('div')
+      summary.className = 'evidence-start-summary'
+      start.append(summary)
       workspace.append(start)
+      renderStartSummary()
       renderingWorkspace = false
       return
     }
