@@ -180,6 +180,29 @@ describe('evidence browser shell', () => {
     expect(workspace.getAttribute('aria-labelledby')).toBe(tab.id)
   })
 
+  it('scrolls the tab strip so a newly active task tab is visible', async () => {
+    const { shell, browser } = setup()
+    const tabList = shell.querySelector<HTMLElement>('.evidence-tabs')!
+    let scrollLeft = 0
+    Object.defineProperty(tabList, 'scrollLeft', { get: () => scrollLeft, set: (value: number) => { scrollLeft = value } })
+    Object.defineProperty(tabList, 'scrollWidth', { get: () => 900 })
+    Object.defineProperty(tabList, 'clientWidth', { get: () => 300 })
+    const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 40, width: right - left, height: 40, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this === tabList) return rect(0, 300)
+      const tab = this.querySelector('.evidence-tab')
+      return tab?.getAttribute('aria-selected') === 'true' ? rect(400, 520) : rect(0, 0)
+    })
+    try {
+      browser.openObject(fact('fact-c', '华南营收'))
+      await flush()
+      // 当前页签右缘 520 超出可见区 300，应只在页签栏内水平滚动到可见并留 8px。
+      expect(scrollLeft).toBe(228)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('uses roving tabindex for manually activated task tabs', async () => {
     const { shell, browser } = setup()
     browser.openObject(fact('fact-a', '华东营收'))

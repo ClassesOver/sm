@@ -1383,7 +1383,7 @@ describe('引用页', () => {
   const SUBJECT_REF: EvidenceObjectRef = {
     kind: 'subject',
     key: 'sub-cccccccccccccccc',
-    label: '正文引用 sub-cccc',
+    label: '正文引用 #cccccc',
   }
 
   it('displays backend semantic warnings without invalidating the citation', async () => {
@@ -1452,7 +1452,7 @@ describe('引用页', () => {
     const { container, ctx } = setupPage(fetcher, {
       kind: 'subject',
       key: 'sub-missing00000000',
-      label: '正文引用 sub-miss',
+      label: '正文引用 #miss',
     })
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('.evidence-status')?.textContent).toContain('来源不存在')

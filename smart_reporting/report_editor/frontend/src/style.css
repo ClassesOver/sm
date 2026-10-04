@@ -3902,6 +3902,8 @@ button {
 .evidence-relations-head .evidence-view-toggle,
 .evidence-relations-head .evidence-relations-toggle { border-color: transparent; background: transparent; color: #0b4f8a; font-size: 13px; box-shadow: none; transform: none; }
 /* 工具条内的视图切换是次要操作：统一小字号与浅色悬停底，不使用浮起投影。 */
+.evidence-relations-head .evidence-mobile-graph-open,
+.evidence-relations-head .evidence-mobile-graph-return { font-size: 13px; }
 .evidence-relations-head .evidence-view-toggle:hover,
 .evidence-relations-head .evidence-relations-toggle:hover { background: #eef4f9; box-shadow: none; transform: none; }
 .evidence-relation-list { padding: 4px 0 10px; }
@@ -4088,6 +4090,11 @@ button {
   .evidence-status-area--grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
   .evidence-status-area--grid > :not(.evidence-status-row) { grid-column: 1 / -1; }
 }
+/* 页面级错误提示框：图标 + 消息 + 操作，与软告警区分为中性红系。 */
+.evidence-status.evidence-page-error { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 6px 10px; padding: 12px 14px; border: 1px solid #f1c9c4; border-left: 3px solid #c2410c; border-radius: 0 8px 8px 0; background: #fff7f5; color: #7a271a; font-size: 13.5px; }
+.evidence-page-error-icon { margin-top: 2px; color: #c2410c; }
+.evidence-page-error-message { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.evidence-page-error-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
 .evidence-status-value--action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .evidence-status-value--action .ui-button { min-height: 30px; padding: 4px 12px; font-size: 12.5px; }
 .evidence-subject-links > li { padding: 4px 0; border-bottom: 0; }
@@ -4542,6 +4549,8 @@ button {
     border-radius: 0;
     background: #fff;
   }
+  /* 全屏关系图贴边固定，标题栏需自带左右留白，否则标题紧贴屏幕边缘。 */
+  .evidence-relations.is-graph-view .evidence-relations-head { padding-left: 12px; padding-right: 12px; }
   .evidence-relations.is-graph-view .evidence-relations-note,
   .evidence-relations.is-graph-view .evidence-relations-toggle,
   .evidence-relations.is-graph-view .evidence-mobile-graph-open { display: none; }

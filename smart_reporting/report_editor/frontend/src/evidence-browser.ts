@@ -10,6 +10,7 @@ import {
   type EvidenceTask,
 } from './evidence-state'
 import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, renderEvidencePage } from './evidence-pages'
+import { subjectLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, MoreHorizontal, X } from 'lucide'
 
@@ -232,6 +233,18 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     if (wasActive) announce(`已切换到核对任务 ${state.currentTask()?.root.label ?? ''}`)
   }
 
+  // 页签多于可见宽度时，当前页签可能停在滚动区域之外；只在页签栏内水平滚动，
+  // 不使用 scrollIntoView，避免带动整页或编辑器纵向滚动。
+  const revealActiveTab = () => {
+    const tab = tabList.querySelector<HTMLElement>('.evidence-tab[aria-selected="true"]')
+    const target = tab?.closest<HTMLElement>('.evidence-tab-wrap') ?? tab
+    if (!target || tabList.scrollWidth <= tabList.clientWidth) return
+    const listRect = tabList.getBoundingClientRect()
+    const rect = target.getBoundingClientRect()
+    if (rect.left < listRect.left) tabList.scrollLeft -= listRect.left - rect.left + 8
+    else if (rect.right > listRect.right) tabList.scrollLeft += rect.right - listRect.right + 8
+  }
+
   const renderTabs = () => {
     // 重新渲染会销毁焦点元素；记录并按身份恢复，避免键盘操作后失位。
     const focusedKey = tabList.contains(document.activeElement)
@@ -332,6 +345,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       ? `evidence-tab-${state.store.active.replace(/[^a-zA-Z0-9_-]/g, '-')}`
       : 'evidence-tab-report'
     workspace.setAttribute('aria-labelledby', activeTabId)
+    revealActiveTab()
     if (focusedKey) {
       tabList.querySelector<HTMLButtonElement>(`[data-evidence-tab="${focusedKey}"]`)?.focus()
     }
@@ -546,7 +560,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         refs.push({
           kind: 'subject',
           key: subject.subjectId,
-          label: `正文引用 ${subject.subjectId.slice(0, 8)}`,
+          label: subjectLabel(subject.subjectId),
         })
       }
       directoryRefs = refs
@@ -724,7 +738,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const ref: EvidenceObjectRef = {
         kind: 'subject',
         key: subject.subjectId,
-        label: `正文引用 ${subject.subjectId.slice(0, 8)}`,
+        label: subjectLabel(subject.subjectId),
       }
       const task = state.openTask(ref, { foreground: true })
       renderAll()

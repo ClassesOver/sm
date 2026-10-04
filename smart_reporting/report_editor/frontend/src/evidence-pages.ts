@@ -19,11 +19,12 @@ import {
   assembleSubjectRelations,
   bindEvidenceNavigation,
   renderRelationList,
+  subjectLabel,
   type EvidenceRelations,
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
-import { ArrowRight, Calculator, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut, type IconNode } from 'lucide'
+import { ArrowRight, Calculator, CircleAlert, ChartColumn, createElement, Database, Expand, ExternalLink, FileText, Hash, LocateFixed, Network, RotateCcw, Tags, X, ZoomIn, ZoomOut, type IconNode } from 'lucide'
 
 type GraphPoint3d = { x: number; y: number; z: number }
 // 相机属于历史页面；力导向坐标属于当前任务图，不写入持久化业务数据。
@@ -221,7 +222,16 @@ function renderPageError(container: HTMLElement, ctx: EvidencePageContext, error
   container.innerHTML = ''
   const skeleton = buildSkeleton(container, ctx, ctx.revisionLabel)
   skeleton.statusBox.hidden = false
-  skeleton.statusBox.textContent = message
+  // 错误以提示框呈现：图标 + 消息 + 可用操作，避免一行孤立文字难以辨认。
+  skeleton.statusBox.classList.add('evidence-page-error')
+  const errorIcon = createElement(CircleAlert, { width: 18, height: 18, 'aria-hidden': 'true' })
+  errorIcon.classList.add('evidence-page-error-icon')
+  const errorMessage = document.createElement('p')
+  errorMessage.className = 'evidence-page-error-message'
+  errorMessage.textContent = message
+  const errorActions = document.createElement('div')
+  errorActions.className = 'evidence-page-error-actions'
+  skeleton.statusBox.append(errorIcon, errorMessage, errorActions)
   if (ctx.graph?.nodes.has(evidenceRefId(ctx.page.ref))) {
     renderRelationSection(skeleton.relationSlot, ctx, graphRelations(ctx.graph, ctx.page.ref))
   }
@@ -235,7 +245,7 @@ function renderPageError(container: HTMLElement, ctx: EvidencePageContext, error
       container.innerHTML = ''
       void renderEvidencePage(container, ctx)
     })
-    skeleton.statusBox.append(' ', retry)
+    errorActions.append(retry)
   }
   if (error instanceof ReportEditorApiError && error.code === 'cursor_invalid' && ctx.page.ref.kind === 'dataset') {
     const reset = makeButton('重新打开第一页')
@@ -246,8 +256,9 @@ function renderPageError(container: HTMLElement, ctx: EvidencePageContext, error
       container.innerHTML = ''
       void renderEvidencePage(container, ctx)
     })
-    skeleton.statusBox.append(' ', reset)
+    errorActions.append(reset)
   }
+  if (!errorActions.childElementCount) errorActions.remove()
   finishRender(container, ctx, skeleton.title)
 }
 
@@ -1784,7 +1795,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       const entryResult = data.validation.subjects.find((item) => item.subjectId === subject.subjectId)
       chip.dataset.status = entryResult?.status ?? 'unbound'
       const status = entryResult ? (CITATION_STATUS_LABELS[entryResult.status] ?? entryResult.status) : '未绑定'
-      let chipText = `正文引用 ${subject.subjectId.slice(0, 8)}：${status}`
+      let chipText = `${subjectLabel(subject.subjectId)}：${status}`
       if (entryResult?.status === 'stale' || entryResult?.warnings?.length) {
         chipText += ' · 需核对口径'
         const warning = document.createElement('div')

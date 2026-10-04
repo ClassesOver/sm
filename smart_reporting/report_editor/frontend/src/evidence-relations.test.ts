@@ -8,6 +8,7 @@ import {
   assembleFactRelations,
   assembleSubjectRelations,
   renderRelationList,
+  subjectLabel,
 } from './evidence-relations'
 import type { EvidenceObjectRef } from './evidence-state'
 
@@ -78,6 +79,15 @@ const SOURCES: TraceSources = {
   },
 }
 
+describe('subjectLabel', () => {
+  it('drops the fixed prefix so the short id stays distinguishable', () => {
+    expect(subjectLabel('sub-a1b2c3d4e5f60718')).toBe('正文引用 #a1b2c3')
+    // 旧实现只保留 4 位有效字符，以下两个引用会显示成同一个名称。
+    expect(subjectLabel('sub-a1b2c3000000000')).not.toBe(subjectLabel('sub-a1b2ff000000000'))
+    expect(subjectLabel('legacy-id')).toBe('正文引用 #legacy')
+  })
+})
+
 describe('assembleFactRelations', () => {
   it('links input facts, citing subjects and producing computations', () => {
     const relations = assembleFactRelations(
@@ -103,7 +113,7 @@ describe('assembleFactRelations', () => {
       },
       {
         from: FACT_REF,
-        to: { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 sub-cccc' },
+        to: { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 #cccccc' },
         label: '引用',
       },
       {
@@ -155,7 +165,7 @@ describe('assembleDatasetRelations', () => {
     const ref: EvidenceObjectRef = { kind: 'dataset', key: 'dataset-url-abc0001', label: '收入明细.csv' }
     const relations = assembleDatasetRelations(ref, SOURCES)
     expect(relations.nodes).toEqual([
-      { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 sub-cccc' },
+      { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 #cccccc' },
     ])
     expect(relations.edges[0]).toMatchObject({ from: ref, label: '引用' })
     expect(relations.loadedNote).toContain('局部关系')
@@ -182,7 +192,7 @@ describe('assembleChartRelations', () => {
 
 describe('assembleSubjectRelations', () => {
   it('keeps citation edges pointing from facts to the subject on every page', () => {
-    const ref: EvidenceObjectRef = { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 sub-cccc' }
+    const ref: EvidenceObjectRef = { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 #cccccc' }
     const relations = assembleSubjectRelations(ref, SOURCES.subjects![0]!)
     expect(relations.edges).toEqual([
       {
