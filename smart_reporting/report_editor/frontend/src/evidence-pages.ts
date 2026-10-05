@@ -2574,8 +2574,21 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   // 图表登记信息与其他对象页一致使用状态行；转换说明逐条列出，不合并成一段。
   const info = document.createElement('div')
   info.className = 'evidence-chart-info evidence-status-area'
-  makeStatusRow(info, '来源数据集', 'datasets').textContent =
-    source.datasetIds.length ? source.datasetIds.join('、') : '未登记'
+  // 来源数据集与关系区一致：显示登记名并可直接打开快照页（支持后台打开）。
+  const datasetsValue = makeStatusRow(info, '来源数据集', 'datasets')
+  if (!source.datasetIds.length) datasetsValue.textContent = '未登记'
+  else {
+    datasetsValue.classList.add('evidence-status-value--action')
+    for (const datasetId of source.datasetIds) {
+      const datasetRef: EvidenceObjectRef = { kind: 'dataset', key: datasetId, label: datasetId }
+      const label = ctx.labelFor?.(datasetRef) ?? datasetId
+      const link = makeButton(label, 'ui-button evidence-link evidence-related-link')
+      link.prepend(createElement(EVIDENCE_KIND_ICONS.dataset, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.dataset }))
+      if (label !== datasetId) link.title = datasetId
+      bindEvidenceNavigation(link, { ...datasetRef, label }, ctx)
+      datasetsValue.append(link)
+    }
+  }
   const notes = makeStatusRow(info, '转换说明', 'transform-notes')
   if (!source.transformNotes.length) notes.textContent = '未登记转换步骤'
   for (const noteText of source.transformNotes) {

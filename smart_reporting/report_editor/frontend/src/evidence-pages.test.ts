@@ -1535,6 +1535,9 @@ describe('图表页', () => {
     const { container, ctx } = setupPage(fetcher, CHART_REF)
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="datasets"]')?.textContent).toContain('dataset-url-abc0001')
+    // 来源数据集可直接打开快照页。
+    container.querySelector<HTMLButtonElement>('[data-status-row="datasets"] button')!.click()
+    expect(ctx.navigate).toHaveBeenCalledWith({ kind: 'dataset', key: 'dataset-url-abc0001', label: 'dataset-url-abc0001' })
     expect(container.textContent).toContain('按院区聚合')
     expect(container.textContent).toContain('作图数据（主序列）')
     expect(container.querySelector('.evidence-page-number')?.textContent).toBe('第 1 / 2 页')
