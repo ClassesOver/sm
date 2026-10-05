@@ -3768,6 +3768,8 @@ button {
   flex-shrink: 0;
   margin: 0 12px 0 auto;
 }
+/* 与“全部任务”同为页签栏工具按钮：统一紧凑尺寸，不用通用按钮的大号样式。 */
+.evidence-tabs-line .evidence-directory-toggle { min-height: 28px; padding: 5px 8px; border-radius: 6px; font-size: 12px; }
 
 /* 导航栏：后退/前进 + 探索路径面包屑 + 修订号 */
 .evidence-nav {
