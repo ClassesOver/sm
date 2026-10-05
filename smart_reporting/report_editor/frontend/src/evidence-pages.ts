@@ -188,6 +188,21 @@ export function snapshotFileName(label: string): string {
   return /\.csv$/i.test(safe) ? safe : `${safe}.csv`
 }
 
+/**
+ * 分页区重建会移除被点击的按钮，键盘焦点会落回页面开头。翻页前记下焦点所在的分页按钮，
+ * 重建后聚焦同类按钮（末页没有“下一页”时退到分页区第一个按钮）；焦点不在分页区时不处理。
+ */
+function rememberPaginationFocus(slot: HTMLElement): () => void {
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLButtonElement) || !slot.contains(focused)) return () => undefined
+  const kind = ['evidence-previous', 'evidence-more'].find((name) => focused.classList.contains(name))
+  return () => {
+    const target = (kind ? slot.querySelector<HTMLButtonElement>(`.${kind}`) : null) ??
+      slot.querySelector<HTMLButtonElement>('button')
+    target?.focus()
+  }
+}
+
 /** 快照与图像体积：逐级进位到 GB，并避免四舍五入后出现“1024.0 KB”。 */
 export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
@@ -2517,6 +2532,8 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     if (paging || ctx.isStale()) return false
     const cursor = nextCursor ?? ctx.page.datasetCursors[index]
     paging = true
+    const restoreFocus = rememberPaginationFocus(moreSlot)
+    const selectFocused = columnSelect !== null && document.activeElement === columnSelect
     moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true })
     if (columnSelect) columnSelect.disabled = true
     try {
@@ -2527,6 +2544,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
         ? [...ctx.page.datasetCursors.slice(0, index), nextCursor] : ctx.page.datasetCursors
       ctx.updatePage({ datasetCursors: cursors, datasetPageIndex: index })
       renderBody()
+      restoreFocus()
       return true
     } catch (error) {
       if (ctx.isStale()) return false
@@ -2548,6 +2566,8 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     } finally {
       paging = false
       if (columnSelect) columnSelect.disabled = false
+      // 禁用会让浏览器移走焦点；切换列窗口后焦点回到列窗口选择框。
+      if (selectFocused && !ctx.isStale()) columnSelect!.focus()
     }
   }
 
@@ -2767,11 +2787,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   const changePage = async (offset: number) => {
     if (paging || ctx.isStale()) return
     paging = true
-    // 分页区重建会移除被点击的按钮；键盘用户的焦点需留在分页区，而不是落回页面开头。
-    const focused = document.activeElement
-    const focusClass = focused instanceof HTMLButtonElement && moreSlot.contains(focused)
-      ? (focused.classList.contains('evidence-previous') ? 'evidence-previous' : 'evidence-more')
-      : null
+    const restoreFocus = rememberPaginationFocus(moreSlot)
     moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true })
     try {
       const next = await ctx.client.chartSource(ctx.page.ref.key, { limit: 20, offset }, ctx.signal)
@@ -2779,10 +2795,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
       data!.detail = { source: next, offset }
       ctx.updatePage({ chartOffset: offset })
       renderPlots()
-      if (focusClass) {
-        (moreSlot.querySelector<HTMLButtonElement>(`.${focusClass}`) ?? moreSlot.querySelector<HTMLButtonElement>('button'))
-          ?.focus()
-      }
+      restoreFocus()
     } catch (error) {
       if (ctx.isStale()) return
       const failure = document.createElement('span')

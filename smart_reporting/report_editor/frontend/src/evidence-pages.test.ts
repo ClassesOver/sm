@@ -1173,11 +1173,14 @@ describe('快照页', () => {
     expect(container.querySelector('.evidence-table td.is-numeric')?.textContent).toBe('1000')
 
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
+    if (!container.isConnected) document.body.append(container)
+    more.focus()
     more.click()
     await vi.waitFor(() => {
       expect(container.querySelector('.evidence-table')?.textContent).toContain('华南')
     })
-    expect(container.querySelector('.evidence-table')?.textContent).toContain('华南')
+    // 末页没有“下一页”，焦点留在分页区的“上一页”。
+    expect(document.activeElement).toBe(container.querySelector('.evidence-previous'))
     expect(container.querySelector('.evidence-dataset-scope')?.textContent).toContain('预览序号 3–4')
     expect(container.querySelector('.evidence-table')?.textContent).not.toContain('华东')
     expect(ctx.page.datasetPageIndex).toBe(1)
