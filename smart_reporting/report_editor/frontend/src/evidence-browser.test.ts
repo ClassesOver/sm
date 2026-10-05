@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ReportEditorClient, type TraceSources } from './api'
+import { ReportEditorApiError, ReportEditorClient, type TraceSources } from './api'
 import { createEvidenceBrowser } from './evidence-browser'
 import type { EvidenceObjectRef } from './evidence-state'
 
@@ -287,6 +287,20 @@ describe('evidence browser shell', () => {
     await flush()
     expect(preview).toHaveBeenCalled()
     await vi.waitFor(() => expect(shell.querySelector('.evidence-table')).not.toBeNull())
+  })
+
+  it('does not report expired computation/chart lists as load failures', async () => {
+    const client = makeClient()
+    vi.spyOn(client, 'sources').mockResolvedValue({ available: false, reason: 'snapshot_expired', datasets: [] })
+    vi.spyOn(client, 'computations').mockRejectedValue(new ReportEditorApiError(410, 'snapshot_expired'))
+    vi.spyOn(client, 'charts').mockRejectedValue(new ReportEditorApiError(410, 'snapshot_expired'))
+    const { shell, browser } = setup(client)
+    browser.open()
+    await flush()
+    await flush()
+    expect([...shell.querySelectorAll('.evidence-directory-notice')].map((note) => note.firstChild?.textContent))
+      .toEqual(['数据快照已超过保留期，登记信息仍可查看，明细不可用'])
+    expect(shell.querySelector('.evidence-directory-retry')).toBeNull()
   })
 
   it('explains unavailable sources and lets failed directory parts be retried', async () => {

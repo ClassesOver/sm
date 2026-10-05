@@ -687,10 +687,14 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     try {
       // 计算/图表清单请求失败与“未登记”不同：失败时如实说明并可重试，不当作没有该类来源。
       const failed = { available: false, failed: true } as const
+      // 修订已退休/无来源索引时这两类清单本就不可用（不是加载失败），不提示重试。
+      const unavailableCodes = new Set(['snapshot_expired', 'source_index_missing', 'feature_disabled'])
+      const settle = (error: unknown) =>
+        error instanceof ReportEditorApiError && unavailableCodes.has(error.code) ? ({ available: false } as const) : failed
       const [sources, computations, charts] = await Promise.all([
         loadSources(),
-        options.client.computations(controller.signal).catch(() => failed),
-        options.client.charts(controller.signal).catch(() => failed),
+        options.client.computations(controller.signal).catch(settle),
+        options.client.charts(controller.signal).catch(settle),
       ])
       if (stale()) return
       const notes: { text: string; retry?: boolean }[] = []

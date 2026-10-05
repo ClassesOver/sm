@@ -1061,6 +1061,26 @@ describe('快照页', () => {
     expect(ctx.page.datasetColumnWindow).toBeUndefined()
   })
 
+  it('keeps registered metadata and relations visible when the snapshot has expired', async () => {
+    const expiredSources = { ...structuredClone(SOURCES_PAYLOAD), available: false, reason: 'snapshot_expired' }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/preview')) {
+        return new Response(JSON.stringify({ detail: { code: 'snapshot_expired' } }), { status: 410 })
+      }
+      if (url.endsWith('/api/sources')) return json(expiredSources)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, DATASET_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('.evidence-status')?.textContent).toContain('数据快照已超过保留期')
+    expect(container.querySelector('[data-status-row="source-type"]')?.textContent).toContain('上传文件')
+    expect(container.querySelector('.evidence-relations')).not.toBeNull()
+    expect(container.querySelector('.evidence-table')).toBeNull()
+    expect(container.querySelector('.evidence-retry')).toBeNull()
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent === '下载此快照')).toBe(false)
+  })
+
   it('explains truncated cells in the scope line and after copying', async () => {
     const truncated = {
       ...PREVIEW_PAGE_1, rows: [['华东', 'x'.repeat(20) + '…[截断]']],

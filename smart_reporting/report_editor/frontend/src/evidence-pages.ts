@@ -2214,6 +2214,43 @@ function formatMaterializedAt(value: string | null): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+/** 登记信息只取自来源索引；缺失字段如实写“未知”，不从文件时间推断。 */
+function renderDatasetInfo(area: HTMLElement, info: TraceDatasetInfo | null): void {
+  if (!info) return
+  area.classList.add('evidence-status-area--grid')
+  if (info.businessLabel) makeStatusRow(area, '业务名称', 'business-label').textContent = info.businessLabel
+  makeStatusRow(area, '来源类型', 'source-type').textContent =
+    DATASET_SOURCE_LABELS[info.sourceType] ?? info.sourceType
+  makeStatusRow(area, '期间角色', 'period-roles').textContent =
+    info.periodRoles.map((role) => PERIOD_ROLE_LABELS[role] ?? role).join(' · ') || '—'
+  makeStatusRow(area, '快照规模', 'size').textContent =
+    `${info.rowCount.toLocaleString('zh-CN')} 行 · ${formatBytes(info.size)}`
+  makeStatusRow(area, '物化时间', 'materialized-at').textContent = formatMaterializedAt(info.materializedAt)
+}
+
+/**
+ * 快照超过保留期：明细不可预览也不可下载，但登记信息与关系仍可核对
+ * （来源目录同样提示“登记信息仍可查看”）。来源清单不可用时退回通用错误页。
+ */
+async function renderExpiredDataset(container: HTMLElement, ctx: EvidencePageContext, error: unknown): Promise<void> {
+  let sources: TraceSources
+  try {
+    sources = await ctx.loadSources()
+  } catch {
+    if (!ctx.isStale()) renderPageError(container, ctx, error)
+    return
+  }
+  if (ctx.isStale()) return
+  container.innerHTML = ''
+  const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
+  skeleton.statusBox.hidden = false
+  skeleton.statusBox.classList.add('evidence-expired-note')
+  skeleton.statusBox.textContent = '数据快照已超过保留期：以下为登记信息，明细不可预览或下载。'
+  renderDatasetInfo(skeleton.statusArea, sources.datasets?.find((item) => item.datasetId === ctx.page.ref.key) ?? null)
+  renderRelationSection(skeleton.relationSlot, ctx, assembleDatasetRelations(ctx.page.ref, sources))
+  finishRender(container, ctx, skeleton.title)
+}
+
 async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
   let data = ctx.pageData<DatasetPageData>()
   if (!data) {
@@ -2267,25 +2304,17 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
       ctx.setPageData(data)
     } catch (error) {
       if (ctx.isStale()) return
+      if (error instanceof ReportEditorApiError && error.code === 'snapshot_expired') {
+        await renderExpiredDataset(container, ctx, error)
+        return
+      }
       renderPageError(container, ctx, error)
       return
     }
   }
   container.innerHTML = ''
   const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
-  // 登记信息只取自来源索引；缺失字段如实写“未知”，不从文件时间推断。
-  const info = data.info
-  if (info) {
-    skeleton.statusArea.classList.add('evidence-status-area--grid')
-    if (info.businessLabel) makeStatusRow(skeleton.statusArea, '业务名称', 'business-label').textContent = info.businessLabel
-    makeStatusRow(skeleton.statusArea, '来源类型', 'source-type').textContent =
-      DATASET_SOURCE_LABELS[info.sourceType] ?? info.sourceType
-    makeStatusRow(skeleton.statusArea, '期间角色', 'period-roles').textContent =
-      info.periodRoles.map((role) => PERIOD_ROLE_LABELS[role] ?? role).join(' · ') || '—'
-    makeStatusRow(skeleton.statusArea, '快照规模', 'size').textContent =
-      `${info.rowCount.toLocaleString('zh-CN')} 行 · ${formatBytes(info.size)}`
-    makeStatusRow(skeleton.statusArea, '物化时间', 'materialized-at').textContent = formatMaterializedAt(info.materializedAt)
-  }
+  renderDatasetInfo(skeleton.statusArea, data.info)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
   const scope = document.createElement('p')
