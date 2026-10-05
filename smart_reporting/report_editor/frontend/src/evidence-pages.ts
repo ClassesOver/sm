@@ -222,7 +222,10 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
 export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, tail: number): string {
   const label = ref.label
   if (label.length <= max) return label
-  const short = ref.kind === 'subject' ? subjectShortId(ref.key) : undefined
+  // 引用显示名为“正文引用 #短号”，短号长度按修订内唯一性确定，直接取显示名中的短号。
+  const short = ref.kind === 'subject'
+    ? (label.startsWith('正文引用 #') ? label.slice('正文引用 '.length) : subjectShortId(ref.key))
+    : undefined
   if (short) return `引用 ${short}`.length <= max ? `引用 ${short}` : short
   return `${label.slice(0, head)}…${label.slice(-tail)}`
 }
@@ -1962,7 +1965,8 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       const entryResult = data.validation.subjects.find((item) => item.subjectId === subject.subjectId)
       chip.dataset.status = entryResult?.status ?? 'unbound'
       const status = entryResult ? (CITATION_STATUS_LABELS[entryResult.status] ?? entryResult.status) : '未绑定'
-      let chipText = `${subjectLabel(subject.subjectId)}：${status}`
+      const subjectRef: EvidenceObjectRef = { kind: 'subject', key: subject.subjectId, label: subjectLabel(subject.subjectId) }
+      let chipText = `${ctx.labelFor?.(subjectRef) ?? subjectRef.label}：${status}`
       if (entryResult?.status === 'stale' || entryResult?.warnings?.length) {
         chipText += ' · 需核对口径'
         const warning = document.createElement('div')

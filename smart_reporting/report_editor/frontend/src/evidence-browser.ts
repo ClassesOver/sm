@@ -10,7 +10,7 @@ import {
   type EvidenceTask,
 } from './evidence-state'
 import { appendHighlighted, renderEvidencePage } from './evidence-pages'
-import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabel } from './evidence-relations'
+import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabel, subjectShortTail } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
@@ -723,11 +723,12 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
           refs.push({ kind: 'chart', key: chart.chartId, label: chart.chartId })
         }
       }
+      const shortTail = subjectShortTail((sources.subjects ?? []).map((subject) => subject.subjectId))
       for (const subject of sources.subjects ?? []) {
         refs.push({
           kind: 'subject',
           key: subject.subjectId,
-          label: subjectLabel(subject.subjectId),
+          label: subjectLabel(subject.subjectId, shortTail),
         })
       }
       directoryRefs = refs
@@ -949,7 +950,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const ref: EvidenceObjectRef = {
         kind: 'subject',
         key: subject.subjectId,
-        label: subjectLabel(subject.subjectId),
+        label: subjectLabel(subject.subjectId, subjectShortTail((sources.subjects ?? []).map((item) => item.subjectId))),
       }
       const task = state.openTask(ref, { foreground: true })
       renderAll()

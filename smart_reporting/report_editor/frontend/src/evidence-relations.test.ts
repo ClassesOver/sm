@@ -10,6 +10,7 @@ import {
   renderRelationList,
   relabelRelations,
   subjectLabel,
+  subjectShortTail,
 } from './evidence-relations'
 import type { EvidenceObjectRef } from './evidence-state'
 
@@ -79,6 +80,17 @@ const SOURCES: TraceSources = {
     ],
   },
 }
+
+describe('subjectShortTail', () => {
+  it('appends the shortest distinguishing tail only when 6-char prefixes collide', () => {
+    expect(subjectShortTail(['sub-a1b2c3d4e5f60718', 'sub-ffffff0000000000'])).toBe(0)
+    expect(subjectShortTail(['sub-0000000000000000', 'sub-0000000000000001'])).toBe(1)
+    expect(subjectShortTail(['sub-abcdef1000000000', 'sub-abcdef2000000000', 'sub-abcdef2000000000'])).toBe(10)
+    expect(subjectShortTail([])).toBe(0)
+    expect(subjectLabel('sub-0000000000000001', 2)).toBe('正文引用 #000000…01')
+    expect(subjectLabel('sub-abc', 2)).toBe('正文引用 #abc')
+  })
+})
 
 describe('subjectLabel', () => {
   it('drops the fixed prefix so the short id stays distinguishable', () => {

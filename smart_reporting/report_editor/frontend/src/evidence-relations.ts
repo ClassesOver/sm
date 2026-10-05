@@ -54,14 +54,32 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
  * 正文引用的统一显示名。subjectId 为 `sub-` + 16 位摘要；旧实现截前 8 位只剩 4 位有效字符，
  * 名称既无可读信息又容易在大报告中重名。这里去掉固定前缀后取 6 位短号，各入口共用。
  */
-/** 正文引用的短号（“#” + ID 去前缀后的前 6 位），用于显示名与关系图缩写。 */
-export function subjectShortId(subjectId: string): string {
-  const short = subjectId.replace(/^sub-/, '').slice(0, 6)
-  return `#${short || subjectId}`
+/**
+ * 正文引用的短号：“#” + ID 去前缀后的前 6 位；tail > 0 时再接“…” + 末尾 tail 位，
+ * 用于区分前缀相同的引用（页签与目录从末尾截断，区分位不能放在长串的中段）。
+ */
+export function subjectShortId(subjectId: string, tail = 0): string {
+  const body = subjectId.replace(/^sub-/, '')
+  if (!body) return `#${subjectId}`
+  if (tail <= 0 || body.length <= 6 + tail) return `#${body.slice(0, tail > 0 ? body.length : 6)}`
+  return `#${body.slice(0, 6)}…${body.slice(-tail)}`
 }
 
-export function subjectLabel(subjectId: string): string {
-  return `正文引用 ${subjectShortId(subjectId)}`
+export function subjectLabel(subjectId: string, tail = 0): string {
+  return `正文引用 ${subjectShortId(subjectId, tail)}`
+}
+
+/**
+ * 同一修订内引用短号互不相同所需的末尾位数（0 表示前 6 位已可区分）：
+ * ID 前缀相同的引用若都只取前 6 位会显示成同名，页签、目录与关系中无法区分。
+ */
+export function subjectShortTail(subjectIds: readonly string[]): number {
+  const ids = [...new Set(subjectIds)]
+  const longest = Math.max(0, ...ids.map((id) => id.replace(/^sub-/, '').length))
+  for (let tail = 0; tail <= longest; tail += 1) {
+    if (new Set(ids.map((id) => subjectShortId(id, tail))).size === ids.length) return tail
+  }
+  return longest
 }
 
 function subjectRef(subjectId: string): EvidenceObjectRef {

@@ -1096,7 +1096,8 @@ async def test_same_fact_subject_tasks_keep_anchor_identity_with_real_backend(
                 await page.locator(".evidence-subject-links").wait_for()
                 await expect(page.locator(".evidence-tab-name")).to_have_count(2)
                 names = await page.locator(".evidence-tab-name").all_text_contents()
-                assert names[0] == names[1]
+                # 两条引用 ID 前缀相同：短号自动加长到可区分，页签名不再同名。
+                assert names[0] != names[1]
                 second_key = await page.locator('.evidence-tab[aria-selected="true"]').get_attribute("data-evidence-tab")
                 assert first_key != second_key
                 await expect(page.locator('[data-evidence="back"]')).to_be_disabled()
