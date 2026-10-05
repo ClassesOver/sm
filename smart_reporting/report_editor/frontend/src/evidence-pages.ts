@@ -1662,7 +1662,7 @@ function makeButton(label: string, className = 'ui-button'): HTMLButtonElement {
 }
 
 /** 在单元格内高亮本页筛选关键词（大小写不敏感），其余文字保持纯文本节点。 */
-function appendHighlighted(cell: HTMLElement, value: string, keyword: string): void {
+export function appendHighlighted(cell: HTMLElement, value: string, keyword: string): void {
   const lower = value.toLowerCase()
   const needle = keyword.toLowerCase()
   let index = lower.indexOf(needle)

@@ -9,7 +9,7 @@ import {
   type EvidenceStore,
   type EvidenceTask,
 } from './evidence-state'
-import { renderEvidencePage } from './evidence-pages'
+import { appendHighlighted, renderEvidencePage } from './evidence-pages'
 import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, MoreHorizontal, X } from 'lucide'
@@ -488,8 +488,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     const current = state.currentPage()
     const filter = directoryFilter.trim().toLowerCase()
     const groups: { label: string; items: EvidenceObjectRef[] }[] = []
+    // 显示名已换成登记名（如方法名、文件名），页面副标题仍显示对象 ID；搜索同时匹配二者。
+    const matchesId = (ref: EvidenceObjectRef) => ref.key.toLowerCase().includes(filter)
     for (const ref of directoryRefs) {
-      if (filter && !ref.label.toLowerCase().includes(filter)) continue
+      if (filter && !ref.label.toLowerCase().includes(filter) && !matchesId(ref)) continue
       const group = groups.find((item) => item.label === EVIDENCE_KIND_LABELS[ref.kind])
       if (group) group.items.push(ref)
       else groups.push({ label: EVIDENCE_KIND_LABELS[ref.kind], items: [ref] })
@@ -522,8 +524,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         icon.classList.add('evidence-directory-icon')
         const name = document.createElement('span')
         name.className = 'evidence-directory-label'
-        name.textContent = ref.label
+        appendHighlighted(name, ref.label, filter)
         item.append(icon, name)
+        if (filter && !ref.label.toLowerCase().includes(filter) && matchesId(ref)) {
+          // 仅按 ID 命中时显示命中的 ID，说明该条目为何出现在结果中。
+          const id = document.createElement('span')
+          id.className = 'evidence-directory-id'
+          appendHighlighted(id, ref.key, filter)
+          item.append(id)
+        }
         item.title = `${group.label} · ${ref.label}`
         item.addEventListener('click', () => openTaskFromDirectory(ref))
         directoryItems.append(item)

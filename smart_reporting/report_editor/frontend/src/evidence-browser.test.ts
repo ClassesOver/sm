@@ -277,6 +277,13 @@ describe('evidence browser shell', () => {
     // 目录条目带类型图标，图标仅作装饰，不改变可读名称。
     const icon = shell.querySelector('.evidence-directory-item .evidence-directory-icon')
     expect(icon?.getAttribute('aria-hidden')).toBe('true')
+    expect(shell.querySelector('.evidence-directory-item .evidence-match')?.textContent).toBe('渠道')
+    // 页面副标题显示的对象 ID 同样可搜，并说明命中的是 ID。
+    search.value = 'COMP-1'
+    search.dispatchEvent(new Event('input'))
+    const items = [...shell.querySelectorAll('.evidence-directory-item')]
+    expect(items.map((item) => item.querySelector('.evidence-directory-label')?.textContent)).toEqual(['渠道收入汇总'])
+    expect(items[0]!.querySelector('.evidence-directory-id .evidence-match')?.textContent).toBe('comp-1')
     expect(shell.querySelectorAll('.evidence-tab')).toHaveLength(1)
   })
 
