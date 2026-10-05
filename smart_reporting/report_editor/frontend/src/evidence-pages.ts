@@ -2767,6 +2767,11 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   const changePage = async (offset: number) => {
     if (paging || ctx.isStale()) return
     paging = true
+    // 分页区重建会移除被点击的按钮；键盘用户的焦点需留在分页区，而不是落回页面开头。
+    const focused = document.activeElement
+    const focusClass = focused instanceof HTMLButtonElement && moreSlot.contains(focused)
+      ? (focused.classList.contains('evidence-previous') ? 'evidence-previous' : 'evidence-more')
+      : null
     moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true })
     try {
       const next = await ctx.client.chartSource(ctx.page.ref.key, { limit: 20, offset }, ctx.signal)
@@ -2774,6 +2779,10 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
       data!.detail = { source: next, offset }
       ctx.updatePage({ chartOffset: offset })
       renderPlots()
+      if (focusClass) {
+        (moreSlot.querySelector<HTMLButtonElement>(`.${focusClass}`) ?? moreSlot.querySelector<HTMLButtonElement>('button'))
+          ?.focus()
+      }
     } catch (error) {
       if (ctx.isStale()) return
       const failure = document.createElement('span')

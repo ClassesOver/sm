@@ -1660,12 +1660,16 @@ describe('图表页', () => {
     expect(container.textContent).toContain('作图数据（主序列）')
     expect(container.querySelector('.evidence-page-number')?.textContent).toBe('第 1 / 2 页')
     const more = container.querySelector<HTMLButtonElement>('.evidence-more')!
+    if (!container.isConnected) document.body.append(container)
+    more.focus()
     more.click()
     await vi.waitFor(() => {
       expect(container.querySelector('.evidence-table')?.textContent).toContain('华北')
     })
     expect(container.querySelector('.evidence-table')?.textContent).not.toContain('华东')
     expect(ctx.page.chartOffset).toBe(20)
+    // 末页没有“下一页”，焦点留在分页区的“上一页”，不落回页面开头。
+    expect(document.activeElement).toBe(container.querySelector('.evidence-previous'))
     expect(container.textContent).toContain('预览序号 21–21')
     expect(container.querySelector('.evidence-page-number')?.textContent).toBe('第 2 / 2 页')
     await renderEvidencePage(container, ctx)
