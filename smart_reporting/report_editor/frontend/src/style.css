@@ -4101,8 +4101,8 @@ button {
 .evidence-fact-inputs > li,
 .evidence-computation-outputs > li,
 .evidence-subject-links > li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid #e6edf3; }
-.evidence-fact-warnings,
 .evidence-limitation { color: #95600c; }
+.evidence-fact-input-missing { color: #5b6b7a; font-size: 13px; }
 /* 登记公式紧随登记值：标签弱化，公式以等宽字体呈现，长公式在行内换行。 */
 .evidence-fact-formula { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0 0 6px; }
 .evidence-fact-formula-label { color: #5b6b7a; font-size: 12px; }

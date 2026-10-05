@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { formatDifference, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -412,11 +412,36 @@ describe('事实页', () => {
     expect(container.querySelector('[data-status-row="reproducibility"]')?.textContent).toContain('不适用')
   })
 
-  it('navigates to an input fact via the 查看 button', async () => {
+  it('shows registration warnings as a callout and explains inputs without a fact id', async () => {
+    const detail = {
+      ...FACT_DETAIL,
+      warnings: ['口径与上期不一致'],
+      inputFactRefs: [{ analysisId: 'analysis_002', factId: null }],
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/facts/')) return json(detail)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, FACT_REF)
+    await renderEvidencePage(container, ctx)
+    const callout = container.querySelector('.evidence-fact-warnings')!
+    expect(callout.classList.contains('evidence-limitations')).toBe(true)
+    expect(callout.querySelector('.evidence-limitations-title')?.textContent).toBe('登记告警')
+    expect(callout.textContent).toContain('口径与上期不一致')
+    const missing = container.querySelector('.evidence-fact-input-missing')
+    expect(missing?.textContent).toBe('分析 analysis_002 的输入未登记事实 ID，无法打开')
+    expect(container.querySelectorAll('.evidence-fact-inputs button')).toHaveLength(0)
+  })
+
+  it('navigates to an input fact via its icon link', async () => {
     const { container, ctx } = setupPage(factFetcher(), FACT_REF)
     await renderEvidencePage(container, ctx)
     const jump = Array.from(container.querySelectorAll<HTMLButtonElement>('.evidence-fact-inputs button'))
-      .find((button) => button.textContent === '查看')!
+      .find((button) => button.textContent === '事实 fact-input')!
+    expect(jump.classList.contains('evidence-related-link')).toBe(true)
+    expect(jump.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
     jump.click()
     expect(ctx.navigate).toHaveBeenCalledWith({
       kind: 'fact',
@@ -781,10 +806,18 @@ describe('事实页', () => {
     // 事实页默认展开，切换后持久到 page.collapsed。
     const body = section.querySelector<HTMLElement>('.evidence-relations-body')!
     expect(body.hidden).toBe(false)
+    // 关系列表保留切换前关系图的高度：页面不收缩，滚动位置与切换按钮位置不跳动。
+    const graphBox = section.querySelector<HTMLElement>('.evidence-graph')!
+    vi.spyOn(graphBox, 'getBoundingClientRect').mockReturnValue({ height: 521.6 } as DOMRect)
     section.querySelector<HTMLButtonElement>('.evidence-view-toggle')!.click()
     expect(page.showList).toBe(true)
     expect(section.querySelector<HTMLElement>('.evidence-graph')!.hidden).toBe(true)
-    expect(section.querySelector<HTMLElement>('.evidence-relation-list')!.hidden).toBe(false)
+    const relationList = section.querySelector<HTMLElement>('.evidence-relation-list')!
+    expect(relationList.hidden).toBe(false)
+    expect(relationList.style.minHeight).toBe('522px')
+    section.querySelector<HTMLButtonElement>('.evidence-view-toggle')!.click()
+    expect(relationList.style.minHeight).toBe('')
+    section.querySelector<HTMLButtonElement>('.evidence-view-toggle')!.click()
     const toggle = section.querySelector<HTMLButtonElement>('.evidence-relations-toggle')!
     toggle.click()
     expect(page.collapsed).toBe(true)
@@ -1332,6 +1365,18 @@ describe('详情入口统一导航', () => {
     link.click()
     expect(ctx.navigate).toHaveBeenCalledExactlyOnceWith(target)
     container.remove()
+  })
+})
+
+describe('graphLabel', () => {
+  it('keeps the citation short id instead of cutting it in the middle', () => {
+    const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-fixture-001', label: '正文引用 #fixtur' }
+    expect(graphLabel(subject, 14, 9, 4)).toBe('正文引用 #fixtur')
+    expect(graphLabel(subject, 10, 5, 4)).toBe('引用 #fixtur')
+    expect(graphLabel(subject, 4, 1, 2)).toBe('#fixtur')
+    const dataset: EvidenceObjectRef = { kind: 'dataset', key: 'd', label: '门急诊收入明细快照.csv' }
+    expect(graphLabel(dataset, 10, 5, 4)).toBe('门急诊收入….csv')
+    expect(graphLabel({ ...dataset, label: '短名' }, 4, 1, 2)).toBe('短名')
   })
 })
 

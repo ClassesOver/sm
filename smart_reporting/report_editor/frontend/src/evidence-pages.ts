@@ -216,6 +216,18 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
  * 数值千分位分组，便于与正文（如“12,450”）对照；只插入分隔符，不四舍五入、
  * 不改小数位。非数值、科学计数法与已含分隔符的文本按原样显示。
  */
+/**
+ * 关系图标签缩写：超长时取首尾、中间省略。正文引用的可辨识部分是末尾的“#短号”，
+ * 从中间切断会丢掉“#”与短号开头（如“正文引用 …xtur”），因此截断时保留完整短号。
+ */
+export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, tail: number): string {
+  const label = ref.label
+  if (label.length <= max) return label
+  const short = ref.kind === 'subject' ? /#[0-9A-Za-z_-]+$/.exec(label)?.[0] : undefined
+  if (short) return `引用 ${short}`.length <= max ? `引用 ${short}` : short
+  return `${label.slice(0, head)}…${label.slice(-tail)}`
+}
+
 export function groupDigits(value: unknown): string {
   if (value === null || value === undefined) return '—'
   const raw = String(value)
@@ -567,7 +579,7 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const current = sameEvidenceRef(node.ref, ctx.page.ref)
         const selected = evidenceRefId(node.ref) === selectedId
         // 小图普通标签保持紧凑；悬停提示与关注态标签仍提供完整名称。
-        const name = node.ref.label.length > 4 ? `${node.ref.label.slice(0, 1)}…${node.ref.label.slice(-2)}` : node.ref.label
+        const name = graphLabel(node.ref, 4, 1, 2)
         const status = current ? ' · 当前页' : selected ? ' · 预览' : ''
         const label = new SpriteText(`${KIND_LABELS[node.ref.kind]} · ${name}${status}`, 3, '#23445b')
         label.fontWeight = '600'
@@ -589,10 +601,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         icon.raycast = () => {}
         const group = new Group()
         group.add(label, icon)
-        const traceName = node.ref.label.length > 14 ? `${node.ref.label.slice(0, 9)}…${node.ref.label.slice(-4)}` : node.ref.label
+        const traceName = graphLabel(node.ref, 14, 9, 4)
         const sized = {
           sprite: label, icon, scale: { x: label.scale.x, y: label.scale.y, z: label.scale.z },
-          name: node.ref.label.length > 10 ? `${node.ref.label.slice(0, 5)}…${node.ref.label.slice(-4)}` : node.ref.label,
+          name: graphLabel(node.ref, 10, 5, 4),
           text: `${KIND_LABELS[node.ref.kind]} · ${name}${status}\n${nodeInfo(node.ref)}`,
           traceText: allNodes.length <= 15
             ? `${KIND_LABELS[node.ref.kind]}${status}\n${traceName}\n${nodeInfo(node.ref)}`
@@ -1633,8 +1645,12 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawR
     sync()
   })
   viewToggle.addEventListener('click', () => {
+    const graphHeight = !ctx.page.showList && !graph.hidden ? graph.getBoundingClientRect().height : 0
     ctx.updatePage({ showList: !ctx.page.showList })
     sync()
+    // 关系列表通常比关系图短：保留切换前的高度，避免页面收缩把滚动位置夹回顶部、
+    // 切换按钮跳离指针，切回关系图后也不会停在页面顶端。
+    list.style.minHeight = ctx.page.showList && graphHeight ? `${Math.round(graphHeight)}px` : ''
   })
   sync()
 }
@@ -1970,12 +1986,18 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
   if (detail.warnings.length) {
-    const warnings = document.createElement('ul')
-    warnings.className = 'evidence-fact-warnings'
+    // 登记告警与计算页“适用局限”同为软提示：使用同一种提示框，不改变核对结论。
+    const warnings = document.createElement('div')
+    warnings.className = 'evidence-limitations evidence-fact-warnings'
+    const title = document.createElement('p')
+    title.className = 'evidence-limitations-title'
+    title.textContent = '登记告警'
+    warnings.append(title)
     for (const warning of detail.warnings) {
-      const li = document.createElement('li')
-      li.textContent = warning
-      warnings.append(li)
+      const p = document.createElement('p')
+      p.className = 'evidence-limitation'
+      p.textContent = warning
+      warnings.append(p)
     }
     skeleton.detailBox.append(warnings)
   }
@@ -1986,13 +2008,17 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
     list.className = 'evidence-fact-inputs'
     for (const input of detail.inputFactRefs) {
       const li = document.createElement('li')
-      li.textContent = `输入事实 ${input.factId ?? input.analysisId}`
       if (input.factId) {
-        const jump = makeButton('查看', 'ui-button evidence-link')
+        // 与引用页“关联事实”一致：整项为带类型图标的链接按钮。
+        const jump = makeButton(`事实 ${input.factId}`, 'ui-button evidence-link evidence-related-link')
+        jump.prepend(createElement(EVIDENCE_KIND_ICONS.fact, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.fact }))
         bindEvidenceNavigation(jump, {
           kind: 'fact', key: input.factId, analysisId: input.analysisId, label: input.factId,
         }, ctx)
-        li.append(' ', jump)
+        li.append(jump)
+      } else {
+        li.className = 'evidence-fact-input-missing'
+        li.textContent = `分析 ${input.analysisId} 的输入未登记事实 ID，无法打开`
       }
       list.append(li)
     }
