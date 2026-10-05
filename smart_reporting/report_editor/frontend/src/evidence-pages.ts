@@ -188,10 +188,17 @@ export function snapshotFileName(label: string): string {
   return /\.csv$/i.test(safe) ? safe : `${safe}.csv`
 }
 
-function formatBytes(size: number): string {
+/** 快照与图像体积：逐级进位到 GB，并避免四舍五入后出现“1024.0 KB”。 */
+export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = size / 1024
+  let unit = 0
+  while (unit < units.length - 1 && Number(value.toFixed(1)) >= 1024) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(1)} ${units[unit]}`
 }
 
 function text(value: unknown): string {
@@ -206,9 +213,11 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
   const a = numeric(draft)
   const b = numeric(registered)
   if (a === null || b === null) return null
+  // 极小数会被 String() 写成科学计数法（如 3e-7），小数位须计入指数，否则差额被舍成 0。
   const decimals = (value: unknown) => {
-    const match = /\.(\d+)/.exec(String(value).replaceAll(',', ''))
-    return match ? Math.min(match[1].length, 10) : 0
+    const match = /^[+-]?\d*(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(String(value).replaceAll(',', '').trim())
+    if (!match) return 0
+    return Math.min(Math.max((match[1]?.length ?? 0) - Number(match[2] ?? 0), 0), 20)
   }
   const places = Math.max(decimals(draft), decimals(registered))
   const rounded = Number((a - b).toFixed(places))

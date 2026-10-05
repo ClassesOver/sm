@@ -60,8 +60,14 @@ const REPRODUCIBILITY_LABELS: Record<string, string> = {
 
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = size / 1024
+  let unit = 0
+  while (unit < units.length - 1 && Number(value.toFixed(1)) >= 1024) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(1)} ${units[unit]}`
 }
 
 function text(value: unknown): string {

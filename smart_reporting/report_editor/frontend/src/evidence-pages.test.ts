@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReportEditorClient } from './api'
 import { createEvidenceGraph, mergeEvidenceGraph } from './evidence-graph'
-import { formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
+import { formatBytes, formatDifference, graphLabel, groupDigits, renderEvidencePage, snapshotFileName, tsvCell, type EvidencePageContext } from './evidence-pages'
 import { createEvidenceState, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
 import { markdownSha256 } from './source-validation'
 
@@ -1478,6 +1478,20 @@ describe('formatDifference', () => {
     expect(formatDifference(100, 100.5)).toBe('-0.5')
     expect(formatDifference(1, 1)).toBe('+0')
     expect(formatDifference('abc', 1)).toBeNull()
+  })
+
+  it('keeps differences between tiny values written in exponent notation', () => {
+    expect(formatDifference(3e-7, 1e-7)).toBe('+2e-7')
+    expect(formatDifference('2.5e-3', '0.001')).toBe('+0.0015')
+  })
+})
+
+describe('formatBytes', () => {
+  it('carries sizes up to GB without showing 1024.0 of a smaller unit', () => {
+    expect(formatBytes(512)).toBe('512 B')
+    expect(formatBytes(1536)).toBe('1.5 KB')
+    expect(formatBytes(1024 * 1024 - 1)).toBe('1.0 MB')
+    expect(formatBytes(2.5 * 1024 ** 3)).toBe('2.5 GB')
   })
 })
 
