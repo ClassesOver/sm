@@ -277,8 +277,9 @@ describe('evidence browser shell', () => {
       '当前修订没有来源索引（旧报告或来源未登记）',
       '计算记录目录加载失败，未列出的不代表没有登记。',
     ])
-    // 有原因说明时不再追加笼统的“没有登记来源”。
+    // 有原因说明时不再追加笼统的“没有登记来源”；起始页同样说明原因。
     expect(shell.querySelector('.evidence-directory-empty')).toBeNull()
+    expect(shell.querySelector('.evidence-start-notice')?.textContent).toBe('当前修订没有来源索引（旧报告或来源未登记）')
     shell.querySelector<HTMLButtonElement>('.evidence-directory-retry')!.click()
     await flush()
     await flush()

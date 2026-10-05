@@ -627,6 +627,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       }
       summary.append(card)
     }
+    // 没有可列出的来源时，起始页同样说明原因，而不是只留下“从目录选择”的引导。
+    if (!summary.children.length) {
+      for (const note of directoryNotes) {
+        const p = document.createElement('p')
+        p.className = 'evidence-start-notice'
+        p.textContent = note.text
+        summary.append(p)
+      }
+    }
   }
 
   const openTaskFromDirectory = (ref: EvidenceObjectRef) => {
