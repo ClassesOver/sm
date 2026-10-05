@@ -1061,6 +1061,30 @@ describe('快照页', () => {
     expect(ctx.page.datasetColumnWindow).toBeUndefined()
   })
 
+  it('explains truncated cells in the scope line and after copying', async () => {
+    const truncated = {
+      ...PREVIEW_PAGE_1, rows: [['华东', 'x'.repeat(20) + '…[截断]']],
+      truncatedCells: 1, cellTruncationNote: '部分单元格超过 4 KiB 已截断',
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/preview')) return json(truncated)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const writeText = vi.fn(async () => undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const { container, ctx } = setupPage(fetcher, DATASET_REF)
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('.evidence-dataset-scope')?.textContent)
+      .toContain('部分单元格超过 4 KiB 已截断（1 个，完整内容请下载快照）')
+    const copy = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '复制本页')!
+    copy.click()
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled())
+    await vi.waitFor(() => expect(container.querySelector('.evidence-dataset-note')?.textContent)
+      .toBe('已复制本页可见 1 行（含已截断的超长单元格）'))
+  })
+
   it('marks a missing materialization time as unknown instead of inferring it', async () => {
     const payload = structuredClone(SOURCES_PAYLOAD)
     payload.datasets[0].materializedAt = null as unknown as string

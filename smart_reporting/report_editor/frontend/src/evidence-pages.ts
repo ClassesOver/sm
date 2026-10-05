@@ -2159,6 +2159,9 @@ interface DatasetPageData {
     offset: number
     nextCursor: string | null
     truncatedByBudget: boolean
+    /** 本页超长被截断的单元格数与服务端说明（截断格以“…[截断]”结尾）。 */
+    truncatedCells?: number
+    cellTruncationNote?: string | null
   }
   info: TraceDatasetInfo | null
   relations: EvidenceRelations
@@ -2245,6 +2248,8 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
           offset: page.offset,
           nextCursor: page.nextCursor,
           truncatedByBudget: page.truncatedByBudget,
+          truncatedCells: page.truncatedCells,
+          cellTruncationNote: page.cellTruncationNote,
         },
         info: sources.datasets?.find((item) => item.datasetId === ctx.page.ref.key) ?? null,
         relations: assembleDatasetRelations(ctx.page.ref, sources),
@@ -2374,7 +2379,8 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
       : '当前页无记录'
     scope.textContent =
       `完整快照共 ${detail.rowCountTotal} 行 · ${range} · 第 ${ctx.page.datasetPageIndex + 1} 页` +
-      (detail.truncatedByBudget ? ' · 已按响应预算截断' : '')
+      (detail.truncatedByBudget ? ' · 已按响应预算截断' : '') +
+      (detail.truncatedCells ? ` · ${detail.cellTruncationNote ?? '部分单元格已截断'}（${detail.truncatedCells} 个，完整内容请下载快照）` : '')
     const rows = visibleRows()
     const keyword = ctx.page.filter.trim()
     clearFilter.hidden = !keyword
@@ -2419,6 +2425,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
       data!.detail = {
         columns: page.columns, rows: [...page.rows], rowCountTotal: page.rowCountTotal,
         offset: page.offset, nextCursor: page.nextCursor, truncatedByBudget: page.truncatedByBudget,
+        truncatedCells: page.truncatedCells, cellTruncationNote: page.cellTruncationNote,
       }
       const cursors = nextCursor
         ? [...ctx.page.datasetCursors.slice(0, index), nextCursor] : ctx.page.datasetCursors
@@ -2532,7 +2539,10 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     ]
     try {
       await navigator.clipboard.writeText(lines.join('\n'))
-      if (!ctx.isStale()) actionNote.textContent = `已复制本页可见 ${rows.length} 行`
+      if (!ctx.isStale()) {
+        actionNote.textContent = `已复制本页可见 ${rows.length} 行` +
+          (data!.detail.truncatedCells ? '（含已截断的超长单元格）' : '')
+      }
     } catch {
       if (!ctx.isStale()) actionNote.textContent = '复制不可用，请手动选择表格内容复制'
     }
