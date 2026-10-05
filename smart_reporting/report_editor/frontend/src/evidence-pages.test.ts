@@ -1227,6 +1227,26 @@ describe('快照页', () => {
     expect(container.querySelector('.evidence-filter-count')?.textContent).toContain('未对完整数据集执行搜索')
   })
 
+  it('keeps numeric column alignment stable while the filter hides rows', async () => {
+    const preview = { ...PREVIEW_PAGE_1, rows: [['华东', null], ['华北', '1200']] }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/preview')) return json(preview)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, DATASET_REF)
+    await renderEvidencePage(container, ctx)
+    const revenueHeader = () => container.querySelectorAll('.evidence-table th')[1]!
+    expect(revenueHeader().classList.contains('is-numeric')).toBe(true)
+    const filter = container.querySelector<HTMLInputElement>('.evidence-filter')!
+    filter.value = '华东'
+    filter.dispatchEvent(new Event('input'))
+    expect(container.querySelector('.evidence-filter-count')?.textContent).toContain('本页匹配 1 / 2 行')
+    expect(revenueHeader().classList.contains('is-numeric')).toBe(true)
+    expect(container.querySelectorAll('.evidence-table td')[1]!.classList.contains('is-numeric')).toBe(true)
+  })
+
   it('keeps the filter limited to each page and restores column widths on a new render', async () => {
     const { container, ctx, page } = setupPage(datasetFetcher(), DATASET_REF)
     await renderEvidencePage(container, ctx)

@@ -1761,7 +1761,15 @@ export function appendHighlighted(cell: HTMLElement, value: string, keyword: str
   if (cursor < value.length) cell.append(value.slice(cursor))
 }
 
-function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)[][], ctx?: EvidencePageContext, highlight = ''): void {
+function renderTable(
+  wrap: HTMLElement,
+  columns: string[],
+  rows: (string | null)[][],
+  ctx?: EvidencePageContext,
+  highlight = '',
+  // 对齐按整页数据判断：筛选只显示部分行时，列的数值对齐不应随输入来回跳变。
+  alignRows: (string | null)[][] = rows,
+): void {
   wrap.innerHTML = ''
   const table = document.createElement('table')
   table.className = 'evidence-table'
@@ -1781,7 +1789,7 @@ function renderTable(wrap: HTMLElement, columns: string[], rows: (string | null)
     table.style.width = `${widths.reduce((sum, width) => sum + width, 0)}px`
   }
   if (ctx) applyWidths()
-  const numeric = numericColumns(columns.length, rows)
+  const numeric = numericColumns(columns.length, alignRows)
   const header = table.insertRow()
   for (const [index, column] of columns.entries()) {
     const cell = document.createElement('th')
@@ -2490,7 +2498,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     if (keyword && !rows.length) {
       matchLine.textContent += ' · 未对完整数据集执行搜索'
     }
-    renderTable(wrap, detail.columns, rows, ctx, keyword)
+    renderTable(wrap, detail.columns, rows, ctx, keyword, detail.rows)
     moreSlot.innerHTML = ''
     if (ctx.page.datasetPageIndex > 0) {
       const previous = makeButton('上一页', 'ui-button evidence-previous')
