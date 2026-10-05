@@ -1480,6 +1480,9 @@ describe('计算页', () => {
     expect(verification?.dataset.tone).toBe('verified')
     expect(container.querySelector('[data-status-row="execution"]')?.textContent).toContain('python 3.12')
     expect(container.querySelector('.evidence-computation-parameters')?.textContent).toContain('"column": "revenue"')
+    // 参数块是纯 JSON，标题在代码块之外。
+    expect(JSON.parse(container.querySelector('.evidence-computation-parameters')!.textContent!)).toEqual({ column: 'revenue' })
+    expect(container.querySelector('.evidence-computation-subhead')?.textContent).toBe('计算参数')
     expect(container.textContent).toContain('python 3.12')
     expect(container.textContent).toContain('数值已核对')
     expect(container.textContent).toContain('具备复算条件')

@@ -2090,19 +2090,21 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     }
     section.append(limitations)
   }
-  const parameters = document.createElement('pre')
-  parameters.className = 'evidence-computation-parameters'
-  parameters.tabIndex = 0
-  parameters.setAttribute('aria-label', '计算参数，可滚动查看')
-  parameters.textContent = `参数：${JSON.stringify(detail.parameters, null, 2)}`
-  section.append(parameters)
+  // 参数以小标题 + 纯 JSON 呈现：标签不混进代码块，复制出的内容就是合法 JSON。
+  const appendJsonBlock = (title: string, value: unknown) => {
+    const heading = document.createElement('h2')
+    heading.className = 'evidence-computation-subhead'
+    heading.textContent = title
+    const block = document.createElement('pre')
+    block.className = 'evidence-computation-parameters'
+    block.tabIndex = 0
+    block.setAttribute('aria-label', `${title}，可滚动查看`)
+    block.textContent = JSON.stringify(value, null, 2)
+    section.append(heading, block)
+  }
+  appendJsonBlock('计算参数', detail.parameters)
   if (detail.preprocessing !== undefined && detail.preprocessing !== null) {
-    const preprocessing = document.createElement('pre')
-    preprocessing.className = 'evidence-computation-parameters'
-    preprocessing.tabIndex = 0
-    preprocessing.setAttribute('aria-label', '预处理参数，可滚动查看')
-    preprocessing.textContent = `预处理：${JSON.stringify(detail.preprocessing, null, 2)}`
-    section.append(preprocessing)
+    appendJsonBlock('预处理参数', detail.preprocessing)
   }
   const heading = document.createElement('h2')
   heading.textContent = '输出事实'
@@ -2124,7 +2126,8 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     pointer.textContent = `${ref.analysisId} ${ref.jsonPointer}`
     li.append(outputName, pointer)
     if (ref.factKey) {
-      const jump = makeButton('查看事实', 'ui-button evidence-link')
+      const jump = makeButton('查看事实', 'ui-button evidence-link evidence-related-link')
+      jump.prepend(createElement(EVIDENCE_KIND_ICONS.fact, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.fact }))
       bindEvidenceNavigation(jump, {
         kind: 'fact', key: ref.factKey, analysisId: ref.analysisId, label: ref.factKey,
       }, ctx)
