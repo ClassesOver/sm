@@ -1662,6 +1662,16 @@ function makeButton(label: string, className = 'ui-button'): HTMLButtonElement {
 }
 
 /** 在单元格内高亮本页筛选关键词（大小写不敏感），其余文字保持纯文本节点。 */
+/** 表格滚动区：宽表需横向滚动，设为可聚焦的具名区域，键盘用户才能滚动查看。 */
+function makeTableRegion(label: string): HTMLDivElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'evidence-table-wrap'
+  wrap.tabIndex = 0
+  wrap.setAttribute('role', 'region')
+  wrap.setAttribute('aria-label', label)
+  return wrap
+}
+
 export function appendHighlighted(cell: HTMLElement, value: string, keyword: string): void {
   const lower = value.toLowerCase()
   const needle = keyword.toLowerCase()
@@ -2296,8 +2306,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
   matchLine.className = 'evidence-filter-count'
   skeleton.detailBox.append(filterRow, matchLine)
 
-  const wrap = document.createElement('div')
-  wrap.className = 'evidence-table-wrap'
+  const wrap = makeTableRegion('数据快照预览表，可用方向键横向滚动')
   const emptyNote = document.createElement('p')
   emptyNote.className = 'evidence-dataset-empty'
   emptyNote.setAttribute('role', 'status')
@@ -2574,8 +2583,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
       const heading = document.createElement('h2')
       heading.textContent = plot.role ? `作图数据（${PLOT_ROLE_LABELS[plot.role] ?? plot.role}）` : '作图数据'
       plotBox.append(heading)
-      const wrap = document.createElement('div')
-      wrap.className = 'evidence-table-wrap'
+      const wrap = makeTableRegion(`${heading.textContent}表，可用方向键横向滚动`)
       renderTable(wrap, plot.columns, plot.rows as (string | null)[][])
       plotBox.append(wrap)
       const range = document.createElement('p')

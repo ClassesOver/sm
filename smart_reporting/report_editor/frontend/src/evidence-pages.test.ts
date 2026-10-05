@@ -1054,6 +1054,11 @@ describe('快照页', () => {
     expect(container.querySelector('[data-status-row="period-roles"]')?.textContent).toContain('本期')
     expect(container.querySelector('[data-status-row="size"]')?.textContent).toContain('4 行')
     expect(container.querySelector('[data-status-row="business-label"]')).toBeNull()
+    // 宽表滚动区可聚焦且具名，键盘用户可横向滚动。
+    const region = container.querySelector<HTMLElement>('.evidence-table-wrap')!
+    expect(region.tabIndex).toBe(0)
+    expect(region.getAttribute('role')).toBe('region')
+    expect(region.getAttribute('aria-label')).toContain('数据快照预览表')
     // 数字列右对齐：revenue 全为数字，branch 为文本。
     const header = [...container.querySelectorAll('.evidence-table th')]
     expect(header.map((cell) => cell.classList.contains('is-numeric'))).toEqual([false, true])
