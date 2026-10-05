@@ -2467,6 +2467,8 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     renderBody()
   })
 
+  // 受控列选择时复制只含当前列窗口，说明需与实际复制范围一致。
+  const copyScope = columnSet ? '复制仅含当前可见行与当前显示的列。' : '复制仅含当前可见行。'
   if (ctx.downloadEnabled) {
     const download = makeButton('下载此快照')
     download.addEventListener('click', () => void downloadSnapshot(download))
@@ -2474,12 +2476,12 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     const copy = makeButton('复制本页')
     copy.addEventListener('click', () => void copyVisible())
     actions.append(copy)
-    actionNote.textContent = '下载为完整快照，不含本页筛选；复制仅含当前可见行。'
+    actionNote.textContent = `下载为完整快照，不含本页筛选；${copyScope}`
   } else {
     const copy = makeButton('复制本页')
     copy.addEventListener('click', () => void copyVisible())
     actions.append(copy)
-    actionNote.textContent = '复制仅含当前可见行。'
+    actionNote.textContent = copyScope
   }
 
   const downloadSnapshot = async (button: HTMLButtonElement) => {
@@ -2499,7 +2501,9 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
         link.click()
         link.remove()
       } else if (response.status === 403) {
-        actionNote.textContent = '当前会话（分享链接）无权下载原始文件'
+        actionNote.textContent = columnSet?.restricted
+          ? '当前会话存在受限列，不能下载原始文件'
+          : '当前会话（分享链接）无权下载原始文件'
       } else if (response.status === 409) {
         actionNote.textContent = '文件完整性校验失败，已拒绝下载'
       } else if (response.status === 410) {

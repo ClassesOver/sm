@@ -826,6 +826,33 @@ def test_derived_export_keeps_unmasked_cells_verbatim(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_derived_export_always_masks_blocked_columns(tmp_path: Path) -> None:
+    """受限列会话的派生导出：即使请求只掩码其他列，受限列也被强制掩码。"""
+    editor, grants, _ = await _make_editor(tmp_path)
+    raw, _ = await grants.issue(
+        _context(), capabilities={"blocked_columns": ["revenue"], "download_derived": True}
+    )
+    _token, session = await grants.exchange(raw)
+    started = await editor.trace_create_derived_export(
+        _context(), session, DATASET_ID, policy="masked_columns", params={"columns": ["visits"]}
+    )
+    assert "revenue" not in str(started)
+    status: dict = {}
+    for _ in range(100):
+        status = await editor.trace_derived_export_status(_context(), session, started["exportId"])
+        if status["status"] != "running":
+            break
+        await asyncio.sleep(0.05)
+    assert status["status"] == "completed"
+    path, _filename, _size = await editor.trace_derived_export_download(
+        _context(), session, started["exportId"]
+    )
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "period,branch,revenue,visits"
+    assert all(line.split(",")[2:] == ["***", "***"] for line in lines[1:])
+
+
+@pytest.mark.anyio
 async def test_derived_export_rejects_unknown_policy_and_bad_columns(
     tmp_path: Path,
 ) -> None:

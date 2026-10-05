@@ -429,6 +429,11 @@ class ReportEditorTraceService:
             )
         index = await self.require_index(context)
         file = await self._resolve_dataset_file(context, index, dataset_id)
+        blocked = self._preview.blocked_columns_in(file, permissions)
+        requested = params.get("columns")
+        if blocked and (requested is None or isinstance(requested, (list, tuple))):
+            # 受限列一律掩码：派生导出不能成为读取受限列的旁路（计划 5.2）。
+            params = {**params, "columns": list(dict.fromkeys([*(requested or []), *blocked]))}
         return await self.exports.create(
             context=context, file=file, policy=policy, params=params
         )

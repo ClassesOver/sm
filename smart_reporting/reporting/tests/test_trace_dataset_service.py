@@ -287,3 +287,20 @@ def test_visible_columns_hide_blocked_names_without_count() -> None:
     assert "revenue" not in columns and restricted is True
     # 可见列可直接用于受控预览。
     assert svc.preview(file, blocked, limit=10, columns=columns).columns == tuple(columns)
+
+
+def test_download_original_refused_when_session_has_blocked_columns_in_file() -> None:
+    """原始字节包含受限列时不能以原始下载绕过列级限制；表头无受限列时不受影响。"""
+    svc = service()
+    file = _file(csv_path("hospital_revenue.csv"))
+    blocked = TracePreviewPermissions(
+        blocked_columns=frozenset({"revenue"}), can_download_original=True
+    )
+    with pytest.raises(ReportingError) as exc:
+        svc.download_target(file, blocked)
+    assert exc.value.code == "dataset_access_denied"
+    assert "revenue" not in str(exc.value)
+    unrelated = TracePreviewPermissions(
+        blocked_columns=frozenset({"no_such_column"}), can_download_original=True
+    )
+    assert svc.download_target(file, unrelated)[0] == csv_path("hospital_revenue.csv")

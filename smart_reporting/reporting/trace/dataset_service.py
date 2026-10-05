@@ -352,7 +352,24 @@ class TraceCsvPreviewService:
             )
         if not file.local_path.is_file():
             raise ReportingError("source_missing", "数据集快照文件不存在。")
+        if self.blocked_columns_in(file, permissions):
+            # 原始字节包含受限列：不能以“原始下载”绕过列级限制（计划 5.2）。
+            raise ReportingError(
+                "dataset_access_denied",
+                "当前会话存在受限列，不能下载原始文件；可使用派生导出（受限列自动掩码）。",
+            )
         return file.local_path, safe_download_filename(file)
+
+    def blocked_columns_in(
+        self, file: TraceDatasetFile, permissions: TracePreviewPermissions
+    ) -> list[str]:
+        """文件表头中当前会话受限的列（仅供服务端强制掩码/拒绝，不回显给客户端）。"""
+
+        if not permissions.blocked_columns:
+            return []
+        if not file.local_path.is_file():
+            raise ReportingError("source_missing", "数据集快照文件不存在。")
+        return [name for name in self._header(file) if name in permissions.blocked_columns]
 
 
 def preview_default_rows() -> int:

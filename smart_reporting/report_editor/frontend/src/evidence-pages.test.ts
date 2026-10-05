@@ -1021,6 +1021,7 @@ describe('快照页', () => {
     expect(container.querySelector('.evidence-column-note')?.textContent).toBe(
       '共 61 列，单页最多显示 50 列 · 部分列受访问限制，未在预览中显示',
     )
+    expect(container.querySelector('.evidence-dataset-note')?.textContent).toContain('复制仅含当前可见行与当前显示的列')
 
     // 先翻到第二页，再切换列窗口：游标绑定列选择，切换后从第一页重新开始。
     container.querySelector<HTMLButtonElement>('.evidence-more')!.click()
