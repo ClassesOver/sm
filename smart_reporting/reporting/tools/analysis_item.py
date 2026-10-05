@@ -1006,6 +1006,19 @@ class RuntimeAnalysisMixin:
             warnings.extend(evidence_warnings)
             payload["warnings"] = list(dict.fromkeys(warnings))
             payload["evidenceFiles"] = identities
+            # B4：服务端构造补充分析计算记录（模型不参与）。有补充 evidence
+            # 文件（非确定性 facts 文件）且执行回执可用时登记；其余情况不伪造。
+            computation_record = self._build_computation_record(
+                analysis_id=analysisId,
+                dataset_ids=datasetIds,
+                identities=identities,
+                deterministic_paths=bound_paths,
+                run_context=run_context,
+                requirements=planned if isinstance(planned, Mapping) else {},
+            )
+            if computation_record is not None:
+                payload["computationRecord"] = computation_record
+                payload["computationScriptFile"] = script
             if isinstance(durable_item, dict):
                 if durable_item != payload:
                     raise ReportingError(
@@ -1042,6 +1055,53 @@ class RuntimeAnalysisMixin:
             }
         except (ReportingError, WorkspaceError) as error:
             return self._failure(error)
+
+    def _build_computation_record(
+        self,
+        *,
+        analysis_id: str,
+        dataset_ids: list[str],
+        identities: list[dict[str, Any]],
+        deterministic_paths: set[str],
+        run_context: RunContext | None,
+        requirements: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """服务端构造 ComputationRecordV1（B4）；不可得时返回 None，不伪造。"""
+
+        from ..code_agent.context import ExecutionReceipt
+        from ..trace.computation_service import build_supplemental_computation_record
+
+        binding = None
+        dependencies = getattr(run_context, "dependencies", None)
+        if isinstance(dependencies, Mapping):
+            candidate = dependencies.get("AgentOS 任务执行")
+            binding = candidate if candidate is not None else None
+        receipt = getattr(binding, "execution_receipt", None)
+        if not isinstance(receipt, ExecutionReceipt):
+            return None
+        supplemental = [
+            item
+            for item in identities
+            if isinstance(item, dict)
+            and item.get("path") not in deterministic_paths
+            and str(item.get("path", "")).endswith(".json")
+        ]
+        script = receipt.source_file.model_dump(mode="json", by_alias=True)
+        if not supplemental:
+            return None
+        evidence = supplemental[0]
+        planned_requirements = requirements.get("codingRequirements")
+        record = build_supplemental_computation_record(
+            analysis_id=analysis_id,
+            dataset_ids=dataset_ids,
+            script_file=script,
+            evidence_file=evidence,
+            execution=receipt.model_dump(mode="json", by_alias=True),
+            requirements=(
+                planned_requirements if isinstance(planned_requirements, list) else ()
+            ),
+        )
+        return record.model_dump(mode="json", by_alias=True)
 
     @staticmethod
     def _analysis_evidence_registration_status(

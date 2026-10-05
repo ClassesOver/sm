@@ -1,0 +1,23 @@
+diff --git a/node_modules/@d3fc/d3fc-label-layout/src/greedy.js b/node_modules/@d3fc/d3fc-label-layout/src/greedy.js
+--- a/node_modules/@d3fc/d3fc-label-layout/src/greedy.js
++++ b/node_modules/@d3fc/d3fc-label-layout/src/greedy.js
+@@ -17,11 +17,17 @@
+     const strategy = (data) => {
++        const constrain = rectangle => bounds && !rectangle.fixed ? {
++            ...rectangle,
++            x: Math.max(bounds.x, Math.min(bounds.x + bounds.width - rectangle.width, rectangle.x)),
++            y: Math.max(bounds.y, Math.min(bounds.y + bounds.height - rectangle.height, rectangle.y))
++        } : rectangle;
+         let rectangles = layout()
+             .locationScore(penaltyForRectangle)
+-            .rectangles(data);
++            .rectangles(data.map(constrain));
+ 
+         data.forEach((rectangle, index) => {
++            if (rectangle.fixed) return;
+             placements(rectangle).forEach((placement, placementIndex) => {
+-                rectangles = rectangles(placement, index);
++                rectangles = rectangles(constrain(placement), index);
+             });
+         });
+         return rectangles.rectangles();

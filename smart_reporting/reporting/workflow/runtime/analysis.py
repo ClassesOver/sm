@@ -73,6 +73,7 @@ from .base import (
     VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     AnalysisReworkRequest,
     Any,
+    ArtifactFile,
     BaseModel,
     Citation,
     ContextTrace,
@@ -127,9 +128,11 @@ from .base import (
 from .chart_inputs import (
     ChartInputMaterialization,
     _binding_catalog,
+    chart_input_root_for,
     fallback_plan,
     prepare_chart_inputs,
     verify_plotly_chart_inputs,
+    verify_static_chart_inputs_referenced,
 )
 from .code_generation import (
     CodeGenerationResult,
@@ -599,10 +602,7 @@ def _visualization_repair_facts(
 def _visualization_chart_input_root(chart_output_root: str) -> str:
     """chart-input 放在 chartOutputRoot 之外的只读兄弟目录，避免混入声明产物。"""
 
-    marker = "/analysis/charts/"
-    if marker in chart_output_root:
-        return chart_output_root.replace(marker, "/analysis/chart-inputs/", 1)
-    return f"{chart_output_root.rstrip('/')}-chart-inputs"
+    return chart_input_root_for(chart_output_root)
 
 
 def _visualization_registration_payload(chart: ChartDraft) -> dict[str, Any]:
@@ -1277,6 +1277,38 @@ class RuntimeAnalysisMixin:
                                 task_workspace,
                                 thread_id=str(coding_task_id),
                             )
+                            # B3：静态图（matplotlib）数值级联合验收——脚本必须
+                            # 引用预物化 chart-input 数据；未引用的图记软告警
+                            # （哈希无法证明柱高，深核依赖视觉审查与回执绑定）。
+                            try:
+                                script_identity = getattr(result, "script_file", None) or (
+                                    result.get("scriptFile") if isinstance(result, Mapping) else None
+                                )
+                                executed_script_path = getattr(script_identity, "path", None) or (
+                                    script_identity.get("path")
+                                    if isinstance(script_identity, Mapping)
+                                    else None
+                                )
+                                if executed_script_path:
+                                    script_bytes, _mime = await task_workspace.afile_bytes(
+                                        thread_id=str(coding_task_id), path=executed_script_path
+                                    )
+                                    unresolved = verify_static_chart_inputs_referenced(
+                                        plan,
+                                        chart_inputs,
+                                        script_bytes.decode("utf-8", errors="replace"),
+                                    )
+                                    for chart_id in unresolved:
+                                        loguru_logger.bind(chart_id=chart_id).warning(
+                                            "report_visualization_static_chart_input_unreferenced "
+                                            "chart_id={} 静态图脚本未引用预物化作图数据，"
+                                            "来源一致性依赖视觉审查。",
+                                            chart_id,
+                                        )
+                            except Exception:  # noqa: BLE001 - 软校验不阻断交付
+                                loguru_logger.warning(
+                                    "report_visualization_static_chart_input_check_failed"
+                                )
                         return result
 
                     async def record_successful_repair(
@@ -1295,6 +1327,39 @@ class RuntimeAnalysisMixin:
                         _inspections: tuple[ChartVisualInspectionReceipt, ...],
                         task_context: RunContext,
                     ) -> Mapping[str, Any]:
+                        # B3：把服务端预物化的 chart-input 文件身份随提交上报，
+                        # 由 submit 工具重验后冻结进 AnalysisChart.plotDataFiles。
+                        plot_data_files: tuple[dict[str, Any], ...] = ()
+                        plan_key = payload_sha256(plan.model_dump(mode="json", by_alias=True))
+                        chart_inputs = chart_input_cache.get(plan_key)
+                        if chart_inputs is not None and chart_inputs.entries:
+                            identity_by_path = {
+                                item.path: {
+                                    "path": item.path,
+                                    "size": len(item.content),
+                                    "sha256": item.sha256,
+                                }
+                                for item in chart_inputs.files
+                            }
+                            plot_data_files = tuple(
+                                {
+                                    "chartId": chart_entry_id,
+                                    "files": [
+                                        identity_by_path[entry["path"]]
+                                        for entry in chart_inputs.entries
+                                        if entry["chartId"] == chart_entry_id
+                                        and entry["path"] in identity_by_path
+                                    ],
+                                }
+                                for chart_entry_id in {
+                                    entry["chartId"] for entry in chart_inputs.entries
+                                }
+                                if any(
+                                    entry["chartId"] == chart_entry_id
+                                    and entry["path"] in identity_by_path
+                                    for entry in chart_inputs.entries
+                                )
+                            )
                         return await toolkit.submit_visualization_charts(
                             section_code,
                             [_visualization_registration_payload(item) for item in plan.charts],
@@ -1302,6 +1367,7 @@ class RuntimeAnalysisMixin:
                             visual_receipts=tuple(
                                 item.model_dump(mode="json", by_alias=True) for item in _inspections
                             ),
+                            plot_data_files=plot_data_files,
                         )
 
                     async def degrade(
@@ -2171,7 +2237,7 @@ class RuntimeAnalysisMixin:
                 ),
             )
         else:
-            _final_checkpoint, manifest = await self._finalize_reporting_sections(
+            checkpoint, manifest = await self._finalize_reporting_sections(
                 run_context,
                 checkpoint=checkpoint,
                 revision=revision,
@@ -2181,11 +2247,24 @@ class RuntimeAnalysisMixin:
                 citation_bindings=authoritative_citations(lineage),
                 source_warnings=_source_warnings_from_state(state),
             )
+        manifest_file = next(
+            (item for item in checkpoint.files if item.path == manifest_path), None
+        )
+        if manifest_file is None:
+            raise ReportingError(
+                "report_checkpoint_invalid", "Completed checkpoint 缺少报告 manifest。"
+            )
         result = self._workflow_result(state)
         result.update(
             {
                 "markdownPath": markdown_path,
                 "artifactManifestPath": manifest_path,
+                "artifactManifest": ArtifactFile(
+                    path=manifest_file.path,
+                    mediaType="application/json",
+                    size=manifest_file.size,
+                    sha256=manifest_file.sha256,
+                ).model_dump(mode="json", by_alias=True),
                 "revision": revision,
             }
         )

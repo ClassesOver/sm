@@ -17,6 +17,7 @@ describe('createExportSettingsPanel', () => {
       toc: false,
       headerFooter: true,
       pageNumbers: true,
+      sources: true,
       note: '运营数据复核后发布',
     })
   })
@@ -30,7 +31,12 @@ describe('createExportSettingsPanel', () => {
 
       let settings: ReturnType<typeof panel.read> | undefined
       expect(() => { settings = panel.read() }).not.toThrow()
-      expect(settings).toMatchObject({ toc: true, headerFooter: true, pageNumbers: true })
+      expect(settings).toMatchObject({
+        toc: true,
+        headerFooter: true,
+        pageNumbers: true,
+        sources: true,
+      })
     } finally {
       setItem.mockRestore()
     }
@@ -47,6 +53,18 @@ describe('createExportSettingsPanel', () => {
 
     expect(panel.dialog.hidden).toBe(true)
     expect(document.activeElement).toBe(opener)
+  })
+
+  it('hides and clears source export when the rollout feature is disabled', () => {
+    const panel = createExportSettingsPanel(document.body)
+
+    panel.setSourcesEnabled(false)
+
+    const input = panel.dialog.querySelector<HTMLInputElement>('[name="sources"]')!
+    expect(input.disabled).toBe(true)
+    expect(input.checked).toBe(false)
+    expect(input.closest('label')?.hidden).toBe(true)
+    expect(panel.read().sources).toBe(false)
   })
 
   it('closes from the shared modal backdrop and restores the opener', () => {

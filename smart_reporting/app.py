@@ -453,6 +453,10 @@ report_editor = ReportEditorService(
     editor_grants=report_editor_grants,
     public_base_url=settings.report_public_base_url,
     export_timeout_seconds=settings.report_editor_export_timeout_seconds,
+    lineage_panel_enabled=settings.report_lineage_panel_enabled,
+    lineage_download_enabled=settings.report_lineage_download_enabled,
+    lineage_drilldown_enabled=settings.report_lineage_drilldown_enabled,
+    lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
 )
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
 report_workflow = report_runtime.workflow()

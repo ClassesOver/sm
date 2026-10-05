@@ -329,3 +329,5 @@ cython_debug/
 .worktrees/
 .superpowers
 docs
+# 证据浏览器等浏览器回放生成的截图与几何报告
+/output/

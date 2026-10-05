@@ -1,0 +1,26 @@
+{
+  "scenario": "图表数据集：类别排序、Top N/其他项、缺值、单位转换、正负数、多系列",
+  "input": "chart_series.csv",
+  "period": "2025-09",
+  "transform_rules": [
+    "按收入降序排序",
+    "Top N = 3，其余院区（含负数）合并为「其他」",
+    "单位换算：元 -> 万元（/10000），保留 3 位小数",
+    "expenses 缺值保持 missing，不补 0"
+  ],
+  "series_names": ["revenue", "expenses"],
+  "category_order": ["B院区", "A院区", "C院区", "其他"],
+  "revenue": {
+    "yuan": [2400.0, 1200.0, 600.0, 350.0],
+    "wan": [0.24, 0.12, 0.06, 0.035],
+    "other_members": ["E院区 300", "F院区 150", "D院区 -100"],
+    "other_sum_check": "300 + 150 + (-100) = 350"
+  },
+  "expenses": {
+    "yuan": [1800.0, 900.0, null, 270.0],
+    "wan": [0.18, 0.09, null, 0.027],
+    "missing_category": "C院区",
+    "other_sum_check": "200 + 120 + (-50) = 270"
+  },
+  "negative_handling": "D院区收入 -100 参与降序排序并落入「其他」，不丢弃"
+}

@@ -143,7 +143,7 @@ function renderDiff(container: HTMLElement, previous: string, current: string) {
 
 export function createHistoryController(
   root: HTMLElement,
-  restore?: (markdown: string) => void,
+  restore?: (markdown: string, revision?: number) => void | Promise<void>,
   loadRevision?: (revision: number) => Promise<string>,
   loadPage?: (offset: number, filters: HistoryFilters) => Promise<HistorySnapshotPage>,
 ) {
@@ -369,11 +369,36 @@ export function createHistoryController(
     renderComparison()
   })
   const hide = modal.close
+  const restoreError = document.createElement('p')
+  restoreError.className = 'history-restore-error'
+  restoreError.setAttribute('role', 'alert')
+  restoreError.hidden = true
+  restoreButton.after(restoreError)
+  let restoring = false
   restoreButton.addEventListener('click', () => {
-    if (!selected || !restore) return
+    if (!selected || !restore || restoring) return
     if (!window.confirm('将此版本恢复为当前草稿？已发布版本不会被覆盖。')) return
-    restore(selected.markdown)
-    hide()
+    restoreError.hidden = true
+    const snapshot = selected
+    const failed = () => {
+      restoreError.textContent = '恢复未完成，请检查保存状态后重试'
+      restoreError.hidden = false
+    }
+    try {
+      const result = snapshot.revision === undefined
+        ? restore(snapshot.markdown)
+        : restore(snapshot.markdown, snapshot.revision)
+      if (result instanceof Promise) {
+        restoring = true
+        restoreButton.disabled = true
+        void result.then(hide, failed).finally(() => {
+          restoring = false
+          restoreButton.disabled = false
+        })
+      } else hide()
+    } catch {
+      failed()
+    }
   })
   return {
     dialog,

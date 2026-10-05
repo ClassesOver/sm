@@ -1,0 +1,24 @@
+{
+  "scenario": "边界：零分母、缺失期间、缺失值（基于 edge_cases.csv）",
+  "unit": "元",
+  "semantic_freeze": {
+    "missing_value": "空值不计入聚合（sum 视为 0 贡献），计入 missing_count",
+    "missing_period": "指标需要基期而该主体无基期记录时，比较事实不可计算（missing_baseline）",
+    "zero_denominator": "基期为 0 时环比率不可计算（zero_denominator），差值仍可计算"
+  },
+  "branch_d": {
+    "current_revenue": 100.0,
+    "baseline_revenue": 0.0,
+    "mom_change": 100.0,
+    "mom_rate_pct": null,
+    "mom_rate_reason": "zero_denominator"
+  },
+  "branch_e": {
+    "current_revenue": 0.0,
+    "current_revenue_missing_count": 1,
+    "current_visits": 0,
+    "current_visits_missing_count": 1,
+    "mom": null,
+    "mom_reason": "missing_baseline"
+  }
+}

@@ -604,6 +604,9 @@ def test_document_context_and_manifest_share_heading_number_contract() -> None:
     assert "max-height:180mm" in pdf_html
     assert "object-fit:contain" in pdf_html
     assert pdf_html.count('<figure class="report-figure">') == 1
+    assert '<figure class="report-figure">' not in word_html
+    assert '<div class="report-figure">' in word_html
+    assert '<p class="report-figure-caption">图表：2025 年收入趋势</p>' in word_html
     assert (
         '<figcaption class="report-figure-caption">图表：2025 年收入趋势</figcaption>' in pdf_html
     )

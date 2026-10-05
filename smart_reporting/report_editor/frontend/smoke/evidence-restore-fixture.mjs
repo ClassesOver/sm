@@ -1,0 +1,51 @@
+// 关闭后恢复：只操作固定 fixture，不保存报告。
+import assert from 'node:assert/strict'
+import { mkdir } from 'node:fs/promises'
+import { chromium } from 'playwright'
+
+const browser = await chromium.launch({ headless: true })
+try {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('http://127.0.0.1:4173/reports/v1/editor/fixture-report/1', { waitUntil: 'networkidle' })
+  await page.locator('[data-action="sources"]').click()
+  await page.locator('.evidence-directory-item', { hasText: '收入明细.csv' }).click()
+  await page.locator('.evidence-filter').fill('华东')
+  const matching = await page.locator('.evidence-filter-count').textContent()
+  await page.locator('.evidence-tab-close').click()
+  await page.locator('[data-action="sources"]').click()
+  await page.getByLabel('全部任务', { exact: true }).click()
+  await page.getByRole('button', { name: '恢复最近关闭的任务', exact: true }).click()
+  assert.equal(await page.locator('.evidence-filter').inputValue(), '华东')
+  assert.equal(await page.locator('.evidence-filter-count').textContent(), matching)
+  await page.locator('.evidence-directory-item', { hasText: '渠道收入汇总' }).click()
+  const datasetTab = () => page.getByRole('tab', { name: '收入明细.csv 快照', exact: true })
+  const computationTab = page.getByRole('tab', { name: '渠道收入汇总 计算', exact: true })
+  await computationTab.dragTo(datasetTab())
+  const orderedNames = await page.locator('.evidence-tab-name').allTextContents()
+  assert.deepEqual(orderedNames, ['渠道收入汇总', '收入明细.csv'])
+  await datasetTab().click()
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.locator('[data-action="sources"]').click()
+  assert.deepEqual(await page.locator('.evidence-tab-name').allTextContents(), orderedNames)
+  assert.equal(await page.locator('.evidence-filter').inputValue(), '华东')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: '关闭核对任务 收入明细.csv', exact: true }).click()
+  await page.getByRole('tab', { name: '报告正文', exact: true }).click()
+  await page.locator('[data-action="more"]').click()
+  await page.locator('[data-action="sources"]').filter({ visible: true }).click()
+  await page.getByLabel('全部任务', { exact: true }).click()
+  await page.getByRole('button', { name: '恢复最近关闭的任务', exact: true }).click()
+  assert.equal(await page.locator('.evidence-filter').inputValue(), '华东')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  const noteWidth = await page.locator('.evidence-relations-note').evaluate(node => node.getBoundingClientRect().width)
+  assert.ok(noteWidth > 250, `关系计数宽度不足：${noteWidth}`)
+  const output = new URL('../../../../output/', import.meta.url)
+  await mkdir(output, { recursive: true })
+  await page.screenshot({ path: new URL('report-editor-v6-restore-mobile.png', output).pathname })
+  assert.deepEqual(errors, [])
+  console.log(JSON.stringify({ taskRestore: 'passed', taskDragAndRefresh: 'passed', viewports: [1280, 390] }))
+} finally {
+  await browser.close()
+}

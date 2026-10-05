@@ -667,6 +667,78 @@ def apply(
                 "report_editor_context_conflict", "当前报告 revision 已绑定其他编辑上下文。"
             )
         contexts[key] = serialized
+    elif name == "set_report_editor_retention":
+        from ...report_editor.service import ReportEditorContext
+
+        try:
+            context = ReportEditorContext.model_validate(arguments.get("context"))
+            if "expiresAt" not in arguments:
+                raise ValueError("必须显式声明保留截止时间或永久保留")
+            expires_at = arguments.get("expiresAt")
+            if expires_at is not None:
+                parsed = datetime.fromisoformat(expires_at)
+                if parsed.utcoffset() is None:
+                    raise ValueError("保留截止时间必须包含时区")
+                expires_at = parsed.astimezone(UTC).isoformat()
+        except (ValueError, TypeError) as error:
+            raise ReportingStateError("report_editor_retention_invalid", "报告版本保留策略无效。") from error
+        contexts = payload.get("reportEditorContexts", {})
+        if not isinstance(contexts, dict) or contexts.get(str(context.revision)) != context.model_dump(mode="json", by_alias=True):
+            raise ReportingStateError("report_editor_context_conflict", "保留策略的报告版本身份不一致。")
+        retention = payload.setdefault("reportEditorRetention", {})
+        if not isinstance(retention, dict):
+            raise ReportingStateError("report_state_invalid", "报告版本保留状态损坏。")
+        retired = payload.get("reportEditorRetiredSources", {})
+        if not isinstance(retired, dict) or str(context.revision) in retired:
+            raise ReportingStateError("report_editor_retention_invalid", "已回收来源的版本不能恢复保留策略。")
+        retention[str(context.revision)] = {"contextSha256": context.digest(), "expiresAt": expires_at}
+    elif name == "begin_report_editor_source_cleanup":
+        from ...report_editor.service import ReportEditorContext
+        from ..trace.contracts_v1 import TraceFileRefV1
+
+        try:
+            cleanup_id = arguments["cleanupId"]
+            now = datetime.fromisoformat(arguments["now"])
+            records = arguments["contexts"]
+            files = [TraceFileRefV1.model_validate(item).model_dump(mode="json", by_alias=True) for item in arguments["files"]]
+            if state.phase != ReportingPhase.COMPLETED or now.utcoffset() is None:
+                raise ValueError("只允许回收已完成工作流")
+            if not isinstance(cleanup_id, str) or not cleanup_id or not isinstance(records, dict) or not records:
+                raise ValueError("回收意图无效")
+            pending = payload.get("reportEditorSourceCleanup")
+            if pending is not None and pending.get("status") != "completed":
+                raise ValueError("已有未完成回收")
+            registered = payload["reportEditorContexts"]
+            retention = payload["reportEditorRetention"]
+            for key, digest in records.items():
+                context = ReportEditorContext.model_validate(registered[key])
+                policy = retention[key]
+                deadline = datetime.fromisoformat(policy["expiresAt"])
+                if (
+                    context.digest() != digest or policy["contextSha256"] != digest
+                    or deadline.utcoffset() is None or deadline > now
+                ):
+                    raise ValueError("版本未到期或身份不一致")
+            retired = payload.setdefault("reportEditorRetiredSources", {})
+            if not isinstance(retired, dict):
+                raise ValueError("回收登记损坏")
+        except (KeyError, ValueError, TypeError, AttributeError) as error:
+            raise ReportingStateError("report_editor_retention_invalid", "来源回收意图无效。") from error
+        retired.update(records)
+        payload["reportEditorSourceCleanup"] = {
+            "cleanupId": cleanup_id, "contexts": dict(records), "files": files,
+            "startedAt": now.astimezone(UTC).isoformat(), "status": "pending",
+        }
+    elif name == "finish_report_editor_source_cleanup":
+        pending = payload.get("reportEditorSourceCleanup")
+        if not isinstance(pending, dict) or pending.get("cleanupId") != arguments.get("cleanupId"):
+            raise ReportingStateError("report_editor_retention_invalid", "来源回收任务身份不一致。")
+        cleaned = payload.setdefault("reportEditorCleanedSourceFiles", {})
+        if not isinstance(cleaned, dict):
+            raise ReportingStateError("report_state_invalid", "已回收文件登记损坏。")
+        for item in pending["files"]:
+            cleaned[item["path"]] = dict(item)
+        pending["status"] = "completed"
     elif name == "set_workflow_checkpoint":
         checkpoint = arguments.get("checkpoint")
         if not isinstance(checkpoint, Mapping):

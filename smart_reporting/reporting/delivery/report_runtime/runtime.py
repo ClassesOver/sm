@@ -211,10 +211,13 @@ class ReportRuntime:
         return image_pattern.sub(replace, body)
 
     @staticmethod
-    def _reject_html_links(body: str) -> None:
+    def _reject_html_links(body: str, *, allowed_links: set[str] | None = None) -> None:
+        allowed = allowed_links or set()
         link_pattern = re.compile(r'<a\b[^>]*\bhref=(?:"([^"]*)"|\'([^\']*)\')', re.I)
         for match in link_pattern.finditer(body):
             href = match.group(1) if match.group(1) is not None else match.group(2)
+            if href in allowed:
+                continue
             if not href.startswith("#") or urlsplit(href).scheme or urlsplit(href).netloc:
                 raise ReportFailure("HTML 预览不允许外部或工作区链接")
 
@@ -245,13 +248,19 @@ class ReportRuntime:
             except UnicodeDecodeError as error:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
-            pdf_markdown, citation_presentations = _pdf_markdown(
-                markdown, state.get("_citationPresentations")
+            export_settings = state.get("_editorExportSettings")
+            include_sources = not isinstance(export_settings, dict) or export_settings.get(
+                "sources", True
+            )
+            pdf_markdown, citation_presentations, trace_source_render = _pdf_markdown(
+                markdown,
+                state.get("_citationPresentations"),
+                include_sources=include_sources,
+                trace_sources=state.get("_traceSourcePresentations"),
             )
             pdf_markdown = _normalize_cjk_strong_markers(pdf_markdown)
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
-            export_settings = state.get("_editorExportSettings")
             include_cover = not isinstance(export_settings, dict) or export_settings.get(
                 "cover", True
             )
@@ -283,7 +292,14 @@ class ReportRuntime:
             html_body = self._inline_images(
                 body, source.parent, allowed_images, self._image_sources
             )
-            self._reject_html_links(html_body)
+            self._reject_html_links(
+                html_body,
+                allowed_links={
+                    item["url"]
+                    for item in citation_presentations
+                    if isinstance(item.get("url"), str)
+                },
+            )
             output = _output_path(self.workspace, output_path)
             word_output = _word_output_path(
                 self.workspace,
@@ -316,6 +332,8 @@ class ReportRuntime:
                 layout=layout,
                 include_cover=include_cover,
                 include_toc=include_toc,
+                citation_presentations=(citation_presentations if include_sources else []),
+                trace_sources=(trace_source_render if include_sources else None),
             )
             preflight_document = HTML(
                 string=pdf_document,
@@ -332,6 +350,8 @@ class ReportRuntime:
                 toc_page_numbers=toc_page_numbers,
                 include_cover=include_cover,
                 include_toc=include_toc,
+                citation_presentations=(citation_presentations if include_sources else []),
+                trace_sources=(trace_source_render if include_sources else None),
             )
             final_document = HTML(
                 string=pdf_document,
@@ -436,13 +456,17 @@ class ReportRuntime:
                     "toc": include_toc,
                     "headerFooter": include_header_footer,
                     "pageNumbers": include_page_numbers,
+                    "sources": include_sources,
                 },
                 "reportTitle": title,
                 "documentContext": context,
                 "visualTheme": deepcopy(REPORT_VISUAL_THEME),
                 "wordStructure": word_structure,
                 "citationPresentations": citation_presentations,
-                "citationAppendixPresent": False,
+                "citationAppendixPresent": include_sources and bool(citation_presentations),
+                "traceSourcePresentations": trace_source_render,
+                "traceSourceAppendixPresent": include_sources
+                and bool(trace_source_render["entries"]),
             }
             result = {
                 "status": "rendered",
@@ -657,6 +681,7 @@ class ReportRuntime:
                         }
                     )
                 extracted_text = "\n".join(extracted_pages)
+                self._validate_trace_source_visibility(render, extracted_text)
                 cover_text = extracted_pages[0]
                 toc_text = "\n".join(extracted_pages[first_numbered_page - 1 : body_start_page - 1])
                 final_text = extracted_pages[-1]
@@ -776,6 +801,43 @@ class ReportRuntime:
             if temp_path is not None:
                 shutil.rmtree(temp_path, ignore_errors=True)
 
+    def _validate_trace_source_visibility(
+        self,
+        render: dict[str, Any],
+        extracted_text: str,
+    ) -> None:
+        """数据来源附录验收（B8 G8）：编号、附录与导出设置三者一致。
+
+        来源展示开启时，每个已分配编号必须出现在 PDF 文本中（正文或附录），
+        附录标题存在且登记标志为真；关闭时三者都必须缺失。协议标记在任何
+        设置下都不得出现在成品文本里。
+        """
+        trace = render.get("traceSourcePresentations")
+        raw_entries = trace.get("entries") if isinstance(trace, dict) else None
+        entries = [item for item in raw_entries or [] if isinstance(item, dict)]
+        sources_enabled = render.get("exportSettings", {}).get("sources", True)
+        appendix_present = render.get("traceSourceAppendixPresent")
+        aliases = [item.get("alias") for item in entries]
+        if sources_enabled:
+            if appendix_present is not bool(entries) or (
+                entries and "数据来源附录" not in extracted_text
+            ):
+                raise ReportFailure("PDF 数据来源附录不完整")
+            if any(
+                not isinstance(alias, str) or alias not in extracted_text
+                for alias in aliases
+            ):
+                raise ReportFailure("PDF 数据来源编号不完整")
+        else:
+            if (
+                appendix_present is not False
+                or "数据来源附录" in extracted_text
+                or any(isinstance(alias, str) and alias in extracted_text for alias in aliases)
+            ):
+                raise ReportFailure("PDF 关闭来源展示后仍出现数据来源内容")
+        if "[[claim:" in extracted_text or "[[table:" in extracted_text:
+            raise ReportFailure("PDF 不应显示数据来源协议标记")
+
     def _validate_manifest_markers(
         self,
         manifest: dict[str, Any] | None,
@@ -823,24 +885,36 @@ class ReportRuntime:
             if isinstance(value, str):
                 citation_ids.append(value)
         presentations = render.get("citationPresentations")
-        if (
+        source_display_enabled = render.get("exportSettings", {}).get("sources", True)
+        invalid_presentation = (
             len(citation_ids) != len(citations)
             or not isinstance(presentations, list)
             or len(presentations) != len(citation_ids)
+            or {item.get("citationId") for item in presentations if isinstance(item, dict)}
+            != set(citation_ids)
             or any(
                 not isinstance(item, dict)
-                or item.get("citationId") != citation_id
-                or item.get("alias") != f"[引用 {index:03d}]"
+                or item.get("alias") != f"[来源 {index:03d}]"
                 or not isinstance(item.get("label"), str)
-                for index, (citation_id, item) in enumerate(
-                    zip(citation_ids, presentations, strict=True), start=1
-                )
+                for index, item in enumerate(presentations, start=1)
             )
-            or any(item["alias"] in extracted_text for item in presentations)
-            or "实际引用附录" in extracted_text
-            or "[[citation:" in extracted_text
-        ):
-            raise ReportFailure("PDF 不应显示引用标识或实际引用附录")
+        )
+        if source_display_enabled:
+            invalid_visibility = (
+                isinstance(presentations, list)
+                and any(item["alias"] not in extracted_text for item in presentations)
+            ) or (
+                bool(citation_ids) and "实际引用附录" not in extracted_text
+            ) or render.get("citationAppendixPresent") is not bool(citation_ids)
+        else:
+            invalid_visibility = (
+                isinstance(presentations, list)
+                and any(item["alias"] in extracted_text for item in presentations)
+            ) or "实际引用附录" in extracted_text or render.get(
+                "citationAppendixPresent"
+            ) is not False
+        if invalid_presentation or invalid_visibility or "[[citation:" in extracted_text:
+            raise ReportFailure("PDF 来源编号或实际引用附录不完整")
         section_ids = [item for item in sections if isinstance(item, str)]
         if len(section_ids) != len(sections) or "[[section:" in extracted_text:
             raise ReportFailure("PDF 不应显示关键章节标识")

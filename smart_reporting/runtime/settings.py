@@ -6,8 +6,8 @@ from ipaddress import IPv4Network, ip_network
 from typing import Literal, cast
 from urllib.parse import quote, urlsplit
 
-from dotenv import dotenv_values
 from dingyi_agno.platform.settings import PlatformSettings
+from dotenv import dotenv_values
 
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_FAST_ID = "qwen3.6-35b-a3b"
@@ -303,6 +303,11 @@ class AgentSettings:
     report_section_concurrency: int
     reporting_execution_mode: str
     report_section_whole_generation: bool = True
+    report_lineage_registration_enabled: bool = True
+    report_lineage_panel_enabled: bool = True
+    report_lineage_download_enabled: bool = True
+    report_lineage_drilldown_enabled: bool = True
+    report_lineage_export_sources_enabled: bool = True
     # 单个可视化章节的墙钟截止（秒）：超时后不再开启新的修复或 fresh attempt，
     # 直接零图降级，保证最难主题也能在报告总时限内交付。
     report_visualization_section_deadline_seconds: int = 900
@@ -493,6 +498,21 @@ class AgentSettings:
             report_section_concurrency=report_section_concurrency,
             report_section_whole_generation=_flag(
                 values.get("AGENT_REPORT_SECTION_WHOLE_GENERATION"), default=True
+            ),
+            report_lineage_registration_enabled=_flag(
+                values.get("AGENT_REPORT_LINEAGE_REGISTRATION_ENABLED"), default=True
+            ),
+            report_lineage_panel_enabled=_flag(
+                values.get("AGENT_REPORT_LINEAGE_PANEL_ENABLED"), default=True
+            ),
+            report_lineage_download_enabled=_flag(
+                values.get("AGENT_REPORT_LINEAGE_DOWNLOAD_ENABLED"), default=True
+            ),
+            report_lineage_drilldown_enabled=_flag(
+                values.get("AGENT_REPORT_LINEAGE_DRILLDOWN_ENABLED"), default=True
+            ),
+            report_lineage_export_sources_enabled=_flag(
+                values.get("AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED"), default=True
             ),
             reporting_execution_mode=reporting_execution_mode,
             report_editor_export_timeout_seconds=_positive_int(

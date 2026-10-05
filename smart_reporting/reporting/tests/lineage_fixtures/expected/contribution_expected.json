@@ -1,0 +1,19 @@
+{
+  "scenario": "多步贡献分解：院区收入净增量占比（基于 hospital_revenue.csv）",
+  "unit": "元",
+  "period": "2025-09",
+  "baseline_period": "2025-08",
+  "claim": "B院区占收入净增量的 66.67%",
+  "branch_deltas": {
+    "A院区": { "current": 1200.0, "baseline": 1000.0, "delta": 200.0, "share_pct": 33.33 },
+    "B院区": { "current": 2400.0, "baseline": 2000.0, "delta": 400.0, "share_pct": 66.67 }
+  },
+  "total": { "current": 3600.0, "baseline": 3000.0, "delta": 600.0 },
+  "share_rounding": "200/600=33.333..% 记 33.33；400/600=66.666..% 记 66.67；两位合计 100.00",
+  "chain": [
+    "派生事实：B院区 share = 400 / 600 * 100 = 66.67%",
+    "B院区增量 = 2400 - 2000 = 400（本期 CSV + 基期 CSV）",
+    "全部院区增量 = 3600 - 3000 = 600（本期 CSV + 基期 CSV）"
+  ],
+  "limitations": ["贡献分解是算术分解，不构成因果证明"]
+}

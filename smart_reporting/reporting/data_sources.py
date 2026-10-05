@@ -18,6 +18,7 @@ from ..workspace import WorkspaceHashResultError, _thread
 from .contract import ReportFileInput
 from .data_source import DataSourceAdapter
 from .models import ReportingError
+from .trace.contracts_v1 import utc_now_timestamp
 from .workflow.query_pipeline import (
     ApprovedQuery,
     DatasetLineage,
@@ -49,6 +50,8 @@ class DatasetHandle:
     filename: str | None = None
     period_roles: tuple[Literal["current", "yoy", "mom"], ...] = ("current",)
     query_window_id: str = "current"
+    # 登记时刻（ISO8601 UTC）；旧句柄无此字段时为 None，禁止用 mtime 推断。
+    materialized_at: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -79,6 +82,11 @@ class DatasetHandle:
                 "periodRoles": list(self.period_roles),
                 "queryWindowId": self.query_window_id,
                 **({"filename": self.filename} if self.filename is not None else {}),
+                **(
+                    {"materializedAt": self.materialized_at}
+                    if self.materialized_at is not None
+                    else {}
+                ),
             },
         }
 
@@ -111,6 +119,11 @@ class DatasetHandle:
                 query_window_id=str(provenance.get("queryWindowId") or "current"),
                 filename=(
                     str(provenance["filename"]) if provenance.get("filename") is not None else None
+                ),
+                materialized_at=(
+                    str(provenance["materializedAt"])
+                    if provenance.get("materializedAt")
+                    else None
                 ),
             )
         except (KeyError, TypeError, ValueError) as error:
@@ -184,6 +197,7 @@ class ReportDatasetStore:
                 requirement_id=requirement_id,
                 sql_hash=sql_hash,
                 filename=file.filename,
+                materialized_at=utc_now_timestamp(),
             )
             handles.append(handle)
             lineages.append(
@@ -299,6 +313,7 @@ class ReportDatasetStore:
                             row_count=result.row_count,
                             size=len(content),
                             sha256=digest,
+                            materialized_at=utc_now_timestamp(),
                         )
                         staging_paths[index] = staging_path
             except Exception as error:

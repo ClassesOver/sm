@@ -40,7 +40,6 @@ from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskExecutionScope, TaskState
 from ....workspace import WorkspaceService
 from ...code_agent.context import ReportingCodingTaskRegistry
-from ...presentation import completed_report_content
 from ...contract import (
     FIELD_REF_PATTERN,
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
@@ -150,6 +149,7 @@ from ...phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
 )
+from ...presentation import completed_report_content
 from ...profile import (
     CapabilitySet,
     EffectiveReportingProfile,
@@ -515,6 +515,7 @@ class _ReportWorkflowRuntimeBase:
         section_concurrency: int = 1,
         reporting_execution_mode: str = "sequential",
         section_whole_generation: bool = True,
+        trace_registration_enabled: bool = True,
         visualization_section_deadline_seconds: int = VISUALIZATION_SECTION_DEADLINE_SECONDS,
         visualization_total_deadline_seconds: int = VISUALIZATION_TOTAL_DEADLINE_SECONDS,
     ):
@@ -553,6 +554,7 @@ class _ReportWorkflowRuntimeBase:
         self.quality_warning_service = quality_warning_service
         self.report_public_base_url = report_public_base_url
         self.report_completion_template = report_completion_template
+        self.trace_registration_enabled = trace_registration_enabled
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
@@ -1502,6 +1504,17 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
         try:
+            if content.get("artifactManifest") is not None:
+                identity = ArtifactFile.model_validate(content["artifactManifest"])
+                if identity.media_type != "application/json" or (
+                    content.get("artifactManifestPath") is not None
+                    and content["artifactManifestPath"] != identity.path
+                ):
+                    raise ValueError("Invalid manifest identity")
+                values["artifactManifest"] = identity.model_dump(mode="json", by_alias=True)
+                values["artifactManifestPath"] = identity.path
+            elif content.get("artifactManifestPath") is not None:
+                raise ValueError("Manifest path requires accepted identity")
             values["sourceWarnings"] = [
                 SourceWarning.model_validate(item).model_dump(mode="json", by_alias=True)
                 for item in values["sourceWarnings"]

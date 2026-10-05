@@ -14,7 +14,11 @@ from ....task_execution import (
 )
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...contract import interactive_spec_path
-from ...delivery.draft_v1 import ReportDraftBlock, promote_orphan_h4_headings
+from ...delivery.draft_v1 import (
+    ReportDraftBlock,
+    ReportServerTable,
+    promote_orphan_h4_headings,
+)
 from ...hospital_operation.deterministic_analysis import DeterministicAnalysisBundle
 from ...model_policy import (
     ThinkingFailureKind,
@@ -24,6 +28,16 @@ from ...model_policy import (
 from ...phase import reporting_model_route_from_run_context
 from ...structured_output import ReportingStructuredOutputExecutor
 from ...tools import build_reporting_tools
+from ...trace.computation_service import detect_computation_cycles
+from ...trace.contracts_v1 import (
+    ChartTraceV1,
+    ComputationRecordV1,
+    TableTraceV1,
+    derive_resource_id,
+)
+from ...trace.index_builder import trace_index_path_for
+from ...trace.subject_builder import build_claim_subject_bindings
+from ...trace.table_builder import build_analysis_table
 from ..checkpoint import (
     ChartVisualInspectionReceipt,
     CheckpointError,
@@ -47,9 +61,11 @@ from .base import (
     AnalysisEvidenceManifest,
     AnalysisReworkRequest,
     Any,
+    ArtifactFile,
     Citation,
     CompletedSection,
     ContextTrace,
+    DatasetHandle,
     DatasetLineage,
     DetailedAnalysisPlan,
     FileIdentity,
@@ -125,6 +141,7 @@ def _analysis_chart_from_registration(
     source_file: Mapping[str, Any],
     interactive_file: Mapping[str, Any] | None,
     visual_receipt: Mapping[str, Any] | None = None,
+    plot_data: Mapping[str, Any] | None = None,
 ) -> AnalysisChart:
     interactive_path = raw_chart.get("interactivePath")
     if interactive_path is not None and (
@@ -139,6 +156,13 @@ def _analysis_chart_from_registration(
     payload["sourceFile"] = dict(source_file)
     if interactive_file is not None:
         payload["interactiveFile"] = dict(interactive_file)
+    # B3：服务端重验过的 chart-input 文件身份随图表冻结，形成图片↔作图
+    # 数据证据链；缺失时保持旧形态（plotDataFiles 空 = 来源不足，读取层降级）。
+    if isinstance(plot_data, Mapping) and plot_data.get("files"):
+        payload["plotDataFiles"] = [
+            dict(item) for item in plot_data["files"] if isinstance(item, Mapping)
+        ]
+        payload["plotDataKind"] = "chart_input"
     # 可视化阶段已为同一文件签发的真实审查回执必须随冻结图表保留；否则通过视觉
     # 审查的图表会在证据中被记录为“未运行审查”。没有匹配回执时才退回确定性检查。
     receipt = _frozen_visual_receipt(visual_receipt, source_file) or ChartVisualInspectionReceipt(
@@ -2303,6 +2327,74 @@ class RuntimeSectionsMixin:
         assert last_error is not None
         raise last_error
 
+    async def _build_server_tables(
+        self,
+        run_context: RunContext,
+        *,
+        checkpoint: ReportingCheckpoint,
+        outline: Any,
+    ) -> tuple[tuple[ReportServerTable, ...], tuple[TableTraceV1, ...], dict[str, tuple[str, str]]]:
+        """从冻结确定性 facts 生成服务端结构化表格（B2，计划 4.2）。
+
+        规则：每个 analysis 至多一张"分期间指标表"（build_analysis_table）；
+        表格追加到第一个引用该 analysis 的批准章节尾部。bundle 不可读或
+        生成失败按软告警跳过（语义缺失软告警，不阻断发布），但已生成的
+        表格与其 trace 严格同源。
+
+        返回 (tables, traces, factId→(analysisId, jsonPointer) 目录)——
+        目录供 B6 正文 subject 绑定构造复用（不重复读 bundle）。
+        """
+
+        from ...trace.fact_index import fact_pointer
+
+        scope = self._scope(run_context)
+        thread_id = scope["threadId"]
+        section_by_analysis: dict[str, str] = {}
+        for section in outline.sections:
+            for analysis_id in section.analysis_ids:
+                section_by_analysis.setdefault(analysis_id, section.code)
+        tables: list[ReportServerTable] = []
+        traces: list[TableTraceV1] = []
+        fact_directory: dict[str, tuple[str, str]] = {}
+        for analysis_id, identity in checkpoint.deterministic_fact_files.items():
+            try:
+                raw = await self._read_identity_bytes(
+                    thread_id, identity, max_bytes=16 * 1024 * 1024
+                )
+                bundle = DeterministicAnalysisBundle.model_validate_json(raw)
+                for fact in (
+                    *bundle.metrics,
+                    *bundle.comparisons,
+                    *bundle.derived_metrics,
+                    *bundle.reconciliations,
+                    *bundle.correlation_details,
+                ):
+                    if fact.fact_id:
+                        pointer = fact_pointer(bundle, fact.fact_id)
+                        if pointer:
+                            fact_directory[fact.fact_id] = (analysis_id, pointer)
+                section_code = section_by_analysis.get(analysis_id)
+                if section_code is None:
+                    continue
+                fact_resource = derive_resource_id(identity.path)
+                built = build_analysis_table(
+                    bundle, fact_file_resource_id=fact_resource
+                )
+                if built is None:
+                    continue
+                trace, markdown = built
+                tables.append(
+                    ReportServerTable(sectionCode=section_code, markdown=markdown)
+                )
+                traces.append(trace)
+            except (ReportingError, ValidationError, ValueError) as error:
+                loguru_logger.warning(
+                    "report_server_table_skipped analysis_id={} error={}",
+                    analysis_id,
+                    error,
+                )
+        return tuple(tables), tuple(traces), fact_directory
+
     async def _finalize_reporting_sections(
         self,
         run_context: RunContext,
@@ -2342,6 +2434,9 @@ class RuntimeSectionsMixin:
                 for item in section_artifacts
             )
         )
+        server_tables, server_table_traces, fact_directory = await self._build_server_tables(
+            run_context, checkpoint=checkpoint, outline=outline
+        )
         chart_inputs: list[ReportChartInput] = []
         destination_by_chart: dict[str, str] = {}
         report_parent = PurePosixPath(markdown_path).parent
@@ -2379,6 +2474,7 @@ class RuntimeSectionsMixin:
             citation_ids=tuple(item.citation_id for item in citation_bindings),
             charts=tuple(chart_inputs),
             require_table=False,
+            server_tables=server_tables,
         )
         await self.report_tools.complete_document_heading_numbers(
             str(self._workflow_result(self._state(run_context))["jobId"]),
@@ -2397,6 +2493,8 @@ class RuntimeSectionsMixin:
         chart_files: list[FileIdentity] = []
         interactive_files: list[FileIdentity] = []
         interactive_charts: dict[str, str] = {}
+        plot_data_files: list[FileIdentity] = []
+        plot_files_by_chart: dict[str, list[FileIdentity]] = {}
         for chart_id in referenced_chart_ids:
             chart = chart_by_id[chart_id]
             content = await self._read_identity_bytes(
@@ -2407,6 +2505,22 @@ class RuntimeSectionsMixin:
                     scope["threadId"], destination_by_chart[chart_id], content
                 )
             )
+            # B3：作图数据（chart-input/v1）与图片一起归档进 revision 目录，
+            # 供追溯索引登记 ChartTraceV1；不进交付 manifest（非渲染产物）。
+            for plot_index, plot_identity in enumerate(chart.plot_data_files, start=1):
+                plot_content = await self._read_identity_bytes(
+                    scope["threadId"], plot_identity, max_bytes=8 * 1024 * 1024
+                )
+                image_stem = PurePosixPath(destination_by_chart[chart_id]).stem
+                plot_destination = report_parent.joinpath(
+                    f"{image_stem}--{plot_index}.chart-input.json"
+                ).as_posix()
+                plot_data_files.append(
+                    await self._write_immutable_artifact(
+                        scope["threadId"], plot_destination, plot_content
+                    )
+                )
+                plot_files_by_chart.setdefault(chart_id, []).append(plot_data_files[-1])
             if chart.interactive_file is not None:
                 spec_content = await self._read_identity_bytes(
                     scope["threadId"], chart.interactive_file, max_bytes=2 * 1024 * 1024
@@ -2421,6 +2535,42 @@ class RuntimeSectionsMixin:
             raise ReportingError(
                 "report_draft_chart_path_invalid", "服务端图表归档路径与 Markdown 装配结果不一致。"
             )
+        # B3：图片由登记的同一份作图数据生成——ChartTraceV1 绑定归档后的
+        # 图片与作图数据文件及数据集来源；无作图数据或数据集映射的图不伪造
+        # trace（读取层按"来源不足"降级，计划 G3）。
+        citation_dataset_by_id = {
+            item.citation_id: item.dataset_id for item in citation_bindings
+        }
+        chart_traces: list[ChartTraceV1] = []
+        chart_trace_files: list[FileIdentity] = []
+        for chart_id in referenced_chart_ids:
+            chart = chart_by_id[chart_id]
+            plot_files = plot_files_by_chart.get(chart_id)
+            dataset_ids = tuple(
+                dict.fromkeys(
+                    citation_dataset_by_id[citation_id]
+                    for citation_id in chart.citation_ids
+                    if citation_id in citation_dataset_by_id
+                )
+            )
+            if not plot_files or not dataset_ids:
+                continue
+            chart_traces.append(
+                ChartTraceV1(
+                    chartId=chart_id,
+                    imageFileResourceId=derive_resource_id(
+                        destination_by_chart[chart_id]
+                    ),
+                    plotDataFileResourceIds=tuple(
+                        derive_resource_id(item.path) for item in plot_files
+                    ),
+                    datasetIds=dataset_ids,
+                    transformNotes=(
+                        "作图数据由服务端 chart-input/v1 物化，图片以同一份数据生成",
+                    ),
+                )
+            )
+            chart_trace_files.extend(plot_files)
         markdown_file = await self._write_immutable_artifact(
             scope["threadId"], markdown_path, rendered.markdown.encode("utf-8")
         )
@@ -2441,9 +2591,69 @@ class RuntimeSectionsMixin:
             raise ReportingError(
                 "report_checkpoint_invalid", "Checkpoint 缺少已完成 analysis task。"
             )
+        trace_handles = tuple(
+            DatasetHandle.from_state(item)
+            for item in self._workflow_result(self._state(run_context)).get(
+                "datasets", ()
+            )
+        )
+        # B2：把冻结确定性事实文件登记进追溯索引，供 Editor FactRef 查询解析。
+        trace_fact_files: dict[str, ArtifactFile] = {}
+        for analysis_id, identity in checkpoint.deterministic_fact_files.items():
+            trace_fact_files[analysis_id] = ArtifactFile(
+                path=identity.path,
+                mediaType="application/json",
+                size=identity.size,
+                sha256=identity.sha256,
+            )
+        # B6：正文 claim 冻结为 subject 绑定（定位锚 = [[claim:id]] 协议标记）。
+        subject_bindings = build_claim_subject_bindings(
+            section_artifacts,
+            fact_directory,
+            {
+                analysis_id: derive_resource_id(item.path)
+                for analysis_id, item in trace_fact_files.items()
+            },
+        )
+        # B4：补充分析计算记录（ComputationRecordV1）与脚本文件进索引。
+        computation_records: list[ComputationRecordV1] = []
+        computation_files: list[FileIdentity] = []
+        if checkpoint.evidence_manifest is not None:
+            for item in checkpoint.evidence_manifest.evidence:
+                raw = item.computation_record
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    record = ComputationRecordV1.model_validate(raw)
+                except ValidationError:
+                    loguru_logger.warning(
+                        "report_computation_record_invalid analysis_id={}",
+                        item.analysis_id,
+                    )
+                    continue
+                computation_records.append(record)
+                if item.computation_script_file is not None:
+                    computation_files.append(item.computation_script_file)
+                for evidence_file in item.evidence_files:
+                    computation_files.append(evidence_file)
+            cycles = detect_computation_cycles(tuple(computation_records))
+            if cycles:
+                raise ReportingError(
+                    "report_computation_cycle_invalid",
+                    "补充分析计算记录存在循环依赖，拒绝发布。",
+                    details={"cycles": cycles[:5]},
+                )
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,
+            handles=trace_handles,
+            fact_files=trace_fact_files,
+            server_table_traces=server_table_traces,
+            chart_trace_files=(*chart_files, *chart_trace_files),
+            chart_traces=tuple(chart_traces),
+            computation_files=tuple(computation_files),
+            computations=tuple(computation_records),
+            subject_bindings=subject_bindings,
             interactive_charts=interactive_charts,
             markdown_path=markdown_path,
             lineage=lineage,
@@ -2462,6 +2672,13 @@ class RuntimeSectionsMixin:
         manifest_file = FileIdentity.model_validate(
             await self.workspace_service.ahash_file(scope["threadId"], manifest_path)
         )
+        trace_index_identity = None
+        if manifest.trace_index is not None:
+            trace_index_identity = FileIdentity.model_validate(
+                await self.workspace_service.ahash_file(
+                    scope["threadId"], trace_index_path_for(manifest_path)
+                )
+            )
         warning_values = tuple((*checkpoint.warnings, *rendered.warnings)[-500:])
         checkpoint = self._update_reporting_checkpoint(
             checkpoint,
@@ -2469,7 +2686,12 @@ class RuntimeSectionsMixin:
             warnings=warning_values,
             last_error=None,
             files=self._merge_checkpoint_files(
-                checkpoint.files, markdown_file, *chart_files, *interactive_files, manifest_file
+                checkpoint.files,
+                markdown_file,
+                *chart_files,
+                *interactive_files,
+                manifest_file,
+                *((trace_index_identity,) if trace_index_identity is not None else ()),
             ),
             trace=(
                 *checkpoint.trace,
@@ -2585,6 +2807,7 @@ class RuntimeSectionsMixin:
             file_by_path: dict[str, Mapping[str, Any]] = {}
             interactive_by_path: dict[str, Mapping[str, Any]] = {}
             receipt_by_path: dict[str, Mapping[str, Any]] = {}
+            plot_data_by_chart: dict[str, Mapping[str, Any]] = {}
             for section in ordered_sections:
                 section_payload = visualization_sections.get(section.code)
                 if not isinstance(section_payload, Mapping):
@@ -2600,6 +2823,9 @@ class RuntimeSectionsMixin:
                 for raw_file in section_payload.get("interactiveFiles", ()):
                     if isinstance(raw_file, Mapping) and isinstance(raw_file.get("path"), str):
                         interactive_by_path[raw_file["path"]] = raw_file
+                for raw_plot in section_payload.get("plotDataFiles", ()):
+                    if isinstance(raw_plot, Mapping) and isinstance(raw_plot.get("chartId"), str):
+                        plot_data_by_chart[raw_plot["chartId"]] = raw_plot
             for section in ordered_sections:
                 section_payload = visualization_sections.get(section.code)
                 if not isinstance(section_payload, Mapping):
@@ -2619,6 +2845,7 @@ class RuntimeSectionsMixin:
                             source_file,
                             interactive_by_path.get(str(raw_chart.get("interactivePath") or "")),
                             receipt_by_path.get(source_path),
+                            plot_data=plot_data_by_chart.get(str(raw_chart.get("chartId") or "")),
                         )
                     )
         warnings.extend(

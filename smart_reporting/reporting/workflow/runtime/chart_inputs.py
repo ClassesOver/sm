@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -244,6 +245,10 @@ def _materialize_chart(
             "chartId": chart.chart_id,
             "role": binding.role,
             "path": path,
+            # B3：文件身份随 entry 提交链路上报，由服务端重验后冻结进
+            # AnalysisChart.plotDataFiles，形成图片↔作图数据证据链。
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
             "columns": columns,
             "rowCount": len(rows),
             "nullableColumns": nullable,
@@ -459,6 +464,53 @@ async def verify_plotly_chart_inputs(
                 chart.chart_id,
                 chart.interactive_path,
             )
+
+
+def chart_input_root_for(chart_output_root: str) -> str:
+    """chart-input 根目录：chartOutputRoot 的只读兄弟目录。
+
+    B3 起供提交工具做路径安全校验（作图数据文件必须落在该目录内），
+    与 analysis.py 的物化入口共用同一推导，防止两处口径漂移。
+    """
+
+    marker = "/analysis/charts/"
+    if marker in chart_output_root:
+        return chart_output_root.replace(marker, "/analysis/chart-inputs/", 1)
+    return f"{chart_output_root.rstrip('/')}-chart-inputs"
+
+
+def verify_static_chart_inputs_referenced(
+    plan: Any,
+    materialized: ChartInputMaterialization,
+    script_source: str,
+) -> list[str]:
+    """静态（matplotlib）图是否引用了预物化 chart-input（软告警依据）。
+
+    回退图（绑定失败走原始 facts）不检查。返回未引用其作图数据的
+    chartId 列表；由调用方记软告警，不阻断交付。
+    """
+
+    referenced_paths: dict[str, list[str]] = {}
+    for item in materialized.files:
+        try:
+            decoded = json.loads(item.content)
+        except ValueError:
+            continue
+        chart_id = str(decoded.get("chartId"))
+        referenced_paths.setdefault(chart_id, []).append(item.path)
+    unresolved: list[str] = []
+    for chart in plan.charts:
+        if chart.interactive_path is not None:
+            continue  # Plotly 图由数值核对负责
+        if chart.chart_id in materialized.fallback_chart_ids:
+            continue
+        paths = referenced_paths.get(chart.chart_id)
+        if not paths:
+            continue
+        tokens = {path for path in paths} | {Path(path).stem for path in paths}
+        if not any(token in script_source for token in tokens):
+            unresolved.append(chart.chart_id)
+    return unresolved
 
 
 def fallback_plan(

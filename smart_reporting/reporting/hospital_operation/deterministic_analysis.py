@@ -30,6 +30,9 @@ class GroupContribution(AnalysisModel):
 
 
 class DeterministicMetricFact(AnalysisModel):
+    # B2 起由服务端按内容寻址签发（trace.fact_index.assign_fact_ids）；
+    # 旧 bundle 无此字段，FactRef 仅位置寻址。
+    fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
     dataset_id: str = Field(alias="datasetId", min_length=1, max_length=256)
     dataset_sha256: str = Field(alias="datasetSha256", pattern=r"^[0-9a-f]{64}$")
     profile_hash: str | None = Field(default=None, alias="profileHash", pattern=r"^[0-9a-f]{64}$")
@@ -62,6 +65,7 @@ class DeterministicMetricFact(AnalysisModel):
 
 
 class DeterministicComparison(AnalysisModel):
+    fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
     comparison_type: Literal["yoy", "mom"] = Field(alias="comparisonType")
     field: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(alias="fieldRef", min_length=1, max_length=512)
@@ -81,6 +85,7 @@ class DeterministicComparison(AnalysisModel):
 
 
 class DeterministicDerivedMetricFact(AnalysisModel):
+    fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
     code: str = Field(min_length=1, max_length=128)
     kind: str = Field(min_length=1, max_length=64)
     period_role: PeriodRole = Field(alias="periodRole")
@@ -102,6 +107,7 @@ class DeterministicDerivedMetricFact(AnalysisModel):
 
 
 class DeterministicReconciliationFact(AnalysisModel):
+    fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
     code: str = Field(min_length=1, max_length=128)
     period_role: PeriodRole = Field(alias="periodRole")
     left_metric: str = Field(alias="leftMetric", min_length=1, max_length=128)
@@ -122,6 +128,20 @@ class DeterministicReconciliationFact(AnalysisModel):
     warnings: tuple[str, ...] = Field(default=(), max_length=100)
 
 
+class CorrelationDetail(AnalysisModel):
+    """B4：相关性元数据（n、字段身份、方法、稳定 ID）；旧键值兼容保留。"""
+
+    fact_id: str | None = Field(default=None, alias="factId", pattern=r"^fact-[0-9a-f]{16}$")
+    dataset_id: str = Field(alias="datasetId", min_length=1, max_length=256)
+    dataset_sha256: str = Field(alias="datasetSha256", pattern=r"^[0-9a-f]{64}$")
+    left_field: str = Field(alias="leftField", min_length=1, max_length=128)
+    right_field: str = Field(alias="rightField", min_length=1, max_length=128)
+    method: Literal["pearson"] = "pearson"
+    sample_count: int = Field(alias="sampleCount", ge=0)
+    value: float
+    warnings: tuple[str, ...] = Field(default=(), max_length=100)
+
+
 class DeterministicAnalysisBundle(AnalysisModel):
     version: str = "1"
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
@@ -131,7 +151,11 @@ class DeterministicAnalysisBundle(AnalysisModel):
     )
     comparisons: tuple[DeterministicComparison, ...] = Field(default=(), max_length=400)
     reconciliations: tuple[DeterministicReconciliationFact, ...] = Field(default=(), max_length=500)
+    # 旧键值形态（模型投影沿用）；B4 起新增 correlationDetails 提供完整元数据。
     correlations: dict[str, float] = Field(default_factory=dict)
+    correlation_details: tuple[CorrelationDetail, ...] = Field(
+        default=(), alias="correlationDetails", max_length=500
+    )
     warnings: tuple[str, ...] = Field(default=(), max_length=500)
 
 
@@ -197,16 +221,21 @@ def build_deterministic_analysis_bundle(
     warnings.extend(comparison_warnings)
     warnings.extend(derived_warnings)
     warnings.extend(reconciliation_warnings)
-    correlations = _correlations(prepared, facts)
-    return DeterministicAnalysisBundle(
+    correlations, correlation_details = _correlations(prepared, facts)
+    bundle = DeterministicAnalysisBundle(
         analysisId=analysis.analysis_id,
         metrics=tuple(facts),
         derivedMetrics=derived_metrics,
         comparisons=comparisons,
         reconciliations=reconciliations,
         correlations=correlations,
+        correlationDetails=correlation_details,
         warnings=tuple(dict.fromkeys(warnings))[:500],
     )
+    # 循环导入规避：fact_index 只依赖本模块类型，函数内延迟导入。
+    from ..trace.fact_index import assign_fact_ids
+
+    return assign_fact_ids(bundle)
 
 
 def validate_metric_code_bindings(bundle: DeterministicAnalysisBundle) -> None:
@@ -1081,8 +1110,11 @@ def _grain_columns(
 
 def _correlations(
     datasets: list[_Dataset], facts: list[DeterministicMetricFact]
-) -> dict[str, float]:
+) -> tuple[dict[str, float], tuple[CorrelationDetail, ...]]:
+    """相关性键值投影（模型沿用）+ B4 完整元数据（n/字段身份/方法）。"""
+
     result: dict[str, float] = {}
+    details: list[CorrelationDetail] = []
     fields_by_dataset: dict[str, list[str]] = {}
     for fact in facts:
         fields_by_dataset.setdefault(fact.dataset_id, []).append(fact.field)
@@ -1100,8 +1132,20 @@ def _correlations(
                     continue
                 value = pair.select(pl.corr("left", "right")).item()
                 if value is not None and math.isfinite(float(value)):
-                    result[f"{dataset.dataset_id}:{left}~{right}"] = _finite(value)
-    return result
+                    key = f"{dataset.dataset_id}:{left}~{right}"
+                    result[key] = _finite(value)
+                    details.append(
+                        CorrelationDetail(
+                            datasetId=dataset.dataset_id,
+                            datasetSha256=dataset.context.sha256,
+                            leftField=left,
+                            rightField=right,
+                            method="pearson",
+                            sampleCount=pair.height,
+                            value=_finite(value),
+                        )
+                    )
+    return result, tuple(details)
 
 
 def _coverage_warnings(dataset: _Dataset) -> list[str]:

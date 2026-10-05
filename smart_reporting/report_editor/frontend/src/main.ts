@@ -20,6 +20,7 @@ import { outline } from '@milkdown/kit/utils'
 import { replaceAll } from '@milkdown/kit/utils'
 import {
   createIcons,
+  Database,
   FileDown,
   FileText,
   Focus,
@@ -48,10 +49,11 @@ import {
   installEditorShortcuts,
 } from './enhancements'
 import { protocolMarkerPlugin } from './protocol-plugin'
+import { evidenceLocationPlugin, evidenceLocationKey, evidenceLocationTransaction, findEvidenceTableCell, findEvidenceChartImage, findProtocolMarkerElement } from './evidence-location'
 import { restoreProtocolMarkers } from './protocol'
 import { findDocumentMatches, replaceDocumentMatches } from './search-document'
 import { searchHighlightPlugin, searchHighlightPluginKey } from './search-highlight-plugin'
-import { createEditorShell } from './shell'
+import { applyLineageFeatureVisibility, createEditorShell } from './shell'
 import { createOutlineController, displayOutlineText, namedOutlineItems, type OutlineItem } from './outline'
 import { documentMetrics } from './metrics'
 import { headingStructureStatus } from './structure'
@@ -69,6 +71,8 @@ import { formalHeadings, reportPreflight, showPreflightPanel } from './preflight
 import { editorChineseLocale, formatRevisionLabel } from './localization'
 import { createReportEditor } from './editor-features'
 import { createSharePanel } from './share'
+import { createSourceValidationController, sourceValidationIssueCount, markdownSha256 } from './source-validation'
+import { linkedSubjectFromSearch } from './linked-subject'
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('report editor root is missing')
@@ -147,9 +151,16 @@ const revisionLabel = root.querySelector<HTMLElement>('.revision-label')
 const metricsLabel = root.querySelector<HTMLElement>('.doc-metrics')
 const structureLabel = root.querySelector<HTMLElement>('.structure-status')
 const imageQualityLabel = root.querySelector<HTMLElement>('.image-quality-status')
+const sourceStatusLabel = document.createElement('span')
+sourceStatusLabel.className = 'source-validation-status'
+sourceStatusLabel.setAttribute('role', 'status')
+sourceStatusLabel.setAttribute('aria-live', 'polite')
+sourceStatusLabel.hidden = true
+structureLabel?.after(sourceStatusLabel)
 if (revisionLabel) revisionLabel.textContent = formatRevisionLabel(revision)
 createIcons({
   icons: {
+    Database,
     FileDown,
     FileText,
     Focus,
@@ -171,6 +182,122 @@ base.href = `${basePath}/asset/`
 document.head.prepend(base)
 
 const client = new ReportEditorClient(basePath)
+let lineagePanelEnabled = true
+const sourceValidation = createSourceValidationController(
+  client,
+  () => getEditorMarkdown(),
+  (result) => {
+    if (!lineagePanelEnabled) return
+    if (!result) {
+      sourceStatusLabel.textContent = '来源暂无法校验'
+      sourceStatusLabel.dataset.state = 'unknown'
+    } else {
+      // 表格与 claim 同为软语义：排序不失效，改值/插删行计入待复核；
+      // 复制出的新格（与冻结值重复）同样提示复核，不自动赋予绑定。
+      const issues = sourceValidationIssueCount(result)
+      if (issues) {
+        sourceStatusLabel.textContent = `来源待复核 ${issues} 处`
+        sourceStatusLabel.dataset.state = 'stale'
+      } else {
+        const hasBindings = result.subjects.length > 0 || (result.tableSummary?.valid ?? 0) > 0 ||
+          (result.charts?.some((chart) => chart.status === 'valid') ?? false)
+        sourceStatusLabel.textContent = hasBindings ? '来源对应当前内容' : '当前内容无精确来源绑定'
+        sourceStatusLabel.dataset.state = hasBindings ? 'valid' : 'unknown'
+      }
+    }
+    sourceStatusLabel.hidden = false
+  },
+  () => {
+    if (!lineagePanelEnabled) return
+    sourceStatusLabel.textContent = '来源校验中'
+    sourceStatusLabel.dataset.state = 'checking'
+    sourceStatusLabel.hidden = false
+  },
+)
+const scheduleSourceValidation = () => {
+  if (lineagePanelEnabled) sourceValidation.schedule()
+}
+// B5/v6：证据浏览器——核对任务页签 + 探索路径 + 对象页，覆盖编辑器但不卸载它。
+// 单独拆 chunk，避免图关系与对象详情代码增大编辑器首屏入口包。
+let captureEvidenceEditor = () => {}
+let restoreEvidenceEditor = () => shell.editor.focus({ preventScroll: true })
+let focusEvidenceTarget = (_target: HTMLElement) => shell.editor.focus({ preventScroll: true })
+let evidenceLocateIntent = 0
+const { createEvidenceBrowser } = await import('./evidence-browser')
+const evidenceBrowser = createEvidenceBrowser(root, {
+  client,
+  revisionLabel: formatRevisionLabel(revision),
+  storageKey: `smart-reporting-evidence:${basePath}`,
+  onOpen: () => captureEvidenceEditor(),
+  onReturnToReport: () => restoreEvidenceEditor(),
+  locateSubject: (subjectId) => {
+    const intent = ++evidenceLocateIntent
+    const reveal = (target: HTMLElement) => {
+      focusEvidenceTarget(target)
+      const reducedMotion = typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      target.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'auto' : 'smooth' })
+    }
+    const findMarker = (selector: string, kind: 'citation' | 'section', value: string) =>
+      findProtocolMarkerElement(shell.editor, selector, kind, value)
+    const locate = (sectionId?: string | null) => {
+      const citation = findMarker('.report-citation-marker', 'citation', subjectId)
+      const section = sectionId ? findMarker('.report-section-marker', 'section', sectionId) : undefined
+      const marker = citation ?? section
+      const target = marker?.closest<HTMLElement>('p, li, td, th, h1, h2, h3, h4') ?? marker
+      if (!target) {
+        shell.editor.focus({ preventScroll: true })
+        status('当前正文中未找到该引用的位置，可能已被修改或删除', 'dirty')
+        return
+      }
+      reveal(target)
+    }
+    const marker = findMarker('.report-citation-marker', 'citation', subjectId)
+    if (marker) {
+      locate()
+      return
+    }
+    void client.sources().then(async (sources) => {
+      if (intent !== evidenceLocateIntent || evidenceBrowser.isOpen()) return
+      const subject = sources.subjects?.find((item) => item.subjectId === subjectId)
+      if (subject?.subjectKind === 'table_cell') {
+        const markdown = getEditorMarkdown()
+        const digest = await markdownSha256(markdown)
+        const result = await client.validateSources(markdown, digest)
+        if (intent !== evidenceLocateIntent || evidenceBrowser.isOpen() || getEditorMarkdown() !== markdown) return
+        const table = result.draftSha256 === digest
+          ? result.tables?.find(item => item.tableId === subject.locator.tableId) : undefined
+        const location = table?.locations?.find(item => item.rowKey === subject.locator.rowKey && item.columnKey === subject.locator.columnKey)
+        const target = location && subject.locator.tableId
+          ? findEvidenceTableCell(shell.editor, subject.locator.tableId, location) : null
+        if (target) reveal(target)
+        else status('当前草稿无法确认该单元格的位置，请核对表格标签', 'dirty')
+        return
+      }
+      if (subject?.subjectKind === 'chart' || subject?.subjectKind === 'chart_caption') {
+        const markdown = getEditorMarkdown()
+        const digest = await markdownSha256(markdown)
+        const result = await client.validateSources(markdown, digest)
+        if (intent !== evidenceLocateIntent || evidenceBrowser.isOpen() || getEditorMarkdown() !== markdown) return
+        const chart = result.draftSha256 === digest
+          ? result.charts?.find(item => item.chartId === subject.locator.chartId) : undefined
+        const target = chart?.locationSource
+          ? findEvidenceChartImage(shell.editor, chart.locationSource, document.baseURI, subject.subjectKind === 'chart_caption') : null
+        if (target) reveal(target)
+        else status('当前草稿无法确认该图表的位置，请核对图片引用', 'dirty')
+        return
+      }
+      locate(subject?.locator.sectionId)
+    }).catch(() => {
+      if (intent === evidenceLocateIntent && !evidenceBrowser.isOpen()) {
+        shell.editor.focus({ preventScroll: true })
+        status('正文位置暂时无法确认，请稍后重试', 'dirty')
+      }
+    })
+  },
+  getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
+})
+shell.sources.addEventListener('click', () => evidenceBrowser.open())
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
 let conflictPanel: ReturnType<typeof createConflictPanel> | null = null
@@ -244,6 +371,15 @@ function errorStatusLabel(error: unknown): string {
 
 try {
   const documentState = await client.load()
+  lineagePanelEnabled = documentState.lineageFeatures?.panel ?? true
+  applyLineageFeatureVisibility(shell, documentState.lineageFeatures)
+  evidenceBrowser.setDownloadEnabled(documentState.lineageFeatures?.download ?? true)
+  evidenceBrowser.setDrilldownEnabled(documentState.lineageFeatures?.drilldown ?? true)
+  exportSettingsPanel.setSourcesEnabled(documentState.lineageFeatures?.exportSources ?? true)
+  if (!lineagePanelEnabled) {
+    sourceValidation.cancel()
+    sourceStatusLabel.hidden = true
+  }
   const saveInBackground = () => runInBackground(saveNow())
   void telemetry.record({
     event: 'document_loaded',
@@ -261,7 +397,8 @@ try {
     useRemote: () => void recoverFromConflict(),
     mergeAndRetry: (markdown) => {
       acceptRemoteBase()
-      crepe.editor.action(replaceAll(markdown))
+      // 合并结果可能引入当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+      crepe.editor.action(replaceAll(markdown, true))
       saveInBackground()
     },
   })
@@ -281,11 +418,46 @@ try {
     },
   )
   crepe.editor.use(protocolMarkerPlugin)
+  crepe.editor.use(evidenceLocationPlugin)
   crepe.editor.use(searchHighlightPlugin)
   crepe.editor.use(indent)
   crepe.editor.use(trailing)
   getEditorMarkdown = () => restoreProtocolMarkers(crepe.getMarkdown())
   await crepe.create()
+  const evidenceView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+  let evidenceLocationTimer: number | undefined
+  focusEvidenceTarget = (target) => {
+    window.clearTimeout(evidenceLocationTimer)
+    evidenceView.dispatch(evidenceLocationTransaction(evidenceView.state, evidenceView.posAtDOM(target, 0)))
+    evidenceView.focus()
+    evidenceLocationTimer = window.setTimeout(() => {
+      evidenceView.dispatch(evidenceView.state.tr.setMeta(evidenceLocationKey, null).setMeta('addToHistory', false))
+    }, 1800)
+  }
+  let evidenceScene: {
+    doc: typeof evidenceView.state.doc
+    selection: ReturnType<typeof evidenceView.state.selection.getBookmark>
+    left: number
+    top: number
+  } | null = null
+  captureEvidenceEditor = () => {
+    evidenceScene = {
+      doc: evidenceView.state.doc,
+      selection: evidenceView.state.selection.getBookmark(),
+      left: window.scrollX,
+      top: window.scrollY,
+    }
+  }
+  restoreEvidenceEditor = () => {
+    const scene = evidenceScene
+    evidenceScene = null
+    // 修订恢复或正文替换后不把旧选区套到新文档上。
+    if (scene && evidenceView.state.doc === scene.doc) {
+      evidenceView.dispatch(evidenceView.state.tr.setSelection(scene.selection.resolve(evidenceView.state.doc)))
+    }
+    evidenceView.focus()
+    if (scene && evidenceView.state.doc === scene.doc) window.scrollTo({ left: scene.left, top: scene.top, behavior: 'auto' })
+  }
   const { installSlashMenuHeadingPreview } = await import('./slash-menu-preview')
   installSlashMenuHeadingPreview()
   crepe.on((listener) => {
@@ -300,6 +472,7 @@ try {
         updateOutline(crepe.editor.action(outline()))
       })
       currentMarkdown = markdown
+      scheduleSourceValidation()
       saveState?.edit(markdown)
       if (markdown === lastSavedMarkdown) {
         draftController?.clear()
@@ -353,9 +526,39 @@ try {
   shell.search.addEventListener('click', () => searchController.open())
   const historyController = createHistoryController(
     root,
-    (markdown) => {
-      crepe.editor.action(replaceAll(markdown))
-      status('历史版本已恢复为草稿', 'dirty')
+    async (markdown, historyRevision) => {
+      if (historyRevision === undefined) {
+        // 会话快照可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+        crepe.editor.action(replaceAll(markdown, true))
+        status('会话快照已恢复为草稿', 'dirty')
+        return
+      }
+      setActionsDisabled(true)
+      blockUI('正在恢复历史版本及来源')
+      try {
+        await saveNow()
+        sourceValidation.cancel()
+        const restored = await client.restoreHistory(historyRevision, sha256)
+        sha256 = restored.sha256
+        lastSavedMarkdown = restored.markdown
+        currentMarkdown = restored.markdown
+        saveState?.reset(restored.markdown)
+        draftController?.clear()
+        evidenceBrowser.reset()
+        // 历史版本可能包含当前正文没有的协议标记；flush 重建 EditorState，避免
+        // protocolMarkerPlugin 的 filterTransaction 把整笔替换拦截掉。
+        crepe.editor.action(replaceAll(restored.markdown, true))
+        window.clearTimeout(saveTimer)
+        scheduleSourceValidation()
+        status(`已恢复第 ${restored.sourceRevision ?? historyRevision} 版及来源`)
+      } catch (error) {
+        scheduleSourceValidation()
+        status(errorStatusLabel(error), 'error')
+        throw error
+      } finally {
+        unblockUI()
+        setActionsDisabled(false)
+      }
     },
     async (historyRevision) => (await client.historyRevision(historyRevision)).markdown,
     createPersistedHistoryLoader((limit, offset) => client.historyPage(limit, offset)),
@@ -364,7 +567,8 @@ try {
   draftController = createLocalDraftController(
     root,
     `smart-reporting-editor:${basePath}`,
-    (markdown) => crepe.editor.action(replaceAll(markdown)),
+    // 本地草稿可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+    (markdown) => crepe.editor.action(replaceAll(markdown, true)),
   )
   draftController.offer(documentState.markdown)
   initialFormalHeadings = formalHeadings(documentState.markdown)
@@ -372,6 +576,9 @@ try {
   historyController.record(`${formatRevisionLabel(revision)} · 初始版本`, documentState.markdown)
   createImagePreview(shell.editor)
   updateOutline(crepe.editor.action(outline()))
+  scheduleSourceValidation()
+  const linkedSubject = linkedSubjectFromSearch(window.location.search)
+  if (lineagePanelEnabled && linkedSubject) void evidenceBrowser.openSubject(linkedSubject)
   status(savedLabel())
   const saveScroll = () => preferences.saveScroll(window.scrollY)
   window.addEventListener('scroll', saveScroll, { passive: true })
@@ -473,7 +680,8 @@ try {
     try {
       const latest = await client.load()
       pendingConflict = null
-      crepe.editor.action(replaceAll(latest.markdown))
+      // 远端版本可能包含当前正文没有的协议标记；flush 重建 EditorState 避免被拦截。
+      crepe.editor.action(replaceAll(latest.markdown, true))
       sha256 = latest.sha256
       lastSavedMarkdown = latest.markdown
       currentMarkdown = latest.markdown
@@ -503,6 +711,7 @@ try {
         toc: true,
         headerFooter: true,
         pageNumbers: true,
+        sources: true,
         note: '',
       }
       const result = await client.export(sha256, settings, note)

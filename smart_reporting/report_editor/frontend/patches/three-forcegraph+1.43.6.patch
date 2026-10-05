@@ -1,0 +1,21 @@
+diff --git a/node_modules/three-forcegraph/dist/three-forcegraph.mjs b/node_modules/three-forcegraph/dist/three-forcegraph.mjs
+--- a/node_modules/three-forcegraph/dist/three-forcegraph.mjs
++++ b/node_modules/three-forcegraph/dist/three-forcegraph.mjs
+@@ -766,5 +766,6 @@
+       // recursively collect all nested geometries bboxes
+       const bboxes = function getBboxes(obj) {
++        if (!obj.visible) return [];
+         const bboxes = [];
+         if (obj.geometry) {
+           obj.geometry.computeBoundingBox();
+@@ -778,7 +779,9 @@
+       if (!bboxes.length) return null;
+ 
+       // extract global x,y,z min/max
+-      return Object.assign(...['x', 'y', 'z'].map(c => ({
++      const corners = bboxes.flatMap(box => [box.min.x, box.max.x].flatMap(x =>
++        [box.min.y, box.max.y].flatMap(y => [box.min.z, box.max.z].map(z => ({ x, y, z })))));
++      return Object.assign({ corners }, ...['x', 'y', 'z'].map(c => ({
+         [c]: [min(bboxes, bb => bb.min[c]), max(bboxes, bb => bb.max[c])]
+       })));
+     }

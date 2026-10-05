@@ -71,6 +71,11 @@ def test_settings_defaults():
     assert current.report_analysis_concurrency == 1
     assert current.report_section_concurrency == 1
     assert current.report_section_whole_generation is True
+    assert current.report_lineage_registration_enabled is True
+    assert current.report_lineage_panel_enabled is True
+    assert current.report_lineage_download_enabled is True
+    assert current.report_lineage_drilldown_enabled is True
+    assert current.report_lineage_export_sources_enabled is True
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
@@ -108,6 +113,11 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_REPORT_OUTPUT_TOKEN_RESERVE="131072",
         AGENT_REPORT_ANALYSIS_CONCURRENCY="3",
         AGENT_REPORT_SECTION_CONCURRENCY="4",
+        AGENT_REPORT_LINEAGE_REGISTRATION_ENABLED="false",
+        AGENT_REPORT_LINEAGE_PANEL_ENABLED="false",
+        AGENT_REPORT_LINEAGE_DOWNLOAD_ENABLED="false",
+        AGENT_REPORT_LINEAGE_DRILLDOWN_ENABLED="false",
+        AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED="false",
     )
 
     assert current.enable_tool_result_compression is False
@@ -125,6 +135,11 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.report_output_token_reserve == 131072
     assert current.report_analysis_concurrency == 3
     assert current.report_section_concurrency == 4
+    assert current.report_lineage_registration_enabled is False
+    assert current.report_lineage_panel_enabled is False
+    assert current.report_lineage_download_enabled is False
+    assert current.report_lineage_drilldown_enabled is False
+    assert current.report_lineage_export_sources_enabled is False
 
 
 @pytest.mark.parametrize("value", ["0", "6", "invalid"])

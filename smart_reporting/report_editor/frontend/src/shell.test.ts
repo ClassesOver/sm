@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { createEditorShell } from './shell'
+import { applyLineageFeatureVisibility, createEditorShell } from './shell'
 
 describe('createEditorShell', () => {
   beforeEach(() => {
@@ -69,6 +69,16 @@ describe('createEditorShell', () => {
     expect(shell.history.isConnected).toBe(true)
   })
 
+  it('hides only the source entry when the lineage panel rollout is disabled', () => {
+    const shell = createEditorShell(document.querySelector<HTMLElement>('#app')!, 'full')
+
+    applyLineageFeatureVisibility(shell, { panel: false })
+
+    expect(shell.sources.hidden).toBe(true)
+    expect(shell.history.hidden).toBe(false)
+    expect(shell.exportPdf.hidden).toBe(false)
+  })
+
   it('provides consistent icon affordances for toolbar actions', () => {
     const root = document.querySelector<HTMLElement>('#app')!
 
@@ -82,6 +92,7 @@ describe('createEditorShell', () => {
       'panel-left',
       'search',
       'history',
+      'database',
       'share-2',
       'focus',
       'more-horizontal',

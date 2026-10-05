@@ -58,6 +58,11 @@ class _FakeAgent:
         ("正文\\[\\[citation:x\\_1]]", "polish", "report_editor_ai_protocol_marker"),
         ("正文[[analysis:analysis_001]]", "polish", "report_editor_ai_protocol_marker"),
         ("正文\\[\\[analysis:analysis\\_001]]", "polish", "report_editor_ai_protocol_marker"),
+        ("收入3600[[claim:claim-1]]", "polish", "report_editor_ai_protocol_marker"),
+        ("收入3600\\[\\[claim:claim\\_1]]", "polish", "report_editor_ai_protocol_marker"),
+        ("[[table:tbl-1]]", "polish", "report_editor_ai_protocol_marker"),
+        ("[[/table:tbl-1]]", "polish", "report_editor_ai_protocol_marker"),
+        ("\\[\\[/table:tbl\\_1]]", "polish", "report_editor_ai_protocol_marker"),
     ],
 )
 async def test_report_editor_ai_validation_rejects_invalid_selection_before_model_call(
@@ -108,3 +113,44 @@ async def test_report_editor_ai_streaming_forwards_only_content_events() -> None
         "stream_events": True,
         "user_id": "user-1",
     }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_ai_rewrite_save_and_undo_revalidate_frozen_claim(tmp_path) -> None:
+    """AI 改值只产生软状态，保存或撤销都不重写冻结事实。"""
+    import hashlib
+
+    from smart_reporting.report_editor.ai import ReportEditorAIService
+    from smart_reporting.reporting.tests.test_trace_subject_validate import (
+        _make_editor_with_subject,
+    )
+
+    editor, grants, context = await _make_editor_with_subject(tmp_path)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    original = "收入3600万元。[[claim:claim-1]]"
+    before = await editor.read_document(context)
+    saved = await editor.save_draft(context, markdown=original, expected_sha256=before.sha256)
+
+    class RewriteAgent:
+        async def arun(self, _prompt, **_kwargs):
+            yield SimpleNamespace(event="RunContent", content="收入3800万元。")
+
+    ai = ReportEditorAIService(RewriteAgent())
+    rewritten = "".join([
+        chunk async for chunk in ai.stream_rewrite(
+            context, selection="收入3600万元。", action="polish",
+        )
+    ]) + "[[claim:claim-1]]"
+    changed = await editor.trace_validate(
+        context, session, rewritten, hashlib.sha256(rewritten.encode()).hexdigest(),
+    )
+    assert changed["subjects"][0]["status"] == "stale"
+    assert changed["subjects"][0]["factValue"] == 3600.0
+    saved = await editor.save_draft(context, markdown=rewritten, expected_sha256=saved.sha256)
+    assert (await editor.read_document(context)).markdown == rewritten
+    undone = await editor.save_draft(context, markdown=original, expected_sha256=saved.sha256)
+    restored = await editor.trace_validate(context, session, undone.markdown, undone.sha256)
+    assert restored["subjects"][0]["status"] == "valid"
+    assert restored["subjects"][0]["factValue"] == 3600.0

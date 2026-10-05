@@ -20,10 +20,36 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
+from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
+from .trace_retention import SourceFileResponse
 
 EDITOR_SESSION_COOKIE = "report_editor_session"
 _LEGACY_SESSION_COOKIE_PATH = "/reports/v1/editor"
+
+
+class EditorTraceExportPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    policy: str = Field(min_length=1, max_length=64)
+    params: dict[str, Any] | None = None
+
+
+class EditorTraceValidatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    markdown: str = Field(max_length=10 * 1024 * 1024)
+    draft_sha256: str = Field(alias="draftSha256", pattern=r"^[0-9a-f]{64}$")
+
+
+class EditorTraceDrilldownPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
+    dataset_id: str = Field(alias="datasetId", min_length=1, max_length=128)
+    dimension_code: str = Field(alias="dimensionCode", min_length=1, max_length=128)
+    limit: int = Field(default=50, ge=1, le=100)
+    cursor: str | None = Field(default=None, max_length=4096)
 
 
 class EditorWritePayload(BaseModel):
@@ -33,11 +59,18 @@ class EditorWritePayload(BaseModel):
     expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
 
 
+class EditorRestorePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
+
+
 class EditorExportSettings(BaseModel):
     cover: StrictBool = False
     toc: StrictBool = True
     header_footer: StrictBool = Field(True, alias="headerFooter")
     page_numbers: StrictBool = Field(True, alias="pageNumbers")
+    sources: StrictBool = True
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -177,6 +210,12 @@ def create_report_editor_router(
                 # 交互图表与 PDF/Word、静态图共用同一份报表视觉主题。
                 "visualTheme": REPORT_VISUAL_THEME,
             }
+            feature_reader = getattr(editor, "lineage_features", None)
+            if callable(feature_reader):
+                result["lineageFeatures"] = feature_reader()
+            source_revision = getattr(document, "source_revision", None)
+            if source_revision is not None:
+                result["sourceRevision"] = source_revision
             chart_reader = getattr(editor, "interactive_charts", None)
             interactive_charts = await chart_reader(context) if callable(chart_reader) else {}
             if interactive_charts:
@@ -247,6 +286,42 @@ def create_report_editor_router(
             except ReportingError as error:
                 _editor_http_error(error)
 
+        @router.post(
+            "/reports/v1/editor/{report_id}/{revision}/api/history/{history_revision}/restore",
+            include_in_schema=False,
+        )
+        async def restore_report_history_revision(
+            report_id: str,
+            revision: int,
+            history_revision: int,
+            payload: EditorRestorePayload,
+            request: Request,
+        ) -> JSONResponse:
+            context = await _write_context(
+                grants, editor, request, report_id=report_id, revision=revision,
+                allowed_origin=allowed_origin,
+            )
+            try:
+                document = await editor.restore_history(
+                    context, history_revision, expected_sha256=payload.expected_sha256
+                )
+                charts = await editor.interactive_charts(context)
+            except ReportingError as error:
+                _editor_http_error(error)
+            result = {
+                "path": document.path,
+                "markdown": document.markdown,
+                "sha256": document.sha256,
+                "sourceRevision": document.source_revision,
+                "csrfToken": grants.csrf_token(request.cookies.get(EDITOR_SESSION_COOKIE, "")),
+                "visualTheme": REPORT_VISUAL_THEME,
+                "interactiveCharts": charts,
+            }
+            feature_reader = getattr(editor, "lineage_features", None)
+            if callable(feature_reader):
+                result["lineageFeatures"] = feature_reader()
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         @router.put(
             "/reports/v1/editor/{report_id}/{revision}/api/document",
             include_in_schema=False,
@@ -256,7 +331,7 @@ def create_report_editor_router(
             revision: int,
             payload: EditorWritePayload,
             request: Request,
-        ) -> dict[str, str]:
+        ) -> dict[str, object]:
             context = await _write_context(
                 grants,
                 editor,
@@ -277,6 +352,7 @@ def create_report_editor_router(
                 "path": document.path,
                 "markdown": document.markdown,
                 "sha256": document.sha256,
+                **({"sourceRevision": document.source_revision} if getattr(document, "source_revision", None) is not None else {}),
             }
 
         @router.post(
@@ -290,13 +366,448 @@ def create_report_editor_router(
                 grants, editor, request, report_id=report_id, revision=revision,
                 allowed_origin=allowed_origin,
             )
-            raw_grant, expires_at = await grants.issue(context, ttl=EDITOR_SHARE_TTL)
+            # 分享链接按 B0 权限矩阵携带受限能力：可预览，默认不可下载原始/派生文件。
+            raw_grant, expires_at = await grants.issue(
+                context,
+                ttl=EDITOR_SHARE_TTL,
+                capabilities={
+                    "download_original": False,
+                    "download_derived": False,
+                    "drilldown": False,
+                },
+            )
             base_url = (editor.public_base_url or str(request.base_url)).rstrip("/")
             return JSONResponse(
                 {
                     "openUrl": f"{base_url}/reports/v1/editor/open/{raw_grant}",
                     "expiresAt": expires_at.isoformat(),
                 },
+                headers={"Cache-Control": "no-store"},
+            )
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/sources",
+            include_in_schema=False,
+        )
+        async def read_report_editor_sources(
+            report_id: str, revision: int, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                sources = await editor.trace_sources(context, session)
+            except ReportingError as error:
+                _editor_http_error(error, request_id=_request_id(request.headers.get("x-request-id")))
+            return JSONResponse(sources, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/facts",
+            include_in_schema=False,
+        )
+        async def read_report_editor_facts(
+            report_id: str, revision: int, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                facts = await editor.trace_facts(context, session)
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(facts, headers={"Cache-Control": "no-store"})
+
+        @router.post(
+            "/reports/v1/editor/{report_id}/{revision}/api/sources/{subject_id}/drilldown",
+            include_in_schema=False,
+        )
+        async def drilldown_report_editor_source(
+            report_id: str,
+            revision: int,
+            subject_id: str,
+            payload: EditorTraceDrilldownPayload,
+            request: Request,
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                result = await editor.trace_drilldown(
+                    context,
+                    session,
+                    subject_id,
+                    metric_code=payload.metric_code,
+                    dataset_id=payload.dataset_id,
+                    dimension_code=payload.dimension_code,
+                    limit=payload.limit,
+                    cursor=payload.cursor,
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            logger.info(
+                "report_editor_drilldown report_id={} revision={} subject={} metric={} "
+                "dimension={} rows={} request_id={}",
+                report_id,
+                revision,
+                subject_id,
+                payload.metric_code,
+                payload.dimension_code,
+                len(result.get("rows", ())),
+                request_id,
+            )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.post(
+            "/reports/v1/editor/{report_id}/{revision}/api/drilldowns/{metric_code}",
+            include_in_schema=False,
+        )
+        async def drilldown_report_editor_metric(
+            report_id: str,
+            revision: int,
+            metric_code: str,
+            payload: EditorTraceDrilldownPayload,
+            request: Request,
+        ) -> JSONResponse:
+            if payload.metric_code != metric_code:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "request_invalid", "message": "指标身份不一致。"},
+                )
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                result = await editor.trace_drilldown_metric(
+                    context,
+                    session,
+                    metric_code,
+                    dataset_id=payload.dataset_id,
+                    dimension_code=payload.dimension_code,
+                    limit=payload.limit,
+                    cursor=payload.cursor,
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/facts/{analysis_id}/{fact_id}",
+            include_in_schema=False,
+        )
+        async def read_report_editor_fact_detail(
+            report_id: str,
+            revision: int,
+            analysis_id: str,
+            fact_id: str,
+            request: Request,
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                detail = await editor.trace_fact_detail(
+                    context, session, analysis_id, fact_id
+                )
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/charts",
+            include_in_schema=False,
+        )
+        async def read_report_editor_charts(
+            report_id: str, revision: int, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                charts = await editor.trace_charts(context, session)
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(charts, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/charts/{chart_id}/source",
+            include_in_schema=False,
+        )
+        async def read_report_editor_chart_source(
+            report_id: str,
+            revision: int,
+            chart_id: str,
+            request: Request,
+            limit: int = 20,
+            offset: int = 0,
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                source = await editor.trace_chart_source(
+                    context,
+                    session,
+                    chart_id,
+                    preview_limit=limit,
+                    preview_offset=offset,
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            return JSONResponse(source, headers={"Cache-Control": "no-store"})
+
+        @router.post(
+            "/reports/v1/editor/{report_id}/{revision}/api/sources/validate",
+            include_in_schema=False,
+        )
+        async def validate_report_editor_sources(
+            report_id: str,
+            revision: int,
+            payload: EditorTraceValidatePayload,
+            request: Request,
+        ) -> JSONResponse:
+            context = await _write_context(
+                grants,
+                editor,
+                request,
+                report_id=report_id,
+                revision=revision,
+                allowed_origin=allowed_origin,
+            )
+            session, _context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                result = await editor.trace_validate(
+                    context,
+                    session,
+                    payload.markdown,
+                    payload.draft_sha256,
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/computations",
+            include_in_schema=False,
+        )
+        async def read_report_editor_computations(
+            report_id: str, revision: int, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                payload = await editor.trace_computations(context, session)
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/computations/{computation_id}",
+            include_in_schema=False,
+        )
+        async def read_report_editor_computation_detail(
+            report_id: str,
+            revision: int,
+            computation_id: str,
+            request: Request,
+            depth: int = 2,
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                payload = await editor.trace_computation_detail(
+                    context, session, computation_id, depth=depth
+                )
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/preview",
+            include_in_schema=False,
+        )
+        async def preview_report_dataset(
+            report_id: str,
+            revision: int,
+            dataset_id: str,
+            request: Request,
+            limit: int = 50,
+            cursor: str | None = None,
+            columns: list[str] | None = Query(default=None),
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            # 每个 columns 参数是一个列名，按原文使用：CSV 列名可含逗号或首尾空格，
+            # 不能用逗号拼接再拆分。
+            selected = columns or None
+            try:
+                payload = await editor.trace_dataset_preview(
+                    context,
+                    session,
+                    dataset_id,
+                    columns=selected,
+                    limit=limit,
+                    cursor=cursor,
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/columns",
+            include_in_schema=False,
+        )
+        async def read_report_dataset_columns(
+            report_id: str, revision: int, dataset_id: str, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                payload = await editor.trace_dataset_columns(context, session, dataset_id)
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+        @router.api_route(
+            "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/download",
+            methods=["GET", "HEAD"],
+            include_in_schema=False,
+        )
+        async def download_report_dataset(
+            report_id: str, revision: int, dataset_id: str, request: Request
+        ) -> FileResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                path, filename, size = await editor.trace_dataset_download(
+                    context, session, dataset_id
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            logger.info(
+                "report_editor_dataset_download report_id={} revision={} dataset={} "
+                "size={} request_id={}",
+                context.report_id,
+                context.revision,
+                dataset_id,
+                size,
+                request_id,
+            )
+            return SourceFileResponse(
+                path, service=editor, context=context,
+                validate=lambda: editor.trace_dataset_download(context, session, dataset_id),
+                filename=filename,
+                media_type="text/csv",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        @router.post(
+            "/reports/v1/editor/{report_id}/{revision}/api/datasets/{dataset_id}/exports",
+            include_in_schema=False,
+        )
+        async def create_report_dataset_export(
+            report_id: str,
+            revision: int,
+            dataset_id: str,
+            payload: EditorTraceExportPayload,
+            request: Request,
+        ) -> JSONResponse:
+            context = await _write_context(
+                grants,
+                editor,
+                request,
+                report_id=report_id,
+                revision=revision,
+                allowed_origin=allowed_origin,
+            )
+            session, _context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                started = await editor.trace_create_derived_export(
+                    context,
+                    session,
+                    dataset_id,
+                    policy=payload.policy,
+                    params=payload.params,
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            return JSONResponse(started, status_code=202, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/data-exports/{export_id}",
+            include_in_schema=False,
+        )
+        async def read_report_dataset_export(
+            report_id: str, revision: int, export_id: str, request: Request
+        ) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            try:
+                status = await editor.trace_derived_export_status(context, session, export_id)
+            except ReportingError as error:
+                _editor_http_error(
+                    error, request_id=_request_id(request.headers.get("x-request-id"))
+                )
+            return JSONResponse(status, headers={"Cache-Control": "no-store"})
+
+        @router.get(
+            "/reports/v1/editor/{report_id}/{revision}/api/data-exports/{export_id}/download",
+            include_in_schema=False,
+        )
+        async def download_report_dataset_export(
+            report_id: str, revision: int, export_id: str, request: Request
+        ) -> FileResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision
+            )
+            request_id = _request_id(request.headers.get("x-request-id"))
+            try:
+                path, filename, _size = await editor.trace_derived_export_download(
+                    context, session, export_id
+                )
+            except ReportingError as error:
+                _editor_http_error(error, request_id=request_id)
+            logger.info(
+                "report_editor_derived_export_download report_id={} revision={} "
+                "export_id={} request_id={}",
+                context.report_id,
+                context.revision,
+                export_id,
+                request_id,
+            )
+            return SourceFileResponse(
+                path, service=editor, context=context,
+                validate=lambda: editor.trace_derived_export_download(context, session, export_id),
+                filename=filename,
+                media_type="text/csv",
                 headers={"Cache-Control": "no-store"},
             )
 
@@ -470,6 +981,27 @@ async def _read_context(
         _editor_http_error(error)
 
 
+async def _read_session_context(
+    grants: ReportEditorGrantService,
+    editor: Any,
+    request: Request,
+    *,
+    report_id: str,
+    revision: int,
+) -> tuple[Any, Any]:
+    """来源类路由使用：返回 (session, context)，权限决策需要 session 能力。"""
+
+    _raw_session, context = await _read_context(
+        grants, editor, request, report_id=report_id, revision=revision
+    )
+    raw_session = request.cookies.get(EDITOR_SESSION_COOKIE, "")
+    try:
+        session = await grants.lookup_session(raw_session)
+    except ReportingError as error:
+        _editor_http_error(error)
+    return session, context
+
+
 def _origin(value: str) -> str:
     parsed = urlsplit(value)
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -500,6 +1032,9 @@ def _editor_error_status(code: str) -> int:
         return 400
     if code in {"report_artifact_validation_failed", "report_editor_export_failed"}:
         return 422
+    # 追溯来源错误码（B0 冻结映射，见 reporting/trace/contracts_v1.py）。
+    if code in TRACE_ERROR_HTTP_STATUS:
+        return TRACE_ERROR_HTTP_STATUS[code]
     return 404
 
 
