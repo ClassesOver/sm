@@ -166,7 +166,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         <p class="evidence-directory-note">目录与搜索会开启独立核对任务，不覆盖当前任务的导航历史。</p>
       </aside>
       <div class="evidence-directory-scrim" hidden></div>
-      <main class="evidence-workspace" tabindex="-1" aria-label="证据对象"></main>
+      <div class="evidence-workspace" tabindex="-1" aria-label="证据对象"></div>
     </div>
     <div class="evidence-announcer sr-only" aria-live="polite"></div>`
   root.append(shell)

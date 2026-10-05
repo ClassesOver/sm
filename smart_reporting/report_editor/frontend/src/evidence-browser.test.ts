@@ -144,6 +144,8 @@ describe('evidence browser shell', () => {
     const close = shell.querySelector<HTMLButtonElement>('.evidence-tab-close')!
     expect(close.getAttribute('aria-label')).toContain('关闭核对任务')
     expect(close.querySelector('svg')).not.toBeNull()
+    // 工作区承担 tabpanel 角色，使用允许该角色的 div（main 不允许 tabpanel）。
+    expect(shell.querySelector('.evidence-workspace')?.tagName).toBe('DIV')
   })
 
   it('loads the source directory and opens an independent task per item', async () => {
