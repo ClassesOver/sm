@@ -750,6 +750,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       }
     } catch {
       if (stale()) return
+      // 整体加载失败时不保留上一次加载的原因说明，只显示失败与重试。
+      directoryNotes = []
       directoryItems.innerHTML = ''
       const failure = document.createElement('p')
       failure.className = 'evidence-directory-empty'
@@ -996,6 +998,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       pageController = null
       sourcesPromise = null
       directoryRefs = []
+      directoryNotes = []
       try { sessionStorage.removeItem(storageKey) } catch { /* ignore storage failures */ }
       hideShell()
     },

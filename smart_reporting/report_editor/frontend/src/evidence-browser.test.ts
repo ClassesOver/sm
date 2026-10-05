@@ -309,6 +309,27 @@ describe('evidence browser shell', () => {
     expect(shell.querySelector('.evidence-directory-retry')).toBeNull()
   })
 
+  it('drops stale directory notices after a reset and a failed reload', async () => {
+    const client = makeClient()
+    const sources = vi.spyOn(client, 'sources')
+      .mockResolvedValueOnce({ available: false, reason: 'source_index_missing', datasets: [] })
+      .mockRejectedValue(new TypeError('network'))
+    const { shell, browser } = setup(client)
+    browser.open()
+    await flush()
+    await flush()
+    expect(shell.querySelectorAll('.evidence-directory-notice')).toHaveLength(1)
+    browser.reset()
+    browser.open()
+    await flush()
+    await flush()
+    expect(sources).toHaveBeenCalledTimes(2)
+    expect(shell.querySelector('.evidence-directory-empty')?.textContent).toBe('来源目录加载失败')
+    expect(shell.querySelectorAll('.evidence-directory-notice')).toHaveLength(0)
+    // 起始页同样不再沿用上一次加载（旧修订）的原因说明。
+    expect(shell.querySelectorAll('.evidence-start-notice')).toHaveLength(0)
+  })
+
   it('explains unavailable sources and lets failed directory parts be retried', async () => {
     const client = makeClient()
     vi.spyOn(client, 'sources').mockResolvedValue({ available: false, reason: 'source_index_missing', datasets: [] })
