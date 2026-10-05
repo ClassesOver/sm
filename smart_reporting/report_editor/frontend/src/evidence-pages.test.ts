@@ -1417,7 +1417,8 @@ describe('graphLabel', () => {
     const subject: EvidenceObjectRef = { kind: 'subject', key: 'sub-fixture-001', label: '正文引用 #fixtur' }
     expect(graphLabel(subject, 14, 9, 4)).toBe('正文引用 #fixtur')
     expect(graphLabel(subject, 10, 5, 4)).toBe('引用 #fixtur')
-    expect(graphLabel(subject, 4, 1, 2)).toBe('#fixtur')
+    // 紧凑位置（上限 4）放不下短号时退回首尾缩写，不撑宽标签。
+    expect(graphLabel(subject, 4, 1, 2)).toBe('正…ur')
     const dataset: EvidenceObjectRef = { kind: 'dataset', key: 'd', label: '门急诊收入明细快照.csv' }
     expect(graphLabel(dataset, 10, 5, 4)).toBe('门急诊收入….csv')
     expect(graphLabel({ ...dataset, label: '短名' }, 4, 1, 2)).toBe('短名')

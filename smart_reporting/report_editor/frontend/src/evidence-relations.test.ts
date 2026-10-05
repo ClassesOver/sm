@@ -10,6 +10,8 @@ import {
   renderRelationList,
   relabelRelations,
   subjectLabel,
+  subjectLabelsFor,
+  subjectShortFromLabel,
   subjectShortTail,
 } from './evidence-relations'
 import type { EvidenceObjectRef } from './evidence-state'
@@ -89,6 +91,15 @@ describe('subjectShortTail', () => {
     expect(subjectShortTail([])).toBe(0)
     expect(subjectLabel('sub-0000000000000001', 2)).toBe('正文引用 #000000…01')
     expect(subjectLabel('sub-abc', 2)).toBe('正文引用 #abc')
+  })
+})
+
+describe('subjectLabelsFor / subjectShortFromLabel', () => {
+  it('labels a revision consistently and round-trips the short id', () => {
+    const label = subjectLabelsFor(['sub-0000000000000000', 'sub-0000000000000001'])
+    expect(label('sub-0000000000000001')).toBe('正文引用 #000000…1')
+    expect(subjectShortFromLabel(label('sub-0000000000000001'))).toBe('#000000…1')
+    expect(subjectShortFromLabel('收入明细.csv')).toBeUndefined()
   })
 })
 

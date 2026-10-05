@@ -61,12 +61,20 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
 export function subjectShortId(subjectId: string, tail = 0): string {
   const body = subjectId.replace(/^sub-/, '')
   if (!body) return `#${subjectId}`
-  if (tail <= 0 || body.length <= 6 + tail) return `#${body.slice(0, tail > 0 ? body.length : 6)}`
+  if (tail <= 0) return `#${body.slice(0, 6)}`
+  if (body.length <= 6 + tail) return `#${body}`
   return `#${body.slice(0, 6)}…${body.slice(-tail)}`
 }
 
+const SUBJECT_LABEL_PREFIX = '正文引用 '
+
 export function subjectLabel(subjectId: string, tail = 0): string {
-  return `正文引用 ${subjectShortId(subjectId, tail)}`
+  return `${SUBJECT_LABEL_PREFIX}${subjectShortId(subjectId, tail)}`
+}
+
+/** 从引用显示名取回短号（显示名由 subjectLabel 生成）；不是引用显示名时返回 undefined。 */
+export function subjectShortFromLabel(label: string): string | undefined {
+  return label.startsWith(`${SUBJECT_LABEL_PREFIX}#`) ? label.slice(SUBJECT_LABEL_PREFIX.length) : undefined
 }
 
 /**
@@ -82,7 +90,13 @@ export function subjectShortTail(subjectIds: readonly string[]): number {
   return longest
 }
 
-function subjectRef(subjectId: string): EvidenceObjectRef {
+/** 按修订内全部引用一次性确定短号尾长，返回各引用的显示名生成器（目录与直接打开引用共用）。 */
+export function subjectLabelsFor(subjectIds: readonly string[]): (subjectId: string) => string {
+  const tail = subjectShortTail(subjectIds)
+  return (subjectId) => subjectLabel(subjectId, tail)
+}
+
+export function subjectRef(subjectId: string): EvidenceObjectRef {
   return { kind: 'subject', key: subjectId, label: subjectLabel(subjectId) }
 }
 

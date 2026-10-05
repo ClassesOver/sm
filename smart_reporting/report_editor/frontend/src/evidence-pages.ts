@@ -23,7 +23,8 @@ import {
   EVIDENCE_KIND_ICONS,
   relabelRelations,
   renderRelationList,
-  subjectLabel,
+  subjectRef,
+  subjectShortFromLabel,
   subjectShortId,
   type EvidenceRelations,
 } from './evidence-relations'
@@ -222,12 +223,11 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
 export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, tail: number): string {
   const label = ref.label
   if (label.length <= max) return label
-  // 引用显示名为“正文引用 #短号”，短号长度按修订内唯一性确定，直接取显示名中的短号。
-  const short = ref.kind === 'subject'
-    ? (label.startsWith('正文引用 #') ? label.slice('正文引用 '.length) : subjectShortId(ref.key))
-    : undefined
-  if (short) return `引用 ${short}`.length <= max ? `引用 ${short}` : short
-  return `${label.slice(0, head)}…${label.slice(-tail)}`
+  // 短号长度按修订内唯一性确定，以显示名中的短号为准。
+  const short = ref.kind === 'subject' ? subjectShortFromLabel(label) ?? subjectShortId(ref.key) : undefined
+  // 缩写不得超过该位置的长度上限（紧凑图标签只有 4 个字符宽，超长会遮挡相邻节点）。
+  const fitting = short && [`引用 ${short}`, short].find((text) => text.length <= max)
+  return fitting || `${label.slice(0, head)}…${label.slice(-tail)}`
 }
 
 /**
@@ -1965,8 +1965,8 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       const entryResult = data.validation.subjects.find((item) => item.subjectId === subject.subjectId)
       chip.dataset.status = entryResult?.status ?? 'unbound'
       const status = entryResult ? (CITATION_STATUS_LABELS[entryResult.status] ?? entryResult.status) : '未绑定'
-      const subjectRef: EvidenceObjectRef = { kind: 'subject', key: subject.subjectId, label: subjectLabel(subject.subjectId) }
-      let chipText = `${ctx.labelFor?.(subjectRef) ?? subjectRef.label}：${status}`
+      const ref = subjectRef(subject.subjectId)
+      let chipText = `${ctx.labelFor?.(ref) ?? ref.label}：${status}`
       if (entryResult?.status === 'stale' || entryResult?.warnings?.length) {
         chipText += ' · 需核对口径'
         const warning = document.createElement('div')
