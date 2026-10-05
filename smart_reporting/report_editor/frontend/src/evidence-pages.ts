@@ -69,6 +69,8 @@ export interface EvidencePageContext {
   getDraft: () => { markdown: string; sha256: string } | null
   /** 按对象身份查询来源目录中已登记的显示名；未加载或未登记时返回 undefined。 */
   labelFor?: (ref: EvidenceObjectRef) => string | undefined
+  /** 登记名可用（来源目录已加载或放弃等待）时兑现；首次渲染前等待，避免显示原始 ID。 */
+  labelsReady?: () => Promise<void>
   /** 页面级数据缓存：历史返回时不重复请求。 */
   pageData: <T>() => T | undefined
   setPageData: (data: unknown) => void
@@ -294,6 +296,8 @@ function finishRender(container: HTMLElement, ctx: EvidencePageContext, title: H
 }
 
 function showLoading(container: HTMLElement): void {
+  // 等待登记名与加载数据会先后调用：只保留一个加载提示。
+  if (container.querySelector(':scope > .evidence-placeholder')) return
   const loading = document.createElement('p')
   loading.className = 'evidence-placeholder'
   loading.textContent = '对象详情加载中…'
@@ -1832,6 +1836,11 @@ export async function renderEvidencePage(
   container: HTMLElement,
   ctx: EvidencePageContext,
 ): Promise<void> {
+  if (ctx.labelsReady && !ctx.pageData()) {
+    showLoading(container)
+    await ctx.labelsReady()
+    if (ctx.isStale()) return
+  }
   if (ctx.page.ref.kind === 'fact') return renderFactPage(container, ctx)
   if (ctx.page.ref.kind === 'computation') return renderComputationPage(container, ctx)
   if (ctx.page.ref.kind === 'dataset') return renderDatasetPage(container, ctx)
@@ -2589,8 +2598,9 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
   renderRelationSection(skeleton.relationSlot, ctx, data.relations)
 
   // 图表登记信息与其他对象页一致使用状态行；转换说明逐条列出，不合并成一段。
-  const info = document.createElement('div')
-  info.className = 'evidence-chart-info evidence-status-area'
+  // 图表登记信息与其他对象页一样放在状态区（位于关系区之前），层级一致。
+  const info = skeleton.statusArea
+  info.classList.add('evidence-chart-info')
   // 来源数据集与关系区一致：显示登记名并可直接打开快照页（支持后台打开）。
   const datasetsValue = makeStatusRow(info, '来源数据集', 'datasets')
   if (!source.datasetIds.length) datasetsValue.textContent = '未登记'
@@ -2614,7 +2624,6 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
     p.textContent = noteText
     notes.append(p)
   }
-  skeleton.detailBox.append(info)
 
   const plotBox = document.createElement('div')
   skeleton.detailBox.append(plotBox)

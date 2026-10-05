@@ -264,6 +264,31 @@ describe('evidence browser shell', () => {
     expect(document.activeElement).toBe(tabs[(tabs.indexOf(active) + 1) % tabs.length])
   })
 
+  it('waits for registered names from the directory before rendering a page', async () => {
+    const client = makeClient()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const original = client.computations.bind(client)
+    vi.spyOn(client, 'computations').mockImplementation(async (signal) => {
+      await gate
+      return original(signal)
+    })
+    const preview = vi.spyOn(client, 'datasetPreview')
+    const { shell, browser } = setup(client)
+    browser.openObject({ kind: 'dataset', key: 'dataset-1', label: 'dataset-1' })
+    await flush()
+    await flush()
+    // 目录未就绪：页面停在加载态，尚未请求快照预览，避免先以原始 ID 渲染。
+    expect(preview).not.toHaveBeenCalled()
+    expect(shell.querySelectorAll('.evidence-placeholder')).toHaveLength(1)
+    release()
+    await flush()
+    await flush()
+    await flush()
+    expect(preview).toHaveBeenCalled()
+    await vi.waitFor(() => expect(shell.querySelector('.evidence-table')).not.toBeNull())
+  })
+
   it('explains unavailable sources and lets failed directory parts be retried', async () => {
     const client = makeClient()
     vi.spyOn(client, 'sources').mockResolvedValue({ available: false, reason: 'source_index_missing', datasets: [] })

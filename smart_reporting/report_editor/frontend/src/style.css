@@ -4141,6 +4141,8 @@ button {
 .evidence-page-error-icon { margin-top: 2px; color: #c2410c; }
 .evidence-page-error-message { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
 .evidence-page-error-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
+/* 值内含按钮时整行垂直居中，标签不因按钮基线下沉。 */
+.evidence-status-row:has(> .evidence-status-value--action) { align-items: center; }
 .evidence-status-value--action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .evidence-status-value--action .ui-button { min-height: 30px; padding: 4px 12px; font-size: 12.5px; }
 .evidence-subject-links > li { padding: 4px 0; border-bottom: 0; }

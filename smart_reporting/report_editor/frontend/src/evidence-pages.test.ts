@@ -1563,6 +1563,10 @@ describe('图表页', () => {
     const { container, ctx } = setupPage(fetcher, CHART_REF)
     await renderEvidencePage(container, ctx)
     expect(container.querySelector('[data-status-row="datasets"]')?.textContent).toContain('dataset-url-abc0001')
+    // 图表登记信息与其他对象页一样位于关系区之前。
+    const row = container.querySelector('[data-status-row="datasets"]')!
+    const relations = container.querySelector('.evidence-relations')!
+    expect(row.compareDocumentPosition(relations) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // 来源数据集可直接打开快照页。
     container.querySelector<HTMLButtonElement>('[data-status-row="datasets"] button')!.click()
     expect(ctx.navigate).toHaveBeenCalledWith({ kind: 'dataset', key: 'dataset-url-abc0001', label: 'dataset-url-abc0001' })

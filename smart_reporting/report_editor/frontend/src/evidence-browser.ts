@@ -122,6 +122,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   let sourcesPromise: Promise<TraceSources> | null = null
   let sourcesController: AbortController | null = null
   let directoryController: AbortController | null = null
+  /** 当前来源目录加载（成功或失败）结束时兑现；页面首次渲染前等待它，以便使用登记名。 */
+  let directoryReady: Promise<void> = Promise.resolve()
   let navigationIntent = 0
   let directoryRefs: EvidenceObjectRef[] = []
   /** 目录说明：来源不可用的原因，或部分目录加载失败（可重试）。 */
@@ -668,6 +670,16 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   }
 
   const loadDirectory = async () => {
+    let settle!: () => void
+    directoryReady = new Promise<void>((resolve) => { settle = resolve })
+    try {
+      await loadDirectoryItems()
+    } finally {
+      settle()
+    }
+  }
+
+  const loadDirectoryItems = async () => {
     directoryController?.abort()
     const controller = new AbortController()
     directoryController = controller
@@ -815,6 +827,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       signal,
       isStale: () => signal.aborted,
       revisionLabel: options.revisionLabel,
+      // 目录未加载过时最多等待 2.5 秒；已有登记名或加载失败时不阻塞页面。
+      labelsReady: () => directoryRefs.length
+        ? Promise.resolve()
+        : Promise.race([directoryReady, new Promise<void>((resolve) => setTimeout(resolve, 2500))]),
       labelFor: (ref: EvidenceObjectRef) => {
         const id = evidenceRefId(ref)
         return directoryRefs.find((item) => evidenceRefId(item) === id)?.label
@@ -901,8 +917,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const latest = state.store.tasks.reduce((a, b) => (a.used > b.used ? a : b))
       state.switchTask(latest.key)
     }
+    // 先发起目录加载（同步设置 directoryReady），再渲染页面，页面据此等待登记名。
+    const directoryLoad = loadDirectory()
     renderAll()
-    void loadDirectory()
+    void directoryLoad
   }
 
   function hideShell() {
