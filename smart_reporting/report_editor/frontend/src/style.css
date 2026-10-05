@@ -4007,7 +4007,8 @@ button {
   outline-offset: 1px;
 }
 
-.evidence-directory-count { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #eef3f7; color: #5b6b7a; font-size: 10.5px; letter-spacing: 0; }
+.evidence-directory-count,
+.evidence-relation-count { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #eef3f7; color: #5b6b7a; font-size: 10.5px; letter-spacing: 0; }
 
 .evidence-directory-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 仅按 ID 命中时 ID 单独成行、与名称左对齐（图标 15px + 间距 8px），名称不被挤成省略号。 */

@@ -276,7 +276,14 @@ export function renderRelationList(
     if (!edges.length) continue
     const heading = document.createElement('h3')
     heading.className = 'evidence-relation-group'
-    heading.textContent = group
+    const groupName = document.createElement('span')
+    groupName.className = 'evidence-relation-group-name'
+    groupName.textContent = group
+    const count = document.createElement('span')
+    count.className = 'evidence-relation-count'
+    count.textContent = String(edges.length)
+    count.setAttribute('aria-label', `${edges.length} 条`)
+    heading.append(groupName, count)
     container.append(heading)
     for (const edge of edges) {
       const endpoints = sameEvidenceRef(edge.from, relations.center) ? [edge.to]

@@ -267,10 +267,13 @@ describe('renderRelationList', () => {
       SOURCES,
     )
     renderRelationList(container, relations, { navigate, openBackground })
-    const groups = Array.from(container.querySelectorAll('.evidence-relation-group')).map(
+    const groups = Array.from(container.querySelectorAll('.evidence-relation-group-name')).map(
       (item) => item.textContent,
     )
     expect(groups).toEqual(['输入', '产出', '引用'])
+    // 分组标题带条数徽标，与来源目录分组一致。
+    expect(Array.from(container.querySelectorAll('.evidence-relation-count')).map((item) => item.textContent))
+      .toEqual(['1', '1', '1'])
     expect(container.querySelectorAll('h3.evidence-relation-group')).toHaveLength(3)
     const rows = container.querySelectorAll<HTMLButtonElement>('.evidence-relation-row')
     expect(rows).toHaveLength(3)
