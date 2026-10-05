@@ -1390,6 +1390,30 @@ describe('无事实标识的输出', () => {
 })
 
 describe('计算页', () => {
+  it('says how many outputs are hidden and keeps nested environment values readable', async () => {
+    const detail = {
+      ...COMPUTATION_DETAIL,
+      environment: { python: '3.12', packages: { polars: '1.3' } },
+      outputFactRefs: Array.from({ length: 23 }, (_, i) => ({
+        analysisId: 'analysis_001', factKey: `fact-${String(i).padStart(16, '0')}`,
+        factKind: 'metric', jsonPointer: `/metrics/m${i}`,
+      })),
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/computations/')) return json(detail)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, { kind: 'computation', key: 'comp-001', label: 'sum' })
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelectorAll('.evidence-computation-outputs li')).toHaveLength(20)
+    expect(container.querySelector('.evidence-outputs-more')?.textContent).toContain('共 23 项输出事实')
+    const execution = container.querySelector('[data-status-row="execution"]')?.textContent ?? ''
+    expect(execution).toContain('packages {"polars":"1.3"}')
+    expect(execution).not.toContain('[object Object]')
+  })
+
   it('renders method, parameters, verification labels and output facts', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input)
@@ -1595,6 +1619,11 @@ describe('引用页', () => {
     expect(container.querySelector('[data-status-row="citation"]')?.textContent).toContain('引用有效')
     expect(container.querySelector('.evidence-warning')?.textContent).toContain('单位文本与生成时不一致')
     expect(container.querySelector('.evidence-locate')).not.toBeNull()
+    // 软告警排在全部状态行之后，状态行不被拆开。
+    const area = container.querySelector('[data-status-row="locator"]')!.parentElement!
+    expect([...area.children].filter((node) => !node.classList.contains('evidence-status'))
+      .map((node) => (node as HTMLElement).dataset.statusRow ?? node.className))
+      .toEqual(['citation', 'kind', 'locator', 'evidence-warning'])
   })
 
   it('renders identity, related objects and the locate action', async () => {

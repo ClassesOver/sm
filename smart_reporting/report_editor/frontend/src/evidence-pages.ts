@@ -2031,7 +2031,7 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     REPRODUCIBILITY_LABELS[detail.reproducibility] ?? detail.reproducibility
   const env = detail.environment
     ? Object.entries(detail.environment)
-        .map(([key, value]) => `${key} ${value}`)
+        .map(([key, value]) => `${key} ${value !== null && typeof value === 'object' ? JSON.stringify(value) : value}`)
         .join(' · ')
     : '环境信息缺失（复算条件有限）'
   makeStatusRow(skeleton.statusArea, '执行记录', 'execution').textContent =
@@ -2097,6 +2097,13 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     outputs.append(li)
   }
   section.append(outputs)
+  if (detail.outputFactRefs.length > 20) {
+    // 列表只展示前 20 项；如实说明其余数量，不让截断看起来像完整清单。
+    const more = document.createElement('p')
+    more.className = 'evidence-outputs-more'
+    more.textContent = `共 ${detail.outputFactRefs.length} 项输出事实，此处显示前 20 项；其余可在关系图中查看。`
+    section.append(more)
+  }
   skeleton.detailBox.append(section)
   finishRender(container, ctx, skeleton.title)
 }
@@ -2660,6 +2667,8 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   const { detail } = data
   const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 引用 ${detail.subjectId}`)
 
+  // 软告警放在全部状态行之后，不把“引用状态/引用类型/正文位置”拆成两段。
+  let citationWarning: HTMLElement | null = null
   if (data.validation) {
     const value = makeStatusRow(skeleton.statusArea, '引用状态', 'citation')
     const entryResult = data.validation.subjects.find((item) => item.subjectId === detail.subjectId)
@@ -2671,14 +2680,13 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
       : '未绑定'
     value.append(chip)
     if (entryResult?.warnings?.length) {
-      const warning = document.createElement('div')
-      warning.className = 'evidence-warning'
+      citationWarning = document.createElement('div')
+      citationWarning.className = 'evidence-warning'
       for (const note of entryResult.warnings) {
         const item = document.createElement('p')
         item.textContent = note
-        warning.append(item)
+        citationWarning.append(item)
       }
-      skeleton.statusArea.append(warning)
     }
   }
 
@@ -2704,6 +2712,7 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   const locate = makeButton('定位正文', 'ui-button evidence-locate')
   locate.addEventListener('click', () => ctx.locateSubject(detail.subjectId))
   locatorValue.append(locatorText, locate)
+  if (citationWarning) skeleton.statusArea.append(citationWarning)
 
   const heading = document.createElement('h2')
   heading.textContent = '关联事实与计算'
