@@ -824,6 +824,37 @@ describe('事实页', () => {
     expect(body.hidden).toBe(true)
   })
 
+  it('reveals the current node on a narrow first view without changing scale or pan', async () => {
+    const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
+    document.body.append(container)
+    await renderEvidencePage(container, ctx)
+    const scroll = container.querySelector<HTMLElement>('.evidence-graph-scroll')!
+    Object.defineProperties(scroll, { clientWidth: { value: 200 }, clientHeight: { value: 200 } })
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    const current = container.querySelector<HTMLElement>('.evidence-node.is-current')!
+    const left = parseFloat(current.style.left)
+    expect(left + 170 + 16).toBeGreaterThan(200)
+    expect(scroll.scrollLeft).toBeGreaterThan(0)
+    expect(scroll.scrollLeft).toBeLessThanOrEqual(left)
+    expect(page.graphScale).toBe(1)
+    expect(page.graphPan).toEqual({ x: 0, y: 0 })
+    container.remove()
+  })
+
+  it('reveals the current node when a hidden graph is shown later (narrow screens)', async () => {
+    const { container, ctx } = setupPage(factFetcher(), FACT_REF)
+    document.body.append(container)
+    await renderEvidencePage(container, ctx)
+    const toggle = container.querySelector<HTMLButtonElement>('.evidence-relations-toggle')!
+    toggle.click() // 收起：关系图不可见
+    const scroll = container.querySelector<HTMLElement>('.evidence-graph-scroll')!
+    scroll.scrollLeft = 0
+    Object.defineProperties(scroll, { clientWidth: { value: 200 }, clientHeight: { value: 200 } })
+    toggle.click() // 展开：显示时补做可见性调整
+    expect(scroll.scrollLeft).toBeGreaterThan(0)
+    container.remove()
+  })
+
   it('locates the current graph node at the current scale without changing preview or navigation', async () => {
     const { container, ctx, page } = setupPage(factFetcher(), FACT_REF)
     document.body.append(container)

@@ -1084,6 +1084,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
   host.append(scroll)
   scroll.scrollLeft = ctx.page.graphScroll.left
   scroll.scrollTop = ctx.page.graphScroll.top
+  requestAnimationFrame(() => {
+    if (!ctx.isStale() && scroll.isConnected) revealCurrentNode(scroll, ctx)
+  })
   scroll.addEventListener('scroll', () => {
     ctx.updatePage({ graphScroll: { left: scroll.scrollLeft, top: scroll.scrollTop } })
   }, { passive: true })
@@ -1633,6 +1636,8 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawR
       if (viewport) {
         viewport.scrollLeft = ctx.page.graphScroll.left
         viewport.scrollTop = ctx.page.graphScroll.top
+        // 窄屏关系图在收起区渲染、点“查看关系图”才显示：显示时再确保当前节点可见。
+        revealCurrentNode(viewport, ctx)
       }
     }
     viewToggle.textContent = ctx.page.showList ? '关系图' : '关系列表'
@@ -1668,6 +1673,21 @@ function renderRelationSection(slot: HTMLElement, ctx: EvidencePageContext, rawR
     list.style.minHeight = ctx.page.showList && graphHeight ? `${Math.round(graphHeight)}px` : ''
   })
   sync()
+}
+
+/**
+ * 2D 关系图尚无用户视角（未滚动、平移、缩放）时，窄屏下当前节点可能落在可视区右侧之外：
+ * 只做最小横向滚动让当前节点完整可见，不改变缩放与布局。视口不可见（宽度为 0）时不处理。
+ */
+function revealCurrentNode(viewport: HTMLElement, ctx: EvidencePageContext): void {
+  const page = ctx.page
+  const untouched = page.graphScale === 1 && page.graphPan.x === 0 && page.graphPan.y === 0 &&
+    page.graphScroll.left === 0 && page.graphScroll.top === 0
+  const position = ctx.graph?.positions.get(evidenceRefId(page.ref))
+  if (!untouched || !position || viewport.clientWidth === 0) return
+  const left = position.x - position.width / 2 - 16
+  const right = position.x + position.width / 2 + 16
+  if (right > viewport.clientWidth) viewport.scrollLeft = Math.max(0, Math.min(left, right - viewport.clientWidth))
 }
 
 function makeStatusRow(area: HTMLElement, label: string, key: string): HTMLElement {
