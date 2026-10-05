@@ -419,6 +419,34 @@ describe('evidence browser shell', () => {
     expect(browser.isOpen()).toBe(false)
   })
 
+  it('maps Alt+Left/Right to task back/forward but leaves text fields alone', async () => {
+    const { shell, browser } = setup()
+    browser.openObject(fact('fact-a', '华东营收'))
+    await flush()
+    browser._state.navigate({ kind: 'computation', key: 'comp-1', label: '渠道收入汇总' })
+    browser.open()
+    await flush()
+    const current = () => shell.querySelector('.evidence-crumb-current')!.textContent
+    const press = (target: Element, key: string) => {
+      const event = new KeyboardEvent('keydown', { key, altKey: true, bubbles: true, cancelable: true })
+      target.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    const back = shell.querySelector<HTMLButtonElement>('[data-evidence="back"]')!
+    expect(back.getAttribute('aria-keyshortcuts')).toBe('Alt+ArrowLeft')
+    expect(press(back, 'ArrowLeft')).toBe(true)
+    await flush()
+    expect(current()).toBe('华东营收')
+    // 搜索框内保留系统行为（按词移动），不触发任务导航。
+    const search = shell.querySelector<HTMLInputElement>('.evidence-directory-search')!
+    expect(press(search, 'ArrowRight')).toBe(false)
+    await flush()
+    expect(current()).toBe('华东营收')
+    expect(press(back, 'ArrowRight')).toBe(true)
+    await flush()
+    expect(current()).toBe('渠道收入汇总')
+  })
+
   it('breadcrumb navigation truncates the path and back restores it', async () => {
     const { shell, browser } = setup()
     browser.openObject(fact('fact-a', '华东营收'))

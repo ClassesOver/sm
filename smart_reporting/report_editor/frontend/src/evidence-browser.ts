@@ -144,8 +144,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         aria-expanded="false" aria-controls="evidence-directory">来源目录</button>
     </div>
     <div class="evidence-nav">
-      <button type="button" class="evidence-nav-arrow" data-evidence="back" aria-label="后退" title="后退"></button>
-      <button type="button" class="evidence-nav-arrow" data-evidence="forward" aria-label="前进" title="前进"></button>
+      <button type="button" class="evidence-nav-arrow" data-evidence="back" aria-label="后退" title="后退（Alt+←）" aria-keyshortcuts="Alt+ArrowLeft"></button>
+      <button type="button" class="evidence-nav-arrow" data-evidence="forward" aria-label="前进" title="前进（Alt+→）" aria-keyshortcuts="Alt+ArrowRight"></button>
       <span class="evidence-nav-label">探索路径</span>
       <nav class="evidence-crumbs" aria-label="探索路径"></nav>
       <details class="evidence-path-picker">
@@ -219,6 +219,18 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     for (const picker of [taskPicker, pathPicker]) {
       if (!picker.contains(event.target as Node)) picker.open = false
     }
+  })
+  // Alt+←/→ 在证据浏览器内对应任务内后退/前进；浏览器默认会离开编辑器页面。
+  // 焦点在可编辑控件内时保留系统行为（如 macOS 中 Option+方向键按词移动）。
+  shell.addEventListener('keydown', (event) => {
+    // 子控件已处理的按键（如列宽调整手柄的方向键）不再触发导航。
+    if (event.defaultPrevented || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    const target = event.target as HTMLElement | null
+    if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+    event.preventDefault()
+    const button = event.key === 'ArrowLeft' ? backButton : forwardButton
+    if (!button.disabled) button.click()
   })
   shell.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
