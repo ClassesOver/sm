@@ -3685,6 +3685,9 @@ button {
 }
 
 .evidence-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.evidence-tabs.can-scroll-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 24px); mask-image: linear-gradient(to right, transparent, #000 24px); }
+.evidence-tabs.can-scroll-right { -webkit-mask-image: linear-gradient(to left, transparent, #000 24px); mask-image: linear-gradient(to left, transparent, #000 24px); }
+.evidence-tabs.can-scroll-left.can-scroll-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
 
 .evidence-tab {
   display: inline-flex;
@@ -4713,4 +4716,10 @@ button {
   .evidence-shell *,
   .evidence-shell *::before,
   .evidence-shell *::after { transition: none; }
+}
+
+/* 窄屏状态行更紧凑：登记信息常有 4–5 行，减少纵向占用，标签列收窄。 */
+@media (max-width: 640px) {
+  .evidence-status-area { gap: 6px; }
+  .evidence-status-row { grid-template-columns: 76px minmax(0, 1fr); gap: 10px; padding: 6px 10px; }
 }

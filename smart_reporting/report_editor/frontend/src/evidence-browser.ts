@@ -271,6 +271,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
 
   // 页签多于可见宽度时，当前页签可能停在滚动区域之外；只在页签栏内水平滚动，
   // 不使用 scrollIntoView，避免带动整页或编辑器纵向滚动。
+  // 页签栏可横向滚动时，在仍有隐藏页签的一侧显示渐隐边缘，提示可以滚动。
+  const updateTabOverflow = () => {
+    const max = tabList.scrollWidth - tabList.clientWidth
+    tabList.classList.toggle('can-scroll-left', max > 1 && tabList.scrollLeft > 1)
+    tabList.classList.toggle('can-scroll-right', max > 1 && tabList.scrollLeft < max - 1)
+  }
+  tabList.addEventListener('scroll', updateTabOverflow, { passive: true })
+  window.addEventListener('resize', updateTabOverflow)
+
   const revealActiveTab = () => {
     const tab = tabList.querySelector<HTMLElement>('.evidence-tab[aria-selected="true"]')
     const target = tab?.closest<HTMLElement>('.evidence-tab-wrap') ?? tab
@@ -390,6 +399,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       : 'evidence-tab-report'
     workspace.setAttribute('aria-labelledby', activeTabId)
     revealActiveTab()
+    updateTabOverflow()
     if (focusedKey) {
       tabList.querySelector<HTMLButtonElement>(`[data-evidence-tab="${focusedKey}"]`)?.focus()
     }

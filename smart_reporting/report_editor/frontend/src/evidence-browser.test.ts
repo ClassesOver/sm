@@ -419,6 +419,24 @@ describe('evidence browser shell', () => {
     expect(browser.isOpen()).toBe(false)
   })
 
+  it('marks the scrollable sides of an overflowing tab bar', async () => {
+    const { shell, browser } = setup()
+    browser.openObject(fact('fact-a', '华东营收'))
+    await flush()
+    const tabs = shell.querySelector<HTMLElement>('.evidence-tabs')!
+    Object.defineProperty(tabs, 'scrollWidth', { configurable: true, value: 900 })
+    Object.defineProperty(tabs, 'clientWidth', { configurable: true, value: 300 })
+    tabs.scrollLeft = 0
+    tabs.dispatchEvent(new Event('scroll'))
+    expect([tabs.classList.contains('can-scroll-left'), tabs.classList.contains('can-scroll-right')]).toEqual([false, true])
+    tabs.scrollLeft = 300
+    tabs.dispatchEvent(new Event('scroll'))
+    expect([tabs.classList.contains('can-scroll-left'), tabs.classList.contains('can-scroll-right')]).toEqual([true, true])
+    tabs.scrollLeft = 600
+    tabs.dispatchEvent(new Event('scroll'))
+    expect([tabs.classList.contains('can-scroll-left'), tabs.classList.contains('can-scroll-right')]).toEqual([true, false])
+  })
+
   it('maps Alt+Left/Right to task back/forward but leaves text fields alone', async () => {
     const { shell, browser } = setup()
     browser.openObject(fact('fact-a', '华东营收'))
