@@ -430,7 +430,8 @@ export class ReportEditorClient {
     const params = new URLSearchParams()
     if (options.limit) params.set('limit', String(options.limit))
     if (options.cursor) params.set('cursor', options.cursor)
-    if (options.columns?.length) params.set('columns', options.columns.join(','))
+    // 每列一个 columns 参数：列名可含逗号，不能拼接后由服务端拆分。
+    for (const column of options.columns ?? []) params.append('columns', column)
     const query = params.toString()
     return this.request<TracePreviewPage>(
       `/api/datasets/${encodeURIComponent(datasetId)}/preview${query ? `?${query}` : ''}`,

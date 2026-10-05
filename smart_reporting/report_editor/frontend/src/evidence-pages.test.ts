@@ -996,11 +996,10 @@ describe('快照页', () => {
         return json({ datasetId: DATASET_REF.key, columns: all, restricted: true, maxColumnsPerPage: 50 })
       }
       if (url.pathname.endsWith('/preview')) {
-        const columns = url.searchParams.get('columns')
-        if (!columns) {
+        const selected = url.searchParams.getAll('columns')
+        if (!selected.length) {
           return new Response(JSON.stringify({ detail: { code: 'resource_limit_exceeded' } }), { status: 422 })
         }
-        const selected = columns.split(',')
         return json(previewFor(selected, url.searchParams.get('cursor') ? 1 : 0, url.searchParams.get('cursor') ? null : 'cw-2'))
       }
       if (url.pathname.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)

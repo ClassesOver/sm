@@ -727,7 +727,7 @@ async def test_http_dataset_columns_supports_controlled_column_selection(
             "restricted": True,
             "maxColumnsPerPage": 50,
         }
-        columns = ",".join(body["columns"])
+        columns = body["columns"]  # 每列一个 columns 参数
         first = await client.get(
             f"{base}/{DATASET_ID}/preview", params={"limit": 2, "columns": columns}
         )
@@ -739,6 +739,24 @@ async def test_http_dataset_columns_supports_controlled_column_selection(
         assert second.status_code == 200 and second.json()["offset"] == 2
         missing = await client.get(f"{base}/dataset-url-none0000/columns")
         assert missing.status_code == 404
+
+        # 列名可含逗号与首尾空格：路由按原文逐个传递，不拼接再拆分。
+        received: list[object] = []
+        original = editor.trace_dataset_preview
+
+        async def capture(*args: object, **kwargs: object) -> dict:
+            received.append(kwargs.get("columns"))
+            return await original(*args, **{**kwargs, "columns": None})
+
+        editor.trace_dataset_preview = capture  # type: ignore[method-assign]
+        try:
+            await client.get(
+                f"{base}/{DATASET_ID}/preview",
+                params={"columns": ["收入,万元", " 期间 "]},
+            )
+        finally:
+            editor.trace_dataset_preview = original  # type: ignore[method-assign]
+        assert received == [["收入,万元", " 期间 "]]
 
 
 # ---------------------------------------------------------------------------

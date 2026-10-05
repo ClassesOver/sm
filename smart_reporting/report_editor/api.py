@@ -650,17 +650,15 @@ def create_report_editor_router(
             request: Request,
             limit: int = 50,
             cursor: str | None = None,
-            columns: str | None = None,
+            columns: list[str] | None = Query(default=None),
         ) -> JSONResponse:
             session, context = await _read_session_context(
                 grants, editor, request, report_id=report_id, revision=revision
             )
             request_id = _request_id(request.headers.get("x-request-id"))
-            selected = (
-                [item.strip() for item in columns.split(",") if item.strip()]
-                if columns
-                else None
-            )
+            # 每个 columns 参数是一个列名，按原文使用：CSV 列名可含逗号或首尾空格，
+            # 不能用逗号拼接再拆分。
+            selected = list(columns) if columns else None
             try:
                 payload = await editor.trace_dataset_preview(
                     context,

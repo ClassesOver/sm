@@ -327,4 +327,15 @@ describe('ReportEditorClient', () => {
     const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
     await expect(client.sources()).rejects.toMatchObject({ status: 502, code: 'report_editor_response_invalid' })
   })
+
+  it('sends one columns parameter per column so names may contain commas', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
+      datasetId: 'd', columns: [], rows: [], rowCountTotal: 0, offset: 0, limit: 50, nextCursor: null,
+      truncatedCells: 0, truncatedByBudget: false, cellTruncationNote: null,
+    })))
+    const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
+    await client.datasetPreview('d', { columns: ['收入,万元', ' 期间 '] })
+    const url = new URL(String(fetcher.mock.calls[0][0]), 'http://reports.test')
+    expect(url.searchParams.getAll('columns')).toEqual(['收入,万元', ' 期间 '])
+  })
 })
