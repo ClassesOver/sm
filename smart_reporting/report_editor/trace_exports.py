@@ -26,7 +26,11 @@ from loguru import logger
 
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_BUDGETS_V1
-from ..reporting.trace.dataset_service import TraceDatasetFile, safe_download_filename
+from ..reporting.trace.dataset_service import (
+    TraceDatasetFile,
+    read_csv_header,
+    safe_download_filename,
+)
 
 _MAX_DERIVED_EXPORT_JOBS = 4
 _RETENTION_SECONDS = TRACE_BUDGETS_V1["export_derived_retention_seconds"]
@@ -74,11 +78,15 @@ class TraceExportJob:
 
 
 def _validate_masked_columns_policy(
-    file: TraceDatasetFile, params: Mapping[str, Any]
+    file: TraceDatasetFile,
+    params: Mapping[str, Any],
+    blocked_columns: frozenset[str] = frozenset(),
 ) -> tuple[list[str], str]:
-    columns = params.get("columns")
+    """校验掩码策略并返回最终掩码列：文件中会话受限的列一律并入（计划 5.2）。"""
+
+    columns = params.get("columns", [])
     mask = params.get("mask", "***")
-    if not isinstance(columns, (list, tuple)) or not columns:
+    if not isinstance(columns, (list, tuple)):
         raise ReportingError(
             "request_invalid", "masked_columns 策略必须提供非空 columns 列表。"
         )
@@ -88,17 +96,21 @@ def _validate_masked_columns_policy(
         raise ReportingError("request_invalid", "masked_columns 策略列清单无效。")
     if not isinstance(mask, str) or not (1 <= len(mask) <= 32):
         raise ReportingError("request_invalid", "masked_columns 策略掩码文本无效。")
-    try:
-        header = pl.scan_csv(file.local_path, infer_schema=False).collect_schema().names()
-    except (OSError, pl.exceptions.PolarsError) as error:
-        raise ReportingError("snapshot_integrity_failed", "CSV 快照无法解析。") from error
+    header = read_csv_header(file.local_path)
     unknown = [item for item in columns if item not in header]
     if unknown:
         # 只回显请求列不存在，不泄露其余受保护字段。
         raise ReportingError(
             "request_invalid", "masked_columns 策略包含不存在的列。"
         )
-    return list(dict.fromkeys(columns)), mask
+    # 受限列强制掩码：派生导出不能成为读取受限列的旁路。
+    forced = [name for name in header if name in blocked_columns]
+    target = list(dict.fromkeys([*columns, *forced]))
+    if not target:
+        raise ReportingError(
+            "request_invalid", "masked_columns 策略必须提供非空 columns 列表。"
+        )
+    return target, mask
 
 
 class TraceDerivedExportService:
@@ -120,13 +132,14 @@ class TraceDerivedExportService:
         file: TraceDatasetFile,
         policy: str,
         params: Mapping[str, Any],
+        blocked_columns: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         self._cleanup_expired()
         if policy != "masked_columns":
             raise ReportingError(
                 "request_invalid", f"未登记的导出策略代码: {policy}"
             )
-        target_columns, mask = _validate_masked_columns_policy(file, params)
+        target_columns, mask = _validate_masked_columns_policy(file, params, blocked_columns)
         running = sum(1 for job in self._jobs.values() if job.status == "running")
         if running >= _MAX_DERIVED_EXPORT_JOBS:
             raise ReportingError(

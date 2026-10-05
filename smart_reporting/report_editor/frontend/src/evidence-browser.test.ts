@@ -278,14 +278,12 @@ describe('evidence browser shell', () => {
     browser.openObject({ kind: 'dataset', key: 'dataset-1', label: 'dataset-1' })
     await flush()
     await flush()
-    // 目录未就绪：页面停在加载态，尚未请求快照预览，避免先以原始 ID 渲染。
-    expect(preview).not.toHaveBeenCalled()
+    // 目录未就绪：数据请求已并行发出，但页面停在加载态，不先以原始 ID 渲染。
+    await vi.waitFor(() => expect(preview).toHaveBeenCalled())
+    await flush()
+    expect(shell.querySelector('.evidence-table')).toBeNull()
     expect(shell.querySelectorAll('.evidence-placeholder')).toHaveLength(1)
     release()
-    await flush()
-    await flush()
-    await flush()
-    expect(preview).toHaveBeenCalled()
     await vi.waitFor(() => expect(shell.querySelector('.evidence-table')).not.toBeNull())
   })
 

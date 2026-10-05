@@ -24,6 +24,7 @@ import {
   relabelRelations,
   renderRelationList,
   subjectLabel,
+  subjectShortId,
   type EvidenceRelations,
 } from './evidence-relations'
 import { evidenceRefId, sameEvidenceRef, type EvidenceObjectKind, type EvidenceObjectRef, type EvidencePage } from './evidence-state'
@@ -215,21 +216,21 @@ export function formatDifference(draft: unknown, registered: unknown): string | 
 }
 
 /**
- * 数值千分位分组，便于与正文（如“12,450”）对照；只插入分隔符，不四舍五入、
- * 不改小数位。非数值、科学计数法与已含分隔符的文本按原样显示。
- */
-/**
  * 关系图标签缩写：超长时取首尾、中间省略。正文引用的可辨识部分是末尾的“#短号”，
  * 从中间切断会丢掉“#”与短号开头（如“正文引用 …xtur”），因此截断时保留完整短号。
  */
 export function graphLabel(ref: EvidenceObjectRef, max: number, head: number, tail: number): string {
   const label = ref.label
   if (label.length <= max) return label
-  const short = ref.kind === 'subject' ? /#[0-9A-Za-z_-]+$/.exec(label)?.[0] : undefined
+  const short = ref.kind === 'subject' ? subjectShortId(ref.key) : undefined
   if (short) return `引用 ${short}`.length <= max ? `引用 ${short}` : short
   return `${label.slice(0, head)}…${label.slice(-tail)}`
 }
 
+/**
+ * 数值千分位分组，便于与正文（如“12,450”）对照；只插入分隔符，不四舍五入、
+ * 不改小数位。非数值、科学计数法与已含分隔符的文本按原样显示。
+ */
 export function groupDigits(value: unknown): string {
   if (value === null || value === undefined) return '—'
   const raw = String(value)
@@ -295,9 +296,16 @@ function finishRender(container: HTMLElement, ctx: EvidencePageContext, title: H
   container.scrollTop = ctx.page.scroll
 }
 
+/**
+ * 页面数据已就绪、即将构建 DOM 时等待登记名（来源目录），避免关系与链接先以原始 ID 渲染。
+ * 数据请求不等待它，二者并行。返回 false 表示等待期间页面已过期。
+ */
+async function labelsSettled(ctx: EvidencePageContext): Promise<boolean> {
+  await ctx.labelsReady?.()
+  return !ctx.isStale()
+}
+
 function showLoading(container: HTMLElement): void {
-  // 等待登记名与加载数据会先后调用：只保留一个加载提示。
-  if (container.querySelector(':scope > .evidence-placeholder')) return
   const loading = document.createElement('p')
   loading.className = 'evidence-placeholder'
   loading.textContent = '对象详情加载中…'
@@ -1681,7 +1689,14 @@ function makeButton(label: string, className = 'ui-button'): HTMLButtonElement {
   return button
 }
 
-/** 在单元格内高亮本页筛选关键词（大小写不敏感），其余文字保持纯文本节点。 */
+/** 对象链接：类型图标 + 文字的链接按钮，按住修饰键时后台打开（各详情页统一入口）。 */
+function makeEvidenceLink(ref: EvidenceObjectRef, text: string, ctx: EvidencePageContext): HTMLButtonElement {
+  const link = makeButton(text, 'ui-button evidence-link evidence-related-link')
+  link.prepend(createElement(EVIDENCE_KIND_ICONS[ref.kind], { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS[ref.kind] }))
+  bindEvidenceNavigation(link, ref, ctx)
+  return link
+}
+
 /** 表格滚动区：宽表需横向滚动，设为可聚焦的具名区域，键盘用户才能滚动查看。 */
 function makeTableRegion(label: string): HTMLDivElement {
   const wrap = document.createElement('div')
@@ -1692,6 +1707,7 @@ function makeTableRegion(label: string): HTMLDivElement {
   return wrap
 }
 
+/** 在单元格内高亮本页筛选关键词（大小写不敏感），其余文字保持纯文本节点。 */
 export function appendHighlighted(cell: HTMLElement, value: string, keyword: string): void {
   const lower = value.toLowerCase()
   const needle = keyword.toLowerCase()
@@ -1836,11 +1852,6 @@ export async function renderEvidencePage(
   container: HTMLElement,
   ctx: EvidencePageContext,
 ): Promise<void> {
-  if (ctx.labelsReady && !ctx.pageData()) {
-    showLoading(container)
-    await ctx.labelsReady()
-    if (ctx.isStale()) return
-  }
   if (ctx.page.ref.kind === 'fact') return renderFactPage(container, ctx)
   if (ctx.page.ref.kind === 'computation') return renderComputationPage(container, ctx)
   if (ctx.page.ref.kind === 'dataset') return renderDatasetPage(container, ctx)
@@ -1909,6 +1920,7 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   }
   await refreshDraftValidation(data, ctx, container)
   if (ctx.isStale()) return
+  if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
   const entry = detail.entry as Record<string, unknown>
@@ -2019,12 +2031,9 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
       const li = document.createElement('li')
       if (input.factId) {
         // 与引用页“关联事实”一致：整项为带类型图标的链接按钮。
-        const jump = makeButton(`事实 ${input.factId}`, 'ui-button evidence-link evidence-related-link')
-        jump.prepend(createElement(EVIDENCE_KIND_ICONS.fact, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.fact }))
-        bindEvidenceNavigation(jump, {
+        li.append(makeEvidenceLink({
           kind: 'fact', key: input.factId, analysisId: input.analysisId, label: input.factId,
-        }, ctx)
-        li.append(jump)
+        }, `事实 ${input.factId}`, ctx))
       } else {
         li.className = 'evidence-fact-input-missing'
         li.textContent = `分析 ${input.analysisId} 的输入未登记事实 ID，无法打开`
@@ -2062,6 +2071,7 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
       return
     }
   }
+  if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
   const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 计算记录 ${detail.computationId}`)
@@ -2135,12 +2145,9 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     pointer.textContent = `${ref.analysisId} ${ref.jsonPointer}`
     li.append(outputName, pointer)
     if (ref.factKey) {
-      const jump = makeButton('查看事实', 'ui-button evidence-link evidence-related-link')
-      jump.prepend(createElement(EVIDENCE_KIND_ICONS.fact, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.fact }))
-      bindEvidenceNavigation(jump, {
+      li.append(' ', makeEvidenceLink({
         kind: 'fact', key: ref.factKey, analysisId: ref.analysisId, label: ref.factKey,
-      }, ctx)
-      li.append(' ', jump)
+      }, '查看事实', ctx))
     }
     outputs.append(li)
   }
@@ -2188,9 +2195,23 @@ export function datasetColumnWindows(columnSet: TraceDatasetColumns): string[][]
   return windows
 }
 
+function columnWindowCount(columnSet: TraceDatasetColumns): number {
+  return Math.ceil(columnSet.columns.length / Math.max(1, columnSet.maxColumnsPerPage))
+}
+
+/** 取第 index 个列窗口（越界回到第一窗），不构造全部窗口。 */
 function windowColumns(columnSet: TraceDatasetColumns, index: number | undefined): string[] {
-  const windows = datasetColumnWindows(columnSet)
-  return windows[index ?? 0] ?? windows[0] ?? []
+  const size = Math.max(1, columnSet.maxColumnsPerPage)
+  const at = index !== undefined && index >= 0 && index < columnWindowCount(columnSet) ? index : 0
+  return columnSet.columns.slice(at * size, (at + 1) * size)
+}
+
+function toDatasetDetail(page: TracePreviewPage): DatasetPageData['detail'] {
+  return {
+    columns: page.columns, rows: [...page.rows], rowCountTotal: page.rowCountTotal,
+    offset: page.offset, nextCursor: page.nextCursor, truncatedByBudget: page.truncatedByBudget,
+    truncatedCells: page.truncatedCells, cellTruncationNote: page.cellTruncationNote,
+  }
 }
 
 /** 整表预览因列数超限或含受限列被拒时，转入受控列选择；其余错误原样抛出。 */
@@ -2212,6 +2233,10 @@ function formatMaterializedAt(value: string | null): string {
   if (Number.isNaN(date.getTime())) return value
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function datasetInfoFor(sources: TraceSources, datasetId: string): TraceDatasetInfo | null {
+  return sources.datasets?.find((item) => item.datasetId === datasetId) ?? null
 }
 
 /** 登记信息只取自来源索引；缺失字段如实写“未知”，不从文件时间推断。 */
@@ -2241,27 +2266,37 @@ async function renderExpiredDataset(container: HTMLElement, ctx: EvidencePageCon
     return
   }
   if (ctx.isStale()) return
+  if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
   skeleton.statusBox.hidden = false
   skeleton.statusBox.classList.add('evidence-expired-note')
   skeleton.statusBox.textContent = '数据快照已超过保留期：以下为登记信息，明细不可预览或下载。'
-  renderDatasetInfo(skeleton.statusArea, sources.datasets?.find((item) => item.datasetId === ctx.page.ref.key) ?? null)
+  renderDatasetInfo(skeleton.statusArea, datasetInfoFor(sources, ctx.page.ref.key))
   renderRelationSection(skeleton.relationSlot, ctx, assembleDatasetRelations(ctx.page.ref, sources))
   finishRender(container, ctx, skeleton.title)
 }
 
 async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
+  // 初次加载与翻页/切换列窗口共用同一请求形状：每页 50 行，受控列选择时带当前列窗口。
+  const requestPreview = (cursor: string | null | undefined, columnSet?: TraceDatasetColumns) =>
+    ctx.client.datasetPreview(ctx.page.ref.key, {
+      limit: 50,
+      ...(columnSet ? { columns: windowColumns(columnSet, ctx.page.datasetColumnWindow) } : {}),
+      ...(cursor ? { cursor } : {}),
+    }, ctx.signal)
   let data = ctx.pageData<DatasetPageData>()
   if (!data) {
     showLoading(container)
+    // 来源清单与快照预览互不依赖：并行请求。
+    const sourcesRequest = ctx.loadSources()
+    sourcesRequest.catch(() => undefined)
     try {
       let columnSet: TraceDatasetColumns | undefined
       let page: TracePreviewPage | undefined
       if (ctx.page.datasetColumnWindow === undefined) {
-        const cursor = ctx.page.datasetCursors[ctx.page.datasetPageIndex]
         try {
-          page = await ctx.client.datasetPreview(ctx.page.ref.key, { limit: 50, ...(cursor ? { cursor } : {}) }, ctx.signal)
+          page = await requestPreview(ctx.page.datasetCursors[ctx.page.datasetPageIndex])
         } catch (error) {
           if (!needsColumnSelection(error)) throw error
           if (ctx.isStale()) return
@@ -2274,30 +2309,18 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
       if (!page) {
         columnSet ??= await ctx.client.datasetColumns(ctx.page.ref.key, ctx.signal)
         if (ctx.isStale()) return
-        if (ctx.page.datasetColumnWindow! >= datasetColumnWindows(columnSet).length) {
+        if (ctx.page.datasetColumnWindow! >= columnWindowCount(columnSet)) {
           // 恢复的窗口序号已不在当前列清单内（权限或快照变化）：回到第一窗。
           ctx.updatePage({ datasetColumnWindow: 0, datasetCursors: [null], datasetPageIndex: 0 })
         }
-        const cursor = ctx.page.datasetCursors[ctx.page.datasetPageIndex]
-        page = await ctx.client.datasetPreview(ctx.page.ref.key, {
-          limit: 50, columns: windowColumns(columnSet, ctx.page.datasetColumnWindow), ...(cursor ? { cursor } : {}),
-        }, ctx.signal)
+        page = await requestPreview(ctx.page.datasetCursors[ctx.page.datasetPageIndex], columnSet)
       }
       if (ctx.isStale()) return
-      const sources = await ctx.loadSources()
+      const sources = await sourcesRequest
       if (ctx.isStale()) return
       data = {
-        detail: {
-          columns: page.columns,
-          rows: [...page.rows],
-          rowCountTotal: page.rowCountTotal,
-          offset: page.offset,
-          nextCursor: page.nextCursor,
-          truncatedByBudget: page.truncatedByBudget,
-          truncatedCells: page.truncatedCells,
-          cellTruncationNote: page.cellTruncationNote,
-        },
-        info: sources.datasets?.find((item) => item.datasetId === ctx.page.ref.key) ?? null,
+        detail: toDatasetDetail(page),
+        info: datasetInfoFor(sources, ctx.page.ref.key),
         relations: assembleDatasetRelations(ctx.page.ref, sources),
         ...(columnSet ? { columnSet } : {}),
       }
@@ -2312,6 +2335,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
       return
     }
   }
+  if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const skeleton = buildSkeleton(container, ctx, `数据快照 ${ctx.page.ref.key} · ${ctx.revisionLabel}`)
   renderDatasetInfo(skeleton.statusArea, data.info)
@@ -2342,7 +2366,7 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
         option.textContent = `第 ${first}–${first + columns.length - 1} 列（${columns[0]} … ${columns[columns.length - 1]}）`
         columnSelect!.append(option)
       })
-      columnSelect.value = String(Math.min(ctx.page.datasetColumnWindow ?? 0, windows.length - 1))
+      columnSelect.value = String(ctx.page.datasetColumnWindow ?? 0)
       label.append(columnSelect)
       columnBar.append(label)
     }
@@ -2455,16 +2479,9 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     moreSlot.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true })
     if (columnSelect) columnSelect.disabled = true
     try {
-      const columns = columnSet ? windowColumns(columnSet, ctx.page.datasetColumnWindow) : undefined
-      const page = await ctx.client.datasetPreview(ctx.page.ref.key, {
-        limit: 50, ...(columns ? { columns } : {}), ...(cursor ? { cursor } : {}),
-      }, ctx.signal)
+      const page = await requestPreview(cursor, columnSet)
       if (ctx.isStale()) return false
-      data!.detail = {
-        columns: page.columns, rows: [...page.rows], rowCountTotal: page.rowCountTotal,
-        offset: page.offset, nextCursor: page.nextCursor, truncatedByBudget: page.truncatedByBudget,
-        truncatedCells: page.truncatedCells, cellTruncationNote: page.cellTruncationNote,
-      }
+      data!.detail = toDatasetDetail(page)
       const cursors = nextCursor
         ? [...ctx.page.datasetCursors.slice(0, index), nextCursor] : ctx.page.datasetCursors
       ctx.updatePage({ datasetCursors: cursors, datasetPageIndex: index })
@@ -2521,16 +2538,11 @@ async function renderDatasetPage(container: HTMLElement, ctx: EvidencePageContex
     const download = makeButton('下载此快照')
     download.addEventListener('click', () => void downloadSnapshot(download))
     actions.append(download)
-    const copy = makeButton('复制本页')
-    copy.addEventListener('click', () => void copyVisible())
-    actions.append(copy)
-    actionNote.textContent = `下载为完整快照，不含本页筛选；${copyScope}`
-  } else {
-    const copy = makeButton('复制本页')
-    copy.addEventListener('click', () => void copyVisible())
-    actions.append(copy)
-    actionNote.textContent = copyScope
   }
+  const copy = makeButton('复制本页')
+  copy.addEventListener('click', () => void copyVisible())
+  actions.append(copy)
+  actionNote.textContent = (ctx.downloadEnabled ? '下载为完整快照，不含本页筛选；' : '') + copyScope
 
   const downloadSnapshot = async (button: HTMLButtonElement) => {
     button.disabled = true
@@ -2617,6 +2629,7 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
       return
     }
   }
+  if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { source } = data.detail
   const skeleton = buildSkeleton(
@@ -2638,10 +2651,8 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
     for (const datasetId of source.datasetIds) {
       const datasetRef: EvidenceObjectRef = { kind: 'dataset', key: datasetId, label: datasetId }
       const label = ctx.labelFor?.(datasetRef) ?? datasetId
-      const link = makeButton(label, 'ui-button evidence-link evidence-related-link')
-      link.prepend(createElement(EVIDENCE_KIND_ICONS.dataset, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.dataset }))
+      const link = makeEvidenceLink({ ...datasetRef, label }, label, ctx)
       if (label !== datasetId) link.title = datasetId
-      bindEvidenceNavigation(link, { ...datasetRef, label }, ctx)
       datasetsValue.append(link)
     }
   }
@@ -2689,12 +2700,15 @@ async function renderChartPage(container: HTMLElement, ctx: EvidencePageContext)
     moreSlot.innerHTML = ''
     // 总页数按最长的作图表计算；只有一页时不显示分页区。
     const currentPage = Math.floor(data!.detail.offset / 20) + 1
-    const totalPages = Math.max(currentPage, Math.ceil(Math.max(0, ...plots.map((plot) => plot.rowCount)) / 20))
     const hasMore = plots.some((plot) => plot.truncated)
-    moreSlot.hidden = totalPages <= 1 && !hasMore
+    const totalPages = Math.max(
+      currentPage + (hasMore ? 1 : 0),
+      Math.ceil(Math.max(0, ...plots.map((plot) => plot.rowCount)) / 20),
+    )
+    moreSlot.hidden = totalPages <= 1
     const pageNumber = document.createElement('span')
     pageNumber.className = 'evidence-page-number'
-    pageNumber.textContent = `第 ${currentPage} / ${Math.max(totalPages, currentPage + (hasMore ? 1 : 0))} 页`
+    pageNumber.textContent = `第 ${currentPage} / ${totalPages} 页`
     moreSlot.append(pageNumber)
     if (data!.detail.offset > 0) {
       const previous = makeButton('上一页', 'ui-button evidence-previous')
@@ -2765,6 +2779,7 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   }
   await refreshDraftValidation(data, ctx, container)
   if (ctx.isStale()) return
+  if (!(await labelsSettled(ctx))) return
   container.innerHTML = ''
   const { detail } = data
   const skeleton = buildSkeleton(container, ctx, `${ctx.revisionLabel} · 引用 ${detail.subjectId}`)
@@ -2823,22 +2838,16 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
   for (const factRef of detail.factRefs) {
     if (!factRef.factId) continue
     const li = document.createElement('li')
-    const jump = makeButton(`事实 ${factRef.factId}`, 'ui-button evidence-link evidence-related-link')
-    jump.prepend(createElement(EVIDENCE_KIND_ICONS.fact, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.fact }))
-    bindEvidenceNavigation(jump, {
+    li.append(makeEvidenceLink({
       kind: 'fact', key: factRef.factId, analysisId: factRef.analysisId, label: factRef.factId,
-    }, ctx)
-    li.append(jump)
+    }, `事实 ${factRef.factId}`, ctx))
     list.append(li)
   }
   if (detail.computationId) {
     const li = document.createElement('li')
     const computationRef: EvidenceObjectRef = { kind: 'computation', key: detail.computationId, label: detail.computationId }
     const computationLabel = ctx.labelFor?.(computationRef) ?? detail.computationId
-    const jump = makeButton(`计算 ${computationLabel}`, 'ui-button evidence-link evidence-related-link')
-    jump.prepend(createElement(EVIDENCE_KIND_ICONS.computation, { width: 15, height: 15, 'aria-hidden': 'true', color: KIND_COLORS.computation }))
-    bindEvidenceNavigation(jump, { ...computationRef, label: computationLabel }, ctx)
-    li.append(jump)
+    li.append(makeEvidenceLink({ ...computationRef, label: computationLabel }, `计算 ${computationLabel}`, ctx))
     list.append(li)
   }
   if (!list.children.length) {

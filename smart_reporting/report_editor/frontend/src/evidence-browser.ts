@@ -528,20 +528,26 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     return sourcesPromise
   }
 
+  /** 目录与起始页共用的原因说明；目录内的说明带读屏播报与（可选）重试。 */
+  const makeNotice = (note: { text: string; retry?: boolean }, className: string, withRetry: boolean) => {
+    const p = document.createElement('p')
+    p.className = className
+    p.textContent = note.text
+    if (withRetry && note.retry) {
+      const retry = document.createElement('button')
+      retry.type = 'button'
+      retry.className = 'evidence-directory-retry'
+      retry.textContent = '重试'
+      retry.addEventListener('click', () => void loadDirectory())
+      p.append(' ', retry)
+    }
+    return p
+  }
+
   const renderDirectoryNotes = () => {
     for (const note of directoryNotes) {
-      const p = document.createElement('p')
-      p.className = 'evidence-directory-notice'
+      const p = makeNotice(note, 'evidence-directory-notice', true)
       p.setAttribute('role', 'status')
-      p.textContent = note.text
-      if (note.retry) {
-        const retry = document.createElement('button')
-        retry.type = 'button'
-        retry.className = 'evidence-directory-retry'
-        retry.textContent = '重试'
-        retry.addEventListener('click', () => void loadDirectory())
-        p.append(' ', retry)
-      }
       directoryItems.append(p)
     }
   }
@@ -553,9 +559,12 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     const filter = directoryFilter.trim().toLowerCase()
     const groups: { label: string; items: EvidenceObjectRef[] }[] = []
     // 显示名已换成登记名（如方法名、文件名），页面副标题仍显示对象 ID；搜索同时匹配二者。
-    const matchesId = (ref: EvidenceObjectRef) => ref.key.toLowerCase().includes(filter)
+    const idOnlyHits = new Set<EvidenceObjectRef>()
     for (const ref of directoryRefs) {
-      if (filter && !ref.label.toLowerCase().includes(filter) && !matchesId(ref)) continue
+      if (filter && !ref.label.toLowerCase().includes(filter)) {
+        if (!ref.key.toLowerCase().includes(filter)) continue
+        idOnlyHits.add(ref)
+      }
       const group = groups.find((item) => item.label === EVIDENCE_KIND_LABELS[ref.kind])
       if (group) group.items.push(ref)
       else groups.push({ label: EVIDENCE_KIND_LABELS[ref.kind], items: [ref] })
@@ -591,7 +600,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
         name.className = 'evidence-directory-label'
         appendHighlighted(name, ref.label, filter)
         item.append(icon, name)
-        if (filter && !ref.label.toLowerCase().includes(filter) && matchesId(ref)) {
+        if (idOnlyHits.has(ref)) {
           // 仅按 ID 命中时显示命中的 ID，说明该条目为何出现在结果中。
           const id = document.createElement('span')
           id.className = 'evidence-directory-id'
@@ -653,12 +662,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     }
     // 没有可列出的来源时，起始页同样说明原因，而不是只留下“从目录选择”的引导。
     if (!summary.children.length) {
-      for (const note of directoryNotes) {
-        const p = document.createElement('p')
-        p.className = 'evidence-start-notice'
-        p.textContent = note.text
-        summary.append(p)
-      }
+      for (const note of directoryNotes) summary.append(makeNotice(note, 'evidence-start-notice', false))
     }
   }
 
@@ -669,14 +673,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     if (window.innerWidth <= 1100) setDirectoryOpen(false)
   }
 
-  const loadDirectory = async () => {
-    let settle!: () => void
-    directoryReady = new Promise<void>((resolve) => { settle = resolve })
-    try {
-      await loadDirectoryItems()
-    } finally {
-      settle()
-    }
+  /** 发起来源目录加载；directoryReady 同步更新为本次加载（成功或失败均兑现）。 */
+  const loadDirectory = () => {
+    directoryReady = loadDirectoryItems().catch(() => undefined)
+    return directoryReady
   }
 
   const loadDirectoryItems = async () => {
@@ -687,14 +687,13 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     try {
       // 计算/图表清单请求失败与“未登记”不同：失败时如实说明并可重试，不当作没有该类来源。
       const failed = { available: false, failed: true } as const
-      // 修订已退休/无来源索引时这两类清单本就不可用（不是加载失败），不提示重试。
-      const unavailableCodes = new Set(['snapshot_expired', 'source_index_missing', 'feature_disabled'])
-      const settle = (error: unknown) =>
-        error instanceof ReportEditorApiError && unavailableCodes.has(error.code) ? ({ available: false } as const) : failed
+      // 修订已退休/无来源索引等“不可用”原因下两类清单本就不可用（不是加载失败），不提示重试。
+      const toUnavailable = (error: unknown) =>
+        error instanceof ReportEditorApiError && error.code in SOURCE_UNAVAILABLE_LABELS ? ({ available: false } as const) : failed
       const [sources, computations, charts] = await Promise.all([
         loadSources(),
-        options.client.computations(controller.signal).catch(settle),
-        options.client.charts(controller.signal).catch(settle),
+        options.client.computations(controller.signal).catch(toUnavailable),
+        options.client.charts(controller.signal).catch(toUnavailable),
       ])
       if (stale()) return
       const notes: { text: string; retry?: boolean }[] = []
@@ -922,9 +921,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       state.switchTask(latest.key)
     }
     // 先发起目录加载（同步设置 directoryReady），再渲染页面，页面据此等待登记名。
-    const directoryLoad = loadDirectory()
+    void loadDirectory()
     renderAll()
-    void directoryLoad
   }
 
   function hideShell() {

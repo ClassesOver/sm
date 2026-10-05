@@ -54,9 +54,14 @@ const KIND_LABELS: Record<EvidenceObjectKind, string> = {
  * 正文引用的统一显示名。subjectId 为 `sub-` + 16 位摘要；旧实现截前 8 位只剩 4 位有效字符，
  * 名称既无可读信息又容易在大报告中重名。这里去掉固定前缀后取 6 位短号，各入口共用。
  */
-export function subjectLabel(subjectId: string): string {
+/** 正文引用的短号（“#” + ID 去前缀后的前 6 位），用于显示名与关系图缩写。 */
+export function subjectShortId(subjectId: string): string {
   const short = subjectId.replace(/^sub-/, '').slice(0, 6)
-  return `正文引用 #${short || subjectId}`
+  return `#${short || subjectId}`
+}
+
+export function subjectLabel(subjectId: string): string {
+  return `正文引用 ${subjectShortId(subjectId)}`
 }
 
 function subjectRef(subjectId: string): EvidenceObjectRef {

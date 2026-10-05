@@ -93,6 +93,17 @@ class TracePreviewPage:
         }
 
 
+def read_csv_header(path: Path) -> list[str]:
+    """读取 CSV 列名（按原文、不做类型推断）；预览、列清单、受限列与派生导出共用。"""
+
+    if not path.is_file():
+        raise ReportingError("source_missing", "数据集快照文件不存在。")
+    try:
+        return pl.scan_csv(path, infer_schema=False).collect_schema().names()
+    except (OSError, pl.exceptions.PolarsError) as error:
+        raise ReportingError("snapshot_integrity_failed", "CSV 快照无法解析。") from error
+
+
 def safe_download_filename(file: TraceDatasetFile) -> str:
     """下载文件名安全化；保留中文，替换路径与控制字符（计划 5.3）。"""
 
@@ -169,10 +180,7 @@ class TraceCsvPreviewService:
                 "request_invalid",
                 f"每页行数必须在 1~{_PREVIEW_MAX_ROWS} 之间。",
             )
-        if not file.local_path.is_file():
-            raise ReportingError("source_missing", "数据集快照文件不存在。")
-
-        header = self._header(file)
+        header = read_csv_header(file.local_path)
         offset = 0
         if cursor is not None:
             payload = self._verify(cursor)
@@ -252,17 +260,9 @@ class TraceCsvPreviewService:
         受限列只以“存在受限列”布尔值体现，不回显列名或数量（计划 5.2）。
         """
 
-        if not file.local_path.is_file():
-            raise ReportingError("source_missing", "数据集快照文件不存在。")
-        header = self._header(file)
+        header = read_csv_header(file.local_path)
         visible = [name for name in header if name not in permissions.blocked_columns]
         return visible, len(visible) != len(header)
-
-    def _header(self, file: TraceDatasetFile) -> list[str]:
-        try:
-            return pl.scan_csv(file.local_path).collect_schema().names()
-        except (OSError, pl.exceptions.PolarsError) as error:
-            raise ReportingError("snapshot_integrity_failed", "CSV 快照无法解析。") from error
 
     def _resolve_columns(
         self,
@@ -367,9 +367,11 @@ class TraceCsvPreviewService:
 
         if not permissions.blocked_columns:
             return []
-        if not file.local_path.is_file():
-            raise ReportingError("source_missing", "数据集快照文件不存在。")
-        return [name for name in self._header(file) if name in permissions.blocked_columns]
+        return [
+            name
+            for name in read_csv_header(file.local_path)
+            if name in permissions.blocked_columns
+        ]
 
 
 def preview_default_rows() -> int:
