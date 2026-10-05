@@ -428,11 +428,18 @@ describe('evidence browser shell', () => {
     const active = browser._state.store.active
     const items = picker.querySelectorAll<HTMLButtonElement>('button')
     expect(items).toHaveLength(14)
-    expect(items[1].disabled).toBe(true)
-    expect(items[2].textContent).toBe('任务 0 · 事实')
-    items[2].focus()
+    // 顺序：报告正文 → 各任务 → 分隔后的“恢复”操作（无已关闭任务时不可用）。
+    expect(items[0].textContent).toBe('报告正文')
+    expect(items[1].textContent).toBe('任务 0 · 事实')
+    expect(items[1].querySelector('svg.evidence-popup-icon')?.getAttribute('aria-hidden')).toBe('true')
+    const restoreItem = items[items.length - 1]
+    expect(restoreItem.textContent).toBe('恢复最近关闭的任务')
+    expect(restoreItem.classList.contains('evidence-popup-action')).toBe(true)
+    expect(restoreItem.disabled).toBe(true)
+    expect([...items].filter((item) => item.hasAttribute('aria-current'))).toHaveLength(1)
+    items[1].focus()
     expect(browser._state.store.active).toBe(active)
-    items[2].click()
+    items[1].click()
     await flush()
     expect(browser._state.currentTask()?.root.key).toBe('fact-0')
     expect(picker.open).toBe(false)

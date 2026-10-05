@@ -3890,6 +3890,11 @@ button {
 .evidence-popup button:hover,
 .evidence-popup button[aria-current] { background: #edf5fc; color: #0b4f8a; }
 .evidence-popup button:disabled { cursor: default; opacity: 1; }
+/* 不可用的操作项需与可点项区分；当前项（aria-current）沿用高亮样式。 */
+.evidence-popup button:disabled:not([aria-current]) { color: #8a99a8; background: transparent; }
+.evidence-popup-icon { flex-shrink: 0; margin-right: 8px; vertical-align: -3px; }
+.evidence-popup .evidence-popup-action { margin-top: 4px; border-top: 1px solid #e3ebf2; border-radius: 0 0 4px 4px; color: #0b4f8a; }
+.evidence-popup .evidence-popup-action:disabled { color: #8a99a8; }
 .evidence-crumb-step { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; }
 .evidence-crumb-step:first-child { max-width: 40%; }
 .evidence-crumb-step:last-child { flex: 1; }

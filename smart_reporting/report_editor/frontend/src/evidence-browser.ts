@@ -12,7 +12,7 @@ import {
 import { appendHighlighted, renderEvidencePage } from './evidence-pages'
 import { EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectLabel } from './evidence-relations'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
-import { ArrowLeft, ArrowRight, createElement, MoreHorizontal, X } from 'lucide'
+import { ArrowLeft, ArrowRight, createElement, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
 /**
  * 证据浏览器外壳（证据浏览器 v6）：任务页签 + 探索面包屑 + 来源目录 + 对象页。
@@ -198,6 +198,11 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     announcer.textContent = message
   }
 
+  const popupIcon = (icon: SVGElement): SVGElement => {
+    icon.classList.add('evidence-popup-icon')
+    return icon
+  }
+
   const closePickers = () => {
     taskPicker.open = false
     pathPicker.open = false
@@ -280,11 +285,16 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     const reportItem = document.createElement('button')
     reportItem.type = 'button'
     reportItem.textContent = '报告正文'
+    reportItem.prepend(popupIcon(createElement(FileText, { width: 15, height: 15, 'aria-hidden': 'true' })))
+    if (!isOpen) reportItem.setAttribute('aria-current', 'true')
     reportItem.addEventListener('click', () => activateTab(REPORT_TAB))
     taskItems.append(reportItem)
+    // “恢复”是操作而非任务：放在任务清单之后、以分隔线隔开。
     const restore = document.createElement('button')
     restore.type = 'button'
+    restore.className = 'evidence-popup-action'
     restore.textContent = '恢复最近关闭的任务'
+    restore.prepend(popupIcon(createElement(RotateCcw, { width: 15, height: 15, 'aria-hidden': 'true' })))
     restore.disabled = state.closedTasks.length === 0
     restore.addEventListener('click', () => {
       const task = state.restoreTask()
@@ -292,7 +302,6 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       renderAll()
       announce(`已恢复核对任务 ${task.root.label}`)
     })
-    taskItems.append(restore)
     for (const task of state.store.tasks) {
       const wrap = document.createElement('span')
       wrap.className = 'evidence-tab-wrap'
@@ -347,11 +356,15 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const item = document.createElement('button')
       item.type = 'button'
       item.textContent = `${task.root.label} · ${EVIDENCE_KIND_LABELS[taskPageKind(task)]}`
+      item.prepend(popupIcon(createElement(EVIDENCE_KIND_ICONS[task.root.kind], {
+        width: 15, height: 15, 'aria-hidden': 'true', color: EVIDENCE_KIND_COLORS[task.root.kind],
+      })))
       item.title = currentPath
-      if (state.store.active === task.key) item.setAttribute('aria-current', 'true')
+      if (isOpen && state.store.active === task.key) item.setAttribute('aria-current', 'true')
       item.addEventListener('click', () => activateTab(task.key))
       taskItems.append(item)
     }
+    taskItems.append(restore)
     const activeTabId = isOpen && state.store.active
       ? `evidence-tab-${state.store.active.replace(/[^a-zA-Z0-9_-]/g, '-')}`
       : 'evidence-tab-report'
