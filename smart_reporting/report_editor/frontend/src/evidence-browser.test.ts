@@ -144,6 +144,12 @@ describe('evidence browser shell', () => {
     const close = shell.querySelector<HTMLButtonElement>('.evidence-tab-close')!
     expect(close.getAttribute('aria-label')).toContain('关闭核对任务')
     expect(close.querySelector('svg')).not.toBeNull()
+    // tablist 只收纳页签（aria-owns），关闭按钮不在其中但仍是可访问按钮。
+    const owner = shell.querySelector<HTMLElement>('[role="tablist"]')!
+    const owned = owner.getAttribute('aria-owns')!.split(' ')
+    expect(owned).toEqual([...shell.querySelectorAll<HTMLElement>('.evidence-tab')].map((tab) => tab.id))
+    expect(owner.contains(close)).toBe(false)
+    expect(close.hasAttribute('aria-hidden')).toBe(false)
     // 工作区承担 tabpanel 角色，使用允许该角色的 div（main 不允许 tabpanel）。
     expect(shell.querySelector('.evidence-workspace')?.tagName).toBe('DIV')
   })

@@ -137,7 +137,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   shell.hidden = true
   shell.innerHTML = `
     <div class="evidence-tabs-line">
-      <div class="evidence-tabs" role="tablist" aria-label="核对任务"></div>
+      <div class="evidence-tabs"></div>
+      <div class="evidence-tablist sr-only" role="tablist" aria-label="核对任务"></div>
       <details class="evidence-task-picker">
         <summary aria-label="全部任务">全部任务</summary>
         <div class="evidence-popup evidence-task-items" aria-label="全部核对任务"></div>
@@ -186,6 +187,9 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   const pathPicker = shell.querySelector<HTMLDetailsElement>('.evidence-path-picker')!
   const pathItems = shell.querySelector<HTMLElement>('.evidence-path-items')!
   const tabList = shell.querySelector<HTMLElement>('.evidence-tabs')!
+  // 视觉页签栏同时容纳页签与关闭按钮；tablist 只能包含页签，因此由独立的 tablist
+  // 元素通过 aria-owns 收纳全部页签，关闭按钮仍是可访问的普通按钮。
+  const tabListOwner = shell.querySelector<HTMLElement>('.evidence-tablist')!
   const directoryToggle = shell.querySelector<HTMLButtonElement>('.evidence-directory-toggle')!
   const directory = shell.querySelector<HTMLElement>('.evidence-directory')!
   const directoryHead = shell.querySelector<HTMLElement>('.evidence-directory-head')!
@@ -400,6 +404,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       ? `evidence-tab-${state.store.active.replace(/[^a-zA-Z0-9_-]/g, '-')}`
       : 'evidence-tab-report'
     workspace.setAttribute('aria-labelledby', activeTabId)
+    tabListOwner.setAttribute('aria-owns', [...tabList.querySelectorAll<HTMLElement>('.evidence-tab')].map((tab) => tab.id).join(' '))
     revealActiveTab()
     updateTabOverflow()
     if (focusedKey) {
