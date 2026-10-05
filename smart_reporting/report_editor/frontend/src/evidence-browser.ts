@@ -49,6 +49,12 @@ export interface EvidenceBrowserOptions {
   drilldownEnabled?: boolean
 }
 
+const SOURCE_UNAVAILABLE_LABELS: Record<string, string> = {
+  source_index_missing: '当前修订没有来源索引（旧报告或来源未登记）',
+  feature_disabled: '来源追溯功能未启用',
+  snapshot_expired: '数据快照已超过保留期，登记信息仍可查看，明细不可用',
+}
+
 export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowserOptions) {
   const storageKey = options.storageKey ?? 'smart-reporting-evidence-session'
   const loadStore = (): EvidenceStore | undefined => {
@@ -118,6 +124,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
   let directoryController: AbortController | null = null
   let navigationIntent = 0
   let directoryRefs: EvidenceObjectRef[] = []
+  /** 目录说明：来源不可用的原因，或部分目录加载失败（可重试）。 */
+  let directoryNotes: { text: string; retry?: boolean }[] = []
   let directoryFilter = ''
   const pageDataCache = new WeakMap<EvidencePage, unknown>()
   const taskGraphs = new WeakMap<EvidenceTask, EvidenceGraph>()
@@ -496,8 +504,27 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     return sourcesPromise
   }
 
+  const renderDirectoryNotes = () => {
+    for (const note of directoryNotes) {
+      const p = document.createElement('p')
+      p.className = 'evidence-directory-notice'
+      p.setAttribute('role', 'status')
+      p.textContent = note.text
+      if (note.retry) {
+        const retry = document.createElement('button')
+        retry.type = 'button'
+        retry.className = 'evidence-directory-retry'
+        retry.textContent = '重试'
+        retry.addEventListener('click', () => void loadDirectory())
+        p.append(' ', retry)
+      }
+      directoryItems.append(p)
+    }
+  }
+
   const renderDirectoryItems = () => {
     directoryItems.innerHTML = ''
+    renderDirectoryNotes()
     const current = state.currentPage()
     const filter = directoryFilter.trim().toLowerCase()
     const groups: { label: string; items: EvidenceObjectRef[] }[] = []
@@ -513,7 +540,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       const empty = document.createElement('p')
       empty.className = 'evidence-directory-empty'
       empty.textContent = filter ? '目录中没有匹配的条目' : '当前修订没有登记来源'
-      directoryItems.append(empty)
+      // 已有原因说明（如未生成来源索引）时不再追加笼统的“没有登记来源”。
+      if (filter || !directoryNotes.length) directoryItems.append(empty)
       return
     }
     for (const group of groups) {
@@ -614,12 +642,19 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     directoryController = controller
     const stale = () => !isOpen || controller.signal.aborted || directoryController !== controller
     try {
+      // 计算/图表清单请求失败与“未登记”不同：失败时如实说明并可重试，不当作没有该类来源。
+      const failed = { available: false, failed: true } as const
       const [sources, computations, charts] = await Promise.all([
         loadSources(),
-        options.client.computations(controller.signal).catch(() => ({ available: false }) as const),
-        options.client.charts(controller.signal).catch(() => ({ available: false }) as const),
+        options.client.computations(controller.signal).catch(() => failed),
+        options.client.charts(controller.signal).catch(() => failed),
       ])
       if (stale()) return
+      const notes: { text: string; retry?: boolean }[] = []
+      if (!sources.available) notes.push({ text: SOURCE_UNAVAILABLE_LABELS[sources.reason ?? ''] ?? '当前修订的来源暂不可用' })
+      const failedKinds = [computations === failed ? '计算记录' : '', charts === failed ? '图表' : ''].filter(Boolean)
+      if (failedKinds.length) notes.push({ text: `${failedKinds.join('、')}目录加载失败，未列出的不代表没有登记。`, retry: true })
+      directoryNotes = notes
       const refs: EvidenceObjectRef[] = []
       for (const dataset of sources.datasets ?? []) {
         refs.push({

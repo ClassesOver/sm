@@ -264,6 +264,29 @@ describe('evidence browser shell', () => {
     expect(document.activeElement).toBe(tabs[(tabs.indexOf(active) + 1) % tabs.length])
   })
 
+  it('explains unavailable sources and lets failed directory parts be retried', async () => {
+    const client = makeClient()
+    vi.spyOn(client, 'sources').mockResolvedValue({ available: false, reason: 'source_index_missing', datasets: [] })
+    const computations = vi.spyOn(client, 'computations').mockRejectedValueOnce(new TypeError('network'))
+    const { shell, browser } = setup(client)
+    browser.open()
+    await flush()
+    await flush()
+    const notes = () => [...shell.querySelectorAll('.evidence-directory-notice')].map((note) => note.firstChild?.textContent)
+    expect(notes()).toEqual([
+      '当前修订没有来源索引（旧报告或来源未登记）',
+      '计算记录目录加载失败，未列出的不代表没有登记。',
+    ])
+    // 有原因说明时不再追加笼统的“没有登记来源”。
+    expect(shell.querySelector('.evidence-directory-empty')).toBeNull()
+    shell.querySelector<HTMLButtonElement>('.evidence-directory-retry')!.click()
+    await flush()
+    await flush()
+    expect(computations).toHaveBeenCalledTimes(2)
+    expect(notes()).toEqual(['当前修订没有来源索引（旧报告或来源未登记）'])
+    expect([...shell.querySelectorAll('.evidence-directory-item')].map((item) => item.textContent)).toEqual(['渠道收入汇总'])
+  })
+
   it('directory search filters items without touching task state', async () => {
     const { shell, browser } = setup()
     browser.open()
