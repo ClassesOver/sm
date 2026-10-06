@@ -8,6 +8,15 @@ describe('reportPreflight', () => {
     expect(reportPreflight('###\n', editor).map((item) => item.code)).toEqual(['heading', 'empty-heading', 'image-alt'])
   })
 
+  it('does not treat comment lines inside code blocks as headings', () => {
+    const editor = document.createElement('div')
+    const markdown = '正文\n\n```bash\n# 安装依赖\n#\n```\n'
+    const codes = reportPreflight(markdown, editor).map((item) => item.code)
+    // 代码块里的 “# 注释” 不算已创建的标题，单独的 “#” 也不是空标题。
+    expect(codes).toContain('heading')
+    expect(codes).not.toContain('empty-heading')
+  })
+
   it('warns when an image alt contains only whitespace', () => {
     const editor = document.createElement('div')
     editor.innerHTML = '<img src="chart.png" alt="   ">'
