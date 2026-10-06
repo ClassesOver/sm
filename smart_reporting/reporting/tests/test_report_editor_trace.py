@@ -1173,6 +1173,33 @@ async def test_fact_detail_rejects_unknown_analysis_and_fact(tmp_path: Path) -> 
     assert exc.value.code == "fact_binding_unavailable"
 
 
+def test_fact_detail_locates_correlation_facts() -> None:
+    """相关性事实（correlationDetails）同样可被引用绑定，事实详情必须能定位与解析。"""
+    from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
+    from smart_reporting.reporting.trace.contracts_v1 import FactRefV1
+    from smart_reporting.reporting.trace.fact_service import resolve_fact
+
+    fact_id = "fact-" + "c" * 16
+    bundle = json.dumps({
+        "analysisId": "analysis_001",
+        "metrics": [],
+        "correlationDetails": [{
+            "factId": fact_id, "datasetId": DATASET_ID, "leftField": "visits",
+            "rightField": "revenue", "method": "pearson", "sampleCount": 12, "value": 0.82,
+        }],
+    }).encode("utf-8")
+    pointer = ReportEditorTraceService._locate_fact_pointer(bundle, fact_id)
+    assert pointer == "/correlationDetails/0"
+    kind = ReportEditorTraceService._pointer_kind(pointer)
+    assert kind == "correlation"
+    detail = resolve_fact(bundle, FactRefV1(
+        analysisId="analysis_001", fileResourceId="trf-" + "0" * 20,
+        jsonPointer=pointer, factKind=kind, factKey=fact_id,
+    ))
+    assert detail["factKind"] == "correlation"
+    assert detail["displayValue"] == 0.82
+
+
 @pytest.mark.anyio
 async def test_http_facts_routes(tmp_path: Path) -> None:
     editor, grants, _ = await _make_editor(tmp_path, with_fact_file=True)

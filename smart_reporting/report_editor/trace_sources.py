@@ -538,11 +538,13 @@ class ReportEditorTraceService:
             raise ReportingError(
                 "snapshot_integrity_failed", "事实文件无法解析。"
             ) from None
+        # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
         for array_name, prefix in (
             ("metrics", "/metrics/"),
             ("comparisons", "/comparisons/"),
             ("derivedMetrics", "/derivedMetrics/"),
             ("reconciliations", "/reconciliations/"),
+            ("correlationDetails", "/correlationDetails/"),
         ):
             for index, item in enumerate(document.get(array_name, ()) or ()):
                 if isinstance(item, dict) and item.get("factId") == fact_id:
@@ -1205,6 +1207,8 @@ class ReportEditorTraceService:
             return "derived"
         if pointer.startswith("/reconciliations/"):
             return "reconciliation"
+        if pointer.startswith("/correlationDetails/"):
+            return "correlation"
         return "metric"
 
     def _permissions(
