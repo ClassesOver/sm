@@ -37,6 +37,8 @@ _MAX_RESPONSE_BYTES = TRACE_BUDGETS_V1["preview_max_response_bytes"]
 _CURSOR_TTL_SECONDS = 3600
 _CURSOR_MAX_AGE_SECONDS = 24 * 3600
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+")
+# polars \u8bfb\u53d6\u91cd\u590d\u8868\u5934\u65f6\u628a\u540e\u51fa\u73b0\u7684\u540c\u540d\u5217\u6539\u540d\u4e3a\u201c<\u5217\u540d>_duplicated_<n>\u201d\u3002
+_DUPLICATED_COLUMN_PATTERN = re.compile(r"^(?P<base>.+)_duplicated_\d+$")
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,19 @@ def read_csv_header(path: Path) -> list[str]:
         return pl.scan_csv(path, infer_schema=False).collect_schema().names()
     except (OSError, pl.exceptions.PolarsError) as error:
         raise ReportingError("snapshot_integrity_failed", "CSV 快照无法解析。") from error
+
+
+def is_blocked_column(name: str, blocked_columns: frozenset[str]) -> bool:
+    """按原列名判断受限列。
+
+    表头含重复列名时，polars 会把第二个同名列改名为“<列名>_duplicated_<n>”；只做精确匹配时，
+    受限列的重复副本会以改名后的列名出现在可预览列与派生导出中，绕过列级限制（计划 5.2）。
+    """
+
+    if name in blocked_columns:
+        return True
+    match = _DUPLICATED_COLUMN_PATTERN.match(name)
+    return match is not None and match.group("base") in blocked_columns
 
 
 def safe_download_filename(file: TraceDatasetFile) -> str:
@@ -261,7 +276,9 @@ class TraceCsvPreviewService:
         """
 
         header = read_csv_header(file.local_path)
-        visible = [name for name in header if name not in permissions.blocked_columns]
+        visible = [
+            name for name in header if not is_blocked_column(name, permissions.blocked_columns)
+        ]
         return visible, len(visible) != len(header)
 
     def _resolve_columns(
@@ -286,8 +303,7 @@ class TraceCsvPreviewService:
                 "resource_limit_exceeded",
                 f"单页最多 {_PREVIEW_MAX_COLUMNS} 列，请使用受控列选择。",
             )
-        blocked = sorted(set(selected) & permissions.blocked_columns)
-        if blocked:
+        if any(is_blocked_column(name, permissions.blocked_columns) for name in selected):
             # 受限列不回显存在性以外的信息（计划 5.2：不泄露受保护字段）。
             raise ReportingError(
                 "dataset_access_denied", "请求包含当前会话无权预览的列。"
@@ -370,7 +386,7 @@ class TraceCsvPreviewService:
         return [
             name
             for name in read_csv_header(file.local_path)
-            if name in permissions.blocked_columns
+            if is_blocked_column(name, permissions.blocked_columns)
         ]
 
 

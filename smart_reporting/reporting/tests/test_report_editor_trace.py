@@ -824,6 +824,23 @@ def test_derived_export_keeps_unmasked_cells_verbatim(tmp_path: Path) -> None:
     ]
 
 
+def test_derived_export_masks_duplicated_copies_of_blocked_columns(tmp_path: Path) -> None:
+    """表头重复的受限列（polars 改名为 *_duplicated_n）同样强制掩码，不成为旁路。"""
+    from smart_reporting.report_editor.trace_exports import _validate_masked_columns_policy
+    from smart_reporting.reporting.trace.dataset_service import TraceDatasetFile
+
+    source = tmp_path / "dup.csv"
+    source.write_text("name,salary,salary\na,1,2\n", encoding="utf-8")
+    file = TraceDatasetFile(
+        dataset_id="dataset-dup", local_path=source, size=source.stat().st_size,
+        sha256="0" * 64, row_count=1,
+    )
+    target, _mask = _validate_masked_columns_policy(
+        file, {"columns": ["name"]}, frozenset({"salary"})
+    )
+    assert target == ["name", "salary", "salary_duplicated_0"]
+
+
 
 @pytest.mark.anyio
 async def test_derived_export_always_masks_blocked_columns(tmp_path: Path) -> None:

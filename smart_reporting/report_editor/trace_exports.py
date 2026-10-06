@@ -28,6 +28,7 @@ from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_BUDGETS_V1
 from ..reporting.trace.dataset_service import (
     TraceDatasetFile,
+    is_blocked_column,
     read_csv_header,
     safe_download_filename,
 )
@@ -104,7 +105,7 @@ def _validate_masked_columns_policy(
             "request_invalid", "masked_columns 策略包含不存在的列。"
         )
     # 受限列强制掩码：派生导出不能成为读取受限列的旁路。
-    forced = [name for name in header if name in blocked_columns]
+    forced = [name for name in header if is_blocked_column(name, blocked_columns)]
     target = list(dict.fromkeys([*columns, *forced]))
     if not target:
         raise ReportingError(
