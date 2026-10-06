@@ -465,6 +465,15 @@ describe('evidence browser shell', () => {
     tabList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
     expect(shell.querySelectorAll('.evidence-tab')).toHaveLength(2)
     expect(shell.querySelector('.evidence-tab-name')!.textContent).toBe('华北营收')
+    // 关闭后焦点留在页签栏的当前选中页签，不落回页面开头。
+    expect(document.activeElement).toBe(shell.querySelector('.evidence-tab[aria-selected="true"]'))
+    // 用关闭按钮关闭（键盘 Enter 触发 click）同样保留焦点。
+    browser.openObject(fact('fact-c', '华南营收'))
+    await flush()
+    const closeButtons = () => [...shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')]
+    closeButtons()[0]!.focus()
+    closeButtons()[0]!.click()
+    expect(document.activeElement).toBe(shell.querySelector('.evidence-tab[aria-selected="true"]'))
   })
 
   it('closing a background tab keeps the active one; closing the active falls back to MRU', async () => {

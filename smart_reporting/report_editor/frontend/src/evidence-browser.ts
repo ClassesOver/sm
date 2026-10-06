@@ -266,12 +266,17 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
 
   const closeTab = (key: string) => {
     const wasActive = state.store.active === key
+    // 被关闭的页签或其关闭按钮正持有焦点；重绘后焦点会落回页面开头，改为回到当前选中页签。
+    const focusInTabs = tabList.contains(document.activeElement)
     state.closeTask(key)
     if (state.store.active === REPORT_TAB) {
       hideShell()
       return
     }
     renderAll()
+    if (focusInTabs && !tabList.contains(document.activeElement)) {
+      tabList.querySelector<HTMLButtonElement>('.evidence-tab[aria-selected="true"]')?.focus()
+    }
     if (wasActive) announce(`已切换到核对任务 ${state.currentTask()?.root.label ?? ''}`)
   }
 
