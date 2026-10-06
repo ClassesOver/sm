@@ -134,6 +134,13 @@ describe('createSearchController', () => {
     expect(controller.panel.hidden).toBe(false)
   })
 
+  it('leaves Ctrl+Shift+F to focus mode instead of opening search', () => {
+    const controller = createSearchController({ root, getText: () => markdown, replaceText })
+    // 专注模式快捷键是 Ctrl/⌘+Shift+F；搜索不能同时被唤起，否则专注模式下顶部弹出搜索面板并抢走焦点。
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', ctrlKey: true, shiftKey: true }))
+    expect(controller.panel.hidden).toBe(true)
+  })
+
   it('selects the existing query when the search shortcut is used again', () => {
     const controller = createSearchController({ root, getText: () => markdown, replaceText })
     controller.open()
