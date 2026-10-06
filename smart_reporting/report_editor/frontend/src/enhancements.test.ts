@@ -120,6 +120,26 @@ describe('report editor enhancements', () => {
     expect(exportPdf).toHaveBeenCalledOnce()
   })
 
+  it('swallows save and export shortcuts while an operation blocks the editor', () => {
+    const save = vi.fn()
+    const exportPdf = vi.fn()
+    let blocked = true
+    // 导出/恢复期间按钮已禁用并显示阻塞遮罩；快捷键不能绕过它们再发起一次导出。
+    const dispose = installEditorShortcuts({ save, exportPdf, isBlocked: () => blocked })
+    const saveKey = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true })
+    window.dispatchEvent(saveKey)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, shiftKey: true }))
+    expect(save).not.toHaveBeenCalled()
+    expect(exportPdf).not.toHaveBeenCalled()
+    // 仍阻止浏览器默认的“另存网页”对话框。
+    expect(saveKey.defaultPrevented).toBe(true)
+
+    blocked = false
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, shiftKey: true }))
+    expect(exportPdf).toHaveBeenCalledOnce()
+    dispose()
+  })
+
   it('closes mobile secondary actions after selection, outside click, or Escape', () => {
     const root = document.querySelector<HTMLElement>('#app')!
     root.innerHTML = `<button id="more" aria-expanded="false"></button><div class="secondary-actions"><button id="search"></button></div>`

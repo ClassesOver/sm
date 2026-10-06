@@ -87,15 +87,17 @@ export function createNetworkStatusController(label: HTMLElement, onReconnect: (
 export function installEditorShortcuts(actions: {
   save: () => void
   exportPdf: () => void
+  /** 导出或恢复进行中（按钮已禁用、显示阻塞遮罩）时返回 true：快捷键只吞掉默认行为，不再发起操作。 */
+  isBlocked?: () => boolean
 }) {
   const listener = (event: KeyboardEvent) => {
     if (!(event.ctrlKey || event.metaKey)) return
     if (event.key.toLowerCase() === 's') {
       event.preventDefault()
-      actions.save()
+      if (!actions.isBlocked?.()) actions.save()
     } else if (event.shiftKey && event.key.toLowerCase() === 'e') {
       event.preventDefault()
-      actions.exportPdf()
+      if (!actions.isBlocked?.()) actions.exportPdf()
     }
   }
   window.addEventListener('keydown', listener)

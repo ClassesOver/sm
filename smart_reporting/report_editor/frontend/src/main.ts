@@ -743,6 +743,9 @@ try {
   installEditorShortcuts({
     save: saveInBackground,
     exportPdf: () => void exportFormat('pdf'),
+    // 与按钮禁用状态一致：导出/恢复进行中再按快捷键会并发第二个任务，其失败的 finally
+    // 会提前撤掉阻塞遮罩并重新启用按钮。
+    isBlocked: () => shell.exportPdf.disabled,
   })
   window.addEventListener('beforeunload', (event) => {
     if (saveState?.shouldWarnBeforeUnload) event.preventDefault()
