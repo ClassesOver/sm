@@ -1903,6 +1903,27 @@ describe('节点分支加载', () => {
     expect(attempts).toBe(2)
   })
 
+  it('explains keyless computation outputs without requesting a fact detail', async () => {
+    const keyless = {
+      ...COMPUTATION_DETAIL,
+      outputFactRefs: [{ analysisId: 'analysis_002', factKey: null, factKind: 'supplemental_finding', jsonPointer: '/findings' }],
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      if (url.includes('/api/computations/')) return json(keyless)
+      throw new Error(url)
+    })
+    const graph = createEvidenceGraph()
+    const { container, ctx, page } = setupPage(fetcher, computation, { graph })
+    await renderEvidencePage(container, ctx)
+    page.selected = { kind: 'fact', key: 'analysis_002#/findings', analysisId: 'analysis_002', label: 'findings' }
+    await renderEvidencePage(container, ctx)
+    container.querySelector<HTMLButtonElement>('.evidence-branch-load')!.click()
+    await vi.waitFor(() => expect(container.textContent).toContain('关系加载失败'))
+    expect(fetcher.mock.calls.map(call => String(call[0])).some(url => url.includes('/api/facts/'))).toBe(false)
+  })
+
   it('ignores branch results after the page is left', async () => {
     let finish!: (response: Response) => void
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async input => {

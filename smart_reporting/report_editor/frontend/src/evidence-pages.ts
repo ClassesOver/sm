@@ -1544,6 +1544,8 @@ async function loadNodeRelations(ref: EvidenceObjectRef, ctx: EvidencePageContex
   switch (ref.kind) {
     case 'fact': {
       if (!ref.analysisId) throw new ReportEditorApiError(404, 'source_missing')
+      // 与事实页一致：未登记 factKey 的计算输出只有“分析#指针”身份，不发必然失败的请求。
+      if (ref.key.startsWith(`${ref.analysisId}#`)) throw new ReportEditorApiError(404, 'fact_binding_unavailable')
       const detail = await ctx.client.factDetail(ref.analysisId, ref.key, ctx.signal)
       return assembleFactRelations(ref, detail, await ctx.loadSources())
     }
