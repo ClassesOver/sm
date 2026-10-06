@@ -346,12 +346,16 @@ describe('evidence browser shell', () => {
     // 有原因说明时不再追加笼统的“没有登记来源”；起始页同样说明原因。
     expect(shell.querySelector('.evidence-directory-empty')).toBeNull()
     expect(shell.querySelector('.evidence-start-notice')?.textContent).toBe('当前修订没有来源索引（旧报告或来源未登记）')
-    shell.querySelector<HTMLButtonElement>('.evidence-directory-retry')!.click()
+    const retry = shell.querySelector<HTMLButtonElement>('.evidence-directory-retry')!
+    retry.focus()
+    retry.click()
     await flush()
     await flush()
     expect(computations).toHaveBeenCalledTimes(2)
     expect(notes()).toEqual(['当前修订没有来源索引（旧报告或来源未登记）'])
     expect([...shell.querySelectorAll('.evidence-directory-item')].map((item) => item.textContent)).toEqual(['渠道收入汇总'])
+    // 重试按钮随目录重建被移除；焦点落到恢复后的第一个目录项，不落回页面开头。
+    await vi.waitFor(() => expect(document.activeElement).toBe(shell.querySelector('.evidence-directory-item')))
   })
 
   it('directory search filters items without touching task state', async () => {

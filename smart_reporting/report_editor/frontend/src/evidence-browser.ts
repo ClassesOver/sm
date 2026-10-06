@@ -550,7 +550,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       retry.type = 'button'
       retry.className = 'evidence-directory-retry'
       retry.textContent = '重试'
-      retry.addEventListener('click', () => void loadDirectory())
+      retry.addEventListener('click', retryDirectory)
       p.append(' ', retry)
     }
     return p
@@ -691,6 +691,18 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     return directoryReady
   }
 
+  /**
+   * 目录内“重试”：重新加载会重建目录列表并移除被点击的按钮，焦点会落回页面开头。
+   * 加载结束后焦点仍在目录外时，落到仍可重试的按钮（依旧失败）或第一个目录项（已恢复）。
+   */
+  const retryDirectory = () => {
+    void loadDirectory().then(() => {
+      if (directory.contains(document.activeElement)) return
+      directoryItems.querySelector<HTMLElement>('.evidence-directory-retry, .ui-button, .evidence-directory-item')
+        ?.focus()
+    })
+  }
+
   const loadDirectoryItems = async () => {
     directoryController?.abort()
     const controller = new AbortController()
@@ -767,7 +779,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       retry.type = 'button'
       retry.className = 'ui-button'
       retry.textContent = '重试'
-      retry.addEventListener('click', () => void loadDirectory())
+      retry.addEventListener('click', retryDirectory)
       directoryItems.append(failure, retry)
     }
   }
