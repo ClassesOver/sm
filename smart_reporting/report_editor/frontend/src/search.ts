@@ -190,7 +190,8 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
   })
   window.addEventListener('keydown', (event) => {
     if (isSuspended?.()) return
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+    // Ctrl/⌘+Shift+F 属于专注模式，这里只响应不带 Shift 的查找快捷键。
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'f') {
       event.preventDefault()
       open()
     } else if (event.key === 'Escape' && !panel.hidden) close()
