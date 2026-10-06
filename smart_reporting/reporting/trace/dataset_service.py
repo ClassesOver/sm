@@ -38,7 +38,8 @@ _CURSOR_TTL_SECONDS = 3600
 _CURSOR_MAX_AGE_SECONDS = 24 * 3600
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+")
 # polars \u8bfb\u53d6\u91cd\u590d\u8868\u5934\u65f6\u628a\u540e\u51fa\u73b0\u7684\u540c\u540d\u5217\u6539\u540d\u4e3a\u201c<\u5217\u540d>_duplicated_<n>\u201d\u3002
-_DUPLICATED_COLUMN_PATTERN = re.compile(r"^(?P<base>.+)_duplicated_\d+$")
+# 引号内的 CSV 列名可含换行：用 DOTALL + fullmatch，避免 “.” 不跨行或 “$” 匹配末尾换行前位置。
+_DUPLICATED_COLUMN_PATTERN = re.compile(r"(?P<base>.+)_duplicated_\d+", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ def is_blocked_column(name: str, blocked_columns: frozenset[str]) -> bool:
 
     if name in blocked_columns:
         return True
-    match = _DUPLICATED_COLUMN_PATTERN.match(name)
+    match = _DUPLICATED_COLUMN_PATTERN.fullmatch(name)
     return match is not None and match.group("base") in blocked_columns
 
 
