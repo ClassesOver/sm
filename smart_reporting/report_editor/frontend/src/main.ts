@@ -515,6 +515,8 @@ try {
         })
       },
     },
+    // 证据浏览器覆盖正文时不拦截 Ctrl/⌘+F 与 Esc：搜索面板在覆盖层下方不可见。
+    isSuspended: () => evidenceBrowser.isOpen(),
     applyHighlight: (query, current) => {
       crepe.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx)

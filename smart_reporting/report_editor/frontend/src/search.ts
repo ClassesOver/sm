@@ -9,6 +9,11 @@ export interface SearchControllerOptions {
   navigate?: (direction: 'prev' | 'next') => void
   /** 编辑器文档后端：计数与替换与高亮共用同一组文档位置，优先于纯文本模式。 */
   backend?: SearchBackend
+  /**
+   * 正文被覆盖（如证据浏览器打开）时返回 true：全局快捷键不再打开被遮住的搜索面板，
+   * Ctrl/⌘+F 交还浏览器原生查找，Esc 交给覆盖层处理。
+   */
+  isSuspended?: () => boolean
 }
 
 export interface SearchBackend {
@@ -46,7 +51,7 @@ function replaceOutsideProtected(text: string, query: string, replacement: strin
   return result + text.slice(cursor)
 }
 
-export function createSearchController({ root, getText, replaceText, setQuery, applyHighlight, navigate, backend }: SearchControllerOptions) {
+export function createSearchController({ root, getText, replaceText, setQuery, applyHighlight, navigate, backend, isSuspended }: SearchControllerOptions) {
   const panel = document.createElement('section')
   panel.className = 'search-panel'
   panel.hidden = true
@@ -184,6 +189,7 @@ export function createSearchController({ root, getText, replaceText, setQuery, a
     move(event.shiftKey ? -1 : 1)
   })
   window.addEventListener('keydown', (event) => {
+    if (isSuspended?.()) return
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
       event.preventDefault()
       open()

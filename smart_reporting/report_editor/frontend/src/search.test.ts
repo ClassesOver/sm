@@ -120,6 +120,20 @@ describe('createSearchController', () => {
     expect(controller.panel.hidden).toBe(true)
   })
 
+  it('leaves Ctrl+F and Escape to the overlay while the report is covered', () => {
+    let covered = true
+    const controller = createSearchController({ root, getText: () => markdown, replaceText, isSuspended: () => covered })
+    // 证据浏览器覆盖正文：不打开被遮住的搜索面板（快捷键交还浏览器原生查找）。
+    // 同文件其他用例的控制器仍挂在 window 上，因此只断言本控制器的面板。
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, cancelable: true }))
+    expect(controller.panel.hidden).toBe(true)
+    covered = false
+    controller.open()
+    covered = true
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(controller.panel.hidden).toBe(false)
+  })
+
   it('selects the existing query when the search shortcut is used again', () => {
     const controller = createSearchController({ root, getText: () => markdown, replaceText })
     controller.open()
