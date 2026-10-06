@@ -106,6 +106,8 @@ export function createFocusModeController(
   root: HTMLElement,
   toggle?: HTMLButtonElement,
   exit?: HTMLButtonElement,
+  /** 正文被覆盖层（证据浏览器）遮住时返回 true：快捷键交给覆盖层，不切换被遮住的专注模式。 */
+  isSuspended?: () => boolean,
 ) {
   let previousFocus: HTMLElement | null = null
   const setFocus = (enabled: boolean) => {
@@ -136,6 +138,7 @@ export function createFocusModeController(
   toggle?.addEventListener('click', () => setFocus(!root.classList.contains('focus-mode')))
   exit?.addEventListener('click', () => setFocus(false))
   const listener = (event: KeyboardEvent) => {
+    if (isSuspended?.()) return
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
       event.preventDefault()
       setFocus(!root.classList.contains('focus-mode'))

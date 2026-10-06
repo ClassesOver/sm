@@ -218,6 +218,20 @@ describe('report editor enhancements', () => {
     expect(preview.dialog.querySelector('img')?.getAttribute('src')).toBe('new-chart.png')
   })
 
+  it('leaves focus-mode shortcuts to the evidence overlay while it covers the report', () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    let covered = false
+    const controller = createFocusModeController(root, undefined, undefined, () => covered)
+    controller.setFocus(true)
+    covered = true
+    // 证据浏览器内按 Esc 关闭其弹层，不应同时退出被遮住的专注模式。
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(root.classList).toContain('focus-mode')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, shiftKey: true }))
+    expect(root.classList).toContain('focus-mode')
+    controller.dispose()
+  })
+
   it('enters focus mode with a shortcut and exits with Escape', () => {
     const root = document.querySelector<HTMLElement>('#app')!
     const editor = document.createElement('textarea')

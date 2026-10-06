@@ -104,7 +104,9 @@ shell.shortcuts.addEventListener('click', async () => {
   panel.open()
 })
 const preferences = createEditorPreferenceController(root, basePath)
-createFocusModeController(root, shell.focus, shell.focusExit)
+// 证据浏览器在下方异步创建；创建前没有覆盖层，判断恒为 false。
+let evidenceCovering = () => false
+createFocusModeController(root, shell.focus, shell.focusExit, () => evidenceCovering())
 const exportPanel = createExportPanel()
 const sharePanel = createSharePanel(root, () => client.share())
 shell.share.addEventListener('click', () => sharePanel.open())
@@ -297,6 +299,7 @@ const evidenceBrowser = createEvidenceBrowser(root, {
   },
   getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
 })
+evidenceCovering = () => evidenceBrowser.isOpen()
 shell.sources.addEventListener('click', () => evidenceBrowser.open())
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
