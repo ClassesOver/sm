@@ -1577,10 +1577,27 @@ describe('计算页', () => {
     expect(execution).not.toContain('[object Object]')
   })
 
+  it('lists registered preprocessing notes as readable text', async () => {
+    const detail = { ...COMPUTATION_DETAIL, preprocessing: ['按院区筛选门诊', '缺失期间按 0 补齐'] }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/computations/')) return json(detail)
+      if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
+      throw new Error(`unexpected ${url}`)
+    }) as unknown as typeof fetch
+    const { container, ctx } = setupPage(fetcher, { kind: 'computation', key: 'comp-001', label: 'sum' })
+    await renderEvidencePage(container, ctx)
+    expect([...container.querySelectorAll('.evidence-computation-preprocessing li')].map((li) => li.textContent))
+      .toEqual(['按院区筛选门诊', '缺失期间按 0 补齐'])
+    expect([...container.querySelectorAll('.evidence-computation-subhead')].map((h) => h.textContent))
+      .toEqual(['计算参数', '预处理说明'])
+  })
+
   it('renders method, parameters, verification labels and output facts', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input)
-      if (url.includes('/api/computations/')) return json(COMPUTATION_DETAIL)
+      // 后端未登记预处理时返回空清单。
+      if (url.includes('/api/computations/')) return json({ ...COMPUTATION_DETAIL, preprocessing: [] })
       if (url.endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
       throw new Error(`unexpected ${url}`)
     }) as unknown as typeof fetch
@@ -1596,6 +1613,8 @@ describe('计算页', () => {
     // 参数块是纯 JSON，标题在代码块之外。
     expect(JSON.parse(container.querySelector('.evidence-computation-parameters')!.textContent!)).toEqual({ column: 'revenue' })
     expect(container.querySelector('.evidence-computation-subhead')?.textContent).toBe('计算参数')
+    // 未登记预处理（后端返回空清单）时不显示空的 “[]” 块。
+    expect(container.textContent).not.toContain('预处理')
     expect(container.textContent).toContain('python 3.12')
     expect(container.textContent).toContain('数值已核对')
     expect(container.textContent).toContain('具备复算条件')

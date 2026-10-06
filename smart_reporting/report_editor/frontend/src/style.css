@@ -4112,6 +4112,9 @@ button {
 .evidence-computation > p { margin: 0 0 12px; }
 .evidence-computation-parameters { max-height: 220px; margin: 0 0 14px; padding: 12px; border: 1px solid #e1eaf1; border-left: 3px solid #9bb9ce; border-radius: 6px; background: #f8fafc; color: #33485c; font-size: 12px; line-height: 1.65; white-space: pre; overflow: auto; overflow-wrap: normal; }
 .evidence-computation-parameters:focus-visible { outline: 2px solid #007ea7; outline-offset: 2px; }
+/* 预处理是人读说明：按条目符号列出，不以代码块呈现。 */
+.evidence-computation-preprocessing { margin: 0 0 14px; padding-left: 20px; color: #33485c; }
+.evidence-computation-preprocessing > li { padding: 2px 0; }
 .evidence-fact-inputs,
 .evidence-computation-outputs,
 .evidence-subject-links { margin: 0; padding: 0; list-style: none; }

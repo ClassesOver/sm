@@ -2180,8 +2180,26 @@ async function renderComputationPage(container: HTMLElement, ctx: EvidencePageCo
     section.append(heading, block)
   }
   appendJsonBlock('计算参数', detail.parameters)
-  if (detail.preprocessing !== undefined && detail.preprocessing !== null) {
-    appendJsonBlock('预处理参数', detail.preprocessing)
+  // 预处理是登记的人读说明（契约 preprocessing: tuple[str]）：按条列出，空清单不显示；
+  // 非清单的旧数据仍以 JSON 如实呈现。
+  const preprocessing = detail.preprocessing
+  if (Array.isArray(preprocessing)) {
+    const notes = preprocessing.filter((note) => note !== null && note !== undefined && String(note).trim())
+    if (notes.length) {
+      const subhead = document.createElement('h2')
+      subhead.className = 'evidence-computation-subhead'
+      subhead.textContent = '预处理说明'
+      const list = document.createElement('ul')
+      list.className = 'evidence-computation-preprocessing'
+      for (const note of notes) {
+        const li = document.createElement('li')
+        li.textContent = typeof note === 'string' ? note : JSON.stringify(note)
+        list.append(li)
+      }
+      section.append(subhead, list)
+    }
+  } else if (preprocessing !== undefined && preprocessing !== null) {
+    appendJsonBlock('预处理说明', preprocessing)
   }
   const heading = document.createElement('h2')
   heading.textContent = '输出事实'

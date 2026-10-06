@@ -641,3 +641,5 @@ Firefox 核心 3D 当前源码复核（2026-10-04）：默认 3D、2D/3D 切换�
 逐模块审查第三轮（2026-10-06，记录不改）：`drilldown_builder` 比率下钻的期望值取派生事实 `value`（原始比值，与下钻 numerator/denominator 计算一致），比率与 sum 维度均要求语义层声明 additiveAcross，属保守设计；`chart_transform` 排序键对空串会抛 ValueError（`_as_number` 已把空串视为缺值），但该模块仅测试使用、无生产调用，未改；`index_builder` 句柄/血缘七元组核对与补充证据事实文件登记一致；`service.py` 来源方法的特性开关、退休修订（`trace_sources` 允许退休并标 `snapshot_expired`，明细接口拒绝）一致；3D 关系图标签/图标布局属作者已验证几何范围（小图 3D 偶发遮挡见前述待决项）。本轮无代码改动。
 
 重复表头受限列：列名含换行（2026-10-06，PR #11 评审）：Codex 评审指出 `_DUPLICATED_COLUMN_PATTERN` 的 `.` 不跨行。引号内含换行的列名（如 `"sal\nary"`）重复时，polars 实测改名为 `sal\nary_duplicated_0`，原正则匹配不到，受限列的副本仍会出现在可见列中。现改为 `re.DOTALL` + `fullmatch`（同时避免 `$` 在末尾换行前命中）。新增后端测试（修复前失败）；后端血缘与报告编辑器 trace 套件通过。
+
+计算页预处理说明（2026-10-06，逐文件审查 · evidence-pages）：契约 `ComputationRecordV1.preprocessing` 是人读说明清单（`tuple[str]`，筛选、join、期间对齐等），后端始终返回清单；计算页却只排除 `null/undefined`，以“预处理参数”标题输出 JSON 代码块——未登记预处理时显示一个空的 `[]` 块，有说明时也以代码形式呈现。现按条目列为“预处理说明”，空清单不显示；非清单的旧数据仍以 JSON 如实呈现。同文件复核：事实页引用状态与差额、计算页参数/输出、快照页列窗口与游标失效（错误页已有“重新打开第一页”）均无问题。新增/调整断言（修复前 2 项失败）；证据浏览器定向测试 187 项、构建与预算通过；Chromium 下详情样式、详情链接 fixture 回放通过。
