@@ -789,8 +789,9 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 14,
           y: Math.round(item.point.y) - 14, width: 28, height: 28 }))
         // 实际绘制的图标为14px；28px 留白区无零碰撞解时，先保证名称不压住可见图标，再比较留白。
-        const visibleIconBounds = items.map(item => ({ x: Math.round(item.point.x) - 7,
-          y: Math.round(item.point.y) - 7, width: 14, height: 14 }))
+        // 可见图标每边再留 2px：相机阻尼末尾的亚像素差异会让“恰好贴边”的方案在绘制时压住 1px。
+        const visibleIconBounds = items.map(item => ({ x: Math.round(item.point.x) - 9,
+          y: Math.round(item.point.y) - 9, width: 18, height: 18 }))
         const iconOverlap = (drawn: Array<{ x: number; y: number; width: number; height: number }>,
           icons: Array<{ x: number; y: number; width: number; height: number }>) =>
           totalCollisionArea([...drawn, ...icons]) - totalCollisionArea(drawn) - totalCollisionArea(icons)
