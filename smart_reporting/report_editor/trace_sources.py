@@ -872,9 +872,10 @@ class ReportEditorTraceService:
                     label_to_key = {}
                 draft_header, draft_rows = _rows(draft_body)
                 # 定位比软校验更保守：重复标签/列名不能选择首个匹配冒充唯一身份。
+                # 已提交正文读取失败（committed 为 None）时视为非唯一，只做软校验、不给定位。
                 unique_block = all(
                     sum(match.group(1) == trace.table_id for match in table_block_pattern.finditer(markdown)) == 1
-                    for markdown in (committed, draft_markdown)
+                    for markdown in (committed or "", draft_markdown)
                 )
                 origin_labels = [row[0] for row in origin_rows if row]
                 draft_labels = [row[0] for row in draft_rows if row]
