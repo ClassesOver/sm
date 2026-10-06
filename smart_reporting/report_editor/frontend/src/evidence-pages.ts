@@ -711,7 +711,10 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     // 使用组件现有力布局为名称留出空间；预热新增节点，避免立即预览时缓存拥挤的初始坐标。
     instance.d3Force('link').distance(70)
     instance.d3Force('charge').strength(-100)
-    instance.warmupTicks(100).graphData({ nodes: restoredNodes, links: linkData })
+    // 组件默认 d3AlphaMin=0：预热后按动画帧继续推进直到 15 秒挂钟冷却，最终坐标随帧率变化，
+    // 同一关系图每次布局不同（名称避障结果随之漂移）。改为预热阶段同步推进到收敛
+    // （300 步时 alpha≈0.001，即 d3 默认收敛阈值），不再按帧冷却，同一输入得到同一布局。
+    instance.warmupTicks(300).cooldownTicks(0).graphData({ nodes: restoredNodes, links: linkData })
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const cameraDuration = () => reducedMotion.matches ? 0 : 180
     const applyMotionPreference = () => { instance.controls().staticMoving = reducedMotion.matches }
@@ -785,7 +788,16 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
         // 28px固定图标区域与布局障碍保持一致；名称与自身图标的正常锚点相交不计遮挡。
         const iconBounds = items.map(item => ({ x: Math.round(item.point.x) - 14,
           y: Math.round(item.point.y) - 14, width: 28, height: 28 }))
+        // 实际绘制的图标为14px；28px 留白区无零碰撞解时，先保证名称不压住可见图标，再比较留白。
+        // 可见图标每边再留 2px：相机阻尼末尾的亚像素差异会让“恰好贴边”的方案在绘制时压住 1px。
+        const visibleIconBounds = items.map(item => ({ x: Math.round(item.point.x) - 9,
+          y: Math.round(item.point.y) - 9, width: 18, height: 18 }))
+        const iconOverlap = (drawn: Array<{ x: number; y: number; width: number; height: number }>,
+          icons: Array<{ x: number; y: number; width: number; height: number }>) =>
+          totalCollisionArea([...drawn, ...icons]) - totalCollisionArea(drawn) - totalCollisionArea(icons)
+            - drawn.reduce((sum, rectangle, index) => sum + totalCollisionArea([rectangle, icons[index]]), 0)
         let bestNameCollision = Infinity
+        let bestVisibleIconCollision = Infinity
         let bestIconCollision = Infinity
         let bestPadding = Infinity
         // 节点、外侧和画布两侧起点均由原生策略避让；复用组件总碰撞计分。
@@ -808,14 +820,16 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
             const drawn = candidate.map(rectangle => ({ ...rectangle,
               x: rectangle.x + 3, y: rectangle.y + 3, width: rectangle.width - 6, height: rectangle.height - 6 }))
             const nameCollision = totalCollisionArea(drawn)
-            const iconCollision = totalCollisionArea([...drawn, ...iconBounds])
-              - nameCollision - totalCollisionArea(iconBounds)
-              - drawn.reduce((sum, rectangle, index) => sum + totalCollisionArea([rectangle, iconBounds[index]]), 0)
-            if (nameCollision < bestNameCollision
-              || nameCollision === bestNameCollision && iconCollision < bestIconCollision
-              || nameCollision === bestNameCollision && iconCollision === bestIconCollision && padding < bestPadding) {
+            const visibleIconCollision = iconOverlap(drawn, visibleIconBounds)
+            const iconCollision = iconOverlap(drawn, iconBounds)
+            const better = nameCollision !== bestNameCollision ? nameCollision < bestNameCollision
+              : visibleIconCollision !== bestVisibleIconCollision ? visibleIconCollision < bestVisibleIconCollision
+                : iconCollision !== bestIconCollision ? iconCollision < bestIconCollision
+                  : padding < bestPadding
+            if (better) {
               rectangles = candidate
               bestNameCollision = nameCollision
+              bestVisibleIconCollision = visibleIconCollision
               bestIconCollision = iconCollision
               bestPadding = padding
             }
