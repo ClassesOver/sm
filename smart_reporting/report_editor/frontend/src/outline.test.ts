@@ -215,6 +215,14 @@ describe('createOutlineController', () => {
     const second = document.querySelectorAll<HTMLButtonElement>('.outline-link')[1]
     second.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
     expect(replaceMarkdown).toHaveBeenCalledWith('# B\nB\n# A\nA\n')
+    // 与拖拽一致提供撤销；目录按新顺序重建后，焦点留在移动后的章节上，可继续用方向键移动。
+    expect(document.querySelector<HTMLButtonElement>('.outline-undo')!.hidden).toBe(false)
+    controller.update([
+      { id: 'b', level: 1, text: 'B' },
+      { id: 'a', level: 1, text: 'A' },
+    ])
+    expect(document.activeElement).toBe(document.querySelectorAll<HTMLButtonElement>('.outline-link')[0])
+    expect(document.activeElement?.textContent).toBe('B')
   })
 
   it('supports direct drag reorder without a sorting mode button', () => {

@@ -41,6 +41,25 @@ describe('copyText', () => {
     expect(execCommand).toHaveBeenCalledWith('copy')
   })
 
+  it('returns focus to the copy control after the selection fallback', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    document.execCommand = vi.fn().mockReturnValue(true)
+    // 与 Chromium 一致：select() 会把焦点移到临时文本框，移除后焦点落回 body。
+    const select = HTMLTextAreaElement.prototype.select
+    vi.spyOn(HTMLTextAreaElement.prototype, 'select').mockImplementation(function (this: HTMLTextAreaElement) {
+      this.focus()
+      select.call(this)
+    })
+    const button = document.createElement('button')
+    document.body.append(button)
+    button.focus()
+
+    await copyText('https://reports.test/d')
+
+    expect(document.activeElement).toBe(button)
+    button.remove()
+  })
+
   it('rejects when both paths fail', async () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
 

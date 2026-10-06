@@ -181,6 +181,24 @@ describe('createHistoryController', () => {
     expect(loadRevision).toHaveBeenCalledWith(2)
   })
 
+  it('explains a failed revision load instead of silently keeping the old preview', async () => {
+    const loadRevision = vi.fn(async (revision: number) => {
+      if (revision === 2) throw new TypeError('network')
+      return '# 旧\n'
+    })
+    const controller = createHistoryController(document.body, vi.fn(), loadRevision)
+    controller.replace([
+      { label: 'Revision 1', markdown: '', revision: 1 },
+      { label: 'Revision 2', markdown: '', revision: 2 },
+    ])
+    controller.open()
+    document.querySelector<HTMLButtonElement>('.history-item:last-child')!.click()
+    await vi.waitFor(() =>
+      expect(document.querySelector('.history-diff-error')?.textContent).toContain('版本内容加载失败'))
+    // 未加载成功的版本不能被恢复。
+    expect(document.querySelector<HTMLButtonElement>('.history-restore')!.hidden).toBe(true)
+  })
+
   it('shows revision source, creation time, and note', () => {
     const controller = createHistoryController(document.body)
     controller.replace([{

@@ -2,8 +2,9 @@ import { createModal } from './modal'
 
 export interface PreflightWarning { code: string; label: string; target?: string }
 // 正式章节标题（h2-h4）由服务端编号映射锁定，导出时逐项核对级别、编号、标题与顺序。
-export function formalHeadings(markdown: string): string[] {
-  const headings: string[] = []
+/** 代码块（``` 或 ~~~ 围栏）之外的行；代码中的 `#` 注释不是章节标题。 */
+function linesOutsideFences(markdown: string): string[] {
+  const lines: string[] = []
   let fence: string | null = null
   for (const line of markdown.split('\n')) {
     const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1]?.[0]
@@ -11,7 +12,15 @@ export function formalHeadings(markdown: string): string[] {
       fence = fence ? null : marker
       continue
     }
-    const heading = fence ? null : /^(#{2,4})\s+(.*?)\s*#*\s*$/.exec(line)
+    if (!fence) lines.push(line)
+  }
+  return lines
+}
+
+export function formalHeadings(markdown: string): string[] {
+  const headings: string[] = []
+  for (const line of linesOutsideFences(markdown)) {
+    const heading = /^(#{2,4})\s+(.*?)\s*#*\s*$/.exec(line)
     if (heading) headings.push(`${heading[1].length}|${heading[2].trim()}`)
   }
   return headings
@@ -34,8 +43,9 @@ export function reportPreflight(
     }
   }
   if (!markdown.trim()) warnings.push({ code: 'empty', label: '报告内容为空' })
-  if (!/^#{1,6}\s+\S/m.test(markdown)) warnings.push({ code: 'heading', label: '尚未创建章节标题', target: '.editor-surface' })
-  const emptyHeadings = markdown.split('\n').filter((line) => /^#{1,6}\s*$/.test(line)).length
+  const prose = linesOutsideFences(markdown)
+  if (!prose.some((line) => /^#{1,6}\s+\S/.test(line))) warnings.push({ code: 'heading', label: '尚未创建章节标题', target: '.editor-surface' })
+  const emptyHeadings = prose.filter((line) => /^#{1,6}\s*$/.test(line)).length
   if (emptyHeadings) warnings.push({ code: 'empty-heading', label: `${emptyHeadings} 个章节标题为空`, target: 'h1, h2, h3, h4, h5, h6' })
   const missingAlt = Array.from(editor.querySelectorAll<HTMLImageElement>('img')).filter(
     (image) => !image.alt.trim(),

@@ -939,10 +939,25 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     persist()
   }
 
+  /**
+   * 证据浏览器覆盖应用栏以下的全部区域，但被覆盖的正文、目录与交互图表覆盖层仍可获得键盘焦点：
+   * Tab 会把焦点移到看不见的编辑器里，输入也会落进被遮住的正文。打开时把被覆盖区域设为 inert，
+   * 应用栏、证据浏览器本身与弹窗（modal-overlay）保持可用；关闭时恢复。
+   */
+  const setCoveredInert = (covered: boolean) => {
+    for (const child of Array.from(root.children)) {
+      if (child === shell || !(child instanceof HTMLElement)) continue
+      if (child.classList.contains('app-bar') || child.classList.contains('modal-overlay')) continue
+      child.inert = covered
+    }
+    document.querySelectorAll<HTMLElement>('.interactive-chart').forEach((chart) => { chart.inert = covered })
+  }
+
   const showShell = () => {
     if (!isOpen) options.onOpen?.()
     isOpen = true
     shell.hidden = false
+    setCoveredInert(true)
     if (state.store.active === REPORT_TAB && state.store.tasks.length) {
       const latest = state.store.tasks.reduce((a, b) => (a.used > b.used ? a : b))
       state.switchTask(latest.key)
@@ -958,6 +973,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     isOpen = false
     pageController?.abort()
     shell.hidden = true
+    // 先解除 inert，随后 onReturnToReport 才能把焦点交还正文。
+    setCoveredInert(false)
     setDirectoryOpen(false)
     closePickers()
     renderTabs()

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { configureSelectionAISuggestions, selectionAIProvider } from './ai'
+import { configureSelectionAISuggestions, resolveSelectionAIAction, selectionAIProvider } from './ai'
 
 describe('selectionAIProvider', () => {
   it.each([
@@ -47,6 +47,19 @@ describe('selectionAIProvider', () => {
       'professional',
       controller.signal,
     )
+  })
+
+  it('maps typed keywords that pick exactly one preset to that preset action', async () => {
+    // 指令框有输入时默认选中“自定义要求”行：输入“润色”后直接回车提交的是原文。
+    expect(resolveSelectionAIAction('润色')).toBe('polish')
+    expect(resolveSelectionAIAction(' 专业报告语气 ')).toBe('professional')
+    expect(resolveSelectionAIAction('精简')).toBe('shorten')
+    expect(resolveSelectionAIAction('把它写长一点')).toBeNull()
+    const streamRewrite = vi.fn(async function* () { yield '改写' })
+    const provider = selectionAIProvider({ streamRewrite })
+    const signal = new AbortController().signal
+    await Array.fromAsync(provider({ document: '# 报告', selection: '原始正文', instruction: '润色' }, signal))
+    expect(streamRewrite).toHaveBeenCalledWith('原始正文', 'polish', signal)
   })
 
   it('exposes only the four report rewrite actions', () => {

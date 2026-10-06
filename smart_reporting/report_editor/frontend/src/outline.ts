@@ -96,6 +96,9 @@ export function createOutlineController({
   let currentItems: OutlineItem[] = []
   let hasRendered = false
   let previousMarkdown: string | null = null
+  // 键盘移动章节后目录会整体重建，原按钮被移除；记下移动后的位置，重建后把焦点还给它，
+  // 否则键盘用户只能移动一步，焦点就落回页面开头。
+  let pendingFocusIndex: number | null = null
   const undo = document.createElement('button')
   undo.type = 'button'; undo.className = 'outline-undo'; undo.textContent = '撤销排序'; undo.hidden = true
   container.querySelector('.outline-heading')?.append(undo)
@@ -220,7 +223,11 @@ export function createOutlineController({
             const target = index + step
             if (target < 0 || target >= items.length || items[target].level !== item.level) return
             event.preventDefault()
-            replaceMarkdown(reorderMarkdownSections(getMarkdown(), index, target))
+            // 与拖拽排序一致：保留排序前正文并提供“撤销排序”。
+            previousMarkdown = getMarkdown()
+            pendingFocusIndex = target
+            replaceMarkdown(reorderMarkdownSections(previousMarkdown, index, target))
+            undo.hidden = false
           })
           if (getMarkdown && replaceMarkdown) {
             button.addEventListener('dragstart', (event) => {
@@ -243,6 +250,10 @@ export function createOutlineController({
           return button
         }),
       )
+      if (pendingFocusIndex !== null) {
+        list.querySelectorAll<HTMLButtonElement>('.outline-link')[pendingFocusIndex]?.focus()
+        pendingFocusIndex = null
+      }
       container.classList.toggle('is-empty', items.length === 0)
       let count = container.querySelector<HTMLElement>('.outline-count')
       if (!count) { count = document.createElement('div'); count.className = 'outline-count'; container.append(count) }

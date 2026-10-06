@@ -87,15 +87,17 @@ export function createNetworkStatusController(label: HTMLElement, onReconnect: (
 export function installEditorShortcuts(actions: {
   save: () => void
   exportPdf: () => void
+  /** 导出或恢复进行中（按钮已禁用、显示阻塞遮罩）时返回 true：快捷键只吞掉默认行为，不再发起操作。 */
+  isBlocked?: () => boolean
 }) {
   const listener = (event: KeyboardEvent) => {
     if (!(event.ctrlKey || event.metaKey)) return
     if (event.key.toLowerCase() === 's') {
       event.preventDefault()
-      actions.save()
+      if (!actions.isBlocked?.()) actions.save()
     } else if (event.shiftKey && event.key.toLowerCase() === 'e') {
       event.preventDefault()
-      actions.exportPdf()
+      if (!actions.isBlocked?.()) actions.exportPdf()
     }
   }
   window.addEventListener('keydown', listener)
@@ -106,6 +108,8 @@ export function createFocusModeController(
   root: HTMLElement,
   toggle?: HTMLButtonElement,
   exit?: HTMLButtonElement,
+  /** 正文被覆盖层（证据浏览器）遮住时返回 true：快捷键交给覆盖层，不切换被遮住的专注模式。 */
+  isSuspended?: () => boolean,
 ) {
   let previousFocus: HTMLElement | null = null
   const setFocus = (enabled: boolean) => {
@@ -136,6 +140,7 @@ export function createFocusModeController(
   toggle?.addEventListener('click', () => setFocus(!root.classList.contains('focus-mode')))
   exit?.addEventListener('click', () => setFocus(false))
   const listener = (event: KeyboardEvent) => {
+    if (isSuspended?.()) return
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
       event.preventDefault()
       setFocus(!root.classList.contains('focus-mode'))

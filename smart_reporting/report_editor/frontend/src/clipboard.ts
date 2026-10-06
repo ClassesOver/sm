@@ -1,5 +1,7 @@
 function copyWithSelection(text: string): boolean {
   if (typeof document.execCommand !== 'function') return false
+  // 选区复制需要临时聚焦隐藏文本框；复制后把焦点还给原控件（如“复制链接”按钮），不落回页面开头。
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   const textarea = document.createElement('textarea')
   textarea.value = text
   textarea.setAttribute('readonly', '')
@@ -15,6 +17,7 @@ function copyWithSelection(text: string): boolean {
     copied = false
   }
   textarea.remove()
+  previousFocus?.focus({ preventScroll: true })
   return copied
 }
 

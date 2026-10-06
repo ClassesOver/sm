@@ -104,7 +104,9 @@ shell.shortcuts.addEventListener('click', async () => {
   panel.open()
 })
 const preferences = createEditorPreferenceController(root, basePath)
-createFocusModeController(root, shell.focus, shell.focusExit)
+// 证据浏览器在下方异步创建；创建前没有覆盖层，判断恒为 false。
+let evidenceCovering = () => false
+createFocusModeController(root, shell.focus, shell.focusExit, () => evidenceCovering())
 const exportPanel = createExportPanel()
 const sharePanel = createSharePanel(root, () => client.share())
 shell.share.addEventListener('click', () => sharePanel.open())
@@ -297,6 +299,7 @@ const evidenceBrowser = createEvidenceBrowser(root, {
   },
   getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
 })
+evidenceCovering = () => evidenceBrowser.isOpen()
 shell.sources.addEventListener('click', () => evidenceBrowser.open())
 const telemetry = createTelemetryReporter((payload) => client.reportEvent(payload))
 const loadStartedAt = performance.now()
@@ -515,6 +518,8 @@ try {
         })
       },
     },
+    // 证据浏览器覆盖正文时不拦截 Ctrl/⌘+F 与 Esc：搜索面板在覆盖层下方不可见。
+    isSuspended: () => evidenceBrowser.isOpen(),
     applyHighlight: (query, current) => {
       crepe.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx)
@@ -706,14 +711,9 @@ try {
       await saveNow()
       status(`正在生成 ${formatLabel}`, 'busy')
       blockUI(`正在生成 ${formatLabel}，渲染与验收可能需要几分钟，期间请勿关闭页面…`)
-      const { note = '', ...settings } = pendingExportSettings ?? {
-        cover: false,
-        toc: true,
-        headerFooter: true,
-        pageNumbers: true,
-        sources: true,
-        note: '',
-      }
+      // 未在本次会话确认过设置时，以面板当前状态为准（含上次保存的偏好与来源功能开关），
+      // 不使用另一份写死的默认值，避免面板显示与实际导出不一致。
+      const { note = '', ...settings } = pendingExportSettings ?? exportSettingsPanel.read()
       const result = await client.export(sha256, settings, note)
       unblockUI()
       void telemetry.record({
@@ -743,6 +743,9 @@ try {
   installEditorShortcuts({
     save: saveInBackground,
     exportPdf: () => void exportFormat('pdf'),
+    // 与按钮禁用状态一致：导出/恢复进行中再按快捷键会并发第二个任务，其失败的 finally
+    // 会提前撤掉阻塞遮罩并重新启用按钮。
+    isBlocked: () => shell.exportPdf.disabled,
   })
   window.addEventListener('beforeunload', (event) => {
     if (saveState?.shouldWarnBeforeUnload) event.preventDefault()

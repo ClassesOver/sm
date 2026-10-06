@@ -284,8 +284,24 @@ export function createHistoryController(
       populateComparisonControls()
       updateItemSelection()
     }
+    // 版本内容加载失败（网络或服务异常）时如实提示，不静默停留在上一次对比，也不允许恢复未加载的版本。
+    const failed = () => {
+      if (sequence !== clickSequence) return
+      selected = null
+      previewLabel.textContent = comparisonSnapshot.label
+      const message = document.createElement('p')
+      message.className = 'history-diff-error'
+      message.setAttribute('role', 'alert')
+      message.textContent = '版本内容加载失败，请重新选择该版本重试'
+      diff.replaceChildren(message)
+      previewEmpty.hidden = true
+      previewContent.hidden = false
+      restoreButton.hidden = true
+      populateComparisonControls()
+      updateItemSelection()
+    }
     if (typeof before === 'string' && typeof after === 'string') apply(before, after)
-    else void Promise.all([before, after]).then(([previous, current]) => apply(previous, current))
+    else void Promise.all([before, after]).then(([previous, current]) => apply(previous, current), failed)
   }
 
   const render = () => {
