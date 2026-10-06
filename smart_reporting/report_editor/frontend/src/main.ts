@@ -711,14 +711,9 @@ try {
       await saveNow()
       status(`正在生成 ${formatLabel}`, 'busy')
       blockUI(`正在生成 ${formatLabel}，渲染与验收可能需要几分钟，期间请勿关闭页面…`)
-      const { note = '', ...settings } = pendingExportSettings ?? {
-        cover: false,
-        toc: true,
-        headerFooter: true,
-        pageNumbers: true,
-        sources: true,
-        note: '',
-      }
+      // 未在本次会话确认过设置时，以面板当前状态为准（含上次保存的偏好与来源功能开关），
+      // 不使用另一份写死的默认值，避免面板显示与实际导出不一致。
+      const { note = '', ...settings } = pendingExportSettings ?? exportSettingsPanel.read()
       const result = await client.export(sha256, settings, note)
       unblockUI()
       void telemetry.record({
