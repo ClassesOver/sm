@@ -538,6 +538,13 @@ describe('evidence browser shell', () => {
     expect(press(back, 'ArrowRight')).toBe(true)
     await flush()
     expect(current()).toBe('渠道收入汇总')
+    // 焦点在页签上时 Alt+← 仍是后退，不被页签栏当作“移到上一个页签”。
+    const activeTab = shell.querySelector<HTMLButtonElement>('.evidence-tab[aria-selected="true"]')!
+    activeTab.focus()
+    expect(press(activeTab, 'ArrowLeft')).toBe(true)
+    await flush()
+    expect(current()).toBe('华东营收')
+    expect(document.activeElement).not.toBe(shell.querySelector('.evidence-tab-report'))
   })
 
   it('breadcrumb navigation truncates the path and back restores it', async () => {

@@ -419,6 +419,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
 
   // 手动激活：方向键只移动焦点，Enter/Space 才激活；Delete 关闭证据页签。
   tabList.addEventListener('keydown', (event) => {
+    // 带修饰键的按键（如 Alt+←/→ 后退/前进）交给外层快捷键处理，不当作页签内移动。
+    if (event.altKey || event.ctrlKey || event.metaKey) return
     const tabs = [...tabList.querySelectorAll<HTMLButtonElement>('.evidence-tab')]
     const focused = tabs.indexOf(document.activeElement as HTMLButtonElement)
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
