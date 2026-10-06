@@ -565,6 +565,30 @@ async def test_validate_tables_preserves_binding_after_editor_serialization(tmp_
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_validate_tables_tolerate_unreadable_committed_markdown(tmp_path: Path) -> None:
+    """已提交正文读取失败时表格重判按保守路径完成（不给定位），不因 None 崩溃。"""
+    editor, grants, context = await _make_editor_with_subject(tmp_path)
+    raw, _ = await grants.issue(context)
+    _token, session = await grants.exchange(raw)
+    original = editor.trace._workspace.read_limited_regular_file
+
+    async def failing_markdown(thread_id, path, *, max_bytes):
+        if path == context.markdown_path:
+            raise OSError("committed markdown unavailable")
+        return await original(thread_id, path, max_bytes=max_bytes)
+
+    editor.trace._workspace.read_limited_regular_file = failing_markdown
+    draft = f"# 报告\n\n{_table_markdown([['本期', '3,600'], ['上期', '3,600']])}\n"
+    result = await editor.trace_validate(
+        context, session, draft, hashlib.sha256(draft.encode()).hexdigest()
+    )
+    # 没有已提交正文就无法把行标签映射到冻结行键：单元格按 unbound 计，不给定位。
+    assert result["tables"][0]["locations"] == []
+    assert result["tableSummary"]["unbound"] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_validate_tables_flag_edited_value_but_keep_other_cells(tmp_path: Path) -> None:
     edited = _table_markdown([["本期", "3,600"], ["上期", "9,999"]])
     result = await _validate_tables(tmp_path, f"# 报告\n\n{edited}\n")

@@ -266,12 +266,17 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
 
   const closeTab = (key: string) => {
     const wasActive = state.store.active === key
+    // 被关闭的页签或其关闭按钮正持有焦点；重绘后焦点会落回页面开头，改为回到当前选中页签。
+    const focusInTabs = tabList.contains(document.activeElement)
     state.closeTask(key)
     if (state.store.active === REPORT_TAB) {
       hideShell()
       return
     }
     renderAll()
+    if (focusInTabs && !tabList.contains(document.activeElement)) {
+      tabList.querySelector<HTMLButtonElement>('.evidence-tab[aria-selected="true"]')?.focus()
+    }
     if (wasActive) announce(`已切换到核对任务 ${state.currentTask()?.root.label ?? ''}`)
   }
 
@@ -414,6 +419,8 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
 
   // 手动激活：方向键只移动焦点，Enter/Space 才激活；Delete 关闭证据页签。
   tabList.addEventListener('keydown', (event) => {
+    // 带修饰键的按键（如 Alt+←/→ 后退/前进）交给外层快捷键处理，不当作页签内移动。
+    if (event.altKey || event.ctrlKey || event.metaKey) return
     const tabs = [...tabList.querySelectorAll<HTMLButtonElement>('.evidence-tab')]
     const focused = tabs.indexOf(document.activeElement as HTMLButtonElement)
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -543,7 +550,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       retry.type = 'button'
       retry.className = 'evidence-directory-retry'
       retry.textContent = '重试'
-      retry.addEventListener('click', () => void loadDirectory())
+      retry.addEventListener('click', retryDirectory)
       p.append(' ', retry)
     }
     return p
@@ -684,6 +691,18 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     return directoryReady
   }
 
+  /**
+   * 目录内“重试”：重新加载会重建目录列表并移除被点击的按钮，焦点会落回页面开头。
+   * 加载结束后焦点仍在目录外时，落到仍可重试的按钮（依旧失败）或第一个目录项（已恢复）。
+   */
+  const retryDirectory = () => {
+    void loadDirectory().then(() => {
+      if (directory.contains(document.activeElement)) return
+      directoryItems.querySelector<HTMLElement>('.evidence-directory-retry, .ui-button, .evidence-directory-item')
+        ?.focus()
+    })
+  }
+
   const loadDirectoryItems = async () => {
     directoryController?.abort()
     const controller = new AbortController()
@@ -760,7 +779,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       retry.type = 'button'
       retry.className = 'ui-button'
       retry.textContent = '重试'
-      retry.addEventListener('click', () => void loadDirectory())
+      retry.addEventListener('click', retryDirectory)
       directoryItems.append(failure, retry)
     }
   }

@@ -28,6 +28,7 @@ from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_BUDGETS_V1
 from ..reporting.trace.dataset_service import (
     TraceDatasetFile,
+    is_blocked_column,
     read_csv_header,
     safe_download_filename,
 )
@@ -104,7 +105,7 @@ def _validate_masked_columns_policy(
             "request_invalid", "masked_columns 策略包含不存在的列。"
         )
     # 受限列强制掩码：派生导出不能成为读取受限列的旁路。
-    forced = [name for name in header if name in blocked_columns]
+    forced = [name for name in header if is_blocked_column(name, blocked_columns)]
     target = list(dict.fromkeys([*columns, *forced]))
     if not target:
         raise ReportingError(
@@ -240,10 +241,20 @@ class TraceDerivedExportService:
         try:
             async with self.source_guard(context):
                 await self._run(job, file, target_columns, mask)
-        except ReportingError as error:
+        except Exception as error:  # noqa: BLE001 - 守卫失败同样必须落到任务状态
+            # 非 ReportingError（如状态库读取失败、锁文件打开失败）若逃出任务，状态会停在
+            # running：轮询永远“生成中”、过期清理跳过 running，且持续占用并发名额。
             job.status = "failed"
-            job.error = error.message
+            job.error = (
+                error.message if isinstance(error, ReportingError) else "派生导出生成失败。"
+            )
             job.finished_at = time.time()
+            if not isinstance(error, ReportingError):
+                logger.warning(
+                    "trace_derived_export_guard_failed export_id={} error={}",
+                    job.export_id,
+                    error,
+                )
 
     async def _run(
         self,

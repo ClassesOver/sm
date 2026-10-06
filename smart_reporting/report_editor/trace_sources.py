@@ -538,11 +538,13 @@ class ReportEditorTraceService:
             raise ReportingError(
                 "snapshot_integrity_failed", "事实文件无法解析。"
             ) from None
+        # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
         for array_name, prefix in (
             ("metrics", "/metrics/"),
             ("comparisons", "/comparisons/"),
             ("derivedMetrics", "/derivedMetrics/"),
             ("reconciliations", "/reconciliations/"),
+            ("correlationDetails", "/correlationDetails/"),
         ):
             for index, item in enumerate(document.get(array_name, ()) or ()):
                 if isinstance(item, dict) and item.get("factId") == fact_id:
@@ -872,9 +874,10 @@ class ReportEditorTraceService:
                     label_to_key = {}
                 draft_header, draft_rows = _rows(draft_body)
                 # 定位比软校验更保守：重复标签/列名不能选择首个匹配冒充唯一身份。
+                # 已提交正文读取失败（committed 为 None）时视为非唯一，只做软校验、不给定位。
                 unique_block = all(
                     sum(match.group(1) == trace.table_id for match in table_block_pattern.finditer(markdown)) == 1
-                    for markdown in (committed, draft_markdown)
+                    for markdown in (committed or "", draft_markdown)
                 )
                 origin_labels = [row[0] for row in origin_rows if row]
                 draft_labels = [row[0] for row in draft_rows if row]
@@ -1204,6 +1207,8 @@ class ReportEditorTraceService:
             return "derived"
         if pointer.startswith("/reconciliations/"):
             return "reconciliation"
+        if pointer.startswith("/correlationDetails/"):
+            return "correlation"
         return "metric"
 
     def _permissions(

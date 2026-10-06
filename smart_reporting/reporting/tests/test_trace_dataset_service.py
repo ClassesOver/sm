@@ -289,6 +289,34 @@ def test_visible_columns_hide_blocked_names_without_count() -> None:
     assert svc.preview(file, blocked, limit=10, columns=columns).columns == tuple(columns)
 
 
+def test_duplicated_header_copies_of_blocked_columns_stay_blocked(tmp_path: Path) -> None:
+    """重复表头的受限列副本（polars 改名为 *_duplicated_n）不出现在可见列，也不能被预览。"""
+    path = tmp_path / "dup.csv"
+    path.write_text("name,salary,salary\na,1,2\n", encoding="utf-8")
+    svc = service()
+    file = _file(path, rows=1)
+    blocked = TracePreviewPermissions(
+        blocked_columns=frozenset({"salary"}), can_download_original=True
+    )
+    columns, restricted = svc.visible_columns(file, blocked)
+    assert columns == ["name"] and restricted is True
+    with pytest.raises(ReportingError) as exc:
+        svc.preview(file, blocked, limit=10, columns=["name", "salary_duplicated_0"])
+    assert exc.value.code == "dataset_access_denied"
+    assert svc.blocked_columns_in(file, blocked) == ["salary", "salary_duplicated_0"]
+    # 未受限会话不受影响：重复列照常可见。
+    assert svc.visible_columns(file, PERMIT_ALL)[0] == ["name", "salary", "salary_duplicated_0"]
+
+
+def test_duplicated_copies_of_newline_headers_stay_blocked(tmp_path: Path) -> None:
+    """引号内含换行的受限列名，其重复副本同样受限（正则需跨行匹配）。"""
+    path = tmp_path / "dup-newline.csv"
+    path.write_text('name,"sal\nary","sal\nary"\na,1,2\n', encoding="utf-8")
+    blocked = TracePreviewPermissions(blocked_columns=frozenset({"sal\nary"}))
+    columns, restricted = service().visible_columns(_file(path, rows=1), blocked)
+    assert columns == ["name"] and restricted is True
+
+
 def test_download_original_refused_when_session_has_blocked_columns_in_file() -> None:
     """原始字节包含受限列时不能以原始下载绕过列级限制；表头无受限列时不受影响。"""
     svc = service()

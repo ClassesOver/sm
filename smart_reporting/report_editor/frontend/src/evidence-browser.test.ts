@@ -346,12 +346,16 @@ describe('evidence browser shell', () => {
     // 有原因说明时不再追加笼统的“没有登记来源”；起始页同样说明原因。
     expect(shell.querySelector('.evidence-directory-empty')).toBeNull()
     expect(shell.querySelector('.evidence-start-notice')?.textContent).toBe('当前修订没有来源索引（旧报告或来源未登记）')
-    shell.querySelector<HTMLButtonElement>('.evidence-directory-retry')!.click()
+    const retry = shell.querySelector<HTMLButtonElement>('.evidence-directory-retry')!
+    retry.focus()
+    retry.click()
     await flush()
     await flush()
     expect(computations).toHaveBeenCalledTimes(2)
     expect(notes()).toEqual(['当前修订没有来源索引（旧报告或来源未登记）'])
     expect([...shell.querySelectorAll('.evidence-directory-item')].map((item) => item.textContent)).toEqual(['渠道收入汇总'])
+    // 重试按钮随目录重建被移除；焦点落到恢复后的第一个目录项，不落回页面开头。
+    await vi.waitFor(() => expect(document.activeElement).toBe(shell.querySelector('.evidence-directory-item')))
   })
 
   it('directory search filters items without touching task state', async () => {
@@ -465,6 +469,15 @@ describe('evidence browser shell', () => {
     tabList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
     expect(shell.querySelectorAll('.evidence-tab')).toHaveLength(2)
     expect(shell.querySelector('.evidence-tab-name')!.textContent).toBe('华北营收')
+    // 关闭后焦点留在页签栏的当前选中页签，不落回页面开头。
+    expect(document.activeElement).toBe(shell.querySelector('.evidence-tab[aria-selected="true"]'))
+    // 用关闭按钮关闭（键盘 Enter 触发 click）同样保留焦点。
+    browser.openObject(fact('fact-c', '华南营收'))
+    await flush()
+    const closeButtons = () => [...shell.querySelectorAll<HTMLButtonElement>('.evidence-tab-close')]
+    closeButtons()[0]!.focus()
+    closeButtons()[0]!.click()
+    expect(document.activeElement).toBe(shell.querySelector('.evidence-tab[aria-selected="true"]'))
   })
 
   it('closing a background tab keeps the active one; closing the active falls back to MRU', async () => {
@@ -529,6 +542,13 @@ describe('evidence browser shell', () => {
     expect(press(back, 'ArrowRight')).toBe(true)
     await flush()
     expect(current()).toBe('渠道收入汇总')
+    // 焦点在页签上时 Alt+← 仍是后退，不被页签栏当作“移到上一个页签”。
+    const activeTab = shell.querySelector<HTMLButtonElement>('.evidence-tab[aria-selected="true"]')!
+    activeTab.focus()
+    expect(press(activeTab, 'ArrowLeft')).toBe(true)
+    await flush()
+    expect(current()).toBe('华东营收')
+    expect(document.activeElement).not.toBe(shell.querySelector('.evidence-tab-report'))
   })
 
   it('breadcrumb navigation truncates the path and back restores it', async () => {

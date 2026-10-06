@@ -824,6 +824,60 @@ def test_derived_export_keeps_unmasked_cells_verbatim(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.anyio
+async def test_derived_export_guard_failure_marks_job_failed(tmp_path: Path) -> None:
+    """来源守卫抛出非 ReportingError 时任务落为 failed，不停在 running 占用并发名额。"""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from smart_reporting.report_editor.trace_exports import TraceDerivedExportService
+    from smart_reporting.reporting.trace.dataset_service import TraceDatasetFile
+
+    source = tmp_path / "data.csv"
+    source.write_text("name,amount\na,1\n", encoding="utf-8")
+    file = TraceDatasetFile(
+        dataset_id="dataset-guard", local_path=source, size=source.stat().st_size,
+        sha256="0" * 64, row_count=1,
+    )
+    context = SimpleNamespace(
+        report_id="report-1", revision=1, scope={"threadId": "thread-1"},
+        markdown_path="报表/report.md",
+    )
+
+    @asynccontextmanager
+    async def broken_guard(_context):
+        raise RuntimeError("state repository unavailable")
+        yield
+
+    service = TraceDerivedExportService(workspace=None)
+    service.source_guard = broken_guard
+    started = await service.create(
+        context=context, file=file, policy="masked_columns", params={"columns": ["amount"]}
+    )
+    await service._jobs[started["exportId"]].task
+    status = await service.status(context, started["exportId"])
+    assert status["status"] == "failed"
+    assert status["error"]["code"] == "report_editor_export_failed"
+    assert "state repository" not in status["error"]["message"]
+
+
+def test_derived_export_masks_duplicated_copies_of_blocked_columns(tmp_path: Path) -> None:
+    """表头重复的受限列（polars 改名为 *_duplicated_n）同样强制掩码，不成为旁路。"""
+    from smart_reporting.report_editor.trace_exports import _validate_masked_columns_policy
+    from smart_reporting.reporting.trace.dataset_service import TraceDatasetFile
+
+    source = tmp_path / "dup.csv"
+    source.write_text("name,salary,salary\na,1,2\n", encoding="utf-8")
+    file = TraceDatasetFile(
+        dataset_id="dataset-dup", local_path=source, size=source.stat().st_size,
+        sha256="0" * 64, row_count=1,
+    )
+    target, _mask = _validate_masked_columns_policy(
+        file, {"columns": ["name"]}, frozenset({"salary"})
+    )
+    assert target == ["name", "salary", "salary_duplicated_0"]
+
+
 
 @pytest.mark.anyio
 async def test_derived_export_always_masks_blocked_columns(tmp_path: Path) -> None:
@@ -1117,6 +1171,33 @@ async def test_fact_detail_rejects_unknown_analysis_and_fact(tmp_path: Path) -> 
     with pytest.raises(ReportingError) as exc:
         await editor.trace_fact_detail(_context(), session, "analysis_001", "fact-" + "e" * 16)
     assert exc.value.code == "fact_binding_unavailable"
+
+
+def test_fact_detail_locates_correlation_facts() -> None:
+    """相关性事实（correlationDetails）同样可被引用绑定，事实详情必须能定位与解析。"""
+    from smart_reporting.report_editor.trace_sources import ReportEditorTraceService
+    from smart_reporting.reporting.trace.contracts_v1 import FactRefV1
+    from smart_reporting.reporting.trace.fact_service import resolve_fact
+
+    fact_id = "fact-" + "c" * 16
+    bundle = json.dumps({
+        "analysisId": "analysis_001",
+        "metrics": [],
+        "correlationDetails": [{
+            "factId": fact_id, "datasetId": DATASET_ID, "leftField": "visits",
+            "rightField": "revenue", "method": "pearson", "sampleCount": 12, "value": 0.82,
+        }],
+    }).encode("utf-8")
+    pointer = ReportEditorTraceService._locate_fact_pointer(bundle, fact_id)
+    assert pointer == "/correlationDetails/0"
+    kind = ReportEditorTraceService._pointer_kind(pointer)
+    assert kind == "correlation"
+    detail = resolve_fact(bundle, FactRefV1(
+        analysisId="analysis_001", fileResourceId="trf-" + "0" * 20,
+        jsonPointer=pointer, factKind=kind, factKey=fact_id,
+    ))
+    assert detail["factKind"] == "correlation"
+    assert detail["displayValue"] == 0.82
 
 
 @pytest.mark.anyio
