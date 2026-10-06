@@ -22,6 +22,18 @@ describe('createExportSettingsPanel', () => {
     })
   })
 
+  it('defaults to the server export defaults and restores saved preferences', () => {
+    // 面板默认值须与服务端 EditorExportSettings 默认一致（不含封面），导出直接读取面板状态。
+    expect(createExportSettingsPanel(document.body).read()).toEqual({
+      cover: false, toc: true, headerFooter: true, pageNumbers: true, sources: true, note: '',
+    })
+    const first = createExportSettingsPanel(document.body)
+    first.dialog.querySelector<HTMLInputElement>('[name="toc"]')!.checked = false
+    first.read()
+    // 刷新后（新面板）读取到上次保存的偏好，而不是写死的默认值。
+    expect(createExportSettingsPanel(document.body).read()).toMatchObject({ toc: false })
+  })
+
   it('still returns settings when persistence is unavailable', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('quota exceeded', 'QuotaExceededError')

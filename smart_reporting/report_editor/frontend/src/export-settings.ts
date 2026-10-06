@@ -27,7 +27,7 @@ export function createExportSettingsPanel(root: HTMLElement) {
           <p class="panel-subtitle">配置导出内容与版本备注</p>
         </div>
       </div>
-      <div class="panel-body export-settings-body"><label><input type="checkbox" name="cover" checked> 包含封面</label><label><input type="checkbox" name="toc" checked> 包含目录</label><label><input type="checkbox" name="headerFooter" checked> 页眉页脚</label><label><input type="checkbox" name="pageNumbers" checked> 页码</label><label><input type="checkbox" name="sources" checked> 来源编号与附录</label><label class="export-note-field"><span>版本备注</span><textarea name="note" maxlength="200" rows="3" placeholder="例如：运营数据复核后发布"></textarea></label></div>
+      <div class="panel-body export-settings-body"><label><input type="checkbox" name="cover"> 包含封面</label><label><input type="checkbox" name="toc" checked> 包含目录</label><label><input type="checkbox" name="headerFooter" checked> 页眉页脚</label><label><input type="checkbox" name="pageNumbers" checked> 页码</label><label><input type="checkbox" name="sources" checked> 来源编号与附录</label><label class="export-note-field"><span>版本备注</span><textarea name="note" maxlength="200" rows="3" placeholder="例如：运营数据复核后发布"></textarea></label></div>
       <div class="export-settings-actions"><button type="button" class="ui-button ui-button--secondary" data-export-settings="cancel">取消</button><button type="button" class="ui-button ui-button--primary" data-export-settings="confirm">继续导出</button></div>`,
   })
   const dialog = modal.overlay
