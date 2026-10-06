@@ -1250,6 +1250,13 @@ button {
   white-space: nowrap;
 }
 
+/* 版本内容加载失败：深色差异区内的浅红提示，使用正文字体而非等宽代码字体。 */
+.history-diff-error {
+  margin: 0;
+  padding: 16px;
+  color: #ffb4a8;
+  font: 13px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
 .history-diff {
   display: block;
   min-height: 0;
